@@ -359,8 +359,8 @@ between here and there:
    the API reference and the site lead with what this is: one bucket, immutable generations, cheap
    chunk-skipping reads from anywhere. A gate derives the site's driver counts from the driver classes in the
    code, and another refuses a count of third-party dependencies that does not name the package it counts.
-7. **`.crbm` format freeze** — [the format reference](format.md) documents the layout, the registry row and the rules that
-   freeze; the format already reserves space for 64-bit IDs and stamps a schema version on
+7. **`.crbm` format freeze** — [the format reference](format.md) documents the layout, the registry row and the questions
+   the freeze review decides; the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe. The row is at schema
    5: an optional cached summary of the current generation (its id count,
    its object's fingerprint, its tail size and its metadata, sealed on an encrypted segment), a ledger of the

@@ -151,15 +151,17 @@ format that gives three shapes:
 
 | Container | When | Bytes of the payload |
 |---|---|---|
-| array | up to 4,096 values | `3A 30 00 00` ‖ `01 00 00 00` ‖ `00 00` ‖ `u16(card−1)` ‖ `10 00 00 00` ‖ the values as ascending `u16` |
-| bitset | more than 4,096 values | the same 16-byte header ‖ 8,192 bytes (65,536 bits) |
-| run | when its body is strictly smaller than the array's (and the bitset's), below | `3B 30 00 00` ‖ `01` ‖ `00 00` ‖ `u16(card−1)` ‖ `u16(runs)` ‖ for each run `u16(start)` ‖ `u16(length−1)` |
+| array | up to 4,096 values, unless a run is smaller | `3A 30 00 00` ‖ `01 00 00 00` ‖ `00 00` ‖ `u16(card−1)` ‖ `10 00 00 00` ‖ the values as ascending `u16` |
+| bitset | more than 4,096 values, unless a run is smaller | the same 16-byte header ‖ 8,192 bytes (65,536 bits) |
+| run | when its body is strictly smaller than the array's (up to 4,096 values) or the bitset's (more than 4,096), below | `3B 30 00 00` ‖ `01` ‖ `00 00` ‖ `u16(card−1)` ‖ `u16(runs)` ‖ for each run `u16(start)` ‖ `u16(length−1)` |
 
 **Which shape the writer picks (writer today).** The choice is Roaring's, made on the size of the container *body*, not
 of the whole payload: a run body is `2 + 4 · runs` bytes, an array body `2 · cardinality`, a bitset body 8,192. A
-container with more than 4,096 values is a bitset; otherwise it is the array, and it becomes a run only when
-`2 + 4 · runs` is strictly smaller than `2 · cardinality`. Where they are equal (`cardinality = 2 · runs + 1`: three
-consecutive values, or five in two runs) the array stays. The run payload has no 4-byte offset header, so a run payload
+container with at most 4,096 values is an array unless `2 + 4 · runs` is strictly smaller than `2 · cardinality`; a
+container with more than 4,096 values is a bitset unless `2 + 4 · runs` is strictly smaller than 8,192. Either way it
+is a run only when the run body is strictly smaller: where the run and the array are equal (`cardinality = 2 · runs + 1`:
+three consecutive values, or five in two runs) the array stays, and a run body (`2 + 4 · runs`, never a multiple of 4)
+cannot equal a bitset body. So the golden file's key 7, all 65,536 values in one run, is a 15-byte run payload. The run payload has no 4-byte offset header, so a run payload
 is 7 bytes smaller than an array payload with the same body size; a port that compares whole payloads would pick the
 run at those ties and write other bytes than the golden file. The writer also removes any run form a bitmap arrived in
 before it chooses, so the bytes depend on the set alone. A reader accepts all three shapes whichever a writer chose.
@@ -360,8 +362,8 @@ that cannot be ignored. (A change that can be ignored is a new extension section
   key refuses it with an `IntegrityError` when the footer names another generation. A value past 2^53 − 1 is refused.
 - **`indexNonce`, `indexTag`.** Encrypted: the index's nonce and tag ([section 8](#8-encryption-at-rest)). Cleartext:
   the writer today writes zero bytes, and a reader does not read either field on a cleartext object, so a port must
-  not refuse non-zero bytes there. A per-write nonce in this slot is planned for the cleartext object, so those bytes
-  may carry a value later ([section 12](#12-reserved-fields-and-the-questions-they-wait-on)).
+  not refuse non-zero bytes there. A per-write value in a footer slot is planned for the cleartext object, so bytes a
+  reader ignores today may carry a value later ([section 12](#12-reserved-fields-and-the-questions-they-wait-on)).
 - **`keyId`.** All zero bytes in every object written today; a reader ignores it, so a port must not refuse a non-zero
   value. The wrapped keys live in the registry row, not in
   the object.
@@ -448,8 +450,9 @@ A summary's `generation` is its own generation; the other scopes use the object'
 **What the associated data does not bind.** It binds the generation *number*, not the object. A segment keeps one data
 key for its life, and a number can be taken again within one row's life ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)),
 so an earlier object stored under the same number, or its sealed parts as a set, opens under the same key and the same
-associated data. What refuses it is the row's usable summary fingerprint, or a pin's fingerprint, and a clear summary
-is not authenticated; with no usable summary nothing refuses it. Whether the associated data should bind a per-write
+associated data. What refuses it is the row's usable summary fingerprint, or a pin's fingerprint; with no usable summary
+nothing refuses it. A sealed summary binds the generation number too, so someone who can write both the row and the
+bucket can put back an old object together with its old summary. Whether the associated data should bind a per-write
 value is an open question for the freeze review ([section 11](#11-versioning-and-compatibility)).
 
 **Wrapping the key.** The row's `wrappedDeks` ([section 10](#10-the-registry-row-schema-5)) holds the data key wrapped
@@ -493,7 +496,7 @@ advance, and it is not unique over time:
 
 - a segment whose row is purged and whose bucket is emptied starts again at 0, so a re-created name serves different data
   at a number the old one used;
-- a number is taken again once its object is deleted: after a purge, and within one row's life after a refused load's
+- a number is taken again once its object is deleted, for example after a purge, and within one row's life after a refused load's
   reclaim of its own object, an erasure's delete above the pointer, or the delete of an object a rollback left above the
   pointer. A load takes `currentGen + 1` when no object holds that number, and otherwise numbers above every object it
   lists, so the objects a rollback leaves above the pointer are not reused while they exist.
@@ -522,8 +525,9 @@ object* carries the fingerprint, or the footer CRC that is half of it, beside th
   needed to tell two objects under one number apart once the ledger knows the number. A rollback onto a
   generation the row knows moves only when the object's footer checksum is the recorded one; an object with another
   checksum is another object under that number. A rollback moves onto a generation the row does not know only with
-  `allowUnknown`, or, when the target is below the pointer, on a row with no usable ledger, or when the target is
-  numbered below a full ledger's bound (a ledger of 128 entries or more).
+  `allowUnknown`, or when the target is below the pointer and either the row has no usable ledger or the target is
+  numbered below a full ledger's bound (a ledger of 128 entries or more; its bound is its least recently current entry
+  that no lease names).
 - **A pin** records the generation, the driver's version of the object and the fingerprint. A pinned read checks the
   object against the fingerprint with one footer-sized read ([`sameObject`](guide/api-reference.md)): another size is
   another object, and at the same size the footer CRC decides.
@@ -719,9 +723,8 @@ a changed object only when the footer's `versionMajor` or a flag bit tells it to
 without either is misread by an older reader, not refused.
 
 **What a 1.0 would promise is not decided.** The freeze is settled by a **freeze review**, inside the planning of the
-1.0 release, and not before. Until it has run, this page promises nothing past what the table
-above and the "Reader today" and "Writer today" lines say, and a change that breaks a reader may land in any minor
-release. These are the questions the review decides.
+1.0 release, and not before. Until it has run, this page describes this release and promises nothing
+beyond it: a change that breaks a reader may land in any minor release. These are the questions the review decides.
 
 1. **Which number is "1.0".** The promise attaches to the library's 1.0 release. The object footer already reads
    "format 1.0", which is a different number: does the first frozen object format keep that number, or move?
@@ -785,14 +788,14 @@ What each reserved or open field holds, and how a reader treats it today. The nu
 | bytes after a payload's bitmap | none written | accepts them | 11 |
 | an entry's cardinality against its payload | written equal | does not compare them | 11 |
 
-A per-write nonce in the cleartext footer's `indexNonce` slot is planned and not yet defined. A reader must not refuse
-non-zero bytes there; question 9 asks when it lands.
+A per-write value in a footer slot of the cleartext object is planned and not yet defined. A reader must not refuse
+non-zero bytes in the fields it ignores today; question 9 asks when it lands.
 
 ## 13. The golden corpus
 
 [`tests/golden/`](../tests/golden) holds the objects any other implementation should decode, and reproduce, to show it
 reads this format. Each is checked in this repository both ways: the writer must produce the file's bytes exactly from
-its inputs, and the library's reader must decode it back to those inputs (for `v1.0-load.crbm`, to the 70,647 ids). The corpus does not change after a release: if a check
+its inputs, and the library's reader must decode it back to those inputs (for `v1.0-load.crbm`, to the 70,647 ids). The corpus's objects and test vectors do not change after a release (a file's description text may be corrected): if a check
 fails after a code change, the format changed, which needs a new format version, not a regenerated file.
 
 | File | Size | Generation | Fingerprint | Contents |
