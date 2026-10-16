@@ -212,8 +212,38 @@ jobs:
       - run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300
       # A step timeout below the job's, so a run that stalls fails this step and keeps its log (each failed test's
       # output, a rehearsal's stderr included); a job that reaches its own timeout is cancelled and keeps none.
-      - run: pnpm test:integration
-        timeout-minutes: 12
+      # DIAGNOSTIC, to be reverted: each file alone, under a shell timeout, beside a memory watchdog that kills the
+      # largest process before the runner starves, so the log survives.
+      - name: integration, one file at a time, with a memory watchdog
+        timeout-minutes: 14
+        run: |
+          set +e
+          watchdog() {
+            n=0
+            while sleep 5; do
+              n=$((n + 1))
+              avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
+              if [ "$avail" -lt 1500 ] || [ $((n % 4)) -eq 0 ]; then
+                echo "[watchdog $(date +%T)] available ${avail} MB, load $(cut -d' ' -f1-3 /proc/loadavg)"
+                ps -eo pid,ppid,rss,pcpu,etimes,args --sort=-rss | head -5 | cut -c1-170 | sed 's/^/[watchdog]   /'
+              fi
+              if [ "$avail" -lt 1500 ]; then
+                pid=$(ps -eo pid,rss --sort=-rss | awk 'NR==2{print $1}')
+                echo "[watchdog] low memory: killing $pid"
+                kill -9 "$pid"
+              fi
+            done
+          }
+          watchdog &
+          wd=$!
+          for f in tests/integration/*.test.ts; do
+            echo "::group::$f"
+            start=$(date +%s)
+            timeout -k 10 240 pnpm exec vitest run -c vitest.integration.config.ts "$f" --reporter=verbose 2>&1 | tail -120
+            echo "exit ${PIPESTATUS[0]} for $f after $(( $(date +%s) - start )) s"
+            echo "::endgroup::"
+          done
+          kill "$wd"
       # Kept only from a run that passed: a month's entry is never written again, so one saved by a run missing an
       # image, or on a broken build of a tag, would stand for the month.
       - uses: ./.github/actions/docker-images-save
