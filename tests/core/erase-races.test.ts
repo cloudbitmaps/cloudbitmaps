@@ -15,7 +15,7 @@ import type {
 } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
-import { testEntropy } from '../helpers/entropy';
+import { testEntropy, zeroEntropy } from '../helpers/entropy';
 
 /**
  * Interleavings of an erasure with another writer that no other test pins. Each case holds the erasure at one exact
@@ -496,14 +496,29 @@ describe('an erasure that races another writer', () => {
     expect(kinds).not.toContain('segment.rewrite');
   });
 
-  it('stands on the rewrite when it got no answer and a load took its number with the same bytes', async () => {
+  it('reports none erased, and deletes nothing, when the rewrite got no answer and a load of the same ids took its number', async () => {
     const w = world();
     await idInCurrentOfThree(w.deps, w.registry);
     const { audit, kinds } = recordingAudit();
     const registry = rewriteLostToLoad(w, [1, 2, 3]);
     const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry }, { audit });
+    // The load wrote the same chunks under another write identity, so its footer is not the rewrite's.
+    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    expect(await generationsOf(w.storage)).toEqual([2, 3]);
+    expect(kinds).not.toContain('segment.rewrite');
+  });
+
+  it('stands on the rewrite when it got no answer and a load took its number with the same ids and the same write identity', async () => {
+    // Only a footer that is the rewrite's own can be taken for it: two writers drawing the same identity (here all
+    // zero) write the same bytes.
+    const w = world();
+    const zero = { ...w, deps: { ...w.deps, entropy: zeroEntropy } };
+    await idInCurrentOfThree(zero.deps, zero.registry);
+    const { audit, kinds } = recordingAudit();
+    const registry = rewriteLostToLoad(zero, [1, 2, 3]);
+    const res = await eraseIdFromSegment(SEG, X, { ...zero.deps, registry }, { audit });
     expect(res).toMatchObject({ erased: true, generation: 3 });
-    expect(await generationsOf(w.storage)).toEqual([3]);
+    expect(await generationsOf(zero.storage)).toEqual([3]);
     expect(kinds).toContain('segment.rewrite');
   });
 });
