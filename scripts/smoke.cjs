@@ -214,10 +214,14 @@ function assertDeclarationsMatchWhatTscLoads() {
     bundler: [ts.ModuleKind.ESNext, ts.ModuleResolutionKind.Bundler, '.mts'],
     node10: [ts.ModuleKind.CommonJS, ts.ModuleResolutionKind.Node10, '.ts'],
   };
-  const loadedAnywhere = new Set();
+  const loadedAnywhere = new Map(); // key -> the file name tsc gave
+  const rootKey = key(root) + path.sep;
   const problems = [];
   for (const [mode, [module, moduleResolution, ext]] of Object.entries(modes)) {
     const probe = path.join(root, `__declarations_probe__${ext}`);
+    // tsc hands the host its own spelling of the probe's name (forward slashes on Windows): compare keys.
+    const probeKey = key(probe);
+    const isProbe = (f) => key(f) === probeKey;
     const options = {
       noEmit: true,
       strict: true,
@@ -231,20 +235,28 @@ function assertDeclarationsMatchWhatTscLoads() {
     };
     const host = ts.createCompilerHost(options, true);
     const { fileExists, readFile, getSourceFile } = host;
-    host.fileExists = (f) => f === probe || fileExists.call(host, f);
-    host.readFile = (f) => (f === probe ? probeText : readFile.call(host, f));
+    host.fileExists = (f) => isProbe(f) || fileExists.call(host, f);
+    host.readFile = (f) => (isProbe(f) ? probeText : readFile.call(host, f));
     host.getSourceFile = (f, ...rest) =>
-      f === probe
+      isProbe(f)
         ? ts.createSourceFile(f, probeText, rest[0], true)
         : getSourceFile.call(host, f, ...rest);
     const program = ts.createProgram([probe], options, host);
-    for (const sf of program.getSourceFiles()) loadedAnywhere.add(key(sf.fileName));
+    for (const sf of program.getSourceFiles()) {
+      if (isProbe(sf.fileName)) continue;
+      const k = key(sf.fileName);
+      loadedAnywhere.set(k, sf.fileName);
+      // A worktree nested in another checkout can resolve a missing entry through the outer checkout's node_modules,
+      // into ITS dist/, and then no diagnostic appears: a file from outside this checkout is a failure in itself.
+      if (!k.startsWith(rootKey))
+        problems.push(`[${mode}] loaded from outside this checkout: ${sf.fileName}`);
+    }
     const diagnostics = [
       ...program.getOptionsDiagnostics(),
       ...program.getGlobalDiagnostics(),
       ...program.getSyntacticDiagnostics(),
       ...program.getSemanticDiagnostics(),
-    ].filter((d) => !d.file || d.file.fileName === probe || inDist(d.file.fileName));
+    ].filter((d) => !d.file || isProbe(d.file.fileName) || inDist(d.file.fileName));
     for (const d of diagnostics) {
       const where = d.file ? path.relative(root, d.file.fileName) : '(program)';
       problems.push(
