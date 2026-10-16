@@ -6,6 +6,7 @@ import type { SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { collect, loadedStore } from '../helpers/loaded';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * `guard.maxGrowth` — the ceiling to `minRetained`'s floor.
@@ -23,7 +24,11 @@ const ids = (n: number, from = 0): number[] => Array.from({ length: n }, (_, i) 
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 
 describe('guard.maxGrowth on load', () => {

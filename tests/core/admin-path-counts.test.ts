@@ -11,6 +11,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The consistency scan asks whether a segment's current object is there with one zero-length tail read (a HEAD on S3, a
@@ -497,7 +498,7 @@ describe('a load that needs the current size takes it from count()', () => {
     const registry = new MemoryRegistryDriver();
     const calls: Record<string, number> = {};
     const storage = counting<IStorageDriver>(memory, calls);
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     for (const n of [3, 5]) {
       const r = await loadSegment(
         SEG,

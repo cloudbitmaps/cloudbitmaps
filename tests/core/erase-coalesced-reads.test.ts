@@ -13,11 +13,13 @@ import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { openGenerationReader } from '@/core/crbm-open';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { collect } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { Gate, Watched, tick } from '../helpers/live-buffers';
 import { expectSameBytes } from '../helpers/chunk-stream';
+import { zeroEntropy } from '../helpers/entropy';
+import { testEntropy } from '../helpers/entropy';
 
 // Segments of up to 2,000 chunks, loaded and then erased through, can outrun the default 5 s limit on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
@@ -114,7 +116,7 @@ const eraseFrom = (
   w: { storage: IStorageDriver; registry: MemoryRegistryDriver },
   id: number,
   deps: object = {},
-) => eraseIdFromSegment(SEG, id, { ...w, codec: roaringCodec, ...deps });
+) => eraseIdFromSegment(SEG, id, { ...w, entropy: testEntropy, codec: roaringCodec, ...deps });
 
 /** Every chunk of the current generation, by key, through a reader. */
 async function chunksOf(
@@ -278,7 +280,7 @@ async function wide(n: number, size = 300 * KIB) {
   const registry = new MemoryRegistryDriver();
   const key = { ...SEG, generation: 0 };
   await inner.putImmutable(key, async (sink) => {
-    const writer = new CrbmWriter(sink, { generation: 0 });
+    const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 0 });
     for (let k = 0; k < n; k++) {
       const payload = new Uint8Array(size);
       payload[0] = k & 0xff;

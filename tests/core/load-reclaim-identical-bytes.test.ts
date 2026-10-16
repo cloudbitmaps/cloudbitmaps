@@ -8,6 +8,7 @@ import { CloudRoaring } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';
 import { REF, clock, gate, generations } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A read of an object's footer names the object by its fingerprint, its size and footer CRC, which is its bytes. Two
@@ -99,7 +100,7 @@ function loadBStorage(
 async function race(found: Found, when: When) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps = { storage, registry, codec: roaringCodec, clock };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
 
   // B's publish of 1 is held, and so is its proof of the object under 1.
   const bAtPublish = gate();

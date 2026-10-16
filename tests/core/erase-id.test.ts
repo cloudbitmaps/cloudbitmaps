@@ -10,6 +10,7 @@ import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * `eraseIdFromSegment` — subject erasure on a loaded segment, one id at a time.
@@ -35,7 +36,13 @@ async function world(keystore?: IKeystore) {
       encryption: { keystore },
     },
   );
-  const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
+  const deps = {
+    storage: w.storage,
+    registry: w.registry,
+    entropy: testEntropy,
+    codec: roaringCodec,
+    keystore,
+  };
   /** A FRESH store: the fixture has no clock, so nothing refreshes a store's generation on a timer. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({

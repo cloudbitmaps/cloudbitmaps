@@ -7,6 +7,7 @@ import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { roaringCodec } from '@/roaring-codec';
 import { STUB_GCS_BUCKET, StubGcsService } from '../../helpers/gcs-stub';
+import { testEntropy } from '../../helpers/entropy';
 
 /**
  * A throttled write, through a real `@google-cloud/storage` client over a stub of the JSON API on the loopback
@@ -220,6 +221,7 @@ describe('GCS: a load whose writes are throttled, through the real SDK', () => {
         clock: { sleep: async () => {} },
       }),
       registry: new GcsRegistryDriver({ storage: client, bucket: STUB_GCS_BUCKET }),
+      entropy: testEntropy,
       codec: roaringCodec,
       // What a store wires: the publish waits on it before a fresh write, as the driver does before a re-send.
       clock: {

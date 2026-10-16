@@ -20,6 +20,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore } from '../helpers/counting';
 import { FULL_STRENGTH } from '../helpers/strength';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The known-generations ledger against a model of what a publish writes and what a collection keeps, over every shipped
@@ -466,7 +467,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
             const storage = new MemoryStorageDriver();
             const registry = reg.make(() => t);
             const keeps = [keepA, keepB] as const;
-            const deps = { storage, registry, codec: roaringCodec, clock };
+            const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
             const model: ModelState = { ledger: undefined, pointer: undefined, leases: new Map() };
             let snapshot: { row: RegistryRecord | null; model: ModelState } | null = null;
             let holders = 0;

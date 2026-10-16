@@ -20,13 +20,22 @@ import { bitsetOf, craftPortable } from '../helpers/portable-bytes';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { loadSegment } from '@/core/load';
 import { MemoryRegistryDriver } from '@/drivers/memory';
+import {
+  GOLDEN_NONCE,
+  counterEntropy,
+  fixedEntropy,
+  testEntropy,
+  zeroEntropy,
+} from '../helpers/entropy';
 
 /**
  * A load from a bitmap writes the generation the same ids write, byte for byte.
  *
  * `tests/golden/v1.0-load.crbm` is the object `store.load()` wrote from the ids below on `main` before bitmap
  * inputs existed. Every input must reproduce it, which proves two things at once: the bitmap path writes what the
- * id path writes, and making `optimize()` canonical moved no id load's bytes.
+ * id path writes, and making `optimize()` canonical moved no id load's bytes. The golden's footer write identity is all
+ * zero, which a store drawing zero entropy reproduces; `v1.0-load-write-identity.crbm` is the same object under a fixed
+ * identity.
  */
 const { RoaringBitmap32 } = roaring;
 const GOLDEN = new Uint8Array(
@@ -64,7 +73,11 @@ async function loadAndRead(
   options: Omit<CloudRoaringOptions, 'storage'> = {},
 ): Promise<{ result: LoadResult; bytes: Uint8Array; backend: MemoryStorage }> {
   const backend = new MemoryStorage();
-  const store = new CloudRoaring({ ...options, storage: backend });
+  const store = new CloudRoaring({
+    ...options,
+    storage: backend,
+    seams: { entropy: zeroEntropy, ...options.seams },
+  });
   const result = await store.load(SEG, input);
   const tail = await backend.storage.getTail({ ...SEG, generation: result.generation }, 1 << 30);
   return { result, bytes: tail.bytes, backend };
@@ -89,6 +102,16 @@ const INPUTS: Array<[string, () => LoadInput]> = [
   ],
   ['a bare RoaringBitmap32 passed as ids', () => fromRanges()],
 ];
+
+describe('a load under a fixed write identity writes the identity golden', () => {
+  it('v1.0-load-write-identity.crbm', async () => {
+    const { bytes } = await loadAndRead(IDS, { seams: { entropy: fixedEntropy(GOLDEN_NONCE) } });
+    const golden = readFileSync(
+      fileURLToPath(new URL('../golden/v1.0-load-write-identity.crbm', import.meta.url)),
+    );
+    expect(Buffer.from(bytes).equals(golden)).toBe(true);
+  });
+});
 
 describe('the golden load object, read back', () => {
   it('decodes with the library reader to exactly the ids docs/format.md lists, chunk by chunk', async () => {
@@ -298,9 +321,16 @@ describe('the cut re-checks every container it copies', () => {
     };
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const err = await loadSegment(SEG, { serialized }, { storage, registry, codec: racing }).catch(
-      (e: unknown) => e,
-    );
+    const err = await loadSegment(
+      SEG,
+      { serialized },
+      {
+        storage,
+        registry,
+        codec: racing,
+        entropy: testEntropy,
+      },
+    ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(IntegrityError);
     expect(await registry.get(SEG)).toBeNull();
     const objects: number[] = [];
@@ -448,7 +478,10 @@ describe('a bitmap load reports the fingerprint of the object it wrote', () => {
     const storage = new MemoryStorageDriver();
     const key = { ...SEG, generation: 0 };
     const decoded = prepareLoadInput(input, roaringCodec) as DecodedLoadInput;
-    const written = await bulkLoadCrbmGeneration(storage, key, decoded, { codec: roaringCodec });
+    const written = await bulkLoadCrbmGeneration(storage, key, decoded, {
+      codec: roaringCodec,
+      entropy: testEntropy,
+    });
     const reader = await openGenerationReader(storage, key, undefined);
     expect(written.fingerprint).toBe(reader.fingerprint);
   });
@@ -475,12 +508,12 @@ describe('an erasure that leaves a tie writes what a load of the erased set writ
     // runs: a tie, which the canonical encoding stores as the array a load from ids writes.
     const erased = [0, 1, 2, 10, 11, at(7, 5), at(7, 6), at(7, 7)];
     const a = new MemoryStorage();
-    const storeA = new CloudRoaring({ storage: a });
+    const storeA = new CloudRoaring({ storage: a, seams: { entropy: counterEntropy() } });
     await storeA.load(SEG, [...erased, 3]);
     const res = await storeA.eraseSubject(3, { allNamespaces: true });
     expect(res.erasedFrom).toHaveLength(1);
     const b = new MemoryStorage();
-    const storeB = new CloudRoaring({ storage: b });
+    const storeB = new CloudRoaring({ storage: b, seams: { entropy: counterEntropy() } });
     await storeB.load(SEG, [99]);
     await storeB.load(SEG, erased);
     const rowA = await a.registry.get(SEG);

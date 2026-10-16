@@ -9,6 +9,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { MIN_EXPIRES_AT_MS } from '@/index';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * What the row's summary of the current generation does through the rest of a segment's life. It describes one
@@ -25,7 +26,7 @@ const NOW = MIN_EXPIRES_AT_MS + 700 * DAY;
 function world(keystore?: InProcessKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver({ now: () => NOW });
-  const load = { storage, registry, codec: roaringCodec, keystore };
+  const load = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   const drop = { storage, registry };
   return { storage, registry, load, drop, keystore };
 }

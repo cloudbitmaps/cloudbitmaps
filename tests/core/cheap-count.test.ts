@@ -1,4 +1,4 @@
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { SafeBitmap } from '@/roaring-codec';
 import {
   CountingMetricsSink,

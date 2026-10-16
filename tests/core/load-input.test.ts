@@ -8,6 +8,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { craftPortable } from '../helpers/portable-bytes';
+import { counterEntropy } from '../helpers/entropy';
 
 /**
  * What core's load accepts besides ids: `{ serialized }` (portable Roaring bytes) and `{ bitmap }` (anything that
@@ -42,7 +43,7 @@ function world(codec: CodecInterface = roaringCodec) {
     storage: storage.driver,
     registry: registry.driver,
     calls: () => [...storage.calls, ...registry.calls],
-    deps: { storage: storage.driver, registry: registry.driver, codec },
+    deps: { storage: storage.driver, registry: registry.driver, codec, entropy: counterEntropy() },
   };
 }
 

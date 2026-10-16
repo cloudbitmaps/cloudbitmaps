@@ -3,6 +3,7 @@ import { runInNewContext } from 'node:vm';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { CrbmReader, RETAINED_BYTES_PER_INDEX_ENTRY } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
+import { zeroEntropy } from '../../helpers/entropy';
 
 /**
  * The reader's memory bound must not under-count the heap its parsed index really retains: the storage reader
@@ -27,7 +28,7 @@ const gc = runInNewContext('gc') as (options?: { type: 'major'; execution: 'sync
 
 async function buildObject(entries: number): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 1 });
+  const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 1 });
   for (let i = 0; i < entries; i++) {
     // Spread the keys across the 16-bit range with uneven gaps, and vary lengths and cardinalities, so the
     // index holds the mixed varint widths and large CRCs a real one does.

@@ -5,6 +5,8 @@ import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
+import { zeroEntropy } from '../helpers/entropy';
 
 const REF: SegmentRef = { segment: 's' };
 
@@ -30,7 +32,11 @@ describe('an erasure under a tombstone, with several objects', () => {
       [1, 2],
       [2, 3],
     ]);
-    const out = await eraseIdFromSegment(REF, 2, { ...w, codec: roaringCodec });
+    const out = await eraseIdFromSegment(REF, 2, {
+      ...w,
+      codec: roaringCodec,
+      entropy: zeroEntropy,
+    });
     expect(out).toMatchObject({ erased: true, fromGeneration: 2, collected: [0, 1, 2] });
     expect(await generations(w.storage)).toEqual([]);
   });
@@ -40,7 +46,12 @@ describe('an erasure under a tombstone, with several objects', () => {
     const st = Object.create(w.storage) as IStorageDriver;
     st.delete = async () => undefined;
     await expect(
-      eraseIdFromSegment(REF, 2, { storage: st, registry: w.registry, codec: roaringCodec }),
+      eraseIdFromSegment(REF, 2, {
+        storage: st,
+        registry: w.registry,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).rejects.toBeInstanceOf(WriteConflictError);
   });
 });

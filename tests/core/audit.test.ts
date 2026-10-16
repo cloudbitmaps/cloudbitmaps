@@ -14,6 +14,7 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { incarnationOf } from '@/core/token';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),
@@ -36,7 +37,7 @@ function world(keystore?: IKeystore) {
   const registry = new MemoryRegistryDriver();
   // Wide enough for every emitter here: `{ registry }` is all the crypto-shred paths need, and the erasure
   // rewrite additionally reads/writes objects, and core's `eraseIdFromSegment` takes the codec it builds bitmaps with.
-  const deps = { storage, registry, keystore, codec: roaringCodec };
+  const deps = { storage, registry, keystore, entropy: testEntropy, codec: roaringCodec };
   const store = (): CloudRoaring =>
     new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore }),

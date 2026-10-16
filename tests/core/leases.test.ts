@@ -37,6 +37,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Leases at the core: the pure helpers, the registry writes that take and release one, and what each collector does
@@ -73,7 +74,13 @@ function world() {
   const registryCalls: Record<string, number> = {};
   const storage = counting<IStorageDriver>(memory, storageCalls);
   const counted = counting<IRegistryDriver>(registry, registryCalls);
-  const deps: LoadDeps = { storage, registry: counted, codec: roaringCodec, clock };
+  const deps: LoadDeps = {
+    storage,
+    registry: counted,
+    entropy: testEntropy,
+    codec: roaringCodec,
+    clock,
+  };
   return { clock, memory, registry, counted, storage, storageCalls, registryCalls, deps };
 }
 type World = ReturnType<typeof world>;
@@ -520,7 +527,12 @@ describe('a load collects around a lease', () => {
     const w = world();
     await loadMany(w, 6, { keep: 5 });
     await putLeases(w, [lease(1, 2, w.clock.t + 10_000_000)]); // live by the clock the other loads have
-    const noClock = { storage: w.storage, registry: w.counted, codec: roaringCodec };
+    const noClock = {
+      storage: w.storage,
+      registry: w.counted,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    };
     await loadSegment(
       SEG,
       Array.from({ length: 8 }, (_, i) => i),
@@ -622,6 +634,7 @@ describe('what always wins over a lease', () => {
     const res = await eraseIdFromSegment(SEG, 7, {
       storage: w.storage,
       registry: w.registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
     expect(res.erased).toBe(true);
@@ -636,6 +649,7 @@ describe('what always wins over a lease', () => {
     const res = await eraseIdFromSegment(SEG, 7, {
       storage: w.storage,
       registry: w.registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
     expect(res).toMatchObject({ erased: true, generation: 2 });

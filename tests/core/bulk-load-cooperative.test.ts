@@ -6,6 +6,7 @@ import { YIELD_EVERY } from '@/core/cooperative';
 import { joinId } from '@/core/bit-route';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryStorageDriver } from '@/drivers/memory';
+import { GOLDEN_NONCE, fixedEntropy, testEntropy } from '../helpers/entropy';
 
 // Bulk-load must not hold Node's only thread for the duration of the load.
 //
@@ -90,7 +91,10 @@ describe('bulk-load is cooperative', () => {
     // unbroken. This case is also the control for the one above — without it, a test asserting "many turns" could
     // be passing because the load is slow for some unrelated reason.
     const { turns } = await loopTurnsDuring(() =>
-      coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, { codec: roaringCodec }),
+      coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, {
+        codec: roaringCodec,
+        entropy: testEntropy,
+      }),
     );
     expect(turns).toBeLessThanOrEqual(2);
   });
@@ -103,9 +107,11 @@ describe('bulk-load is cooperative', () => {
       new MemoryStorageDriver() as never,
       KEY as never,
       ids,
+      { entropy: fixedEntropy(GOLDEN_NONCE) },
     );
     const without = await coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, {
       codec: roaringCodec,
+      entropy: fixedEntropy(GOLDEN_NONCE),
     });
     expect(withClock.sha256).toBe(without.sha256);
     expect(withClock.size).toBe(without.size);

@@ -14,6 +14,7 @@ import type { CrbmCrypto } from '@/core/crypto';
 import { NodeAead } from '@/drivers/crypto';
 import { IntegrityError } from '@/core/errors';
 import { collect, expectSameBytes } from '../../helpers/chunk-stream';
+import { zeroEntropy } from '../../helpers/entropy';
 
 const SEG = { segment: 'handoff' };
 const KEYS = [0, 1, 2, 5];
@@ -31,6 +32,7 @@ async function build(
 ): Promise<Uint8Array> {
   const sink = new BufferSink();
   const writer = new CrbmWriter(sink, {
+    entropy: zeroEntropy,
     generation: 3,
     ...(crypto ? { crypto } : {}),
     ...(metadata ? { metadata } : {}),

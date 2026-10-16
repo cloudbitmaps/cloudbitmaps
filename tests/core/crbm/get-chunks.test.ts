@@ -16,6 +16,7 @@ import {
 } from '@/core/crbm/plan-reads';
 import { collect, expectSameBytes } from '../../helpers/chunk-stream';
 import { Gate, Watched, tick, worstWhileWaiting } from '../../helpers/live-buffers';
+import { zeroEntropy } from '../../helpers/entropy';
 
 /** The bytes of each chunk a stream yields, in order: what an array-returning read would have answered. */
 async function getChunks(
@@ -44,7 +45,11 @@ const cryptoFor = (dek: Uint8Array): CrbmCrypto => ({
 
 async function build(crypto?: CrbmCrypto): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 3, ...(crypto ? { crypto } : {}) });
+  const writer = new CrbmWriter(sink, {
+    entropy: zeroEntropy,
+    generation: 3,
+    ...(crypto ? { crypto } : {}),
+  });
   for (const k of KEYS) await writer.addChunk(k, PAYLOADS.get(k)!, 1 + k);
   await writer.finish();
   return sink.bytes();
@@ -220,7 +225,7 @@ describe.each(variants)('CrbmReader.readChunks ($name)', ({ encrypted, crypto })
 
 describe('CrbmReader.readChunks: payload cap and associated data', () => {
   it('a chunk over the payload cap is refused by the writer; one forged past it, at open (crafted.test.ts)', async () => {
-    const writer = new CrbmWriter(new BufferSink(), { generation: 1 });
+    const writer = new CrbmWriter(new BufferSink(), { entropy: zeroEntropy, generation: 1 });
     await expect(writer.addChunk(0, new Uint8Array(1024 * KIB + 1), 1)).rejects.toBeInstanceOf(
       ValidationError,
     );
@@ -293,7 +298,11 @@ const MIB = 1024 * KIB;
 /** `sizes.length` chunks of the given sizes, keys 0 up, each its own range when sizes are a full MiB. */
 async function object(sizes: readonly number[], crypto?: CrbmCrypto): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 1, ...(crypto ? { crypto } : {}) });
+  const writer = new CrbmWriter(sink, {
+    entropy: zeroEntropy,
+    generation: 1,
+    ...(crypto ? { crypto } : {}),
+  });
   const payload = new Uint8Array(randomBytes(MIB));
   for (const [key, size] of sizes.entries()) {
     await writer.addChunk(key, payload.subarray(0, size), 1);
@@ -449,7 +458,7 @@ describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
   it('issues a sparse plan of many tiny ranges through the window, and yields every chunk', async () => {
     // 100 needed chunks of 100 bytes, each followed by a 300 KiB chunk nobody asked for: 100 ranges of their own.
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 1 });
+    const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 1 });
     const payload = new Uint8Array(randomBytes(300 * KIB));
     for (let i = 0; i < 100; i++) {
       await writer.addChunk(2 * i, payload.subarray(0, 100), 1);
@@ -656,7 +665,11 @@ describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
 describe('CrbmReader.readChunks: an object with the metadata extension block', () => {
   it('reads every chunk and no byte past the last of them', async () => {
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 3, metadata: { source: 'test' } });
+    const writer = new CrbmWriter(sink, {
+      entropy: zeroEntropy,
+      generation: 3,
+      metadata: { source: 'test' },
+    });
     for (const k of KEYS) await writer.addChunk(k, PAYLOADS.get(k)!, 1 + k);
     await writer.finish();
     const bytes = sink.bytes();

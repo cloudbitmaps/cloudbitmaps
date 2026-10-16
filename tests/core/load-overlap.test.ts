@@ -7,6 +7,7 @@ import type { WrappedDek } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A load starts its existence check and its key unwrap while it encodes, joins them where the write needs them, and
@@ -61,12 +62,14 @@ function world() {
   const direct = (encrypted: boolean) => ({
     storage: memory,
     registry,
+    entropy: testEntropy,
     codec: roaringCodec,
     ...(encrypted ? { keystore: keys } : {}),
   });
   const through = (encrypted: boolean, storageHook?: Hook, keystoreHook?: Hook) => ({
     storage: logged(memory, 'storage', ['getTail', 'list', 'putImmutable'], log, storageHook),
     registry: logged(registry, 'registry', ['get', 'create', 'compareAndSwap'], log),
+    entropy: testEntropy,
     codec: roaringCodec,
     ...(encrypted
       ? { keystore: logged(keys, 'keystore', ['openDek', 'createDek'], log, keystoreHook) }

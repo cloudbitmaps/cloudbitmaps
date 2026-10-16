@@ -7,6 +7,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Behaviour of single steps of an erasure that no other test pins: each case below fails when exactly one line of the
@@ -17,7 +18,11 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, codec: roaringCodec, entropy: testEntropy },
+  };
 }
 
 /** A storage whose calls are routed through `over`, and the rest to `storage`. */
@@ -123,7 +128,12 @@ describe('the steps of an erasure', () => {
         return out;
       },
     });
-    const res = await eraseIdFromSegment(SEG, 7, { storage, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(SEG, 7, {
+      storage,
+      registry,
+      codec: roaringCodec,
+      entropy: testEntropy,
+    });
     expect(cas).toBe(1);
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, collected: [0, 2] });
   });

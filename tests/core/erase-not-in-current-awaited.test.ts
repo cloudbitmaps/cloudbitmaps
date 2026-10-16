@@ -3,6 +3,7 @@ import { NotFoundError } from '@/core/errors';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { loadedStore } from '../helpers/loaded';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The rewrite phase translates a `NotFoundError` by re-reading the row: the pointer still at `from` means the
@@ -38,6 +39,7 @@ describe('an erasure that sweeps the other generations translates a NotFoundErro
     const res = await eraseIdFromSegment(SEG, 5, {
       storage,
       registry: w.registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
 
@@ -58,7 +60,12 @@ describe('an erasure that sweeps the other generations translates a NotFoundErro
     };
 
     await expect(
-      eraseIdFromSegment(SEG, 5, { storage, registry: w.registry, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, 5, {
+        storage,
+        registry: w.registry,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 });

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/core/audit';
 import type { CodecBitmap } from '@/core/codec';
-import { writeCrbmGenerationStream } from '@/core/crbm-write';
+import { writeCrbmGenerationStream } from '../helpers/crbm-write';
 import { crc32c } from '@/core/crbm/crc32c';
 import { FOOTER, FOOTER_BYTES, FOOTER_CRC_COVERAGE } from '@/core/crbm/format';
 import { aadFor } from '@/core/crypto';
@@ -14,6 +14,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * On an encrypted segment, an object sealed under a key its row does not hold: a first load's that lost the race to the
@@ -35,7 +36,7 @@ function world() {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
   const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-  const deps = { storage, registry, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   return { storage, registry, keystore, deps };
 }
 type W = ReturnType<typeof world>;
@@ -371,7 +372,12 @@ describe('an encrypted object under a cleartext row with a pointer', () => {
   // cleartext row with a pointer writes cleartext, a publish that would add a key to it is refused, and a rollback
   // refuses an encrypted target on it. So an encrypted object there is a first load's that minted a key and crashed, or
   // lost the race to a cleartext first load: no reader of the row can open it.
-  const plain = (w: W) => ({ storage: w.storage, registry: w.registry, codec: roaringCodec });
+  const plain = (w: W) => ({
+    storage: w.storage,
+    registry: w.registry,
+    entropy: testEntropy,
+    codec: roaringCodec,
+  });
 
   it('below the pointer: it is a holder the erasure cannot search, and goes', async () => {
     const w = world();

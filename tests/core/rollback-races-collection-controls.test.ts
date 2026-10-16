@@ -9,6 +9,7 @@ import { RecordingAuditSink } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The controls of the race in `rollback-races-collection.test.ts`: the rows and buckets a delete loop meets after its
@@ -24,7 +25,11 @@ import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec, clock } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+  };
 }
 type World = ReturnType<typeof world>;
 

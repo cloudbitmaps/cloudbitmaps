@@ -13,6 +13,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A load reads the segment's row once and decides everything from that read: the guard's "before", the number it
@@ -27,7 +28,11 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 
 async function idsOf(storage: IStorageDriver, generation: number): Promise<number[]> {

@@ -7,6 +7,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * What an erasure on a segment with no generation yet costs at the store a registry is over, the way a request is
@@ -24,7 +25,7 @@ function world() {
   let t = 1_000;
   const registry = new ObjectStoreRegistry(store, 'p', () => (t += 1));
   const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-  const deps = { storage, registry, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   const counted = async (run: () => Promise<unknown>) => {
     const reads = store.reads;
     const writes = store.writes;

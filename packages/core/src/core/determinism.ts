@@ -45,7 +45,8 @@ export interface Rng {
 
 /**
  * Injected entropy: `length` cryptographically strong random bytes, for an identity that must never repeat (a
- * registry row's incarnation id, and the random part every registry write adds to its token). Deliberately not an
+ * registry row's incarnation id, the random part every registry write adds to its token, and a generation's write
+ * identity, the 12 bytes a cleartext object's footer carries). Deliberately not an
  * {@link Rng}: an `Rng` is seedable for simulation, and a seeded source hands every process the same "random"
  * identity. Production wiring uses the platform's Web Crypto; a test injects a deterministic source to replay a run.
  */

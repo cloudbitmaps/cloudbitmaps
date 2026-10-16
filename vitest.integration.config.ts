@@ -37,6 +37,7 @@ export default defineConfig({
       // Kept in step with `vitest.config.ts`: two aliases were missing here, so an integration test
       // importing either would fall through the `@/(.*)` catch-all to a core path that does not exist.
       { find: /^@\/system-clock$/, replacement: ROARING + '/system-clock.ts' },
+      { find: /^@\/system-entropy$/, replacement: ROARING + '/system-entropy.ts' },
       { find: /^@\/portable\/(.*)$/, replacement: ROARING + '/portable/$1' },
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },
       { find: /^@\/bin\/(.*)$/, replacement: ROARING + '/bin/$1' },

@@ -11,22 +11,24 @@ import type { Clock, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
+import { testEntropy, zeroEntropy } from '../helpers/entropy';
+import type { Entropy } from '@/core/determinism';
 
 /**
  * A refused rewrite discards its own object above the winner's pointer, after one read of its footer matches the
- * rewrite's fingerprint. A footer names an object by its bytes, and a cleartext load of the ids the rewrite holds
- * writes those very bytes, so once another erasure has deleted the rewrite's object a load can take the number again
- * with an object the footer read cannot tell from the rewrite's:
+ * rewrite's fingerprint. A footer names a write: its checksum covers the write identity each writer draws, so a cleartext
+ * load of the ids the rewrite holds, which takes the number again once another erasure has deleted the rewrite's
+ * object, writes the same chunks under another footer, and the read tells its object from the rewrite's:
  *
  *   first load       writes 1 ([5, 6]), holds its publish ─────────▶ publishes 1 │
  *   erasure (of X)   reads 0, writes 2 = [1, 2, Y], refused by that publish; its discard reads the row ── stalls ──▶
  *   erasure (of Y)   finds 2 above the pointer, renews the row, deletes 2 │
- *   second load      [1, 2, Y] reads the row, takes 2 afresh, writes the rewrite's bytes ──▶ publishes 2
+ *   second load      [1, 2, Y] reads the row, takes 2 afresh, writes the rewrite's ids ──▶ publishes 2
  *
- * Were the refused erasure to delete what its footer read matched, the row would name generation 2 with no object under
- * it, and every read of the segment would fail, with nothing reporting it. The discard renews the row it read before
- * deleting, so a publish fenced on a row read before that renewal is refused, and a renewal that loses makes it decide
- * again. Gated promises hold each order, and the clock never waits, so a run is the same every time.
+ * Were the refused erasure to delete the load's object, the row would name generation 2 with no object under it, and
+ * every read of the segment would fail, with nothing reporting it. It keeps the object, and the load publishes. Where the
+ * footer matches, the discard renews the row it read before deleting, so a publish fenced on a row read before that
+ * renewal is refused, and a renewal that loses makes it decide again. Gated promises hold each order, and the clock never waits, so a run is the same every time.
  */
 
 /** The second id: the rewrite of generation 0 still holds it, and the first load's generation does not. */
@@ -52,10 +54,10 @@ interface Sent {
  * refuses its publish of 2 and its discard reaches `stallAt`, every call on `clk`. Returns the erasure's run, its gate,
  * what it sent, and the stores.
  */
-async function refusedRewrite(stallAt: Stall, clk: Clock = clock) {
+async function refusedRewrite(stallAt: Stall, clk: Clock = clock, entropy: Entropy = testEntropy) {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
-  const deps = { storage, registry, codec: roaringCodec, clock: clk };
+  const deps = { storage, registry, entropy, codec: roaringCodec, clock: clk };
   await loadSegment(REF, [1, 2, X, Y], deps); // generation 0
 
   const l1AtPublish = gate();
@@ -114,8 +116,14 @@ async function refusedRewrite(stallAt: Stall, clk: Clock = clock) {
 }
 
 /** The race in the header: the discard stalls at `stallAt`, and the second load publishes as `l2Publish` says. */
-async function race(stallAt: Stall, l2Publish: L2Publish) {
-  const { e1, atDiscard, sent, storage, registry, deps } = await refusedRewrite(stallAt);
+async function race(stallAt: Stall, l2Publish: L2Publish, entropy: Entropy = testEntropy) {
+  const { e1, atDiscard, sent, storage, registry, deps } = await refusedRewrite(
+    stallAt,
+    clock,
+    entropy,
+  );
+  // Whether the load's object carries the rewrite's footer: only when every write's identity is the same.
+  const alike = entropy === zeroEntropy;
   const rewrite = (await openGenerationReader(storage, GEN2, undefined)).fingerprint;
 
   // The other erasure erases an id the rewrite holds and the first load's generation does not: generation 2 is a
@@ -138,8 +146,8 @@ async function race(stallAt: Stall, l2Publish: L2Publish) {
   let l2: LoadResult;
   if (l2Publish === 'after the erasure returns') {
     await l2AtPublish.reached;
-    // A control that must hold: the footer read cannot tell the load's object from the rewrite's.
-    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(true);
+    // A control that must hold: the footer read tells the load's object from the rewrite's.
+    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(alike);
     atDiscard.open();
     first = await e1;
     l2AtPublish.open();
@@ -147,7 +155,7 @@ async function race(stallAt: Stall, l2Publish: L2Publish) {
   } else {
     l2 = await l2Run;
     expect(l2).toMatchObject({ generation: 2, published: true });
-    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(true);
+    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(alike);
     atDiscard.open();
     first = await e1;
   }
@@ -160,7 +168,7 @@ async function reads(storage: IStorageDriver, registry: IRegistryDriver): Promis
   return collect(store.segment(REF.segment).iterate());
 }
 
-describe("a refused rewrite's discard and a load that takes its number again with the same bytes", () => {
+describe("a refused rewrite's discard and a load that takes its number again with the same ids", () => {
   it.each<[Stall, L2Publish]>([
     ['before its footer read', 'at once'],
     ['before its footer read', 'after the erasure returns'],
@@ -174,18 +182,36 @@ describe("a refused rewrite's discard and a load that takes its number again wit
       const { first, l2, storage, registry } = await race(stallAt, l2Publish);
 
       expect(first).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
-      // The load publishes unless the discard's renewal landed before its publish: once that renewal lands first, the
-      // load's publish is fenced on a row the renewal retired.
-      expect(l2.published).toBe(l2Publish === 'at once' || stallAt === 'before its delete');
-      // The row names a generation whose object is in the bucket, and the segment reads it: the load's when it
-      // published, the first load's when the discard's renewal refused it.
+      // The footer of the load's object carries its own write identity, so the discard never mistakes it for the
+      // rewrite: it renews and deletes nothing over it, and the load publishes whenever it lands.
+      expect(l2.published).toBe(true);
+      // The row names the load's generation, whose object is in the bucket, and the segment reads it.
       const row = await registry.get(REF);
-      expect(row?.currentGen).toBe(l2.published ? 2 : 1);
-      expect(await generations(storage)).toContain(row?.currentGen);
-      expect(await reads(storage, registry)).toEqual(l2.published ? [1, 2, Y] : [5, 6]);
-      if (!l2.published) expect(l2).toMatchObject({ generation: 2, reason: 'superseded' });
+      expect(row?.currentGen).toBe(2);
+      expect(await generations(storage)).toContain(2);
+      expect(await reads(storage, registry)).toEqual([1, 2, Y]);
     },
   );
+});
+
+describe("a refused rewrite's discard when every write's identity is all zero", () => {
+  // The control that the race is real: with one identity for every write (an object from before identities existed
+  // carries zeros), the load's object has the rewrite's footer, the discard's second decision matches it, and its
+  // renewal, which lands first, refuses the load.
+  it("still takes the load's object for the rewrite's, and its renewal refuses the load", async () => {
+    const { first, l2, sent, storage, registry } = await race(
+      'after its footer read',
+      'after the erasure returns',
+      zeroEntropy,
+    );
+
+    expect(first).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(sent).toEqual({ renewals: 2, deletes: 1 });
+    expect(l2).toMatchObject({ generation: 2, published: false, reason: 'superseded' });
+    expect(await generations(storage)).not.toContain(2);
+    expect((await registry.get(REF))?.currentGen).toBe(1);
+    expect(await reads(storage, registry)).toEqual([5, 6]);
+  });
 });
 
 describe("a refused rewrite's discard whose renewal of the row loses", () => {
@@ -199,19 +225,19 @@ describe("a refused rewrite's discard whose renewal of the row loses", () => {
     expect(await reads(storage, registry)).toEqual([1, 2, Y]);
   });
 
-  it("to another erasure's renewal: it decides again, and deletes the object only once its own renewal lands, which refuses the load", async () => {
+  it("to another erasure's renewal: it decides again, finds an object that is not its own under the number, and keeps it, so the load publishes", async () => {
     const { first, l2, sent, storage, registry } = await race(
       'after its footer read',
       'after the erasure returns',
     );
 
     expect(first).toMatchObject({ erased: false, reason: 'superseded' });
-    // The second renewal landed, so the object under 2 went, and the load that wrote it was refused.
-    expect(sent).toEqual({ renewals: 2, deletes: 1 });
-    expect(l2).toMatchObject({ generation: 2, published: false, reason: 'superseded' });
-    expect(await generations(storage)).not.toContain(2);
-    expect((await registry.get(REF))?.currentGen).toBe(1);
-    expect(await reads(storage, registry)).toEqual([5, 6]);
+    // Its one renewal lost; the second decision read a footer that is the load's, not the rewrite's, and stopped.
+    expect(sent).toEqual({ renewals: 1, deletes: 0 });
+    expect(l2).toMatchObject({ generation: 2, published: true });
+    expect(await generations(storage)).toContain(2);
+    expect((await registry.get(REF))?.currentGen).toBe(2);
+    expect(await reads(storage, registry)).toEqual([1, 2, Y]);
   });
 
   it(`to another write each time: it keeps its object after ${DISCARD_ATTEMPTS} renewals`, async () => {
@@ -276,7 +302,7 @@ describe("a refused rewrite's discard whose renewal of the row loses", () => {
   it('with no answer, having not landed, and no clock to wait on: it throws and deletes nothing', async () => {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [1, 2, X], deps);
     const l1AtPublish = gate();
     const l1Registry = Object.create(registry) as IRegistryDriver;
@@ -435,7 +461,7 @@ describe("an erasure's renewal of the row before it deletes a holder", () => {
   it('a write of leases alone between the renewal and the delete does not stop the erasure', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     // A load writes generation 1, which holds 9, above the pointer, and holds its publish.
     const atPublish = gate();
@@ -484,7 +510,7 @@ describe('refused rewrites of several erasures racing one that won', () => {
       const ids = Array.from({ length: losers }, (_, i) => 1_000 + i);
       const storage = new MemoryStorageDriver();
       const registry: IRegistryDriver = new MemoryRegistryDriver();
-      const deps = { storage, registry, codec: roaringCodec, clock };
+      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
       await loadSegment(REF, [1, 2, Z, ...ids], deps); // generation 0, one chunk
 
       // The winner writes generation 1 and holds its publish.

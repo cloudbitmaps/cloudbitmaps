@@ -12,6 +12,7 @@ import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { roaringCodec } from '@/roaring-codec';
 import { objectFingerprint } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The write paths' summary, on the local-filesystem backend: the row on disk carries the summary of the current
@@ -53,7 +54,7 @@ function world(keystore?: InProcessKeystore) {
     storage,
     registry,
     tails,
-    deps: { storage, registry, codec: roaringCodec, keystore },
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
   };
 }
 type World = ReturnType<typeof world>;

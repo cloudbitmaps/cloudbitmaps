@@ -15,6 +15,8 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { zeroEntropy } from '../helpers/entropy';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A segment whose row carries wrapped keys has been encrypted since its first published generation: a load picks the
@@ -46,6 +48,7 @@ function world() {
 async function putCleartext(storage: IStorageDriver, key: GenKey): Promise<void> {
   const sink = new BufferSink();
   const writer = new CrbmWriter(sink, {
+    entropy: zeroEntropy,
     generation: key.generation,
     metadata: { owner: 'attacker' },
   });
@@ -135,7 +138,7 @@ describe('a cleartext object under an encrypted segment', () => {
       await loadSegment(
         SEG,
         [1, 2, 3],
-        { storage: racing, registry, codec: roaringCodec },
+        { storage: racing, registry, entropy: testEntropy, codec: roaringCodec },
         { allowEmpty: true },
       ),
     ).toMatchObject({ generation: 1, published: false, reason: 'superseded' });

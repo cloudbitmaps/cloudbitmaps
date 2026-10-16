@@ -23,6 +23,7 @@ import {
   generations,
   stallingAfterFence,
 } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Two erasures of one id, and a load that takes a number the second one freed, on the holders an erasure deletes one by
@@ -68,6 +69,7 @@ async function race(
   const deps = {
     storage: r.storage,
     registry: r.registry,
+    entropy: testEntropy,
     codec: roaringCodec,
     clock,
     ...(r.keystore === undefined ? {} : { keystore: r.keystore }),
@@ -163,6 +165,7 @@ describe('two erasures of one id, and a load that takes the number the second on
     await loadSegment(REF, [1, 2, 3], {
       storage: r.storage,
       registry: r.registry,
+      entropy: testEntropy,
       codec: roaringCodec,
       keystore: ks,
     });
@@ -270,6 +273,7 @@ describe('an object replaced under its number while an erasure searches it', () 
       const result = await eraseIdFromSegment(REF, X, {
         storage: replacedAtFirstRange(storage, 0, anotherObject(storage, ids)),
         registry,
+        entropy: testEntropy,
         codec: roaringCodec,
         clock,
       });
@@ -303,6 +307,7 @@ describe('an object replaced under its number while an erasure searches it', () 
       eraseIdFromSegment(REF, X, {
         storage: replacedAtFirstRange(storage, 0, flipped),
         registry,
+        entropy: testEntropy,
         codec: roaringCodec,
         clock,
       }),

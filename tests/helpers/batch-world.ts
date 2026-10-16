@@ -8,6 +8,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import type { CloudRoaringOptions, MaterializeManyOutput } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
+import { withoutWriteIdentity } from './entropy';
 
 const { RoaringBitmap32 } = roaring;
 export type Bitmap = InstanceType<typeof RoaringBitmap32>;
@@ -134,7 +135,7 @@ export async function batchWorld(
     async hex(ref, generation) {
       const r = typeof ref === 'string' ? { segment: ref } : ref;
       const tail = await backend.storage.getTail({ ...r, generation }, 1 << 30);
-      return Buffer.from(tail.bytes).toString('hex');
+      return Buffer.from(withoutWriteIdentity(tail.bytes)).toString('hex');
     },
     async ids(name, s = store) {
       const out: number[] = [];

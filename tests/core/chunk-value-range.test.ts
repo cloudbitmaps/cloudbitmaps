@@ -1,5 +1,5 @@
 import { publishGeneration } from '../helpers/publish';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import { CloudRoaring, IntegrityError } from '@/index';
@@ -11,6 +11,7 @@ import { craftPortable, type CraftedContainer } from '../helpers/portable-bytes'
 import type { CodecBitmap } from '@/core/codec';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { testEntropy } from '../helpers/entropy';
 
 // A chunk payload holds REMAINDERS — 16-bit offsets within one chunk. Nothing upstream enforces that: the
 // byte/length caps bound size, and CRC/AEAD only prove the bytes are the bytes that were written, which anyone
@@ -81,7 +82,7 @@ describe('chunk payload value range', () => {
       { chunkKey: 1, bitmap: SafeBitmap.fromValues([70_000]) }, // corrupt: carried through by the rewrite
     ]);
     await publishGeneration(registry, { ...SEG, generation: 0 });
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
 
     await expect(eraseIdFromSegment(SEG, joinId(0, 1), deps)).rejects.toBeInstanceOf(
       IntegrityError,
@@ -102,7 +103,12 @@ describe('chunk payload value range', () => {
     await publishGeneration(registry, { ...SEG, generation: 0 });
 
     await expect(
-      eraseIdFromSegment(SEG, joinId(0, 1), { storage, registry, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, joinId(0, 1), {
+        storage,
+        registry,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).rejects.toThrow(/70000/);
     expect((await registry.get(SEG))!.currentGen).toBe(0);
   });
@@ -188,7 +194,12 @@ describe('chunk payload structure', () => {
     await publishGeneration(registry, { ...SEG, generation: 0 });
 
     await expect(
-      eraseIdFromSegment(SEG, joinId(0, 1), { storage, registry, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, joinId(0, 1), {
+        storage,
+        registry,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).rejects.toBeInstanceOf(IntegrityError);
     expect((await registry.get(SEG))!.currentGen).toBe(0);
   });

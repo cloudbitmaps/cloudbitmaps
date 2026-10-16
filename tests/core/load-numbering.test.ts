@@ -7,6 +7,7 @@ import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * How a load numbers its generation. It takes `currentGen + 1` from the row it already read when one existence
@@ -51,7 +52,7 @@ function recording(inner: IStorageDriver): { storage: IStorageDriver; calls: Cal
 function world(registry: IRegistryDriver = new MemoryRegistryDriver()) {
   const memory = new MemoryStorageDriver();
   const { storage, calls } = recording(memory);
-  const deps = { storage, registry, codec: roaringCodec };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
   const reset = () => calls.splice(0, calls.length);
   return { memory, storage, registry, calls, deps, reset };
 }

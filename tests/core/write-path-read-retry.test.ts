@@ -7,6 +7,7 @@ import { loadSegment } from '@/core/load';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The reads a write makes along the way are retried as the store's own reads are.
@@ -124,6 +125,7 @@ function coreDeps(w: Awaited<ReturnType<typeof world>>, retried: boolean) {
   return {
     storage: w.flaky.storage,
     registry: w.backend.registry,
+    entropy: testEntropy,
     codec: roaringCodec,
     ...(retried
       ? {

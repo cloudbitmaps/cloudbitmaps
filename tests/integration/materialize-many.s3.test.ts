@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { CreateBucketCommand, ListBucketsCommand, S3Client } from '@aws-sdk/client-s3';
 import roaring from 'roaring';
 import { S3Storage } from '@cloudbitmaps/s3';
@@ -6,6 +6,7 @@ import { CloudRoaring, WriteConflictError } from '@/index';
 import type { MaterializeResult } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver } from '@/core/ports';
+import { withoutWriteIdentity } from '../helpers/entropy';
 
 const { RoaringBitmap32 } = roaring;
 
@@ -59,7 +60,7 @@ const published = (o: unknown): MaterializeResult => {
 };
 
 describe('materializeMany against S3 (MinIO)', () => {
-  it('publishes outputs over one multipart part, byte for byte what a load of the ids writes, and loses a race typed', async () => {
+  it('publishes outputs over one multipart part, byte for byte what a load of the ids writes but for its write identity, and loses a race typed', async () => {
     const storage = new S3Storage({
       bucket: BUCKET,
       prefix: `${RUN}/many`,
@@ -119,14 +120,17 @@ describe('materializeMany against S3 (MinIO)', () => {
       published: false,
       error: expect.any(WriteConflictError),
     });
-    // the same ids loaded are the same object
+    // the same ids loaded are the same object but for each write's identity: compared as digests, since a failed
+    // equality of two multi-megabyte strings makes the runner diff them and starves it before it reports
     await store.load({ segment: 'big-ref' }, { bitmap: union });
     const driver = storage.storage;
-    const bytes = async (segment: string): Promise<string> =>
-      Buffer.from((await driver.getTail({ segment, generation: 0 }, 1 << 30)).bytes).toString(
-        'hex',
-      );
-    expect(await bytes('big')).toBe(await bytes('big-ref'));
+    const digest = async (segment: string): Promise<string> =>
+      createHash('sha256')
+        .update(
+          withoutWriteIdentity((await driver.getTail({ segment, generation: 0 }, 1 << 30)).bytes),
+        )
+        .digest('hex');
+    expect(await digest('big')).toBe(await digest('big-ref'));
     expect(await s('big').count()).toBe(union.size);
     expect(run.stats.groups).toBe(1);
     expect(run.stats.requests.rangeReads).toBeGreaterThan(0);

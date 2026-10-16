@@ -4,6 +4,7 @@ import type { RegistryRecord, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A ledger carried through many publishes whose `keep` is above what a row records (what `*Into` and `materializeMany`
@@ -25,7 +26,7 @@ describe.each([129, 200])(
       const registry = new MemoryRegistryDriver();
       const calls: Record<string, number> = {};
       const storage = counting(memory, calls);
-      const deps = { storage, registry, codec: roaringCodec };
+      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
       for (let i = 0; i < n; i++) {
         await loadSegment(SEG, [i], deps, { keep: Number.MAX_SAFE_INTEGER });
       }

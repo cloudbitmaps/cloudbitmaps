@@ -12,6 +12,7 @@ import { rollbackSegment } from '@/core/rollback';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { recordedWaits, unansweredRegistry } from '../helpers/unanswered-registry';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * An erasure that finds the id only in a generation above the pointer deletes that generation. A load that wrote it
@@ -31,7 +32,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('the load is refused, and the row names only what is in the bucket', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     await loadSegment(REF, [1, 2, 3], deps);
 
     // Hold the load at its publish, with its object already in the bucket.
@@ -74,7 +75,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('the load publishes before the fence lands: the erasure deletes nothing, and a re-run erases from the new generation', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     let reachLoad!: () => void;
     const loadReached = new Promise<void>((resolve) => (reachLoad = resolve));
@@ -126,7 +127,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('pins written while the fence is written are waited out, not reported as another writer', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     let reach!: () => void;
     const reached = new Promise<void>((resolve) => (reach = resolve));
@@ -170,7 +171,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('the erasure that loses to the publish reports it, and a re-run erases from the new generation', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     // The load lands first: the erasure finds 9 in the current generation and rewrites it.
     await loadSegment(REF, [1, 2, 3, 9], deps);
@@ -187,7 +188,7 @@ describe('the fence above the pointer gets no answer', () => {
   async function rolledBack() {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     await loadSegment(REF, [1, 2], deps);
     await loadSegment(REF, [1, 2, 9], deps);
     await rollbackSegment(REF, 0, deps); // generation 1, holding 9, is above the pointer
@@ -302,7 +303,7 @@ describe('an erasure and a first load that found no row', () => {
       const load = loadSegment(
         REF_NS,
         [X, 7],
-        { storage: backend.storage, registry: gated, codec: roaringCodec },
+        { storage: backend.storage, registry: gated, entropy: testEntropy, codec: roaringCodec },
         { ...options, audit },
       );
 
@@ -356,7 +357,11 @@ describe('a row with no pointer, over an object a first load wrote and never pub
       registry,
       publish: false,
     });
-    return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+    return {
+      storage,
+      registry,
+      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    };
   }
 
   it('an id the unpublished object holds is erased, and the object is deleted', async () => {
@@ -395,7 +400,14 @@ describe('a row with no pointer, on a store that requires encryption', () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    const deps = { storage, registry, codec: roaringCodec, keystore, requireEncryption: true };
+    const deps = {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+      keystore,
+      requireEncryption: true,
+    };
     return { storage, registry, deps };
   }
 

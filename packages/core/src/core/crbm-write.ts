@@ -1,7 +1,8 @@
 /**
  * Writing one immutable `.crbm` generation: from in-memory bitmaps, from already-encoded chunks, or streamed.
  */
-import { IntegrityError } from './errors';
+import { IntegrityError, ValidationError } from './errors';
+import type { Entropy } from './determinism';
 import { yieldEvery } from './cooperative';
 import type { Yielder } from './cooperative';
 import type { CrbmCrypto } from './crypto';
@@ -9,6 +10,32 @@ import type { GenerationMetadata, GenKey, IStorageDriver } from './ports';
 import { fingerprintFor } from './crbm/fingerprint';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, EncodedChunk } from './codec';
+
+/**
+ * What every writer of a generation takes. `entropy` is required: it is the source of the write's identity (a
+ * cleartext generation's footer nonce, see `CrbmWriter`'s `entropy`), and a call that could leave it out would
+ * write an object no different from any other writer's of the same ids.
+ */
+export interface WriteOptions {
+  readonly crypto?: CrbmCrypto;
+  readonly clock?: Yielder;
+  readonly metadata?: GenerationMetadata;
+  readonly entropy: Entropy;
+}
+
+/**
+ * The entropy a write was given, or a {@link ValidationError} naming the verb that has none. Checked where a write
+ * begins, before any id is read or object put, so a caller wired without a source fails at once instead of writing a
+ * generation with no identity.
+ */
+export function requireEntropy(entropy: Entropy | undefined, verb: string): Entropy {
+  if (typeof entropy !== 'function') {
+    throw new ValidationError(
+      `${verb} needs an entropy source (\`entropy\`): the footer of every generation it writes carries 12 random bytes of the write's identity`,
+    );
+  }
+  return entropy;
+}
 
 /**
  * Write one immutable generation from in-memory bitmaps. Chunks are
@@ -20,7 +47,7 @@ export async function writeCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
-  options: { crypto?: CrbmCrypto; clock?: Yielder; metadata?: GenerationMetadata } = {},
+  options: WriteOptions,
 ): Promise<{ size: number; sha256: string; fingerprint: string; tailBytes: number }> {
   const sorted = [...chunks].sort((a, b) => a.chunkKey - b.chunkKey);
   const { size, sha256, fingerprint, tailBytes } = await writeEncodedChunks(
@@ -53,7 +80,7 @@ export async function writeEncodedChunks(
   driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<EncodedChunk>,
-  options: { crypto?: CrbmCrypto; clock?: Yielder; metadata?: GenerationMetadata },
+  options: WriteOptions,
 ): Promise<{
   size: number;
   sha256: string;
@@ -75,6 +102,7 @@ export async function writeEncodedChunks(
       generation: key.generation,
       crypto: options.crypto,
       metadata: options.metadata,
+      entropy: options.entropy,
     });
     for (const chunk of chunks) {
       await writer.addChunk(chunk.chunkKey, chunk.payload, chunk.cardinality);
@@ -128,7 +156,7 @@ export async function writeCrbmGenerationStream(
   driver: IStorageDriver,
   key: GenKey,
   chunks: AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>,
-  options: { crypto?: CrbmCrypto; clock?: Yielder; metadata?: GenerationMetadata } = {},
+  options: WriteOptions,
 ): Promise<StreamWriteResult> {
   const chunkKeys: number[] = [];
   let cardinality = 0;
@@ -142,6 +170,7 @@ export async function writeCrbmGenerationStream(
       generation: key.generation,
       crypto: options.crypto,
       metadata: options.metadata,
+      entropy: options.entropy,
     });
     for await (const { chunkKey, bitmap } of chunks) {
       if (bitmap.isEmpty) continue;

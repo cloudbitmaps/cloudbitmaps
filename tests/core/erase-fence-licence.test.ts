@@ -13,11 +13,12 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MemoryStorage } from '@/index';
-import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/index';
+import type { Entropy, IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore } from '../helpers/counting';
 import { recordedWaits, unansweredRegistry } from '../helpers/unanswered-registry';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The erasure's one write to the row before it deletes anything: it takes every generation it is about to delete out of
@@ -33,13 +34,22 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 interface World {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
-  readonly load: { storage: IStorageDriver; registry: IRegistryDriver; codec: typeof roaringCodec };
+  readonly load: {
+    storage: IStorageDriver;
+    registry: IRegistryDriver;
+    codec: typeof roaringCodec;
+    entropy: Entropy;
+  };
 }
 
 function world(): World {
   const backend = new MemoryStorage();
   const { storage, registry } = backend;
-  return { storage, registry, load: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    load: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 
 const bucket = async (w: World): Promise<number[]> =>
@@ -828,7 +838,7 @@ describe('what an erasure costs at the store an object-store registry is over', 
     const store = new CountingObjectStore(0, { conditionalDelete: true });
     let t = 1_000;
     const registry = new ObjectStoreRegistry(store, 'p', () => (t += 1));
-    const load = { storage, registry, codec: roaringCodec };
+    const load = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     if (shape === 'older') {
       await loadSegment(SEG, [1, 999], load, { keep: 1 }); // 0 holds, and the ledger names it
       await loadSegment(SEG, [1], load, { keep: 1 });
@@ -1162,7 +1172,7 @@ describe('after erased: true, no ledger entry names a generation that held the i
         fc.asyncProperty(fc.array(step, { minLength: 3, maxLength: 14 }), async (steps) => {
           const storage = new MemoryStorageDriver();
           const registry = reg.make();
-          const deps = { storage, registry, codec: roaringCodec };
+          const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
           for (const s of steps) {
             if (s.kind === 'load') {
               await loadSegment(SEG, [100, ...s.ids], deps, { keep: s.keep });

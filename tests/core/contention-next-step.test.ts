@@ -8,6 +8,7 @@ import type { IRegistryDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A contention error ends with what the caller does next, and a rollback that loses its race keeps the driver's error
@@ -45,7 +46,7 @@ async function loaded(count: number) {
     await loadSegment(
       SEG,
       Array.from({ length: g + 3 }, (_, i) => i),
-      { storage, registry, codec: roaringCodec, clock },
+      { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
       { keep: 5 },
     );
   }
@@ -59,7 +60,7 @@ describe('the next step in a contention error', () => {
     const err = await loadSegment(
       SEG,
       [1, 2, 3],
-      { storage, registry, codec: roaringCodec, clock },
+      { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
       { keep: 5 },
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WriteConflictError);

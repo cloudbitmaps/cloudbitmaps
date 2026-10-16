@@ -141,7 +141,7 @@ again and decides from what it holds:
 
 | The row, read again | The load |
 |---|---|
-| names this load's generation, and, on a registry that reports write tokens, its `pointerId` is the token of a write this load sent; on one that does not, the object under it has a footer matching the one this load wrote | `published: true`: taken as the write having landed with only its response lost. On a registry that does not report tokens, another load's object with the same bytes passes this too (below) |
+| names this load's generation, and, on a registry that reports write tokens, its `pointerId` is the token of a write this load sent; on one that does not, the object under it has a footer matching the one this load wrote | `published: true`: taken as the write having landed with only its response lost |
 | names this load's generation, but on a registry that reports write tokens its `pointerId` is not the token of a write this load sent; on one that does not, the footer of the object under the number is not the one this load wrote; or the row belongs to another incarnation of the name | `published: false`, `reason: 'superseded'`: the load reports none published and deletes nothing. On a registry that reports tokens this is usually another load's publish of that number; the paragraph on `superseded` refusals below says what else it can mean |
 | has moved on, because another write changed it | `published: false`, `reason: 'superseded'`: this load's write can no longer land. A load that found no row is refused by any row that appeared meanwhile, guarded or not |
 | is still as the write found it | the load sends a fresh compare-and-swap from the row it just read, after a wait on the store's clock: at most three, after under 500 ms, then 1 s, then 2 s. It is a new request, not a replay, and it carries the version the first one did, so the registry lets at most one of the two land. Each is settled by this same table. Still unanswered, the load throws the registry's own `TransientError` |
@@ -151,12 +151,13 @@ reports tokens (the in-memory, local-filesystem, S3, GCS and Azure Blob registri
 write it sends, before it sends it (a write sent again with a new token reports it; one that repeats the same body
 repeats the token already reported). The row's `pointerId` names the writer of the write that last set the pointer, so
 the pointer is over this load's write if and only if the `pointerId` is one of those tokens. The object's bytes play no
-part, so another load of the same cleartext ids, which writes the same bytes under the number once an erasure has freed
-it, is not mistaken for this one: this load reports `superseded`, audits no `segment.publish` and deletes nothing. The
+part, so another load of the same cleartext ids, which takes the number once an erasure has freed it, is not mistaken for
+this one: this load reports `superseded`, audits no `segment.publish` and deletes nothing. The
 same check runs after a write the registry refused as a conflict, since a client that re-sends a write can meet its own
 landed copy, and after a write that went unanswered. A registry of your own that does not report tokens is settled by
-the object instead: the load reads the footer of the object under the pointer and takes a match as its own, and a
-footer names bytes, not the writer, so such a registry can report another load's identical publish as this load's. On
+the object instead: the load reads the footer of the object under the pointer and takes a match as its own. The footer
+carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index
+nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum: another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
 Azure Blob the client's retry policy runs under each of those writes too, so a registry that
 never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's
 default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the
@@ -216,9 +217,9 @@ await store.load({ segment: 'audience:retained' }, { bitmap: retained });
 await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 ```
 
-- **It is the same load.** The generation is byte for byte the one the same ids write (on an encrypted segment, chunk
-  for chunk: each write seals its chunks with a fresh nonce, so two writes of one set are never the same bytes), and
-  everything above holds unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
+- **It is the same load.** The generation holds chunk for chunk what the same ids write (every write also carries its
+  own write identity in the footer, and an encrypted one seals its chunks with a fresh nonce, so two writes of one set
+  are never the same bytes), and everything above holds unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
 - **It is checked first.** The bytes are size-capped at 537,403,396 bytes, more than any canonical 32-bit bitmap
   serializes to (call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
   every stored chunk is, and decoded by the safe deserializer, all before the load's first request. Bytes that fail
@@ -305,7 +306,7 @@ export async function loadParts(
   workers both built would load as if nothing were wrong. The members of disjoint parts add up to the members of their
   union, and they add up to fewer when any id is in two parts, so the recipe compares the two and refuses.
 - **A range boundary may fall inside a chunk.** A chunk is the 65,536 ids that share their high 16 bits. When a
-  boundary splits one, both parts hold a piece of it and the union merges them, so the generation is the same bytes a
+  boundary splits one, both parts hold a piece of it and the union merges them, so the generation holds the same chunks a
   load of the whole set writes. Cutting on whole chunks keeps each part's chunks its own, and a union of parts like
   that copies containers rather than merging them.
 - **It costs the requests of one load.** The parts never touch storage: they are bytes in your processes, so one part
@@ -331,11 +332,11 @@ await store.load({ segment: 'audience:active' }, ids, {
 - **What it may hold.** A flat object of string keys and string or finite-number values. Nothing nested, and no boolean,
   `null`, `NaN`, `Infinity`, array or class instance. A key is at most 128 bytes and the whole record at most 1,024 bytes
   as canonical JSON: keys sorted by UTF-16 code unit, no whitespace, braces and quotes counted. Text has to be
-  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing: a load given either writes byte for byte the object a load given no `metadata` writes. Anything that breaks a rule is a
+  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing: a load given either writes an object with no extension block, as a load given no `metadata` does. Anything that breaks a rule is a
   `ValidationError`, thrown **before the load makes a request**: nothing is read and nothing is written.
 - **It is copied when you call.** What is stored is the record as it was at the call, whatever the load's id source
-  takes to run and whatever you do to your object meanwhile. Key order never changes the bytes, so the same record
-  gives the same object.
+  takes to run and whatever you do to your object meanwhile. Key order never changes the bytes of the metadata, so the same record
+  gives the same block.
 - **Published with the pointer, and immutable.** The metadata is in the generation's object, and the segment's row
   carries a summary of the current generation (its id count, its metadata and its object's fingerprint), written by the
   same compare-and-swap that
@@ -638,8 +639,9 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
 - **A known generation whose object is not the one the row recorded** throws `IntegrityError` before the target is
   opened, with or without a keystore: another object was stored under the number, for example by a write that never
   published after the original was collected. It reports as another object, not as a failed decryption. What is compared
-  is the footer's checksum: damage inside an object whose footer is intact, and a change of a cleartext object's metadata
-  that keeps the footer's bytes (the same ids, other metadata of the same length), are not seen by it, and a read of the
+  is the footer's checksum: damage inside an object whose footer is intact, and an edit made in place to a cleartext
+  object's metadata block that keeps the footer (another write of the same ids, whatever its metadata, carries its own
+  write identity, so its footer differs), are not seen by it, and a read of the
   generation reports the first. `allowUnknown`
   moves onto it, and the row then records its checksum.
 - **A generation that is not in the bucket** throws `NotFoundError` naming the ones that are, once the row knows it or
@@ -894,9 +896,9 @@ outcome is unknown (`TransientError`), a damaged operand (`IntegrityError`), a l
 pinned exclude that moved (`StaleOperandError`), the memory budget (`BudgetExceededError`). One output's refusal or error
 never stops another. The call throws only for bad input (`ValidationError` naming the output index and the path in the
 expression, before any request), an operand that names no segment unless `allowAbsentOperands`, and a `budget` its own
-plan exceeds, the last two before any chunk is read. Each output's generation is byte for byte what the same ids would
-load (chunk for chunk on an encrypted segment), since every chunk goes through the codec's canonical encoding before it is
-written.
+plan exceeds, the last two before any chunk is read. Each output's generation holds, chunk for chunk, what the same ids would
+load, since every chunk goes through the codec's canonical encoding before it is written; the footer of each carries its
+own write identity.
 
 **`keep` is required.** An `*Into` keeps every generation unless told otherwise, and a thousand outputs would leave a
 thousand uncollected destinations on every refresh. The call's `keep` applies to every output, and an output's own
@@ -1063,7 +1065,7 @@ await store.materializeMany({
 });
 ```
 
-An output names a fed operand as it names a stored one, and one name is not both. The call's outputs are byte for byte what the
+An output names a fed operand as it names a stored one, and one name is not both. The call's outputs hold, chunk for chunk, what the
 same operands stored would publish.
 
 **The records.** `key` is `id >>> 16`, an integer from 0 to 65,535, and never below the previous record's. A key may arrive
@@ -1196,7 +1198,7 @@ await store.materializeMany({
 });
 ```
 
-The outputs are byte for byte what the same sets stored would publish. Everything said of a feed above holds: every record
+The outputs hold, chunk for chunk, what the same sets stored would publish. Everything said of a feed above holds: every record
 is checked, a fed call runs as one group and needs `maxBufferedBytes`, a set that holds no id is refused unless its name is
 in `mayBeEmpty`, and an erasure that this store runs while the call runs refuses it. The sets are your copy, which no
 erasure reaches: build them from the source after any erasure.
@@ -1253,8 +1255,8 @@ is an ordinary one: every guard and every race check runs, judged against each `
   rebuild them from the source rather than replay them. Or publish through candidates: write each accepted output to a
   scratch segment of its own, which `eraseSubject` sweeps like any other, then publish each candidate to its `dest` in a
   second call whose output is `expr: '<candidate>'`, and drop the candidates.
-- **The same ids give the same chunks.** On an encrypted segment each write seals with a fresh nonce, so the objects of
-  the two calls are not the same bytes.
+- **The same ids give the same chunks.** Each write carries its own write identity in the footer (and an encrypted one
+  seals with a fresh nonce), so the objects of the two calls are never the same bytes.
 
 #### Recipes over a dry run
 
@@ -1370,15 +1372,14 @@ that was never current. So does a load whose registry write ended without an ans
 object by number: the decision comes from the row, and the object is this load's own write, of which the write reports
 no version. One that finds the row gone, or holding key material where the load wrote cleartext (which has no place in
 an encrypted segment's bucket), deletes its object only once one read of its footer matches the object this load wrote,
-since by then its generation number may name another writer's object (a re-created segment's, say). That keeps another
-object, but not one with the same bytes, which a re-created segment's load of the same cleartext ids writes: a refusal
-that straddles a purge can delete that load's generation, and nothing reports it. The grace a retention sweep waits
-before it purges a tombstone (`tombstoneGraceMs`, 24 h by default) is what keeps a purge out of a load's run. The delete
-passes the version that read reported, so on a storage driver that reports `conditionalDelete` an object put under the
-number since is kept; one the read does not match stays, an orphan. Under any other row another write changed, the
-object stays, an orphan, whatever its number: the footer names the object's bytes, not the load that wrote them, and a
-load of the same ids writes the same bytes, so the read cannot tell this load's object from a generation another load
-published under the number, or still will. Above the pointer an erasure deletes an object that holds the id it erases
+since by then its generation number may name another writer's object (a re-created segment's, say). The footer carries
+the write identity this load drew, so it matches that object and no other: a re-created segment's load of the same
+cleartext ids, which writes the same chunks under the same number, is another object, and a refusal that straddles a
+purge keeps it. The delete passes the version that read reported, so on a storage driver that reports
+`conditionalDelete` an object put under the number since is kept; one the read does not match stays, an orphan. An
+object whose identity field is all zero (a reader accepts one) names no write, so two such objects of the same ids are
+alike, and a refusal that matches one by its footer cannot tell it from another's. Under any other row another write changed, the object stays, an orphan, whatever its number:
+the decision there comes from the row, not from the footer. Above the pointer an erasure deletes an object that holds the id it erases
 and a load can take the freed number; below it a rollback can lower the pointer and let a load take the number again,
 and a generation another load published can sit in a window the row does not record.
 

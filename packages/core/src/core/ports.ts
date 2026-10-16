@@ -349,7 +349,9 @@ export interface IStorageDriver {
   /**
    * Stream a new immutable generation. The driver opens a destination, hands `write` a {@link BlobSink},
    * then atomically commits (and computes the content hash). Throws {@link WriteConflictError} if the key
-   * already exists (write-once).
+   * already exists (write-once). Call `write` once: the object committed is the bytes that one call wrote, because
+   * the caller records the write identity of that call's object (its footer) for every later proof; a driver that
+   * runs `write` again after a failed attempt must commit only the last run's bytes.
    */
   putImmutable(
     key: GenKey,
@@ -722,8 +724,8 @@ const STORAGE_BACKEND_BRAND: unique symbol = Symbol.for('cloudbitmaps.storage-ba
  * Where a store keeps everything: the generations, and the pointer saying which one is current.
  *
  * **Branded on purpose.** The two fields alone are not enough to qualify, and that is the whole point. This
- * shape is also {@link LoadDeps}, so before the brand any `{ storage, registry }`
- * object literal satisfied it — including one assembling halves from two *unrelated* stores, which the store
+ * same two fields are the heart of {@link LoadDeps}, so without the brand any `{ storage, registry }`
+ * object literal would satisfy it — including one assembling halves from two *unrelated* stores, which the store
  * accepted and then answered **empty** for a segment that holds data, because it read a pointer from a place
  * nothing had ever been written. That is the exact silent-empty failure one-class-per-backend exists to
  * remove, and it was reachable in five lines.

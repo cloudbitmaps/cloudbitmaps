@@ -52,6 +52,7 @@ export default defineConfig({
       { find: /^@\/lease-guards$/, replacement: ROARING + '/lease-guards.ts' },
       { find: /^@\/reserved-namespace$/, replacement: ROARING + '/reserved-namespace.ts' },
       { find: /^@\/system-clock$/, replacement: ROARING + '/system-clock.ts' },
+      { find: /^@\/system-entropy$/, replacement: ROARING + '/system-entropy.ts' },
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },
       { find: /^@\/portable\/(.*)$/, replacement: ROARING + '/portable/$1' },
       { find: /^@\/bin\/(.*)$/, replacement: ROARING + '/bin/$1' },

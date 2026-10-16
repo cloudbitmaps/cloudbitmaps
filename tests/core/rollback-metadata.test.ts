@@ -20,6 +20,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { FINGERPRINT } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A rollback writes the target's own count and metadata into the row, in the write that moves the pointer, so a reader
@@ -39,7 +40,7 @@ const key = (): InProcessKeystore =>
 function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const load = { storage, registry, codec: roaringCodec, keystore };
+  const load = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   return { storage, registry, load, deps: { storage, registry, keystore } };
 }
 type World = ReturnType<typeof world>;

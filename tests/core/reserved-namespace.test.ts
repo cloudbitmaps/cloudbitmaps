@@ -22,6 +22,7 @@ import {
   refuseReservedNamespace,
 } from '@/reserved-namespace';
 import type { SegmentRef } from '@/index';
+import { zeroEntropy } from '../helpers/entropy';
 
 /**
  * `cbm.due.` is the namespace the due index keeps its own pointer rows in, and every fleet-wide scan skips a
@@ -196,7 +197,7 @@ describe('every entry point that takes a namespace refuses the reserved one', ()
           for await (const _ of listSegments(registry, { namespace: RESERVED })) void _;
         },
       ],
-      ['loadSegment', () => loadSegment(BAD, [], deps)],
+      ['loadSegment', () => loadSegment(BAD, [], { ...deps, entropy: zeroEntropy })],
       ['listGenerations', () => listGenerations(BAD, deps)],
       ['rollbackSegment', () => rollbackSegment(BAD, 0, deps)],
       ['eraseIdFromSegment', () => eraseIdFromSegment(BAD, 1, deps as never)],
@@ -226,7 +227,7 @@ describe('every entry point that takes a namespace refuses the reserved one', ()
       () => store.dropSegment(BAD, { confirmSegment: 's' }),
       () => store.setRetention(BAD, { expiresAt: FUTURE }),
       () => store.clearRetention(BAD),
-      () => loadSegment(BAD, [], deps),
+      () => loadSegment(BAD, [], { ...deps, entropy: zeroEntropy }),
       () => destroySegment(BAD, deps, { confirmSegment: 's' }),
       () => dropSegment(BAD, deps, { confirmSegment: 's' }),
       () => eraseNamespace(RESERVED, deps, { confirmNamespace: RESERVED }),
