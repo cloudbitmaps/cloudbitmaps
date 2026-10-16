@@ -89,6 +89,9 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, 
 # npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
 ```
 
+On npm 12 and pnpm 10 and later, allow `roaring`'s install script first; see the
+[Install section of the getting-started guide](guide/getting-started.md#install).
+
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
 is a dependency of both and is never installed directly. The storage drivers are their own packages
 (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each depending on its SDK for real. `@cloudbitmaps/tools`, the offline
@@ -359,7 +362,8 @@ between here and there:
    the API reference and the site lead with what this is: one bucket, immutable generations, cheap
    chunk-skipping reads from anywhere. A gate derives the site's driver counts from the driver classes in the
    code, and another refuses a count of third-party dependencies that does not name the package it counts.
-7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
+7. **`.crbm` format freeze** — [the format reference](format.md) documents the layout, the registry row and the questions
+   the freeze review decides; the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe. The row is at schema
    5: an optional cached summary of the current generation (its id count,
    its object's fingerprint, its tail size and its metadata, sealed on an encrypted segment), a ledger of the

@@ -143,7 +143,7 @@ export const EXT_SECTION_HEADER_BYTES = 5;
 /**
  * Cap on the sections of one block, in bytes. A reader refuses a larger block from its trailer alone, before it reads
  * any sections beyond what it already holds (the read that brings the index may already hold up to this much before
- * it), and a writer of any 1.x minor keeps within it, so a later section type stays readable by this reader.
+ * it), and the writer keeps within it, so a section type added later stays readable by this reader.
  */
 export const MAX_EXT_BYTES = 4 * 1024;
 /**

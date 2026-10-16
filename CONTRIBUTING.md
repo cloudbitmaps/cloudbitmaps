@@ -18,6 +18,13 @@ Every change must pass these locally, and CI runs each of them on every pull req
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm api:surface:check` · `pnpm smoke`
+- `pnpm lint` also runs the function-length gate (`pnpm lint:fn-length`, `scripts/function-length.cjs`): no function in
+  `packages/*/src` may be over 100 code lines (blank lines and comment-only lines are not counted), and the ones that
+  already were are listed with their sizes in `scripts/function-length-baseline.json`, a ratchet that can only go
+  down. It fails on a new function over the limit, on a baselined one that grew, and on one that shrank while its
+  entry stayed: after you shorten one, run `pnpm lint:fn-length --update` to lower or drop its entry and commit the
+  result. It never records growth. A function that has a new name or place is re-keyed with `pnpm lint:fn-length --update --rename '<oldKey>' '<newKey>'` (the failure message prints the command); that step trusts whoever runs it, so review a changed key in `scripts/function-length-baseline.json` like code, and the command prints each re-key it makes. The script's header states what it cannot see (a rename changes a function's
+  identity, lines are counted rather than complexity, `tests/` and `scripts/` are not checked).
 - `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
   Azurite) — no real cloud account needed. Locally it needs Docker with the backends started first
   (`docker compose up -d`, as [`tests/README.md`](tests/README.md) says), and a change that touches a driver runs it
@@ -75,9 +82,13 @@ before changing one of the heavy tests or the code under it. [`tests/README.md`]
 them and their sizes.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
-**no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
-want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
-for `test:integration`).
+**no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools want a
+current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 10, the version
+`package.json` pins. pnpm 11 and later refuse to run against that pin unless told to ignore it; run that way, they stop
+reading the `pnpm` block of `package.json`, where the overrides and the install-script allowance live, and when they
+manage their own version they write a `pnpm-lock.yaml` of two YAML documents, which GitHub's dependency graph and
+Dependabot read as having no dependencies. `tests/ci/pnpm-config.test.ts` fails on the pin and on such a lockfile.
+Docker only for `test:integration`).
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all six packages.
 
 ## Repo layout (a pnpm workspace of six packages)

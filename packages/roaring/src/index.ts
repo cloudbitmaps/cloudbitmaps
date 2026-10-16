@@ -533,8 +533,9 @@ export interface SubjectErasureEntry {
   readonly generation?: number;
   /**
    * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — another writer (a load,
-   * another erasure or a rollback) moved the pointer, or replaced an object the call meant to delete, while the call
-   * was in flight, so **this call** did not erase the id;
+   * another erasure or a rollback) moved the pointer, replaced an object the call meant to delete, or left the row with
+   * no pointer (a purge and re-creation, or a hand-made write), while the call was in flight, so **this call** did
+   * not erase the id;
    * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
    * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
    * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the

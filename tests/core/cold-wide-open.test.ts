@@ -388,9 +388,10 @@ describe('a cold open sizes its tail read from the row summary', () => {
   });
 
   it('answers the same whatever the summary says', async () => {
-    const real = (await (await wideWorld(WIDE_IDS)).facts()).tailBytes;
+    // One segment serves every hint: `hint` only rewrites what the row read answers, and each store starts cold.
+    const w = await wideWorld(WIDE_IDS);
+    const real = (await w.facts()).tailBytes;
     for (const hint of [PREAMBLE_BYTES + 100, 1000, real - 1, real + 1, real * 2]) {
-      const w = await wideWorld(WIDE_IDS);
       w.hint(hint);
       const store = w.store();
       expect(await store.segment('wide').has(WIDE_IDS[777]!), `hint ${hint}`).toBe(true);

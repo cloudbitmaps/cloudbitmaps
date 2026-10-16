@@ -14,6 +14,8 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { checkPortableLayout, containerPayloads } from '@/portable/layout';
 import { IntegrityError } from '@/core/errors';
+import { CrbmReader } from '@/core/crbm/reader';
+import { BufferReader } from '@/core/blob';
 import { bitsetOf, craftPortable } from '../helpers/portable-bytes';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { loadSegment } from '@/core/load';
@@ -108,6 +110,35 @@ describe('a load under a fixed write identity writes the identity golden', () =>
       fileURLToPath(new URL('../golden/v1.0-load-write-identity.crbm', import.meta.url)),
     );
     expect(Buffer.from(bytes).equals(golden)).toBe(true);
+  });
+});
+
+describe('the golden load object, read back', () => {
+  it('decodes with the library reader to exactly the ids docs/format.md lists, chunk by chunk', async () => {
+    const reader = await CrbmReader.open(new BufferReader(GOLDEN));
+    expect(reader.generation).toBe(0);
+    expect(reader.chunkKeys()).toEqual([0, 1, 2, 3, 4, 7, 65_535]);
+    expect(reader.count()).toBe(70_647);
+    const decoded: number[] = [];
+    for (const key of reader.chunkKeys()) {
+      const bytes = (await reader.getChunk(key))!;
+      for (const low of SafeBitmap.safeDeserialize(bytes, 1 << 20).toArray()) {
+        decoded.push(key * 65_536 + low);
+      }
+    }
+    expect(decoded).toEqual(IDS);
+    // The doc's own spot checks: payload sizes of the array, bitset and run chunks, and the two ties as arrays.
+    const sizes = new Map<number, number>();
+    for (const key of reader.chunkKeys()) sizes.set(key, (await reader.getChunk(key))!.length);
+    expect([...sizes]).toEqual([
+      [0, 24],
+      [1, 8_208],
+      [2, 15],
+      [3, 22],
+      [4, 26],
+      [7, 15],
+      [65_535, 20],
+    ]);
   });
 });
 
