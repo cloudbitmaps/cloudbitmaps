@@ -255,8 +255,8 @@ export interface EraseIdResult {
    * only when it is read up front — a concurrent `dropSegment` gives `'destroyed'`, once the tombstone's objects have
    * been searched as a fresh call searches them, and a retention sweep that purges the row gives `'absent'`.
    * `'no-generation'` is only the answer to a row read with no generation: a row that loses its pointer *after* the
-   * call found one (a purge and re-creation, or a hand-made write) is `'superseded'`, because the bucket may hold an
-   * object that holds the id which this call did not search, and a re-run searches it.
+   * call found one (a purge and re-creation, or a hand-made write) is `'superseded'`, because the call found a holder
+   * in that bucket and stopped before deleting it, and a re-run searches it again.
    */
   readonly reason?: 'absent' | 'destroyed' | 'no-generation' | 'not-member' | 'superseded';
   /**
@@ -559,8 +559,8 @@ async function eraseOnce(
  * `'destroyed'` (a concurrent `dropSegment` leaves `currentGen` where it was, so testing the pointer alone
  * would miss it and report an error for a segment the operator deliberately dropped), a vanished row is
  * `'absent'` (the retention sweep purged a tombstone while we worked), a row with no pointer is
- * `'superseded'` (a call that found a pointer did not search the bucket of a row that has none now, which a first load
- * can have filled, so it cannot report `'no-generation'`), and a pointer that moved is `'superseded'`. On a row that had no
+ * `'superseded'` (the call found a holder in a bucket whose row has no pointer now and stopped before deleting it, so
+ * it cannot report `'no-generation'`), and a pointer that moved is `'superseded'`. On a row that had no
  * pointer, a pointer that appeared is `'superseded'`: a load published, or a rollback moved onto an object.
  */
 function rowVerdict(
