@@ -6,8 +6,6 @@
     "packages/core/src/core/combine-many.ts::class Run > pass": 225,
     "packages/core/src/core/combine-many.ts::class Run > publishWave": 119,
     "packages/core/src/core/crbm/reader.ts::class CrbmReader > open": 196,
-    "packages/core/src/core/erase-id.ts::eraseOnce": 639,
-    "packages/core/src/core/erase-id.ts::eraseOnce > fence": 105,
     "packages/core/src/core/erasure.ts::dropSegmentFor": 109,
     "packages/core/src/core/generation-gc.ts::listingPass": 120,
     "packages/core/src/core/load.ts::runLoad": 222,
