@@ -470,12 +470,14 @@ function recordCollect(
  *        ├─ no pointer ────▶ unpublished      search each first load's object; fence; delete the holders
  *        └─ pointer ───────▶ stage ─┬─ id in the current generation ─▶ finishRewrite (publish, collect, prove)
  *                                   ├─ id elsewhere or nowhere ──────▶ notInCurrent  (fence, collect, delete)
- *                                   └─ the row moved on ─────────────▶ discardRefused, then the reason
+ *                                   └─ the row moved on ─────────────▶ discardRefused (when it wrote its rewrite),
+ *                                                                      then the reason
  *
- * Every phase that deletes keeps one order: search (`holds`, `holdsEach`), then one write to the row (`fence`) that takes
- * what is about to go out of its ledger, then the deletes (`deleteFenced`, or a collection below the pointer that
- * `collectAgain` runs again while it spares a name the row has taken back), and last `holderLeft`, the one place that
- * decides `erased: true`.
+ * A phase that deletes by name or by the row's ledger first takes those names out of the row (`fence`, which writes
+ * again when a write is lost), then deletes (`deleteFenced`, or a collection below the pointer that `collectAgain`
+ * fences and runs again while it spares a name the row has taken back), and last `holderLeft`, the one place that
+ * decides `erased: true`. `underTombstone` writes nothing: its collection holds the tombstone's token. `finishRewrite`'s
+ * write is the publish, and a refused publish discards what it wrote.
  */
 async function eraseOnce(
   ref: SegmentRef,
