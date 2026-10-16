@@ -462,5 +462,17 @@
   {
     "entry": "@cloudbitmaps/roaring CloudRoaring.rollback",
     "reason": "the allowForward option is replaced by allowUnknown, with no alias: a rollback moves only onto a generation the row's knownGens names, with the footer checksum it records, and allowUnknown is the one audited override; a call that passed allowForward now passes allowUnknown only for a target the row does not know, and none for a generation an earlier rollback left; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core judgeLoad",
+    "reason": "its deps parameter widens from LoadDeps to Omit<LoadDeps, 'entropy'>: it writes nothing, so every caller that passed LoadDeps still compiles and one with no entropy now compiles too; a compatible widening that follows the new required entropy of LoadDeps"
+  },
+  {
+    "entry": "@cloudbitmaps/core LoadDeps.entropy",
+    "reason": "a required member of an interface that only core callers build: the load draws its generation's write identity through it, and a source left out was already refused at run time; required so the compiler says so, and the flavor package supplies Web Crypto's by default, so no store user passes one"
+  },
+  {
+    "entry": "@cloudbitmaps/core EraseIdDeps.entropy",
+    "reason": "a required member of an interface that only core callers build: the erasure rewrite draws its generation's write identity through it, and a source left out was already refused at run time; required so the compiler says so, and the flavor package supplies Web Crypto's by default, so no store user passes one"
   }
 ]
