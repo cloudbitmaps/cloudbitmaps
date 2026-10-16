@@ -23,19 +23,27 @@ Three words appear everywhere:
 
 ## Install & entry points
 
-On npm 12 and pnpm 10 and later, a dependency's install script runs only if you allow it, and `roaring` needs its one
-script to fetch its native binary. Allow it first: add these two top-level keys to your `package.json` (create one with
-`pnpm init` or `npm init -y` if you have none):
-`{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but
-warns until you allow it the same way; pnpm 9 needs nothing extra. Then install:
+`roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if
+you allow it. Allow it first (create a `package.json` with `pnpm init` or `npm init -y` if you have none):
+
+- **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and
+  the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
+- **pnpm 11 and later:** put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside your `package.json`.
+  Those versions no longer read the `package.json` `pnpm` key. Without it the install exits 1 with
+  `ERR_PNPM_IGNORED_BUILDS`.
+- **pnpm 10:** add `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` to your `package.json`. Without it the
+  install exits 0 and the package throws at `import`.
+- **pnpm 9:** nothing extra.
+
+Then install:
 
 ```bash
 pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
-Installed before allowing it? The install exited 0 and the package throws at `import`. Add the setting, then run
-`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
+Installed before allowing it? The package throws at `import` (the install exited 0, or 1 on pnpm 11 and later). Add the
+setting, then run `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
 [Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
 
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
@@ -187,7 +195,7 @@ Run from inside the region with a client of 128 sockets, a cold `count()` is one
 If the library breaks, you are not stuck:
 
 - **It is a library, not a service.** Your data lives in your bucket, your account or your filesystem. CloudBitmaps never sees it, and you are the data controller (see [`PRIVACY.md`](PRIVACY.md)).
-- **The files are an open format.** Each `.crbm` object is a documented container with a footer index and CRC32C checksums, wrapping standard Roaring serialization that every Roaring library (Java, Go, Python, C++, Rust, C#) reads.
+- **The files are an open format.** Each `.crbm` object is a documented container with a footer index and CRC32C checksums, wrapping standard Roaring serialization that every Roaring library (Java, Go, Python, C++, Rust, C#) reads. [The format reference](docs/format.md) gives every byte of the object and of the registry row.
 - **A bad load does not overwrite the last good one.** Generations are write-once and checksummed, and corruption is rejected before it is decoded. The one answer taken without decoding a payload, [`count()`](docs/guide/reading.md#what-count-trusts), comes from the registry row's summary, or from the index when the row has none, and is checked for internal consistency but not against the payloads. A bad load writes a new generation, and the previous one stays in the bucket for you to [roll the pointer back](docs/guide/loading.md#roll-back-a-segment) to. Under the default `keep: 1` it stays only until the next load, so roll back before you load again, or raise [`keep`](docs/guide/loading.md#generations-and-keep).
 - **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or `ndjson` (a destroyed segment, crypto-shredded or dropped, is listed in the manifest's `skipped` instead). The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
 
@@ -305,15 +313,19 @@ and `1.0`.
 
 ## Building & contributing
 
-You need **Node ≥ 22.12** and **pnpm 9**; Docker is needed only for the integration tests.
+You need **Node ≥ 22.12** and **pnpm 10**, the version `packageManager` pins (Dependabot supports pnpm up to 10, and
+pnpm 11 and later can write a lockfile GitHub's dependency graph reads as empty); Docker is needed only for the
+integration tests.
 
 ```bash
 pnpm install
 pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm api:surface:check && pnpm smoke
 ```
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) is the canonical record of how we work. [`AGENTS.md`](AGENTS.md) is the AI-agent
-operating manual (`CLAUDE.md` is a symlink to it).
+Using CloudBitmaps? Tell us in [`ADOPTERS.md`](ADOPTERS.md); questions go to
+[Discussions](https://github.com/cloudbitmaps/cloudbitmaps/discussions). [`CONTRIBUTING.md`](CONTRIBUTING.md) is the
+canonical record of how we work. [`AGENTS.md`](AGENTS.md) is the AI-agent operating manual (`CLAUDE.md` is a symlink to
+it).
 
 ## License
 

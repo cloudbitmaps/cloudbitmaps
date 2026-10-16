@@ -525,6 +525,10 @@ The name is deliberately **not** tied to a codec. `.crbm` is the container for a
 CRC32C checksums, the AES-GCM framing and the generation model are all codec-independent, and only the chunk
 payload bytes would differ. Roaring is the one codec that ships.
 
+**The byte layout** of the object (the preamble, the chunk payloads, the index, the footer, the checksums and the
+sealing) and the registry row that points at it are in [the format reference](../format.md); this section covers the
+name, the version and the extension block.
+
 **Format version.** Every object is format **1.0**: the preamble, the chunk payloads, the index and the fixed
 104-byte footer. A reader refuses an unknown major version, and refuses an object whose footer sets a flag bit it does
 not know. A generation written with metadata carries one **extension block** between the last payload and the index,

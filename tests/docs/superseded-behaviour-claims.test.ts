@@ -1830,33 +1830,36 @@ describe('no document claims behaviour this library does not have', () => {
       // scans such a line once per unit, so each must scan it once. The last two work the quote pairing and the rules
       // hardest.
       //
-      // Judged by how the time grows, not by a wall-clock bound: each shape is read at a quarter of the length and at
-      // the full length, in this process, so a loaded machine slows both alike. Four times the input is about four
-      // times the time for a single scan and sixteen for a scan per unit. The two lengths are read in turn, five times
-      // over, and a reading is the least of its five, so a pause or a spell of load reaches both lengths alike and one
-      // slow run does not decide it. The growth counts against a shape only when it is over 6, where a single scan
-      // measures about 4, and the full-length reading is over 20 ms, a floor that keeps load noise on a reading of a
-      // few milliseconds from failing it. A scan per unit grows by sixteen, though a fixed cost per call hides part of
-      // it at this length, so a shape that scans a part of the line twice shows well under that. What the test catches
-      // is a scan that goes quadratic or worse. Several shapes read in a few milliseconds even at full length, and a
-      // regression that leaves one of them under the floor is not seen.
+      // Judged by how the time grows, not by a wall-clock bound: each shape is read at an eighth of the length and at
+      // the full length, in this process, so a loaded machine slows both alike. Eight times the input is about eight
+      // times the time for a single scan and sixty-four for a scan per unit. The two lengths are read in turn, six
+      // times over, and a reading is the least of its six, so a pause or a spell of load reaches both lengths alike and
+      // one slow run does not decide it. The growth counts against a shape only when it is over 16 and the
+      // full-length reading is over 20 ms, a floor that keeps load noise on a reading of a few milliseconds from
+      // failing it. Measured, a single scan grows 6.5 to 8.6 times, so 16 leaves about twice that for load. Planted
+      // scans per unit (a retry from each bracket, star, doc-comment link, quote or run of blanks) grew 20 to 54
+      // times, at least 1.25 times the limit. A fixed cost per call hides part of a quadratic growth at this length,
+      // so a shape that scans a part of the line twice shows well under the full sixty-four. What the test catches is
+      // a scan that goes quadratic or worse and adds, at full length, more than about one and a half times the shape's
+      // linear reading; a smaller quadratic term on top of a heavy shape's linear time is not seen. Several shapes read in a few milliseconds
+      // even at full length, and a regression that leaves one of them under the floor is not seen.
       const FULL = 40_960;
       const expectLinear = (what: string, build: (length: number) => string): void => {
-        const quarter = build(FULL / 4);
+        const eighth = build(FULL / 8);
         const full = build(FULL);
         let small = Infinity;
         let large = Infinity;
-        for (let run = 0; run < 5; run++) {
+        for (let run = 0; run < 6; run++) {
           let started = performance.now();
-          hitsIn('x.md', quarter);
+          hitsIn('x.md', eighth);
           small = Math.min(small, performance.now() - started);
           started = performance.now();
           hitsIn('x.md', full);
           large = Math.min(large, performance.now() - started);
         }
         const growth = large / Math.max(small, 1);
-        const verdict = `${what}: ${small.toFixed(1)} ms at a quarter, ${large.toFixed(1)} ms at full, ${growth.toFixed(1)}x`;
-        expect(large > 20 && growth > 6, verdict).toBe(false);
+        const verdict = `${what}: ${small.toFixed(1)} ms at an eighth, ${large.toFixed(1)} ms at full, ${growth.toFixed(1)}x`;
+        expect(large > 20 && growth > 16, verdict).toBe(false);
       };
       for (const unit of [
         '[a ',

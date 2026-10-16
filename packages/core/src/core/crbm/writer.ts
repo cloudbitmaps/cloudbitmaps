@@ -7,8 +7,9 @@
  * **Encryption (opt-in via `crypto`).** When a {@link CrbmCrypto} is supplied, each chunk payload is
  * AES-256-GCM-sealed (`nonce ‖ ciphertext ‖ tag`, AAD = its chunkKey) and the whole index is sealed too (its
  * nonce/tag go in the footer). The footer then sets `FLAG_ENCRYPTED` and **zeroes `chunkCount` +
- * `totalCardinality`** so a leaked object reveals neither how many chunks nor how many ids it holds — the
- * reader derives both from the decrypted index. The per-chunk CRC covers the *encrypted* on-disk bytes.
+ * `totalCardinality`**, so neither number is stored in the clear — the reader derives both from the decrypted
+ * index. Nothing is padded: the index's length bounds the number of chunks (an entry is 8 to 24 bytes) and the
+ * payload region's length bounds the set's size. The per-chunk CRC covers the *encrypted* on-disk bytes.
  *
  * **Metadata (opt-in via `metadata`).** A generation given metadata carries an extension block between the last payload
  * and the index, flagged in the footer (`FLAG_EXTENSION`), holding the metadata's canonical JSON, sealed like the index
