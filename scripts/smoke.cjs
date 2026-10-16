@@ -173,11 +173,136 @@ function assertSubpathsResolveWithoutExports(pkgDir) {
   console.log(`  subpaths resolve without exports: @cloudbitmaps/${pkgDir} (${subpaths.length})`);
 }
 
+/**
+ * A package ships only the declarations the TypeScript compiler loads for a consumer, and every one it loads is
+ * there.
+ *
+ * `scripts/build.mjs` prunes with its own walk (`scripts/lib/reachable-declarations.cjs`), and a walk cannot catch
+ * its own bug, so this does not reuse it. It builds one program that imports every `exports` entry of every
+ * package by name, under NodeNext, Bundler and Node10 resolution with `skipLibCheck` off, and fails on
+ *   (a) any diagnostic inside a package's `dist/` — a reachable declaration deleted by mistake shows as TS2307;
+ *   (b) any diagnostic in the probe itself — a lost entry shows there, as TS7016 or TS2307 on its import;
+ *   (c) any shipped `.d.ts` that no resolution mode loaded — a stray the prune missed;
+ *   (d) any loaded file outside this checkout. A worktree nested in another checkout can resolve a package
+ *       through the outer `node_modules`, so a lost entry would load the outer build's file and raise no
+ *       diagnostic; this rule turns that silent pass into a failure.
+ * It checks only the `typesVersions` range its own TypeScript version selects; the walk reads every range.
+ * It lives here, after the build, because it reads `dist/`; the test suite runs before the build in CI.
+ */
+function assertDeclarationsMatchWhatTscLoads() {
+  const fs = require('node:fs');
+  const ts = require('typescript');
+  const root = path.join(__dirname, '..');
+  const dists = packageDirs().map((d) => path.join(root, 'packages', d, 'dist'));
+  for (const dist of dists) {
+    if (!fs.existsSync(dist))
+      throw new Error(`${dist}: dist/ is missing, so its declarations cannot be checked.`);
+  }
+  const specs = packageDirs().flatMap((d) => entriesOf(d));
+  const probeText = specs.map((spec, i) => `export * as m${i} from '${spec}';`).join('\n');
+  // One key per file for every comparison: the compiler names files in its own form (forward slashes, and on
+  // Windows a drive letter in either case), the filesystem walk in the platform's, so both go through the canonical
+  // real path, lower-cased where the filesystem ignores case.
+  const key = (f) => {
+    let p;
+    try {
+      p = fs.realpathSync.native(f);
+    } catch {
+      p = path.resolve(f);
+    }
+    return process.platform === 'win32' ? p.toLowerCase() : p;
+  };
+  const distKeys = dists.map((d) => key(d) + path.sep);
+  const inDist = (f) => distKeys.some((d) => key(f).startsWith(d));
+  const modes = {
+    nodenext: [ts.ModuleKind.NodeNext, ts.ModuleResolutionKind.NodeNext, '.mts'],
+    bundler: [ts.ModuleKind.ESNext, ts.ModuleResolutionKind.Bundler, '.mts'],
+    node10: [ts.ModuleKind.CommonJS, ts.ModuleResolutionKind.Node10, '.ts'],
+  };
+  const loadedAnywhere = new Map(); // key -> the file name tsc gave
+  const rootKey = key(root) + path.sep;
+  const problems = [];
+  for (const [mode, [module, moduleResolution, ext]] of Object.entries(modes)) {
+    const probe = path.join(root, `__declarations_probe__${ext}`);
+    // tsc hands the host its own spelling of the probe's name (forward slashes on Windows): compare keys.
+    const probeKey = key(probe);
+    const isProbe = (f) => key(f) === probeKey;
+    const options = {
+      noEmit: true,
+      strict: true,
+      skipLibCheck: false,
+      module,
+      moduleResolution,
+      target: ts.ScriptTarget.ES2022,
+      lib: ['lib.es2022.d.ts'],
+      types: ['node'],
+      typeRoots: [path.join(root, 'node_modules', '@types')],
+    };
+    const host = ts.createCompilerHost(options, true);
+    const { fileExists, readFile, getSourceFile } = host;
+    host.fileExists = (f) => isProbe(f) || fileExists.call(host, f);
+    host.readFile = (f) => (isProbe(f) ? probeText : readFile.call(host, f));
+    host.getSourceFile = (f, ...rest) =>
+      isProbe(f)
+        ? ts.createSourceFile(f, probeText, rest[0], true)
+        : getSourceFile.call(host, f, ...rest);
+    const program = ts.createProgram([probe], options, host);
+    for (const sf of program.getSourceFiles()) {
+      if (isProbe(sf.fileName)) continue;
+      const k = key(sf.fileName);
+      loadedAnywhere.set(k, sf.fileName);
+      // A worktree nested in another checkout can resolve a missing entry through the outer checkout's node_modules,
+      // into ITS dist/, and then no diagnostic appears: a file from outside this checkout is a failure in itself.
+      if (!k.startsWith(rootKey))
+        problems.push(`[${mode}] loaded from outside this checkout: ${sf.fileName}`);
+    }
+    const diagnostics = [
+      ...program.getOptionsDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ].filter((d) => !d.file || isProbe(d.file.fileName) || inDist(d.file.fileName));
+    for (const d of diagnostics) {
+      const where = d.file ? path.relative(root, d.file.fileName) : '(program)';
+      problems.push(
+        `[${mode}] TS${d.code} ${where}: ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`,
+      );
+    }
+  }
+  const shipped = dists.flatMap((dist) => declarationFiles(dist).map((f) => path.join(dist, f)));
+  // A key that no longer matches would make the diagnostics filter above keep nothing from dist/, a silent pass.
+  const outside = shipped.filter((f) => !inDist(f));
+  if (outside.length > 0) {
+    throw new Error(
+      `smoke: path keys disagree; ${outside.length} shipped declaration(s) not seen inside a dist/`,
+    );
+  }
+  for (const file of shipped.filter((f) => !loadedAnywhere.has(key(f))).sort()) {
+    problems.push(`stray, loaded by no resolution mode: ${path.relative(root, file)}`);
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `shipped declarations differ from what a consumer's compiler loads (${problems.length}):\n  ` +
+        problems.join('\n  '),
+    );
+  }
+  console.log(
+    `  shipped declarations == what tsc loads (nodenext, bundler, node10): ${shipped.length} file(s), ` +
+      `${specs.length} entries`,
+  );
+}
+
 /** Every package directory in the workspace. */
 function packageDirs() {
   return require('node:fs')
     .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter(
+      (e) =>
+        e.isDirectory() &&
+        require('node:fs').existsSync(
+          path.join(__dirname, '..', 'packages', e.name, 'package.json'),
+        ),
+    )
     .map((e) => e.name)
     .sort();
 }
@@ -534,6 +659,8 @@ function assertRanLikeDirect(bin, how, viaLink, direct, out) {
 }
 
 async function main() {
+  // First, so a lost or stray declaration is reported by the compiler, not by the narrower checks below.
+  assertDeclarationsMatchWhatTscLoads();
   for (const pkgDir of packageDirs()) {
     for (const specifier of entriesOf(pkgDir)) {
       await import(specifier); // ESM `import` condition

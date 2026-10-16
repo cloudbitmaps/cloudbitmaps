@@ -42,6 +42,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The packages no longer contain declaration files for internal modules.** A package's tarball held a `.d.ts` for
+  every source file, though no `exports` entry made those modules importable and no public declaration imported them;
+  it now holds only the declarations its `exports` entries reach, and the files they import. The conformance suite's
+  declarations (`testing/conformance`), the fuzz harnesses' and the codec's decoder internals are among those removed.
+  The public types, and every entry point's resolution under `node10`, `node16`, `nodenext` and `bundler`, are unchanged.
 - **A cleartext generation carries a random write identity in its footer, so two loads of the same ids no longer write
   identical objects.** The footer's `indexNonce` field, 12 bytes at offset 40, holds the AEAD nonce of the sealed index on
   an encrypted generation and was all zero on a cleartext one. Every writer of a cleartext generation now draws those 12

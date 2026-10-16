@@ -15,7 +15,8 @@
  *     `@cloudbitmaps/core` — so the error classes are the same objects and `instanceof` holds across
  *     packages. esbuild applies tsconfig `paths` BEFORE `packages: 'external'`, which is why the
  *     `@cloudbitmaps/*` entry has to be spelled out rather than left to the flag;
- *   - one `.d.ts` tree under dist/ mirroring src/ (the exports map already points at `dist/<entry>/index.d.ts`);
+ *   - one `.d.ts` tree under dist/ mirroring src/ (the exports map already points at `dist/<entry>/index.d.ts`),
+ *     pruned to the declarations an `exports` entry reaches, so internal modules ship no declaration;
  *   - the ESM-only `export-segments` bin with its `#!` line preserved (esbuild keeps an entry's hashbang);
  *   - the fuzz-only bundles into the git-ignored repo-root `fuzz/build/`, never into dist/.
  * `node scripts/smoke.cjs` (ESM import + `require()` of every entry, the bin, cross-bundle error identity) is the
@@ -163,6 +164,16 @@ for await (const file of dts(dist)) {
   if (text !== src) await writeFile(file, text);
 }
 
+// Ship only the declarations a consumer can reach.
+//
+// tsc wrote one `.d.ts` per source file, but the JavaScript is bundled, so most internal modules (the conformance
+// suite, the fuzz harnesses, decoder internals) have a declaration that no `exports` entry names and no reachable
+// declaration imports. A consumer cannot load them, so they stay out of the tarball. This runs after the
+// extension rewrite above, which needs every file in place, and `scripts/smoke.cjs` then checks the output
+// against what the TypeScript compiler loads, which fails on a stray or on a reachable file lost by mistake.
+const { pruneUnreachable } = require('./lib/reachable-declarations.cjs');
+const pruned = pruneUnreachable(pkgDir);
+
 // Fuzz-only bundles — into the repo-root fuzz/build, never into dist/.
 const fuzzEntry =
   short === 'core'
@@ -181,5 +192,5 @@ if (fuzzEntry && existsSync(path.join(pkgDir, fuzzEntry))) {
 }
 
 console.log(
-  `build ${pkg.name}: ${Object.keys(entries).length} entries (esm), declarations emitted (${rewritten} alias specifiers rewritten, ${extended} extensions added)`,
+  `build ${pkg.name}: ${Object.keys(entries).length} entries (esm), declarations emitted (${rewritten} alias specifiers rewritten, ${extended} extensions added, ${pruned} unreachable pruned)`,
 );
