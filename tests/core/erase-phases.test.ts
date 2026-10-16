@@ -1,9 +1,12 @@
+import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { ValidationError } from '@/core/errors';
+import { IntegrityError, ValidationError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
+import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * Behaviour of single steps of an erasure that no other test pins: each case below fails when exactly one line of the
@@ -41,7 +44,7 @@ describe('the steps of an erasure', () => {
       },
     });
     const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
-    expect(res).toMatchObject({ erased: true, fromGeneration: 0 });
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, collected: [99, 0] });
   });
 
   it('names the newest generation it could not remove', async () => {
@@ -76,7 +79,9 @@ describe('the steps of an erasure', () => {
   it('decodes a chunk under the cap the caller set', async () => {
     const w = world();
     await loadSegment(SEG, [1, 2, 3], w.deps);
-    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, maxBitmapBytes: 1 })).rejects.toThrow();
+    const call = eraseIdFromSegment(SEG, 2, { ...w.deps, maxBitmapBytes: 1 });
+    await expect(call).rejects.toBeInstanceOf(IntegrityError);
+    await expect(call).rejects.toThrow(/exceeds cap 1B/);
   });
 
   it('lists the bucket once for an id no generation holds, however many it keeps', async () => {
@@ -95,18 +100,38 @@ describe('the steps of an erasure', () => {
     expect(lists).toBe(1);
   });
 
-  it('writes the row once to rewrite and collect an ordinary segment', async () => {
-    const w = world();
-    await loadSegment(SEG, [1, 2, 3], w.deps);
-    let writes = 0;
-    const registry = Object.assign(Object.create(w.registry) as IRegistryDriver, {
-      compareAndSwap: (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
-        writes += 1;
-        return w.registry.compareAndSwap(...args);
+  it('keeps the premise of a fence that wrote nothing, so a later write to a non-lease field does not stop the delete', async () => {
+    const storage = new MemoryStorageDriver();
+    const inner = new MemoryRegistryDriver();
+    const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
+    const at = (generation: number) => ({ ...SEG, generation });
+    const fresh = () => ({ registry: new MemoryRegistryDriver(), publish: false });
+    // Generation 0 holds the id below the pointer, 1 is current, 2 is sealed above it under a key the row does not hold.
+    await bulkLoadCrbmGeneration(storage, at(0), [1, 7], fresh());
+    await bulkLoadCrbmGeneration(storage, at(1), [1], fresh());
+    await bulkLoadCrbmGeneration(storage, at(2), [1, 5], { ...fresh(), keystore });
+    // A row with a pointer and no ledger, so the collection fences a second time.
+    await inner.create(SEG, { currentGen: 1 });
+    let cas = 0;
+    const registry = Object.assign(Object.create(inner) as IRegistryDriver, {
+      compareAndSwap: async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
+        const out = await inner.compareAndSwap(...args);
+        cas += 1;
+        // Another writer's retention policy lands right after the fence's first write.
+        if (cas === 1)
+          await inner.compareAndSwap(SEG, out.token, { retention: { expiresAt: 4102444800000 } });
+        return out;
       },
     });
-    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, registry });
+    const res = await eraseIdFromSegment(SEG, 7, { storage, registry, codec: roaringCodec });
+    expect(cas).toBe(1);
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, collected: [0, 2] });
+  });
+
+  it('rewrites and collects an ordinary segment', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    const res = await eraseIdFromSegment(SEG, 2, w.deps);
     expect(res).toMatchObject({ erased: true, collected: [0] });
-    expect(writes).toBe(1);
   });
 });
