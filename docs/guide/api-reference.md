@@ -1185,7 +1185,7 @@ Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `s
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired`
 
 Types: `EngineDeps` · `EngineCombineOptions` · `SegmentReader` · `RetryDeps` · `RetryingOptions` · `LoadDeps` · `LoadJudgement` · `GuardRefusal` ·
-`CombineExpr` · `CombineManyDeps` · `CombineManyFeed` · `CombineManyFeedRecord` · `CombineManyOperand` · `CombineManyOperandStats` · `CombineManyOutcome` · `CombineManyOutput` · `CombineManyOutputStats` · `CombineManyRequest` · `CombineManyRun` · `CombineManyStats` · `CombineManyWrite` · `CompiledCombineMany` · `GenerationListDeps` · `GenerationSummary` · `PinLease` · `LeaseDeps` · `LeaseTake` · `TakenLease` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
+`CombineExpr` · `CombineManyDeps` · `CombineManyFeed` · `CombineManyFeedRecord` · `CombineManyOperand` · `CombineManyOperandStats` · `CombineManyOutcome` · `CombineManyOutput` · `CombineManyOutputStats` · `CombineManyRequest` · `CombineManyRun` · `CombineManyStats` · `CombineManyWrite` · `CompiledCombineMany` · `GenerationListDeps` · `GenerationSummary` · `PinLease` · `LeaseDeps` · `LeaseTake` · `TakenLease` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps`
 
 ### `@cloudbitmaps/core/driver-kit`
 
