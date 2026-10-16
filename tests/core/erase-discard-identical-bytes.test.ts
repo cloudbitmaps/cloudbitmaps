@@ -11,7 +11,8 @@ import type { Clock, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
-import { testEntropy } from '../helpers/entropy';
+import { testEntropy, zeroEntropy } from '../helpers/entropy';
+import type { Entropy } from '@/core/determinism';
 
 /**
  * A refused rewrite discards its own object above the winner's pointer, after one read of its footer matches the
@@ -53,10 +54,10 @@ interface Sent {
  * refuses its publish of 2 and its discard reaches `stallAt`, every call on `clk`. Returns the erasure's run, its gate,
  * what it sent, and the stores.
  */
-async function refusedRewrite(stallAt: Stall, clk: Clock = clock) {
+async function refusedRewrite(stallAt: Stall, clk: Clock = clock, entropy: Entropy = testEntropy) {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock: clk };
+  const deps = { storage, registry, entropy, codec: roaringCodec, clock: clk };
   await loadSegment(REF, [1, 2, X, Y], deps); // generation 0
 
   const l1AtPublish = gate();
@@ -115,8 +116,14 @@ async function refusedRewrite(stallAt: Stall, clk: Clock = clock) {
 }
 
 /** The race in the header: the discard stalls at `stallAt`, and the second load publishes as `l2Publish` says. */
-async function race(stallAt: Stall, l2Publish: L2Publish) {
-  const { e1, atDiscard, sent, storage, registry, deps } = await refusedRewrite(stallAt);
+async function race(stallAt: Stall, l2Publish: L2Publish, entropy: Entropy = testEntropy) {
+  const { e1, atDiscard, sent, storage, registry, deps } = await refusedRewrite(
+    stallAt,
+    clock,
+    entropy,
+  );
+  // Whether the load's object carries the rewrite's footer: only when every write's identity is the same.
+  const alike = entropy === zeroEntropy;
   const rewrite = (await openGenerationReader(storage, GEN2, undefined)).fingerprint;
 
   // The other erasure erases an id the rewrite holds and the first load's generation does not: generation 2 is a
@@ -140,7 +147,7 @@ async function race(stallAt: Stall, l2Publish: L2Publish) {
   if (l2Publish === 'after the erasure returns') {
     await l2AtPublish.reached;
     // A control that must hold: the footer read tells the load's object from the rewrite's.
-    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(false);
+    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(alike);
     atDiscard.open();
     first = await e1;
     l2AtPublish.open();
@@ -148,7 +155,7 @@ async function race(stallAt: Stall, l2Publish: L2Publish) {
   } else {
     l2 = await l2Run;
     expect(l2).toMatchObject({ generation: 2, published: true });
-    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(false);
+    expect(await sameObjectUnder(storage, GEN2, rewrite)).toBe(alike);
     atDiscard.open();
     first = await e1;
   }
@@ -185,6 +192,26 @@ describe("a refused rewrite's discard and a load that takes its number again wit
       expect(await reads(storage, registry)).toEqual([1, 2, Y]);
     },
   );
+});
+
+describe("a refused rewrite's discard when every write's identity is all zero", () => {
+  // The control that the race is real: with one identity for every write (an object from before identities existed
+  // carries zeros), the load's object has the rewrite's footer, the discard's second decision matches it, and its
+  // renewal, which lands first, refuses the load.
+  it("still takes the load's object for the rewrite's, and its renewal refuses the load", async () => {
+    const { first, l2, sent, storage, registry } = await race(
+      'after its footer read',
+      'after the erasure returns',
+      zeroEntropy,
+    );
+
+    expect(first).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(sent).toEqual({ renewals: 2, deletes: 1 });
+    expect(l2).toMatchObject({ generation: 2, published: false, reason: 'superseded' });
+    expect(await generations(storage)).not.toContain(2);
+    expect((await registry.get(REF))?.currentGen).toBe(1);
+    expect(await reads(storage, registry)).toEqual([5, 6]);
+  });
 });
 
 describe("a refused rewrite's discard whose renewal of the row loses", () => {

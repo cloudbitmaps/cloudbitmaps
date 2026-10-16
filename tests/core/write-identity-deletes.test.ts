@@ -8,7 +8,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';
-import { counterEntropy } from '../helpers/entropy';
+import { counterEntropy, zeroEntropy } from '../helpers/entropy';
 import { withoutTokenReports } from '../helpers/no-token-reports';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
 
@@ -22,6 +22,16 @@ import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race
  */
 
 const IDS = [3, 5, 8];
+
+/**
+ * Each case runs under random-looking identities, where the delete is refused, and again under one all-zero identity
+ * for every write, the footer of an object from before identities existed: there the old race is real, which shows the
+ * case can fail and what the identity buys.
+ */
+const MODES = [
+  ['distinct identities', false],
+  ['all-zero identities', true],
+] as const;
 
 /** What the segment reads, through a store over the same drivers. */
 async function reads(storage: IStorageDriver, registry: IRegistryDriver): Promise<number[]> {
@@ -39,68 +49,78 @@ describe('the gone-row reclaim across a purge', () => {
    * same ids always write, the first load would delete the second's object, and the row it then creates would name a
    * generation with nothing under it.
    */
-  it('keeps the object the second load wrote, which the second load then publishes', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
-    const entropy = counterEntropy();
-    const deps = { storage, registry, codec: roaringCodec, clock, entropy };
+  it.each(MODES)(
+    '%s: the object the second load wrote is kept or deleted',
+    async (_label, zero) => {
+      const storage = new MemoryStorageDriver();
+      const registry = new MemoryRegistryDriver();
+      const entropy = zero ? zeroEntropy : counterEntropy();
+      const deps = { storage, registry, codec: roaringCodec, clock, entropy };
 
-    // The first load: its write lands, then its first read of the row after it is answered and held.
-    const atReclaim = gate();
-    let wrote = false;
-    let held = false;
-    const l1Storage = Object.create(storage) as IStorageDriver;
-    l1Storage.putImmutable = async (key, write) => {
-      const put = await storage.putImmutable(key, write);
-      wrote = true;
-      return put;
-    };
-    const l1Registry = Object.create(registry) as IRegistryDriver;
-    l1Registry.get = async (ref) => {
-      const row = await registry.get(ref);
-      if (wrote && !held) {
-        held = true;
-        atReclaim.reach();
-        await atReclaim.opened;
+      // The first load: its write lands, then its first read of the row after it is answered and held.
+      const atReclaim = gate();
+      let wrote = false;
+      let held = false;
+      const l1Storage = Object.create(storage) as IStorageDriver;
+      l1Storage.putImmutable = async (key, write) => {
+        const put = await storage.putImmutable(key, write);
+        wrote = true;
+        return put;
+      };
+      const l1Registry = Object.create(registry) as IRegistryDriver;
+      l1Registry.get = async (ref) => {
+        const row = await registry.get(ref);
+        if (wrote && !held) {
+          held = true;
+          atReclaim.reach();
+          await atReclaim.opened;
+        }
+        return row;
+      };
+      const l1 = loadSegment(
+        REF,
+        IDS,
+        { ...deps, storage: l1Storage, registry: l1Registry },
+        { guard: { minCardinality: 100 } },
+      );
+      await atReclaim.reached;
+      expect(await generations(storage)).toEqual([0]);
+
+      // The name is swept: the object under 0 goes, and there is no row.
+      await storage.delete({ ...REF, generation: 0 });
+      expect(await registry.get(REF)).toBeNull();
+
+      // The second load takes 0 afresh and writes the same ids; its row is not created yet.
+      const atCreate = gate();
+      const l2Registry = Object.create(registry) as IRegistryDriver;
+      l2Registry.create = async (ref, record, options) => {
+        atCreate.reach();
+        await atCreate.opened;
+        return registry.create(ref, record, options);
+      };
+      const l2 = loadSegment(REF, IDS, { ...deps, registry: l2Registry });
+      await atCreate.reached;
+      expect(await generations(storage)).toEqual([0]);
+
+      // The first load's reclaim reads no row and meets the second load's object under its number.
+      atReclaim.open();
+      expect(await l1).toMatchObject({ generation: 0, published: false });
+      if (zero) {
+        // The first load's footer proof matches the second load's object: it deletes it.
+        expect(await generations(storage)).toEqual([]);
+        atCreate.open();
+        await l2.catch(() => undefined);
+        return;
       }
-      return row;
-    };
-    const l1 = loadSegment(
-      REF,
-      IDS,
-      { ...deps, storage: l1Storage, registry: l1Registry },
-      { guard: { minCardinality: 100 } },
-    );
-    await atReclaim.reached;
-    expect(await generations(storage)).toEqual([0]);
+      expect(await generations(storage)).toEqual([0]);
 
-    // The name is swept: the object under 0 goes, and there is no row.
-    await storage.delete({ ...REF, generation: 0 });
-    expect(await registry.get(REF)).toBeNull();
-
-    // The second load takes 0 afresh and writes the same ids; its row is not created yet.
-    const atCreate = gate();
-    const l2Registry = Object.create(registry) as IRegistryDriver;
-    l2Registry.create = async (ref, record, options) => {
-      atCreate.reach();
-      await atCreate.opened;
-      return registry.create(ref, record, options);
-    };
-    const l2 = loadSegment(REF, IDS, { ...deps, registry: l2Registry });
-    await atCreate.reached;
-    expect(await generations(storage)).toEqual([0]);
-
-    // The first load's reclaim reads no row and meets the second load's object under its number.
-    atReclaim.open();
-    expect(await l1).toMatchObject({ generation: 0, published: false });
-    expect(await generations(storage)).toEqual([0]);
-
-    atCreate.open();
-    expect(await l2).toMatchObject({ generation: 0, published: true });
-    expect((await registry.get(REF))?.currentGen).toBe(0);
-    expect(await generations(storage)).toEqual([0]);
-    expect(await reads(storage, registry)).toEqual(IDS);
-  });
+      atCreate.open();
+      expect(await l2).toMatchObject({ generation: 0, published: true });
+      expect((await registry.get(REF))?.currentGen).toBe(0);
+      expect(await generations(storage)).toEqual([0]);
+      expect(await reads(storage, registry)).toEqual(IDS);
+    },
+  );
 });
 
 /**
@@ -141,10 +161,10 @@ describe("a refused rewrite's discard on a driver whose versions derive from the
    * The version the discard names is a hash of the bytes it read. With the same bytes under 2, the load's object has that
    * version, and the delete removes the generation the pointer now names.
    */
-  it("does not delete the load's generation: its object has another version", async () => {
+  it.each(MODES)("%s: the load's generation is kept or deleted", async (_label, zero) => {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const entropy = counterEntropy();
+    const entropy = zero ? zeroEntropy : counterEntropy();
     const deps = { storage, registry, codec: roaringCodec, clock, entropy };
     await loadSegment(REF, [1, 2, X, Y], deps);
 
@@ -192,6 +212,11 @@ describe("a refused rewrite's discard on a driver whose versions derive from the
 
     atDelete.open();
     expect(await e1).toMatchObject({ erased: false, reason: 'superseded' });
+    if (zero) {
+      // The same bytes, so the same version: the delete removes the generation the pointer names.
+      expect(await generations(storage)).not.toContain(2);
+      return;
+    }
     expect((await registry.get(REF))?.currentGen).toBe(2);
     expect(await generations(storage)).toContain(2);
     expect(await reads(storage, registry)).toEqual([1, 2, Y]);
@@ -209,36 +234,47 @@ describe('a publish that gets no answer, on a registry that reports no write tok
    * Such a registry cannot say whose write landed, so the first load asks whether the object under 1 is its own. A footer
    * that is the same for the same ids answers yes, and the first load reports `published: true` for the second load's write.
    */
-  it("does not report the other load's write as its own", async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = withoutTokenReports(new MemoryRegistryDriver());
-    const entropy = counterEntropy();
-    const deps = { storage, registry, codec: roaringCodec, clock, entropy };
-    expect(await loadSegment(REF, [9], deps)).toMatchObject({ generation: 0, published: true });
+  it.each(MODES)(
+    "%s: the other load's write is or is not reported as its own",
+    async (_label, zero) => {
+      const storage = new MemoryStorageDriver();
+      const registry = withoutTokenReports(new MemoryRegistryDriver());
+      const entropy = zero ? zeroEntropy : counterEntropy();
+      const deps = { storage, registry, codec: roaringCodec, clock, entropy };
+      expect(await loadSegment(REF, [9], deps)).toMatchObject({ generation: 0, published: true });
 
-    let armed = true;
-    const l1Registry = Object.create(registry) as IRegistryDriver;
-    l1Registry.compareAndSwap = async (ref, expected, patch, options) => {
-      if (armed && 'currentGen' in patch && patch.currentGen === 1) {
-        armed = false;
-        expect(await generations(storage)).toEqual([0, 1]);
-        await eraseIdFromSegment(REF, 8, deps);
-        expect(await generations(storage)).toEqual([0]);
-        expect(await loadSegment(REF, IDS, deps)).toMatchObject({ generation: 1, published: true });
-        throw new TransientError('no answer, and the write did not land');
+      let armed = true;
+      const l1Registry = Object.create(registry) as IRegistryDriver;
+      l1Registry.compareAndSwap = async (ref, expected, patch, options) => {
+        if (armed && 'currentGen' in patch && patch.currentGen === 1) {
+          armed = false;
+          expect(await generations(storage)).toEqual([0, 1]);
+          await eraseIdFromSegment(REF, 8, deps);
+          expect(await generations(storage)).toEqual([0]);
+          expect(await loadSegment(REF, IDS, deps)).toMatchObject({
+            generation: 1,
+            published: true,
+          });
+          throw new TransientError('no answer, and the write did not land');
+        }
+        return registry.compareAndSwap(ref, expected, patch, options);
+      };
+      const first = await loadSegment(
+        REF,
+        IDS,
+        { ...deps, registry: l1Registry },
+        { allowEmpty: true },
+      ).catch((e: unknown) => e);
+
+      if (zero) {
+        // The footer is the same for the same ids, so the first load takes the second load's object for its own.
+        expect(first).toMatchObject({ published: true });
+        return;
       }
-      return registry.compareAndSwap(ref, expected, patch, options);
-    };
-    const first = await loadSegment(
-      REF,
-      IDS,
-      { ...deps, registry: l1Registry },
-      { allowEmpty: true },
-    ).catch((e: unknown) => e);
-
-    // Whatever else it reports, it does not claim the second load's publish as its own.
-    expect(first).not.toMatchObject({ published: true });
-    expect((await registry.get(REF))?.currentGen).toBe(1);
-    expect(await reads(storage, registry)).toEqual(IDS);
-  });
+      // Whatever else it reports, it does not claim the second load's publish as its own.
+      expect(first).not.toMatchObject({ published: true });
+      expect((await registry.get(REF))?.currentGen).toBe(1);
+      expect(await reads(storage, registry)).toEqual(IDS);
+    },
+  );
 });

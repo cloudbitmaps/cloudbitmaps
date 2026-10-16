@@ -7,6 +7,7 @@ import { FOOTER, FOOTER_BYTES } from '@/core/crbm/format';
 import { loadSegment } from '@/core/load';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { ValidationError } from '@/core/errors';
+import type { Entropy } from '@/core/determinism';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';
@@ -162,7 +163,7 @@ describe('a writer with no entropy source', () => {
     const registry = new MemoryRegistryDriver();
     const ref = { segment: 's' };
     await expect(
-      loadSegment(ref, IDS, { storage, registry, codec: roaringCodec }),
+      loadSegment(ref, IDS, { storage, registry, codec: roaringCodec } as never),
     ).rejects.toBeInstanceOf(ValidationError);
     const gens: number[] = [];
     for await (const k of storage.list(ref)) gens.push(k.generation);
@@ -175,7 +176,7 @@ describe('a writer with no entropy source', () => {
       entropy: counterEntropy(),
     });
     await expect(
-      eraseIdFromSegment(ref, 3, { storage, registry, codec: roaringCodec }),
+      eraseIdFromSegment(ref, 3, { storage, registry, codec: roaringCodec } as never),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -188,5 +189,115 @@ describe('a writer with no entropy source', () => {
       seams: { entropy: () => new Uint8Array(4) },
     });
     await expect(store.load({ segment: 'a' }, IDS)).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe('the default entropy source', () => {
+  it('gives every generation its own non-zero identity when seams.entropy is not set', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend, retry: false });
+    await store.load({ segment: 'a' }, IDS);
+    await store.load({ segment: 'b' }, IDS);
+    await store.load({ segment: 'b' }, [...IDS, 9]);
+    const w = { store, backend, draws: [] } satisfies World;
+    const nonces = [
+      nonceOf(await objectOf(w, { segment: 'a' }, 0)),
+      nonceOf(await objectOf(w, { segment: 'b' }, 0)),
+      nonceOf(await objectOf(w, { segment: 'b' }, 1)),
+    ];
+    for (const nonce of nonces) expect(nonce).not.toEqual(new Uint8Array(12));
+    expect(new Set(nonces.map((n) => Buffer.from(n).toString('hex'))).size).toBe(3);
+  });
+});
+
+describe('an entropy source that returns the wrong thing', () => {
+  const draws: [string, Entropy, RegExp][] = [
+    ['16 bytes', () => new Uint8Array(16), /must return 12 bytes.*got 16/],
+    ['11 bytes', () => new Uint8Array(11), /must return 12 bytes.*got 11/],
+    [
+      'a plain array of 12 numbers',
+      () => Array.from({ length: 12 }, (_, i) => i) as never,
+      /must return a Uint8Array.*got an array/,
+    ],
+    ['nothing', () => undefined as never, /must return a Uint8Array.*got undefined/],
+  ];
+
+  it.each(draws)(
+    '%s: a load is refused before any object is written',
+    async (_what, entropy, message) => {
+      const w = world({ seams: { entropy } });
+      const ref = { segment: 'a' };
+      await expect(w.store.load(ref, IDS)).rejects.toThrow(message);
+      await expect(w.store.load(ref, IDS)).rejects.toBeInstanceOf(ValidationError);
+      const held: number[] = [];
+      for await (const k of w.backend.storage.list(ref)) held.push(k.generation);
+      expect(held).toEqual([]);
+    },
+  );
+
+  it('an erasure rewrite is refused too, and leaves the segment as it was', async () => {
+    const ref = { segment: 'a' };
+    let bad = false;
+    const w = world({
+      seams: { entropy: (n) => (bad ? new Uint8Array(n + 4) : new Uint8Array(n).fill(7)) },
+    });
+    await w.store.load(ref, IDS);
+    bad = true;
+    // `eraseSubject` reports a segment it could not rewrite in its result, as a note on that segment.
+    const result = await w.store.eraseSubject(3, { allNamespaces: true });
+    expect(result.erasedFrom).toHaveLength(1);
+    expect(result.erasedFrom[0]).toMatchObject({ erased: false });
+    expect(result.erasedFrom[0]?.note).toMatch(/must return 12 bytes.*got 16/);
+    const held: number[] = [];
+    for await (const k of w.backend.storage.list(ref)) held.push(k.generation);
+    expect(held).toEqual([0]);
+    expect(await collect(w.store.segment('a').iterate())).toEqual(IDS);
+  });
+});
+
+describe('an entropy source that reuses one buffer', () => {
+  it('two concurrent loads still carry two identities', async () => {
+    const shared = new Uint8Array(12);
+    let calls = 0;
+    const entropy: Entropy = () => {
+      calls += 1;
+      shared.fill(calls);
+      return shared;
+    };
+    const w = world({ seams: { entropy } });
+    await Promise.all([w.store.load({ segment: 'a' }, IDS), w.store.load({ segment: 'b' }, IDS)]);
+    const a = nonceOf(await objectOf(w, { segment: 'a' }, 0));
+    const b = nonceOf(await objectOf(w, { segment: 'b' }, 0));
+    expect(a).not.toEqual(b);
+    expect(new Set([a[0], b[0]])).toEqual(new Set([1, 2]));
+  });
+});
+
+describe('a missing entropy source refuses before any round trip', () => {
+  it('a load and an erasure make no registry or storage call', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const calls: string[] = [];
+    const spy = <T extends object>(inner: T, label: string): T =>
+      new Proxy(inner, {
+        get(target, prop, receiver) {
+          const value: unknown = Reflect.get(target, prop, receiver);
+          if (typeof value !== 'function') return value;
+          return (...args: unknown[]) => {
+            calls.push(`${label}.${String(prop)}`);
+            return (value as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+    const deps = {
+      storage: spy(storage, 'storage'),
+      registry: spy(registry, 'registry'),
+      codec: roaringCodec,
+    } as never;
+    await expect(loadSegment({ segment: 's' }, IDS, deps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(eraseIdFromSegment({ segment: 's' }, 3, deps)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(calls).toEqual([]);
   });
 });

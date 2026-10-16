@@ -11,6 +11,7 @@
       "@/lease-guards": ["./packages/roaring/src/lease-guards.ts"],
       "@/reserved-namespace": ["./packages/roaring/src/reserved-namespace.ts"],
       "@/system-clock": ["./packages/roaring/src/system-clock.ts"],
+      "@/system-entropy": ["./packages/roaring/src/system-entropy.ts"],
       "@/testing/*": ["./packages/roaring/src/testing/*"],
       "@/portable/*": ["./packages/roaring/src/portable/*"],
       "@/bin/*": ["./packages/roaring/src/bin/*"],
