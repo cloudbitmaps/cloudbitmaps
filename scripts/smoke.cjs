@@ -195,15 +195,20 @@ function assertDeclarationsMatchWhatTscLoads() {
   }
   const specs = packageDirs().flatMap((d) => entriesOf(d));
   const probeText = specs.map((spec, i) => `export * as m${i} from '${spec}';`).join('\n');
-  const real = (f) => {
+  // One key per file for every comparison: the compiler names files in its own form (forward slashes, and on
+  // Windows a drive letter in either case), the filesystem walk in the platform's, so both go through the canonical
+  // real path, lower-cased where the filesystem ignores case.
+  const key = (f) => {
+    let p;
     try {
-      return fs.realpathSync(f);
+      p = fs.realpathSync.native(f);
     } catch {
-      return f;
+      p = path.resolve(f);
     }
+    return process.platform === 'win32' ? p.toLowerCase() : p;
   };
-  const realDists = dists.map((d) => real(d) + path.sep);
-  const inDist = (f) => realDists.some((d) => real(f).startsWith(d));
+  const distKeys = dists.map((d) => key(d) + path.sep);
+  const inDist = (f) => distKeys.some((d) => key(f).startsWith(d));
   const modes = {
     nodenext: [ts.ModuleKind.NodeNext, ts.ModuleResolutionKind.NodeNext, '.mts'],
     bundler: [ts.ModuleKind.ESNext, ts.ModuleResolutionKind.Bundler, '.mts'],
@@ -233,7 +238,7 @@ function assertDeclarationsMatchWhatTscLoads() {
         ? ts.createSourceFile(f, probeText, rest[0], true)
         : getSourceFile.call(host, f, ...rest);
     const program = ts.createProgram([probe], options, host);
-    for (const sf of program.getSourceFiles()) loadedAnywhere.add(real(sf.fileName));
+    for (const sf of program.getSourceFiles()) loadedAnywhere.add(key(sf.fileName));
     const diagnostics = [
       ...program.getOptionsDiagnostics(),
       ...program.getGlobalDiagnostics(),
@@ -248,7 +253,14 @@ function assertDeclarationsMatchWhatTscLoads() {
     }
   }
   const shipped = dists.flatMap((dist) => declarationFiles(dist).map((f) => path.join(dist, f)));
-  for (const file of shipped.filter((f) => !loadedAnywhere.has(real(f))).sort()) {
+  // A key that no longer matches would make the diagnostics filter above keep nothing from dist/, a silent pass.
+  const outside = shipped.filter((f) => !inDist(f));
+  if (outside.length > 0) {
+    throw new Error(
+      `smoke: path keys disagree; ${outside.length} shipped declaration(s) not seen inside a dist/`,
+    );
+  }
+  for (const file of shipped.filter((f) => !loadedAnywhere.has(key(f))).sort()) {
     problems.push(`stray, loaded by no resolution mode: ${path.relative(root, file)}`);
   }
   if (problems.length > 0) {
