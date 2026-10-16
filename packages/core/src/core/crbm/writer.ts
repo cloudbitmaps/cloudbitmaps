@@ -66,7 +66,8 @@ export interface CrbmWriterOptions {
   /** When set, payloads + index are AES-256-GCM-encrypted, bound to `(segment, generation, scope)` via AAD. */
   readonly crypto?: CrbmCrypto;
   /**
-   * Where the write's identity comes from: a cleartext generation draws 12 bytes from it, once, when it is finished,
+   * Where the write's identity comes from: a cleartext generation draws 12 bytes from it, once, when the writer is
+   * constructed (so a source that is missing or returns the wrong shape fails before the first byte is written),
    * and stores them in the footer's `indexNonce` slot, so two writes of the same ids at the same number are not the
    * same object. An encrypted generation draws nothing here: the slot already holds the index's AEAD nonce, which
    * `crypto` drew for that seal. Required, so a writer cannot be built that leaves the slot zero: a zero slot names
@@ -104,6 +105,8 @@ export class CrbmWriter {
   /** Where the chunk payloads end: the extension block's start when there is metadata, else the index's. */
   private payloadEnd = 0;
   private footerCrc32c: number | undefined;
+  /** A cleartext generation's write identity, drawn at construction; `undefined` for an encrypted one. */
+  private readonly writeIdentity: Uint8Array | undefined;
 
   constructor(
     private readonly sink: BlobSink,
@@ -113,6 +116,8 @@ export class CrbmWriter {
     this.metadata = metadataBytes(options.metadata, (message) => {
       throw new ValidationError(message);
     });
+    this.writeIdentity =
+      options.crypto === undefined ? drawWriteIdentity(options.entropy) : undefined;
   }
 
   /**
@@ -187,7 +192,7 @@ export class CrbmWriter {
     } else {
       // A cleartext generation's slot is its write identity: footer CRC covers it, so the object's fingerprint, and
       // every proof that compares one, names this write and not just these ids.
-      indexNonce = this.drawWriteIdentity();
+      indexNonce = this.writeIdentity;
     }
     const indexOffset = this.offset;
     await this.sink.write(indexRegion);
@@ -220,17 +225,6 @@ export class CrbmWriter {
       footerCrc: this.footerCrc32c,
       tailBytes: this.written - this.payloadEnd,
     };
-  }
-
-  /** The write's identity: 12 fresh bytes from the injected source, copied so a source that reuses its buffer cannot alias. */
-  private drawWriteIdentity(): Uint8Array {
-    const drawn = this.options.entropy(AEAD_NONCE_BYTES);
-    if (!(drawn instanceof Uint8Array) || drawn.length !== AEAD_NONCE_BYTES) {
-      throw new ValidationError(
-        `the entropy source must return exactly ${AEAD_NONCE_BYTES} bytes for a write's identity`,
-      );
-    }
-    return Uint8Array.from(drawn);
   }
 
   private async ensurePreamble(): Promise<void> {
@@ -337,4 +331,31 @@ function framed(sealed: AeadSealed): Uint8Array {
   out.set(sealed.ciphertext, sealed.nonce.length);
   out.set(sealed.tag, sealed.nonce.length + sealed.ciphertext.length);
   return out;
+}
+
+/**
+ * A write's identity: 12 fresh bytes from the injected source, copied so a source that reuses its buffer cannot alias
+ * two writers. A missing source, or one that returns anything but a `Uint8Array` of exactly 12 bytes, is a
+ * {@link ValidationError} that says what came back.
+ */
+function drawWriteIdentity(entropy: Entropy | undefined): Uint8Array {
+  if (typeof entropy !== 'function') {
+    throw new ValidationError(
+      "a cleartext CrbmWriter needs an entropy source (`entropy`) for its write's identity",
+    );
+  }
+  const drawn: unknown = entropy(AEAD_NONCE_BYTES);
+  if (!(drawn instanceof Uint8Array)) {
+    throw new ValidationError(
+      `the entropy source must return a Uint8Array of ${AEAD_NONCE_BYTES} bytes for a write's identity; got ${
+        Array.isArray(drawn) ? 'an array' : typeof drawn
+      }`,
+    );
+  }
+  if (drawn.length !== AEAD_NONCE_BYTES) {
+    throw new ValidationError(
+      `the entropy source must return ${AEAD_NONCE_BYTES} bytes for a write's identity; got ${drawn.length}`,
+    );
+  }
+  return Uint8Array.from(drawn);
 }

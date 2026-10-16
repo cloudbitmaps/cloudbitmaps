@@ -29,6 +29,7 @@ import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audi
 import { incarnationField } from './token';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import { bulkLoadAhead, cleartextUnderRequiredEncryption } from './bulk-load';
+import { requireEntropy } from './crbm-write';
 import { provenObject, openGenerationReader, provesOwnObject } from './crbm-open';
 import { readSeed, wantsSeed } from './ledger-seed';
 import { footerCrcOf } from './crbm/fingerprint';
@@ -82,10 +83,11 @@ export interface LoadDeps {
   /**
    * The source of the write's identity: 12 random bytes the new generation's footer carries (for a cleartext generation;
    * an encrypted one carries its index's AEAD nonce), so two loads of the same ids at the same number are two objects
-   * and every check that a footer is "mine" names this write. Required in practice: a load without one is refused with
-   * {@link ValidationError} before it reads an id. `@cloudbitmaps/roaring` supplies Web Crypto's by default.
+   * and every check that a footer is "mine" names this write. Required: a load without one (a JavaScript caller can
+   * leave it out) is refused with {@link ValidationError} before any read, keystore call or write.
+   * `@cloudbitmaps/roaring` supplies Web Crypto's by default.
    */
-  readonly entropy?: Entropy;
+  readonly entropy: Entropy;
   /**
    * The store's read retry, for the read the guard makes of the current generation: a transient fault there is run
    * again under it rather than failing the load. Absent, the read is made once. It does not govern the write: a
@@ -310,7 +312,7 @@ export interface LoadJudgement {
 export async function judgeLoad(
   ref: SegmentRef,
   cardinality: number,
-  deps: LoadDeps,
+  deps: Omit<LoadDeps, 'entropy'>,
   options: Pick<LoadOptions, 'allowEmpty' | 'guard'> = {},
 ): Promise<LoadJudgement> {
   validateUserRef(ref);
@@ -467,7 +469,7 @@ interface CurrentSize {
  */
 async function currentCardinality(
   ref: SegmentRef,
-  deps: LoadDeps,
+  deps: Omit<LoadDeps, 'entropy'>,
   record: RegistryRecord | null,
   unwrapped: PromiseLike<Aead> | undefined,
 ): Promise<CurrentSize> {
@@ -579,6 +581,7 @@ async function runLoad(
   checkedAuditSink(options.audit, 'load');
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   const codec = requireCodec(deps.codec, 'loadSegment');
+  const entropy = requireEntropy(deps.entropy, 'a load');
   const keep = options.keep ?? 1;
   requireInteger(keep, { min: 0, what: 'keep' });
   const guard = checkedGuard(options.guard, '');
@@ -653,7 +656,7 @@ async function runLoad(
         requireEncryption: deps.requireEncryption,
         codec: deps.codec,
         clock: deps.clock,
-        entropy: deps.entropy,
+        entropy,
         metadata,
         row,
       },

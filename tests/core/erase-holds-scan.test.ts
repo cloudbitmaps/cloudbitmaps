@@ -8,6 +8,7 @@ import type { GenKey, IStorageDriver } from '@/core/ports';
 import { TransientError, WriteConflictError, destroySegment } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { zeroEntropy } from '../helpers/entropy';
 
 // When the id is not in the current generation, the erasure looks through the other generations for the newest
 // holder, a few at a time. The answer must be what a one-at-a-time scan, newest first, gives for every layout:
@@ -72,7 +73,12 @@ async function build(
 }
 
 const erase = (p: Probe) =>
-  eraseIdFromSegment(SEG, ID, { storage: p.storage, registry: p.registry, codec: roaringCodec });
+  eraseIdFromSegment(SEG, ID, {
+    storage: p.storage,
+    registry: p.registry,
+    codec: roaringCodec,
+    entropy: zeroEntropy,
+  });
 
 /** What is left in the bucket that still holds the id, read straight off the objects. */
 async function holdersLeft(p: Probe): Promise<number[]> {
@@ -260,7 +266,7 @@ describe('an id erasure under a tombstone reads few generations once one holds t
       delete: async () => {},
     };
     await expect(
-      eraseIdFromSegment(SEG, ID, { storage, registry, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, ID, { storage, registry, codec: roaringCodec, entropy: zeroEntropy }),
     ).rejects.toBeInstanceOf(WriteConflictError);
     // Two searches (the one that finds a holder, and the one for what the collection left), each at most a window of
     // reads deep, not one read per generation.

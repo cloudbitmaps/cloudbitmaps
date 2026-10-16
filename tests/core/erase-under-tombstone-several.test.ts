@@ -6,6 +6,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
+import { zeroEntropy } from '../helpers/entropy';
 
 const REF: SegmentRef = { segment: 's' };
 
@@ -31,7 +32,11 @@ describe('an erasure under a tombstone, with several objects', () => {
       [1, 2],
       [2, 3],
     ]);
-    const out = await eraseIdFromSegment(REF, 2, { ...w, codec: roaringCodec });
+    const out = await eraseIdFromSegment(REF, 2, {
+      ...w,
+      codec: roaringCodec,
+      entropy: zeroEntropy,
+    });
     expect(out).toMatchObject({ erased: true, fromGeneration: 2, collected: [0, 1, 2] });
     expect(await generations(w.storage)).toEqual([]);
   });

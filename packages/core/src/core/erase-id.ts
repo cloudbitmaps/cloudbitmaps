@@ -212,9 +212,10 @@ export interface EraseIdDeps {
   /**
    * The source of the rewrite's identity: 12 random bytes its footer carries when the segment is cleartext (an encrypted
    * rewrite carries its index's AEAD nonce), so the rewrite is not the same object as a load of the same ids at its
-   * number. A rewrite without one is refused with {@link ValidationError} when it comes to write (an erasure that finds nothing to remove writes nothing, and needs none).
+   * number. Required: an erasure without one (a JavaScript caller can leave it out) is refused with
+   * {@link ValidationError} before any read, keystore call, delete or write, even when it would find nothing to rewrite.
    */
-  readonly entropy?: Entropy;
+  readonly entropy: Entropy;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
   readonly maxBitmapBytes?: number;
   /**
@@ -414,6 +415,7 @@ async function eraseOnce(
   checkedAuditSink(options.audit, 'eraseIdFromSegment');
   const { chunkKey, remainder } = splitId(id); // validates the u32 range
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');
+  requireEntropy(deps.entropy, 'eraseIdFromSegment');
   const maxBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
   const base = { segment: ref.segment, namespace: ref.namespace };
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
@@ -1313,7 +1315,7 @@ async function eraseOnce(
           crypto: cryptoAt(generation),
           clock: deps.clock,
           metadata,
-          entropy: requireEntropy(deps.entropy, 'an erasure rewrite'),
+          entropy: deps.entropy,
         },
       );
       written = generation; // `putImmutable` commits atomically, so the object exists exactly now
