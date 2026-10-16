@@ -95,7 +95,7 @@ so, and so do the module headers in the code.
   0.20.0); a refused erasure rewrite's discard could delete a load's generation of the same ids on a driver whose version
   derives from the bytes (an S3 object without SSE-KMS or SSE-C), or after a rollback moved the pointer below it; a
   publish settled by footer on a registry that reports no write tokens could report another load's publish as its own.
-  Each now meets a different footer and keeps the object. A driver that ignores a delete's condition keeps the round trip
+  Each now meets a different footer: a refused load's reclaim and an erasure rewrite's discard delete only an object whose footer is their own and leave another writer's, and a publish settled by the footer answers `'superseded'` for another writer's object of the same ids, keeping and deleting nothing. A driver that ignores a delete's condition keeps the round trip
   between the read and the delete, and an object whose identity field is all zero (one written with zero entropy) can still have the same bytes as
   another's of the same ids.
 - **An erasure whose row lost its pointer mid-call answers `'superseded'`, where it answered `'no-generation'` with the id

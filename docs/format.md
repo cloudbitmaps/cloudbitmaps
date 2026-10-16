@@ -224,7 +224,8 @@ section type is a generation's metadata.
 - **Presence.** The block is present exactly when the footer's `FLAG_EXTENSION` flag (bit 3, `0x08`) is set. A reader
   finds it from `indexOffset` alone: the trailer is the 12 bytes before the index, and `extStart` follows from
   `sectionsLength`. Chunk payloads end at `extStart`. A writer sets the flag only when there is something to put in the
-  block, so an object with no metadata is the same bytes as an object written without the mechanism.
+  block, so an object with no metadata is the same bytes as an object written without the mechanism, under the same write
+  identity ([section 6](#6-the-footer)).
 - **Size cap.** `sectionsLength` is at most **4,096** bytes (4 KiB), the sections only. A reader refuses a larger block
   from the trailer alone. The writer today stays within the cap; whether a later minor promises to is a freeze
   question ([section 11](#11-versioning-and-compatibility)).
@@ -361,7 +362,8 @@ that cannot be ignored. (A change that can be ignored is a new extension section
 - **`generation`.** The number in the object's key; a generation is self-describing. A reader opening an object under a
   key refuses it with an `IntegrityError` when the footer names another generation. A value past 2^53 − 1 is refused.
 - **`indexNonce`, `indexTag`.** Encrypted: the index's nonce and tag ([section 8](#8-encryption-at-rest)). Cleartext:
-  `indexNonce` is the write's identity, 12 bytes the writer draws once for the object from a random source and does not
+  `indexNonce` is the write's identity, 12 bytes the writer draws once for the object from its entropy source (random
+  by default, injectable) and does not
   derive from the object's content, so two writes of the same ids at the same number carry different ones; `indexTag`
   is written zero. A reader does not interpret either field on a cleartext object: it accepts any `indexNonce`, an
   all-zero one included (every object written before the identity existed has one, and so does one written with zero
@@ -782,7 +784,7 @@ What each reserved or open field holds, and how a reader treats it today. The nu
 | footer `reserved2` (offset 30) | written zero | ignores it | 8, 9 |
 | preamble bytes 6 and 7 | written zero | never reads them | 9 |
 | footer `keyId` (offset 68, 16 bytes) | written zero; the wrapped keys are in the row | ignores it | 9 |
-| footer `indexNonce` on a cleartext object | the write's identity, 12 bytes drawn once per object; all zero only when the writer was given zero entropy | does not interpret it: accepts any value, all-zero included | 9, 11 |
+| footer `indexNonce` on a cleartext object | the write's identity, 12 bytes drawn once per object; all zero in an object written by an earlier release, and when the writer was given zero entropy | does not interpret it: accepts any value, all-zero included | 9, 11 |
 | footer `indexTag` on a cleartext object | written zero | does not read it | 9 |
 | footer `versionMinor` | written 0 | does not branch on it | 10 |
 | `elementWidth` other than 32 | not written | refuses it | 6 |
