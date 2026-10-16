@@ -40,7 +40,7 @@ so, and so do the module headers in the code.
   every source file, though no `exports` entry made those modules importable and no public declaration imported them;
   it now holds only the declarations its `exports` entries reach, and the files they import. The conformance suite's
   declarations (`testing/conformance`), the fuzz harnesses' and the codec's decoder internals are among those removed.
-  The public types, and every entry point's resolution under `node16`, `nodenext` and `bundler`, are unchanged.
+  The public types, and every entry point's resolution under `node10`, `node16`, `nodenext` and `bundler`, are unchanged.
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
   `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
   optional. A leading `--`, which pnpm forwards, is dropped. Any other argument prints "takes no arguments; it reads its

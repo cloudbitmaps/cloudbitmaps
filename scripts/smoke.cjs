@@ -181,7 +181,12 @@ function assertSubpathsResolveWithoutExports(pkgDir) {
  * its own bug, so this does not reuse it. It builds one program that imports every `exports` entry of every
  * package by name, under NodeNext, Bundler and Node10 resolution with `skipLibCheck` off, and fails on
  *   (a) any diagnostic inside a package's `dist/` — a reachable declaration deleted by mistake shows as TS2307;
- *   (b) any shipped `.d.ts` that no resolution mode loaded — a stray the prune missed.
+ *   (b) any diagnostic in the probe itself — a lost entry shows there, as TS7016 or TS2307 on its import;
+ *   (c) any shipped `.d.ts` that no resolution mode loaded — a stray the prune missed;
+ *   (d) any loaded file outside this checkout. A worktree nested in another checkout can resolve a package
+ *       through the outer `node_modules`, so a lost entry would load the outer build's file and raise no
+ *       diagnostic; this rule turns that silent pass into a failure.
+ * It checks only the `typesVersions` range its own TypeScript version selects; the walk reads every range.
  * It lives here, after the build, because it reads `dist/`; the test suite runs before the build in CI.
  */
 function assertDeclarationsMatchWhatTscLoads() {

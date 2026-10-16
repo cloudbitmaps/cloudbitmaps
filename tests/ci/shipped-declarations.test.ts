@@ -126,13 +126,7 @@ describe('the walk fails closed on what it cannot classify', () => {
       'a reference path directive',
       { name: 'p', exports: entry },
       { 'dist/index.d.ts': '/// <reference path="./x.d.ts" />' },
-      /reference path\|types/,
-    ],
-    [
-      'a reference types directive',
-      { name: 'p', exports: entry },
-      { 'dist/index.d.ts': '/// <reference types="./x" />' },
-      /reference path\|types/,
+      /reference path> directive/,
     ],
     [
       'an .mjs specifier',
@@ -207,6 +201,42 @@ describe('the walk fails closed on what it cannot classify', () => {
       /'#…' import specifier/,
     ],
     [
+      'a .mts specifier',
+      { name: 'p', exports: entry },
+      { 'dist/index.d.ts': "export * from './x.mts';" },
+      /\.mjs\/\.cjs/,
+    ],
+    [
+      'a .cts specifier',
+      { name: 'p', exports: entry },
+      { 'dist/index.d.ts': "export * from './x.cts';" },
+      /\.mjs\/\.cjs/,
+    ],
+    [
+      'a .d.mts root',
+      { name: 'p', exports: { '.': { types: './dist/index.d.mts' } } },
+      { ...base, 'dist/index.d.mts': '' },
+      /\.d\.mts\/\.d\.cts root/,
+    ],
+    [
+      'an array nested under a condition',
+      { name: 'p', exports: { '.': { import: { node: ['./a.js'], types: './dist/index.d.ts' } } } },
+      base,
+      /array target is not supported/,
+    ],
+    [
+      'a wildcard typesVersions target',
+      { name: 'p', exports: entry, typesVersions: { '*': { '*': ['dist/*'] } } },
+      base,
+      /typesVersions .*without a wildcard/,
+    ],
+    [
+      'a typesVersions target that does not exist',
+      { name: 'p', exports: entry, typesVersions: { '<5.0': { kit: ['./dist/none.d.ts'] } } },
+      base,
+      /types root does not exist/,
+    ],
+    [
       'a declaration map',
       { name: 'p', exports: entry },
       { ...base, 'dist/index.d.ts.map': '{}' },
@@ -220,13 +250,78 @@ describe('the walk fails closed on what it cannot classify', () => {
     expect(() => pruneUnreachable(dir)).toThrow(message);
   });
 
+  it('throws on a missing package.json', () => {
+    const dir = plant({ name: 'p' }, {});
+    rmSync(join(dir, 'package.json'));
+    expect(() => unreachableDeclarations(dir)).toThrow(/ENOENT/);
+  });
+
   it('leaves every file in place when it throws', () => {
+    const plants: [object, Record<string, string>][] = [
+      [{ name: 'p', exports: entry }, { 'dist/index.d.ts': "export * from './gone.js';" }],
+      [
+        { name: 'p', exports: entry, typesVersions: { '*': { '*': ['dist/*'] } } },
+        { 'dist/index.d.ts': 'export {};' },
+      ],
+      [
+        { name: 'p', exports: entry, typesVersions: { '<5.0': { k: ['./dist/none.d.ts'] } } },
+        { 'dist/index.d.ts': 'export {};' },
+      ],
+      [{ name: 'p', exports: entry }, { 'dist/index.d.ts': '/// <reference path="./x.d.ts" />' }],
+    ];
+    for (const [manifest, files] of plants) {
+      const dir = plant(manifest, { ...files, 'dist/other.d.ts': 'export {};' });
+      const before = readdirSync(join(dir, 'dist')).sort();
+      expect(() => pruneUnreachable(dir)).toThrow();
+      expect(readdirSync(join(dir, 'dist')).sort()).toEqual(before);
+    }
+  });
+
+  it('keeps every typesVersions target, whatever its range', () => {
+    const dir = plant(
+      {
+        name: 'p',
+        exports: entry,
+        typesVersions: { '*': { a: ['./dist/a.d.ts'] }, '<5.0': { b: ['./dist/ts4/b.d.ts'] } },
+      },
+      {
+        'dist/index.d.ts': 'export {};',
+        'dist/a.d.ts': "export * from './a-dep.js';",
+        'dist/a-dep.d.ts': '',
+        'dist/ts4/b.d.ts': '',
+        'dist/stray.d.ts': '',
+      },
+    );
+    expect(unreachableDeclarations(dir)).toEqual(['dist/stray.d.ts']);
+  });
+
+  it('accepts a reference types directive', () => {
     const dir = plant(
       { name: 'p', exports: entry },
-      { 'dist/index.d.ts': "export * from './gone.js';", 'dist/other.d.ts': 'export {};' },
+      { 'dist/index.d.ts': '/// <reference types="node" />\nexport {};', 'dist/stray.d.ts': '' },
     );
-    expect(() => pruneUnreachable(dir)).toThrow();
-    expect(readdirSync(join(dir, 'dist')).sort()).toEqual(['index.d.ts', 'other.d.ts']);
+    expect(unreachableDeclarations(dir)).toEqual(['dist/stray.d.ts']);
+  });
+
+  it('skips a .json exports entry', () => {
+    const dir = plant(
+      { name: 'p', exports: { ...entry, './package.json': './package.json' } },
+      { ...base, 'dist/stray.d.ts': '' },
+    );
+    expect(unreachableDeclarations(dir)).toEqual(['dist/stray.d.ts']);
+  });
+
+  it('does not follow a .json specifier', () => {
+    const dir = plant(
+      { name: 'p', exports: entry },
+      {
+        'dist/index.d.ts':
+          "export type D = typeof import('./data.json');\nexport * from './data.json';",
+        'dist/data.json': '{}',
+        'dist/stray.d.ts': '',
+      },
+    );
+    expect(unreachableDeclarations(dir)).toEqual(['dist/stray.d.ts']);
   });
 
   it('accepts a lib reference, a blocked null subpath and a bare import', () => {

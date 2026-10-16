@@ -8,23 +8,29 @@
  * `pruneUnreachable`; `scripts/smoke.cjs` then checks the result with the TypeScript compiler itself, which
  * does not share this walk's blind spots.
  *
- * Reachability starts from every `types` target of the `exports` map (conditions may nest) plus a top-level
- * `types` field, and follows each relative specifier of `import`/`export … from '…'`, `import x = require('…')`,
+ * Reachability starts from every `types` target of the `exports` map (conditions may nest), a top-level `types`
+ * field, and every target of every `typesVersions` range (not only `*`: a `moduleResolution: node` consumer, or one
+ * on an older TypeScript, is routed through them), and follows each relative specifier of `import`/`export … from '…'`, `import x = require('…')`,
  * `declare module '…'` and `import('…')` type queries. A `.js` specifier names the sibling `.d.ts`; a directory
  * specifier its `index.d.ts`. Bare specifiers (other packages, SDKs) are not followed. Comments are skipped, so
- * a doc-comment example is not an edge.
+ * a doc-comment example is not an edge. Also not edges, and not errors: a `/// <reference types="…">` (it names an
+ * installed type package, not a file of ours), a relative `.json` specifier, and an `exports` entry whose target is
+ * a `.json` file such as `"./package.json"`.
  *
  * Because it DELETES files, the walk fails closed: it throws, and so fails the build, on anything it cannot
  * classify instead of guessing which files are dead. Known limits, each one a throw:
  *   - a missing `package.json`, no `types` root at all, or a `types` root whose file does not exist;
  *   - a relative specifier that resolves to no `.d.ts`;
- *   - `/// <reference path=…>` and `/// <reference types=…>` directives (`lib` is not a file edge and is fine);
+ *   - `/// <reference path=…>` directives (`types` and `lib` name no file of ours and are fine);
  *   - a relative specifier ending `.mjs`, `.cjs`, `.mts` or `.cts`, and any `.d.mts`/`.d.cts` output;
  *   - an `exports` target that is an array, a plain string, has no `types` condition, whose `types` is not a
  *     string, uses a `types@<range>` condition, or whose subpath key holds a `*` wildcard;
  *   - a manifest `imports` field, and any `#…` specifier;
  *   - any `.d.ts.map` under `dist/` (a pruned declaration would orphan its map).
- * `typesVersions` is not read: it must point at files `exports` also names, which the smoke check verifies.
+ *   - a `typesVersions` target holding a `*` (it cannot be enumerated) or naming a file that does not exist.
+ * Every `typesVersions` target is a root, so nothing a mapping names is pruned. `scripts/smoke.cjs` checks the
+ * result with the TypeScript compiler, which reads only the `typesVersions` range its own version selects, so a
+ * target under another range is protected by this walk alone.
  * `pkgDir` may be relative; it is resolved to an absolute path first.
  */
 const fs = require('node:fs');
@@ -58,6 +64,26 @@ function typesTargets(target, where = 'exports', out = []) {
   return out;
 }
 
+/** Every target of every `typesVersions` range; throws on one holding a `*` wildcard. */
+function typesVersionsTargets(manifest) {
+  const out = [];
+  const ranges = manifest.typesVersions;
+  if (ranges === undefined || ranges === null) return out;
+  for (const [range, mapping] of Object.entries(ranges)) {
+    for (const [pattern, targets] of Object.entries(mapping ?? {})) {
+      for (const target of [targets].flat()) {
+        if (typeof target !== 'string' || target.includes('*')) {
+          throw new Error(
+            `typesVersions "${range}" "${pattern}": target ${JSON.stringify(target)} must be a path without a wildcard`,
+          );
+        }
+        out.push(target);
+      }
+    }
+  }
+  return out;
+}
+
 /** Every `types` root a manifest declares; throws when an `exports` entry has none or the shape is unreadable. */
 function typesRoots(manifest) {
   if (manifest.imports !== undefined) throw new Error('package.json "imports" is not supported');
@@ -69,12 +95,14 @@ function typesRoots(manifest) {
       if (subpath.includes('*'))
         throw new Error(`exports "${subpath}": wildcard subpaths are not supported`);
       if (target === null) continue; // a blocked subpath names no file
+      if (typeof target === 'string' && target.endsWith('.json')) continue; // data, not a declaration
       const found = typesTargets(target, `exports "${subpath}"`);
       if (found.length === 0) throw new Error(`exports "${subpath}": no "types" condition`);
       roots.push(...found);
     }
   }
   if (typeof manifest.types === 'string') roots.push(manifest.types);
+  roots.push(...typesVersionsTargets(manifest));
   if (roots.length === 0) throw new Error('package.json names no `types` root');
   return roots;
 }
@@ -98,15 +126,15 @@ function resolveSpecifier(from, specifier) {
   return found;
 }
 
-/** Throws on a reference directive or a `#…` import specifier; `lib` references name no file of ours. */
+/** Throws on a `reference path` directive or a `#…` import specifier; `lib` and `types` references name no file of ours. */
 function assertNoReferences(file, source) {
   if (
     /(?:\bfrom|\bimport|\brequire|\bdeclare\s+module)\s*\(?\s*(['"])#/.test(blankComments(source))
   ) {
     throw new Error(`${file}: a '#…' import specifier is not supported`);
   }
-  if (/^\s*\/\/\/\s*<reference\s+(?:path|types)\s*=/m.test(source)) {
-    throw new Error(`${file}: a /// <reference path|types> directive is not supported`);
+  if (/^\s*\/\/\/\s*<reference\s+path\s*=/m.test(source)) {
+    throw new Error(`${file}: a /// <reference path> directive is not supported`);
   }
 }
 
@@ -139,8 +167,9 @@ function reachableFrom(pkgDir, manifest) {
     seen.add(file);
     const source = fs.readFileSync(file, 'utf8');
     assertNoReferences(file, source);
-    for (const { specifier } of scanSpecifiers(source))
-      queue.push(resolveSpecifier(file, specifier));
+    for (const { specifier } of scanSpecifiers(source)) {
+      if (!specifier.endsWith('.json')) queue.push(resolveSpecifier(file, specifier));
+    }
   }
   return seen;
 }
