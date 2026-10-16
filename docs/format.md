@@ -322,7 +322,7 @@ The last 104 bytes of the object. Its position is fixed, so a reader finds it fr
 | 29 | 1 | `versionMinor` | `u8` | the format's minor version; 0 |
 | 30 | 2 | `reserved2` | `u16` | reserved; written as zero |
 | 32 | 8 | `generation` | `u64` | the generation number the object was written as |
-| 40 | 12 | `indexNonce` | bytes | the index's AEAD nonce when encrypted; on a cleartext object, written zero and not read |
+| 40 | 12 | `indexNonce` | bytes | the index's AEAD nonce when encrypted; on a cleartext object, the write's identity: 12 bytes its writer drew once for the object |
 | 52 | 16 | `indexTag` | bytes | the index's AEAD tag when encrypted; on a cleartext object, written zero and not read |
 | 68 | 16 | `keyId` | bytes | reserved; written as zero |
 | 84 | 4 | `chunkCount` | `u32` | the number of index entries; zero when encrypted |
@@ -361,9 +361,12 @@ that cannot be ignored. (A change that can be ignored is a new extension section
 - **`generation`.** The number in the object's key; a generation is self-describing. A reader opening an object under a
   key refuses it with an `IntegrityError` when the footer names another generation. A value past 2^53 − 1 is refused.
 - **`indexNonce`, `indexTag`.** Encrypted: the index's nonce and tag ([section 8](#8-encryption-at-rest)). Cleartext:
-  the writer today writes zero bytes, and a reader does not read either field on a cleartext object, so a port must
-  not refuse non-zero bytes there. A per-write value in a footer slot is planned for the cleartext object, so bytes a
-  reader ignores today may carry a value later ([section 12](#12-reserved-fields-and-the-questions-they-wait-on)).
+  `indexNonce` is the write's identity, 12 bytes the writer draws once for the object from a random source and does not
+  derive from the object's content, so two writes of the same ids at the same number carry different ones; `indexTag`
+  is written zero. A reader does not interpret either field on a cleartext object: it accepts any `indexNonce`, an
+  all-zero one included (every object written before the identity existed has one, and so does one written with zero
+  entropy), and any `indexTag`, so a port must not refuse a value there. A writer that cannot draw the 12 bytes
+  writes nothing.
 - **`keyId`.** All zero bytes in every object written today; a reader ignores it, so a port must not refuse a non-zero
   value. The wrapped keys live in the registry row, not in
   the object.
@@ -373,7 +376,7 @@ that cannot be ignored. (A change that can be ignored is a new extension section
   encrypted footer whose values are not zero; the reader derives both from the decrypted index. Zero is not secrecy: see
   what a reader without the key can read ([section 8](#8-encryption-at-rest)).
 - **`footerCrc32c`.** Covers footer bytes `[0, 96)`: every field above, the CRC of the index (and through it every
-  entry's CRC), the flags, the generation, the nonce and the tag. It **does not cover** the CRC field itself, the
+  entry's CRC), the flags, the generation, the nonce (a cleartext object's write identity included) and the tag. It **does not cover** the CRC field itself, the
   `endMagic`, the preamble, or the extension block. A reader checks `endMagic` and then this CRC before it trusts any
   other footer field.
 
@@ -486,8 +489,12 @@ cleartext plus 28 bytes, so it bounds the set's size. The object's key also name
 
 `size` is the object's length in bytes and `footerCrc` is the footer's `footerCrc32c`, each in canonical decimal (no sign,
 no leading zeros). The golden file `v1.0-basic.crbm` is `145:3558123930`. A fingerprint is valid when the size is a
-safe integer of at least 112 and the CRC fits in 32 bits. Two objects with the same fingerprint hold the same chunks, as
-far as a CRC can tell. A fingerprint does not name a writer: another writer's object with the same bytes matches too.
+safe integer of at least 112 and the CRC fits in 32 bits. Because the footer's checksum covers the write identity
+(`indexNonce`, [section 6](#6-the-footer)), a fingerprint names one write, not just a set of ids: two cleartext writes of
+the same ids and metadata at the same number have different fingerprints, except for a chance of about 2^-32 (the
+checksum's 32 bits; the size adds nothing when the two objects are the same size). Two objects with the same fingerprint
+are one write as far as a CRC can tell. That holds when the writers drew their identities from a random source: two
+objects whose identity is all zero, or a repeated one, match when their other bytes match.
 Because the footer is stored in the clear, a reader computes the fingerprint of an encrypted object with no key, from
 one read of a footer's worth of bytes. Compare fingerprints for equality; do not interpret them.
 
@@ -745,15 +752,16 @@ beyond it: a change that breaks a reader may land in any minor release. These ar
 8. **Extension points after the freeze.** Do flag bits and extension section types stay open, assigned one at a time by
    later releases? Is flag bit 1 retired or available? A section must be safe to ignore and a flag bit is the mechanism
    for what is not; is that the whole of the mechanism?
-9. **Reserved bytes.** Preamble bytes 6 and 7, the footer's `reserved2` and `keyId`, and the cleartext `indexNonce` and
-   `indexTag` are ignored by a reader today. Must any meaning a 1.x gives them be safe to ignore, or do readers start
-   refusing non-zero values first? Does the planned per-write cleartext nonce land before 1.0, and, if after, in a flag
-   bit or a field today's readers ignore?
+9. **Reserved bytes.** Preamble bytes 6 and 7, the footer's `reserved2` and `keyId`, and the cleartext `indexTag` are
+   ignored by a reader today, and so is the cleartext `indexNonce`, which now holds a write identity. Must any meaning a
+   1.x gives them be safe to ignore, or do readers start refusing non-zero values first? Is the cleartext `indexNonce`
+   a field a reader may interpret or refuse in 1.x, or one it never reads?
 10. **`versionMinor`.** No reader branches on it. Is it informational only, and does the comparison of the preamble with
     the footer stay?
 11. **Reader leniencies.** Each is accepted today and may be refused, kept, or required: an index `gap` above 0; bytes
     between the index and the footer; overlong varints; bytes after a payload's bitmap; a cardinality that is not
-    compared with the payload; a cleartext object's `indexNonce` and `indexTag` bytes.
+    compared with the payload; the bytes of a cleartext object's `indexNonce` (an all-zero value included) and
+    `indexTag`.
 12. **Caps a writer promises to stay within.** Only the extension block's 4 KiB is written as a rule today. The
     others are what a reader of this library accepts: an index of 8 MiB, a payload of 1 MiB, a row of 1 MiB, a ledger of
     192 entries written and 384 read, leases 64 and 256, 8 wrapped keys, governance objects of 64 KiB, metadata of 1 KiB
@@ -774,7 +782,8 @@ What each reserved or open field holds, and how a reader treats it today. The nu
 | footer `reserved2` (offset 30) | written zero | ignores it | 8, 9 |
 | preamble bytes 6 and 7 | written zero | never reads them | 9 |
 | footer `keyId` (offset 68, 16 bytes) | written zero; the wrapped keys are in the row | ignores it | 9 |
-| footer `indexNonce` and `indexTag` on a cleartext object | written zero | does not read them | 9 |
+| footer `indexNonce` on a cleartext object | the write's identity, 12 bytes drawn once per object; all zero only when the writer was given zero entropy | does not interpret it: accepts any value, all-zero included | 9, 11 |
+| footer `indexTag` on a cleartext object | written zero | does not read it | 9 |
 | footer `versionMinor` | written 0 | does not branch on it | 10 |
 | `elementWidth` other than 32 | not written | refuses it | 6 |
 | `payloadCodecId` other than 1 | not written | refuses it, naming the id | 4 |
@@ -788,8 +797,8 @@ What each reserved or open field holds, and how a reader treats it today. The nu
 | bytes after a payload's bitmap | none written | accepts them | 11 |
 | an entry's cardinality against its payload | written equal | does not compare them | 11 |
 
-A per-write value in a footer slot of the cleartext object is planned and not yet defined. A reader must not refuse
-non-zero bytes in the fields it ignores today; question 9 asks when it lands.
+A reader must not refuse non-zero bytes in the fields it ignores today, the cleartext `indexNonce` included; question 9
+asks whether that stays so.
 
 ## 13. The golden corpus
 
@@ -804,10 +813,21 @@ fails after a code change, the format changed, which needs a new format version,
 | `v1.0-metadata.crbm` | 220 | 7 | `220:3739725468` | the same chunks and an extension block holding the canonical JSON `{"def":"v41","landedAt":1790000000000,"owner":"campaigns"}`; the footer sets `FLAG_EXTENSION` |
 | `v1.0-metadata-encrypted.crbm` | 332 | 7 | `332:940636896` | the same, encrypted: payloads, index and metadata sealed with AES-256-GCM under the key bytes `00 01 02 … 1f`, namespace `golden`, segment `metadata`; written under a counter nonce so the bytes repeat |
 | `v1.0-load.crbm` | 8,505 | 0 | `8505:4208818` | what `store.load()` wrote from a fixed set of ids: seven real Roaring payloads (keys 0, 1, 2, 3, 4, 7 and 65,535) of 4, 4,097, 1,000, 3, 5, 65,536 and 2 ids, 70,647 in all, covering an array, a bitset, a run, two run-versus-array ties, a full chunk and the top of the id space; cleartext |
+| `v1.0-basic-write-identity.crbm` | 145 | 7 | `145:4278738239` | `v1.0-basic.crbm` with the write identity `c0 c1 c2 … cb` (twelve distinct bytes) at footer offset 40, and so another `footerCrc32c`; every other byte is the original's |
+| `v1.0-metadata-write-identity.crbm` | 220 | 7 | `220:4126890553` | `v1.0-metadata.crbm` with the same identity, the same way |
+| `v1.0-load-write-identity.crbm` | 8,505 | 0 | `8505:727501847` | `v1.0-load.crbm` with the same identity, the same way |
 | `metadata-canonical.json` | | | | the canonical-JSON vectors for the metadata section: each input, the canonical text it must become and that text's UTF-8 bytes |
 
 The three `basic`/`metadata` files use payload bytes that are not a Roaring bitmap on purpose: they pin the container
 (preamble, index, footer, block, sealing), and `v1.0-load.crbm` pins the payload codec.
+
+**The write identity in the corpus.** The four original cleartext files are unchanged since before the write identity
+existed: their footer `indexNonce` is 12 zero bytes, which this release's writer reproduces byte for byte when its random
+source returns zeros. A reader accepts them like any other object. The three `-write-identity` files show the field as
+a writer draws it: each is its original with the 12 bytes at footer offset 40 set to `c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 ca cb`
+and the 4 bytes of `footerCrc32c` (footer offset 96) recomputed over footer bytes `[0, 96)`, so the size and every
+other byte are the original's and only the fingerprint differs. The encrypted file has no such twin: its `indexNonce`
+is already the index's AEAD nonce.
 
 **Decoding `v1.0-basic.crbm` by hand.** The whole object, 145 bytes (`xxd` of the file):
 
