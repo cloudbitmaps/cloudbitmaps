@@ -27,7 +27,11 @@ const X = 42;
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, codec: roaringCodec },
+  };
 }
 
 type Deps = ReturnType<typeof world>['deps'];
@@ -105,55 +109,22 @@ function replacingBeforeFirstDelete(
 }
 
 /**
- * A registry that does not report its writes' tokens, whose write of the pointer to `generation` lands and then gets no
- * answer: the publish settles it by the object under the number. `beforeSettled` runs between the write and the read
- * that settles it.
+ * A registry that does not report its writes' tokens, whose write of the rewrite's pointer to generation 3 does not
+ * land: the rewrite's object under 3 is freed meanwhile (a second erasure's collection, with an operator's rollback
+ * refusing it before it reached generation 2, can do that), a load of `ids` takes the number 3 and publishes it, and the
+ * write gets no answer. The publish settles it by the object under the number.
  */
-function unansweredPublish(
-  registry: IRegistryDriver,
-  generation: number,
-  beforeSettled: () => Promise<void>,
-): IRegistryDriver {
-  const wrapped = overRegistry(registry, {
+function rewriteLostToLoad(w: ReturnType<typeof world>, ids: number[]): IRegistryDriver {
+  const wrapped = overRegistry(w.registry, {
     compareAndSwap: async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
-      const out = await registry.compareAndSwap(...args);
-      if (args[2].currentGen !== generation) return out;
-      await beforeSettled();
+      if (args[2].currentGen !== 3) return w.registry.compareAndSwap(...args);
+      await w.storage.delete({ ...SEG, generation: 3 });
+      await loadSegment(SEG, ids, w.deps);
       throw new TransientError('the write got no answer');
     },
   });
   Object.defineProperty(wrapped, 'reportsWriteTokens', { value: false });
   return wrapped;
-}
-
-/** Another writer's object under `generation`: the number taken again, over `ids`. */
-async function retake(storage: IStorageDriver, generation: number, ids: number[]): Promise<void> {
-  const key = { ...SEG, generation };
-  await storage.delete(key);
-  await bulkLoadCrbmGeneration(storage, key, ids, {
-    registry: new MemoryRegistryDriver(),
-    publish: false,
-  });
-}
-
-/** What the erasure's audit sink saw, in order. */
-function recordingAudit(): { audit: IAuditSink; kinds: string[] } {
-  const kinds: string[] = [];
-  return { kinds, audit: { onEvent: (e) => void kinds.push(e.kind) } };
-}
-
-/** A storage that counts the deletes sent to it. */
-function countingDeletes(storage: IStorageDriver): { storage: IStorageDriver; deletes: GenKey[] } {
-  const deletes: GenKey[] = [];
-  return {
-    deletes,
-    storage: overStorage(storage, {
-      delete: (key, options) => {
-        deletes.push(key);
-        return storage.delete(key, options);
-      },
-    }),
-  };
 }
 
 /**
@@ -172,6 +143,38 @@ function afterFirstWrite(registry: IRegistryDriver, act: () => Promise<void>): I
       return out;
     },
   });
+}
+
+/** What a call came to: its result, or the error it was rejected with, so one assertion reads either. */
+async function settled<T>(call: Promise<T>): Promise<T | Error> {
+  try {
+    return await call;
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
+}
+
+/** What the erasure's audit sink saw, in order. */
+function recordingAudit(): { audit: IAuditSink; kinds: string[] } {
+  const kinds: string[] = [];
+  return { kinds, audit: { onEvent: (e) => void kinds.push(e.kind) } };
+}
+
+/** A storage that counts the deletes sent to it. */
+function countingDeletes(storage: IStorageDriver): {
+  storage: IStorageDriver;
+  deletes: GenKey[];
+} {
+  const deletes: GenKey[] = [];
+  return {
+    deletes,
+    storage: overStorage(storage, {
+      delete: (key, options) => {
+        deletes.push(key);
+        return storage.delete(key, options);
+      },
+    }),
+  };
 }
 
 /**
@@ -202,13 +205,6 @@ function atFence(
   };
 }
 
-/** The tombstone of a row of the same name that is another incarnation of it. */
-async function foreignTombstone(): Promise<RegistryRecord> {
-  const other = new MemoryRegistryDriver();
-  await other.create(SEG, { currentGen: 0, status: 'destroyed' });
-  return (await other.get(SEG))!;
-}
-
 /**
  * A segment of three generations, `keep` window wide, whose current generation 2 holds `X`: the erasure rewrites it as
  * generation 3 and deletes 0, 1 and 2. Returns the ledger entries the row holds for them, by generation.
@@ -225,9 +221,9 @@ async function idInCurrentOfThree(
 }
 
 /**
- * A reader's window naming generations again, written to the row at the start of each collection pass made once the
- * pointer is `pointer`: pass `n` finds the generations `windows[n]` that it meant to delete named by the row, and
- * spares them. A pass past the last window finds the row as the erasure left it.
+ * A rollback onto generations and back, as the row leaves it: its ledger names them again. It is written at the start
+ * of each collection pass made once the pointer is `pointer`: pass `n` finds the generations `windows[n]` that it meant
+ * to delete named by the row, and spares them. A pass past the last window finds the row as the erasure left it.
  */
 function nameDoomedAgain(
   storage: IStorageDriver,
@@ -254,7 +250,9 @@ function nameDoomedAgain(
         named += 1;
         const names = new Set(window.map((e) => e.generation));
         const others = row.knownGens!.filter((e) => !names.has(e.generation));
-        await registry.compareAndSwap(ref, row.token, { knownGens: [...window, ...others] });
+        await registry.compareAndSwap(ref, row.token, {
+          knownGens: [...window, ...others],
+        });
         return registry.get(ref);
       },
     }),
@@ -272,8 +270,16 @@ describe('an erasure that races another writer', () => {
       await w.registry.delete(SEG);
       await setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: Date.now() + 1e9 });
     });
-    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage: counted.storage, registry });
-    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    const res = await eraseIdFromSegment(SEG, X, {
+      ...w.deps,
+      storage: counted.storage,
+      registry,
+    });
+    expect(res).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      collected: [],
+    });
     expect(counted.deletes).toEqual([]);
     expect(await generationsOf(w.storage)).toEqual([0, 1]);
     // The re-run reads a row with no pointer, searches its bucket and finds the holder.
@@ -291,7 +297,11 @@ describe('an erasure that races another writer', () => {
       await w.registry.compareAndSwap(SEG, row.token, { currentGen: null });
     });
     const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
-    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    expect(res).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      collected: [],
+    });
     expect(counted.deletes).toEqual([]);
     expect(await generationsOf(w.storage)).toEqual([0, 1]);
   });
@@ -301,18 +311,38 @@ describe('an erasure that races another writer', () => {
     await setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: Date.now() + 1e9 });
     expect((await w.registry.get(SEG))!.currentGen).toBeNull();
     const res = await eraseIdFromSegment(SEG, X, w.deps);
-    expect(res).toMatchObject({ erased: false, reason: 'no-generation', collected: [] });
+    expect(res).toMatchObject({
+      erased: false,
+      reason: 'no-generation',
+      collected: [],
+    });
   });
 
   it('refuses as superseded, and deletes nothing, when the row is re-created under another incarnation and dropped before the fence', async () => {
     const w = world();
     await holderAbovePointer(w.deps);
     const counted = countingDeletes(w.storage);
-    const foreign = await foreignTombstone();
-    const seen = atFence(counted.storage, w.registry, () => Promise.resolve(foreign));
+    // A purge, a load that creates the name again (generation 2), and the first write of a drop, which tombstones the
+    // row before its sweep runs. The tombstone stays.
+    const seen = atFence(counted.storage, w.registry, async () => {
+      await w.registry.delete(SEG);
+      await loadSegment(SEG, [100, 101], w.deps);
+      const row = (await w.registry.get(SEG))!;
+      await w.registry.compareAndSwap(SEG, row.token, {
+        status: 'destroyed',
+        summary: undefined,
+        knownGens: undefined,
+        leases: undefined,
+      });
+    });
     const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
-    expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(res).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      collected: [],
+    });
     expect(counted.deletes).toEqual([]);
+    expect(await generationsOf(w.storage)).toEqual([1, 2]);
   });
 
   it('refuses as superseded, and deletes nothing, when the pointer moves past only some of the holders before the fence', async () => {
@@ -329,18 +359,29 @@ describe('an erasure that races another writer', () => {
       await rollbackSegment(SEG, 2, w.deps);
     });
     const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
-    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    expect(res).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      collected: [],
+    });
     expect(counted.deletes).toEqual([]);
+    expect(await generationsOf(w.storage)).toEqual([0, 1, 2, 3]);
   });
 
-  it('collects again after each collection that spared a generation a reader window named, and reports every generation it deleted', async () => {
+  it('collects again after each collection that spared a generation the row named again after a rollback onto it and back, and reports every generation it deleted', async () => {
     const w = world();
     const entries = await idInCurrentOfThree(w.deps, w.registry);
     const two = entries.filter((e) => e.generation === 2);
     const seen = nameDoomedAgain(w.storage, w.registry, [two, two, two], 3);
-    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
-    expect(res).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
-    expect([...res.collected].sort()).toEqual([0, 1, 2]);
+    // A pass that stops early is a rejection, which an assertion on the result alone would report as a bare error.
+    const res = await settled(eraseIdFromSegment(SEG, X, { ...w.deps, ...seen }));
+    expect(res).not.toBeInstanceOf(Error);
+    expect(res).toMatchObject({
+      erased: true,
+      fromGeneration: 2,
+      generation: 3,
+    });
+    expect([...(res as { collected: number[] }).collected].sort()).toEqual([0, 1, 2]);
     expect(await generationsOf(w.storage)).toEqual([3]);
   });
 
@@ -352,11 +393,13 @@ describe('an erasure that races another writer', () => {
     const storage = rollbackBeforeDeleting(named.storage, w.deps, 2);
     const { audit, kinds } = recordingAudit();
     const call = eraseIdFromSegment(SEG, X, { ...w.deps, ...named, storage }, { audit });
-    await expect(call).rejects.toBeInstanceOf(NotFoundError);
+    const err = await settled(call);
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((err as Error).message).toMatch(/an erasure deleted generation 2/);
     expect(kinds).toContain('segment.rewrite');
   });
 
-  it('stops collecting again at a rollback onto a generation it deleted, though the pass also spared another and the row names a doomed one again', async () => {
+  it('stops collecting again at a rollback onto a generation it deleted, though the pass also spared another and the rollback undoes itself only after the call read the row twice', async () => {
     const w = world();
     const entries = await idInCurrentOfThree(w.deps, w.registry);
     const named = nameDoomedAgain(
@@ -368,17 +411,46 @@ describe('an erasure that races another writer', () => {
       ],
       3,
     );
-    // The row, after the rollback, names generation 0, which is below the pointer now and already deleted.
-    const stale = entries.filter((e) => e.generation === 0);
-    const storage = rollbackBeforeDeleting(named.storage, w.deps, 1, async () => {
-      const row = (await w.registry.get(SEG))!;
-      await w.registry.compareAndSwap(SEG, row.token, { knownGens: [...stale, ...row.knownGens!] });
+    // An operator's rollback onto generation 1 lands before the erasure's delete of it and, being slow, undoes itself
+    // after the call's two reads of the row that look for the pointer on the deleted object: the pointer goes back to 3
+    // and the ledger drops 1, as a rollback's undo writes them. The call raises for the operator to check, as it does
+    // when every read it makes still names the missing object.
+    let before: RegistryRecord | undefined;
+    let reads = -1;
+    const registry = overRegistry(named.registry, {
+      get: async (ref: SegmentRef) => {
+        if (reads >= 0) {
+          reads += 1;
+          if (reads === 3) {
+            const row = (await w.registry.get(SEG))!;
+            await w.registry.compareAndSwap(SEG, row.token, {
+              currentGen: before!.currentGen,
+              summary: before!.summary,
+              knownGens: before!.knownGens!.filter((e) => e.generation !== 1),
+            });
+          }
+        }
+        return named.registry.get(ref);
+      },
     });
-    const call = eraseIdFromSegment(SEG, X, { ...w.deps, ...named, storage });
-    await expect(call).rejects.toBeInstanceOf(NotFoundError);
+    const storage = overStorage(named.storage, {
+      delete: async (key, options) => {
+        if (key.generation === 1 && before === undefined) {
+          before = (await w.registry.get(SEG))!;
+          await rollbackSegment(SEG, 1, w.deps, { allowUnknown: true });
+          await named.storage.delete(key, options);
+          reads = 0;
+          return;
+        }
+        return named.storage.delete(key, options);
+      },
+    });
+    const err = await settled(eraseIdFromSegment(SEG, X, { ...w.deps, registry, storage }));
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((err as Error).message).toMatch(/an erasure deleted generation 1/);
   });
 
-  it('reports the row, not a race, when the object it meant to delete is replaced and the row is dropped meanwhile', async () => {
+  it('searches the tombstone and erases when the object it meant to delete is replaced and the row is dropped meanwhile', async () => {
     const w = world();
     await holderAbovePointer(w.deps);
     const storage = replacingBeforeFirstDelete(w.storage, async () => {
@@ -402,23 +474,34 @@ describe('an erasure that races another writer', () => {
     const storage = replacingBeforeFirstDelete(w.storage, () => w.registry.delete(SEG));
     const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'absent' });
+    // The load's object stays: the call's delete was conditioned on the object it searched.
+    expect(await generationsOf(w.storage)).toEqual([0, 1]);
   });
 
-  it('reports none erased, and deletes nothing, when the rewrite got no answer and another writer holds its number with other bytes', async () => {
+  it('reports none erased, and deletes nothing, when the rewrite got no answer and a load took its number with other bytes', async () => {
     const w = world();
     await idInCurrentOfThree(w.deps, w.registry);
-    const registry = unansweredPublish(w.registry, 3, () => retake(w.storage, 3, [7, 8, 9]));
-    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry });
-    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
-    expect(await generationsOf(w.storage)).toEqual([0, 1, 2, 3]);
+    const { audit, kinds } = recordingAudit();
+    const registry = rewriteLostToLoad(w, [7, 8, 9]);
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry }, { audit });
+    expect(res).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      collected: [],
+    });
+    // Generation 2 still holds the id, and 3 is the load's.
+    expect(await generationsOf(w.storage)).toEqual([2, 3]);
+    expect(kinds).not.toContain('segment.rewrite');
   });
 
-  it('stands on the rewrite when it got no answer and its number holds the same bytes again', async () => {
+  it('stands on the rewrite when it got no answer and a load took its number with the same bytes', async () => {
     const w = world();
     await idInCurrentOfThree(w.deps, w.registry);
-    const registry = unansweredPublish(w.registry, 3, () => retake(w.storage, 3, [1, 2, 3]));
-    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry });
+    const { audit, kinds } = recordingAudit();
+    const registry = rewriteLostToLoad(w, [1, 2, 3]);
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry }, { audit });
     expect(res).toMatchObject({ erased: true, generation: 3 });
     expect(await generationsOf(w.storage)).toEqual([3]);
+    expect(kinds).toContain('segment.rewrite');
   });
 });
