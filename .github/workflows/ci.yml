@@ -181,9 +181,23 @@ jobs:
       - run: node scripts/smoke.cjs
 
   integration:
-    name: integration (MinIO + fake-gcs-server + Azurite)
+    name: integration ${{ matrix.file }}
     runs-on: ubuntu-latest # needs Docker on the runner
     timeout-minutes: 20
+    # DIAGNOSTIC, to be reverted: one job per integration file, so the file that starves its runner is the one job
+    # whose log is lost, and every other file keeps its log.
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - azure.test.ts
+          - calibrate-large-rehearsal.test.ts
+          - calibrate-rehearsal.test.ts
+          - conditional-delete.test.ts
+          - gcs.test.ts
+          - materialize-many.s3.test.ts
+          - real-cloud-conditional-delete.test.ts
+          - s3.test.ts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
@@ -212,38 +226,9 @@ jobs:
       - run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300
       # A step timeout below the job's, so a run that stalls fails this step and keeps its log (each failed test's
       # output, a rehearsal's stderr included); a job that reaches its own timeout is cancelled and keeps none.
-      # DIAGNOSTIC, to be reverted: each file alone, under a shell timeout, beside a memory watchdog that kills the
-      # largest process before the runner starves, so the log survives.
-      - name: integration, one file at a time, with a memory watchdog
+      - name: integration, this file alone
         timeout-minutes: 14
-        run: |
-          set +e
-          watchdog() {
-            n=0
-            while sleep 5; do
-              n=$((n + 1))
-              avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
-              if [ "$avail" -lt 1500 ] || [ $((n % 4)) -eq 0 ]; then
-                echo "[watchdog $(date +%T)] available ${avail} MB, load $(cut -d' ' -f1-3 /proc/loadavg)"
-                ps -eo pid,ppid,rss,pcpu,etimes,args --sort=-rss | head -5 | cut -c1-170 | sed 's/^/[watchdog]   /'
-              fi
-              if [ "$avail" -lt 1500 ]; then
-                pid=$(ps -eo pid,rss --sort=-rss | awk 'NR==2{print $1}')
-                echo "[watchdog] low memory: killing $pid"
-                kill -9 "$pid"
-              fi
-            done
-          }
-          watchdog &
-          wd=$!
-          for f in tests/integration/*.test.ts; do
-            echo "::group::$f"
-            start=$(date +%s)
-            timeout -k 10 240 pnpm exec vitest run -c vitest.integration.config.ts "$f" --reporter=verbose 2>&1 | tail -120
-            echo "exit ${PIPESTATUS[0]} for $f after $(( $(date +%s) - start )) s"
-            echo "::endgroup::"
-          done
-          kill "$wd"
+        run: pnpm exec vitest run -c vitest.integration.config.ts tests/integration/${{ matrix.file }} --reporter=verbose
       # Kept only from a run that passed: a month's entry is never written again, so one saved by a run missing an
       # image, or on a broken build of a tag, would stand for the month.
       - uses: ./.github/actions/docker-images-save
