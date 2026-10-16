@@ -8,13 +8,16 @@ import { counterEntropy } from './entropy';
 
 /**
  * The writers of `@/core/crbm-write` with a deterministic entropy filled in when a test names none, for the many tests
- * that write an object to read it back and care nothing about its identity. Each call gets a source of its own, so two
- * writes of the same ids at the same number are two objects, as in production. A test of the identity passes its own.
+ * that write an object to read it back and care nothing about its identity. One counter source is shared by every
+ * write a test file makes through this module, so two writes of the same ids at the same number draw different
+ * identities and are two objects, as in production; a run replays the same draws, since the counter starts alike in each
+ * file. A test of the identity passes its own source.
  */
 type Given = Omit<WriteOptions, 'entropy'> & { readonly entropy?: WriteOptions['entropy'] };
+const shared = counterEntropy();
 const filled = (options: Given | undefined): WriteOptions => ({
   ...options,
-  entropy: options?.entropy ?? counterEntropy(),
+  entropy: options?.entropy ?? shared,
 });
 
 export const writeCrbmGeneration = (
