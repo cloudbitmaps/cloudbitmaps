@@ -169,8 +169,8 @@ for await (const file of dts(dist)) {
 // tsc wrote one `.d.ts` per source file, but the JavaScript is bundled, so most internal modules (the conformance
 // suite, the fuzz harnesses, decoder internals) have a declaration that no `exports` entry names and no reachable
 // declaration imports. A consumer cannot load them, so they stay out of the tarball. This runs after the
-// extension rewrite above, which needs every file in place, and `tests/ci/shipped-declarations.test.ts` fails the
-// build's output if a stray remains.
+// extension rewrite above, which needs every file in place, and `scripts/smoke.cjs` fails the build's
+// output if a stray remains.
 const { pruneUnreachable } = require('./lib/reachable-declarations.cjs');
 const pruned = pruneUnreachable(pkgDir);
 

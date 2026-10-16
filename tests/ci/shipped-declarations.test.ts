@@ -1,8 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
@@ -10,22 +9,17 @@ import { afterEach, describe, expect, it } from 'vitest';
  *
  * tsc writes one `.d.ts` per source file while esbuild bundles the JavaScript, so without a prune every internal
  * module (the conformance suite, the fuzz harnesses, the decoder internals) would ship a declaration that no
- * public declaration imports and no `exports` entry names. This test reads each package's built `dist/` and
- * names every such file. It needs `pnpm build` to have run first, like `scripts/smoke.cjs`.
- *
- * The first block fires the walk itself at a planted tree, in both directions: what it must keep (nested
- * conditions, `.js` and directory specifiers, `import()` type queries, cycles) and what it must not follow
- * (a bare specifier to another package).
+ * public declaration imports and no `exports` entry names. `scripts/smoke.cjs` checks each built package's
+ * `dist/` with the walk, after the build. This file needs no build: it fires the walk at a planted tree, in
+ * both directions: what it must keep (nested conditions, `.js` and directory specifiers, `import()` type
+ * queries, cycles) and what it must not follow (a bare specifier to another package).
  */
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const { unreachableDeclarations, pruneUnreachable } = createRequire(import.meta.url)(
   '../../scripts/lib/reachable-declarations.cjs',
 ) as {
   unreachableDeclarations: (pkgDir: string) => string[];
   pruneUnreachable: (pkgDir: string) => number;
 };
-
-const PACKAGES = readdirSync(join(ROOT, 'packages'));
 
 const temps: string[] = [];
 afterEach(() => {
@@ -108,15 +102,5 @@ describe('the declaration reachability walk', () => {
     writeFileSync(join(dir, 'dist/index.d.ts'), "export * from './keep/a.js';");
     expect(pruneUnreachable(dir)).toBe(1);
     expect(readdirSync(join(dir, 'dist')).sort()).toEqual(['index.d.ts', 'keep', 'kit.d.ts']);
-  });
-});
-
-describe('the shipped declarations of each package', () => {
-  it.each(PACKAGES)('%s ships no declaration its exports cannot reach', (pkg) => {
-    const dir = join(ROOT, 'packages', pkg);
-    expect(readdirSync(dir), `packages/${pkg}/dist is missing: run pnpm build first`).toContain(
-      'dist',
-    );
-    expect(unreachableDeclarations(dir)).toEqual([]);
   });
 });

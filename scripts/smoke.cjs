@@ -173,6 +173,38 @@ function assertSubpathsResolveWithoutExports(pkgDir) {
   console.log(`  subpaths resolve without exports: @cloudbitmaps/${pkgDir} (${subpaths.length})`);
 }
 
+/**
+ * A package ships only the declaration files a consumer can reach from its `exports` map.
+ *
+ * `scripts/build.mjs` prunes the strays with the same walk (`scripts/lib/reachable-declarations.cjs`), so this
+ * checks that the prune ran and caught everything. It lives here, after the build, because it reads `dist/`;
+ * the test suite runs before the build in CI. Every stray is named so one run shows the whole list.
+ */
+function strayDeclarationReport(pkgDir) {
+  const { existsSync } = require('node:fs');
+  const dir = path.join(__dirname, '..', 'packages', pkgDir);
+  if (!existsSync(path.join(dir, 'dist'))) {
+    return `@cloudbitmaps/${pkgDir}: dist/ is missing, so its declarations cannot be checked.`;
+  }
+  const strays = unreachableDeclarations(dir);
+  if (strays.length === 0) {
+    console.log(`  every shipped .d.ts reachable from exports: @cloudbitmaps/${pkgDir}`);
+    return null;
+  }
+  return (
+    `@cloudbitmaps/${pkgDir}: ${strays.length} shipped declaration(s) no \`exports\` entry reaches — ` +
+    `the prune in scripts/build.mjs missed them\n  ${strays.join('\n  ')}`
+  );
+}
+
+/** The stray-declaration check over every package, failing once with all of them named. */
+function assertNoStrayDeclarations() {
+  const reports = packageDirs()
+    .map(strayDeclarationReport)
+    .filter((r) => r !== null);
+  if (reports.length > 0) throw new Error(reports.join('\n'));
+}
+
 /** Every package directory in the workspace. */
 function packageDirs() {
   return require('node:fs')
@@ -378,6 +410,7 @@ function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
+const { unreachableDeclarations } = require('./lib/reachable-declarations.cjs');
 
 /**
  * Every `.d.ts` under `dist/`, as a path relative to `dist`. Both sweeps take the whole tree; which
@@ -572,6 +605,8 @@ async function main() {
     assertDtsSpecifiers(pkgDir);
     assertSubpathsResolveWithoutExports(pkgDir);
   }
+
+  assertNoStrayDeclarations();
 
   console.log(
     'smoke: ESM + CJS import (via exports map) + roaring round-trip + cross-bundle errors + SDK-free entries OK',

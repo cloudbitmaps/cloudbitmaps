@@ -5,7 +5,7 @@
  * tsc emits one declaration per source file while esbuild bundles the JavaScript, so a package's `dist/` holds a
  * declaration for every internal module. Only the ones an `exports` entry names, or that a reachable declaration
  * imports, can be loaded by a consumer; the rest are dead weight in the tarball. The build prunes them with
- * `pruneUnreachable`, and `tests/ci/shipped-declarations.test.ts` fails on any that remain.
+ * `pruneUnreachable`, and `scripts/smoke.cjs` fails on any that remain.
  *
  * Reachability starts from every `types` target of the `exports` map (conditions may nest) plus a top-level
  * `types` field, and follows each relative specifier of `import`/`export … from '…'` and `import('…')` type
