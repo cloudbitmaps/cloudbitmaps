@@ -59,6 +59,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/erase-not-in-current-awaited.test.ts',
   'tests/core/erase-swept-generation.test.ts',
   'tests/core/erase-phases.test.ts',
+  'tests/core/erase-races.test.ts',
   'tests/core/generation-gc.test.ts',
   'tests/core/generation-metadata-read.test.ts',
   'tests/core/stat-size.test.ts',

@@ -1,0 +1,395 @@
+import { eraseIdFromSegment } from '@/core/erase-id';
+import { NotFoundError, TransientError } from '@/core/errors';
+import { loadSegment } from '@/core/load';
+import { rollbackSegment } from '@/core/rollback';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import type {
+  GenKey,
+  IAuditSink,
+  KnownGeneration,
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+  SegmentRef,
+} from '@/index';
+import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+
+/**
+ * Interleavings of an erasure with another writer that no other test pins. Each case holds the erasure at one exact
+ * call of the registry or the storage, lets the other writer act, and checks what the erasure then reports and
+ * deletes.
+ */
+const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
+const X = 42;
+
+function world() {
+  const storage = new MemoryStorageDriver();
+  const registry = new MemoryRegistryDriver();
+  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+}
+
+type Deps = ReturnType<typeof world>['deps'];
+
+/** A registry whose calls are routed through `patch`, and the rest to `registry`. */
+function overRegistry(registry: IRegistryDriver, patch: Partial<IRegistryDriver>): IRegistryDriver {
+  return Object.assign(Object.create(registry) as IRegistryDriver, patch);
+}
+
+/** A storage whose calls are routed through `patch`, and the rest to `storage`. */
+function overStorage(storage: IStorageDriver, patch: Partial<IStorageDriver>): IStorageDriver {
+  return Object.assign(Object.create(storage) as IStorageDriver, patch);
+}
+
+/** Generation 0 is current and clean; generation 1 holds `X` and sits above the pointer, after a rollback. */
+async function holderAbovePointer(deps: Deps): Promise<void> {
+  await loadSegment(SEG, [1, 2, 3], deps);
+  await loadSegment(SEG, [1, 2, 3, X], deps);
+  await rollbackSegment(SEG, 0, deps);
+}
+
+/** The generation numbers in the bucket, ascending. */
+async function generationsOf(storage: IStorageDriver): Promise<number[]> {
+  const out: number[] = [];
+  for await (const k of storage.list(SEG)) out.push(k.generation);
+  return out.sort((a, b) => a - b);
+}
+
+/**
+ * A storage whose delete of `generation` is preceded by an operator's rollback of the pointer onto it: the object is
+ * still there when the rollback checks it, and gone when the pointer is next read. `then` runs right after the rollback.
+ */
+function rollbackBeforeDeleting(
+  storage: IStorageDriver,
+  deps: Deps,
+  generation: number,
+  then: () => Promise<void> = () => Promise.resolve(),
+): IStorageDriver {
+  let rolled = false;
+  return overStorage(storage, {
+    delete: async (key, options) => {
+      if (key.generation === generation && !rolled) {
+        rolled = true;
+        await rollbackSegment(SEG, generation, deps, { allowUnknown: true });
+        await then();
+      }
+      return storage.delete(key, options);
+    },
+  });
+}
+
+/**
+ * A storage whose first delete is preceded by `during` and by the replacement of the object under that number with
+ * another that holds `X`: the delete the erasure sends, conditioned on the object it searched, is then refused.
+ */
+function replacingBeforeFirstDelete(
+  storage: IStorageDriver,
+  during: () => Promise<void>,
+): IStorageDriver {
+  let first = true;
+  return overStorage(storage, {
+    delete: async (key, options) => {
+      if (first) {
+        first = false;
+        await storage.delete(key);
+        await bulkLoadCrbmGeneration(storage, key, [1, 2, 3, X, 5], {
+          registry: new MemoryRegistryDriver(),
+          publish: false,
+        });
+        await during();
+      }
+      return storage.delete(key, options);
+    },
+  });
+}
+
+/**
+ * A registry that does not report its writes' tokens, whose write of the pointer to `generation` lands and then gets no
+ * answer: the publish settles it by the object under the number. `beforeSettled` runs between the write and the read
+ * that settles it.
+ */
+function unansweredPublish(
+  registry: IRegistryDriver,
+  generation: number,
+  beforeSettled: () => Promise<void>,
+): IRegistryDriver {
+  const wrapped = overRegistry(registry, {
+    compareAndSwap: async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
+      const out = await registry.compareAndSwap(...args);
+      if (args[2].currentGen !== generation) return out;
+      await beforeSettled();
+      throw new TransientError('the write got no answer');
+    },
+  });
+  Object.defineProperty(wrapped, 'reportsWriteTokens', { value: false });
+  return wrapped;
+}
+
+/** Another writer's object under `generation`: the number taken again, over `ids`. */
+async function retake(storage: IStorageDriver, generation: number, ids: number[]): Promise<void> {
+  const key = { ...SEG, generation };
+  await storage.delete(key);
+  await bulkLoadCrbmGeneration(storage, key, ids, {
+    registry: new MemoryRegistryDriver(),
+    publish: false,
+  });
+}
+
+/** What the erasure's audit sink saw, in order. */
+function recordingAudit(): { audit: IAuditSink; kinds: string[] } {
+  const kinds: string[] = [];
+  return { kinds, audit: { onEvent: (e) => void kinds.push(e.kind) } };
+}
+
+/** A storage that counts the deletes sent to it. */
+function countingDeletes(storage: IStorageDriver): { storage: IStorageDriver; deletes: GenKey[] } {
+  const deletes: GenKey[] = [];
+  return {
+    deletes,
+    storage: overStorage(storage, {
+      delete: (key, options) => {
+        deletes.push(key);
+        return storage.delete(key, options);
+      },
+    }),
+  };
+}
+
+/**
+ * A registry whose reads after its first write of the row answer with `change` applied to the row: the reads a delete
+ * by name is made after, once the erasure's fence has written.
+ */
+function rereadAfterFence(
+  registry: IRegistryDriver,
+  change: (row: RegistryRecord) => RegistryRecord,
+): IRegistryDriver {
+  let wrote = false;
+  return overRegistry(registry, {
+    compareAndSwap: async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
+      const out = await registry.compareAndSwap(...args);
+      wrote = true;
+      return out;
+    },
+    get: async (ref: SegmentRef) => {
+      const row = await registry.get(ref);
+      return wrote && row !== null ? change(row) : row;
+    },
+  });
+}
+
+/**
+ * Runs `act` once, at the erasure's fence: after the storage was first listed (the search of the bucket) and before the
+ * next read of the row. The read answers with what `act` returns, or with the row itself when it returns nothing.
+ */
+function atFence(
+  storage: IStorageDriver,
+  registry: IRegistryDriver,
+  act: () => Promise<RegistryRecord | void>,
+): { storage: IStorageDriver; registry: IRegistryDriver } {
+  let listed = false;
+  let acted = false;
+  return {
+    storage: overStorage(storage, {
+      list: (ref: SegmentRef) => {
+        listed = true;
+        return storage.list(ref);
+      },
+    }),
+    registry: overRegistry(registry, {
+      get: async (ref: SegmentRef) => {
+        if (!listed || acted) return registry.get(ref);
+        acted = true;
+        return (await act()) ?? registry.get(ref);
+      },
+    }),
+  };
+}
+
+/** The tombstone of a row of the same name that is another incarnation of it. */
+async function foreignTombstone(): Promise<RegistryRecord> {
+  const other = new MemoryRegistryDriver();
+  await other.create(SEG, { currentGen: 0, status: 'destroyed' });
+  return (await other.get(SEG))!;
+}
+
+/**
+ * A segment of three generations, `keep` window wide, whose current generation 2 holds `X`: the erasure rewrites it as
+ * generation 3 and deletes 0, 1 and 2. Returns the ledger entries the row holds for them, by generation.
+ */
+async function idInCurrentOfThree(
+  deps: Deps,
+  registry: IRegistryDriver,
+): Promise<KnownGeneration[]> {
+  const keep = { keep: 5 };
+  await loadSegment(SEG, [1, 2, 3], deps, keep);
+  await loadSegment(SEG, [1, 2, 3, 4], deps, keep);
+  await loadSegment(SEG, [1, 2, 3, X], deps, keep);
+  return [...(await registry.get(SEG))!.knownGens!];
+}
+
+/**
+ * A reader's window naming generations again, written to the row at the start of each collection pass made once the
+ * pointer is `pointer`: pass `n` finds the generations `windows[n]` that it meant to delete named by the row, and
+ * spares them. A pass past the last window finds the row as the erasure left it.
+ */
+function nameDoomedAgain(
+  storage: IStorageDriver,
+  registry: IRegistryDriver,
+  windows: readonly (readonly KnownGeneration[])[],
+  pointer: number,
+): { storage: IStorageDriver; registry: IRegistryDriver } {
+  let listed = false;
+  let named = 0;
+  return {
+    storage: overStorage(storage, {
+      list: (ref: SegmentRef) => {
+        listed = true;
+        return storage.list(ref);
+      },
+    }),
+    registry: overRegistry(registry, {
+      get: async (ref: SegmentRef) => {
+        const row = await registry.get(ref);
+        if (row?.currentGen !== pointer) listed = false;
+        const window = windows[named];
+        if (row === null || !listed || window === undefined) return row;
+        listed = false;
+        named += 1;
+        const names = new Set(window.map((e) => e.generation));
+        const others = row.knownGens!.filter((e) => !names.has(e.generation));
+        await registry.compareAndSwap(ref, row.token, { knownGens: [...window, ...others] });
+        return registry.get(ref);
+      },
+    }),
+  };
+}
+
+describe('an erasure that races another writer', () => {
+  it('reports no generation, and deletes nothing, when the row loses its pointer before the delete by name', async () => {
+    const w = world();
+    await holderAbovePointer(w.deps);
+    const counted = countingDeletes(w.storage);
+    const registry = rereadAfterFence(w.registry, (row) => ({ ...row, currentGen: null }));
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage: counted.storage, registry });
+    expect(res).toMatchObject({ erased: false, reason: 'no-generation' });
+    expect(counted.deletes).toEqual([]);
+  });
+
+  it('refuses as superseded, and deletes nothing, when the row is re-created under another incarnation and dropped before the fence', async () => {
+    const w = world();
+    await holderAbovePointer(w.deps);
+    const counted = countingDeletes(w.storage);
+    const foreign = await foreignTombstone();
+    const seen = atFence(counted.storage, w.registry, () => Promise.resolve(foreign));
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
+    expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(counted.deletes).toEqual([]);
+  });
+
+  it('refuses as superseded, and deletes nothing, when the pointer moves past only some of the holders before the fence', async () => {
+    const w = world();
+    const keep = { keep: 5 };
+    await loadSegment(SEG, [1, 2, 3], w.deps, keep);
+    await loadSegment(SEG, [1, 2, 3, X], w.deps, keep);
+    await loadSegment(SEG, [1, 2, 3], w.deps, keep);
+    await loadSegment(SEG, [1, 2, 3, X], w.deps, keep);
+    await rollbackSegment(SEG, 0, w.deps);
+    const counted = countingDeletes(w.storage);
+    // Generations 1 and 3 hold the id above the pointer; a rollback then puts the pointer between them.
+    const seen = atFence(counted.storage, w.registry, async () => {
+      await rollbackSegment(SEG, 2, w.deps);
+    });
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
+    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    expect(counted.deletes).toEqual([]);
+  });
+
+  it('collects again after each collection that spared a generation a reader window named, and reports every generation it deleted', async () => {
+    const w = world();
+    const entries = await idInCurrentOfThree(w.deps, w.registry);
+    const two = entries.filter((e) => e.generation === 2);
+    const seen = nameDoomedAgain(w.storage, w.registry, [two, two, two], 3);
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
+    expect(res).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
+    expect([...res.collected].sort()).toEqual([0, 1, 2]);
+    expect(await generationsOf(w.storage)).toEqual([3]);
+  });
+
+  it('raises the rollback onto a generation it deleted, after the rewrite event, when the pass that met it spared nothing more', async () => {
+    const w = world();
+    const entries = await idInCurrentOfThree(w.deps, w.registry);
+    const two = entries.filter((e) => e.generation === 2);
+    const named = nameDoomedAgain(w.storage, w.registry, [two], 3);
+    const storage = rollbackBeforeDeleting(named.storage, w.deps, 2);
+    const { audit, kinds } = recordingAudit();
+    const call = eraseIdFromSegment(SEG, X, { ...w.deps, ...named, storage }, { audit });
+    await expect(call).rejects.toBeInstanceOf(NotFoundError);
+    expect(kinds).toContain('segment.rewrite');
+  });
+
+  it('stops collecting again at a rollback onto a generation it deleted, though the pass also spared another and the row names a doomed one again', async () => {
+    const w = world();
+    const entries = await idInCurrentOfThree(w.deps, w.registry);
+    const named = nameDoomedAgain(
+      w.storage,
+      w.registry,
+      [
+        entries.filter((e) => e.generation === 1 || e.generation === 2),
+        entries.filter((e) => e.generation === 2),
+      ],
+      3,
+    );
+    // The row, after the rollback, names generation 0, which is below the pointer now and already deleted.
+    const stale = entries.filter((e) => e.generation === 0);
+    const storage = rollbackBeforeDeleting(named.storage, w.deps, 1, async () => {
+      const row = (await w.registry.get(SEG))!;
+      await w.registry.compareAndSwap(SEG, row.token, { knownGens: [...stale, ...row.knownGens!] });
+    });
+    const call = eraseIdFromSegment(SEG, X, { ...w.deps, ...named, storage });
+    await expect(call).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('reports the row, not a race, when the object it meant to delete is replaced and the row is dropped meanwhile', async () => {
+    const w = world();
+    await holderAbovePointer(w.deps);
+    const storage = replacingBeforeFirstDelete(w.storage, async () => {
+      const row = (await w.registry.get(SEG))!;
+      await w.registry.compareAndSwap(SEG, row.token, {
+        status: 'destroyed',
+        summary: undefined,
+        knownGens: undefined,
+        leases: undefined,
+      });
+    });
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage });
+    // A tombstone is searched as a fresh call searches one: the replacement holds the id, so every object under it goes.
+    expect(res).toMatchObject({ erased: true, collected: [0, 1] });
+    expect(await generationsOf(w.storage)).toEqual([]);
+  });
+
+  it('reports the row as absent, not superseded, when the object it meant to delete is replaced and the row is purged meanwhile', async () => {
+    const w = world();
+    await holderAbovePointer(w.deps);
+    const storage = replacingBeforeFirstDelete(w.storage, () => w.registry.delete(SEG));
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage });
+    expect(res).toMatchObject({ erased: false, reason: 'absent' });
+  });
+
+  it('reports none erased, and deletes nothing, when the rewrite got no answer and another writer holds its number with other bytes', async () => {
+    const w = world();
+    await idInCurrentOfThree(w.deps, w.registry);
+    const registry = unansweredPublish(w.registry, 3, () => retake(w.storage, 3, [7, 8, 9]));
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry });
+    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    expect(await generationsOf(w.storage)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('stands on the rewrite when it got no answer and its number holds the same bytes again', async () => {
+    const w = world();
+    await idInCurrentOfThree(w.deps, w.registry);
+    const registry = unansweredPublish(w.registry, 3, () => retake(w.storage, 3, [1, 2, 3]));
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry });
+    expect(res).toMatchObject({ erased: true, generation: 3 });
+    expect(await generationsOf(w.storage)).toEqual([3]);
+  });
+});
