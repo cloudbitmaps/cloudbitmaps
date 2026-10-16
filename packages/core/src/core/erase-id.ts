@@ -48,8 +48,8 @@
  * where the truth was to re-run.
  *
  * Which reason comes from **re-reading the row**, not from assuming a supersession: a moved pointer is
- * `'superseded'`, a tombstoned row `'destroyed'`, a purged row `'absent'`, a row with no pointer
- * `'no-generation'`. A pointer still on `from` means the object it names is genuinely gone — the forbidden
+ * `'superseded'`, a tombstoned row `'destroyed'`, a purged row `'absent'`, a row that lost its pointer
+ * `'superseded'` too (its bucket was not searched, so no claim about it is made; a re-run searches it). A pointer still on `from` means the object it names is genuinely gone — the forbidden
  * `missing-storage-generation` state — or is another object than the row's summary names by its fingerprint, and that
  * throws, because no re-run fixes either. That `NotFoundError` is the only signal of those states, so a faulting
  * re-read rethrows it rather than replacing it with a transient-looking registry error.
@@ -232,8 +232,9 @@ export interface EraseIdResult {
   readonly erased: boolean;
   /**
    * Why the id was not erased, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a crypto-shred
-   * tombstone — already unreadable), `'no-generation'` (a row with no generation yet: its bucket can hold first loads'
-   * objects, none of them found to hold the id, and `collected` names any this call deleted unsearched, see below),
+   * tombstone — already unreadable), `'no-generation'` (a row with no generation yet when the call read it, its first
+   * read: its bucket can hold first loads' objects, none of them found to hold the id, and `collected` names any this
+   * call deleted unsearched, see below),
    * `'not-member'` (no
    * generation in the bucket holds the id — the common case across a fleet scan — with the same note on `collected`),
    * or `'superseded'`.
@@ -250,10 +251,12 @@ export interface EraseIdResult {
    * another erasure of the *same* id, the re-run reports `'not-member'` because it is already gone. Either way the
    * re-run settles it, which is why it is the documented action for this reason and for no other.
    *
-   * The first three reasons are also returned when the row changes *underneath* a call already in flight, not
+   * `'absent'` and `'destroyed'` are also returned when the row changes *underneath* a call already in flight, not
    * only when it is read up front — a concurrent `dropSegment` gives `'destroyed'`, once the tombstone's objects have
-   * been searched as a fresh call searches them, and a retention sweep that purges the row gives `'absent'`. A caller
-   * branching on `reason` never has to care which it was.
+   * been searched as a fresh call searches them, and a retention sweep that purges the row gives `'absent'`.
+   * `'no-generation'` is only the answer to a row read with no generation: a row that loses its pointer *after* the
+   * call found one (a purge and re-creation, or a hand-made write) is `'superseded'`, because the bucket may hold an
+   * object that holds the id which this call did not search, and a re-run searches it.
    */
   readonly reason?: 'absent' | 'destroyed' | 'no-generation' | 'not-member' | 'superseded';
   /**
@@ -368,7 +371,7 @@ interface Pass {
 }
 
 /** What the row says about a call's premise: `null` while it holds, otherwise the reason to report. */
-type Verdict = 'superseded' | 'absent' | 'no-generation' | 'destroyed' | null;
+type Verdict = 'superseded' | 'absent' | 'destroyed' | null;
 
 /**
  * What one pass of {@link eraseIdFromSegment} works from, passed to every phase of it. The first group is fixed once the
@@ -556,8 +559,9 @@ async function eraseOnce(
  * `'destroyed'` (a concurrent `dropSegment` leaves `currentGen` where it was, so testing the pointer alone
  * would miss it and report an error for a segment the operator deliberately dropped), a vanished row is
  * `'absent'` (the retention sweep purged a tombstone while we worked), a row with no pointer is
- * `'no-generation'`, and a pointer that moved is `'superseded'`. On a row that had no pointer, a pointer that
- * appeared is `'superseded'`: a load published, or a rollback moved onto an object.
+ * `'superseded'` (a call that found a pointer did not search the bucket of a row that has none now, which a first load
+ * can have filled, so it cannot report `'no-generation'`), and a pointer that moved is `'superseded'`. On a row that had no
+ * pointer, a pointer that appeared is `'superseded'`: a load published, or a rollback moved onto an object.
  */
 function rowVerdict(
   c: EraseCall,
@@ -571,14 +575,16 @@ function rowVerdict(
   // A write of the row's leases alone, which readers make, is not another writer's: the premise still holds.
   const same = row.token === c.premiseToken || onlyLeasesDiffer(c.premise, row, alsoIgnore);
   if (pointerless) return row.currentGen === null && same ? null : 'superseded';
-  if (row.currentGen === null) return 'no-generation';
+  // A row that lost its pointer mid-call may still have a bucket that holds the id: it is not searched here, so the
+  // answer is the one that asks for a re-run, which searches it up front.
+  if (row.currentGen === null) return 'superseded';
   return row.currentGen === from && same ? null : 'superseded';
 }
 
 /** The answer for a call whose premise stopped holding: `reason`, with the generation it wrote when it wrote one. */
 function refusedResult(
   c: EraseCall,
-  reason: 'superseded' | 'absent' | 'no-generation' | 'destroyed',
+  reason: 'superseded' | 'absent' | 'destroyed',
   generation?: number,
 ): EraseIdResult {
   const { base, from } = c;
@@ -873,7 +879,7 @@ function doomedGenerations(
  * **A row with no usable ledger** names nothing to prune when it is read, but a load that publishes before the
  * collection reads the row starts a ledger from the bucket, which names the holders the collection then spares. So
  * the caller reads the row again after the collection, and what the ledger then names below the bound is pruned and
- * collected again, within the same five lost writes.
+ * collected again, within the passes' own bound of five.
  *
  * A write that gets no answer is settled by reading the row, and nothing is deleted until it is: a landing is gone on
  * under; a row still as the write found it gets a fresh compare-and-swap from the row just read, a request of its own
@@ -894,8 +900,9 @@ async function fence(c: EraseCall, plan: FencePlan): Promise<Fenced> {
     // holder left in the bucket is never answered with `'absent'`.
     if (row === null || row.status === 'destroyed' || (!pointerless && row.currentGen === null)) {
       if (row !== null && !sameIncarnation(record, row)) return fenceRefused('superseded');
+      // An active row with no pointer, found by a call that found a pointer: it lost it mid-call.
       const reason =
-        row === null ? 'absent' : row.status === 'destroyed' ? 'destroyed' : 'no-generation';
+        row === null ? 'absent' : row.status === 'destroyed' ? 'destroyed' : 'superseded';
       return {
         moved: plan.byName.length > 0 ? reason : null,
         sweep: plan.sweeps,
@@ -920,8 +927,7 @@ async function fence(c: EraseCall, plan: FencePlan): Promise<Fenced> {
         pointer !== null &&
         pointer > from &&
         plan.byName.every((h) => h <= pointer);
-      if (!below)
-        return fenceRefused(pointerless || pointer !== null ? 'superseded' : 'no-generation');
+      if (!below) return fenceRefused('superseded');
       byName = [];
       moved = 'superseded';
       pastHolders = true;
@@ -977,7 +983,9 @@ async function fence(c: EraseCall, plan: FencePlan): Promise<Fenced> {
  * load that started a ledger from the bucket, made the row name what the collection meant to delete since the fence
  * took it out. So the fence is made again (with `by` the holders the pointer moved past, and the collection's `below`
  * bound when it is not `from`) and the collection runs again, until one spares nothing the row names. Each pass that
- * writes counts against the bound on lost writes the fences share, and there are at most that many passes.
+ * writes costs a lost write only when its write is lost (a landed prune counts nothing), and the passes are bounded
+ * apart, at most as many as the fences' attempts: a call whose last pass still spared a name the row knows stops there,
+ * and throws when a holder is left.
  */
 async function collectAgain(
   c: EraseCall,
@@ -1332,7 +1340,7 @@ async function notInCurrent(c: EraseCall): Promise<EraseIdResult> {
     collected.push(...again.deleted);
     missing = again.missing;
     // A row gone in the second fence leaves the reason the call already had: a holder may still be in the bucket.
-    if (again.moved !== null && again.moved !== 'absent' && again.moved !== 'no-generation') {
+    if (again.moved !== null && again.moved !== 'absent') {
       moved = again.moved;
     }
   }
@@ -1391,11 +1399,10 @@ interface Staged {
  * pointer still at exactly `from` means the object it names is genuinely absent — the forbidden
  * `missing-storage-generation` state a failed publish leaves behind — or is another object than the row's summary
  * names by its fingerprint, and that **throws**, because it is an integrity problem rather than a race and no
- * re-run fixes it. A pointer that moved is `'superseded'`. The
- * other two states are not supersessions and are not reported as one: the row **gone** (the retention sweep
- * purged a tombstone while we worked) is `'absent'`, and a row whose `currentGen` is `null` is
- * `'no-generation'` — the same answers this function gives when it reads either state up front, so a caller
- * branching on `reason` never has to special-case where in the call it was discovered.
+ * re-run fixes it. A pointer that moved is `'superseded'`, and so is a row whose `currentGen` is `null`: the call
+ * found a pointer, so it never searched the bucket of a row with none, and `'no-generation'` would claim a search it did
+ * not make; the re-run searches it. The row **gone** (the retention sweep purged a tombstone while we worked) is
+ * `'absent'` and a tombstoned row `'destroyed'`, the answers this function gives when it reads either state up front.
  *
  * `generation` is set only once the object is **durable**. Reporting it from `nextGeneration` was wrong in a
  * way worth naming: if the row is gone by then, `nextGeneration` finds no row and no objects and restarts at

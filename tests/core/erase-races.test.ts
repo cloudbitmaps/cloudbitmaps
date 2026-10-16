@@ -1,6 +1,7 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { NotFoundError, TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
+import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type {
@@ -156,23 +157,19 @@ function countingDeletes(storage: IStorageDriver): { storage: IStorageDriver; de
 }
 
 /**
- * A registry whose reads after its first write of the row answer with `change` applied to the row: the reads a delete
- * by name is made after, once the erasure's fence has written.
+ * A registry that runs `act` once, right after the first write of the row that succeeds: the erasure's own write, the
+ * one that renews the row before it deletes anything.
  */
-function rereadAfterFence(
-  registry: IRegistryDriver,
-  change: (row: RegistryRecord) => RegistryRecord,
-): IRegistryDriver {
-  let wrote = false;
+function afterFirstWrite(registry: IRegistryDriver, act: () => Promise<void>): IRegistryDriver {
+  let acted = false;
   return overRegistry(registry, {
     compareAndSwap: async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
       const out = await registry.compareAndSwap(...args);
-      wrote = true;
+      if (!acted) {
+        acted = true;
+        await act();
+      }
       return out;
-    },
-    get: async (ref: SegmentRef) => {
-      const row = await registry.get(ref);
-      return wrote && row !== null ? change(row) : row;
     },
   });
 }
@@ -265,14 +262,46 @@ function nameDoomedAgain(
 }
 
 describe('an erasure that races another writer', () => {
-  it('reports no generation, and deletes nothing, when the row loses its pointer before the delete by name', async () => {
+  it('answers superseded, and leaves the holder to a re-run that erases it, when its row is purged and created again without a pointer', async () => {
     const w = world();
     await holderAbovePointer(w.deps);
     const counted = countingDeletes(w.storage);
-    const registry = rereadAfterFence(w.registry, (row) => ({ ...row, currentGen: null }));
+    // After the erasure's first write, an out-of-band purge of the row, and a retention policy that creates it again: a
+    // row with no pointer over a bucket that still holds the id.
+    const registry = afterFirstWrite(w.registry, async () => {
+      await w.registry.delete(SEG);
+      await setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: Date.now() + 1e9 });
+    });
     const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage: counted.storage, registry });
-    expect(res).toMatchObject({ erased: false, reason: 'no-generation' });
+    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
     expect(counted.deletes).toEqual([]);
+    expect(await generationsOf(w.storage)).toEqual([0, 1]);
+    // The re-run reads a row with no pointer, searches its bucket and finds the holder.
+    const again = await eraseIdFromSegment(SEG, X, w.deps);
+    expect(again).toMatchObject({ erased: true, collected: [1] });
+    expect(await generationsOf(w.storage)).toEqual([0]);
+  });
+
+  it('answers superseded, not no-generation, when a hand-made write clears the pointer of its row before the fence', async () => {
+    const w = world();
+    await holderAbovePointer(w.deps);
+    const counted = countingDeletes(w.storage);
+    const seen = atFence(counted.storage, w.registry, async () => {
+      const row = (await w.registry.get(SEG))!;
+      await w.registry.compareAndSwap(SEG, row.token, { currentGen: null });
+    });
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, ...seen });
+    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    expect(counted.deletes).toEqual([]);
+    expect(await generationsOf(w.storage)).toEqual([0, 1]);
+  });
+
+  it('answers no-generation when its first read finds a row with no generation and a bucket that holds nothing', async () => {
+    const w = world();
+    await setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: Date.now() + 1e9 });
+    expect((await w.registry.get(SEG))!.currentGen).toBeNull();
+    const res = await eraseIdFromSegment(SEG, X, w.deps);
+    expect(res).toMatchObject({ erased: false, reason: 'no-generation', collected: [] });
   });
 
   it('refuses as superseded, and deletes nothing, when the row is re-created under another incarnation and dropped before the fence', async () => {
