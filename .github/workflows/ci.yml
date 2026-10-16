@@ -210,7 +210,10 @@ jobs:
       # with a clear signal instead of hanging until the job timeout. Every image is local by now, the override runs
       # each service on its local copy, and `--pull never` keeps compose from pulling behind the helper's back.
       - run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300
+      # A step timeout below the job's, so a run that stalls fails this step and keeps its log (each failed test's
+      # output, a rehearsal's stderr included); a job that reaches its own timeout is cancelled and keeps none.
       - run: pnpm test:integration
+        timeout-minutes: 12
       # Kept only from a run that passed: a month's entry is never written again, so one saved by a run missing an
       # image, or on a broken build of a tag, would stand for the month.
       - uses: ./.github/actions/docker-images-save
