@@ -5,10 +5,11 @@ registry row that points at it, and the rules a reader follows to stay safe when
 understand. It is for someone writing a reader or a port in another language, and for anyone reasoning about what a
 version change means.
 
-> **The format is not frozen yet; it freezes at 1.0.** Until then the object layout and the registry row can change
-> in a minor release, and a store moves to such a release by exporting its segments and loading them again (see
-> [Versioning and compatibility](#11-versioning-and-compatibility)). From 1.0 the layout, the meaning of every field
-> and the mechanisms for extending it are a SemVer promise.
+> **The format is not frozen yet.** The object layout and the registry row can change in a minor release, and a store
+> moves to such a release by exporting its segments and loading them again. A freeze review, inside the planning of
+> the 1.0 release, decides what the project promises to keep; until it has, nothing on this page is a compatibility
+> promise. [Versioning and compatibility](#11-versioning-and-compatibility) says what readers do today and lists the
+> questions the review decides.
 
 ## Contents
 
@@ -23,7 +24,7 @@ version change means.
 9. [Identity: fingerprint, pins and the known-generations ledger](#9-identity-fingerprint-pins-and-the-known-generations-ledger)
 10. [The registry row, schema 5](#10-the-registry-row-schema-5)
 11. [Versioning and compatibility](#11-versioning-and-compatibility)
-12. [Reserved fields and what is not decided before the freeze](#12-reserved-fields-and-what-is-not-decided-before-the-freeze)
+12. [Reserved fields and the questions they wait on](#12-reserved-fields-and-the-questions-they-wait-on)
 13. [The golden corpus](#13-the-golden-corpus)
 
 ## How to read this page
@@ -34,7 +35,7 @@ Every statement here is read from the code in `packages/core/src` (the `.crbm` c
 [`tests/golden/`](../tests/golden) decodes as this page describes. Two labels separate what a port may
 rely on from what this release happens to do:
 
-- **Layout** is the format itself: the byte positions, widths and meanings. Layout is what freezes at 1.0.
+- **Layout** is the format itself: the byte positions, widths and meanings a port reads and writes.
 - **Writer today** and **Reader today** are the behaviour of this release's code: what it writes, and what it checks
   or refuses. A later minor release can write other values where the layout allows them, and a reader of your own
   should accept what the layout allows, not only what the writer happens to write. Where a reader today is stricter
@@ -43,7 +44,8 @@ rely on from what this release happens to do:
 Notation. `u8`, `u16`, `u32` and `u64` are unsigned integers, **little-endian** throughout. `a ‖ b` is the bytes of
 `a` followed by the bytes of `b`. A **varint** is an unsigned LEB128 integer of at most 5 bytes whose value fits in 32
 bits: seven bits per byte, low bits first, the high bit of a byte set when another byte follows. Offsets are from the
-start of the object, and the first byte is offset 0.
+start of the object, and the first byte is offset 0. A writer today writes the shortest varint (no padding byte with a
+zero payload); a reader today also accepts a longer encoding of the same value (`80 00` for 0), up to 5 bytes.
 
 ## 1. What a generation is
 
@@ -62,13 +64,16 @@ changes an object after it is complete: an erasure or a later load writes anothe
   none.
 - `<namespace>` and `<segment>` are the caller's names, each encoded with the object-key name codec: every character
   outside `A-Z a-z 0-9 . _ : -` is written as `%XX` for each of its UTF-8 bytes (uppercase hex), `%` itself is written
-  `%25`, and a **leading** `_` is written `%5F`. An absent namespace is the literal `_default`; the leading-underscore
-  rule is what keeps a caller's own `_default` (written `%5Fdefault`) from reaching it.
+  `%25`, and a **leading** `_` is written `%5F`. A name that is exactly `.` or `..` has every dot written `%2E`, so a
+  key never holds a path component that a file tool or a hierarchical store would resolve. An absent namespace is the
+  literal `_default`; the leading-underscore rule is what keeps a caller's own `_default` (written `%5Fdefault`) from
+  reaching it. A name is at most 256 characters, measured on the longer of its key encoding and its path encoding.
 - `<generation>` is a non-negative integer in canonical decimal: no sign, no leading zeros. A key whose middle is not
   canonical, or that names another segment sharing the prefix, is not a generation of this segment.
 
 The local-filesystem driver stores the same object at `<root>/<namespace>/segments/<segment>.<generation>.crbm`, with
-a path-safe variant of the codec (it also escapes `:`, a Windows device-name stem and a trailing dot).
+a path-safe variant of the codec (it also escapes `:`, a Windows device-name stem and a trailing dot); the `.` and
+`..` rule applies to both.
 
 **Layout.**
 
@@ -142,37 +147,54 @@ serialization of a 32-bit Roaring bitmap**, as the
 `(chunkKey << 16) + value` for each value in the bitmap.
 
 Because every value is below 65,536, a payload holds exactly one container, under container key 0. In the portable
-format that gives three shapes, and the writer picks the smallest with ties going to the array, as Roaring does:
+format that gives three shapes:
 
 | Container | When | Bytes of the payload |
 |---|---|---|
 | array | up to 4,096 values | `3A 30 00 00` ‖ `01 00 00 00` ‖ `00 00` ‖ `u16(card−1)` ‖ `10 00 00 00` ‖ the values as ascending `u16` |
 | bitset | more than 4,096 values | the same 16-byte header ‖ 8,192 bytes (65,536 bits) |
-| run | when its runs are smaller than the array | `3B 30 00 00` ‖ `01` ‖ `00 00` ‖ `u16(card−1)` ‖ `u16(runs)` ‖ for each run `u16(start)` ‖ `u16(length−1)` |
+| run | when its body is strictly smaller than the array's (and the bitset's), below | `3B 30 00 00` ‖ `01` ‖ `00 00` ‖ `u16(card−1)` ‖ `u16(runs)` ‖ for each run `u16(start)` ‖ `u16(length−1)` |
+
+**Which shape the writer picks (writer today).** The choice is Roaring's, made on the size of the container *body*, not
+of the whole payload: a run body is `2 + 4 · runs` bytes, an array body `2 · cardinality`, a bitset body 8,192. A
+container with more than 4,096 values is a bitset; otherwise it is the array, and it becomes a run only when
+`2 + 4 · runs` is strictly smaller than `2 · cardinality`. Where they are equal (`cardinality = 2 · runs + 1`: three
+consecutive values, or five in two runs) the array stays. The run payload has no 4-byte offset header, so a run payload
+is 7 bytes smaller than an array payload with the same body size; a port that compares whole payloads would pick the
+run at those ties and write other bytes than the golden file. The writer also removes any run form a bitmap arrived in
+before it chooses, so the bytes depend on the set alone. A reader accepts all three shapes whichever a writer chose.
 
 The array and bitset headers are the cookie `12346` (`0x303A`), a container count of 1, the container's key (0) and
 `cardinality − 1`, then the offset to the body (16). The run form is the cookie `12347` (`0x303B`, whose upper half
 holds `count − 1 = 0`), one byte of run flags (bit 0 set), the key and `cardinality − 1`; with fewer than four
 containers the portable format has no offset header. The golden file `v1.0-load.crbm`
 ([section 13](#13-the-golden-corpus)) holds all three: a 4-value array is 24 bytes, a 4,097-value bitset is 8,208, and
-1,000 consecutive values as one run is 15.
+1,000 consecutive values as one run is 15; its chunks of 3 consecutive values and of 5 values in two runs sit at the
+ties and are stored as arrays (22 and 26 bytes).
 
 - **Element width.** The footer's `elementWidth` is 32: ids are 32-bit and split 16/16 as above. 64 is reserved for a
-  future major version ([section 12](#12-reserved-fields-and-what-is-not-decided-before-the-freeze)).
+  future major version ([section 12](#12-reserved-fields-and-the-questions-they-wait-on)).
 - **Container codec.** The footer's `containerCodec` is 0, *none*: the payload is the codec's bytes as they are, with
   no further transform. Any other value is refused.
 - **Cardinality.** The index records each chunk's cardinality, between 1 and 65,536 ([section 5](#5-the-index)). The
   codec's own count is not compared with it when a payload is decoded: a payload whose bits disagree with its entry
   decodes to what it holds, and `count()` still answers the entry's number. A writer of your own must write them equal.
 - **Decoding limits.** A reader of this library refuses a payload longer than 1 MiB, and checks a payload's structure
-  (containers in ascending key order, array values strictly ascending, runs ascending and not touching, a bitset's
-  popcount equal to its stated cardinality) before it hands the bytes to a decoder, because a native decoder checks
-  only that it does not read past the buffer.
+  before it hands the bytes to a decoder, because a native decoder checks only that it does not read past the buffer.
+  **Reader today, refused:** containers out of ascending key order; array values not strictly ascending; runs that are
+  not ascending, that overlap or touch, or that leave their container; a run container with no runs; a bitset whose
+  popcount is not its stated cardinality; a run container whose stated cardinality is not what its runs cover; an entry
+  in an offset header that is not where its container starts; and any value above 65,535, which means any container key
+  other than 0. **Reader today, accepted:** bytes after the end of the bitmap inside a stored payload (the read path does
+  not require the payload to be consumed whole), and a payload whose count disagrees with its index entry (above). A
+  port that refuses those two refuses objects this library opens.
 - **Encrypted.** An encrypted payload is `nonce ‖ ciphertext ‖ tag` in place of the bytes above
   ([section 8](#8-encryption-at-rest)): 28 bytes longer than the cleartext payload.
 
 The codec is a field of the container, not of the format: `.crbm` is a shared container, and only the payload bytes
-belong to a codec. Ids are permanent once published, and none is reserved for a codec that does not exist.
+belong to a codec. The intent is that an id is never reused for another codec, and none is reserved for a codec that
+does not exist; whether a 1.x release may add a codec is a question for the freeze review
+([section 11](#11-versioning-and-compatibility)).
 
 ## 4. The extension block
 
@@ -202,8 +224,8 @@ section type is a generation's metadata.
   `sectionsLength`. Chunk payloads end at `extStart`. A writer sets the flag only when there is something to put in the
   block, so an object with no metadata is the same bytes as an object written without the mechanism.
 - **Size cap.** `sectionsLength` is at most **4,096** bytes (4 KiB), the sections only. A reader refuses a larger block
-  from the trailer alone. A writer of any 1.x minor stays within the cap, so a section added later is still readable
-  by this reader's size rule.
+  from the trailer alone. The writer today stays within the cap; whether a later minor promises to is a freeze
+  question ([section 11](#11-versioning-and-compatibility)).
 - **Sections.** The sections fill the region `[extStart, indexOffset − 12)` exactly. Types are in strictly ascending
   order: type 0, a repeated type and a type out of order are all refused. A section may not run past the region. **A
   reader skips the body of a section type it does not know** (after checking its header, its order and its length), so
@@ -216,7 +238,9 @@ section type is a generation's metadata.
   only when the tail ends inside the block.
 - **What the block does not carry.** In a cleartext object the footer's CRC does not cover the block's bytes
   ([section 7](#7-checksums)), and the encrypted metadata's authentication does not stop whoever can write the object
-  from removing the block and clearing the flag: the object then reads as one with no metadata.
+  from removing the block and clearing the flag: the object then reads as one with no metadata. Removing the block
+  changes the object's size and footer, so its fingerprint changes too, and a row's summary records the generation's
+  metadata (sealed, when the row is encrypted), so a row with a usable summary refuses the edited object.
 
 **Section type 1: the generation's metadata.** A flat record of string and finite-number values, at most 1 KiB, stored
 as its **canonical JSON** in UTF-8.
@@ -267,7 +291,7 @@ not shrink as a varint; the cardinality is a varint because 65,536 does not fit 
 - **Ordering.** Keys strictly ascend: after the first entry a `keyDelta` of 0 is a duplicate and is refused; a key past
   65,535 is refused. A generation has at most 65,536 entries.
 - **Writer today.** `gap` is always 0, so each payload starts where the previous one ended.
-- **Reader today.** Accepts any `gap`. Refuses an entry whose `length` is 0 (cleartext) or under 28 (encrypted, the
+- **Reader today.** Accepts any `gap`, and a varint written longer than it needs to be. Refuses an entry whose `length` is 0 (cleartext) or under 28 (encrypted, the
   nonce and tag), or over the payload cap (1 MiB, plus 28 on an encrypted object); whose `cardinality` is outside 1 to
   65,536; or whose payload would end past the payload region. Because gaps are unsigned, payloads ascend and cannot
   overlap. A reader refuses an index region over 8 MiB, and sizes its tables from the region's length, never from a
@@ -296,8 +320,8 @@ The last 104 bytes of the object. Its position is fixed, so a reader finds it fr
 | 29 | 1 | `versionMinor` | `u8` | the format's minor version; 0 |
 | 30 | 2 | `reserved2` | `u16` | reserved; written as zero |
 | 32 | 8 | `generation` | `u64` | the generation number the object was written as |
-| 40 | 12 | `indexNonce` | bytes | the index's AEAD nonce when encrypted, else zero |
-| 52 | 16 | `indexTag` | bytes | the index's AEAD tag when encrypted, else zero |
+| 40 | 12 | `indexNonce` | bytes | the index's AEAD nonce when encrypted; on a cleartext object, written zero and not read |
+| 52 | 16 | `indexTag` | bytes | the index's AEAD tag when encrypted; on a cleartext object, written zero and not read |
 | 68 | 16 | `keyId` | bytes | reserved; written as zero |
 | 84 | 4 | `chunkCount` | `u32` | the number of index entries; zero when encrypted |
 | 88 | 8 | `totalCardinality` | `u64` | the sum of every entry's cardinality; zero when encrypted |
@@ -331,27 +355,32 @@ that cannot be ignored. (A change that can be ignored is a new extension section
 - **`versionMajor`.** A reader refuses any value but its own major version, 1, with an `UnsupportedError` ([section
   11](#11-versioning-and-compatibility)).
 - **`versionMinor`.** Written as 0. A reader does not branch on it today.
-- **`reserved2`.** Written as zero and not read.
+- **`reserved2`.** Written as zero; a reader ignores it, so a port must not refuse a non-zero value.
 - **`generation`.** The number in the object's key; a generation is self-describing. A reader opening an object under a
   key refuses it with an `IntegrityError` when the footer names another generation. A value past 2^53 − 1 is refused.
-- **`indexNonce`, `indexTag`.** Cleartext: all zero bytes. Encrypted: the index's nonce and tag
-  ([section 8](#8-encryption-at-rest)).
-- **`keyId`.** All zero bytes in every object written today; not read. The wrapped keys live in the registry row, not in
+- **`indexNonce`, `indexTag`.** Encrypted: the index's nonce and tag ([section 8](#8-encryption-at-rest)). Cleartext:
+  the writer today writes zero bytes, and a reader does not read either field on a cleartext object, so a port must
+  not refuse non-zero bytes there. A per-write nonce in this slot is planned for the cleartext object, so those bytes
+  may carry a value later ([section 12](#12-reserved-fields-and-the-questions-they-wait-on)).
+- **`keyId`.** All zero bytes in every object written today; a reader ignores it, so a port must not refuse a non-zero
+  value. The wrapped keys live in the registry row, not in
   the object.
 - **`chunkCount`, `totalCardinality`.** Cleartext: the number of index entries and the sum of their cardinalities, and a
-  reader checks both against the index (a mismatch is an `IntegrityError`), so `count()` of a cleartext generation is
-  answerable from the footer with no index read. Encrypted: both are zero, so a leaked object reveals neither how many
-  chunks nor how many ids it holds, and a reader refuses an encrypted footer whose values are not zero; the reader
-  derives both from the decrypted index.
+  reader checks both against the index (a mismatch is an `IntegrityError`); the library's `count()` answers from the row's
+  summary or from the index's sum. Encrypted: both are zero, so neither number is stored, and a reader refuses an
+  encrypted footer whose values are not zero; the reader derives both from the decrypted index. Zero is not secrecy: see
+  what a reader without the key can read ([section 8](#8-encryption-at-rest)).
 - **`footerCrc32c`.** Covers footer bytes `[0, 96)`: every field above, the CRC of the index (and through it every
   entry's CRC), the flags, the generation, the nonce and the tag. It **does not cover** the CRC field itself, the
   `endMagic`, the preamble, or the extension block. A reader checks `endMagic` and then this CRC before it trusts any
   other footer field.
 
-**Check order today.** `endMagic`, then `footerCrc32c`, then `versionMajor`, then (a missing key on an encrypted object
-is a `ValidationError`), then the little-endian flag, then unknown flag bits, then `elementWidth`, `payloadCodecId` and
-`containerCodec`, then (a key given for an object that is not encrypted is an `IntegrityError`), then the index bounds and
-the index CRC.
+**Check order today.** The object's size and at least 112 bytes, then `endMagic`, then `footerCrc32c`, then
+`versionMajor`, then (a missing key on an encrypted object is a `ValidationError`), then the little-endian flag, then
+unknown flag bits, then `elementWidth`, `payloadCodecId` and `containerCodec`, then the four `u64` fields
+(`indexOffset`, `indexLength`, `totalCardinality`, `generation`) each as a safe integer, then (a key given for an object
+that is not encrypted is an `IntegrityError`), then the index bounds, then the index cap, then the preamble against the
+footer (when the first read covers offset 0), then the index CRC.
 
 ## 7. Checksums
 
@@ -371,17 +400,22 @@ standard algorithm's.
 The chain of commitment: the footer CRC covers the index CRC, the index CRC covers every entry, and each entry holds
 its payload's CRC. So the footer CRC commits, as far as a CRC can, to every id and to the object's shape. A CRC detects
 damage; it does not authenticate. Whoever can write the object can write a consistent set of CRCs, and the AEAD of an
-encrypted object ([section 8](#8-encryption-at-rest)) is what authenticates there.
+encrypted object ([section 8](#8-encryption-at-rest)) is what authenticates there, but only what it seals: the payloads,
+the index and the metadata. The footer's fields, the presence of the extension block and its framing are not
+authenticated.
 
 ## 8. Encryption at rest
 
 An object is encrypted or it is not, as a whole: the footer's `FLAG_ENCRYPTED` bit says which, and a segment's
-objects are all one or all the other. A reader opening an encrypted object needs the segment's data key; one that is
+objects are all one or all the other (a historical exception: an earlier release's cleartext publish that raced a
+segment's first keyed load can leave a cleartext object beside encrypted ones, and a reader refuses it). A reader opening an encrypted object needs the segment's data key; one that is
 given a key for an object that is not encrypted refuses the object with an `IntegrityError`, and one that is not given
 a key for an encrypted object raises a `ValidationError`.
 
-**The cipher.** AES-256-GCM with a 12-byte nonce and a 16-byte tag, the nonce drawn at random for each seal. The key is
-a per-segment 32-byte data key (DEK), shared by every generation of the segment.
+**The cipher.** AES-256-GCM with a 12-byte nonce and a 16-byte tag. The key is a per-segment 32-byte data key (DEK),
+shared by every generation of the segment. The nonce is the sealer's: the library's own sealer draws it at random for each
+seal, so a key should seal fewer than 2^32 messages ([the encryption guide](guide/encryption.md)); the sealer is
+injectable, and the golden file uses a counter so its bytes repeat.
 
 **What is sealed**, each as its own AEAD message:
 
@@ -399,6 +433,10 @@ moved to another segment, generation, chunk or scope fails to open. The bytes:
 0x01 ‖ u16 len(namespace) ‖ namespace ‖ u16 len(segment) ‖ segment ‖ u64 generation ‖ u8 scope ‖ u32 chunkKey
 ```
 
+The integers are little-endian, like every integer on this page, and `len` is the length in UTF-8 bytes. For the index
+(scope 1) of `v1.0-metadata-encrypted.crbm`, namespace `golden`, segment `metadata`, generation 7, the 32 bytes are
+`01 0600 676f6c64656e 0800 6d65746164617461 0700000000000000 01 00000000`.
+
 - `namespace` and `segment` are the caller's names as raw UTF-8 (not the key-encoded form), and an absent namespace is
   the empty string.
 - `generation` is the generation number.
@@ -407,19 +445,33 @@ moved to another segment, generation, chunk or scope fails to open. The bytes:
 
 A summary's `generation` is its own generation; the other scopes use the object's.
 
+**What the associated data does not bind.** It binds the generation *number*, not the object. A segment keeps one data
+key for its life, and a number can be taken again within one row's life ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)),
+so an earlier object stored under the same number, or its sealed parts as a set, opens under the same key and the same
+associated data. What refuses it is the row's usable summary fingerprint, or a pin's fingerprint, and a clear summary
+is not authenticated; with no usable summary nothing refuses it. Whether the associated data should bind a per-write
+value is an open question for the freeze review ([section 11](#11-versioning-and-compatibility)).
+
 **Wrapping the key.** The row's `wrappedDeks` ([section 10](#10-the-registry-row-schema-5)) holds the data key wrapped
 under one or more key-encryption keys (KEKs): a list of `{ keyId, wrapped }`, one entry per KEK, where `wrapped` is
-base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, the AES-256-GCM seal of the 32-byte data key under the KEK with the UTF-8
-bytes of `keyId` as associated data, so a wrapping cannot be relabelled to another KEK. Discarding the list leaves the
-segment's bytes unreadable. The footer's `keyId` field stays zero.
+an opaque blob (base64) of the keystore that wrote it. A keystore is pluggable, and only the envelope (`keyId`,
+`wrapped`, both strings) belongs to the row. The library's in-process keystore writes `wrapped` as base64 of
+`nonce(12) ‖ ciphertext ‖ tag(16)`, the AES-256-GCM seal of the 32-byte data key under the KEK with the UTF-8 bytes of
+`keyId` as associated data, so a wrapping cannot be relabelled to another KEK; another keystore (a KMS adapter, say)
+writes its own bytes there. Whether a later release fixes the inside of the blob or only the envelope is a freeze
+question ([section 11](#11-versioning-and-compatibility)). Discarding the list leaves the segment's bytes unreadable.
+The footer's `keyId` field stays zero.
 
 **What a reader without the key can still read.** The preamble, and every field of the footer, in the clear: the flags,
 the generation, the object's size and the index's length and CRC, so it can check the footer CRC and the index CRC and
 compute the object's fingerprint ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)). It
-cannot read the index (so not the number of chunks, their keys, sizes or cardinalities), the payloads, or the
-metadata. The extension block's framing (its trailer and its section types and lengths) stays visible, so the presence
-of a metadata section and its length are visible; its contents are not. The `chunkCount` and `totalCardinality` fields
-are zero, so neither is leaked.
+cannot read the index's contents (the chunks' keys, sizes and cardinalities), the payloads, or the metadata. The
+extension block's framing (its trailer and its section types and lengths) stays visible, so the presence of a metadata
+section and its length are visible; its contents are not. The footer's `chunkCount` and `totalCardinality` are zero, so
+neither number is stored. Nothing is padded, though, and sizes leak: the footer's `indexLength` bounds the number of
+chunks (an entry is 8 to 24 bytes, and 8 to 13 as the writer writes them today), and the payload region, which is the
+object's size less the preamble, the block, the index and the footer, is the sum of the sealed payloads, each its
+cleartext plus 28 bytes, so it bounds the set's size. The object's key also names the segment and the generation.
 
 ## 9. Identity: fingerprint, pins and the known-generations ledger
 
@@ -441,7 +493,10 @@ advance, and it is not unique over time:
 
 - a segment whose row is purged and whose bucket is emptied starts again at 0, so a re-created name serves different data
   at a number the old one used;
-- after a rollback, the numbers above the pointer are taken again by the next load.
+- a number is taken again once its object is deleted: after a purge, and within one row's life after a refused load's
+  reclaim of its own object, an erasure's delete above the pointer, or the delete of an object a rollback left above the
+  pointer. A load takes `currentGen + 1` when no object holds that number, and otherwise numbers above every object it
+  lists, so the objects a rollback leaves above the pointer are not reused while they exist.
 
 So `(segment, generation)` can name two different objects at different times. Everything that has to know *which
 object* carries the fingerprint, or the footer CRC that is half of it, beside the number:
@@ -464,8 +519,11 @@ object* carries the fingerprint, or the footer CRC that is half of it, beside th
   checks every object it opens for the row's generation against it and refuses one that is another object under the
   number.
 - **The `knownGens` entry** records `{ generation, footerCrc }`: the footer checksum half, because the size is not
-  needed to tell two objects under one number apart once the ledger knows the number. A rollback moves only onto a
-  generation the row knows, and an object whose footer carries another checksum is another object under that number.
+  needed to tell two objects under one number apart once the ledger knows the number. A rollback onto a
+  generation the row knows moves only when the object's footer checksum is the recorded one; an object with another
+  checksum is another object under that number. A rollback moves onto a generation the row does not know only with
+  `allowUnknown`, or, when the target is below the pointer, on a row with no usable ledger, or when the target is
+  numbered below a full ledger's bound (a ledger of 128 entries or more).
 - **A pin** records the generation, the driver's version of the object and the fingerprint. A pinned read checks the
   object against the fingerprint with one footer-sized read ([`sameObject`](guide/api-reference.md)): another size is
   another object, and at the same size the footer CRC decides.
@@ -488,22 +546,30 @@ copies and caches of it.
 | Envelope field | Type | Meaning |
 |---|---|---|
 | `schemaVersion` | integer | the row's schema; 5. A write always stamps it |
-| `deleted` | boolean | `true` marks a tombstone: the row is kept, with its counter advanced, so a re-create continues the counter; a reader treats a tombstone as absent. On a store whose conditional delete the backend honours, a delete removes the object instead and nothing is left |
+| `deleted` | boolean | `true` marks an envelope tombstone (not to be confused with a record's `status: "destroyed"`, the mark a crypto-shred leaves): the row is kept, with its counter advanced, so a re-create continues the counter; a reader treats a tombstone as absent. On a store whose conditional delete the backend honours, a delete removes the object instead and nothing is left |
 | `record` | object | the row, below |
 
 An envelope with another field is refused with an `IntegrityError`.
 
 | Driver | Where the envelope lives |
 |---|---|
-| S3 | an object `<prefix>registry/<namespace>/<segment>.reg`, `Content-Type: application/json`; create with `If-None-Match: *`, swap and conditional delete with `If-Match: <etag>` |
-| GCS | the same key; create with `ifGenerationMatch: 0`, swap with `ifGenerationMatch: <generation>` |
-| Azure Blob | the same key; create with `If-None-Match: *`, swap with `If-Match: <etag>` |
-| local filesystem | a file `<root>/<namespace>/registry/<segment>.reg`, written to a temporary file, synced, atomically renamed, and the directory synced |
+| S3 | an object `<prefix>registry/<namespace>/<segment>.reg`; create with `If-None-Match: *`, swap with `If-Match: <etag>`; the delete is conditional on `If-Match: <etag>` when the driver's conditional delete is on (by default, on an AWS S3 host) |
+| GCS | the same key; create with `ifGenerationMatch: 0`, swap with `ifGenerationMatch: <generation>`; the delete carries `ifGenerationMatch: <generation>` only when the driver's conditional delete is turned on, which is off by default |
+| Azure Blob | the same key; create with `If-None-Match: *`, swap with `If-Match: <etag>`; the delete carries `If-Match: <etag>` unless turned off, which is on by default; each write also tags the blob's metadata `cbwid` (outside the body) |
+| local filesystem | a file `<root>/<namespace>/registry/<segment>.reg`, written to a temporary file, synced, atomically renamed, and the directory synced. Swaps are fenced by an in-process lock only: a root is for one process, and two processes on one root are not fenced. A delete unlinks the file and never leaves a tombstone |
 | in-memory | not persisted, and holds the same record in memory |
+
+The three object stores set `Content-Type: application/json`, and a create over a tombstone is conditioned on the
+tombstone's version.
 
 The three object stores share one codec and one key layout: `registry/` first, then the encoded namespace (`_default`
 for none), then the encoded segment, then `.reg`, with the name codec of [section 1](#1-what-a-generation-is). A listing
-of `<prefix>registry/` finds every segment, and `<prefix>registry/<namespace>/` one namespace. A row is read with a
+of `<prefix>registry/` finds every segment, and `<prefix>registry/<namespace>/` one namespace. It also finds the retention
+sweep's **due-index rows**, which are not segments: full schema-5 rows with `currentGen: null`, in namespaces named
+`cbm.due.<bucket>` (the bucket is an expiry's day number, epoch milliseconds divided by 86,400,000, rounded down), each
+named `<n>.<namespace><segment>`, where `n` is the namespace's length in characters. An application's namespace may not
+start with `cbm.due.`. A tool that enumerates segments must skip those namespaces, and a port that writes names must
+refuse the prefix. A row is read with a
 1 MiB ceiling. The conditional write is what makes the pointer swap atomic: a store that accepts the precondition and
 ignores it turns the swap into last-write-wins.
 
@@ -515,15 +581,15 @@ ignores it turns the swap into last-write-wins.
 | `segment` | string | the segment's name; at most 256 characters once encoded |
 | `currentGen` | integer or `null` | the pointer: the generation reads resolve to, a non-negative safe integer. `null` says the segment exists and has no generation yet; a row can exist before the first load |
 | `status` | `"active"` or `"destroyed"` | `destroyed` is the tombstone left by a crypto-shred; the segment reads as empty |
-| `wrappedDeks` | array, optional | the wrapped data keys of an encrypted segment ([section 8](#8-encryption-at-rest)): 1 to 8 entries `{ keyId, wrapped }`, both non-empty strings, `wrapped` at most 4,096 characters. Absent means the segment is cleartext |
+| `wrappedDeks` | array, optional | the wrapped data keys of an encrypted segment ([section 8](#8-encryption-at-rest)): 1 to 8 entries `{ keyId, wrapped }`, both non-empty strings, `wrapped` an opaque keystore blob of at most 4,096 characters. A writer writes exactly those two fields; a reader accepts an entry with extra fields and ignores them. Absent means the segment is cleartext |
 | `keyId` | string, optional | reserved: an external key reference for a future key-management adapter; unused today |
 | `summary` | object, optional | a cached description of the current generation, below |
 | `knownGens` | array, optional | the generations the row knows it made current, below |
 | `leases` | array, optional | the leases that keep a generation out of collection, below |
-| `retention` | object, optional | a governance policy: a plain JSON object of at most 64 KiB. The key `expiresAt`, an epoch-millisecond number, is the one with meaning: once it has passed, a retention sweep may retire the segment. Every other key is the caller's and is kept |
-| `residency` | object, optional | the same shape as `retention`; stored and returned, with no meaning attached |
-| `createdAt` | integer | epoch milliseconds the row was created |
-| `updatedAt` | integer | epoch milliseconds of the last write |
+| `retention` | object, optional | a governance policy: a plain JSON object of at most 64 KiB (65,536 UTF-16 units of its JSON text, checked when a row is written, not when it is read). Two keys are the library's. `expiresAt` is an integer of at least 1,000,000,000,000, in epoch milliseconds; once it has passed, a retention sweep may retire the segment, and a smaller value or one that is not an integer reads as an invalid policy, not as a date. `retiredBySweepAt` is the sweep's own mark on a tombstone it wrote, which lets a later sweep purge the row: only the sweep's tombstone write sets it, every other tombstone write removes it, and a caller must not use the name. Every other key is the caller's and is kept |
+| `residency` | object, optional | the same shape and size cap as `retention`; stored and returned, with no meaning attached |
+| `createdAt` | integer | epoch milliseconds the row was created; a reader checks only that it is a number |
+| `updatedAt` | integer | epoch milliseconds of the last write; a reader checks only that it is a number |
 | `token` | string | the row's version for compare-and-swap, below |
 | `pointerId` | string | the token of the last write that named a field a read resolves through, below |
 
@@ -578,11 +644,13 @@ bucket and never one that vouches for a generation it should not.
 
 **`leases`.** An array of exactly `{ holder, generation, until }`: `holder` is 16 lowercase hex digits, unique in the
 list; `generation` a non-negative safe integer; `until` an epoch-millisecond number the lease runs to on the holder's
-clock. A collector holds a leased generation until the lease ends, plus a margin for clock skew. A writer writes at most
-64 entries and a reader accepts 256; a row with no pointer holds none. A write that moves `currentGen` leaves the list
-as it was.
+clock. A collector holds a leased generation until the lease ends, plus a margin for clock skew. `until` is a non-negative safe integer. A writer writes at
+most 64 entries (it may leave more when it shrinks a longer list) and a reader accepts 256; a writer writes none on a row
+with no pointer, though a reader accepts such a row. A write that moves `currentGen` leaves the list as it was.
 
-**An example,** a cleartext row (the numbers are those of `v1.0-load.crbm`, [section 13](#13-the-golden-corpus)):
+**An example,** a cleartext row whose summary describes `v1.0-load.crbm` ([section 13](#13-the-golden-corpus)): that object's
+generation number is 0, its cardinality, fingerprint and `tailBytes` are the ones below, and its footer checksum is the
+ledger's entry. The other fields are made up, and the object carries no metadata, so the summary has none.
 
 ```json
 {
@@ -591,24 +659,20 @@ as it was.
   "record": {
     "namespace": "acme",
     "segment": "shoppers",
-    "currentGen": 3,
+    "currentGen": 0,
     "status": "active",
     "retention": { "expiresAt": 1893456000000 },
     "summary": {
-      "generation": 3,
+      "generation": 0,
       "cardinality": 70647,
       "fingerprint": "8505:4208818",
-      "tailBytes": 167,
-      "metadata": { "owner": "campaigns" }
+      "tailBytes": 167
     },
-    "knownGens": [
-      { "generation": 2, "footerCrc": 123456 },
-      { "generation": 3, "footerCrc": 4208818 }
-    ],
+    "knownGens": [{ "generation": 0, "footerCrc": 4208818 }],
     "createdAt": 1790000000000,
     "updatedAt": 1790000100000,
-    "token": "00112233445566778899aabbccddeeff.4.0123456789abcdef",
-    "pointerId": "00112233445566778899aabbccddeeff.4.0123456789abcdef"
+    "token": "00112233445566778899aabbccddeeff.1.0123456789abcdef",
+    "pointerId": "00112233445566778899aabbccddeeff.1.0123456789abcdef"
   }
 }
 ```
@@ -650,50 +714,85 @@ the **row schema** (`schemaVersion` in the envelope, 5 today). They move indepen
 release unreadable by the next is listed under **Breaking** in the [changelog](../CHANGELOG.md), and a store moves by
 **exporting its segments with the release that wrote them and loading them with the new one into a new prefix**: there
 is no upgrade in place and no downgrade, and the rows of one prefix are all of one release. The changelog's Breaking
-entries on registry schemas 4 and 5 give the steps and say what stays behind.
+entries on registry schemas 4 and 5 give the steps and say what stays behind. One limit of that policy: a reader refuses
+a changed object only when the footer's `versionMajor` or a flag bit tells it to, so an incompatible change made
+without either is misread by an older reader, not refused.
 
-**What freezing at 1.0 means.** From 1.0 these become a SemVer promise:
+**What a 1.0 would promise is not decided.** The freeze is settled by a **freeze review**, inside the planning of the
+1.0 release, and not before. Until it has run, this page promises nothing past what the table
+above and the "Reader today" and "Writer today" lines say, and a change that breaks a reader may land in any minor
+release. These are the questions the review decides.
 
-- the object layout of sections 2 to 6, the byte position, width and meaning of every field, and the codec ids already
-  published;
-- the flag mechanism and the extension-section mechanism: a reader skips a section type it does not know, refuses a
-  flag bit it does not know, and a writer of any 1.x minor keeps an extension block within 4 KiB;
-- the registry row's schema: its envelope and the meaning of every field of schema 5;
-- the identity rules of [section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger).
+1. **Which number is "1.0".** The promise attaches to the library's 1.0 release. The object footer already reads
+   "format 1.0", which is a different number: does the first frozen object format keep that number, or move?
+2. **What is in scope.** The object layout of sections 2 to 6 and the codec ids already published are the obvious
+   members. Also candidates, because a port needs them and the code treats them as fixed: the object-key layout and name
+   codec of section 1, the CRC32C and its coverage of section 7, the cipher, framing, associated-data bytes and scope
+   numbers of section 8, and the plaintext of the sealed summary of section 10.
+3. **Identity.** Does the promise cover only the fingerprint's spelling and the meaning of `summary`, `knownGens` and
+   `pointerId`, leaving rollback, pin and cache behaviour to the API, or the identity rules of section 9 as a whole?
+4. **A new payload codec in 1.x.** Is a new `payloadCodecId` a 1.x addition that an older reader refuses by naming the
+   id, or a major change? Can a `containerCodec` value, or `versionMinor`, carry a 1.x change?
+5. **Row schemas.** A reader reads exactly one schema, so a new schema in a 1.x minor stops every older 1.x reader. Does
+   every 1.x read every schema an earlier 1.x wrote, with older readers refusing a newer one and the changelog saying
+   so, or is a new schema a major change?
+6. **What "major" means.** Is a change of meaning a new footer `versionMajor`, a new library major, or both?
+7. **Marking an incompatible change before 1.0.** Must such a change bump `versionMajor` or set a new flag bit, so that
+   an older reader refuses it rather than misreads it?
+8. **Extension points after the freeze.** Do flag bits and extension section types stay open, assigned one at a time by
+   later releases? Is flag bit 1 retired or available? A section must be safe to ignore and a flag bit is the mechanism
+   for what is not; is that the whole of the mechanism?
+9. **Reserved bytes.** Preamble bytes 6 and 7, the footer's `reserved2` and `keyId`, and the cleartext `indexNonce` and
+   `indexTag` are ignored by a reader today. Must any meaning a 1.x gives them be safe to ignore, or do readers start
+   refusing non-zero values first? Does the planned per-write cleartext nonce land before 1.0, and, if after, in a flag
+   bit or a field today's readers ignore?
+10. **`versionMinor`.** No reader branches on it. Is it informational only, and does the comparison of the preamble with
+    the footer stay?
+11. **Reader leniencies.** Each is accepted today and may be refused, kept, or required: an index `gap` above 0; bytes
+    between the index and the footer; overlong varints; bytes after a payload's bitmap; a cardinality that is not
+    compared with the payload; a cleartext object's `indexNonce` and `indexTag` bytes.
+12. **Caps a writer promises to stay within.** Only the extension block's 4 KiB is written as a rule today. The
+    others are what a reader of this library accepts: an index of 8 MiB, a payload of 1 MiB, a row of 1 MiB, a ledger of
+    192 entries written and 384 read, leases 64 and 256, 8 wrapped keys, governance objects of 64 KiB, metadata of 1 KiB
+    and `tailBytes` of at most 8,392,820. Which of them does a 1.x writer promise to stay within?
+13. **The associated data.** It binds the generation number and not the object ([section 8](#8-encryption-at-rest)). Does
+    it bind a per-write value, and does that change come before 1.0?
+14. **The wrapped key.** Is the inside of `wrappedDeks.wrapped` part of the format, or only its envelope, given that a
+    keystore is pluggable?
 
-**How a 1.x release can add to the format.** Only through the mechanisms the layout already has: a new **extension
-section type** for something a reader can ignore, and a new **footer flag bit** for something it cannot (an older
-reader then refuses the object, which is the point). A new row field is a change to the schema and is refused by a
-reader that does not declare it, so it is also a stamped change. **A change of meaning is a new major version**: moving
-a field, narrowing a width, reusing a bit or a codec id, or reading an existing field differently. A major bump is
-refused by every older reader with the typed error above.
+## 12. Reserved fields and the questions they wait on
 
-## 12. Reserved fields and what is not decided before the freeze
+What each reserved or open field holds, and how a reader treats it today. The numbers refer to the questions of
+[section 11](#11-versioning-and-compatibility).
 
-These are the places the format leaves open. None carries meaning today, and the freeze fixes what each may mean
-before 1.0.
+| Where | What it holds today | What a reader does today | Question |
+|---|---|---|---|
+| footer `flags` bit 1 and bits 4 to 31 | written clear | refuses an object that sets one, with an `UnsupportedError` | 8 |
+| footer `reserved2` (offset 30) | written zero | ignores it | 8, 9 |
+| preamble bytes 6 and 7 | written zero | never reads them | 9 |
+| footer `keyId` (offset 68, 16 bytes) | written zero; the wrapped keys are in the row | ignores it | 9 |
+| footer `indexNonce` and `indexTag` on a cleartext object | written zero | does not read them | 9 |
+| footer `versionMinor` | written 0 | does not branch on it | 10 |
+| `elementWidth` other than 32 | not written | refuses it | 6 |
+| `payloadCodecId` other than 1 | not written | refuses it, naming the id | 4 |
+| `containerCodec` other than 0 | not written | refuses it | 4 |
+| extension section types 2 to 255 | not written; type 0 is never a section | skips the body after checking its header, order and length | 8 |
+| row `keyId` | optional string, unused | stored and returned | none yet: an external key reference for a future key-management adapter |
+| row `residency` | optional object | stored and returned, with no meaning | none yet |
+| index `gap` above 0 | written 0 | accepts it | 11 |
+| bytes between the index and the footer | none written | accepts them | 11 |
+| a varint longer than the shortest | not written | accepts it, up to 5 bytes and 32 bits | 11 |
+| bytes after a payload's bitmap | none written | accepts them | 11 |
+| an entry's cardinality against its payload | written equal | does not compare them | 11 |
 
-| Where | Today | Open until the freeze |
-|---|---|---|
-| footer `flags` bit 1 and bits 4 to 31 | written clear; an object that sets one is refused | which bits get meanings, and in what order |
-| footer `reserved2` (offset 30) | written zero, not read | whether it keeps a meaning of its own or joins the flag space |
-| preamble bytes 6 and 7 | written zero, not read | the same |
-| footer `keyId` (offset 68, 16 bytes) | written zero, not read; the wrapped keys are in the row | whether it names a key in the object or stays reserved |
-| row `keyId` | optional string, unused | the external-key-reference semantics, if any |
-| row `residency` | stored and returned | any semantics; today it has none |
-| footer `versionMinor` | written 0, not branched on | what a minor bump changes for a reader, if anything |
-| `elementWidth` other than 32 | refused | 64-bit ids, which are a future major version |
-| `payloadCodecId` other than 1 | refused | ids are permanent once published; none is reserved ahead of a codec |
-| `containerCodec` other than 0 | refused | a container-level transform, if one is ever defined |
-| extension section types 2 to 255 | skipped | which sections exist; type 0 is never a section |
-
-A per-write nonce in a footer slot is planned; a separate change will define it.
+A per-write nonce in the cleartext footer's `indexNonce` slot is planned and not yet defined. A reader must not refuse
+non-zero bytes there; question 9 asks when it lands.
 
 ## 13. The golden corpus
 
 [`tests/golden/`](../tests/golden) holds the objects any other implementation should decode, and reproduce, to show it
 reads this format. Each is checked in this repository both ways: the writer must produce the file's bytes exactly from
-its inputs, and the reader must decode it back to those inputs. The corpus does not change after a release: if a check
+its inputs, and the library's reader must decode it back to those inputs (for `v1.0-load.crbm`, to the 70,647 ids). The corpus does not change after a release: if a check
 fails after a code change, the format changed, which needs a new format version, not a regenerated file.
 
 | File | Size | Generation | Fingerprint | Contents |
