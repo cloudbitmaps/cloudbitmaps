@@ -434,9 +434,10 @@ segment's key. A driver that reports `conditionalDelete` deletes only that objec
 call deletes nothing more, and it reports `erased: true` when nothing left holds the id, or the reason the row gives,
 `'superseded'` as a rule. A refused rewrite that deletes its own object again above the winner's pointer (see racing
 writers above) meets the same race, another erasure deleting that object as a holder and a load taking its number, and
-one more: a read of the footer names an object by its bytes, and a load of the ids the rewrite holds, in the clear,
-writes the rewrite's very bytes. So it first reads the footer of the object under its number and keeps one that is
-gone, is another object or cannot be read. Then it renews the row it read, as it does before deleting a holder, so a
+one more: a rewrite is deleted on the strength of a read of its footer. The footer carries the write identity the
+rewrite drew, so it names that write: a load of the ids the rewrite holds, in the clear, writes the same chunks but
+another identity, and its object does not match. So the call first reads the footer of the object under its number and
+keeps one that is gone, is another object or cannot be read. Then it renews the row it read, as it does before deleting a holder, so a
 load that wrote the object that read matched, which read the row before writing it, is refused at its publish. A
 renewal that loses means another write landed since: the call reads the row and decides again. One lost to a write of
 leases alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; after
@@ -466,17 +467,16 @@ repaired. These limits hold on every driver:
   then names the very object the call read. The call detects that one instead, as that bullet says.
 - On S3 the version is the object's ETag, which for an object stored without SSE-KMS or SSE-C is computed from its
   bytes. Two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes, share
-  one, so a load that writes, under the number taken again, exactly the bytes of the holder (the same ids and metadata,
-  in the clear) is not told apart from it. At a refused rewrite's discard the renewal before the delete refuses every
-  load that wrote those bytes and had not published when the call read the row, so the only one lost that way is one
-  that took the number after the renewal, in the one round trip before the delete. An encrypted generation written
-  through the shipped keystore seals every chunk under a fresh random nonce, so its bytes differ from any other
-  write's.
-- A read of the footer cannot tell a refused rewrite's object from a generation a load published with the same bytes.
-  When a rollback has moved the pointer below such a generation before the refused rewrite reads the row, nothing is
-  left for the renewal to refuse, and the discard deletes that generation as its own: from then on a pinned handle of it
-  fails with `NotFoundError` for any chunk it has yet to read, a lease of it names a missing generation, and a rollback
-  to it finds it gone.
+  one. Every object this library writes carries a random write identity in its footer (an encrypted one, its index's
+  nonce, and its chunks sealed under fresh nonces), so two writes of the same ids are never the same bytes, and a
+  load that takes the number again does not share the holder's ETag: the condition refuses its object there as it
+  does on a driver with a version per object. An object whose identity field is all zero, which a reader accepts,
+  has the bytes of any other such object of the same ids and metadata, and the round trip before the delete stays
+  open for it.
+- A read of the footer names a write, so it cannot take a generation a load published for a refused rewrite's object,
+  whatever its ids: the footer does not match, and the discard keeps it, including when a rollback has moved the
+  pointer below that generation before the call reads the row. A generation whose identity field is all zero is the
+  exception, as above.
 - A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
   its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
   no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load

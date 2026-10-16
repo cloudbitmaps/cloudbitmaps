@@ -71,7 +71,7 @@ name.
 | `retry` | tune the retry of reads, or `false` to turn it off |
 | `metrics` | a metrics sink; off by default |
 | `budget` | `{ maxRequests }` or `false`: the per-call request ceiling |
-| `seams` | `{ clock, rng }`: determinism, for tests |
+| `seams` | `{ clock, rng, entropy }`: determinism, for tests and replayable jobs; the source of each generation's write identity is the last |
 
 ## What it costs
 

@@ -1,0 +1,6 @@
+---
+'@cloudbitmaps/core': minor
+'@cloudbitmaps/roaring': minor
+---
+
+Every generation now carries a random write identity in its footer, so two loads of the same ids at the same generation number write two different objects. A cleartext generation stores 12 bytes its writer drew, once, in the footer's `indexNonce` field, which an encrypted generation already filled with its index's AEAD nonce; the footer checksum covers it, so an object's fingerprint, a pin, a ledger entry and every check that a footer is "mine" name one write. A load or erasure that deletes an object after reading its footer no longer deletes another writer's object of the same ids: a refused load's reclaim after a purge and re-create of the name, a refused rewrite's discard on a driver whose versions derive from the bytes, and a publish settled by footer on a registry that reports no write tokens. The store draws the identity from Web Crypto by default; `seams.entropy` (and `entropy` on `LoadDeps` and `EraseDeps`) replaces it for a replayable run. A reader takes any value in the field, an all-zero one included. The format stays 1.0, the footer keeps its 104 bytes, and the only change to a cleartext object is that field and the footer checksum that covers it.

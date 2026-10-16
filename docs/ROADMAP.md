@@ -371,6 +371,9 @@ between here and there:
    The object format stays 1.0: a generation written with metadata carries it in an extension block of typed
    sections, flagged in its footer (a reader skips a section type it does not know); a generation without metadata has
    no block and no flag.
+   Every generation's footer also carries a random write identity: the `indexNonce` field holds the index's AEAD
+   nonce on an encrypted generation and 12 bytes its writer drew on a cleartext one, covered by the footer checksum, so
+   two loads of the same ids are two objects with two fingerprints.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
 9. **Closing the named deferrals.** None of these is built:
    - self-healing disaster recovery;
@@ -426,11 +429,11 @@ move it up.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
 - **A ledger that tells a generation a load published from one a seed recorded.** A rollback refuses a generation the
   row's `knownGens` does not name, but a publish over a row with no usable ledger seeds one from the bucket, an orphan or
-  stray included, so a rollback accepts a seeded orphan as it accepts any known generation. An object's footer names its
-  bytes, not the load that wrote it, and a load of the same ids writes the same bytes, so the ledger's footer checksum
-  cannot tell a generation a load published from a same-bytes object another write stored under its number
-  ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). Telling them apart takes an identity each
-  write carries.
+  stray included, so a rollback accepts a seeded orphan as it accepts any known generation. A footer now names one write
+  (it carries a write identity), so the ledger's footer checksum tells a generation from another write's object under
+  its number, but a ledger seeded from the bucket records an orphan's footer as it records any other
+  ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). Telling a published generation from a seeded
+  orphan takes a record of which load published it.
 - **One generation from parts built in several processes.** Several workers, each owning a disjoint range of the id
   space, publishing one generation together without re-encoding. The format already allows it (a chunk's checksum
   and its encryption are bound to the chunk, not its position); what it needs is a server-side compose on every

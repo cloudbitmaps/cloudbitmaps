@@ -28,6 +28,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A cleartext generation carries a random write identity in its footer, so two loads of the same ids no longer write
+  identical objects.** The footer's `indexNonce` field, 12 bytes at offset 40, holds the AEAD nonce of the sealed index on
+  an encrypted generation and was all zero on a cleartext one. Every writer of a generation now draws those 12 bytes
+  once per object: a cleartext generation stores them there, an encrypted one is unchanged. The footer checksum covers
+  the field, so an object's fingerprint (`<size>:<checksum>`), a pin, a ledger entry and the row's summary name one write
+  and not just a set of ids. The footer keeps its 104 bytes, the format stays 1.0 and no offset moves. A reader takes a
+  cleartext object whatever the field holds, an all-zero value included. `CloudRoaring` draws from Web Crypto by default,
+  and `seams.entropy` replaces it (a function from a length to that many random bytes); `LoadDeps` and `EraseDeps` of
+  `@cloudbitmaps/core` take the same function as `entropy`, and a load or an erasure rewrite given none is refused with
+  a `ValidationError` before it writes. `.crbm` goldens under `tests/golden` carry a fixed identity; the one written
+  with an all-zero field stays and must read as it did.
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
   `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
   optional. A leading `--`, which pnpm forwards, is dropped. Any other argument prints "takes no arguments; it reads its
@@ -61,6 +72,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A delete decided from one read of an object's footer no longer removes another writer's object of the same cleartext
+  ids.** Two loads of the same ids at the same number wrote the same bytes, so a footer match proved content and not the
+  writer. A refused load whose reclaim read no row, after the name was swept, purged and re-created and a load of the same
+  ids took the freed number, deleted that load's generation and the row it then created named nothing (Medium, in
+  0.20.0); a refused erasure rewrite's discard could delete a load's generation of the same ids on a driver whose version
+  derives from the bytes (an S3 object without SSE-KMS or SSE-C), or after a rollback moved the pointer below it; a
+  publish settled by footer on a registry that reports no write tokens could report another load's publish as its own.
+  Each now meets a different footer and keeps the object. A driver that ignores a delete's condition keeps the round trip
+  between the read and the delete, and an object whose identity field is all zero is still alike to another's.
 - **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment of
   the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs
   on, so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`
