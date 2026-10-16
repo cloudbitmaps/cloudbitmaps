@@ -380,8 +380,9 @@ describe('an erasure that races another writer', () => {
       erased: true,
       fromGeneration: 2,
       generation: 3,
+      collected: expect.arrayContaining([0, 1, 2]),
     });
-    expect([...(res as { collected: number[] }).collected].sort()).toEqual([0, 1, 2]);
+    expect(res).toHaveProperty('collected.length', 3);
     expect(await generationsOf(w.storage)).toEqual([3]);
   });
 
