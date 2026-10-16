@@ -174,42 +174,106 @@ function assertSubpathsResolveWithoutExports(pkgDir) {
 }
 
 /**
- * A package ships only the declaration files a consumer can reach from its `exports` map.
+ * A package ships only the declarations the TypeScript compiler loads for a consumer, and every one it loads is
+ * there.
  *
- * `scripts/build.mjs` prunes the strays with the same walk (`scripts/lib/reachable-declarations.cjs`), so this
- * checks that the prune ran and caught everything. It lives here, after the build, because it reads `dist/`;
- * the test suite runs before the build in CI. Every stray is named so one run shows the whole list.
+ * `scripts/build.mjs` prunes with its own walk (`scripts/lib/reachable-declarations.cjs`), and a walk cannot catch
+ * its own bug, so this does not reuse it. It builds one program that imports every `exports` entry of every
+ * package by name, under NodeNext, Bundler and Node10 resolution with `skipLibCheck` off, and fails on
+ *   (a) any diagnostic inside a package's `dist/` — a reachable declaration deleted by mistake shows as TS2307;
+ *   (b) any shipped `.d.ts` that no resolution mode loaded — a stray the prune missed.
+ * It lives here, after the build, because it reads `dist/`; the test suite runs before the build in CI.
  */
-function strayDeclarationReport(pkgDir) {
-  const { existsSync } = require('node:fs');
-  const dir = path.join(__dirname, '..', 'packages', pkgDir);
-  if (!existsSync(path.join(dir, 'dist'))) {
-    return `@cloudbitmaps/${pkgDir}: dist/ is missing, so its declarations cannot be checked.`;
+function assertDeclarationsMatchWhatTscLoads() {
+  const fs = require('node:fs');
+  const ts = require('typescript');
+  const root = path.join(__dirname, '..');
+  const dists = packageDirs().map((d) => path.join(root, 'packages', d, 'dist'));
+  for (const dist of dists) {
+    if (!fs.existsSync(dist))
+      throw new Error(`${dist}: dist/ is missing, so its declarations cannot be checked.`);
   }
-  const strays = unreachableDeclarations(dir);
-  if (strays.length === 0) {
-    console.log(`  every shipped .d.ts reachable from exports: @cloudbitmaps/${pkgDir}`);
-    return null;
+  const specs = packageDirs().flatMap((d) => entriesOf(d));
+  const probeText = specs.map((spec, i) => `export * as m${i} from '${spec}';`).join('\n');
+  const real = (f) => {
+    try {
+      return fs.realpathSync(f);
+    } catch {
+      return f;
+    }
+  };
+  const realDists = dists.map((d) => real(d) + path.sep);
+  const inDist = (f) => realDists.some((d) => real(f).startsWith(d));
+  const modes = {
+    nodenext: [ts.ModuleKind.NodeNext, ts.ModuleResolutionKind.NodeNext, '.mts'],
+    bundler: [ts.ModuleKind.ESNext, ts.ModuleResolutionKind.Bundler, '.mts'],
+    node10: [ts.ModuleKind.CommonJS, ts.ModuleResolutionKind.Node10, '.ts'],
+  };
+  const loadedAnywhere = new Set();
+  const problems = [];
+  for (const [mode, [module, moduleResolution, ext]] of Object.entries(modes)) {
+    const probe = path.join(root, `__declarations_probe__${ext}`);
+    const options = {
+      noEmit: true,
+      strict: true,
+      skipLibCheck: false,
+      module,
+      moduleResolution,
+      target: ts.ScriptTarget.ES2022,
+      lib: ['lib.es2022.d.ts'],
+      types: ['node'],
+      typeRoots: [path.join(root, 'node_modules', '@types')],
+    };
+    const host = ts.createCompilerHost(options, true);
+    const { fileExists, readFile, getSourceFile } = host;
+    host.fileExists = (f) => f === probe || fileExists.call(host, f);
+    host.readFile = (f) => (f === probe ? probeText : readFile.call(host, f));
+    host.getSourceFile = (f, ...rest) =>
+      f === probe
+        ? ts.createSourceFile(f, probeText, rest[0], true)
+        : getSourceFile.call(host, f, ...rest);
+    const program = ts.createProgram([probe], options, host);
+    for (const sf of program.getSourceFiles()) loadedAnywhere.add(real(sf.fileName));
+    const diagnostics = [
+      ...program.getOptionsDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ].filter((d) => !d.file || d.file.fileName === probe || inDist(d.file.fileName));
+    for (const d of diagnostics) {
+      const where = d.file ? path.relative(root, d.file.fileName) : '(program)';
+      problems.push(
+        `[${mode}] TS${d.code} ${where}: ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`,
+      );
+    }
   }
-  return (
-    `@cloudbitmaps/${pkgDir}: ${strays.length} shipped declaration(s) no \`exports\` entry reaches — ` +
-    `the prune in scripts/build.mjs missed them\n  ${strays.join('\n  ')}`
+  const shipped = dists.flatMap((dist) => declarationFiles(dist).map((f) => path.join(dist, f)));
+  for (const file of shipped.filter((f) => !loadedAnywhere.has(real(f))).sort()) {
+    problems.push(`stray, loaded by no resolution mode: ${path.relative(root, file)}`);
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `shipped declarations differ from what a consumer's compiler loads (${problems.length}):\n  ` +
+        problems.join('\n  '),
+    );
+  }
+  console.log(
+    `  shipped declarations == what tsc loads (nodenext, bundler, node10): ${shipped.length} file(s), ` +
+      `${specs.length} entries`,
   );
-}
-
-/** The stray-declaration check over every package, failing once with all of them named. */
-function assertNoStrayDeclarations() {
-  const reports = packageDirs()
-    .map(strayDeclarationReport)
-    .filter((r) => r !== null);
-  if (reports.length > 0) throw new Error(reports.join('\n'));
 }
 
 /** Every package directory in the workspace. */
 function packageDirs() {
   return require('node:fs')
     .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter(
+      (e) =>
+        e.isDirectory() &&
+        require('node:fs').existsSync(
+          path.join(__dirname, '..', 'packages', e.name, 'package.json'),
+        ),
+    )
     .map((e) => e.name)
     .sort();
 }
@@ -410,7 +474,6 @@ function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
-const { unreachableDeclarations } = require('./lib/reachable-declarations.cjs');
 
 /**
  * Every `.d.ts` under `dist/`, as a path relative to `dist`. Both sweeps take the whole tree; which
@@ -567,6 +630,8 @@ function assertRanLikeDirect(bin, how, viaLink, direct, out) {
 }
 
 async function main() {
+  // First, so a lost or stray declaration is reported by the compiler, not by the narrower checks below.
+  assertDeclarationsMatchWhatTscLoads();
   for (const pkgDir of packageDirs()) {
     for (const specifier of entriesOf(pkgDir)) {
       await import(specifier); // ESM `import` condition
@@ -605,8 +670,6 @@ async function main() {
     assertDtsSpecifiers(pkgDir);
     assertSubpathsResolveWithoutExports(pkgDir);
   }
-
-  assertNoStrayDeclarations();
 
   console.log(
     'smoke: ESM + CJS import (via exports map) + roaring round-trip + cross-bundle errors + SDK-free entries OK',
