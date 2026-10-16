@@ -332,6 +332,27 @@ export function cleartextUnderRequiredEncryption(
   );
 }
 
+/** The refusal of a load that demands encryption (`requireEncryption`) but has no keystore to encrypt with. */
+function requireKeystoreWhenEncryptionRequired(options: {
+  readonly keystore?: unknown;
+  readonly requireEncryption?: boolean;
+}): void {
+  if (options.keystore === undefined && options.requireEncryption === true) {
+    throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
+  }
+}
+
+/** The refusal of a load that demands encryption onto a segment whose lineage is already cleartext. */
+function refuseCleartextWhenEncryptionRequired(
+  options: { readonly requireEncryption?: boolean },
+  ref: SegmentRef,
+  currentGen: number,
+): void {
+  if (options.requireEncryption === true) {
+    throw cleartextUnderRequiredEncryption(ref, currentGen);
+  }
+}
+
 /**
  * {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched: the same
  * options, with the same meaning, and the same writes. The number is joined only where the object is written.
@@ -343,8 +364,7 @@ export async function bulkLoadAhead(
   ids: Parameters<typeof bulkLoadCrbmGeneration>[2],
   options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
 ): Promise<BulkLoadResult> {
-  if (options.keystore === undefined && options.requireEncryption === true)
-    throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
+  requireKeystoreWhenEncryptionRequired(options);
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   const entropy = requireEntropy(options.entropy, 'a load');
   // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
@@ -425,8 +445,7 @@ export async function bulkLoadAhead(
       // half-encrypted — a pin of a superseded generation, once its reader is reopened, would find bytes its key
       // cannot open, and a later `destroySegment` would attest that shredding one DEK made every copy unreadable
       // while the older cleartext objects stay readable from any of them.
-      if (options.requireEncryption === true)
-        throw cleartextUnderRequiredEncryption(ref, existing.currentGen);
+      refuseCleartextWhenEncryptionRequired(options, ref, existing.currentGen);
       // Otherwise the segment stays what it is: cleartext.
     } else {
       const minted = await options.keystore.createDek();
