@@ -26,6 +26,14 @@ so, and so do the module headers in the code.
   copy. A store belongs to one copy, so another copy's segment always comes from another store. Install one copy of the
   package in a process.
 
+### Added
+
+- **A format reference, [`docs/format.md`](docs/format.md).** Every byte of a `.crbm` object (the preamble, the chunk
+  payloads, the extension block, the index, the 104-byte footer, the checksums and the sealing), the identity rules, and
+  the registry row at schema 5, with how each cloud registry stores it, what a reader refuses and with which error, what
+  the pre-1.0 policy is, the questions the 1.0 freeze review decides, and the golden corpus with a hand decode. It is written from
+  the code, and every file in `tests/golden/` decodes as it describes.
+
 ### Changed
 
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
@@ -61,6 +69,16 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The install docs allowed `roaring`'s install script in a place pnpm 11 and 12 do not read, and said every
+  unallowed install exits 0.** With pnpm 11 or 12 the `package.json` block
+  `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` changes nothing:
+  `pnpm add @cloudbitmaps/roaring` exits 1 with `ERR_PNPM_IGNORED_BUILDS` and the first `import` throws
+  `Cannot find module './build/Release/roaring.node'`. The README, the getting-started guide and every package README
+  now give one instruction per client: npm 12 reads `allowScripts` from `package.json`; pnpm 10 reads
+  `onlyBuiltDependencies` from `package.json`; pnpm 11 and later read `allowBuilds: { roaring: true }` from a
+  `pnpm-workspace.yaml` beside it (and warn about the `pnpm` key on every command). Without the allowance the install
+  exits 0 on npm 12 and pnpm 10 and 1 on pnpm 11 and later, and `pnpm rebuild roaring` is a silent no-op on pnpm 10 and
+  11 but exits 1 on pnpm 12. The site's install snippets, `llms.txt` and the roadmap now point to the same step.
 - **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment of
   the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs
   on, so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`

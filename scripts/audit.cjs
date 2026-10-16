@@ -8,9 +8,8 @@
  * This gives a real blocking gate — a brand-new advisory in a prod dependency breaks CI — while known,
  * build-time-only advisories don't perpetually red the pipeline.
  *
- * pnpm 9's `pnpm audit` CLI does not filter by `package.json` > `pnpm.auditConfig.ignoreGhsas` and offers no
- * per-advisory ignore flag (verified: `pnpm audit --prod --audit-level high` still exits non-zero on the
- * triaged advisories), so we do the filtering here. No extra dependency: pnpm + Node only. `--prod` scopes to
+ * pnpm 10's own `pnpm audit` also honours that list, but this gate does the filtering itself, so its verdict never
+ * depends on how a given pnpm release treats the list. No extra dependency: pnpm + Node only. `--prod` scopes to
  * runtime dependencies (dev-tool advisories are out of scope for what ships). Run it via `node scripts/audit.cjs`
  * (NOT `pnpm audit`, which is pnpm's built-in command, not this script). Bar: `AUDIT_LEVEL=critical|high|moderate|low`.
  */

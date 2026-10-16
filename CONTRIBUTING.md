@@ -82,9 +82,13 @@ before changing one of the heavy tests or the code under it. [`tests/README.md`]
 them and their sizes.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
-**no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
-want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
-for `test:integration`).
+**no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools want a
+current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 10, the version
+`package.json` pins. pnpm 11 and later refuse to run against that pin unless told to ignore it; run that way, they stop
+reading the `pnpm` block of `package.json`, where the overrides and the install-script allowance live, and when they
+manage their own version they write a `pnpm-lock.yaml` of two YAML documents, which GitHub's dependency graph and
+Dependabot read as having no dependencies. `tests/ci/pnpm-config.test.ts` fails on the pin and on such a lockfile.
+Docker only for `test:integration`).
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all six packages.
 
 ## Repo layout (a pnpm workspace of six packages)
