@@ -89,6 +89,9 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, 
 # npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
 ```
 
+On npm 12 and pnpm 10 and later, allow `roaring`'s install script first; see the
+[Install section of the getting-started guide](guide/getting-started.md#install).
+
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
 is a dependency of both and is never installed directly. The storage drivers are their own packages
 (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each depending on its SDK for real. `@cloudbitmaps/tools`, the offline
