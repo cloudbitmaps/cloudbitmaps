@@ -259,6 +259,329 @@ async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number
   return out.sort((a, b) => a - b);
 }
 
+const key = (generation: number): GenKey => ({ segment: CONFORMANCE_SEGMENT, generation });
+
+// The cases of each conformance suite are split by area into the functions below. Each one registers its `it`s
+// in the `describe` that calls it, and the suite calls them in the order the cases always ran in.
+
+/** One conformance case of a storage driver: runs, or is skipped where the caller named it in `skip`. */
+type DriverTest = (name: StorageDriverCase, fn: () => Promise<void>, timeout?: number) => void;
+
+type StorageDriverOptions = NonNullable<Parameters<typeof storageDriverConformance>[2]>;
+
+function storageWriteOnceConformance(
+  makeDriver: () => IStorageDriver,
+  test: DriverTest,
+  options: StorageDriverOptions,
+): void {
+  test('write-once round trip', async () => {
+    const d = makeDriver();
+    expect(d.capabilities().rangeRead).toBe(true);
+    const bytes = patterned(1000);
+    const put = await putBytes(d, key(0), bytes);
+    expect(put.size).toBe(1000);
+    expect(put.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(await d.getRange(key(0), 0, 1000)).toEqual(bytes);
+    expect(await d.getRange(key(0), 100, 50)).toEqual(bytes.subarray(100, 150));
+    expect(await d.getRange(key(0), 950, 50)).toEqual(bytes.subarray(950)); // exactly to the end
+  });
+
+  test('collision', async () => {
+    const d = makeDriver();
+    const first = patterned(300);
+    await putBytes(d, key(0), first);
+    await expect(putBytes(d, key(0), patterned(400))).rejects.toBeInstanceOf(WriteConflictError);
+    // Write-once means the loser changed nothing: the stored object is still the first.
+    expect(await d.getRange(key(0), 0, 300)).toEqual(first);
+    expect((await d.getTail(key(0), 10)).size).toBe(300);
+
+    // And under a race: a driver that checks for the object and then writes passes the sequential collision above,
+    // and stores both writers' bytes under one number, one of them lost. Exactly one lands, and the object is its.
+    const racers = [patterned(500), patterned(501)];
+    const settled = await Promise.allSettled(racers.map((b) => putBytes(d, key(1), b)));
+    expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const lost = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(lost.reason).toBeInstanceOf(WriteConflictError);
+    const winner = racers[settled.findIndex((r) => r.status === 'fulfilled')]!;
+    expect((await d.getTail(key(1), 0)).size).toBe(winner.length);
+    expect(await d.getRange(key(1), 0, winner.length)).toEqual(winner);
+  });
+
+  if (options.largeBytes !== undefined) {
+    const large = options.largeBytes;
+    test('collision on a large upload', async () => {
+      const d = makeDriver();
+      const first = patterned(large);
+      await putBytes(d, key(0), first);
+      await expect(putBytes(d, key(0), patterned(large + 1))).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+      // The loser changed nothing: the stored object is still the first, byte for byte.
+      expect((await d.getTail(key(0), 10)).size).toBe(large);
+      expect(firstDifference(await d.getRange(key(0), 0, large), first)).toBe(-1);
+      expect(await generationsOf(d, SEG)).toEqual([0]);
+    });
+  }
+}
+
+function storageReadConformance(makeDriver: () => IStorageDriver, test: DriverTest): void {
+  test('missing object', async () => {
+    const d = makeDriver();
+    await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+    // A zero-byte tail is how a load checks that the generation number it is about to take is free.
+    await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
+    await putBytes(d, key(1), patterned(100));
+    await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError); // a neighbour is not it
+    await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  test('out-of-range read', async () => {
+    const d = makeDriver();
+    await putBytes(d, key(0), patterned(100));
+    // Runs past the end, starts past the end, and malformed ranges: each is refused, never a short read.
+    await expect(d.getRange(key(0), 90, 20)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.getRange(key(0), 500, 10)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.getRange(key(0), -1, 10)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.getRange(key(0), 0, -1)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.getRange(key(0), 1.5, 10)).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  test('tail size', async () => {
+    const d = makeDriver();
+    const bytes = patterned(1000);
+    await putBytes(d, key(0), bytes);
+    // The size is the object's, not the length of the tail returned.
+    const small = await d.getTail(key(0), 64);
+    expect(small.size).toBe(1000);
+    expect(small.bytes).toEqual(bytes.subarray(936));
+    const whole = await d.getTail(key(0), 5000);
+    expect(whole.size).toBe(1000);
+    expect(whole.bytes).toEqual(bytes);
+    const none = await d.getTail(key(0), 0);
+    expect(none.size).toBe(1000);
+    expect(none.bytes.length).toBe(0);
+    // A whole length of zero or less is an empty tail with the size, and the largest safe one the whole object.
+    const negative = await d.getTail(key(0), -1);
+    expect(negative.size).toBe(1000);
+    expect(negative.bytes.length).toBe(0);
+    expect((await d.getTail(key(0), Number.MAX_SAFE_INTEGER)).bytes).toEqual(bytes);
+    // A length that is not a safe integer is refused, never read as a different length: a fraction (a negative one
+    // too), an infinity of either sign, and a whole number past the safe range on either side.
+    for (const length of [
+      Number.NaN,
+      1.5,
+      -1.5,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      2 ** 53,
+      -(2 ** 53),
+    ]) {
+      await expect(d.getTail(key(0), length), String(length)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+    // An empty object is an object: its tail is empty and its size is 0, not a refused range.
+    await putBytes(d, key(1), new Uint8Array(0));
+    const empty = await d.getTail(key(1), 10);
+    expect(empty.size).toBe(0);
+    expect(empty.bytes.length).toBe(0);
+  });
+}
+
+function storageDeleteConformance(makeDriver: () => IStorageDriver, test: DriverTest): void {
+  test('idempotent delete', async () => {
+    const d = makeDriver();
+    await d.delete(key(0)); // absent: a no-op
+    await putBytes(d, key(0), patterned(10));
+    expect((await d.getTail(key(0), 10)).size).toBe(10); // there, and read, before the delete
+    await d.delete(key(0));
+    // Missing to the very next read, by either call: a rollback reads one footer after its swap to know the object is there.
+    await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(d.getRange(key(0), 0, 4)).rejects.toBeInstanceOf(NotFoundError);
+    await d.delete(key(0)); // already gone: a no-op
+    await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  // Collection deletes a generation by name without knowing whether it is there, so an absent name between two
+  // present ones has to be a no-op that touches neither.
+  test('delete of an absent key beside its neighbours', async () => {
+    const d = makeDriver();
+    await putBytes(d, key(1), patterned(10));
+    await putBytes(d, key(3), patterned(12));
+    await d.delete(key(2));
+    await d.delete(key(0));
+    await d.delete(key(4));
+    expect(await generationsOf(d, SEG)).toEqual([1, 3]);
+    expect((await d.getTail(key(1), 10)).size).toBe(10);
+    expect((await d.getTail(key(3), 12)).size).toBe(12);
+  });
+
+  test('list read-after-delete', async () => {
+    const d = makeDriver();
+    const other: SegmentRef = { segment: 'other' };
+    expect(await generationsOf(d, SEG)).toEqual([]);
+    await putBytes(d, key(0), patterned(10));
+    await putBytes(d, key(1), patterned(10));
+    await putBytes(d, key(2), patterned(10));
+    await putBytes(d, { ...other, generation: 0 }, patterned(10));
+    // Read-after-put, then read-after-delete, with no wait in between: a listing that lags fails here.
+    expect(await generationsOf(d, SEG)).toEqual([0, 1, 2]);
+    await d.delete(key(1));
+    expect(await generationsOf(d, SEG)).toEqual([0, 2]);
+    await d.delete(key(0));
+    await d.delete(key(2));
+    expect(await generationsOf(d, SEG)).toEqual([]);
+    expect(await generationsOf(d, other)).toEqual([0]); // another segment's generation is not this one's
+  });
+}
+
+function storageListingConformance(
+  makeDriver: () => IStorageDriver,
+  test: DriverTest,
+  options: StorageDriverOptions,
+  pagedListSize: number | undefined,
+): void {
+  const missingLocation = options.missingLocation;
+  if (missingLocation !== undefined) {
+    test('missing location', async () => {
+      const d = missingLocation();
+      await failsAsMissingLocation('getRange', () => d.getRange(key(0), 0, 10));
+      await failsAsMissingLocation('getTail', () => d.getTail(key(0), 10));
+      await failsAsMissingLocation('delete', () => d.delete(key(0)));
+      await failsAsMissingLocation('list', () => generationsOf(d, SEG));
+    });
+  }
+
+  if (pagedListSize !== undefined) {
+    test(
+      'list across pages',
+      async () => {
+        const d = makeDriver();
+        await eachIndex(pagedListSize, (g) => putBytes(d, key(g), patterned(2)));
+        const listed = await generationsOf(d, SEG);
+        expect(listed.length).toBe(pagedListSize);
+        expect(listed).toEqual(Array.from({ length: pagedListSize }, (_v, g) => g));
+      },
+      Math.max(30_000, pagedListSize * 60),
+    );
+  }
+
+  // A driver whose key leaves out the namespace, folds two names into one spelling, or lists by a bare prefix passes
+  // every case above, and then serves one tenant's ids to another and deletes another segment's objects.
+  test('names and namespaces kept apart', async () => {
+    const d = makeDriver();
+    const refs: SegmentRef[] = [
+      { segment: 's' },
+      { namespace: 'n', segment: 's' },
+      { namespace: '_default', segment: 's' },
+      { segment: 's.1' },
+      { segment: 's0' },
+      { segment: 's1' },
+      { segment: 'a/b' },
+      { segment: 'a_b' },
+      { segment: 'a:b' },
+      { segment: 'a%3Ab' },
+      { segment: 'a.' },
+      { segment: 'a' },
+      { namespace: 'a', segment: 'b/c' },
+      { namespace: 'a/b', segment: 'c' },
+      ...NASTY_NAMES.map((namespace) => ({ namespace, segment: 'x' })),
+    ];
+    const sizeOf = (i: number): number => 10 + i;
+    for (const [i, ref] of refs.entries()) {
+      await putBytes(d, { ...ref, generation: 0 }, patterned(sizeOf(i)));
+    }
+    for (const [i, ref] of refs.entries()) {
+      const gen = { ...ref, generation: 0 };
+      expect((await d.getTail(gen, 0)).size, JSON.stringify(ref)).toBe(sizeOf(i));
+      expect(await d.getRange(gen, 0, sizeOf(i))).toEqual(patterned(sizeOf(i)));
+      expect(await generationsOf(d, ref), JSON.stringify(ref)).toEqual([0]);
+    }
+    await d.delete({ ...refs[0]!, generation: 0 });
+    expect(await generationsOf(d, refs[0]!)).toEqual([]);
+    for (const ref of refs.slice(1)) {
+      expect(await generationsOf(d, ref), JSON.stringify(ref)).toEqual([0]);
+    }
+  });
+}
+
+function storageGenerationsAndConditionalDelete(
+  makeDriver: () => IStorageDriver,
+  test: DriverTest,
+  options: StorageDriverOptions,
+): void {
+  test('generations by number', async () => {
+    const d = makeDriver();
+    for (const g of [1, 10, 11]) await putBytes(d, key(g), patterned(g));
+    expect(await generationsOf(d, SEG)).toEqual([1, 10, 11]);
+    await d.delete(key(1));
+    expect(await generationsOf(d, SEG)).toEqual([10, 11]);
+    expect((await d.getTail(key(10), 0)).size).toBe(10);
+  });
+
+  // A number can be taken again once its object is deleted, so a delete decided from a read of one object can meet
+  // another under the same key. `ifVersion` is what tells them apart, where the driver says it can.
+  test('conditional delete', async () => {
+    const d = makeDriver();
+    const first = patterned(40);
+    await putBytes(d, key(0), first);
+    const read = await d.getTail(key(0), 10);
+    // The version a delete is conditioned on: the one the read reported.
+    await d.delete(key(0), { ifVersion: read.version });
+    expect(await generationsOf(d, SEG)).toEqual([]);
+    const applies = d.capabilities().conditionalDelete === true;
+    if (options.conditionalDelete !== undefined) expect(applies).toBe(options.conditionalDelete);
+
+    // The number taken again: another object under the same key, with other bytes.
+    await putBytes(d, key(0), patterned(41));
+    if (!applies) {
+      // A driver that does not apply the condition ignores it, and deletes what is there.
+      await d.delete(key(0), { ifVersion: read.version });
+      expect(await generationsOf(d, SEG)).toEqual([]);
+      return;
+    }
+    // Every read of an object reports its version, the zero-byte existence check included, and two objects stored
+    // one after the other under one key with different bytes do not share one.
+    expect(read.version).toEqual(expect.any(String));
+    const again = await d.getTail(key(0), 10);
+    expect(again.version).toEqual(expect.any(String));
+    expect(again.version).not.toBe(read.version);
+    expect((await d.getTail(key(0), 0)).version).toBe(again.version);
+    expect((await d.getTail(key(0), 1000)).version).toBe(again.version);
+
+    // A version that names an object no longer there: refused, and the object stored since is left as it was.
+    await expect(d.delete(key(0), { ifVersion: read.version })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(await d.getRange(key(0), 0, 41)).toEqual(patterned(41));
+    expect(await generationsOf(d, SEG)).toEqual([0]);
+
+    // The version it holds: deleted, and a delete of the absent key, with either version, is a no-op.
+    await d.delete(key(0), { ifVersion: again.version });
+    expect(await generationsOf(d, SEG)).toEqual([]);
+    await d.delete(key(0), { ifVersion: again.version });
+    await d.delete(key(0), { ifVersion: read.version });
+    await d.delete(key(1), { ifVersion: read.version }); // never written
+    expect(await generationsOf(d, SEG)).toEqual([]);
+  });
+
+  // A driver that commits what it was given when the writer fails leaves a truncated generation holding a number.
+  test('failed write', async () => {
+    const d = makeDriver();
+    await expect(
+      d.putImmutable(key(0), async (sink) => {
+        await sink.write(patterned(10));
+        throw new Error('the source failed');
+      }),
+    ).rejects.toThrow('the source failed');
+    expect(await generationsOf(d, SEG)).toEqual([]);
+    await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
+    await putBytes(d, key(0), patterned(20));
+    expect((await d.getTail(key(0), 0)).size).toBe(20);
+  });
+}
+
 /**
  * Contract tests for an {@link IStorageDriver} — the contract its doc comment lists: write-once with
  * `WriteConflictError` on a collision, `NotFoundError` for a missing object, `ValidationError` for an out-of-range
@@ -307,298 +630,13 @@ export function storageDriverConformance(
   const test = (name: StorageDriverCase, fn: () => Promise<void>, timeout?: number): void => {
     (skipped.has(name) ? it.skip : it)(name, fn, timeout);
   };
-  const key = (generation: number): GenKey => ({ segment: CONFORMANCE_SEGMENT, generation });
 
   describe(`IStorageDriver conformance: ${label}`, () => {
-    test('write-once round trip', async () => {
-      const d = makeDriver();
-      expect(d.capabilities().rangeRead).toBe(true);
-      const bytes = patterned(1000);
-      const put = await putBytes(d, key(0), bytes);
-      expect(put.size).toBe(1000);
-      expect(put.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
-      expect(await d.getRange(key(0), 0, 1000)).toEqual(bytes);
-      expect(await d.getRange(key(0), 100, 50)).toEqual(bytes.subarray(100, 150));
-      expect(await d.getRange(key(0), 950, 50)).toEqual(bytes.subarray(950)); // exactly to the end
-    });
-
-    test('collision', async () => {
-      const d = makeDriver();
-      const first = patterned(300);
-      await putBytes(d, key(0), first);
-      await expect(putBytes(d, key(0), patterned(400))).rejects.toBeInstanceOf(WriteConflictError);
-      // Write-once means the loser changed nothing: the stored object is still the first.
-      expect(await d.getRange(key(0), 0, 300)).toEqual(first);
-      expect((await d.getTail(key(0), 10)).size).toBe(300);
-
-      // And under a race: a driver that checks for the object and then writes passes the sequential collision above,
-      // and stores both writers' bytes under one number, one of them lost. Exactly one lands, and the object is its.
-      const racers = [patterned(500), patterned(501)];
-      const settled = await Promise.allSettled(racers.map((b) => putBytes(d, key(1), b)));
-      expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-      const lost = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
-      expect(lost.reason).toBeInstanceOf(WriteConflictError);
-      const winner = racers[settled.findIndex((r) => r.status === 'fulfilled')]!;
-      expect((await d.getTail(key(1), 0)).size).toBe(winner.length);
-      expect(await d.getRange(key(1), 0, winner.length)).toEqual(winner);
-    });
-
-    if (options.largeBytes !== undefined) {
-      const large = options.largeBytes;
-      test('collision on a large upload', async () => {
-        const d = makeDriver();
-        const first = patterned(large);
-        await putBytes(d, key(0), first);
-        await expect(putBytes(d, key(0), patterned(large + 1))).rejects.toBeInstanceOf(
-          WriteConflictError,
-        );
-        // The loser changed nothing: the stored object is still the first, byte for byte.
-        expect((await d.getTail(key(0), 10)).size).toBe(large);
-        expect(firstDifference(await d.getRange(key(0), 0, large), first)).toBe(-1);
-        expect(await generationsOf(d, SEG)).toEqual([0]);
-      });
-    }
-
-    test('missing object', async () => {
-      const d = makeDriver();
-      await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError);
-      await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
-      // A zero-byte tail is how a load checks that the generation number it is about to take is free.
-      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
-      await putBytes(d, key(1), patterned(100));
-      await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError); // a neighbour is not it
-      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
-    });
-
-    test('out-of-range read', async () => {
-      const d = makeDriver();
-      await putBytes(d, key(0), patterned(100));
-      // Runs past the end, starts past the end, and malformed ranges: each is refused, never a short read.
-      await expect(d.getRange(key(0), 90, 20)).rejects.toBeInstanceOf(ValidationError);
-      await expect(d.getRange(key(0), 500, 10)).rejects.toBeInstanceOf(ValidationError);
-      await expect(d.getRange(key(0), -1, 10)).rejects.toBeInstanceOf(ValidationError);
-      await expect(d.getRange(key(0), 0, -1)).rejects.toBeInstanceOf(ValidationError);
-      await expect(d.getRange(key(0), 1.5, 10)).rejects.toBeInstanceOf(ValidationError);
-    });
-
-    test('tail size', async () => {
-      const d = makeDriver();
-      const bytes = patterned(1000);
-      await putBytes(d, key(0), bytes);
-      // The size is the object's, not the length of the tail returned.
-      const small = await d.getTail(key(0), 64);
-      expect(small.size).toBe(1000);
-      expect(small.bytes).toEqual(bytes.subarray(936));
-      const whole = await d.getTail(key(0), 5000);
-      expect(whole.size).toBe(1000);
-      expect(whole.bytes).toEqual(bytes);
-      const none = await d.getTail(key(0), 0);
-      expect(none.size).toBe(1000);
-      expect(none.bytes.length).toBe(0);
-      // A whole length of zero or less is an empty tail with the size, and the largest safe one the whole object.
-      const negative = await d.getTail(key(0), -1);
-      expect(negative.size).toBe(1000);
-      expect(negative.bytes.length).toBe(0);
-      expect((await d.getTail(key(0), Number.MAX_SAFE_INTEGER)).bytes).toEqual(bytes);
-      // A length that is not a safe integer is refused, never read as a different length: a fraction (a negative one
-      // too), an infinity of either sign, and a whole number past the safe range on either side.
-      for (const length of [
-        Number.NaN,
-        1.5,
-        -1.5,
-        Number.POSITIVE_INFINITY,
-        Number.NEGATIVE_INFINITY,
-        2 ** 53,
-        -(2 ** 53),
-      ]) {
-        await expect(d.getTail(key(0), length), String(length)).rejects.toBeInstanceOf(
-          ValidationError,
-        );
-      }
-      // An empty object is an object: its tail is empty and its size is 0, not a refused range.
-      await putBytes(d, key(1), new Uint8Array(0));
-      const empty = await d.getTail(key(1), 10);
-      expect(empty.size).toBe(0);
-      expect(empty.bytes.length).toBe(0);
-    });
-
-    test('idempotent delete', async () => {
-      const d = makeDriver();
-      await d.delete(key(0)); // absent: a no-op
-      await putBytes(d, key(0), patterned(10));
-      expect((await d.getTail(key(0), 10)).size).toBe(10); // there, and read, before the delete
-      await d.delete(key(0));
-      // Missing to the very next read, by either call: a rollback reads one footer after its swap to know the object is there.
-      await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
-      await expect(d.getRange(key(0), 0, 4)).rejects.toBeInstanceOf(NotFoundError);
-      await d.delete(key(0)); // already gone: a no-op
-      await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
-    });
-
-    // Collection deletes a generation by name without knowing whether it is there, so an absent name between two
-    // present ones has to be a no-op that touches neither.
-    test('delete of an absent key beside its neighbours', async () => {
-      const d = makeDriver();
-      await putBytes(d, key(1), patterned(10));
-      await putBytes(d, key(3), patterned(12));
-      await d.delete(key(2));
-      await d.delete(key(0));
-      await d.delete(key(4));
-      expect(await generationsOf(d, SEG)).toEqual([1, 3]);
-      expect((await d.getTail(key(1), 10)).size).toBe(10);
-      expect((await d.getTail(key(3), 12)).size).toBe(12);
-    });
-
-    test('list read-after-delete', async () => {
-      const d = makeDriver();
-      const other: SegmentRef = { segment: 'other' };
-      expect(await generationsOf(d, SEG)).toEqual([]);
-      await putBytes(d, key(0), patterned(10));
-      await putBytes(d, key(1), patterned(10));
-      await putBytes(d, key(2), patterned(10));
-      await putBytes(d, { ...other, generation: 0 }, patterned(10));
-      // Read-after-put, then read-after-delete, with no wait in between: a listing that lags fails here.
-      expect(await generationsOf(d, SEG)).toEqual([0, 1, 2]);
-      await d.delete(key(1));
-      expect(await generationsOf(d, SEG)).toEqual([0, 2]);
-      await d.delete(key(0));
-      await d.delete(key(2));
-      expect(await generationsOf(d, SEG)).toEqual([]);
-      expect(await generationsOf(d, other)).toEqual([0]); // another segment's generation is not this one's
-    });
-
-    const missingLocation = options.missingLocation;
-    if (missingLocation !== undefined) {
-      test('missing location', async () => {
-        const d = missingLocation();
-        await failsAsMissingLocation('getRange', () => d.getRange(key(0), 0, 10));
-        await failsAsMissingLocation('getTail', () => d.getTail(key(0), 10));
-        await failsAsMissingLocation('delete', () => d.delete(key(0)));
-        await failsAsMissingLocation('list', () => generationsOf(d, SEG));
-      });
-    }
-
-    if (pagedListSize !== undefined) {
-      test(
-        'list across pages',
-        async () => {
-          const d = makeDriver();
-          await eachIndex(pagedListSize, (g) => putBytes(d, key(g), patterned(2)));
-          const listed = await generationsOf(d, SEG);
-          expect(listed.length).toBe(pagedListSize);
-          expect(listed).toEqual(Array.from({ length: pagedListSize }, (_v, g) => g));
-        },
-        Math.max(30_000, pagedListSize * 60),
-      );
-    }
-
-    // A driver whose key leaves out the namespace, folds two names into one spelling, or lists by a bare prefix passes
-    // every case above, and then serves one tenant's ids to another and deletes another segment's objects.
-    test('names and namespaces kept apart', async () => {
-      const d = makeDriver();
-      const refs: SegmentRef[] = [
-        { segment: 's' },
-        { namespace: 'n', segment: 's' },
-        { namespace: '_default', segment: 's' },
-        { segment: 's.1' },
-        { segment: 's0' },
-        { segment: 's1' },
-        { segment: 'a/b' },
-        { segment: 'a_b' },
-        { segment: 'a:b' },
-        { segment: 'a%3Ab' },
-        { segment: 'a.' },
-        { segment: 'a' },
-        { namespace: 'a', segment: 'b/c' },
-        { namespace: 'a/b', segment: 'c' },
-        ...NASTY_NAMES.map((namespace) => ({ namespace, segment: 'x' })),
-      ];
-      const sizeOf = (i: number): number => 10 + i;
-      for (const [i, ref] of refs.entries()) {
-        await putBytes(d, { ...ref, generation: 0 }, patterned(sizeOf(i)));
-      }
-      for (const [i, ref] of refs.entries()) {
-        const gen = { ...ref, generation: 0 };
-        expect((await d.getTail(gen, 0)).size, JSON.stringify(ref)).toBe(sizeOf(i));
-        expect(await d.getRange(gen, 0, sizeOf(i))).toEqual(patterned(sizeOf(i)));
-        expect(await generationsOf(d, ref), JSON.stringify(ref)).toEqual([0]);
-      }
-      await d.delete({ ...refs[0]!, generation: 0 });
-      expect(await generationsOf(d, refs[0]!)).toEqual([]);
-      for (const ref of refs.slice(1)) {
-        expect(await generationsOf(d, ref), JSON.stringify(ref)).toEqual([0]);
-      }
-    });
-
-    test('generations by number', async () => {
-      const d = makeDriver();
-      for (const g of [1, 10, 11]) await putBytes(d, key(g), patterned(g));
-      expect(await generationsOf(d, SEG)).toEqual([1, 10, 11]);
-      await d.delete(key(1));
-      expect(await generationsOf(d, SEG)).toEqual([10, 11]);
-      expect((await d.getTail(key(10), 0)).size).toBe(10);
-    });
-
-    // A number can be taken again once its object is deleted, so a delete decided from a read of one object can meet
-    // another under the same key. `ifVersion` is what tells them apart, where the driver says it can.
-    test('conditional delete', async () => {
-      const d = makeDriver();
-      const first = patterned(40);
-      await putBytes(d, key(0), first);
-      const read = await d.getTail(key(0), 10);
-      // The version a delete is conditioned on: the one the read reported.
-      await d.delete(key(0), { ifVersion: read.version });
-      expect(await generationsOf(d, SEG)).toEqual([]);
-      const applies = d.capabilities().conditionalDelete === true;
-      if (options.conditionalDelete !== undefined) expect(applies).toBe(options.conditionalDelete);
-
-      // The number taken again: another object under the same key, with other bytes.
-      await putBytes(d, key(0), patterned(41));
-      if (!applies) {
-        // A driver that does not apply the condition ignores it, and deletes what is there.
-        await d.delete(key(0), { ifVersion: read.version });
-        expect(await generationsOf(d, SEG)).toEqual([]);
-        return;
-      }
-      // Every read of an object reports its version, the zero-byte existence check included, and two objects stored
-      // one after the other under one key with different bytes do not share one.
-      expect(read.version).toEqual(expect.any(String));
-      const again = await d.getTail(key(0), 10);
-      expect(again.version).toEqual(expect.any(String));
-      expect(again.version).not.toBe(read.version);
-      expect((await d.getTail(key(0), 0)).version).toBe(again.version);
-      expect((await d.getTail(key(0), 1000)).version).toBe(again.version);
-
-      // A version that names an object no longer there: refused, and the object stored since is left as it was.
-      await expect(d.delete(key(0), { ifVersion: read.version })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-      expect(await d.getRange(key(0), 0, 41)).toEqual(patterned(41));
-      expect(await generationsOf(d, SEG)).toEqual([0]);
-
-      // The version it holds: deleted, and a delete of the absent key, with either version, is a no-op.
-      await d.delete(key(0), { ifVersion: again.version });
-      expect(await generationsOf(d, SEG)).toEqual([]);
-      await d.delete(key(0), { ifVersion: again.version });
-      await d.delete(key(0), { ifVersion: read.version });
-      await d.delete(key(1), { ifVersion: read.version }); // never written
-      expect(await generationsOf(d, SEG)).toEqual([]);
-    });
-
-    // A driver that commits what it was given when the writer fails leaves a truncated generation holding a number.
-    test('failed write', async () => {
-      const d = makeDriver();
-      await expect(
-        d.putImmutable(key(0), async (sink) => {
-          await sink.write(patterned(10));
-          throw new Error('the source failed');
-        }),
-      ).rejects.toThrow('the source failed');
-      expect(await generationsOf(d, SEG)).toEqual([]);
-      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
-      await putBytes(d, key(0), patterned(20));
-      expect((await d.getTail(key(0), 0)).size).toBe(20);
-    });
+    storageWriteOnceConformance(makeDriver, test, options);
+    storageReadConformance(makeDriver, test);
+    storageDeleteConformance(makeDriver, test);
+    storageListingConformance(makeDriver, test, options, pagedListSize);
+    storageGenerationsAndConditionalDelete(makeDriver, test, options);
   });
 }
 
@@ -613,6 +651,1195 @@ async function drainRecords(it: AsyncIterable<RegistryRecord>): Promise<Registry
   const out: RegistryRecord[] = [];
   for await (const r of it) out.push(r);
   return out;
+}
+
+// Shared by every driver the suites run against, so frozen: a driver that mutates its input cannot leak state
+// into the next suite.
+const clearSummary: RegistrySummary = Object.freeze({
+  generation: 3,
+  cardinality: 12_000_000,
+  fingerprint: '1572864:2864434397',
+  tailBytes: 6_000,
+  metadata: Object.freeze({ def: 'v41', landedAt: 1_790_000_000_000 }),
+});
+const sealedSummary: RegistrySummary = Object.freeze({
+  generation: 4,
+  sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMw==',
+});
+
+const crc = (g: number): number => 1000 + g;
+const ledger = (...gens: number[]): { generation: number; footerCrc: number }[] =>
+  gens.map((generation) => ({ generation, footerCrc: crc(generation) }));
+
+/** The writes a test makes, each with the tokens it reported, in the order reported. */
+const collect = (): { tokens: string[]; options: { onToken: (t: string) => void } } => {
+  const tokens: string[] = [];
+  return { tokens, options: { onToken: (t) => void tokens.push(t) } };
+};
+
+type RegistryConformanceOptions = NonNullable<Parameters<typeof registryConformance>[2]>;
+
+function registryRowLifecycle(makeDriver: () => IRegistryDriver): void {
+  it('advertises strongRead', () => {
+    expect(makeDriver().capabilities().strongRead).toBe(true);
+  });
+
+  it('create, read back the full record, then CAS with the token', async () => {
+    const d = makeDriver();
+    expect(await d.get(SEG)).toBeNull();
+    const { token: t0 } = await d.create(SEG, {
+      currentGen: 3,
+      keyId: 'k1',
+      retention: { days: 30 },
+    });
+    const rec = await d.get(SEG);
+    expect(rec).not.toBeNull();
+    expect(rec!.segment).toBe(SEG.segment);
+    expect(rec!.currentGen).toBe(3);
+    expect(rec!.keyId).toBe('k1');
+    expect(rec!.status).toBe('active'); // default
+    expect(rec!.retention).toEqual({ days: 30 });
+    expect(rec!.token).toBe(t0);
+    expect(rec!.updatedAt).toBeGreaterThanOrEqual(rec!.createdAt);
+
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, {
+      currentGen: 4,
+      residency: { region: 'eu' },
+    });
+    expect(t1).not.toBe(t0);
+    const rec2 = await d.get(SEG);
+    expect(rec2!.currentGen).toBe(4);
+    expect(rec2!.residency).toEqual({ region: 'eu' });
+    expect(rec2!.createdAt).toBe(rec!.createdAt); // createdAt preserved across CAS
+  });
+
+  it('rejects create when the row exists', async () => {
+    const d = makeDriver();
+    await d.create(SEG, { currentGen: 0 });
+    await expect(d.create(SEG, { currentGen: 1 })).rejects.toBeInstanceOf(WriteConflictError);
+  });
+
+  it('rejects a stale-token CAS and leaves the record unchanged', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+    await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect((await d.get(SEG))!.currentGen).toBe(1);
+  });
+
+  // ── a caller's `held` row ─────────────────────────────────────────────────────────────────────────────
+  // `held` is a hint that may spare a read, never the fence: it must not change what any write answers.
+  it('a compare-and-swap with the row it read as `held` lands, as one without it does', async () => {
+    const d = makeDriver();
+    await d.create(SEG, { currentGen: 0 });
+    const held = (await d.get(SEG))!;
+    const { token } = await d.compareAndSwap(SEG, held.token, { currentGen: 1 }, { held });
+    expect(token).not.toBe(held.token);
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 1, token });
+    const next = (await d.get(SEG))!;
+    await d.compareAndSwap(SEG, next.token, { currentGen: 2 }, { held: next });
+    expect((await d.get(SEG))!.currentGen).toBe(2);
+  });
+
+  it('a compare-and-swap with a stale `held` row loses as a lost race does, and changes nothing', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    const held = (await d.get(SEG))!;
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 }); // another writer, after the read
+    await expect(
+      d.compareAndSwap(SEG, held.token, { currentGen: 9 }, { held }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 1, token: t1 });
+    // a row deleted and created again since is no different
+    await d.delete(SEG);
+    await d.create(SEG, { currentGen: 0 });
+    await expect(
+      d.compareAndSwap(SEG, held.token, { currentGen: 9 }, { held }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect((await d.get(SEG))!.currentGen).toBe(0);
+  });
+
+  it('a `held` row that is a copy, or of another token than `expected`, is read for as without it', async () => {
+    const d = makeDriver();
+    await d.create(SEG, { currentGen: 0 });
+    const first = (await d.get(SEG))!;
+    await d.compareAndSwap(SEG, first.token, { currentGen: 1 });
+    const current = (await d.get(SEG))!;
+    // `expected` names the current row: the older `held` is not the row it fences on, so it is not used
+    await d.compareAndSwap(SEG, current.token, { currentGen: 2 }, { held: first });
+    // a copy no driver returned
+    const copy = structuredClone((await d.get(SEG))!);
+    await d.compareAndSwap(SEG, copy.token, { currentGen: 3 }, { held: copy });
+    // a `held` that lies about the row cannot change what a write lands on
+    const lie: RegistryRecord = { ...(await d.get(SEG))!, currentGen: 99, keyId: 'forged' };
+    await d.compareAndSwap(SEG, lie.token, { currentGen: 4 }, { held: lie });
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 4 });
+    expect((await d.get(SEG))!.keyId).toBeUndefined();
+  });
+}
+
+function registryOptionalFields(makeDriver: () => IRegistryDriver): void {
+  it('a create with `held: null` makes the row when there is none, and conflicts when there is one', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: 0 }, { held: null });
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 0, token });
+    await expect(d.create(SEG, { currentGen: 1 }, { held: null })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 0, token });
+    // a row that was deleted is no row, whether the driver removed it or left a tombstone
+    await d.delete(SEG);
+    const { token: again } = await d.create(SEG, { currentGen: 2 }, { held: null });
+    expect(again).not.toBe(token);
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 2, token: again });
+  });
+
+  it('CAS against an absent row is a conflict', async () => {
+    const d = makeDriver();
+    await expect(d.compareAndSwap(SEG, '1', { currentGen: 1 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+  });
+
+  it('round-trips a non-default status + both governance blobs set at create', async () => {
+    const d = makeDriver();
+    await d.create(SEG, {
+      currentGen: 2,
+      status: 'destroyed',
+      retention: { days: 30 },
+      residency: { region: 'eu' },
+    });
+    const rec = await d.get(SEG);
+    expect(rec).toMatchObject({
+      currentGen: 2,
+      status: 'destroyed',
+      retention: { days: 30 },
+      residency: { region: 'eu' },
+    });
+  });
+
+  it('a patch can set and later CLEAR an optional field (keyId — crypto-shred path)', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0, keyId: 'k1' });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { keyId: undefined });
+    expect((await d.get(SEG))!.keyId).toBeUndefined();
+    // unrelated patch leaves it cleared
+    await d.compareAndSwap(SEG, t1, { residency: { region: 'eu' } });
+    const rec = await d.get(SEG);
+    expect(rec!.keyId).toBeUndefined();
+    expect(rec!.residency).toEqual({ region: 'eu' });
+  });
+
+  it('round-trips the wrapped-DEK list through create → get → CAS-clear (crypto-shred path)', async () => {
+    const d = makeDriver();
+    const wrappedDeks = [
+      { keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' },
+      { keyId: 'recovery', wrapped: 'cmVjb3Zlcnktd3JhcHBlZA==' },
+    ];
+    const { token: t0 } = await d.create(SEG, { currentGen: 0, wrappedDeks });
+    // Survives the create→get round-trip intact (every backend must serialize the list of {keyId, wrapped}).
+    expect((await d.get(SEG))!.wrappedDeks).toEqual(wrappedDeks);
+    // Survives an unrelated patch (not accidentally dropped)...
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+    expect((await d.get(SEG))!.wrappedDeks).toEqual(wrappedDeks);
+    // ...and crypto-shred CLEARS it (the linchpin: the only DEK copy is gone).
+    await d.compareAndSwap(SEG, t1, { wrappedDeks: undefined, status: 'destroyed' });
+    const rec = await d.get(SEG);
+    expect(rec!.wrappedDeks).toBeUndefined();
+    expect(rec!.status).toBe('destroyed');
+  });
+
+  it('clears one governance field via patch without disturbing the other', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, {
+      currentGen: 0,
+      retention: { days: 30 },
+      residency: { region: 'eu' },
+    });
+    // Clear retention only; residency must survive (guards the `'k' in patch` clear-vs-preserve idiom).
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: undefined });
+    expect((await d.get(SEG))!.retention).toBeUndefined();
+    expect((await d.get(SEG))!.residency).toEqual({ region: 'eu' });
+    // An unrelated patch leaves retention cleared and residency intact.
+    await d.compareAndSwap(SEG, t1, { keyId: 'k2' });
+    const rec = await d.get(SEG);
+    expect(rec!.retention).toBeUndefined();
+    expect(rec!.residency).toEqual({ region: 'eu' });
+  });
+
+  it('rejects an unknown status and a non-serializable governance blob', async () => {
+    const d = makeDriver();
+    await expectValidationReject(d.create(SEG, { currentGen: 0, status: 'bogus' as 'active' }));
+    await expectValidationReject(
+      d.create(SEG, {
+        currentGen: 0,
+        retention: { big: 1n } as unknown as Record<string, unknown>,
+      }),
+    );
+  });
+}
+
+function registryDeleteAndList(makeDriver: () => IRegistryDriver): void {
+  it('never reuses a token across delete→recreate (ABA-safe)', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    await d.delete(SEG);
+    expect(await d.get(SEG)).toBeNull();
+    const { token: t0b } = await d.create(SEG, { currentGen: 7 });
+    expect(t0b).not.toBe(t0);
+    await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+  });
+
+  it('delete is idempotent', async () => {
+    const d = makeDriver();
+    await d.create(SEG, { currentGen: 0 });
+    await d.delete(SEG);
+    await d.delete(SEG); // no throw
+    expect(await d.get(SEG)).toBeNull();
+  });
+
+  it('lists live records, scoped by namespace, excluding deleted', async () => {
+    const d = makeDriver();
+    await d.create({ segment: 'a' }, { currentGen: 0 });
+    await d.create({ segment: 'b' }, { currentGen: 0 });
+    await d.create({ namespace: 'tenant:acme', segment: 'c:1' }, { currentGen: 0 });
+    await d.delete({ segment: 'b' });
+    // The UNSCOPED list is the one that matters here: it has to recover a namespace from however the driver
+    // stored it, which is where a filesystem driver's encoding has to be undone. Fleet-wide scans — the
+    // retention sweep, the consistency check, subject erasure, eject — all ride on this call, so a driver
+    // that can write a namespace it cannot enumerate takes every one of them down.
+    expect((await drainSegments(d.list())).sort()).toEqual(['a', 'c:1']);
+    expect(await drainSegments(d.list('tenant:acme'))).toEqual(['c:1']);
+    expect((await drainSegments(d.list(undefined))).sort()).toEqual(['a', 'c:1']);
+  });
+
+  it('rejects a negative / non-integer currentGen', async () => {
+    const d = makeDriver();
+    for (const bad of [-1, 1.5, NaN]) {
+      await expectValidationReject(d.create(SEG, { currentGen: bad }));
+    }
+    const { token } = await d.create(SEG, { currentGen: 0 });
+    await expectValidationReject(d.compareAndSwap(SEG, token, { currentGen: -5 }));
+  });
+
+  // `currentGen: null` ("this segment exists and has no Storage generation yet") is a first-class stored
+  // value, not a missing field. It is what lets a retention policy be recorded ahead of the first load, so every driver must
+  // round-trip it through create, CAS, get AND list. Serialization is where this breaks silently: a driver
+  // that JSON-drops it, coerces it to 0, or (the subtle one) merges a patch with `patch.currentGen ?? prev`
+  // would leave the pointer at the old generation and read stale Storage data no one asked for.
+  it('round-trips a null currentGen through create, list, and CAS in both directions', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: null, retention: { expiresAt: 42 } });
+    const rec = await d.get(SEG);
+    expect(rec!.currentGen).toBeNull();
+    expect(rec!.status).toBe('active'); // null gen is a LIVE segment, not a tombstone
+    expect(rec!.retention).toEqual({ expiresAt: 42 });
+    // Enumeration must carry the WHOLE row, not just the pointer. A fleet sweep reads the policy straight out
+    // of `list()` rather than paying a `get()` per segment, so a driver whose projection drops `retention` — or
+    // stringifies the number — makes every segment read as "no policy" and **nothing ever expires**. That fails
+    // open on a retention commitment and is visible only to someone reading a ledger.
+    const listed = await drainRecords(d.list());
+    expect(listed.map((r) => r.currentGen)).toEqual([null]);
+    expect(listed[0]!.retention).toEqual({ expiresAt: 42 });
+
+    // null → 0: the first load publishing a generation onto an existing row.
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 0 });
+    expect((await d.get(SEG))!.currentGen).toBe(0);
+
+    // 0 → null: clearing the pointer. The value is legal, so a driver must actually apply it; treating the
+    // patch field as absent (the `??` merge bug) would silently leave `currentGen: 0` here.
+    await d.compareAndSwap(SEG, t1, { currentGen: null });
+    expect((await d.get(SEG))!.currentGen).toBeNull();
+
+    // A patch that does not mention `currentGen` must NOT disturb it — the other half of the same trap.
+    const cleared = await d.get(SEG);
+    await d.compareAndSwap(SEG, cleared!.token, { keyId: 'k7' });
+    const after = await d.get(SEG);
+    expect(after!.currentGen).toBeNull();
+    expect(after!.keyId).toBe('k7');
+  });
+
+  // A `destroyed` tombstone is still a record. `list()` must yield it: `runConsistencyCheck` skips
+  // tombstones itself, and the retention sweep can only clean up a dead row it can *see* — a driver that filters
+  // by status turns that cleanup into a permanent silent no-op while rows accumulate forever.
+  it('yields destroyed tombstones from list(), and refuses an undefined currentGen patch', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: 0 });
+    await d.compareAndSwap(SEG, token, { status: 'destroyed' });
+    const listed = await drainRecords(d.list());
+    expect(listed.map((r) => [r.segment, r.status])).toEqual([[SEG.segment, 'destroyed']]);
+
+    // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`. Under presence-based merging
+    // it would silently un-publish the segment's Storage data, so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
+    const live = makeDriver();
+    const { token: t0 } = await live.create(SEG, { currentGen: 3 });
+    await expectValidationReject(
+      live.compareAndSwap(SEG, t0, { currentGen: undefined, keyId: 'k1' }),
+    );
+    expect((await live.get(SEG))!.currentGen).toBe(3); // and the pointer is untouched
+  });
+}
+
+function registryNames(makeDriver: () => IRegistryDriver): void {
+  it('rejects traversal / invalid names on every method', async () => {
+    const d = makeDriver();
+    for (const name of BAD_NAMES) {
+      await expectValidationReject(d.get({ segment: name }));
+      await expectValidationReject(d.get({ namespace: name, segment: 's' }));
+      await expectValidationReject(d.create({ segment: name }, { currentGen: 0 }));
+      await expectValidationReject(d.compareAndSwap({ segment: name }, '1', { currentGen: 0 }));
+      await expectValidationReject(d.delete({ segment: name }));
+    }
+  });
+
+  // Every registry fixture above is `s:v1`-shaped, and `:` happens to encode to itself — so a driver that
+  // wrote segment names into its key VERBATIM would pass every test above this one. `NASTY_NAMES`, which the
+  // storage-source suite also runs, is what catches it. The failure it guards against is
+  // quiet: an unencoded `a/b` writes to a key whose parsed form no longer round-trips, so the segment
+  // stays readable through `get` while vanishing from `list` — and from every sweep that drives off it.
+  it('round-trips names that need encoding, through create, get AND list', async () => {
+    for (const segment of NASTY_NAMES) {
+      const d = makeDriver();
+      await d.create({ segment }, { currentGen: 4 });
+
+      const got = await d.get({ segment });
+      expect(got, `get() lost ${JSON.stringify(segment)}`).not.toBeNull();
+      expect(got!.segment).toBe(segment);
+      expect(got!.currentGen).toBe(4);
+
+      const listed: string[] = [];
+      for await (const rec of d.list()) listed.push(rec.segment);
+      expect(listed, `list() lost ${JSON.stringify(segment)}`).toContain(segment);
+    }
+  });
+
+  // The single-cycle ABA case above covers one delete→recreate. This is the repeated case, and it is the
+  // one that catches a counter which advances on *some* transitions but not all: such a driver still hands
+  // out a fresh token each cycle, so `t0b !== t0` holds every time, while two incarnations several cycles
+  // apart quietly collide. Tokens are opaque strings, so the contract is asserted as identity — no token
+  // is ever issued twice, and no retired token is ever accepted again — not as a numbering scheme.
+  it('with overwhelming probability never re-issues a token across repeated delete-and-recreate cycles (ABA-safe)', async () => {
+    const d = makeDriver();
+    const retired: string[] = [];
+    for (let cycle = 0; cycle < 4; cycle++) {
+      const { token } = await d.create(SEG, { currentGen: cycle });
+      retired.push(token);
+      await d.delete(SEG);
+    }
+    expect(new Set(retired).size, 'a token was issued to two different incarnations').toBe(
+      retired.length,
+    );
+    // The live incarnation must refuse every token any previous one ever held.
+    const { token: live } = await d.create(SEG, { currentGen: 0 });
+    expect(retired).not.toContain(live);
+    for (const stale of retired) {
+      await expect(
+        d.compareAndSwap(SEG, stale, { currentGen: 99 }),
+        `a retired token (${stale}) was accepted by the live row`,
+      ).rejects.toBeInstanceOf(WriteConflictError);
+    }
+    expect((await d.get(SEG))!.currentGen).toBe(0); // and none of them moved the pointer
+    await d.compareAndSwap(SEG, live, { currentGen: 1 }); // the current token still works
+  });
+}
+
+function registryTombstonesAndFencedDelete(makeDriver: () => IRegistryDriver): void {
+  it('refuses a compare-and-swap against a tombstoned row, and leaves it deleted', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: 0 });
+    await d.delete(SEG);
+    // A stale token holder must not be able to resurrect a deleted row — that row may have been
+    // crypto-shredded or erased, and un-deleting it would undo a compliance action.
+    await expect(d.compareAndSwap(SEG, token, { currentGen: 1 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(await d.get(SEG)).toBeNull();
+  });
+
+  // `delete is idempotent` above asserts only that a repeat call does not throw, which a driver that
+  // re-tombstones on every call also satisfies. Observable state must be unchanged too.
+  it('re-deleting an already-tombstoned row leaves the row observably unchanged', async () => {
+    const d = makeDriver();
+    const { token: first } = await d.create(SEG, { currentGen: 0 });
+    await d.delete(SEG);
+    const listedOnce = [];
+    for await (const r of d.list()) listedOnce.push(r);
+
+    await d.delete(SEG);
+    await d.delete(SEG);
+
+    expect(await d.get(SEG)).toBeNull();
+    const listedThrice = [];
+    for await (const r of d.list()) listedThrice.push(r);
+    expect(listedThrice).toEqual(listedOnce);
+    // Still ABA-safe: the recreate's token is new, and the original stays refused.
+    const { token: next } = await d.create(SEG, { currentGen: 0 });
+    expect(next).not.toBe(first);
+    await expect(d.compareAndSwap(SEG, first, { currentGen: 9 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+  });
+
+  // ── `delete` with an expected token ──────────────────────────────────────────────────────────────────
+  // A delete decided from a row read earlier must not take a row created after that read. The token is the
+  // row's identity, so a delete that carries it is refused for any other incarnation.
+  it('delete with the current token deletes the row', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: 0 });
+    await d.delete(SEG, token);
+    expect(await d.get(SEG)).toBeNull();
+    expect(await drainSegments(d.list())).toEqual([]);
+    const { token: next } = await d.create(SEG, { currentGen: 0 }); // the name is free again, with a fresh token
+    expect(next).not.toBe(token);
+  });
+
+  it('delete with a stale token throws and leaves the row', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+    await expect(d.delete(SEG, t0)).rejects.toBeInstanceOf(WriteConflictError);
+    const row = await d.get(SEG);
+    expect(row).toMatchObject({ currentGen: 1, status: 'active', token: t1 });
+    await d.compareAndSwap(SEG, t1, { currentGen: 2 }); // still live, and its token still works
+  });
+
+  it('delete with a token from before a delete-and-recreate leaves the new row', async () => {
+    const d = makeDriver();
+    const { token: old } = await d.create(SEG, { currentGen: 0 });
+    await d.delete(SEG, old);
+    const { token: fresh } = await d.create(SEG, { currentGen: 5 });
+    // The replayed or delayed delete: same name, the token of an incarnation that is gone.
+    await expect(d.delete(SEG, old)).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 5, token: fresh });
+  });
+
+  it('delete with a token against an absent or already-deleted row throws', async () => {
+    const d = makeDriver();
+    await expect(d.delete(SEG, '1')).rejects.toBeInstanceOf(WriteConflictError); // never existed
+    const { token } = await d.create(SEG, { currentGen: 0 });
+    await d.delete(SEG, token);
+    await expect(d.delete(SEG, token)).rejects.toBeInstanceOf(WriteConflictError); // tombstoned
+    expect(await d.get(SEG)).toBeNull();
+  });
+
+  it('delete without a token is unchanged: it takes the row at whatever token it carries', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: 0 });
+    await d.compareAndSwap(SEG, token, { currentGen: 1 });
+    await d.delete(SEG);
+    expect(await d.get(SEG)).toBeNull();
+    await d.delete(SEG); // and stays idempotent
+  });
+}
+
+function registrySummary(makeDriver: () => IRegistryDriver): void {
+  // ── `summary`: the row's cached description of its current generation ─────────────────────────────────
+  // A driver stores it like any other field. A driver that dropped it would still be correct, only slower, so
+  // the reason to hold every driver to it is the other direction: a driver that kept a summary a patch cleared,
+  // or lost one a patch did not mention, would describe the wrong generation.
+  it('round-trips a summary of either shape through create, get, list and compare-and-swap', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+    expect((await d.get(SEG))!.summary).toEqual(clearSummary);
+    expect((await drainRecords(d.list()))[0]!.summary).toEqual(clearSummary);
+
+    // A sealed summary goes with wrapped keys: an encrypted segment's row never carries a clear one.
+    const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+    await d.compareAndSwap(SEG, t0, { currentGen: 4, wrappedDeks, summary: sealedSummary });
+    expect((await d.get(SEG))!.summary).toEqual(sealedSummary);
+    expect((await drainRecords(d.list()))[0]!.summary).toEqual(sealedSummary);
+  });
+
+  // A write must store the summary it was called with. A driver that checks it at the call and serialises the
+  // caller's object after awaiting the row would store whatever the caller changed in between: a row every later
+  // read refuses, or another write's metadata.
+  it('stores the summary as it was when the write was called, whatever the caller changes after', async () => {
+    const d = makeDriver();
+    const asCalled = {
+      generation: 3,
+      cardinality: 5,
+      fingerprint: '4096:7',
+      tailBytes: 300,
+      metadata: { day: 'mon' },
+    };
+    const mine = structuredClone(asCalled);
+    const created = d.create(SEG, { currentGen: 3, summary: mine });
+    mine.cardinality = -1;
+    mine.metadata.day = 'x'.repeat(2000);
+    const { token } = await created;
+    expect((await d.get(SEG))!.summary).toEqual(asCalled);
+
+    const next = {
+      generation: 4,
+      cardinality: 6,
+      fingerprint: '4100:8',
+      tailBytes: 300,
+      metadata: { day: 'tue' },
+    };
+    const theirs = structuredClone(next);
+    const swapped = d.compareAndSwap(SEG, token, { currentGen: 4, summary: theirs });
+    theirs.generation = 9;
+    theirs.metadata.day = 'wed';
+    await swapped;
+    expect((await d.get(SEG))!.summary).toEqual(next);
+    expect((await drainRecords(d.list()))[0]!.summary).toEqual(next);
+  });
+
+  it('keeps a summary across a patch that does not mention it, and clears it when told to', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+    expect((await d.get(SEG))!.summary).toEqual(clearSummary);
+    await d.compareAndSwap(SEG, t1, { status: 'destroyed', summary: undefined });
+    const rec = await d.get(SEG);
+    expect(rec!.summary).toBeUndefined();
+    expect(rec!.retention).toEqual({ expiresAt: 9 });
+  });
+}
+
+function registrySummaryValidation(makeDriver: () => IRegistryDriver): void {
+  it('refuses a malformed summary and leaves the row unchanged', async () => {
+    const d = makeDriver();
+    const bad = {
+      generation: 3,
+      cardinality: -1,
+      fingerprint: '4096:7',
+      tailBytes: 300,
+    } as RegistrySummary;
+    await expectValidationReject(d.create(SEG, { currentGen: 3, summary: bad }));
+    expect(await d.get(SEG)).toBeNull();
+    // A summary names the object it describes: one without a fingerprint, or with one no object can have, is malformed.
+    for (const fingerprint of [undefined, '', '7', '0:1', '4096:4294967296']) {
+      const unnamed = {
+        generation: 3,
+        cardinality: 5,
+        fingerprint,
+        tailBytes: 300,
+      } as RegistrySummary;
+      await expectValidationReject(d.create(SEG, { currentGen: 3, summary: unnamed }));
+    }
+    expect(await d.get(SEG)).toBeNull();
+    const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+    await expectValidationReject(d.compareAndSwap(SEG, token, { summary: bad }));
+    expect(await d.get(SEG)).toMatchObject({ token, summary: clearSummary });
+  });
+
+  // A clear summary's `tailBytes` is the bytes an open reads from the object's end: from a footer's size to the object's
+  // size less its preamble, and no more than the cap of one open's tail read. A driver that stored any integer would
+  // let a row make every cold open read a size no object has.
+  it('refuses a clear summary whose tailBytes no object of its size can have, and a sealed one too short for it', async () => {
+    const d = makeDriver();
+    const sized = (tailBytes: unknown): RegistrySummary =>
+      ({ generation: 3, cardinality: 5, fingerprint: '4096:7', tailBytes }) as RegistrySummary;
+    // 104 is a footer, 4088 is the size less the preamble, and 8,392,820 is the cap: all three are legal where they fit.
+    await d.create(SEG, { currentGen: 3, summary: sized(104) });
+    await d.delete(SEG);
+    await d.create(SEG, { currentGen: 3, summary: sized(4096 - 8) });
+    await d.delete(SEG);
+    const big: RegistrySummary = {
+      generation: 3,
+      cardinality: 5,
+      fingerprint: '20000000:7',
+      tailBytes: 8_392_820,
+    };
+    await d.create(SEG, { currentGen: 3, summary: big });
+    await d.delete(SEG);
+    for (const tailBytes of [undefined, 103, 4096 - 7, 4096, 1.5, -1, '300', null]) {
+      await expectValidationReject(d.create(SEG, { currentGen: 3, summary: sized(tailBytes) }));
+    }
+    await expectValidationReject(
+      d.create(SEG, { currentGen: 3, summary: { ...big, tailBytes: 8_392_821 } }),
+    );
+    // A sealed blob of 51 bytes is a nonce, a tag and 23 bytes: one short of the count, the fingerprint and the tail size.
+    const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+    const sealed = (bytes: number): RegistrySummary => ({
+      generation: 3,
+      sealed: Buffer.alloc(bytes, 7).toString('base64'),
+    });
+    await expectValidationReject(
+      d.create(SEG, { currentGen: 3, wrappedDeks, summary: sealed(51) }),
+    );
+    await d.create(SEG, { currentGen: 3, wrappedDeks, summary: sealed(52) });
+    expect(await d.get(SEG)).toMatchObject({ currentGen: 3 });
+  });
+}
+
+function registryKnownGens(makeDriver: () => IRegistryDriver): void {
+  // ── `knownGens`: the generations a row made current, in the order it made them current ─────────────────────
+  // A driver that kept the ledger across a patch that moved the pointer would vouch for a pointer its last entry is not,
+  // and one that sorted it would lose which generations were most recently current.
+
+  it('round-trips knownGens through create, get, list and compare-and-swap, in the order given', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 4, knownGens: ledger(3, 1, 4) });
+    expect((await d.get(SEG))!.knownGens).toEqual(ledger(3, 1, 4));
+    expect((await drainRecords(d.list()))[0]!.knownGens).toEqual(ledger(3, 1, 4));
+    await d.compareAndSwap(SEG, t0, { currentGen: 1, knownGens: ledger(4, 3, 1) });
+    expect((await d.get(SEG))!.knownGens).toEqual(ledger(4, 3, 1));
+    expect((await drainRecords(d.list()))[0]!.knownGens).toEqual(ledger(4, 3, 1));
+  });
+
+  it('follows the pointer: a patch that moves currentGen without naming it drops the ledger, one that keeps it or names only leases, retention or residency keeps it', async () => {
+    const d = makeDriver();
+    const entry = { holder: '00112233aabbccdd', generation: 5, until: 1_900_000_000_000 };
+    const { token: t0 } = await d.create(SEG, { currentGen: 5, knownGens: ledger(2, 4, 5) });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+    const { token: t2 } = await d.compareAndSwap(SEG, t1, { residency: { region: 'eu' } });
+    const { token: t3 } = await d.compareAndSwap(SEG, t2, { leases: [entry] });
+    const { token: t4 } = await d.compareAndSwap(SEG, t3, { currentGen: 5 });
+    expect((await d.get(SEG))!.knownGens).toEqual(ledger(2, 4, 5));
+    const { token: t5 } = await d.compareAndSwap(SEG, t4, { currentGen: 6 });
+    expect((await d.get(SEG))!.knownGens).toBeUndefined();
+    await d.compareAndSwap(SEG, t5, { currentGen: 7, knownGens: ledger(7) });
+    expect((await d.get(SEG))!.knownGens).toEqual(ledger(7));
+  });
+
+  it('clears knownGens when told to', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: 5, knownGens: ledger(4, 5) });
+    await d.compareAndSwap(SEG, token, { knownGens: undefined });
+    expect((await d.get(SEG))!.knownGens).toBeUndefined();
+  });
+
+  it('stores knownGens as they were when the write was called', async () => {
+    const d = makeDriver();
+    const mine = ledger(1, 5);
+    const created = d.create(SEG, { currentGen: 5, knownGens: mine });
+    mine.push({ generation: 99, footerCrc: 1 });
+    mine[0]!.footerCrc = 5;
+    await created;
+    expect((await d.get(SEG))!.knownGens).toEqual(ledger(1, 5));
+  });
+}
+
+function registryKnownGensValidation(makeDriver: () => IRegistryDriver): void {
+  it('naming knownGens alone does not renew pointerId, and naming it beside currentGen does', async () => {
+    const d = makeDriver();
+    const { token: created } = await d.create(SEG, { currentGen: 5, knownGens: ledger(5) });
+    const { token: t1 } = await d.compareAndSwap(SEG, created, { knownGens: ledger(4, 5) });
+    expect(t1).not.toBe(created);
+    expect((await d.get(SEG))!.pointerId).toBe(created);
+    const { token: t2 } = await d.compareAndSwap(SEG, t1, {
+      currentGen: 6,
+      knownGens: ledger(5, 6),
+    });
+    expect((await d.get(SEG))!.pointerId).toBe(t2);
+  });
+
+  it('refuses a malformed ledger and leaves the row unchanged', async () => {
+    const d = makeDriver();
+    const refused: ReadonlyArray<[string, unknown, number | null]> = [
+      ['not an array', { generation: 5, footerCrc: 1 }, 5],
+      ['an entry that is not an object', [5], 5],
+      ['an entry with an extra key', [{ generation: 5, footerCrc: 1, size: 9 }], 5],
+      ['a negative generation', [{ generation: -1, footerCrc: 1 }, ...ledger(5)], 5],
+      ['a fractional generation', [{ generation: 1.5, footerCrc: 1 }, ...ledger(5)], 5],
+      ['a footerCrc of -1', [{ generation: 4, footerCrc: -1 }, ...ledger(5)], 5],
+      ['a footerCrc of 1.5', [{ generation: 4, footerCrc: 1.5 }, ...ledger(5)], 5],
+      ['a footerCrc of 2^32', [{ generation: 4, footerCrc: 2 ** 32 }, ...ledger(5)], 5],
+      ['a repeated generation', [...ledger(4, 5), ...ledger(4)], 5],
+      ['193 entries', ledger(...Array.from({ length: 193 }, (_, i) => i)), 192],
+      ['a row with no pointer', ledger(5), null],
+      ['an empty list', [], 5],
+      ['a last entry that is not the pointer', ledger(5, 4), 5],
+    ];
+    for (const [what, knownGens, currentGen] of refused) {
+      await expectValidationReject(
+        d.create(SEG, { currentGen, knownGens } as NewRegistryRecord),
+        what,
+      );
+      expect(await d.get(SEG), what).toBeNull();
+    }
+    const { token } = await d.create(SEG, { currentGen: 5, knownGens: ledger(4, 5) });
+    await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: ledger(5, 4) }));
+    await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: ledger(4) }));
+    await expectValidationReject(
+      d.compareAndSwap(SEG, token, { currentGen: 3, knownGens: ledger(4, 5) }),
+    );
+    expect(await d.get(SEG)).toMatchObject({ token, knownGens: ledger(4, 5) });
+  });
+
+  it('accepts a ledger that is not in number order, one with entries above the pointer, and one of the writer cap', async () => {
+    const d = makeDriver();
+    // The ledger every rollback swap writes: the target last, the generations it left numbered above it.
+    const { token } = await d.create(SEG, { currentGen: 1, knownGens: ledger(0, 2, 3, 1) });
+    expect((await d.get(SEG))!.knownGens).toEqual(ledger(0, 2, 3, 1));
+    const full = ledger(...Array.from({ length: 192 }, (_, i) => i));
+    await d.compareAndSwap(SEG, token, { currentGen: 191, knownGens: full });
+    expect((await d.get(SEG))!.knownGens).toEqual(full);
+  });
+
+  it("refuses a current entry whose checksum disagrees with a clear summary's fingerprint, given in the same write or kept from the row", async () => {
+    const d = makeDriver();
+    const agreeing = [{ generation: 3, footerCrc: 2864434397 }];
+    const disagreeing = [{ generation: 3, footerCrc: 2864434398 }];
+    await expectValidationReject(
+      d.create(SEG, { currentGen: 3, summary: clearSummary, knownGens: disagreeing }),
+    );
+    expect(await d.get(SEG)).toBeNull();
+    const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+    await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: disagreeing }));
+    expect(await d.get(SEG)).toMatchObject({ token });
+    await d.compareAndSwap(SEG, token, { knownGens: agreeing });
+    expect((await d.get(SEG))!.knownGens).toEqual(agreeing);
+  });
+}
+
+function registryLeases(makeDriver: () => IRegistryDriver): void {
+  // ── `leases`: the holds on a segment's generations ───────────────────────────────────────────────────────
+  // A lease names a generation a holder pinned and does not follow the pointer: a driver that dropped it when the
+  // pointer moved would let the next load collect a leased generation.
+  it('round-trips leases through compare-and-swap, get and list, and keeps them across a pointer move', async () => {
+    const d = makeDriver();
+    const entry = { holder: '00112233aabbccdd', generation: 3, until: 1_900_000_000_000 };
+    const { token: t0 } = await d.create(SEG, { currentGen: 5 });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { leases: [entry] });
+    expect((await d.get(SEG))!.leases).toEqual([entry]);
+    expect((await drainRecords(d.list()))[0]!.leases).toEqual([entry]);
+    const { token: t2 } = await d.compareAndSwap(SEG, t1, {
+      currentGen: 6,
+      knownGens: ledger(5, 6),
+    });
+    expect((await d.get(SEG))!.leases).toEqual([entry]);
+    const { token: t3 } = await d.compareAndSwap(SEG, t2, { retention: { expiresAt: 9 } });
+    expect((await d.get(SEG))!.leases).toEqual([entry]);
+    await d.compareAndSwap(SEG, t3, { leases: undefined });
+    expect((await d.get(SEG))!.leases).toBeUndefined();
+  });
+
+  it('refuses malformed leases and leaves the row unchanged', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: 5 });
+    const ok = { holder: '00112233aabbccdd', generation: 3, until: 1_900_000_000_000 };
+    await expectValidationReject(
+      d.compareAndSwap(SEG, token, { leases: [{ ...ok, holder: 'x' }] }),
+    );
+    await expectValidationReject(d.compareAndSwap(SEG, token, { leases: [ok, ok] }));
+    await expectValidationReject(d.compareAndSwap(SEG, token, { leases: [{ ...ok, until: -1 }] }));
+    expect(await d.get(SEG)).toMatchObject({ token });
+    expect((await d.get(SEG))!.leases).toBeUndefined();
+  });
+}
+
+function registryWriteTokensReported(makeDriver: () => IRegistryDriver): void {
+  it('a create reports the token it returns, and the row it makes has it as its token and its pointerId', async (ctx) => {
+    const d = makeDriver();
+    if (d.reportsWriteTokens !== true) return ctx.skip();
+    const { tokens, options } = collect();
+    const { token } = await d.create(SEG, { currentGen: 0 }, options);
+    expect(tokens).toEqual([token]);
+    expect(await d.get(SEG)).toMatchObject({ token, pointerId: token });
+  });
+
+  it('a create handed `held: null` reports its token too', async (ctx) => {
+    const d = makeDriver();
+    if (d.reportsWriteTokens !== true) return ctx.skip();
+    const { tokens, options } = collect();
+    const { token } = await d.create(SEG, { currentGen: 0 }, { ...options, held: null });
+    expect(tokens).toEqual([token]);
+    expect((await d.get(SEG))!.pointerId).toBe(token);
+  });
+
+  it('a compare-and-swap naming a resolved field reports its token, which becomes the row pointerId, held row or not', async (ctx) => {
+    const d = makeDriver();
+    if (d.reportsWriteTokens !== true) return ctx.skip();
+    const created = await d.create(SEG, { currentGen: 0 });
+    const first = collect();
+    const t1 = (await d.compareAndSwap(SEG, created.token, { currentGen: 1 }, first.options)).token;
+    expect(first.tokens).toEqual([t1]);
+    expect((await d.get(SEG))!.pointerId).toBe(t1);
+    const held = (await d.get(SEG))!;
+    const second = collect();
+    const t2 = (await d.compareAndSwap(SEG, t1, { currentGen: 2 }, { ...second.options, held }))
+      .token;
+    expect(second.tokens).toEqual([t2]);
+    expect((await d.get(SEG))!.pointerId).toBe(t2);
+  });
+
+  it('a compare-and-swap that names no resolved field reports its token, which becomes the row token and not its pointerId', async (ctx) => {
+    const d = makeDriver();
+    if (d.reportsWriteTokens !== true) return ctx.skip();
+    const { token: created } = await d.create(SEG, { currentGen: 0 });
+    const { tokens, options } = collect();
+    const { token } = await d.compareAndSwap(SEG, created, { retention: { days: 5 } }, options);
+    expect(tokens).toEqual([token]);
+    expect(await d.get(SEG)).toMatchObject({ token, pointerId: created });
+  });
+}
+
+function registryWriteTokensRefused(makeDriver: () => IRegistryDriver): void {
+  it('a token is reported before the write is applied: a report that throws stops it, and the row is untouched', async (ctx) => {
+    const d = makeDriver();
+    if (d.reportsWriteTokens !== true) return ctx.skip();
+    const refused = new Error('stop before sending');
+    const stop = {
+      onToken: (): void => {
+        throw refused;
+      },
+    };
+    await expect(d.create(SEG, { currentGen: 0 }, stop)).rejects.toBe(refused);
+    expect(await d.get(SEG)).toBeNull();
+    const { token } = await d.create(SEG, { currentGen: 0 });
+    await expect(d.compareAndSwap(SEG, token, { currentGen: 1 }, stop)).rejects.toBe(refused);
+    expect(await d.get(SEG)).toMatchObject({ token, pointerId: token, currentGen: 0 });
+  });
+
+  it('a write that conflicts leaves no row carrying a token it reported', async (ctx) => {
+    const d = makeDriver();
+    if (d.reportsWriteTokens !== true) return ctx.skip();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+    const { tokens, options } = collect();
+    await expect(d.create(SEG, { currentGen: 5 }, options)).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 }, options)).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    const row = (await d.get(SEG))!;
+    expect(row).toMatchObject({ token: t1, pointerId: t1, currentGen: 1 });
+    expect(tokens).not.toContain(row.token);
+    expect(tokens).not.toContain(row.pointerId);
+  });
+
+  it('each write reports its own token, and a conflicted one leaves none behind', async (ctx) => {
+    const d = makeDriver();
+    if (d.reportsWriteTokens !== true) return ctx.skip();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    await d.compareAndSwap(SEG, t0, { currentGen: 1 }); // t0 is stale now
+    const { tokens, options } = collect();
+    await expect(d.compareAndSwap(SEG, t0, { currentGen: 2 }, options)).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    const fresh = (await d.get(SEG))!;
+    const landed = (await d.compareAndSwap(SEG, fresh.token, { currentGen: 2 }, options)).token;
+    const again = (await d.compareAndSwap(SEG, landed, { currentGen: 3 }, options)).token;
+    expect(tokens.filter((t) => t === landed)).toHaveLength(1);
+    expect(tokens.filter((t) => t === again)).toHaveLength(1);
+    expect(new Set(tokens).size).toBe(tokens.length);
+    expect(tokens).toContain((await d.get(SEG))!.pointerId);
+    expect((await d.get(SEG))!.pointerId).toBe(again);
+  });
+}
+
+function registryPointerId(makeDriver: () => IRegistryDriver): void {
+  // ── `pointerId`: the token of the last write that named a field a read resolves through ──────────────────────────
+  // A reader keys its caches on a generation with this. A driver that kept it across a write that changed what the
+  // row resolves to would let a reader serve one resolution's chunks for another; one that renewed it on a lease or
+  // policy write would make every warm reader of the segment open it again.
+  it('a create sets pointerId to the token it returns, and get and list return it', async () => {
+    const d = makeDriver();
+    const { token } = await d.create(SEG, { currentGen: null });
+    expect((await d.get(SEG))!.pointerId).toBe(token);
+    expect((await drainRecords(d.list()))[0]!.pointerId).toBe(token);
+  });
+
+  it('a compare-and-swap naming a resolved field renews pointerId to its own token, the pointer at its own value included', async () => {
+    const d = makeDriver();
+    let { token } = await d.create(SEG, { currentGen: 2 });
+    const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+    const patches: readonly RegistryPatch[] = [
+      { currentGen: 3 },
+      { currentGen: 3 },
+      { summary: clearSummary },
+      { keyId: 'k1' },
+      { keyId: undefined },
+      { wrappedDeks },
+      { wrappedDeks: undefined },
+      { status: 'destroyed' },
+    ];
+    for (const patch of patches) {
+      ({ token } = await d.compareAndSwap(SEG, token, patch));
+      const row = (await d.get(SEG))!;
+      expect(row.pointerId, JSON.stringify(patch)).toBe(token);
+      expect((await drainRecords(d.list()))[0]!.pointerId).toBe(token);
+    }
+  });
+
+  // "Names" is by presence, whatever the value: each resolved field named at the value the row already has renews it,
+  // from a row whose pointerId is not its token, so a driver that compared values instead would be seen.
+  it('a compare-and-swap naming any resolved field at the value it already has renews pointerId', async () => {
+    const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+    const rows: ReadonlyArray<{ create: NewRegistryRecord; patch: RegistryPatch }> = [
+      { create: { currentGen: 3, summary: clearSummary }, patch: { summary: clearSummary } },
+      { create: { currentGen: 3 }, patch: { status: 'active' } },
+      { create: { currentGen: 3, keyId: 'k1' }, patch: { keyId: 'k1' } },
+      { create: { currentGen: 3, wrappedDeks }, patch: { wrappedDeks } },
+    ];
+    for (const { create, patch } of rows) {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, create);
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+      expect((await d.get(SEG))!.pointerId).toBe(t0);
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, patch);
+      const row = (await d.get(SEG))!;
+      expect(row.pointerId, JSON.stringify(patch)).toBe(t2);
+      expect(row).toMatchObject(patch);
+    }
+  });
+
+  it('a compare-and-swap naming only leases, policy or the ledger moves the token and leaves pointerId', async () => {
+    const d = makeDriver();
+    const { token: created } = await d.create(SEG, { currentGen: 5 });
+    const entry = { holder: '00112233aabbccdd', generation: 5, until: 1_900_000_000_000 };
+    const patches: readonly RegistryPatch[] = [
+      { leases: [entry] },
+      { leases: undefined },
+      { retention: { expiresAt: 9 } },
+      { residency: { region: 'eu' } },
+      { knownGens: ledger(3, 5) },
+      { knownGens: undefined },
+    ];
+    let token = created;
+    for (const patch of patches) {
+      const before = token;
+      ({ token } = await d.compareAndSwap(SEG, token, patch));
+      expect(token, JSON.stringify(patch)).not.toBe(before);
+      expect((await d.get(SEG))!.pointerId, JSON.stringify(patch)).toBe(created);
+    }
+    expect((await drainRecords(d.list()))[0]!.pointerId).toBe(created);
+  });
+}
+
+function registryPointerIdRenewal(makeDriver: () => IRegistryDriver): void {
+  // The renewal a writer asks for with no other change: naming the pointer at its own value. "Moves" in a patch
+  // means "changes value", so the summary, the ledger and the leases stay with a pointer that stays.
+  it('a patch naming the pointer at the value it has keeps the summary, the ledger and the leases', async () => {
+    const d = makeDriver();
+    const entry = { holder: '00112233aabbccdd', generation: 2, until: 1_900_000_000_000 };
+    const { token: t0 } = await d.create(SEG, {
+      currentGen: 3,
+      summary: clearSummary,
+      knownGens: [...ledger(1, 2), { generation: 3, footerCrc: 2864434397 }],
+    });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { leases: [entry] });
+    const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 3 });
+    const row = (await d.get(SEG))!;
+    expect(row).toMatchObject({
+      currentGen: 3,
+      token: t2,
+      pointerId: t2,
+      knownGens: [...ledger(1, 2), { generation: 3, footerCrc: 2864434397 }],
+    });
+    expect(row.summary).toEqual(clearSummary);
+    expect(row.leases).toEqual([entry]);
+  });
+
+  it('never repeats a pointerId across writes, deletes and re-creates', async () => {
+    const d = makeDriver();
+    const seen = new Set<string>();
+    for (let cycle = 0; cycle < 3; cycle++) {
+      let { token } = await d.create(SEG, { currentGen: null });
+      seen.add((await d.get(SEG))!.pointerId);
+      for (let g = 0; g < 3; g++) {
+        ({ token } = await d.compareAndSwap(SEG, token, { currentGen: g }));
+        const { pointerId } = (await d.get(SEG))!;
+        expect(seen.has(pointerId), `cycle ${cycle}, generation ${g}`).toBe(false);
+        seen.add(pointerId);
+      }
+      await d.delete(SEG, token);
+    }
+    await d.create(SEG, { currentGen: 0 });
+    expect(seen.has((await d.get(SEG))!.pointerId)).toBe(false);
+  });
+
+  it('a lost compare-and-swap changes nothing, pointerId included', async () => {
+    const d = makeDriver();
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+    const before = (await d.get(SEG))!;
+    await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(await d.get(SEG)).toMatchObject({
+      token: before.token,
+      pointerId: before.pointerId,
+      currentGen: 0,
+    });
+  });
+}
+
+function registryRefusedFields(makeDriver: () => IRegistryDriver): void {
+  // A keyId a read would refuse (it must be a non-empty string) is refused at the write, so one bad write cannot
+  // make a row unreadable and stop every listing that reaches it.
+  it('a create or a patch naming a keyId that is not a non-empty string is refused and stores nothing', async () => {
+    const d = makeDriver();
+    for (const keyId of [5, '', null, {}]) {
+      await expect(
+        d.create(SEG, { currentGen: 0, keyId } as unknown as NewRegistryRecord),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(await d.get(SEG)).toBeNull();
+    }
+    const { token } = await d.create(SEG, { currentGen: 0, keyId: 'k1' });
+    for (const keyId of [5, '', {}]) {
+      await expect(
+        d.compareAndSwap(SEG, token, { keyId } as unknown as RegistryPatch),
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
+    expect(await d.get(SEG)).toMatchObject({ token, keyId: 'k1' });
+    const cleared = await d.compareAndSwap(SEG, token, { keyId: undefined });
+    expect((await d.get(SEG))!.token).toBe(cleared.token);
+    expect((await d.get(SEG))!.keyId).toBeUndefined();
+  });
+
+  // Only the registry sets it: a write that carried a value of the caller's is refused, or the value is not stored.
+  it('a create or a patch naming pointerId never sets it', async () => {
+    const d = makeDriver();
+    const forged = '0123456789abcdef0123456789abcdef.0.0123456789abcdef';
+    const created = await d
+      .create(SEG, { currentGen: 0, pointerId: forged } as NewRegistryRecord)
+      .catch((err: unknown) => err);
+    if (!(created instanceof ValidationError)) {
+      expect(created).toMatchObject({ token: expect.any(String) });
+      expect((await d.get(SEG))!.pointerId).toBe((created as { token: string }).token);
+    } else {
+      expect(await d.get(SEG)).toBeNull();
+      await d.create(SEG, { currentGen: 0 });
+    }
+    const row = (await d.get(SEG))!;
+    const swapped = await d
+      .compareAndSwap(SEG, row.token, { pointerId: forged } as RegistryPatch)
+      .catch((err: unknown) => err);
+    const after = (await d.get(SEG))!;
+    expect(after.pointerId).not.toBe(forged);
+    if (swapped instanceof ValidationError) expect(after.token).toBe(row.token);
+    else expect(after.pointerId).toBe(row.pointerId);
+  });
+
+  // A forged value beside a resolved field, and forged values a careless driver could take for its own: the row's
+  // pointerId before its last renewal, and the row's own token while its pointerId is another.
+  it('a patch naming pointerId beside a resolved field, or as a value the row has had, never sets it', async () => {
+    const d = makeDriver();
+    const forged = '0123456789abcdef0123456789abcdef.0.0123456789abcdef';
+    const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+    const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+    // The row now has pointerId t1, and a token past it once a policy write lands.
+    const { token: t2 } = await d.compareAndSwap(SEG, t1, { retention: { expiresAt: 9 } });
+    expect((await d.get(SEG))!).toMatchObject({ token: t2, pointerId: t1 });
+
+    // Beside a resolved field: the write renews pointerId to its own token, or is refused; never the forged value.
+    const combined = await d
+      .compareAndSwap(SEG, t2, { currentGen: 2, pointerId: forged } as RegistryPatch)
+      .catch((err: unknown) => err);
+    let row = (await d.get(SEG))!;
+    expect(row.pointerId).not.toBe(forged);
+    if (combined instanceof ValidationError) {
+      expect(row).toMatchObject({ token: t2, pointerId: t1, currentGen: 1 });
+    } else {
+      expect(row).toMatchObject({
+        currentGen: 2,
+        pointerId: (combined as { token: string }).token,
+      });
+    }
+
+    // Its previous pointerId, and its own token while its pointerId is another: refused, or not stored.
+    for (const pick of ['previous', 'token'] as const) {
+      const before = (await d.get(SEG))!;
+      const { token: ahead } = await d.compareAndSwap(SEG, before.token, {
+        retention: { expiresAt: 10 },
+      });
+      const now = (await d.get(SEG))!;
+      expect(now.pointerId).not.toBe(now.token);
+      const value = pick === 'previous' ? t0 : ahead;
+      const swapped = await d
+        .compareAndSwap(SEG, ahead, { pointerId: value } as RegistryPatch)
+        .catch((err: unknown) => err);
+      row = (await d.get(SEG))!;
+      expect(row.pointerId, pick).toBe(now.pointerId);
+      if (swapped instanceof ValidationError) expect(row.token, pick).toBe(ahead);
+    }
+  });
+}
+
+function registryNamespaceListing(
+  makeDriver: () => IRegistryDriver,
+  options: RegistryConformanceOptions,
+  pagedListSize: number | undefined,
+): void {
+  it('list of a namespace that is not a valid name is refused, not read as empty', async () => {
+    const d = makeDriver();
+    await d.create({ segment: 'a' }, { currentGen: 0 });
+    await expect(drainSegments(d.list(''))).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
+    const d = makeDriver();
+    await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });
+    await d.create({ namespace: 'ns2', segment: 'b' }, { currentGen: 0 });
+    await d.create({ namespace: 'nsextra', segment: 'c' }, { currentGen: 0 });
+    const seen: string[] = [];
+    for await (const rec of d.list('ns')) seen.push(rec.segment);
+    expect(seen).toEqual(['a']);
+  });
+
+  const missingLocation = options.missingLocation;
+  if (missingLocation !== undefined) {
+    it('missing location', async () => {
+      const d = missingLocation();
+      await failsAsMissingLocation('get', () => d.get(SEG));
+      await failsAsMissingLocation('list', () => drainRecords(d.list()));
+      await failsAsMissingLocation('create', () => d.create(SEG, { currentGen: 0 }));
+    });
+  }
+
+  if (pagedListSize !== undefined) {
+    it(
+      'list across pages',
+      async () => {
+        const d = makeDriver();
+        const name = (i: number): string => `page-${String(i).padStart(6, '0')}`;
+        await eachIndex(pagedListSize, (i) => d.create({ segment: name(i) }, { currentGen: i }));
+        const listed = (await drainRecords(d.list())).map((r) => r.segment);
+        expect(listed.length).toBe(pagedListSize);
+        expect(new Set(listed).size).toBe(pagedListSize);
+        expect([...listed].sort()).toEqual(
+          Array.from({ length: pagedListSize }, (_v, i) => name(i)),
+        );
+      },
+      Math.max(30_000, pagedListSize * 60),
+    );
+  }
+
+  // A registry keyed by the segment name alone, keeping the namespace as a column it filters listings on, passes every
+  // case above; through a store, one tenant's first load then publishes over another tenant's row.
+  it('one segment name in several namespaces is several rows, each written and deleted alone', async () => {
+    const d = makeDriver();
+    const refs: SegmentRef[] = [
+      { segment: 's' },
+      { namespace: 'n', segment: 's' },
+      { namespace: '_default', segment: 's' },
+      { namespace: 'a', segment: 'b/c' },
+      { namespace: 'a/b', segment: 'c' },
+      ...NASTY_NAMES.map((namespace) => ({ namespace, segment: 's' })),
+    ];
+    const tokens = new Map<number, string>();
+    for (const [i, ref] of refs.entries()) {
+      tokens.set(i, (await d.create(ref, { currentGen: i })).token);
+    }
+    for (const [i, ref] of refs.entries()) {
+      const rec = await d.get(ref);
+      expect(rec?.currentGen, JSON.stringify(ref)).toBe(i);
+      expect(rec?.namespace).toBe(ref.namespace);
+      expect(rec?.segment).toBe(ref.segment);
+    }
+    // A swap of one and a delete of another touch only themselves.
+    await d.compareAndSwap(refs[1]!, tokens.get(1)!, { currentGen: 100 });
+    await d.delete(refs[2]!);
+    for (const [i, ref] of refs.entries()) {
+      const want = i === 1 ? 100 : i === 2 ? undefined : i;
+      expect((await d.get(ref))?.currentGen, JSON.stringify(ref)).toBe(want);
+    }
+    const live = refs.filter((_ref, i) => i !== 2);
+    for (const namespace of new Set(live.map((ref) => ref.namespace))) {
+      if (namespace === undefined) continue;
+      const want = live.filter((ref) => ref.namespace === namespace).map((ref) => ref.segment);
+      expect((await drainSegments(d.list(namespace))).sort(), namespace).toEqual(want.sort());
+    }
+  });
 }
 
 /**
@@ -641,1162 +1868,162 @@ export function registryConformance(
 ): void {
   const pagedListSize = pagedListSizeOf(options.pagedListSize);
   describe(`IRegistryDriver conformance: ${label}`, () => {
-    it('advertises strongRead', () => {
-      expect(makeDriver().capabilities().strongRead).toBe(true);
-    });
-
-    it('create, read back the full record, then CAS with the token', async () => {
-      const d = makeDriver();
-      expect(await d.get(SEG)).toBeNull();
-      const { token: t0 } = await d.create(SEG, {
-        currentGen: 3,
-        keyId: 'k1',
-        retention: { days: 30 },
-      });
-      const rec = await d.get(SEG);
-      expect(rec).not.toBeNull();
-      expect(rec!.segment).toBe(SEG.segment);
-      expect(rec!.currentGen).toBe(3);
-      expect(rec!.keyId).toBe('k1');
-      expect(rec!.status).toBe('active'); // default
-      expect(rec!.retention).toEqual({ days: 30 });
-      expect(rec!.token).toBe(t0);
-      expect(rec!.updatedAt).toBeGreaterThanOrEqual(rec!.createdAt);
-
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, {
-        currentGen: 4,
-        residency: { region: 'eu' },
-      });
-      expect(t1).not.toBe(t0);
-      const rec2 = await d.get(SEG);
-      expect(rec2!.currentGen).toBe(4);
-      expect(rec2!.residency).toEqual({ region: 'eu' });
-      expect(rec2!.createdAt).toBe(rec!.createdAt); // createdAt preserved across CAS
-    });
-
-    it('rejects create when the row exists', async () => {
-      const d = makeDriver();
-      await d.create(SEG, { currentGen: 0 });
-      await expect(d.create(SEG, { currentGen: 1 })).rejects.toBeInstanceOf(WriteConflictError);
-    });
-
-    it('rejects a stale-token CAS and leaves the record unchanged', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-      await d.compareAndSwap(SEG, t0, { currentGen: 1 });
-      await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-      expect((await d.get(SEG))!.currentGen).toBe(1);
-    });
-
-    // ── a caller's `held` row ─────────────────────────────────────────────────────────────────────────────
-    // `held` is a hint that may spare a read, never the fence: it must not change what any write answers.
-    it('a compare-and-swap with the row it read as `held` lands, as one without it does', async () => {
-      const d = makeDriver();
-      await d.create(SEG, { currentGen: 0 });
-      const held = (await d.get(SEG))!;
-      const { token } = await d.compareAndSwap(SEG, held.token, { currentGen: 1 }, { held });
-      expect(token).not.toBe(held.token);
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 1, token });
-      const next = (await d.get(SEG))!;
-      await d.compareAndSwap(SEG, next.token, { currentGen: 2 }, { held: next });
-      expect((await d.get(SEG))!.currentGen).toBe(2);
-    });
-
-    it('a compare-and-swap with a stale `held` row loses as a lost race does, and changes nothing', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-      const held = (await d.get(SEG))!;
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 }); // another writer, after the read
-      await expect(
-        d.compareAndSwap(SEG, held.token, { currentGen: 9 }, { held }),
-      ).rejects.toBeInstanceOf(WriteConflictError);
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 1, token: t1 });
-      // a row deleted and created again since is no different
-      await d.delete(SEG);
-      await d.create(SEG, { currentGen: 0 });
-      await expect(
-        d.compareAndSwap(SEG, held.token, { currentGen: 9 }, { held }),
-      ).rejects.toBeInstanceOf(WriteConflictError);
-      expect((await d.get(SEG))!.currentGen).toBe(0);
-    });
-
-    it('a `held` row that is a copy, or of another token than `expected`, is read for as without it', async () => {
-      const d = makeDriver();
-      await d.create(SEG, { currentGen: 0 });
-      const first = (await d.get(SEG))!;
-      await d.compareAndSwap(SEG, first.token, { currentGen: 1 });
-      const current = (await d.get(SEG))!;
-      // `expected` names the current row: the older `held` is not the row it fences on, so it is not used
-      await d.compareAndSwap(SEG, current.token, { currentGen: 2 }, { held: first });
-      // a copy no driver returned
-      const copy = structuredClone((await d.get(SEG))!);
-      await d.compareAndSwap(SEG, copy.token, { currentGen: 3 }, { held: copy });
-      // a `held` that lies about the row cannot change what a write lands on
-      const lie: RegistryRecord = { ...(await d.get(SEG))!, currentGen: 99, keyId: 'forged' };
-      await d.compareAndSwap(SEG, lie.token, { currentGen: 4 }, { held: lie });
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 4 });
-      expect((await d.get(SEG))!.keyId).toBeUndefined();
-    });
-
-    it('a create with `held: null` makes the row when there is none, and conflicts when there is one', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 0 }, { held: null });
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 0, token });
-      await expect(d.create(SEG, { currentGen: 1 }, { held: null })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 0, token });
-      // a row that was deleted is no row, whether the driver removed it or left a tombstone
-      await d.delete(SEG);
-      const { token: again } = await d.create(SEG, { currentGen: 2 }, { held: null });
-      expect(again).not.toBe(token);
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 2, token: again });
-    });
-
-    it('CAS against an absent row is a conflict', async () => {
-      const d = makeDriver();
-      await expect(d.compareAndSwap(SEG, '1', { currentGen: 1 })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-    });
-
-    it('round-trips a non-default status + both governance blobs set at create', async () => {
-      const d = makeDriver();
-      await d.create(SEG, {
-        currentGen: 2,
-        status: 'destroyed',
-        retention: { days: 30 },
-        residency: { region: 'eu' },
-      });
-      const rec = await d.get(SEG);
-      expect(rec).toMatchObject({
-        currentGen: 2,
-        status: 'destroyed',
-        retention: { days: 30 },
-        residency: { region: 'eu' },
-      });
-    });
-
-    it('a patch can set and later CLEAR an optional field (keyId — crypto-shred path)', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 0, keyId: 'k1' });
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { keyId: undefined });
-      expect((await d.get(SEG))!.keyId).toBeUndefined();
-      // unrelated patch leaves it cleared
-      await d.compareAndSwap(SEG, t1, { residency: { region: 'eu' } });
-      const rec = await d.get(SEG);
-      expect(rec!.keyId).toBeUndefined();
-      expect(rec!.residency).toEqual({ region: 'eu' });
-    });
-
-    it('round-trips the wrapped-DEK list through create → get → CAS-clear (crypto-shred path)', async () => {
-      const d = makeDriver();
-      const wrappedDeks = [
-        { keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' },
-        { keyId: 'recovery', wrapped: 'cmVjb3Zlcnktd3JhcHBlZA==' },
-      ];
-      const { token: t0 } = await d.create(SEG, { currentGen: 0, wrappedDeks });
-      // Survives the create→get round-trip intact (every backend must serialize the list of {keyId, wrapped}).
-      expect((await d.get(SEG))!.wrappedDeks).toEqual(wrappedDeks);
-      // Survives an unrelated patch (not accidentally dropped)...
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
-      expect((await d.get(SEG))!.wrappedDeks).toEqual(wrappedDeks);
-      // ...and crypto-shred CLEARS it (the linchpin: the only DEK copy is gone).
-      await d.compareAndSwap(SEG, t1, { wrappedDeks: undefined, status: 'destroyed' });
-      const rec = await d.get(SEG);
-      expect(rec!.wrappedDeks).toBeUndefined();
-      expect(rec!.status).toBe('destroyed');
-    });
-
-    it('clears one governance field via patch without disturbing the other', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, {
-        currentGen: 0,
-        retention: { days: 30 },
-        residency: { region: 'eu' },
-      });
-      // Clear retention only; residency must survive (guards the `'k' in patch` clear-vs-preserve idiom).
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: undefined });
-      expect((await d.get(SEG))!.retention).toBeUndefined();
-      expect((await d.get(SEG))!.residency).toEqual({ region: 'eu' });
-      // An unrelated patch leaves retention cleared and residency intact.
-      await d.compareAndSwap(SEG, t1, { keyId: 'k2' });
-      const rec = await d.get(SEG);
-      expect(rec!.retention).toBeUndefined();
-      expect(rec!.residency).toEqual({ region: 'eu' });
-    });
-
-    it('rejects an unknown status and a non-serializable governance blob', async () => {
-      const d = makeDriver();
-      await expectValidationReject(d.create(SEG, { currentGen: 0, status: 'bogus' as 'active' }));
-      await expectValidationReject(
-        d.create(SEG, {
-          currentGen: 0,
-          retention: { big: 1n } as unknown as Record<string, unknown>,
-        }),
-      );
-    });
-
-    it('never reuses a token across delete→recreate (ABA-safe)', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-      await d.delete(SEG);
-      expect(await d.get(SEG)).toBeNull();
-      const { token: t0b } = await d.create(SEG, { currentGen: 7 });
-      expect(t0b).not.toBe(t0);
-      await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-    });
-
-    it('delete is idempotent', async () => {
-      const d = makeDriver();
-      await d.create(SEG, { currentGen: 0 });
-      await d.delete(SEG);
-      await d.delete(SEG); // no throw
-      expect(await d.get(SEG)).toBeNull();
-    });
-
-    it('lists live records, scoped by namespace, excluding deleted', async () => {
-      const d = makeDriver();
-      await d.create({ segment: 'a' }, { currentGen: 0 });
-      await d.create({ segment: 'b' }, { currentGen: 0 });
-      await d.create({ namespace: 'tenant:acme', segment: 'c:1' }, { currentGen: 0 });
-      await d.delete({ segment: 'b' });
-      // The UNSCOPED list is the one that matters here: it has to recover a namespace from however the driver
-      // stored it, which is where a filesystem driver's encoding has to be undone. Fleet-wide scans — the
-      // retention sweep, the consistency check, subject erasure, eject — all ride on this call, so a driver
-      // that can write a namespace it cannot enumerate takes every one of them down.
-      expect((await drainSegments(d.list())).sort()).toEqual(['a', 'c:1']);
-      expect(await drainSegments(d.list('tenant:acme'))).toEqual(['c:1']);
-      expect((await drainSegments(d.list(undefined))).sort()).toEqual(['a', 'c:1']);
-    });
-
-    it('rejects a negative / non-integer currentGen', async () => {
-      const d = makeDriver();
-      for (const bad of [-1, 1.5, NaN]) {
-        await expectValidationReject(d.create(SEG, { currentGen: bad }));
-      }
-      const { token } = await d.create(SEG, { currentGen: 0 });
-      await expectValidationReject(d.compareAndSwap(SEG, token, { currentGen: -5 }));
-    });
-
-    // `currentGen: null` ("this segment exists and has no Storage generation yet") is a first-class stored
-    // value, not a missing field. It is what lets a retention policy be recorded ahead of the first load, so every driver must
-    // round-trip it through create, CAS, get AND list. Serialization is where this breaks silently: a driver
-    // that JSON-drops it, coerces it to 0, or (the subtle one) merges a patch with `patch.currentGen ?? prev`
-    // would leave the pointer at the old generation and read stale Storage data no one asked for.
-    it('round-trips a null currentGen through create, list, and CAS in both directions', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: null, retention: { expiresAt: 42 } });
-      const rec = await d.get(SEG);
-      expect(rec!.currentGen).toBeNull();
-      expect(rec!.status).toBe('active'); // null gen is a LIVE segment, not a tombstone
-      expect(rec!.retention).toEqual({ expiresAt: 42 });
-      // Enumeration must carry the WHOLE row, not just the pointer. A fleet sweep reads the policy straight out
-      // of `list()` rather than paying a `get()` per segment, so a driver whose projection drops `retention` — or
-      // stringifies the number — makes every segment read as "no policy" and **nothing ever expires**. That fails
-      // open on a retention commitment and is visible only to someone reading a ledger.
-      const listed = await drainRecords(d.list());
-      expect(listed.map((r) => r.currentGen)).toEqual([null]);
-      expect(listed[0]!.retention).toEqual({ expiresAt: 42 });
-
-      // null → 0: the first load publishing a generation onto an existing row.
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 0 });
-      expect((await d.get(SEG))!.currentGen).toBe(0);
-
-      // 0 → null: clearing the pointer. The value is legal, so a driver must actually apply it; treating the
-      // patch field as absent (the `??` merge bug) would silently leave `currentGen: 0` here.
-      await d.compareAndSwap(SEG, t1, { currentGen: null });
-      expect((await d.get(SEG))!.currentGen).toBeNull();
-
-      // A patch that does not mention `currentGen` must NOT disturb it — the other half of the same trap.
-      const cleared = await d.get(SEG);
-      await d.compareAndSwap(SEG, cleared!.token, { keyId: 'k7' });
-      const after = await d.get(SEG);
-      expect(after!.currentGen).toBeNull();
-      expect(after!.keyId).toBe('k7');
-    });
-
-    // A `destroyed` tombstone is still a record. `list()` must yield it: `runConsistencyCheck` skips
-    // tombstones itself, and the retention sweep can only clean up a dead row it can *see* — a driver that filters
-    // by status turns that cleanup into a permanent silent no-op while rows accumulate forever.
-    it('yields destroyed tombstones from list(), and refuses an undefined currentGen patch', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 0 });
-      await d.compareAndSwap(SEG, token, { status: 'destroyed' });
-      const listed = await drainRecords(d.list());
-      expect(listed.map((r) => [r.segment, r.status])).toEqual([[SEG.segment, 'destroyed']]);
-
-      // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`. Under presence-based merging
-      // it would silently un-publish the segment's Storage data, so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
-      const live = makeDriver();
-      const { token: t0 } = await live.create(SEG, { currentGen: 3 });
-      await expectValidationReject(
-        live.compareAndSwap(SEG, t0, { currentGen: undefined, keyId: 'k1' }),
-      );
-      expect((await live.get(SEG))!.currentGen).toBe(3); // and the pointer is untouched
-    });
-
-    it('rejects traversal / invalid names on every method', async () => {
-      const d = makeDriver();
-      for (const name of BAD_NAMES) {
-        await expectValidationReject(d.get({ segment: name }));
-        await expectValidationReject(d.get({ namespace: name, segment: 's' }));
-        await expectValidationReject(d.create({ segment: name }, { currentGen: 0 }));
-        await expectValidationReject(d.compareAndSwap({ segment: name }, '1', { currentGen: 0 }));
-        await expectValidationReject(d.delete({ segment: name }));
-      }
-    });
-
-    // Every registry fixture above is `s:v1`-shaped, and `:` happens to encode to itself — so a driver that
-    // wrote segment names into its key VERBATIM would pass every test above this one. `NASTY_NAMES`, which the
-    // storage-source suite also runs, is what catches it. The failure it guards against is
-    // quiet: an unencoded `a/b` writes to a key whose parsed form no longer round-trips, so the segment
-    // stays readable through `get` while vanishing from `list` — and from every sweep that drives off it.
-    it('round-trips names that need encoding, through create, get AND list', async () => {
-      for (const segment of NASTY_NAMES) {
-        const d = makeDriver();
-        await d.create({ segment }, { currentGen: 4 });
-
-        const got = await d.get({ segment });
-        expect(got, `get() lost ${JSON.stringify(segment)}`).not.toBeNull();
-        expect(got!.segment).toBe(segment);
-        expect(got!.currentGen).toBe(4);
-
-        const listed: string[] = [];
-        for await (const rec of d.list()) listed.push(rec.segment);
-        expect(listed, `list() lost ${JSON.stringify(segment)}`).toContain(segment);
-      }
-    });
-
-    // The single-cycle ABA case above covers one delete→recreate. This is the repeated case, and it is the
-    // one that catches a counter which advances on *some* transitions but not all: such a driver still hands
-    // out a fresh token each cycle, so `t0b !== t0` holds every time, while two incarnations several cycles
-    // apart quietly collide. Tokens are opaque strings, so the contract is asserted as identity — no token
-    // is ever issued twice, and no retired token is ever accepted again — not as a numbering scheme.
-    it('with overwhelming probability never re-issues a token across repeated delete-and-recreate cycles (ABA-safe)', async () => {
-      const d = makeDriver();
-      const retired: string[] = [];
-      for (let cycle = 0; cycle < 4; cycle++) {
-        const { token } = await d.create(SEG, { currentGen: cycle });
-        retired.push(token);
-        await d.delete(SEG);
-      }
-      expect(new Set(retired).size, 'a token was issued to two different incarnations').toBe(
-        retired.length,
-      );
-      // The live incarnation must refuse every token any previous one ever held.
-      const { token: live } = await d.create(SEG, { currentGen: 0 });
-      expect(retired).not.toContain(live);
-      for (const stale of retired) {
-        await expect(
-          d.compareAndSwap(SEG, stale, { currentGen: 99 }),
-          `a retired token (${stale}) was accepted by the live row`,
-        ).rejects.toBeInstanceOf(WriteConflictError);
-      }
-      expect((await d.get(SEG))!.currentGen).toBe(0); // and none of them moved the pointer
-      await d.compareAndSwap(SEG, live, { currentGen: 1 }); // the current token still works
-    });
-
-    it('refuses a compare-and-swap against a tombstoned row, and leaves it deleted', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 0 });
-      await d.delete(SEG);
-      // A stale token holder must not be able to resurrect a deleted row — that row may have been
-      // crypto-shredded or erased, and un-deleting it would undo a compliance action.
-      await expect(d.compareAndSwap(SEG, token, { currentGen: 1 })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-      expect(await d.get(SEG)).toBeNull();
-    });
-
-    // `delete is idempotent` above asserts only that a repeat call does not throw, which a driver that
-    // re-tombstones on every call also satisfies. Observable state must be unchanged too.
-    it('re-deleting an already-tombstoned row leaves the row observably unchanged', async () => {
-      const d = makeDriver();
-      const { token: first } = await d.create(SEG, { currentGen: 0 });
-      await d.delete(SEG);
-      const listedOnce = [];
-      for await (const r of d.list()) listedOnce.push(r);
-
-      await d.delete(SEG);
-      await d.delete(SEG);
-
-      expect(await d.get(SEG)).toBeNull();
-      const listedThrice = [];
-      for await (const r of d.list()) listedThrice.push(r);
-      expect(listedThrice).toEqual(listedOnce);
-      // Still ABA-safe: the recreate's token is new, and the original stays refused.
-      const { token: next } = await d.create(SEG, { currentGen: 0 });
-      expect(next).not.toBe(first);
-      await expect(d.compareAndSwap(SEG, first, { currentGen: 9 })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-    });
-
-    // ── `delete` with an expected token ──────────────────────────────────────────────────────────────────
-    // A delete decided from a row read earlier must not take a row created after that read. The token is the
-    // row's identity, so a delete that carries it is refused for any other incarnation.
-    it('delete with the current token deletes the row', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 0 });
-      await d.delete(SEG, token);
-      expect(await d.get(SEG)).toBeNull();
-      expect(await drainSegments(d.list())).toEqual([]);
-      const { token: next } = await d.create(SEG, { currentGen: 0 }); // the name is free again, with a fresh token
-      expect(next).not.toBe(token);
-    });
-
-    it('delete with a stale token throws and leaves the row', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
-      await expect(d.delete(SEG, t0)).rejects.toBeInstanceOf(WriteConflictError);
-      const row = await d.get(SEG);
-      expect(row).toMatchObject({ currentGen: 1, status: 'active', token: t1 });
-      await d.compareAndSwap(SEG, t1, { currentGen: 2 }); // still live, and its token still works
-    });
-
-    it('delete with a token from before a delete-and-recreate leaves the new row', async () => {
-      const d = makeDriver();
-      const { token: old } = await d.create(SEG, { currentGen: 0 });
-      await d.delete(SEG, old);
-      const { token: fresh } = await d.create(SEG, { currentGen: 5 });
-      // The replayed or delayed delete: same name, the token of an incarnation that is gone.
-      await expect(d.delete(SEG, old)).rejects.toBeInstanceOf(WriteConflictError);
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 5, token: fresh });
-    });
-
-    it('delete with a token against an absent or already-deleted row throws', async () => {
-      const d = makeDriver();
-      await expect(d.delete(SEG, '1')).rejects.toBeInstanceOf(WriteConflictError); // never existed
-      const { token } = await d.create(SEG, { currentGen: 0 });
-      await d.delete(SEG, token);
-      await expect(d.delete(SEG, token)).rejects.toBeInstanceOf(WriteConflictError); // tombstoned
-      expect(await d.get(SEG)).toBeNull();
-    });
-
-    it('delete without a token is unchanged: it takes the row at whatever token it carries', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 0 });
-      await d.compareAndSwap(SEG, token, { currentGen: 1 });
-      await d.delete(SEG);
-      expect(await d.get(SEG)).toBeNull();
-      await d.delete(SEG); // and stays idempotent
-    });
-
-    // ── `summary`: the row's cached description of its current generation ─────────────────────────────────
-    // A driver stores it like any other field. A driver that dropped it would still be correct, only slower, so
-    // the reason to hold every driver to it is the other direction: a driver that kept a summary a patch cleared,
-    // or lost one a patch did not mention, would describe the wrong generation.
-    const clearSummary: RegistrySummary = {
-      generation: 3,
-      cardinality: 12_000_000,
-      fingerprint: '1572864:2864434397',
-      tailBytes: 6_000,
-      metadata: { def: 'v41', landedAt: 1_790_000_000_000 },
-    };
-    const sealedSummary: RegistrySummary = {
-      generation: 4,
-      sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMw==',
-    };
-
-    it('round-trips a summary of either shape through create, get, list and compare-and-swap', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
-      expect((await d.get(SEG))!.summary).toEqual(clearSummary);
-      expect((await drainRecords(d.list()))[0]!.summary).toEqual(clearSummary);
-
-      // A sealed summary goes with wrapped keys: an encrypted segment's row never carries a clear one.
-      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
-      await d.compareAndSwap(SEG, t0, { currentGen: 4, wrappedDeks, summary: sealedSummary });
-      expect((await d.get(SEG))!.summary).toEqual(sealedSummary);
-      expect((await drainRecords(d.list()))[0]!.summary).toEqual(sealedSummary);
-    });
-
-    // A write must store the summary it was called with. A driver that checks it at the call and serialises the
-    // caller's object after awaiting the row would store whatever the caller changed in between: a row every later
-    // read refuses, or another write's metadata.
-    it('stores the summary as it was when the write was called, whatever the caller changes after', async () => {
-      const d = makeDriver();
-      const asCalled = {
-        generation: 3,
-        cardinality: 5,
-        fingerprint: '4096:7',
-        tailBytes: 300,
-        metadata: { day: 'mon' },
-      };
-      const mine = structuredClone(asCalled);
-      const created = d.create(SEG, { currentGen: 3, summary: mine });
-      mine.cardinality = -1;
-      mine.metadata.day = 'x'.repeat(2000);
-      const { token } = await created;
-      expect((await d.get(SEG))!.summary).toEqual(asCalled);
-
-      const next = {
-        generation: 4,
-        cardinality: 6,
-        fingerprint: '4100:8',
-        tailBytes: 300,
-        metadata: { day: 'tue' },
-      };
-      const theirs = structuredClone(next);
-      const swapped = d.compareAndSwap(SEG, token, { currentGen: 4, summary: theirs });
-      theirs.generation = 9;
-      theirs.metadata.day = 'wed';
-      await swapped;
-      expect((await d.get(SEG))!.summary).toEqual(next);
-      expect((await drainRecords(d.list()))[0]!.summary).toEqual(next);
-    });
-
-    it('keeps a summary across a patch that does not mention it, and clears it when told to', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
-      expect((await d.get(SEG))!.summary).toEqual(clearSummary);
-      await d.compareAndSwap(SEG, t1, { status: 'destroyed', summary: undefined });
-      const rec = await d.get(SEG);
-      expect(rec!.summary).toBeUndefined();
-      expect(rec!.retention).toEqual({ expiresAt: 9 });
-    });
-
-    it('refuses a malformed summary and leaves the row unchanged', async () => {
-      const d = makeDriver();
-      const bad = {
-        generation: 3,
-        cardinality: -1,
-        fingerprint: '4096:7',
-        tailBytes: 300,
-      } as RegistrySummary;
-      await expectValidationReject(d.create(SEG, { currentGen: 3, summary: bad }));
-      expect(await d.get(SEG)).toBeNull();
-      // A summary names the object it describes: one without a fingerprint, or with one no object can have, is malformed.
-      for (const fingerprint of [undefined, '', '7', '0:1', '4096:4294967296']) {
-        const unnamed = {
-          generation: 3,
-          cardinality: 5,
-          fingerprint,
-          tailBytes: 300,
-        } as RegistrySummary;
-        await expectValidationReject(d.create(SEG, { currentGen: 3, summary: unnamed }));
-      }
-      expect(await d.get(SEG)).toBeNull();
-      const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
-      await expectValidationReject(d.compareAndSwap(SEG, token, { summary: bad }));
-      expect(await d.get(SEG)).toMatchObject({ token, summary: clearSummary });
-    });
-
-    // A clear summary's `tailBytes` is the bytes an open reads from the object's end: from a footer's size to the object's
-    // size less its preamble, and no more than the cap of one open's tail read. A driver that stored any integer would
-    // let a row make every cold open read a size no object has.
-    it('refuses a clear summary whose tailBytes no object of its size can have, and a sealed one too short for it', async () => {
-      const d = makeDriver();
-      const sized = (tailBytes: unknown): RegistrySummary =>
-        ({ generation: 3, cardinality: 5, fingerprint: '4096:7', tailBytes }) as RegistrySummary;
-      // 104 is a footer, 4088 is the size less the preamble, and 8,392,820 is the cap: all three are legal where they fit.
-      await d.create(SEG, { currentGen: 3, summary: sized(104) });
-      await d.delete(SEG);
-      await d.create(SEG, { currentGen: 3, summary: sized(4096 - 8) });
-      await d.delete(SEG);
-      const big: RegistrySummary = {
-        generation: 3,
-        cardinality: 5,
-        fingerprint: '20000000:7',
-        tailBytes: 8_392_820,
-      };
-      await d.create(SEG, { currentGen: 3, summary: big });
-      await d.delete(SEG);
-      for (const tailBytes of [undefined, 103, 4096 - 7, 4096, 1.5, -1, '300', null]) {
-        await expectValidationReject(d.create(SEG, { currentGen: 3, summary: sized(tailBytes) }));
-      }
-      await expectValidationReject(
-        d.create(SEG, { currentGen: 3, summary: { ...big, tailBytes: 8_392_821 } }),
-      );
-      // A sealed blob of 51 bytes is a nonce, a tag and 23 bytes: one short of the count, the fingerprint and the tail size.
-      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
-      const sealed = (bytes: number): RegistrySummary => ({
-        generation: 3,
-        sealed: Buffer.alloc(bytes, 7).toString('base64'),
-      });
-      await expectValidationReject(
-        d.create(SEG, { currentGen: 3, wrappedDeks, summary: sealed(51) }),
-      );
-      await d.create(SEG, { currentGen: 3, wrappedDeks, summary: sealed(52) });
-      expect(await d.get(SEG)).toMatchObject({ currentGen: 3 });
-    });
-
-    // ── `knownGens`: the generations a row made current, in the order it made them current ─────────────────────
-    // A driver that kept the ledger across a patch that moved the pointer would vouch for a pointer its last entry is not,
-    // and one that sorted it would lose which generations were most recently current.
-    const crc = (g: number): number => 1000 + g;
-    const ledger = (...gens: number[]): { generation: number; footerCrc: number }[] =>
-      gens.map((generation) => ({ generation, footerCrc: crc(generation) }));
-
-    it('round-trips knownGens through create, get, list and compare-and-swap, in the order given', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 4, knownGens: ledger(3, 1, 4) });
-      expect((await d.get(SEG))!.knownGens).toEqual(ledger(3, 1, 4));
-      expect((await drainRecords(d.list()))[0]!.knownGens).toEqual(ledger(3, 1, 4));
-      await d.compareAndSwap(SEG, t0, { currentGen: 1, knownGens: ledger(4, 3, 1) });
-      expect((await d.get(SEG))!.knownGens).toEqual(ledger(4, 3, 1));
-      expect((await drainRecords(d.list()))[0]!.knownGens).toEqual(ledger(4, 3, 1));
-    });
-
-    it('follows the pointer: a patch that moves currentGen without naming it drops the ledger, one that keeps it or names only leases, retention or residency keeps it', async () => {
-      const d = makeDriver();
-      const entry = { holder: '00112233aabbccdd', generation: 5, until: 1_900_000_000_000 };
-      const { token: t0 } = await d.create(SEG, { currentGen: 5, knownGens: ledger(2, 4, 5) });
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
-      const { token: t2 } = await d.compareAndSwap(SEG, t1, { residency: { region: 'eu' } });
-      const { token: t3 } = await d.compareAndSwap(SEG, t2, { leases: [entry] });
-      const { token: t4 } = await d.compareAndSwap(SEG, t3, { currentGen: 5 });
-      expect((await d.get(SEG))!.knownGens).toEqual(ledger(2, 4, 5));
-      const { token: t5 } = await d.compareAndSwap(SEG, t4, { currentGen: 6 });
-      expect((await d.get(SEG))!.knownGens).toBeUndefined();
-      await d.compareAndSwap(SEG, t5, { currentGen: 7, knownGens: ledger(7) });
-      expect((await d.get(SEG))!.knownGens).toEqual(ledger(7));
-    });
-
-    it('clears knownGens when told to', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 5, knownGens: ledger(4, 5) });
-      await d.compareAndSwap(SEG, token, { knownGens: undefined });
-      expect((await d.get(SEG))!.knownGens).toBeUndefined();
-    });
-
-    it('stores knownGens as they were when the write was called', async () => {
-      const d = makeDriver();
-      const mine = ledger(1, 5);
-      const created = d.create(SEG, { currentGen: 5, knownGens: mine });
-      mine.push({ generation: 99, footerCrc: 1 });
-      mine[0]!.footerCrc = 5;
-      await created;
-      expect((await d.get(SEG))!.knownGens).toEqual(ledger(1, 5));
-    });
-
-    it('naming knownGens alone does not renew pointerId, and naming it beside currentGen does', async () => {
-      const d = makeDriver();
-      const { token: created } = await d.create(SEG, { currentGen: 5, knownGens: ledger(5) });
-      const { token: t1 } = await d.compareAndSwap(SEG, created, { knownGens: ledger(4, 5) });
-      expect(t1).not.toBe(created);
-      expect((await d.get(SEG))!.pointerId).toBe(created);
-      const { token: t2 } = await d.compareAndSwap(SEG, t1, {
-        currentGen: 6,
-        knownGens: ledger(5, 6),
-      });
-      expect((await d.get(SEG))!.pointerId).toBe(t2);
-    });
-
-    it('refuses a malformed ledger and leaves the row unchanged', async () => {
-      const d = makeDriver();
-      const refused: ReadonlyArray<[string, unknown, number | null]> = [
-        ['not an array', { generation: 5, footerCrc: 1 }, 5],
-        ['an entry that is not an object', [5], 5],
-        ['an entry with an extra key', [{ generation: 5, footerCrc: 1, size: 9 }], 5],
-        ['a negative generation', [{ generation: -1, footerCrc: 1 }, ...ledger(5)], 5],
-        ['a fractional generation', [{ generation: 1.5, footerCrc: 1 }, ...ledger(5)], 5],
-        ['a footerCrc of -1', [{ generation: 4, footerCrc: -1 }, ...ledger(5)], 5],
-        ['a footerCrc of 1.5', [{ generation: 4, footerCrc: 1.5 }, ...ledger(5)], 5],
-        ['a footerCrc of 2^32', [{ generation: 4, footerCrc: 2 ** 32 }, ...ledger(5)], 5],
-        ['a repeated generation', [...ledger(4, 5), ...ledger(4)], 5],
-        ['193 entries', ledger(...Array.from({ length: 193 }, (_, i) => i)), 192],
-        ['a row with no pointer', ledger(5), null],
-        ['an empty list', [], 5],
-        ['a last entry that is not the pointer', ledger(5, 4), 5],
-      ];
-      for (const [what, knownGens, currentGen] of refused) {
-        await expectValidationReject(
-          d.create(SEG, { currentGen, knownGens } as NewRegistryRecord),
-          what,
-        );
-        expect(await d.get(SEG), what).toBeNull();
-      }
-      const { token } = await d.create(SEG, { currentGen: 5, knownGens: ledger(4, 5) });
-      await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: ledger(5, 4) }));
-      await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: ledger(4) }));
-      await expectValidationReject(
-        d.compareAndSwap(SEG, token, { currentGen: 3, knownGens: ledger(4, 5) }),
-      );
-      expect(await d.get(SEG)).toMatchObject({ token, knownGens: ledger(4, 5) });
-    });
-
-    it('accepts a ledger that is not in number order, one with entries above the pointer, and one of the writer cap', async () => {
-      const d = makeDriver();
-      // The ledger every rollback swap writes: the target last, the generations it left numbered above it.
-      const { token } = await d.create(SEG, { currentGen: 1, knownGens: ledger(0, 2, 3, 1) });
-      expect((await d.get(SEG))!.knownGens).toEqual(ledger(0, 2, 3, 1));
-      const full = ledger(...Array.from({ length: 192 }, (_, i) => i));
-      await d.compareAndSwap(SEG, token, { currentGen: 191, knownGens: full });
-      expect((await d.get(SEG))!.knownGens).toEqual(full);
-    });
-
-    it("refuses a current entry whose checksum disagrees with a clear summary's fingerprint, given in the same write or kept from the row", async () => {
-      const d = makeDriver();
-      const agreeing = [{ generation: 3, footerCrc: 2864434397 }];
-      const disagreeing = [{ generation: 3, footerCrc: 2864434398 }];
-      await expectValidationReject(
-        d.create(SEG, { currentGen: 3, summary: clearSummary, knownGens: disagreeing }),
-      );
-      expect(await d.get(SEG)).toBeNull();
-      const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
-      await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: disagreeing }));
-      expect(await d.get(SEG)).toMatchObject({ token });
-      await d.compareAndSwap(SEG, token, { knownGens: agreeing });
-      expect((await d.get(SEG))!.knownGens).toEqual(agreeing);
-    });
-
-    // ── `leases`: the holds on a segment's generations ───────────────────────────────────────────────────────
-    // A lease names a generation a holder pinned and does not follow the pointer: a driver that dropped it when the
-    // pointer moved would let the next load collect a leased generation.
-    it('round-trips leases through compare-and-swap, get and list, and keeps them across a pointer move', async () => {
-      const d = makeDriver();
-      const entry = { holder: '00112233aabbccdd', generation: 3, until: 1_900_000_000_000 };
-      const { token: t0 } = await d.create(SEG, { currentGen: 5 });
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { leases: [entry] });
-      expect((await d.get(SEG))!.leases).toEqual([entry]);
-      expect((await drainRecords(d.list()))[0]!.leases).toEqual([entry]);
-      const { token: t2 } = await d.compareAndSwap(SEG, t1, {
-        currentGen: 6,
-        knownGens: ledger(5, 6),
-      });
-      expect((await d.get(SEG))!.leases).toEqual([entry]);
-      const { token: t3 } = await d.compareAndSwap(SEG, t2, { retention: { expiresAt: 9 } });
-      expect((await d.get(SEG))!.leases).toEqual([entry]);
-      await d.compareAndSwap(SEG, t3, { leases: undefined });
-      expect((await d.get(SEG))!.leases).toBeUndefined();
-    });
-
-    it('refuses malformed leases and leaves the row unchanged', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 5 });
-      const ok = { holder: '00112233aabbccdd', generation: 3, until: 1_900_000_000_000 };
-      await expectValidationReject(
-        d.compareAndSwap(SEG, token, { leases: [{ ...ok, holder: 'x' }] }),
-      );
-      await expectValidationReject(d.compareAndSwap(SEG, token, { leases: [ok, ok] }));
-      await expectValidationReject(
-        d.compareAndSwap(SEG, token, { leases: [{ ...ok, until: -1 }] }),
-      );
-      expect(await d.get(SEG)).toMatchObject({ token });
-      expect((await d.get(SEG))!.leases).toBeUndefined();
-    });
-
+    registryRowLifecycle(makeDriver);
+    registryOptionalFields(makeDriver);
+    registryDeleteAndList(makeDriver);
+    registryNames(makeDriver);
+    registryTombstonesAndFencedDelete(makeDriver);
+    registrySummary(makeDriver);
+    registrySummaryValidation(makeDriver);
+    registryKnownGens(makeDriver);
+    registryKnownGensValidation(makeDriver);
+    registryLeases(makeDriver);
     // ── a write's token, reported before it is sent ────────────────────────────────────────────────────────────────
     // A registry that sets `reportsWriteTokens` tells a writer the token of each write before sending it, so that the
     // writer can say, whatever became of the request, whether the row's `pointerId` is its own write's. A registry that
     // does not set it is not held to these cases.
     describe('write tokens', () => {
-      /** The writes a test makes, each with the tokens it reported, in the order reported. */
-      const collect = (): { tokens: string[]; options: { onToken: (t: string) => void } } => {
-        const tokens: string[] = [];
-        return { tokens, options: { onToken: (t) => void tokens.push(t) } };
-      };
-
-      it('a create reports the token it returns, and the row it makes has it as its token and its pointerId', async (ctx) => {
-        const d = makeDriver();
-        if (d.reportsWriteTokens !== true) return ctx.skip();
-        const { tokens, options } = collect();
-        const { token } = await d.create(SEG, { currentGen: 0 }, options);
-        expect(tokens).toEqual([token]);
-        expect(await d.get(SEG)).toMatchObject({ token, pointerId: token });
-      });
-
-      it('a create handed `held: null` reports its token too', async (ctx) => {
-        const d = makeDriver();
-        if (d.reportsWriteTokens !== true) return ctx.skip();
-        const { tokens, options } = collect();
-        const { token } = await d.create(SEG, { currentGen: 0 }, { ...options, held: null });
-        expect(tokens).toEqual([token]);
-        expect((await d.get(SEG))!.pointerId).toBe(token);
-      });
-
-      it('a compare-and-swap naming a resolved field reports its token, which becomes the row pointerId, held row or not', async (ctx) => {
-        const d = makeDriver();
-        if (d.reportsWriteTokens !== true) return ctx.skip();
-        const created = await d.create(SEG, { currentGen: 0 });
-        const first = collect();
-        const t1 = (await d.compareAndSwap(SEG, created.token, { currentGen: 1 }, first.options))
-          .token;
-        expect(first.tokens).toEqual([t1]);
-        expect((await d.get(SEG))!.pointerId).toBe(t1);
-        const held = (await d.get(SEG))!;
-        const second = collect();
-        const t2 = (await d.compareAndSwap(SEG, t1, { currentGen: 2 }, { ...second.options, held }))
-          .token;
-        expect(second.tokens).toEqual([t2]);
-        expect((await d.get(SEG))!.pointerId).toBe(t2);
-      });
-
-      it('a compare-and-swap that names no resolved field reports its token, which becomes the row token and not its pointerId', async (ctx) => {
-        const d = makeDriver();
-        if (d.reportsWriteTokens !== true) return ctx.skip();
-        const { token: created } = await d.create(SEG, { currentGen: 0 });
-        const { tokens, options } = collect();
-        const { token } = await d.compareAndSwap(SEG, created, { retention: { days: 5 } }, options);
-        expect(tokens).toEqual([token]);
-        expect(await d.get(SEG)).toMatchObject({ token, pointerId: created });
-      });
-
-      it('a token is reported before the write is applied: a report that throws stops it, and the row is untouched', async (ctx) => {
-        const d = makeDriver();
-        if (d.reportsWriteTokens !== true) return ctx.skip();
-        const refused = new Error('stop before sending');
-        const stop = {
-          onToken: (): void => {
-            throw refused;
-          },
-        };
-        await expect(d.create(SEG, { currentGen: 0 }, stop)).rejects.toBe(refused);
-        expect(await d.get(SEG)).toBeNull();
-        const { token } = await d.create(SEG, { currentGen: 0 });
-        await expect(d.compareAndSwap(SEG, token, { currentGen: 1 }, stop)).rejects.toBe(refused);
-        expect(await d.get(SEG)).toMatchObject({ token, pointerId: token, currentGen: 0 });
-      });
-
-      it('a write that conflicts leaves no row carrying a token it reported', async (ctx) => {
-        const d = makeDriver();
-        if (d.reportsWriteTokens !== true) return ctx.skip();
-        const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-        const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
-        const { tokens, options } = collect();
-        await expect(d.create(SEG, { currentGen: 5 }, options)).rejects.toBeInstanceOf(
-          WriteConflictError,
-        );
-        await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 }, options)).rejects.toBeInstanceOf(
-          WriteConflictError,
-        );
-        const row = (await d.get(SEG))!;
-        expect(row).toMatchObject({ token: t1, pointerId: t1, currentGen: 1 });
-        expect(tokens).not.toContain(row.token);
-        expect(tokens).not.toContain(row.pointerId);
-      });
-
-      it('each write reports its own token, and a conflicted one leaves none behind', async (ctx) => {
-        const d = makeDriver();
-        if (d.reportsWriteTokens !== true) return ctx.skip();
-        const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-        await d.compareAndSwap(SEG, t0, { currentGen: 1 }); // t0 is stale now
-        const { tokens, options } = collect();
-        await expect(d.compareAndSwap(SEG, t0, { currentGen: 2 }, options)).rejects.toBeInstanceOf(
-          WriteConflictError,
-        );
-        const fresh = (await d.get(SEG))!;
-        const landed = (await d.compareAndSwap(SEG, fresh.token, { currentGen: 2 }, options)).token;
-        const again = (await d.compareAndSwap(SEG, landed, { currentGen: 3 }, options)).token;
-        expect(tokens.filter((t) => t === landed)).toHaveLength(1);
-        expect(tokens.filter((t) => t === again)).toHaveLength(1);
-        expect(new Set(tokens).size).toBe(tokens.length);
-        expect(tokens).toContain((await d.get(SEG))!.pointerId);
-        expect((await d.get(SEG))!.pointerId).toBe(again);
-      });
+      registryWriteTokensReported(makeDriver);
+      registryWriteTokensRefused(makeDriver);
     });
 
-    // ── `pointerId`: the token of the last write that named a field a read resolves through ──────────────────────────
-    // A reader keys its caches on a generation with this. A driver that kept it across a write that changed what the
-    // row resolves to would let a reader serve one resolution's chunks for another; one that renewed it on a lease or
-    // policy write would make every warm reader of the segment open it again.
-    it('a create sets pointerId to the token it returns, and get and list return it', async () => {
-      const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: null });
-      expect((await d.get(SEG))!.pointerId).toBe(token);
-      expect((await drainRecords(d.list()))[0]!.pointerId).toBe(token);
-    });
+    registryPointerId(makeDriver);
+    registryPointerIdRenewal(makeDriver);
+    registryRefusedFields(makeDriver);
+    registryNamespaceListing(makeDriver, options, pagedListSize);
+  });
+}
 
-    it('a compare-and-swap naming a resolved field renews pointerId to its own token, the pointer at its own value included', async () => {
-      const d = makeDriver();
-      let { token } = await d.create(SEG, { currentGen: 2 });
-      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
-      const patches: readonly RegistryPatch[] = [
-        { currentGen: 3 },
-        { currentGen: 3 },
-        { summary: clearSummary },
-        { keyId: 'k1' },
-        { keyId: undefined },
-        { wrappedDeks },
-        { wrappedDeks: undefined },
-        { status: 'destroyed' },
-      ];
-      for (const patch of patches) {
-        ({ token } = await d.compareAndSwap(SEG, token, patch));
-        const row = (await d.get(SEG))!;
-        expect(row.pointerId, JSON.stringify(patch)).toBe(token);
-        expect((await drainRecords(d.list()))[0]!.pointerId).toBe(token);
-      }
-    });
+/** Exactly one of two racing writers wins; the loser reports a conflict, not a crash or a silent no-op. */
+const expectOneWinner = (results: PromiseSettledResult<unknown>[]): void => {
+  const won = results.filter((r) => r.status === 'fulfilled');
+  const lost = results.filter((r) => r.status === 'rejected');
+  expect(won).toHaveLength(1);
+  expect(lost).toHaveLength(1);
+  expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(WriteConflictError);
+};
 
-    // "Names" is by presence, whatever the value: each resolved field named at the value the row already has renews it,
-    // from a row whose pointerId is not its token, so a driver that compared values instead would be seen.
-    it('a compare-and-swap naming any resolved field at the value it already has renews pointerId', async () => {
-      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
-      const rows: ReadonlyArray<{ create: NewRegistryRecord; patch: RegistryPatch }> = [
-        { create: { currentGen: 3, summary: clearSummary }, patch: { summary: clearSummary } },
-        { create: { currentGen: 3 }, patch: { status: 'active' } },
-        { create: { currentGen: 3, keyId: 'k1' }, patch: { keyId: 'k1' } },
-        { create: { currentGen: 3, wrappedDeks }, patch: { wrappedDeks } },
-      ];
-      for (const { create, patch } of rows) {
-        const d = makeDriver();
-        const { token: t0 } = await d.create(SEG, create);
-        const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
-        expect((await d.get(SEG))!.pointerId).toBe(t0);
-        const { token: t2 } = await d.compareAndSwap(SEG, t1, patch);
-        const row = (await d.get(SEG))!;
-        expect(row.pointerId, JSON.stringify(patch)).toBe(t2);
-        expect(row).toMatchObject(patch);
-      }
-    });
+function registryRacingWrites(
+  makeDrivers: () => readonly [IRegistryDriver, IRegistryDriver],
+): void {
+  it('two concurrent creates of the same segment: exactly one wins', async () => {
+    const [a, b] = makeDrivers();
+    expectOneWinner(
+      await Promise.allSettled([
+        a.create(SEG, { currentGen: 0 }),
+        b.create(SEG, { currentGen: 0 }),
+      ]),
+    );
+    expect((await a.get(SEG))!.currentGen).toBe(0);
+  });
 
-    it('a compare-and-swap naming only leases, policy or the ledger moves the token and leaves pointerId', async () => {
-      const d = makeDriver();
-      const { token: created } = await d.create(SEG, { currentGen: 5 });
-      const entry = { holder: '00112233aabbccdd', generation: 5, until: 1_900_000_000_000 };
-      const patches: readonly RegistryPatch[] = [
-        { leases: [entry] },
-        { leases: undefined },
-        { retention: { expiresAt: 9 } },
-        { residency: { region: 'eu' } },
-        { knownGens: ledger(3, 5) },
-        { knownGens: undefined },
-      ];
-      let token = created;
-      for (const patch of patches) {
-        const before = token;
-        ({ token } = await d.compareAndSwap(SEG, token, patch));
-        expect(token, JSON.stringify(patch)).not.toBe(before);
-        expect((await d.get(SEG))!.pointerId, JSON.stringify(patch)).toBe(created);
-      }
-      expect((await drainRecords(d.list()))[0]!.pointerId).toBe(created);
-    });
+  it('two concurrent swaps from the same token: exactly one wins, and the pointer lands once', async () => {
+    const [a, b] = makeDrivers();
+    const { token } = await a.create(SEG, { currentGen: 0 });
+    expectOneWinner(
+      await Promise.allSettled([
+        a.compareAndSwap(SEG, token, { currentGen: 1 }),
+        b.compareAndSwap(SEG, token, { currentGen: 2 }),
+      ]),
+    );
+    // The loser's write must not have landed on top of the winner's.
+    const after = await a.get(SEG);
+    expect([1, 2]).toContain(after!.currentGen);
+    expect(after!.token).not.toBe(token);
+    // The row's pointerId is the winner's token: the last write that named a field a read resolves through.
+    expect(after!.pointerId).toBe(after!.token);
+    // And the winner's token is the only one that can swap again.
+    await expect(a.compareAndSwap(SEG, token, { currentGen: 9 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+  });
 
-    // The renewal a writer asks for with no other change: naming the pointer at its own value. "Moves" in a patch
-    // means "changes value", so the summary, the ledger and the leases stay with a pointer that stays.
-    it('a patch naming the pointer at the value it has keeps the summary, the ledger and the leases', async () => {
-      const d = makeDriver();
-      const entry = { holder: '00112233aabbccdd', generation: 2, until: 1_900_000_000_000 };
-      const { token: t0 } = await d.create(SEG, {
-        currentGen: 3,
-        summary: clearSummary,
-        knownGens: [...ledger(1, 2), { generation: 3, footerCrc: 2864434397 }],
-      });
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { leases: [entry] });
-      const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 3 });
-      const row = (await d.get(SEG))!;
-      expect(row).toMatchObject({
-        currentGen: 3,
-        token: t2,
-        pointerId: t2,
-        knownGens: [...ledger(1, 2), { generation: 3, footerCrc: 2864434397 }],
-      });
-      expect(row.summary).toEqual(clearSummary);
-      expect(row.leases).toEqual([entry]);
-    });
-
-    it('never repeats a pointerId across writes, deletes and re-creates', async () => {
-      const d = makeDriver();
-      const seen = new Set<string>();
-      for (let cycle = 0; cycle < 3; cycle++) {
-        let { token } = await d.create(SEG, { currentGen: null });
-        seen.add((await d.get(SEG))!.pointerId);
-        for (let g = 0; g < 3; g++) {
-          ({ token } = await d.compareAndSwap(SEG, token, { currentGen: g }));
-          const { pointerId } = (await d.get(SEG))!;
-          expect(seen.has(pointerId), `cycle ${cycle}, generation ${g}`).toBe(false);
-          seen.add(pointerId);
-        }
-        await d.delete(SEG, token);
-      }
-      await d.create(SEG, { currentGen: 0 });
-      expect(seen.has((await d.get(SEG))!.pointerId)).toBe(false);
-    });
-
-    it('a lost compare-and-swap changes nothing, pointerId included', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-      await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
-      const before = (await d.get(SEG))!;
-      await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 })).rejects.toBeInstanceOf(
-        WriteConflictError,
+  // A registry that reports its writes' tokens makes a token unique to its write attempt, also against another writer
+  // racing the same version: a loser's token is never the one the row ends up carrying, so a publish that was told
+  // only its own tokens cannot take another writer's landed write for its own. A version counter alone is not enough.
+  it("writers racing one create, or one swap from the same token, each report their own token: the row carries only the winner's", async (ctx) => {
+    const drivers = makeDrivers();
+    if (drivers[0].reportsWriteTokens !== true) return ctx.skip();
+    const racers = 6;
+    /** `racers` writers, alternating over the two drivers, each with its own token collector. */
+    const race = async (
+      write: (d: IRegistryDriver, onToken: (t: string) => void) => Promise<{ token: string }>,
+    ): Promise<void> => {
+      const reported: string[][] = Array.from({ length: racers }, () => []);
+      const results = await Promise.allSettled(
+        reported.map((tokens, i) => write(drivers[i % 2]!, (t) => void tokens.push(t))),
       );
-      expect(await d.get(SEG)).toMatchObject({
-        token: before.token,
-        pointerId: before.pointerId,
-        currentGen: 0,
+      const winners = results.flatMap((r, i) => (r.status === 'fulfilled' ? [i] : []));
+      expect(winners).toHaveLength(1);
+      for (const r of results) {
+        if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(WriteConflictError);
+      }
+      const winner = winners[0]!;
+      const row = (await drivers[0].get(SEG))!;
+      expect(reported[winner]).toContain(row.pointerId);
+      reported.forEach((tokens, i) => {
+        if (i !== winner) expect(tokens, `writer ${i}`).not.toContain(row.pointerId);
       });
-    });
+    };
+    // Every racer sends the same body, as two loads of the same ids racing one number do, so a token derived from the
+    // content sent would be the same for the winner and the losers.
+    await race((d, onToken) => d.create(SEG, { currentGen: 0 }, { onToken }));
+    const { token } = await drivers[0].get(SEG).then((r) => ({ token: r!.token }));
+    await race((d, onToken) => d.compareAndSwap(SEG, token, { currentGen: 10 }, { onToken }));
+  });
+}
 
-    // A keyId a read would refuse (it must be a non-empty string) is refused at the write, so one bad write cannot
-    // make a row unreadable and stop every listing that reaches it.
-    it('a create or a patch naming a keyId that is not a non-empty string is refused and stores nothing', async () => {
-      const d = makeDriver();
-      for (const keyId of [5, '', null, {}]) {
-        await expect(
-          d.create(SEG, { currentGen: 0, keyId } as unknown as NewRegistryRecord),
-        ).rejects.toBeInstanceOf(ValidationError);
-        expect(await d.get(SEG)).toBeNull();
-      }
-      const { token } = await d.create(SEG, { currentGen: 0, keyId: 'k1' });
-      for (const keyId of [5, '', {}]) {
-        await expect(
-          d.compareAndSwap(SEG, token, { keyId } as unknown as RegistryPatch),
-        ).rejects.toBeInstanceOf(ValidationError);
-      }
-      expect(await d.get(SEG)).toMatchObject({ token, keyId: 'k1' });
-      const cleared = await d.compareAndSwap(SEG, token, { keyId: undefined });
-      expect((await d.get(SEG))!.token).toBe(cleared.token);
-      expect((await d.get(SEG))!.keyId).toBeUndefined();
-    });
-
-    // Only the registry sets it: a write that carried a value of the caller's is refused, or the value is not stored.
-    it('a create or a patch naming pointerId never sets it', async () => {
-      const d = makeDriver();
-      const forged = '0123456789abcdef0123456789abcdef.0.0123456789abcdef';
-      const created = await d
-        .create(SEG, { currentGen: 0, pointerId: forged } as NewRegistryRecord)
-        .catch((err: unknown) => err);
-      if (!(created instanceof ValidationError)) {
-        expect(created).toMatchObject({ token: expect.any(String) });
-        expect((await d.get(SEG))!.pointerId).toBe((created as { token: string }).token);
-      } else {
-        expect(await d.get(SEG)).toBeNull();
-        await d.create(SEG, { currentGen: 0 });
-      }
-      const row = (await d.get(SEG))!;
-      const swapped = await d
-        .compareAndSwap(SEG, row.token, { pointerId: forged } as RegistryPatch)
-        .catch((err: unknown) => err);
-      const after = (await d.get(SEG))!;
-      expect(after.pointerId).not.toBe(forged);
-      if (swapped instanceof ValidationError) expect(after.token).toBe(row.token);
-      else expect(after.pointerId).toBe(row.pointerId);
-    });
-
-    // A forged value beside a resolved field, and forged values a careless driver could take for its own: the row's
-    // pointerId before its last renewal, and the row's own token while its pointerId is another.
-    it('a patch naming pointerId beside a resolved field, or as a value the row has had, never sets it', async () => {
-      const d = makeDriver();
-      const forged = '0123456789abcdef0123456789abcdef.0.0123456789abcdef';
-      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
-      // The row now has pointerId t1, and a token past it once a policy write lands.
-      const { token: t2 } = await d.compareAndSwap(SEG, t1, { retention: { expiresAt: 9 } });
-      expect((await d.get(SEG))!).toMatchObject({ token: t2, pointerId: t1 });
-
-      // Beside a resolved field: the write renews pointerId to its own token, or is refused; never the forged value.
-      const combined = await d
-        .compareAndSwap(SEG, t2, { currentGen: 2, pointerId: forged } as RegistryPatch)
-        .catch((err: unknown) => err);
-      let row = (await d.get(SEG))!;
-      expect(row.pointerId).not.toBe(forged);
-      if (combined instanceof ValidationError) {
-        expect(row).toMatchObject({ token: t2, pointerId: t1, currentGen: 1 });
-      } else {
-        expect(row).toMatchObject({
-          currentGen: 2,
-          pointerId: (combined as { token: string }).token,
-        });
-      }
-
-      // Its previous pointerId, and its own token while its pointerId is another: refused, or not stored.
-      for (const pick of ['previous', 'token'] as const) {
-        const before = (await d.get(SEG))!;
-        const { token: ahead } = await d.compareAndSwap(SEG, before.token, {
-          retention: { expiresAt: 10 },
-        });
-        const now = (await d.get(SEG))!;
-        expect(now.pointerId).not.toBe(now.token);
-        const value = pick === 'previous' ? t0 : ahead;
-        const swapped = await d
-          .compareAndSwap(SEG, ahead, { pointerId: value } as RegistryPatch)
-          .catch((err: unknown) => err);
-        row = (await d.get(SEG))!;
-        expect(row.pointerId, pick).toBe(now.pointerId);
-        if (swapped instanceof ValidationError) expect(row.token, pick).toBe(ahead);
-      }
-    });
-
-    it('list of a namespace that is not a valid name is refused, not read as empty', async () => {
-      const d = makeDriver();
-      await d.create({ segment: 'a' }, { currentGen: 0 });
-      await expect(drainSegments(d.list(''))).rejects.toBeInstanceOf(ValidationError);
-    });
-
-    it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
-      const d = makeDriver();
-      await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });
-      await d.create({ namespace: 'ns2', segment: 'b' }, { currentGen: 0 });
-      await d.create({ namespace: 'nsextra', segment: 'c' }, { currentGen: 0 });
-      const seen: string[] = [];
-      for await (const rec of d.list('ns')) seen.push(rec.segment);
-      expect(seen).toEqual(['a']);
-    });
-
-    const missingLocation = options.missingLocation;
-    if (missingLocation !== undefined) {
-      it('missing location', async () => {
-        const d = missingLocation();
-        await failsAsMissingLocation('get', () => d.get(SEG));
-        await failsAsMissingLocation('list', () => drainRecords(d.list()));
-        await failsAsMissingLocation('create', () => d.create(SEG, { currentGen: 0 }));
-      });
+function registryRacingDeletes(
+  makeDrivers: () => readonly [IRegistryDriver, IRegistryDriver],
+): void {
+  it('a delete racing a swap leaves exactly one outcome, never both', async () => {
+    const [a, b] = makeDrivers();
+    const { token } = await a.create(SEG, { currentGen: 0 });
+    const [del, cas] = await Promise.allSettled([
+      a.delete(SEG),
+      b.compareAndSwap(SEG, token, { currentGen: 1 }),
+    ]);
+    const row = await a.get(SEG);
+    if (cas.status === 'fulfilled') {
+      // The swap won the fence. The delete then either tombstoned the swapped row (row gone) or lost.
+      expect(row === null || row.currentGen === 1).toBe(true);
+    } else {
+      expect((cas as PromiseRejectedResult).reason).toBeInstanceOf(WriteConflictError);
+      expect(del.status).toBe('fulfilled');
+      expect(row).toBeNull();
     }
+  });
 
-    if (pagedListSize !== undefined) {
-      it(
-        'list across pages',
-        async () => {
-          const d = makeDriver();
-          const name = (i: number): string => `page-${String(i).padStart(6, '0')}`;
-          await eachIndex(pagedListSize, (i) => d.create({ segment: name(i) }, { currentGen: i }));
-          const listed = (await drainRecords(d.list())).map((r) => r.segment);
-          expect(listed.length).toBe(pagedListSize);
-          expect(new Set(listed).size).toBe(pagedListSize);
-          expect([...listed].sort()).toEqual(
-            Array.from({ length: pagedListSize }, (_v, i) => name(i)),
-          );
-        },
-        Math.max(30_000, pagedListSize * 60),
-      );
+  it('a delete fenced on a token it read before a swap loses to it: the row survives', async () => {
+    const [a, b] = makeDrivers();
+    const { token } = await a.create(SEG, { currentGen: 0 });
+    await b.compareAndSwap(SEG, token, { currentGen: 1 }); // lands between the delete's read and its write
+    await expect(a.delete(SEG, token)).rejects.toBeInstanceOf(WriteConflictError);
+    expect((await a.get(SEG))?.currentGen).toBe(1);
+  });
+
+  it('two deletes fenced on the same token: exactly one lands', async () => {
+    const [a, b] = makeDrivers();
+    const { token } = await a.create(SEG, { currentGen: 0 });
+    expectOneWinner(await Promise.allSettled([a.delete(SEG, token), b.delete(SEG, token)]));
+    expect(await a.get(SEG)).toBeNull();
+  });
+
+  it('a reader never observes a row as absent while a writer is overwriting it', async () => {
+    const [a, b] = makeDrivers();
+    let { token } = await a.create(SEG, { currentGen: 0 });
+    // Hammer the row while reading it. A store that reads in two round trips (metadata, then bytes pinned
+    // to that version) loses its pin on every one of these writes; if it answers that with `null`, a live
+    // row disappears — which is what `ObjectVersionRaced` and the bounded re-read exist to prevent.
+    for (let i = 1; i <= 12; i++) {
+      const [, read] = await Promise.all([
+        b.compareAndSwap(SEG, token, { currentGen: i }).then((r) => {
+          token = r.token;
+        }),
+        a.get(SEG),
+      ]);
+      expect(read, `get() reported an absent row on overwrite ${i}`).not.toBeNull();
     }
-
-    // A registry keyed by the segment name alone, keeping the namespace as a column it filters listings on, passes every
-    // case above; through a store, one tenant's first load then publishes over another tenant's row.
-    it('one segment name in several namespaces is several rows, each written and deleted alone', async () => {
-      const d = makeDriver();
-      const refs: SegmentRef[] = [
-        { segment: 's' },
-        { namespace: 'n', segment: 's' },
-        { namespace: '_default', segment: 's' },
-        { namespace: 'a', segment: 'b/c' },
-        { namespace: 'a/b', segment: 'c' },
-        ...NASTY_NAMES.map((namespace) => ({ namespace, segment: 's' })),
-      ];
-      const tokens = new Map<number, string>();
-      for (const [i, ref] of refs.entries()) {
-        tokens.set(i, (await d.create(ref, { currentGen: i })).token);
-      }
-      for (const [i, ref] of refs.entries()) {
-        const rec = await d.get(ref);
-        expect(rec?.currentGen, JSON.stringify(ref)).toBe(i);
-        expect(rec?.namespace).toBe(ref.namespace);
-        expect(rec?.segment).toBe(ref.segment);
-      }
-      // A swap of one and a delete of another touch only themselves.
-      await d.compareAndSwap(refs[1]!, tokens.get(1)!, { currentGen: 100 });
-      await d.delete(refs[2]!);
-      for (const [i, ref] of refs.entries()) {
-        const want = i === 1 ? 100 : i === 2 ? undefined : i;
-        expect((await d.get(ref))?.currentGen, JSON.stringify(ref)).toBe(want);
-      }
-      const live = refs.filter((_ref, i) => i !== 2);
-      for (const namespace of new Set(live.map((ref) => ref.namespace))) {
-        if (namespace === undefined) continue;
-        const want = live.filter((ref) => ref.namespace === namespace).map((ref) => ref.segment);
-        expect((await drainSegments(d.list(namespace))).sort(), namespace).toEqual(want.sort());
-      }
-    });
   });
 }
 
@@ -1816,130 +2043,8 @@ export function registryConcurrency(
   makeDrivers: () => readonly [IRegistryDriver, IRegistryDriver],
 ): void {
   describe(`IRegistryDriver concurrency: ${label}`, () => {
-    /** Exactly one of two racing writers wins; the loser reports a conflict, not a crash or a silent no-op. */
-    const expectOneWinner = (results: PromiseSettledResult<unknown>[]): void => {
-      const won = results.filter((r) => r.status === 'fulfilled');
-      const lost = results.filter((r) => r.status === 'rejected');
-      expect(won).toHaveLength(1);
-      expect(lost).toHaveLength(1);
-      expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(WriteConflictError);
-    };
-
-    it('two concurrent creates of the same segment: exactly one wins', async () => {
-      const [a, b] = makeDrivers();
-      expectOneWinner(
-        await Promise.allSettled([
-          a.create(SEG, { currentGen: 0 }),
-          b.create(SEG, { currentGen: 0 }),
-        ]),
-      );
-      expect((await a.get(SEG))!.currentGen).toBe(0);
-    });
-
-    it('two concurrent swaps from the same token: exactly one wins, and the pointer lands once', async () => {
-      const [a, b] = makeDrivers();
-      const { token } = await a.create(SEG, { currentGen: 0 });
-      expectOneWinner(
-        await Promise.allSettled([
-          a.compareAndSwap(SEG, token, { currentGen: 1 }),
-          b.compareAndSwap(SEG, token, { currentGen: 2 }),
-        ]),
-      );
-      // The loser's write must not have landed on top of the winner's.
-      const after = await a.get(SEG);
-      expect([1, 2]).toContain(after!.currentGen);
-      expect(after!.token).not.toBe(token);
-      // The row's pointerId is the winner's token: the last write that named a field a read resolves through.
-      expect(after!.pointerId).toBe(after!.token);
-      // And the winner's token is the only one that can swap again.
-      await expect(a.compareAndSwap(SEG, token, { currentGen: 9 })).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-    });
-
-    // A registry that reports its writes' tokens makes a token unique to its write attempt, also against another writer
-    // racing the same version: a loser's token is never the one the row ends up carrying, so a publish that was told
-    // only its own tokens cannot take another writer's landed write for its own. A version counter alone is not enough.
-    it("writers racing one create, or one swap from the same token, each report their own token: the row carries only the winner's", async (ctx) => {
-      const drivers = makeDrivers();
-      if (drivers[0].reportsWriteTokens !== true) return ctx.skip();
-      const racers = 6;
-      /** `racers` writers, alternating over the two drivers, each with its own token collector. */
-      const race = async (
-        write: (d: IRegistryDriver, onToken: (t: string) => void) => Promise<{ token: string }>,
-      ): Promise<void> => {
-        const reported: string[][] = Array.from({ length: racers }, () => []);
-        const results = await Promise.allSettled(
-          reported.map((tokens, i) => write(drivers[i % 2]!, (t) => void tokens.push(t))),
-        );
-        const winners = results.flatMap((r, i) => (r.status === 'fulfilled' ? [i] : []));
-        expect(winners).toHaveLength(1);
-        for (const r of results) {
-          if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(WriteConflictError);
-        }
-        const winner = winners[0]!;
-        const row = (await drivers[0].get(SEG))!;
-        expect(reported[winner]).toContain(row.pointerId);
-        reported.forEach((tokens, i) => {
-          if (i !== winner) expect(tokens, `writer ${i}`).not.toContain(row.pointerId);
-        });
-      };
-      // Every racer sends the same body, as two loads of the same ids racing one number do, so a token derived from the
-      // content sent would be the same for the winner and the losers.
-      await race((d, onToken) => d.create(SEG, { currentGen: 0 }, { onToken }));
-      const { token } = await drivers[0].get(SEG).then((r) => ({ token: r!.token }));
-      await race((d, onToken) => d.compareAndSwap(SEG, token, { currentGen: 10 }, { onToken }));
-    });
-
-    it('a delete racing a swap leaves exactly one outcome, never both', async () => {
-      const [a, b] = makeDrivers();
-      const { token } = await a.create(SEG, { currentGen: 0 });
-      const [del, cas] = await Promise.allSettled([
-        a.delete(SEG),
-        b.compareAndSwap(SEG, token, { currentGen: 1 }),
-      ]);
-      const row = await a.get(SEG);
-      if (cas.status === 'fulfilled') {
-        // The swap won the fence. The delete then either tombstoned the swapped row (row gone) or lost.
-        expect(row === null || row.currentGen === 1).toBe(true);
-      } else {
-        expect((cas as PromiseRejectedResult).reason).toBeInstanceOf(WriteConflictError);
-        expect(del.status).toBe('fulfilled');
-        expect(row).toBeNull();
-      }
-    });
-
-    it('a delete fenced on a token it read before a swap loses to it: the row survives', async () => {
-      const [a, b] = makeDrivers();
-      const { token } = await a.create(SEG, { currentGen: 0 });
-      await b.compareAndSwap(SEG, token, { currentGen: 1 }); // lands between the delete's read and its write
-      await expect(a.delete(SEG, token)).rejects.toBeInstanceOf(WriteConflictError);
-      expect((await a.get(SEG))?.currentGen).toBe(1);
-    });
-
-    it('two deletes fenced on the same token: exactly one lands', async () => {
-      const [a, b] = makeDrivers();
-      const { token } = await a.create(SEG, { currentGen: 0 });
-      expectOneWinner(await Promise.allSettled([a.delete(SEG, token), b.delete(SEG, token)]));
-      expect(await a.get(SEG)).toBeNull();
-    });
-
-    it('a reader never observes a row as absent while a writer is overwriting it', async () => {
-      const [a, b] = makeDrivers();
-      let { token } = await a.create(SEG, { currentGen: 0 });
-      // Hammer the row while reading it. A store that reads in two round trips (metadata, then bytes pinned
-      // to that version) loses its pin on every one of these writes; if it answers that with `null`, a live
-      // row disappears — which is what `ObjectVersionRaced` and the bounded re-read exist to prevent.
-      for (let i = 1; i <= 12; i++) {
-        const [, read] = await Promise.all([
-          b.compareAndSwap(SEG, token, { currentGen: i }).then((r) => {
-            token = r.token;
-          }),
-          a.get(SEG),
-        ]);
-        expect(read, `get() reported an absent row on overwrite ${i}`).not.toBeNull();
-      }
-    });
+    registryRacingWrites(makeDrivers);
+    registryRacingDeletes(makeDrivers);
   });
 }
 
@@ -2014,6 +2119,154 @@ function schemaFiveRowText(ref: SegmentRef, extra: Record<string, unknown> = {})
   });
 }
 
+const removes = (h: RegistryDeleteHarness): boolean =>
+  h.driver.capabilities().conditionalDelete === true;
+
+function registryDeleteFencing(make: () => RegistryDeleteHarness): void {
+  it('says whether a delete removes a row: conditionalDelete is a boolean, or absent', () => {
+    const flag = make().driver.capabilities().conditionalDelete;
+    expect(flag === undefined || typeof flag === 'boolean').toBe(true);
+  });
+
+  it('a delete fenced on the current token removes the row where the registry says so, and tombstones it otherwise', async () => {
+    const h = make();
+    const { token } = await h.driver.create(SEG, { currentGen: 0, status: 'destroyed' });
+    expect(await h.stored(SEG)).toBe(true);
+    await h.driver.delete(SEG, token);
+    expect(await h.driver.get(SEG)).toBeNull();
+    expect(await drainSegments(h.driver.list())).toEqual([]);
+    expect(await h.stored(SEG), 'what the backend still holds for the row').toBe(!removes(h));
+  });
+
+  it('a delete with no token does the same', async () => {
+    const h = make();
+    await h.driver.create(SEG, { currentGen: null });
+    await h.driver.delete(SEG);
+    expect(await h.driver.get(SEG)).toBeNull();
+    expect(await h.stored(SEG)).toBe(!removes(h));
+    await h.driver.delete(SEG); // and stays idempotent
+    expect(await h.stored(SEG)).toBe(!removes(h));
+  });
+
+  it('a delete fenced on a stale token removes nothing: the row stays stored and live', async () => {
+    const h = make();
+    const { token: t0 } = await h.driver.create(SEG, { currentGen: 0 });
+    const { token: t1 } = await h.driver.compareAndSwap(SEG, t0, { currentGen: 1 });
+    await expect(h.driver.delete(SEG, t0)).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await h.stored(SEG)).toBe(true);
+    expect(await h.driver.get(SEG)).toMatchObject({ currentGen: 1, token: t1 });
+  });
+
+  it('a name deleted and created again is a new incarnation: every earlier token is refused', async () => {
+    const h = make();
+    const held: string[] = [];
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const { token: t0 } = await h.driver.create(SEG, { currentGen: null });
+      const { token: t1 } = await h.driver.compareAndSwap(SEG, t0, { currentGen: cycle });
+      held.push(t0, t1);
+      await h.driver.delete(SEG, t1);
+    }
+    expect(new Set(held).size).toBe(held.length);
+    const { token: live } = await h.driver.create(SEG, { currentGen: 0 });
+    expect(held).not.toContain(live);
+    for (const stale of held) {
+      await expect(h.driver.compareAndSwap(SEG, stale, { currentGen: 9 })).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+      await expect(h.driver.delete(SEG, stale)).rejects.toBeInstanceOf(WriteConflictError);
+    }
+    expect(await h.driver.get(SEG)).toMatchObject({ currentGen: 0, token: live });
+  });
+}
+
+function registryPlantedRows(make: () => RegistryDeleteHarness): void {
+  // A row an earlier schema wrote carries no ledger of the generations it published (and below schema 4 no
+  // `pointerId` either), so this build cannot vouch for any of them: every read and every write that reads it first
+  // refuses it, loudly, rather than read it as empty or write over it.
+  it('a row stamped with an earlier schema is refused by every read and write, naming its key (UnsupportedError)', async (ctx) => {
+    if (make().plantRow === undefined) return ctx.skip();
+    for (const schemaVersion of [1, 2, 3, 4]) {
+      const h = make();
+      const ref = { namespace: 'tenant:acme', segment: `old-row-${schemaVersion}` };
+      await h.plantRow!(ref, earlierSchemaRowText(ref, schemaVersion));
+      const named = new RegExp(`old-row-${schemaVersion}`);
+      await expect(h.driver.get(ref)).rejects.toBeInstanceOf(UnsupportedError);
+      await expect(h.driver.get(ref)).rejects.toThrow(named);
+      await expect(drainRecords(h.driver.list())).rejects.toBeInstanceOf(UnsupportedError);
+      await expect(drainRecords(h.driver.list('tenant:acme'))).rejects.toThrow(named);
+      const token = plantedToken(schemaVersion);
+      await expect(h.driver.compareAndSwap(ref, token, { currentGen: 5 })).rejects.toBeInstanceOf(
+        UnsupportedError,
+      );
+      await expect(h.driver.create(ref, { currentGen: 0 })).rejects.toBeInstanceOf(
+        UnsupportedError,
+      );
+      await expect(h.driver.delete(ref, token)).rejects.toBeInstanceOf(UnsupportedError);
+      await expect(h.driver.delete(ref)).rejects.toBeInstanceOf(UnsupportedError);
+      expect(await h.stored(ref), 'the row is left as it was').toBe(true);
+    }
+  });
+
+  // A stored row is untrusted bytes: a shape this schema cannot have is an IntegrityError naming the row, and a ledger
+  // that is well formed but disagrees with its row is read, not refused, so one such row stops no listing.
+  it('a planted schema-5 row that carries keptGens, or more than 384 ledger entries, is an IntegrityError naming its key', async (ctx) => {
+    if (make().plantRow === undefined) return ctx.skip();
+    const tooMany = Array.from({ length: 385 }, (_, i) => ({ generation: i, footerCrc: i }));
+    const shapes: ReadonlyArray<[string, Record<string, unknown>]> = [
+      ['keptGens', { keptGens: [3] }],
+      ['385 entries', { currentGen: 384, knownGens: tooMany }],
+      ['an entry with an extra key', { knownGens: [{ generation: 4, footerCrc: 12, size: 1 }] }],
+      [
+        'a repeated generation',
+        {
+          knownGens: [
+            { generation: 4, footerCrc: 1 },
+            { generation: 4, footerCrc: 1 },
+          ],
+        },
+      ],
+      ['a footerCrc of 2^32', { knownGens: [{ generation: 4, footerCrc: 2 ** 32 }] }],
+    ];
+    for (const [i, [what, extra]] of shapes.entries()) {
+      const h = make();
+      const ref = { namespace: 'tenant:acme', segment: `bad-ledger-${i}` };
+      await h.plantRow!(ref, schemaFiveRowText(ref, extra));
+      await expect(h.driver.get(ref), what).rejects.toBeInstanceOf(IntegrityError);
+      await expect(h.driver.get(ref), what).rejects.toThrow(new RegExp(`bad-ledger-${i}`));
+      await expect(drainRecords(h.driver.list('tenant:acme')), what).rejects.toBeInstanceOf(
+        IntegrityError,
+      );
+    }
+  });
+
+  it('a planted schema-5 row whose ledger disagrees with its pointer is read as stored, not refused', async (ctx) => {
+    if (make().plantRow === undefined) return ctx.skip();
+    const h = make();
+    const ref = { namespace: 'tenant:acme', segment: 'disagrees' };
+    const stale = [
+      { generation: 2, footerCrc: 11 },
+      { generation: 3, footerCrc: 12 },
+    ];
+    await h.plantRow!(ref, schemaFiveRowText(ref, { knownGens: stale }));
+    expect((await h.driver.get(ref))!.knownGens).toEqual(stale);
+    expect((await drainRecords(h.driver.list('tenant:acme')))[0]!.knownGens).toEqual(stale);
+  });
+
+  it('a planted schema-5 row is read', async (ctx) => {
+    if (make().plantRow === undefined) return ctx.skip();
+    const h = make();
+    const ref = { namespace: 'tenant:acme', segment: 'current' };
+    await h.plantRow!(ref, schemaFiveRowText(ref));
+    expect(await h.driver.get(ref)).toMatchObject({
+      currentGen: 4,
+      knownGens: [
+        { generation: 3, footerCrc: 11 },
+        { generation: 4, footerCrc: 12 },
+      ],
+    });
+  });
+}
+
 /**
  * Contract tests for what `delete` leaves behind, which differs by driver and is declared by
  * `capabilities().conditionalDelete`:
@@ -2027,148 +2280,7 @@ function schemaFiveRowText(ref: SegmentRef, extra: Record<string, unknown> = {})
  */
 export function registryDeleteConformance(label: string, make: () => RegistryDeleteHarness): void {
   describe(`IRegistryDriver delete conformance: ${label}`, () => {
-    const removes = (h: RegistryDeleteHarness): boolean =>
-      h.driver.capabilities().conditionalDelete === true;
-
-    it('says whether a delete removes a row: conditionalDelete is a boolean, or absent', () => {
-      const flag = make().driver.capabilities().conditionalDelete;
-      expect(flag === undefined || typeof flag === 'boolean').toBe(true);
-    });
-
-    it('a delete fenced on the current token removes the row where the registry says so, and tombstones it otherwise', async () => {
-      const h = make();
-      const { token } = await h.driver.create(SEG, { currentGen: 0, status: 'destroyed' });
-      expect(await h.stored(SEG)).toBe(true);
-      await h.driver.delete(SEG, token);
-      expect(await h.driver.get(SEG)).toBeNull();
-      expect(await drainSegments(h.driver.list())).toEqual([]);
-      expect(await h.stored(SEG), 'what the backend still holds for the row').toBe(!removes(h));
-    });
-
-    it('a delete with no token does the same', async () => {
-      const h = make();
-      await h.driver.create(SEG, { currentGen: null });
-      await h.driver.delete(SEG);
-      expect(await h.driver.get(SEG)).toBeNull();
-      expect(await h.stored(SEG)).toBe(!removes(h));
-      await h.driver.delete(SEG); // and stays idempotent
-      expect(await h.stored(SEG)).toBe(!removes(h));
-    });
-
-    it('a delete fenced on a stale token removes nothing: the row stays stored and live', async () => {
-      const h = make();
-      const { token: t0 } = await h.driver.create(SEG, { currentGen: 0 });
-      const { token: t1 } = await h.driver.compareAndSwap(SEG, t0, { currentGen: 1 });
-      await expect(h.driver.delete(SEG, t0)).rejects.toBeInstanceOf(WriteConflictError);
-      expect(await h.stored(SEG)).toBe(true);
-      expect(await h.driver.get(SEG)).toMatchObject({ currentGen: 1, token: t1 });
-    });
-
-    it('a name deleted and created again is a new incarnation: every earlier token is refused', async () => {
-      const h = make();
-      const held: string[] = [];
-      for (let cycle = 0; cycle < 3; cycle++) {
-        const { token: t0 } = await h.driver.create(SEG, { currentGen: null });
-        const { token: t1 } = await h.driver.compareAndSwap(SEG, t0, { currentGen: cycle });
-        held.push(t0, t1);
-        await h.driver.delete(SEG, t1);
-      }
-      expect(new Set(held).size).toBe(held.length);
-      const { token: live } = await h.driver.create(SEG, { currentGen: 0 });
-      expect(held).not.toContain(live);
-      for (const stale of held) {
-        await expect(h.driver.compareAndSwap(SEG, stale, { currentGen: 9 })).rejects.toBeInstanceOf(
-          WriteConflictError,
-        );
-        await expect(h.driver.delete(SEG, stale)).rejects.toBeInstanceOf(WriteConflictError);
-      }
-      expect(await h.driver.get(SEG)).toMatchObject({ currentGen: 0, token: live });
-    });
-
-    // A row an earlier schema wrote carries no ledger of the generations it published (and below schema 4 no
-    // `pointerId` either), so this build cannot vouch for any of them: every read and every write that reads it first
-    // refuses it, loudly, rather than read it as empty or write over it.
-    it('a row stamped with an earlier schema is refused by every read and write, naming its key (UnsupportedError)', async (ctx) => {
-      if (make().plantRow === undefined) return ctx.skip();
-      for (const schemaVersion of [1, 2, 3, 4]) {
-        const h = make();
-        const ref = { namespace: 'tenant:acme', segment: `old-row-${schemaVersion}` };
-        await h.plantRow!(ref, earlierSchemaRowText(ref, schemaVersion));
-        const named = new RegExp(`old-row-${schemaVersion}`);
-        await expect(h.driver.get(ref)).rejects.toBeInstanceOf(UnsupportedError);
-        await expect(h.driver.get(ref)).rejects.toThrow(named);
-        await expect(drainRecords(h.driver.list())).rejects.toBeInstanceOf(UnsupportedError);
-        await expect(drainRecords(h.driver.list('tenant:acme'))).rejects.toThrow(named);
-        const token = plantedToken(schemaVersion);
-        await expect(h.driver.compareAndSwap(ref, token, { currentGen: 5 })).rejects.toBeInstanceOf(
-          UnsupportedError,
-        );
-        await expect(h.driver.create(ref, { currentGen: 0 })).rejects.toBeInstanceOf(
-          UnsupportedError,
-        );
-        await expect(h.driver.delete(ref, token)).rejects.toBeInstanceOf(UnsupportedError);
-        await expect(h.driver.delete(ref)).rejects.toBeInstanceOf(UnsupportedError);
-        expect(await h.stored(ref), 'the row is left as it was').toBe(true);
-      }
-    });
-
-    // A stored row is untrusted bytes: a shape this schema cannot have is an IntegrityError naming the row, and a ledger
-    // that is well formed but disagrees with its row is read, not refused, so one such row stops no listing.
-    it('a planted schema-5 row that carries keptGens, or more than 384 ledger entries, is an IntegrityError naming its key', async (ctx) => {
-      if (make().plantRow === undefined) return ctx.skip();
-      const tooMany = Array.from({ length: 385 }, (_, i) => ({ generation: i, footerCrc: i }));
-      const shapes: ReadonlyArray<[string, Record<string, unknown>]> = [
-        ['keptGens', { keptGens: [3] }],
-        ['385 entries', { currentGen: 384, knownGens: tooMany }],
-        ['an entry with an extra key', { knownGens: [{ generation: 4, footerCrc: 12, size: 1 }] }],
-        [
-          'a repeated generation',
-          {
-            knownGens: [
-              { generation: 4, footerCrc: 1 },
-              { generation: 4, footerCrc: 1 },
-            ],
-          },
-        ],
-        ['a footerCrc of 2^32', { knownGens: [{ generation: 4, footerCrc: 2 ** 32 }] }],
-      ];
-      for (const [i, [what, extra]] of shapes.entries()) {
-        const h = make();
-        const ref = { namespace: 'tenant:acme', segment: `bad-ledger-${i}` };
-        await h.plantRow!(ref, schemaFiveRowText(ref, extra));
-        await expect(h.driver.get(ref), what).rejects.toBeInstanceOf(IntegrityError);
-        await expect(h.driver.get(ref), what).rejects.toThrow(new RegExp(`bad-ledger-${i}`));
-        await expect(drainRecords(h.driver.list('tenant:acme')), what).rejects.toBeInstanceOf(
-          IntegrityError,
-        );
-      }
-    });
-
-    it('a planted schema-5 row whose ledger disagrees with its pointer is read as stored, not refused', async (ctx) => {
-      if (make().plantRow === undefined) return ctx.skip();
-      const h = make();
-      const ref = { namespace: 'tenant:acme', segment: 'disagrees' };
-      const stale = [
-        { generation: 2, footerCrc: 11 },
-        { generation: 3, footerCrc: 12 },
-      ];
-      await h.plantRow!(ref, schemaFiveRowText(ref, { knownGens: stale }));
-      expect((await h.driver.get(ref))!.knownGens).toEqual(stale);
-      expect((await drainRecords(h.driver.list('tenant:acme')))[0]!.knownGens).toEqual(stale);
-    });
-
-    it('a planted schema-5 row is read', async (ctx) => {
-      if (make().plantRow === undefined) return ctx.skip();
-      const h = make();
-      const ref = { namespace: 'tenant:acme', segment: 'current' };
-      await h.plantRow!(ref, schemaFiveRowText(ref));
-      expect(await h.driver.get(ref)).toMatchObject({
-        currentGen: 4,
-        knownGens: [
-          { generation: 3, footerCrc: 11 },
-          { generation: 4, footerCrc: 12 },
-        ],
-      });
-    });
+    registryDeleteFencing(make);
+    registryPlantedRows(make);
   });
 }
