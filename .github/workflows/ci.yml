@@ -181,23 +181,9 @@ jobs:
       - run: node scripts/smoke.cjs
 
   integration:
-    name: integration ${{ matrix.file }}
+    name: integration (MinIO + fake-gcs-server + Azurite)
     runs-on: ubuntu-latest # needs Docker on the runner
     timeout-minutes: 20
-    # DIAGNOSTIC, to be reverted: one job per integration file, so the file that starves its runner is the one job
-    # whose log is lost, and every other file keeps its log.
-    strategy:
-      fail-fast: false
-      matrix:
-        file:
-          - azure.test.ts
-          - calibrate-large-rehearsal.test.ts
-          - calibrate-rehearsal.test.ts
-          - conditional-delete.test.ts
-          - gcs.test.ts
-          - materialize-many.s3.test.ts
-          - real-cloud-conditional-delete.test.ts
-          - s3.test.ts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
@@ -224,11 +210,7 @@ jobs:
       # with a clear signal instead of hanging until the job timeout. Every image is local by now, the override runs
       # each service on its local copy, and `--pull never` keeps compose from pulling behind the helper's back.
       - run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300
-      # A step timeout below the job's, so a run that stalls fails this step and keeps its log (each failed test's
-      # output, a rehearsal's stderr included); a job that reaches its own timeout is cancelled and keeps none.
-      - name: integration, this file alone
-        timeout-minutes: 14
-        run: pnpm exec vitest run -c vitest.integration.config.ts tests/integration/${{ matrix.file }} --reporter=verbose
+      - run: pnpm test:integration
       # Kept only from a run that passed: a month's entry is never written again, so one saved by a run missing an
       # image, or on a broken build of a tag, would stand for the month.
       - uses: ./.github/actions/docker-images-save
