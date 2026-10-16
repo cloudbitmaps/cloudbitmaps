@@ -1,0 +1,77 @@
+name: We use CloudBitmaps
+description: Tell us you use CloudBitmaps, in production, in staging or while you evaluate it.
+title: 'We use CloudBitmaps'
+labels: [adopter]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for telling us. Every field but the first two is optional. This issue is public and shows your GitHub
+        account: to stay unnamed, write "unnamed" below and leave out anything that identifies your organization, and
+        leave out anything you would not put in a public issue (no ids, names of your users, or bucket names). Every
+        issue from this form is counted as an adopter, through its `adopter` label, whether or not it is listed.
+  - type: input
+    id: who
+    attributes:
+      label: Organization or project
+      description: Your company, team or project. Write "unnamed" to be counted but not listed.
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: What you use it for
+      description: For example audience segments, feature-flag cohorts, permission sets or candidate pools.
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Stage
+      options:
+        - Production
+        - Staging
+        - Evaluating
+    validations:
+      required: false
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage
+      multiple: true
+      options:
+        - S3
+        - GCS
+        - Azure Blob
+        - Local filesystem
+        - In-memory
+    validations:
+      required: false
+  - type: input
+    id: since
+    attributes:
+      label: Using it since
+      description: A month and year is plenty.
+    validations:
+      required: false
+  - type: input
+    id: scale
+    attributes:
+      label: Rough scale
+      description: Segments, ids per segment, reads a second. Ranges are fine.
+    validations:
+      required: false
+  - type: textarea
+    id: friction
+    attributes:
+      label: What got in your way
+      description: Setup, docs, errors, missing features. This is the most useful part for us.
+    validations:
+      required: false
+  - type: checkboxes
+    id: listing
+    attributes:
+      label: Listing
+      options:
+        - label: List us in ADOPTERS.md.
+          required: false

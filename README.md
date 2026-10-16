@@ -312,8 +312,10 @@ pnpm install
 pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm api:surface:check && pnpm smoke
 ```
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) is the canonical record of how we work. [`AGENTS.md`](AGENTS.md) is the AI-agent
-operating manual (`CLAUDE.md` is a symlink to it).
+Using CloudBitmaps? Tell us in [`ADOPTERS.md`](ADOPTERS.md); questions go to
+[Discussions](https://github.com/cloudbitmaps/cloudbitmaps/discussions). [`CONTRIBUTING.md`](CONTRIBUTING.md) is the
+canonical record of how we work. [`AGENTS.md`](AGENTS.md) is the AI-agent operating manual (`CLAUDE.md` is a symlink to
+it).
 
 ## License
 
