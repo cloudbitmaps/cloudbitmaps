@@ -13,6 +13,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A generation number can be taken again once its object is deleted: a load numbers `currentGen + 1` when no object
@@ -30,7 +31,11 @@ const range = (from: number, n: number): number[] => Array.from({ length: n }, (
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 
 /** Generation `g`'s ids: some in chunk 0, more for each generation so the chunk offsets move, and one in chunk 1. */

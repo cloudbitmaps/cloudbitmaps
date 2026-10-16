@@ -13,6 +13,7 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { incarnationOf } from '@/core/token';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * `loadSegment` — replace a segment's contents with one immutable generation.
@@ -29,7 +30,11 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 
 async function generations(storage: IStorageDriver, ref: SegmentRef = SEG): Promise<number[]> {
@@ -408,6 +413,7 @@ describe('loadSegment — racing writers', () => {
             raced = true;
             await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 9 }, [99], {
               registry: w.registry,
+              entropy: testEntropy,
               codec: roaringCodec,
             });
           }
@@ -526,7 +532,14 @@ describe('loadSegment — encryption', () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    const deps = { storage, registry, codec: roaringCodec, keystore, requireEncryption: true };
+    const deps = {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+      keystore,
+      requireEncryption: true,
+    };
 
     expect((await loadSegment(SEG, [1, 2, 3], deps)).published).toBe(true);
     expect((await loadSegment(SEG, [4, 5, 6], deps)).published).toBe(true);

@@ -184,7 +184,12 @@ async function assertSectionsHold(sections, metadata, name) {
 async function validCrbmWithMetadata(metadata) {
   const { CrbmWriter, BufferSink } = await import('./build/fuzz-core.js');
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 5, metadata });
+  const writer = new CrbmWriter(sink, {
+    generation: 5,
+    metadata,
+    // Zero keeps every seed byte-identical from one run to the next.
+    entropy: (n) => new Uint8Array(n),
+  });
   for (const key of [0, 256, 65535]) {
     const payload = new RoaringBitmap32([1, 2, key + 3]).serialize(SerializationFormat.portable);
     await writer.addChunk(key, payload, 3);

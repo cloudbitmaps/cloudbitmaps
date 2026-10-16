@@ -14,6 +14,7 @@ import {
 } from '@/core/crbm/format';
 import type { Aead, AeadSealed } from '@/core/crypto';
 import { NodeAead } from '@/drivers/crypto';
+import { zeroEntropy } from './entropy';
 
 /** One chunk as a test writes it: raw payload bytes and the cardinality the index records. */
 export interface RawChunk {
@@ -22,13 +23,17 @@ export interface RawChunk {
   readonly cardinality: number;
 }
 
-/** The bytes `CrbmWriter` produces for `chunks` under `options`. */
+/**
+ * The bytes `CrbmWriter` produces for `chunks` under `options`. With no `entropy` the write identity is all zero, the
+ * footer of an object written before the identity existed, so a test that builds an object to forge or splice it, or
+ * to compare it with another, is not made to carry a nonce it does not test.
+ */
 export async function writeCrbm(
   chunks: readonly RawChunk[],
-  options: CrbmWriterOptions,
+  options: Omit<CrbmWriterOptions, 'entropy'> & { readonly entropy?: CrbmWriterOptions['entropy'] },
 ): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, options);
+  const writer = new CrbmWriter(sink, { ...options, entropy: options.entropy ?? zeroEntropy });
   for (const c of chunks) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
   await writer.finish();
   return sink.bytes();

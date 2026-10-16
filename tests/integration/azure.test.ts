@@ -18,7 +18,7 @@ import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { isConditionalConflict } from '@/azure-blob/azure-errors';
 import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { IntegrityError, NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';

@@ -7,6 +7,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 const REF: SegmentRef = { segment: 's' };
 const X = 9;
@@ -16,7 +17,7 @@ describe('an erasure that deletes only objects it cannot search, on a segment wi
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    const deps = { storage, registry, codec: roaringCodec, keystore };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
     await loadSegment(REF, [1], deps); // generation 0, current, under the row's key
     for (const generation of [1, 2]) {
       // Above the pointer, each sealed under a key of its own, which the row does not hold.

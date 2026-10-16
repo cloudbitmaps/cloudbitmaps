@@ -6,6 +6,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 const REF: SegmentRef = { segment: 's' };
 const X = 9;
@@ -21,7 +22,7 @@ describe('a sealed holder does not stop the search of the older generations belo
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    const deps = { storage, registry, codec: roaringCodec, keystore };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
     await loadSegment(REF, [1, X], deps, { keep: 9 });
     for (let i = 0; i < 6; i++) await loadSegment(REF, [1, 2], deps, { keep: 9 }); // 1..6; 6 current
     await storage.delete({ ...REF, generation: 5 });

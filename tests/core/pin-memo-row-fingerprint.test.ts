@@ -3,7 +3,7 @@ import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
 import { aadFor } from '@/core/crypto';
 import type { Aead, IKeystore, WrappedDek } from '@/core/crypto';
-import { writeCrbmGenerationStream } from '@/core/crbm-write';
+import { writeCrbmGenerationStream } from '../helpers/crbm-write';
 import { SafeBitmap } from '@/roaring-codec';
 import type { IStorageDriver } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';

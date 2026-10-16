@@ -2,6 +2,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { loadedStore } from '../helpers/loaded';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A concurrent erasure collects with `keep: 0`, which takes every generation below its new pointer — `from`, and
@@ -27,7 +28,10 @@ async function generationsIn(storage: {
 
 async function world() {
   const w = await loadedStore({}, { retry: false });
-  return { ...w, deps: { storage: w.storage, registry: w.registry, codec: roaringCodec } };
+  return {
+    ...w,
+    deps: { storage: w.storage, registry: w.registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 
 /** Run `hook` once, immediately after the first chunk read — inside the rewrite's whole-segment stream. */

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { aadFor } from '@/core/crypto';
 import type { Aead, CrbmCrypto } from '@/core/crypto';
 import { openGenerationReader, verifyGeneration } from '@/core/crbm-open';
-import { writeCrbmGenerationStream } from '@/core/crbm-write';
+import { writeCrbmGenerationStream } from '../helpers/crbm-write';
 import { CrbmReader } from '@/core/crbm/reader';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, isNotFoundError } from '@/core/errors';
@@ -15,6 +15,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { FINGERPRINT } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * An erasure rewrites the current generation without one id, and the rewrite is the same generation in every way but
@@ -29,7 +30,7 @@ const IDS = [1, 2, 3, 70_000, 200_000];
 function world(keystore?: InProcessKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps = { storage, registry, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   return { storage, registry, deps, keystore };
 }
 type World = ReturnType<typeof world>;

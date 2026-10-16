@@ -1,6 +1,6 @@
 import { afterEach, vi } from 'vitest';
 import { publishGeneration } from '../helpers/publish';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { CrbmReader } from '@/core/crbm/reader';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError } from '@/core/errors';
@@ -15,6 +15,7 @@ import { collect } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The erasure rewrite reads the generation's chunks through the reader's coalesced stream rather than one round trip
@@ -100,6 +101,7 @@ const erase = (p: Probe, id: number, deps: object = {}) =>
   eraseIdFromSegment(SEG, id, {
     storage: p.storage,
     registry: p.registry,
+    entropy: testEntropy,
     codec: roaringCodec,
     ...deps,
   });

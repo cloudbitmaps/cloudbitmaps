@@ -1,4 +1,4 @@
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from './helpers/crbm-write';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -10,6 +10,7 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import type { EraseIdDeps } from '@cloudbitmaps/core';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { testEntropy } from '../helpers/entropy';
 
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
@@ -25,7 +26,13 @@ const k = (): Uint8Array => randomBytes(32);
 function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps: EraseIdDeps = { storage, registry, keystore, codec: roaringCodec };
+  const deps: EraseIdDeps = {
+    storage,
+    registry,
+    keystore,
+    entropy: testEntropy,
+    codec: roaringCodec,
+  };
   const store = (ks = keystore): CloudRoaring =>
     new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore: ks }),

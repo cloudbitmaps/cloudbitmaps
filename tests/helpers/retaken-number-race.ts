@@ -7,6 +7,7 @@ import { CloudRoaring } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { Clock, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { collect } from './loaded';
+import { testEntropy } from './entropy';
 
 /**
  * The race a delete conditioned on the object's identity closes. A number can be taken again once its object is
@@ -91,6 +92,7 @@ export const byFreeFunction: StalledErasure = async (storage, registry) => {
   const result = await eraseIdFromSegment(REF, X, {
     storage,
     registry,
+    entropy: testEntropy,
     codec: roaringCodec,
     clock,
   });
@@ -103,7 +105,7 @@ export async function raceStaleHolderDelete(
   registry: IRegistryDriver,
   stalled: StalledErasure,
 ): Promise<void> {
-  const deps = { storage, registry, codec: roaringCodec, clock };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
   await loadSegment(REF, [1, 2, 3], deps); // generation 0
   await loadSegment(REF, [1, 2, 3, X], deps); // generation 1 holds X; `keep: 1` keeps 0
   await rollbackSegment(REF, 0, deps); // 1 is above the pointer now, and holds X

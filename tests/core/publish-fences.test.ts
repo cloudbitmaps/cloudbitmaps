@@ -17,6 +17,7 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { incarnationOf } from '@/core/token';
 import { FINGERPRINT } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
@@ -47,7 +48,13 @@ async function world(keystore?: IKeystore) {
       encryption: { keystore },
     },
   );
-  const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
+  const deps = {
+    storage: w.storage,
+    registry: w.registry,
+    entropy: testEntropy,
+    codec: roaringCodec,
+    keystore,
+  };
   /** A FRESH store: the fixture has no clock, so nothing refreshes a store's generation on a timer. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({

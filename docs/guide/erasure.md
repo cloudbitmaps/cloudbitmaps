@@ -82,7 +82,7 @@ there", and `note` says why:
 
 | `note` | Means | What to do |
 |---|---|---|
-| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, replaced an object the call meant to delete, or beat the call's write to the segment's row five times in a row before it deleted anything (nothing was deleted). Usually a load; it can also be another erasure or an operator's `rollback`. On a segment with no generation yet, any other write of its row before the erasure renewed it reports it too: a first load's publish, a `setRetention`, another erasure's renewal. A row that loses its pointer after the call found one (purged and created again, or written by hand without a pointer) and a row purged and created again as another incarnation of the name report it as well: the call found a holder there and stopped before deleting it, so the bucket can still hold an object that holds the id. On a registry that reports write tokens, a rewrite counts as published only when the row's pointer is over its own write: another load of the same ids can take the rewrite's number once an erasure has freed it and write the same bytes, and the rewrite is then `'superseded'`, with no `segment.rewrite` event and none of the generations the row names deleted. The same can happen to a rewrite whose own write landed and was then followed, ahead of the rewrite's next read of the row, by a write that renews the row's `pointerId` over it (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it): it cannot tell that from another load's write, so it reports `erased: false` and deletes nothing, and a re-run erases. On a registry that does not report write tokens, a rewrite whose write got no answer counts as published when the object under its number is its own bytes: another load of the same ids that takes the rewrite's number, once the rewrite's object is freed, makes the rewrite stand, with a `segment.rewrite` event for a generation another writer may have published; with other bytes there it is `'superseded'` and deletes nothing. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
+| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, replaced an object the call meant to delete, or beat the call's write to the segment's row five times in a row before it deleted anything (nothing was deleted). Usually a load; it can also be another erasure or an operator's `rollback`. On a segment with no generation yet, any other write of its row before the erasure renewed it reports it too: a first load's publish, a `setRetention`, another erasure's renewal. A row that loses its pointer after the call found one (purged and created again, or written by hand without a pointer) and a row purged and created again as another incarnation of the name report it as well: the call found a holder there and stopped before deleting it, so the bucket can still hold an object that holds the id. On a registry that reports write tokens, a rewrite counts as published only when the row's pointer is over its own write: another load of the same ids can take the rewrite's number once an erasure has freed it, and the rewrite is then `'superseded'`, with no `segment.rewrite` event and none of the generations the row names deleted. The same can happen to a rewrite whose own write landed and was then followed, ahead of the rewrite's next read of the row, by a write that renews the row's `pointerId` over it (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it): it cannot tell that from another load's write, so it reports `erased: false` and deletes nothing, and a re-run erases. On a registry that does not report write tokens, a rewrite whose write got no answer counts as published when the footer of the object under its number is the rewrite's own, the write identity it drew included: another load's object there, of the same ids or others, is `'superseded'` and deletes nothing. An object whose identity field is all zero (one written with zero entropy) can carry the rewrite's footer, and then the rewrite stands, with a `segment.rewrite` event for a generation another writer may have published. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
 | `error: <message>`, a transient storage or registry fault | The storage failed under it, or a registry write got no answer that reading the row could settle; the generations that write was to guard were not deleted. | Re-run. |
 | `error: <message>`, the budget ran out | The call's `budget` ended before all the segment's generations were searched. | Re-run with a higher `budget`. |
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
@@ -438,10 +438,11 @@ segment's key. A driver that reports `conditionalDelete` deletes only that objec
 call deletes nothing more, and it reports `erased: true` when nothing left holds the id, or the reason the row gives,
 `'superseded'` as a rule. A refused rewrite that deletes its own object again above the winner's pointer (see racing
 writers above) meets the same race, another erasure deleting that object as a holder and a load taking its number, and
-one more: a read of the footer names an object by its bytes, and a load of the ids the rewrite holds, in the clear,
-writes the rewrite's very bytes. So it first reads the footer of the object under its number and keeps one that is
-gone, is another object or cannot be read. Then it renews the row it read, as it does before deleting a holder, so a
-load that wrote the object that read matched, which read the row before writing it, is refused at its publish. A
+one more: a rewrite is deleted on the strength of a read of its footer. The footer carries the write identity the
+rewrite drew, so it names that write: a load of the ids the rewrite holds, in the clear, writes the same chunks but
+another identity, and its object does not match. So the call first reads the footer of the object under its number and
+keeps one that is gone, is another object or cannot be read. Then it renews the row it read, as it does before deleting a holder, so a
+load that wrote an object that read matched (only one with an all-zero identity can), which read the row before writing it, is refused at its publish. A
 renewal that loses means another write landed since: the call reads the row and decides again. One lost to a write of
 leases alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; after
 8 lost to other writes the call keeps the object, as racing writers above says. Once its own renewal lands, it deletes,
@@ -470,17 +471,16 @@ repaired. These limits hold on every driver:
   then names the very object the call read. The call detects that one instead, as that bullet says.
 - On S3 the version is the object's ETag, which for an object stored without SSE-KMS or SSE-C is computed from its
   bytes. Two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes, share
-  one, so a load that writes, under the number taken again, exactly the bytes of the holder (the same ids and metadata,
-  in the clear) is not told apart from it. At a refused rewrite's discard the renewal before the delete refuses every
-  load that wrote those bytes and had not published when the call read the row, so the only one lost that way is one
-  that took the number after the renewal, in the one round trip before the delete. An encrypted generation written
-  through the shipped keystore seals every chunk under a fresh random nonce, so its bytes differ from any other
-  write's.
-- A read of the footer cannot tell a refused rewrite's object from a generation a load published with the same bytes.
-  When a rollback has moved the pointer below such a generation before the refused rewrite reads the row, nothing is
-  left for the renewal to refuse, and the discard deletes that generation as its own: from then on a pinned handle of it
-  fails with `NotFoundError` for any chunk it has yet to read, a lease of it names a missing generation, and a rollback
-  to it finds it gone.
+  one. Every object this library writes carries a random write identity in its footer (an encrypted one, its index's
+  nonce, and its chunks sealed under fresh nonces), so two writes of the same ids are never the same bytes, and a
+  load that takes the number again does not share the holder's ETag: the condition refuses its object there as it
+  does on a driver with a version per object. An object whose identity field is all zero, which a reader accepts,
+  has the bytes of any other such object of the same ids and metadata, and the round trip before the delete stays
+  open for it.
+- A read of the footer names a write (to the 32 bits of its checksum), so it cannot take a generation a load published for a refused rewrite's object,
+  whatever its ids: the footer does not match, and the discard keeps it, including when a rollback has moved the
+  pointer below that generation before the call reads the row. A generation whose identity field is all zero is the
+  exception, as above.
 - A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
   its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
   no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load

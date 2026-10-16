@@ -10,6 +10,7 @@ import {
 import type { Clock, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { SystemClock } from '@/system-clock';
 import { joinId } from '@/core/bit-route';
+import { zeroEntropy } from '../helpers/entropy';
 
 /**
  * `store.load` is the load an application calls, and what it adds over core's `loadSegment` is two bindings: the
@@ -100,7 +101,9 @@ describe("@cloudbitmaps/core's loadSegment", () => {
     const calls: string[] = [];
     const storage: IStorageDriver = recording(backend.storage, calls);
     const registry: IRegistryDriver = recording(backend.registry, calls);
-    const err = await core.loadSegment(REF, [1], { storage, registry }).catch((e: unknown) => e);
+    const err = await core
+      .loadSegment(REF, [1], { storage, registry, entropy: zeroEntropy })
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as Error).message).toMatch(/^loadSegment needs a bitmap codec/);
     expect(calls).toEqual([]);

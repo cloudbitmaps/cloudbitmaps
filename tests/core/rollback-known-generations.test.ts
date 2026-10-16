@@ -30,6 +30,7 @@ import type { AuditEvent } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
+import { counterEntropy } from '../helpers/entropy';
 
 /**
  * A rollback moves only onto a generation the row knows it published, and only if the object under the number is the one
@@ -59,7 +60,14 @@ function world(encrypted: boolean) {
   const memory = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver({ now: () => now });
   const keystore = encrypted ? keyService() : undefined;
-  const deps = { storage: memory, registry, codec: roaringCodec, keystore, clock };
+  const deps = {
+    storage: memory,
+    registry,
+    entropy: counterEntropy(),
+    codec: roaringCodec,
+    keystore,
+    clock,
+  };
   /** The deps of a rollback: this store's keystore, or none (a store that holds no key). */
   const rollbackDeps = (withKey = true) => ({
     storage: memory,
@@ -1082,7 +1090,9 @@ describe('what the checksum covers', () => {
     }
   });
 
-  it('a cleartext object put back with the same ids and other metadata of the same length has the same checksum: it is not seen', async () => {
+  it('a cleartext object put back with the same ids and other metadata of the same length has another checksum: it is seen, and the rollback refuses it', async () => {
+    // The footer's write identity is in the checksum, so the object put back is no longer the one the ledger recorded,
+    // whatever it holds.
     const w = world(false);
     for (const n of [3, 4, 5]) {
       await loadSegment(SEG, ids(n), w.deps, { keep: 9, metadata: { run: 'a' } });
@@ -1090,10 +1100,11 @@ describe('what the checksum covers', () => {
     await w.memory.delete({ ...SEG, generation: 0 });
     await writeStray(w, 0, ids(3), { run: 'b' });
     const audit = new RecordingAuditSink();
-    await rollbackSegment(SEG, 0, w.rollbackDeps(), { audit });
-    expect((await rowOf(w)).currentGen).toBe(0);
-    expect((await rowOf(w)).summary).toMatchObject({ metadata: { run: 'b' } });
-    expect(events(audit)[0]).not.toHaveProperty('unknown');
+    await expect(rollbackSegment(SEG, 0, w.rollbackDeps(), { audit })).rejects.toBeInstanceOf(
+      IntegrityError,
+    );
+    expect((await rowOf(w)).currentGen).toBe(2);
+    expect(events(audit)).toEqual([]);
   });
 });
 

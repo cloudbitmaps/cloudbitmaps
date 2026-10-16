@@ -27,6 +27,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * `checkConsistency({ generations: true })` holds every generation a row's ledger of known generations names, and the
@@ -152,7 +153,7 @@ async function loadMany(
     const r = await loadSegment(
       segment,
       Array.from({ length: g + 1 }, (_, i) => i),
-      { ...deps, codec: roaringCodec },
+      { ...deps, entropy: testEntropy, codec: roaringCodec },
       keep === undefined ? {} : { keep },
     );
     expect(r).toMatchObject({ generation: g, published: true });

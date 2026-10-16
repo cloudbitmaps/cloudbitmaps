@@ -5,6 +5,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IRegistryDriver, IStorageDriver, RegistryPatch } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 const isRewritePublish = (patch: RegistryPatch): boolean =>
   'currentGen' in patch && patch.currentGen === 2;
@@ -17,7 +18,7 @@ describe('a refused rewrite whose discard faults', () => {
     async (refusedAt) => {
       const storage = new MemoryStorageDriver();
       const registry: IRegistryDriver = new MemoryRegistryDriver();
-      const deps = { storage, registry, codec: roaringCodec, clock };
+      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
       await loadSegment(REF, [1, 2, X], deps);
       const l1AtPublish = gate();
       const l1Registry = Object.create(registry) as IRegistryDriver;

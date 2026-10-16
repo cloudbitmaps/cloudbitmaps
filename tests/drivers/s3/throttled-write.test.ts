@@ -8,6 +8,7 @@ import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { roaringCodec } from '@/roaring-codec';
 import { STUB_BUCKET, StubS3Bucket, type FaultKind } from '../../helpers/s3-bucket-stub';
+import { testEntropy } from '../../helpers/entropy';
 
 /**
  * A throttled write, through a real `S3Client` over a stub transport (the SDK's signing, error parsing and retry all
@@ -408,6 +409,7 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
     const deps = {
       storage: new S3StorageDriver({ client, bucket: STUB_BUCKET, clock }),
       registry: new S3RegistryDriver({ client, bucket: STUB_BUCKET }),
+      entropy: testEntropy,
       codec: roaringCodec,
       // What a store wires: the publish waits on it before a fresh write, as the driver does before a re-send.
       clock: { now: () => 0, sleep: clock.sleep, yieldNow: async (): Promise<void> => {} },

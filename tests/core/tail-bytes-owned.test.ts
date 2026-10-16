@@ -22,6 +22,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect } from '../helpers/chunk-stream';
 import { objectFingerprint } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 const K = 65_536;
 /** Three chunks of 200 ids: a chunk region far under the 64 KiB a reader keeps by default. */
@@ -220,7 +221,7 @@ describe("a refused load's reclaim over a driver that answers with a class insta
   it('sends its delete conditioned on the version the getter reports', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     await loadSegment(SEG, [1, 2, 3], deps);
 
     const sent: { generation: number; ifVersion: string | undefined }[] = [];

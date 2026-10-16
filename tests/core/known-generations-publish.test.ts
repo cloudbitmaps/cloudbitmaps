@@ -23,6 +23,7 @@ import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { objectFingerprint } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * What every writer of a row leaves in its ledger, `knownGens`: the generation made current last, each entry's footer
@@ -40,7 +41,7 @@ function world(encrypted: boolean) {
   const keystore = encrypted
     ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
     : undefined;
-  const deps = { storage: memory, registry, codec: roaringCodec, keystore };
+  const deps = { storage: memory, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   return { memory, registry, keystore, deps };
 }
 type World = ReturnType<typeof world>;

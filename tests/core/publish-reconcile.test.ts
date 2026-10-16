@@ -25,6 +25,7 @@ import { CountingObjectStore, counting } from '../helpers/counting';
 import { opaqueTokens } from '../helpers/opaque-tokens';
 import { withoutTokenReports } from '../helpers/no-token-reports';
 import { FINGERPRINT } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The driver sends a publish's registry write once. When it ends without a definite answer (a throttle, a lost
@@ -144,7 +145,7 @@ function world(
     // A load hands the loop back through this, and it is not a wait: only the publish's backoff is recorded.
     yieldNow: async (): Promise<void> => {},
   };
-  const bare = { storage: faultyStorage, registry, codec: roaringCodec };
+  const bare = { storage: faultyStorage, registry, entropy: testEntropy, codec: roaringCodec };
   return {
     storage,
     base,
@@ -161,7 +162,7 @@ function world(
     bare,
     /** The same with the store's random source, which spreads each wait. */
     withRng: (next: () => number) => ({ ...bare, clock, readRetry: { clock, rng: { next } } }),
-    plain: { storage, registry: base, codec: roaringCodec },
+    plain: { storage, registry: base, entropy: testEntropy, codec: roaringCodec },
     /** Make the next `times` registry writes do `f`. */
     arm: (f: Fault, times = 1) => {
       for (let i = 0; i < times; i++) faults.push(f);

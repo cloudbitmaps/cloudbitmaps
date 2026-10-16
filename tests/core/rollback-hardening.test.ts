@@ -21,6 +21,7 @@ import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A rollback proves what it moves the pointer onto. Rolling to the generation already current is a no-op only over an
@@ -37,7 +38,7 @@ const key = (): InProcessKeystore =>
 
 function world(keystore?: IKeystore, registry: IRegistryDriver = new MemoryRegistryDriver()) {
   const storage = new MemoryStorageDriver();
-  const load = { storage, registry, codec: roaringCodec, keystore };
+  const load = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   return { storage, registry, load, deps: { storage, registry, keystore } };
 }
 type World = ReturnType<typeof world>;
@@ -480,7 +481,7 @@ describe("a swap with no answer is not taken for another writer's publish of the
 
   it('when the load records a ledger other than the one the swap writes, though the object is the same', async () => {
     // A row with a ledger: the target above it is an object a load wrote and never published, and the load that takes
-    // its number writes it byte for byte again, so the two summaries read the same. The swap carries the whole ledger and
+    // its number writes the same ids again. The swap carries the whole ledger and
     // adds the target; a load that keeps one generation writes the target and the one it superseded, so only the ledger
     // differs.
     const w = world();
@@ -494,22 +495,22 @@ describe("a swap with no answer is not taken for another writer's publish of the
     expect((await rowOf(w)).knownGens?.map((e) => e.generation)).toEqual([4, 5]);
   });
 
-  it('is the stated limit when the load writes the same object and the same ledger: it reads as the swap', async () => {
-    // A load that keeps every generation writes the ledger the swap would, and, writing the very object the rollback
-    // read, leaves the very row the swap would. The pointer is where the rollback asked for it, on that object, and the
-    // rollback reports and audits the move as its own.
+  it('when the load writes the same ids and the same ledger: its object has a footer of its own, so it does not read as the swap', async () => {
+    // A load that keeps every generation writes the ledger the swap would, but the object it writes under the number
+    // carries its own write identity, so the row it leaves names another object than the rollback read, and the
+    // rollback does not take the move for its own.
     const w = world();
     await loads(w, 5);
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [6], {
       registry: w.registry,
       publish: false,
     });
-    expect(await racedByALoad(w, [6], 9)).toBeUndefined();
+    expect(await racedByALoad(w, [6], 9)).toBeInstanceOf(TransientError);
   });
 
   it('when the load seeds a ledger over a row with no usable ledger, which the swap does not write', async () => {
     // A rollback never starts a ledger, so over a row with none it writes none; the load that takes the number writes
-    // the very object again and seeds a ledger from the bucket, so the rows differ and the swap is not taken for it. (It
+    // the same ids again and seeds a ledger from the bucket, so the rows differ and the swap is not taken for it. (It
     // was the stated limit when a row that records no window was left by both.)
     const w = world();
     await loads(w, 6); // generation 5 holds [6]
@@ -518,7 +519,12 @@ describe("a swap with no answer is not taken for another writer's publish of the
     const row = await rowOf(w);
     await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
     expect(await racedByALoad(w, [6])).toBeInstanceOf(TransientError);
-    expect((await rowOf(w)).summary).toEqual(original);
+    // The load's object is another write of the same ids: the same summary but for its fingerprint.
+    expect((await rowOf(w)).summary).toMatchObject({
+      generation: 5,
+      cardinality: 1,
+    });
+    expect((await rowOf(w)).summary).not.toEqual(original);
     expect((await rowOf(w)).knownGens?.at(-1)?.generation).toBe(5);
   });
 });

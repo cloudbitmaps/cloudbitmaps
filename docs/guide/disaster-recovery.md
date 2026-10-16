@@ -573,9 +573,9 @@ if (report.errored.length > 0) {
   `summary-mismatch` and once with its `generation`.
   - **What it covers.** It holds each object's footer to the recorded checksum, so it finds another object, or bytes
     that are not a `.crbm`, under a known number. It does not find damage inside an object whose footer is intact (a
-    cut or a flipped byte in the body: a read of that generation reports it as `IntegrityError`), nor a metadata change
-    that keeps the footer's bytes: an object with the same ids and other metadata of the same length has the same
-    footer. A check of the bytes themselves is a read of the generation.
+    cut or a flipped byte in the body: a read of that generation reports it as `IntegrityError`), nor an edit
+    of the metadata block made in place that keeps the footer: another write of the same ids, whatever its metadata,
+    carries its own write identity, so its footer differs. A check of the bytes themselves is a read of the generation.
   - **How a footer read is classed.** A footer whose checksum is not the recorded one, or that fails its own checks
     (the bytes are not a `.crbm`, or are cut short of a footer), is a mismatch. A missing object is skipped. A storage
     driver that answers a size that is not a byte count is the driver's fault, not the object's, so the segment lands

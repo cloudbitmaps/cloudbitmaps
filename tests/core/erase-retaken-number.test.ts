@@ -16,6 +16,7 @@ import {
   raceStaleHolderDelete,
   type StalledErasure,
 } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * An erasure that decided to delete a holder above the pointer, and stalled, must not delete another object stored
@@ -60,7 +61,7 @@ describe('an erasure whose holder above the pointer is deleted and its number ta
   it('the delete it sends names the object it searched', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps);
@@ -103,7 +104,7 @@ describe('an erasure whose delete of a holder is refused for another object unde
   it('with the row unchanged and the object now there still holding the id: superseded, not a failed delete', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps); // generation 1, above the pointer, holds X
@@ -127,7 +128,7 @@ describe('an erasure whose delete of a holder is refused for another object unde
   it('with several holders: the deletes stop at the first refused one, and what was deleted before it is reported', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps, { keep: 9 });
     await loadSegment(REF, [1, 2, 3, X], deps, { keep: 9 }); // 1
     await loadSegment(REF, [1, 2, 3, X, 4], deps, { keep: 9 }); // 2
@@ -165,7 +166,7 @@ describe('an erasure over a storage driver that reports no version', () => {
   it('sends its delete with no version, and the delete removes the holder', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps);
@@ -180,7 +181,7 @@ describe('an erasure over a storage driver that reports no version', () => {
   it('through store.eraseSubject with no budget, which hands the erasure the driver itself', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps);

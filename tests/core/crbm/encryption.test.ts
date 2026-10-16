@@ -9,6 +9,7 @@ import { crc32c } from '@/core/crbm/crc32c';
 import { FOOTER, FOOTER_CRC_COVERAGE } from '@/core/crbm/format';
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
+import { zeroEntropy } from '../../helpers/entropy';
 
 const SEG: SegmentRef = { segment: 'secrets' };
 const GEN = 7;
@@ -26,7 +27,7 @@ const CHUNKS = [
 
 async function writeEncrypted(crypto: CrbmCrypto): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: GEN, crypto });
+  const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: GEN, crypto });
   for (const c of CHUNKS) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
   await writer.finish();
   return sink.bytes();
@@ -113,7 +114,7 @@ describe('CrbmWriter/CrbmReader — encryption', () => {
 
   it('a cleartext object still opens with no crypto (encryption is opt-in)', async () => {
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: GEN });
+    const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: GEN });
     for (const c of CHUNKS) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
     await writer.finish();
     const reader = await CrbmReader.open(new BufferReader(sink.bytes()));

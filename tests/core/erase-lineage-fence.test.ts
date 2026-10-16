@@ -6,6 +6,7 @@ import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A generation number identifies a generation only **within one incarnation of a name**. `nextGeneration`
@@ -69,6 +70,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     const res = await eraseIdFromSegment(REF, 2, {
       storage: wrapped,
       registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
 
@@ -117,6 +119,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     const res = await eraseIdFromSegment(REF, 2, {
       storage: wrapped,
       registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     }).catch((e: Error) => `threw ${e.name}: ${e.message}`);
 
@@ -172,6 +175,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     const res = await eraseIdFromSegment(REF, 2, {
       storage: wrappedStorage,
       registry: wrappedRegistry,
+      entropy: testEntropy,
       codec: roaringCodec,
     }).catch((e: Error) => `threw ${e.name}: ${e.message}`);
 
@@ -223,7 +227,12 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const res = await eraseIdFromSegment(REF, 2, { storage, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(REF, 2, {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    });
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(res.collected).toEqual([0]);
     expect(await idsIn(storage, 1)).toEqual([1, 3]);

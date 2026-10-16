@@ -13,7 +13,7 @@ export const OPTION_KEYS = {
   encryption: ['keystore', 'required'],
   retry: ['maxAttempts', 'baseDelayMs', 'maxDelayMs', 'backoffFactor', 'jitter', 'onRetry'],
   budget: ['maxRequests'],
-  seams: ['clock', 'rng'],
+  seams: ['clock', 'rng', 'entropy'],
 } as const satisfies Record<string, readonly string[]>;
 
 /** The groups: the top-level keys whose value, when it is an object, has keys of its own. */

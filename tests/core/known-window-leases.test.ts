@@ -8,6 +8,7 @@ import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A generation a live lease holds stays in the ledger, so it stays a rollback target while its lease lives, whatever
@@ -30,7 +31,7 @@ function world(start = T0) {
     storage,
     registry,
     clock,
-    deps: { storage, registry, codec: roaringCodec, clock },
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
     advance: (ms: number) => {
       t += ms;
     },

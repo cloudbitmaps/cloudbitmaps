@@ -12,11 +12,12 @@ import { DecodedLoadInput, prepareLoadInput } from '@/core/load-input';
 import type { LoadInput } from '@/core/load-input';
 import { roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
+import { testEntropy } from './entropy';
 import { kindOf, routedProject, routing, toSerialized } from './load-routing';
 
 export type { BulkLoadResult } from '@/core/bulk-load';
 
-/** `store.load()`'s loader with the codec and clock the store would pass; an explicit option wins. */
+/** `store.load()`'s loader with the codec, clock and entropy the store would pass; an explicit option wins. */
 export const bulkLoadCrbmGeneration: typeof coreBulkLoad = async (
   driver,
   key,
@@ -34,5 +35,6 @@ export const bulkLoadCrbmGeneration: typeof coreBulkLoad = async (
     ...options,
     codec,
     clock: options.clock ?? new SystemClock(),
+    entropy: options.entropy ?? testEntropy,
   });
 };

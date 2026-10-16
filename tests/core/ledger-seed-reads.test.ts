@@ -7,6 +7,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { objectFingerprint } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * What a seed reads from the bucket, and how: each generation it keeps has its footer checksum read (a 104-byte tail
@@ -27,7 +28,11 @@ function world(encrypted: boolean) {
   const keystore = encrypted
     ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
     : undefined;
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec, keystore } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
+  };
 }
 type W = ReturnType<typeof world>;
 

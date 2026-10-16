@@ -192,6 +192,7 @@ describe('an object replaced under the same generation and pointerId, under read
       await w.writer.load(B, [2]);
       expect(await w.a.has(20)).toBe(true); // opens the object, and caches its chunk 0
       expect(await w.b.has(2)).toBe(true); // lets `a`'s reader go
+      const original = (await w.backend.storage.getTail({ ...A, generation: 0 }, 1 << 30)).bytes;
       await replace(w, STRAY, encrypted);
       w.reset();
       await expect(w.a.has(HI + 999)).rejects.toBeInstanceOf(NotFoundError);
@@ -202,9 +203,13 @@ describe('an object replaced under the same generation and pointerId, under read
       expect(await w.a.has(20)).toBe(true);
       expect(await w.a.has(999)).toBe(false);
       expect(await w.a.count()).toBe(OLD.length);
-      // Put back, the object is the row's again, and the read serves it.
+      // Put back the very object, the object is the row's again, and the read serves it: a load of the same ids is
+      // another write, with another footer, and is not it.
       if (!encrypted) {
-        await replace(w, OLD);
+        await w.backend.storage.delete({ ...A, generation: 0 });
+        await w.backend.storage.putImmutable({ ...A, generation: 0 }, (sink) =>
+          sink.write(original),
+        );
         expect(await collect(w.a.iterate())).toEqual(OLD);
       }
     },

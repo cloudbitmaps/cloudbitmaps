@@ -6,6 +6,7 @@ import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * "The bit is physically gone from the bucket when the call returns" has to hold for **ex-members** as well as
@@ -40,7 +41,12 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     expect(await generations(storage)).toEqual([0, 1]); // gen 0 retained as the grace window
     expect(await heldIn(storage, 0, 7)).toBe(true); // …and it still holds the ex-member
 
-    const res = await eraseIdFromSegment(REF, 7, { storage, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(REF, 7, {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    });
     expect(res.erased).toBe(true);
     expect(res.fromGeneration).toBe(0); // found in the retained generation, not the current one
     expect(res.generation).toBeUndefined(); // nothing was rewritten — there was nothing to rewrite
@@ -68,7 +74,12 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [5, 6], { registry });
     await gcOrphanGenerations(REF, { storage, registry });
 
-    const res = await eraseIdFromSegment(REF, 999, { storage, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(REF, 999, {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    });
     expect(res).toMatchObject({ erased: false, reason: 'not-member' });
     expect(res.collected).toEqual([]);
     expect(await generations(storage)).toEqual([0, 1]); // the grace window is NOT collapsed
@@ -79,7 +90,12 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [5, 6, 7], { registry });
 
-    const res = await eraseIdFromSegment(REF, 6, { storage, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(REF, 6, {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    });
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(res.collected).toEqual([0]);
   });
@@ -103,7 +119,12 @@ describe('erasure reaches an ex-member in a retained generation', () => {
       },
     };
 
-    const res = await eraseIdFromSegment(REF, 999, { storage, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(REF, 999, {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    });
     expect(res).toMatchObject({ erased: false, reason: 'not-member' });
     expect(opens).toBe(1); // the current generation only — no superseded generation to look in
   });
@@ -130,7 +151,12 @@ describe('erasure reaches an ex-member in a retained generation', () => {
       },
     };
 
-    const res = await eraseIdFromSegment(REF, 7, { storage, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(REF, 7, {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    });
     expect(res).toMatchObject({ erased: false, reason: 'not-member' }); // nothing left holding it
     expect(await generations(real)).toEqual([1]);
   });
@@ -152,7 +178,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     };
 
     await expect(
-      eraseIdFromSegment(REF, 7, { storage, registry, codec: roaringCodec }),
+      eraseIdFromSegment(REF, 7, { storage, registry, entropy: testEntropy, codec: roaringCodec }),
     ).rejects.toThrow('storage unavailable');
   });
 });

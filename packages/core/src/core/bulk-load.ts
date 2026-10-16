@@ -5,7 +5,7 @@
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { KeyUnavailableError, ValidationError } from './errors';
 import { yieldEvery } from './cooperative';
-import type { Clock } from './determinism';
+import type { Clock, Entropy } from './determinism';
 import { incarnationField } from './token';
 import { MAX_REMAINDER, isBadIdError, splitId } from './bit-route';
 import { aadFor, sameKeys } from './crypto';
@@ -23,7 +23,7 @@ import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
 import { ChunkLoadInput, DecodedLoadInput } from './load-input';
 import { ownSummary } from './summary';
-import { encodeEach, writeEncodedChunks } from './crbm-write';
+import { encodeEach, requireEntropy, writeEncodedChunks } from './crbm-write';
 import { provesOwnObject } from './crbm-open';
 import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept } from './publish';
@@ -262,6 +262,12 @@ export function bulkLoadCrbmGeneration(
      */
     clock?: Clock;
     /**
+     * The source of the write's identity: a cleartext generation's footer carries 12 bytes drawn from it, so two loads
+     * of the same ids at the same number are not the same object. Optional in the type, as `codec` is, because a flavor
+     * package binds it; a write without one is refused with {@link ValidationError} before it reads an id.
+     */
+    entropy?: Entropy;
+    /**
      * Write the object but do **not** advance the pointer (default: publish when a `registry` is wired).
      *
      * For a caller that has to inspect what it wrote before deciding whether it should become current — a
@@ -326,6 +332,27 @@ export function cleartextUnderRequiredEncryption(
   );
 }
 
+/** The refusal of a load that demands encryption (`requireEncryption`) but has no keystore to encrypt with. */
+function requireKeystoreWhenEncryptionRequired(options: {
+  readonly keystore?: unknown;
+  readonly requireEncryption?: boolean;
+}): void {
+  if (options.keystore === undefined && options.requireEncryption === true) {
+    throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
+  }
+}
+
+/** The refusal of a load that demands encryption onto a segment whose lineage is already cleartext. */
+function refuseCleartextWhenEncryptionRequired(
+  options: { readonly requireEncryption?: boolean },
+  ref: SegmentRef,
+  currentGen: number,
+): void {
+  if (options.requireEncryption === true) {
+    throw cleartextUnderRequiredEncryption(ref, currentGen);
+  }
+}
+
 /**
  * {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched: the same
  * options, with the same meaning, and the same writes. The number is joined only where the object is written.
@@ -337,10 +364,9 @@ export async function bulkLoadAhead(
   ids: Parameters<typeof bulkLoadCrbmGeneration>[2],
   options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
 ): Promise<BulkLoadResult> {
-  if (options.keystore === undefined && options.requireEncryption === true) {
-    throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
-  }
+  requireKeystoreWhenEncryptionRequired(options);
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
+  const entropy = requireEntropy(options.entropy, 'a load');
   // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
   // encode its own chunks, are bucketed per chunk instead; both give the same bytes.
   let chunks: Iterable<EncodedChunk>;
@@ -352,9 +378,8 @@ export async function bulkLoadAhead(
     chunks = await encodedChunksOfInput(ids, codec, options.clock);
   }
 
-  if (options.keystore !== undefined && options.registry === undefined) {
+  if (options.keystore !== undefined && options.registry === undefined)
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
-  }
   // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment (which
   // would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted. A present cleartext row the
   // caller already read is used as read (see `row`).
@@ -420,8 +445,7 @@ export async function bulkLoadAhead(
       // half-encrypted — a pin of a superseded generation, once its reader is reopened, would find bytes its key
       // cannot open, and a later `destroySegment` would attest that shredding one DEK made every copy unreadable
       // while the older cleartext objects stay readable from any of them.
-      if (options.requireEncryption === true)
-        throw cleartextUnderRequiredEncryption(ref, existing.currentGen);
+      refuseCleartextWhenEncryptionRequired(options, ref, existing.currentGen);
       // Otherwise the segment stays what it is: cleartext.
     } else {
       const minted = await options.keystore.createDek();
@@ -435,6 +459,7 @@ export async function bulkLoadAhead(
       crypto,
       clock: options.clock,
       metadata: options.metadata,
+      entropy,
     });
   const summary = ownSummary(
     key,

@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import roaring from 'roaring';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { LoadInput, LoadResult } from '@/index';
+import { counterEntropy } from '../helpers/entropy';
 
 // Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
 vi.setConfig({ testTimeout: 60_000 });
@@ -111,7 +112,7 @@ const anySet: fc.Arbitrary<Bitmap> = fc.oneof(leaf, op, deserialized);
 
 async function load(input: LoadInput): Promise<{ result: LoadResult; bytes: string }> {
   const backend = new MemoryStorage();
-  const store = new CloudRoaring({ storage: backend });
+  const store = new CloudRoaring({ storage: backend, seams: { entropy: counterEntropy() } });
   const ref = { segment: 'p' };
   // `allowEmpty`, so an empty set is written rather than refused: the property is about the bytes.
   const result = await store.load(ref, input, { allowEmpty: true });

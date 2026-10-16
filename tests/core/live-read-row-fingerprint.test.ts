@@ -132,11 +132,12 @@ describe('an object replaced under an unchanged row is never served', () => {
     const w = await world();
     await w.writer.load(A, OLD);
     expect(await w.a.count()).toBe(OLD.length); // resolved from the row, nothing opened
+    const original = (await w.backend.storage.getTail({ ...A, generation: 0 }, 1 << 30)).bytes;
     await w.stray(0, STRAY);
     await expect(w.a.has(999)).rejects.toBeInstanceOf(NotFoundError);
-    // Put back, the object is the row's again, and the read serves it.
+    // Put back the very object, and it is the row's again: a load of the same ids is another write.
     await w.backend.storage.delete({ ...A, generation: 0 });
-    await bulkLoadCrbmGeneration(w.backend.storage, { ...A, generation: 0 }, OLD);
+    await w.backend.storage.putImmutable({ ...A, generation: 0 }, (sink) => sink.write(original));
     expect(await collect(w.a.iterate())).toEqual(OLD);
   });
 

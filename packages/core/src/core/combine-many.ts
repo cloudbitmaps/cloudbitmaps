@@ -17,7 +17,7 @@
  * Every operand chunk is read through the source's `getChunks` and decoded through the checks on untrusted tier data,
  * and the shared chunk cache is never touched, so a batch neither evicts another reader's hot chunks nor serves
  * from them. Every output chunk is built from decoded chunks and handed on, and the write path run-optimizes it, so an
- * output is byte for byte what the same ids would load.
+ * output holds chunk for chunk what the same ids would load.
  */
 import { requireInteger, requirePositiveInteger } from './check';
 import { refuseAbsent } from './absent-operands';

@@ -10,6 +10,7 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A load, an `*Into` and an erasure's rewrite publish onto a row they already read, and say so to the registry
@@ -60,6 +61,7 @@ function world() {
   const through = (r: IRegistryDriver, encrypted = false) => ({
     storage: counted,
     registry: r,
+    entropy: testEntropy,
     codec: roaringCodec,
     clock,
     ...(encrypted ? { keystore } : {}),

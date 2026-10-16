@@ -58,7 +58,7 @@ To persist, pass a different **backend** as `storage`. Nothing else changes:
 There is no `add` or `remove`: a segment changes only by loading a new generation. A load is a batch job, not a
 request handler. `store.exists(ref)` says whether a segment has been loaded. A load takes ids, or a bitmap you already
 hold: `store.load(ref, { bitmap })` for a `RoaringBitmap32`, or `{ serialized }` for portable Roaring bytes, checked
-before anything is written and loaded with no per-id work, into the same bytes its ids would write.
+before anything is written and loaded with no per-id work, into a generation holding chunk for chunk what its ids would write (its footer carries its own write identity).
 
 To write many results over the same stored operands, `store.materializeMany` reads each operand once for a whole batch of
 `and` / `or` / `andNot` outputs instead of once per `*Into` call, and a set you already hold in memory streams in as its
@@ -78,7 +78,7 @@ name.
 | `retry` | tune the retry of reads, or `false` to turn it off |
 | `metrics` | a metrics sink; off by default |
 | `budget` | `{ maxRequests }` or `false`: the per-call request ceiling |
-| `seams` | `{ clock, rng }`: determinism, for tests |
+| `seams` | `{ clock, rng, entropy }`: determinism, for tests and replayable jobs; the source of each generation's write identity is the last |
 
 ## What it costs
 

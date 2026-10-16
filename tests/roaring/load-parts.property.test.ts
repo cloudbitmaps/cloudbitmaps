@@ -8,6 +8,7 @@ import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { counting } from '../helpers/counting';
 import { craftPortable } from '../helpers/portable-bytes';
+import { counterEntropy } from '../helpers/entropy';
 
 // Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
 vi.setConfig({ testTimeout: 60_000 });
@@ -161,7 +162,10 @@ async function loadWhole(
   set: Bitmap,
 ): Promise<{ result: library.LoadResult; objects: Record<number, string> }> {
   const backend = new MemoryStorage();
-  const result = await new CloudRoaring({ storage: backend }).load(ref, set.toArray(), {
+  const result = await new CloudRoaring({
+    storage: backend,
+    seams: { entropy: counterEntropy() },
+  }).load(ref, set.toArray(), {
     allowEmpty: true,
   });
   return { result, objects: await stored(backend) };
@@ -172,7 +176,7 @@ async function loadViaRecipe(
 ): Promise<{ result: library.LoadResult; objects: Record<number, string> }> {
   const backend = new MemoryStorage();
   const result = await recipe.loadParts(
-    new CloudRoaring({ storage: backend }),
+    new CloudRoaring({ storage: backend, seams: { entropy: counterEntropy() } }),
     ref,
     parts.map((p) => recipe.partBytes(p)),
   );

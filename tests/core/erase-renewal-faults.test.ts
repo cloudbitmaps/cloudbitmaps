@@ -5,6 +5,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { recordedWaits } from '../helpers/unanswered-registry';
+import { testEntropy } from '../helpers/entropy';
 
 const REF: SegmentRef = { segment: 's' };
 const X = 9;
@@ -35,7 +36,12 @@ describe("an erasure's renewal of the row, and its deletes", () => {
       return registry.compareAndSwap(ref, expected, patch, opts);
     };
     await expect(
-      eraseIdFromSegment(REF, X, { storage, registry: reg, codec: roaringCodec }),
+      eraseIdFromSegment(REF, X, {
+        storage,
+        registry: reg,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(await gens(storage)).toEqual([0]);
   });
@@ -57,6 +63,7 @@ describe("an erasure's renewal of the row, and its deletes", () => {
       eraseIdFromSegment(REF, X, {
         storage,
         registry: reg,
+        entropy: testEntropy,
         codec: roaringCodec,
         ...recordedWaits(),
       }),
@@ -76,7 +83,12 @@ describe("an erasure's renewal of the row, and its deletes", () => {
         }
         return registry.compareAndSwap(ref, expected, patch, opts);
       };
-      const out = await eraseIdFromSegment(REF, X, { storage, registry: reg, codec: roaringCodec });
+      const out = await eraseIdFromSegment(REF, X, {
+        storage,
+        registry: reg,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      });
       expect(out).toMatchObject({ erased: false, reason: 'superseded' });
       expect(await gens(storage)).toEqual([0]);
     }
@@ -104,6 +116,7 @@ describe("an erasure's renewal of the row, and its deletes", () => {
     const out = await eraseIdFromSegment(REF, X, {
       storage,
       registry: reg,
+      entropy: testEntropy,
       codec: roaringCodec,
       ...recordedWaits(),
     });
@@ -119,7 +132,12 @@ describe("an erasure's renewal of the row, and its deletes", () => {
       throw new TransientError('the delete timed out');
     };
     await expect(
-      eraseIdFromSegment(REF, X, { storage: st, registry, codec: roaringCodec }),
+      eraseIdFromSegment(REF, X, {
+        storage: st,
+        registry,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).rejects.toBeInstanceOf(TransientError);
     expect(await gens(storage)).toEqual([0]);
   });

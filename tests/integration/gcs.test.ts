@@ -19,7 +19,7 @@ import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { GcsRegistryDriver } from '@/gcs/registry';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';

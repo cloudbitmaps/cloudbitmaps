@@ -27,6 +27,7 @@ import type { IRegistryDriver, IStorageDriver } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { batchWorld, range } from '../helpers/batch-world';
 import { feedOf, lcg, recordsOf } from '../helpers/combine-feed';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * `materializeMany({ dryRun: true })`: every output computed and judged as its publish would be, nothing written.
@@ -413,7 +414,7 @@ describe('judgeLoad', () => {
   const deps = () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    return { storage, registry, codec: roaringCodec };
+    return { storage, registry, entropy: testEntropy, codec: roaringCodec };
   };
 
   it('reads the object when the row has no usable summary, and counts both reads', async () => {

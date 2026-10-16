@@ -7,6 +7,7 @@ import type { SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A tombstone is not proof that nothing readable is left. A crypto-shred leaves objects no key opens, but a cleartext
@@ -27,7 +28,11 @@ async function cleartextTombstone() {
   const registry = new MemoryRegistryDriver();
   await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
   await destroySegment(REF, { registry }, { confirmSegment: 's', allowCleartext: true });
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 
 describe('an erasure looks under a tombstone', () => {
@@ -63,7 +68,13 @@ describe('an erasure looks under a tombstone', () => {
     });
     await destroySegment(REF, { registry }, { confirmSegment: 's' });
     expect(
-      await eraseIdFromSegment(REF, 2, { storage, registry, keystore, codec: roaringCodec }),
+      await eraseIdFromSegment(REF, 2, {
+        storage,
+        registry,
+        keystore,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).toMatchObject({ erased: false, reason: 'destroyed' });
   });
 

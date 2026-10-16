@@ -10,6 +10,7 @@ import { RecordingAuditSink, TransientError } from '@/index';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { gate } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A refused load deletes the object it wrote, best-effort: a fault in that cleanup must not replace the refusal, which
@@ -39,6 +40,7 @@ describe('a refused load whose cleanup fails is still a refusal', () => {
       {
         storage,
         registry,
+        entropy: testEntropy,
         codec: roaringCodec,
       },
     );
@@ -46,7 +48,7 @@ describe('a refused load whose cleanup fails is still a refusal', () => {
     const res = await loadSegment(
       REF,
       [1],
-      { storage: deletesFail(storage), registry, codec: roaringCodec },
+      { storage: deletesFail(storage), registry, entropy: testEntropy, codec: roaringCodec },
       { guard: { minRetained: 0.5 }, audit },
     );
     expect(res).toMatchObject({ published: false, reason: 'min-retained' });
@@ -84,7 +86,12 @@ describe('a refusal the publish raises as an error', () => {
         loadSegment(
           REF,
           [1, 2, 3],
-          { storage, registry: createThrows(registry, err), codec: roaringCodec },
+          {
+            storage,
+            registry: createThrows(registry, err),
+            entropy: testEntropy,
+            codec: roaringCodec,
+          },
           { allowEmpty: true, audit },
         ),
       ).rejects.toBe(err);
@@ -102,7 +109,12 @@ describe('a refusal the publish raises as an error', () => {
       loadSegment(
         REF,
         [1, 2, 3],
-        { storage, registry: createThrows(registry, err), codec: roaringCodec },
+        {
+          storage,
+          registry: createThrows(registry, err),
+          entropy: testEntropy,
+          codec: roaringCodec,
+        },
         { allowEmpty: true },
       ),
     ).rejects.toBe(err);
@@ -129,7 +141,11 @@ describe('a refused load whose row another writer changed', () => {
   const world = () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+    return {
+      storage,
+      registry,
+      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    };
   };
   const consistent = async (w: ReturnType<typeof world>): Promise<void> => {
     const report = await runConsistencyCheck({ storage: w.storage, registry: w.registry });

@@ -17,7 +17,7 @@ import {
   writeCrbmGeneration,
   writeCrbmGenerationStream,
   writeEncodedChunks,
-} from '@/core/crbm-write';
+} from '../../helpers/crbm-write';
 import type { CodecBitmap } from '@/core/codec';
 import { aadFor } from '@/core/crypto';
 import type { CrbmCrypto } from '@/core/crypto';
@@ -25,6 +25,7 @@ import { IntegrityError, NotFoundError } from '@/core/errors';
 import type { GenKey, IStorageDriver, TailRead } from '@/core/ports';
 import { NodeAead } from '@/drivers/crypto';
 import { MemoryStorageDriver } from '@/drivers/memory';
+import { zeroEntropy } from '../../helpers/entropy';
 
 const SEG = { segment: 'tail-bytes' };
 const dek = new Uint8Array(randomBytes(32));
@@ -41,6 +42,7 @@ async function build(
 ): Promise<{ bytes: Uint8Array; identity: CrbmWriter['identity'] }> {
   const sink = new BufferSink();
   const writer = new CrbmWriter(sink, {
+    entropy: zeroEntropy,
     generation,
     ...(options.encrypted ? { crypto: cryptoFor(generation) } : {}),
     ...(options.metadata ? { metadata: options.metadata } : {}),

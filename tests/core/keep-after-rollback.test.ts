@@ -9,6 +9,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Which generations a load keeps after a rollback. The ledger survives a rollback, so the window a load draws from it
@@ -25,7 +26,11 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 type World = ReturnType<typeof world>;
 
@@ -320,7 +325,11 @@ describe('a lease on the restored generation', () => {
     const clock = clockAt(MIN_EXPIRES_AT_MS * 2);
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver({ now: () => clock.now() });
-    const w = { storage, registry, deps: { storage, registry, codec: roaringCodec, clock } };
+    const w = {
+      storage,
+      registry,
+      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+    };
     await loadEach(w, 4, { keep: 9 });
     await rollbackSegment(SEG, 1, w.deps);
     const row = (await registry.get(SEG))!;

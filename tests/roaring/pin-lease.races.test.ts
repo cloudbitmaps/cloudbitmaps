@@ -17,6 +17,7 @@ import type { IRegistryDriver, IStorageDriver, RegistryRecord } from '@/core/por
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
 import { collect } from '../helpers/loaded';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A lease write moves the row's token, so it meets every other writer of the row; and a pin of the current generation
@@ -261,7 +262,12 @@ describe('a lease write against the other writers of the row', () => {
     const racing = hook(x.memory.registry, 'compareAndSwap', async (nth) => {
       if (nth === 0) await lease(x.reader, x.w);
     });
-    const deps = { storage: x.memory.storage, registry: racing, codec: roaringCodec };
+    const deps = {
+      storage: x.memory.storage,
+      registry: racing,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    };
     const first = await eraseIdFromSegment(REF, 7, deps);
     expect(first).toMatchObject({ erased: true, generation: 1 });
     expect((await x.memory.registry.get(REF))!.leases).toBeUndefined();
@@ -286,6 +292,7 @@ describe('a lease write against the other writers of the row', () => {
     const res = await eraseIdFromSegment(REF, 7, {
       storage: x.memory.storage,
       registry: x.memory.registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
     expect(res.erased).toBe(true);

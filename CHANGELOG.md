@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A load or an erasure called directly on `@cloudbitmaps/core` with no `entropy` throws a `ValidationError`.**
+  `loadSegment`, `loadSegmentChunks` and `eraseIdFromSegment` (through their `LoadDeps` and `EraseIdDeps`) need an
+  `entropy` function, now required by both types, which draws each generation's write identity, and refuse without one
+  (a JavaScript caller can leave it out) before any read, keystore call, delete or write, even an erasure of an id no
+  generation holds. `judgeLoad`, which writes nothing, takes the same deps without it. The store of
+  `@cloudbitmaps/roaring` supplies Web Crypto's by default.
 - **`export-segments` refuses an argument, and a `null` or `undefined` segment ref is a `ValidationError`.** The command
   exits 2 on any argument but `--help` or `-h` (after a leading `--`, which `pnpm run` forwards), where it ignored one.
   A `null` or `undefined` ref passed to a store call or to `validateSegmentRef` of `@cloudbitmaps/core/driver-kit`
@@ -41,6 +47,19 @@ so, and so do the module headers in the code.
   it now holds only the declarations its `exports` entries reach, and the files they import. The conformance suite's
   declarations (`testing/conformance`), the fuzz harnesses' and the codec's decoder internals are among those removed.
   The public types, and every entry point's resolution under `node10`, `node16`, `nodenext` and `bundler`, are unchanged.
+- **A cleartext generation carries a random write identity in its footer, so two loads of the same ids no longer write
+  identical objects.** The footer's `indexNonce` field, 12 bytes at offset 40, holds the AEAD nonce of the sealed index on
+  an encrypted generation and was all zero on a cleartext one. Every writer of a cleartext generation now draws those 12
+  bytes once per object and stores them there; an encrypted generation is unchanged. The footer checksum covers
+  the field, so an object's fingerprint (`<size>:<checksum>`), a pin, a ledger entry and the row's summary name one write
+  and not just a set of ids, to the 32 bits of the footer checksum (two writes of the same ids share a fingerprint with
+  probability about 2^-32). The footer keeps its 104 bytes, the format stays 1.0 and no offset moves. A reader takes a
+  cleartext object whatever the field holds, an all-zero value included. `CloudRoaring` draws from Web Crypto by default,
+  and `seams.entropy` replaces it (a function from a length to that many random bytes); `LoadDeps` and `EraseIdDeps` of
+  `@cloudbitmaps/core` take the same function as `entropy`. A cleartext object's writer draws the identity before it
+  writes anything, so a source that returns anything but a `Uint8Array` of 12 bytes fails with a `ValidationError`
+  before the first byte is uploaded. The goldens under `tests/golden` are unchanged, with the field all zero, which a writer drawing zero entropy reproduces; a `-write-identity` file beside each cleartext one
+  carries a fixed identity.
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
   `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
   optional. A leading `--`, which pnpm forwards, is dropped. Any other argument prints "takes no arguments; it reads its
@@ -74,6 +93,19 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A delete decided from one read of an object's footer no longer removes another writer's object of the same cleartext
+  ids.** Two loads of the same ids at the same number wrote the same bytes, so a footer match proved content and not the
+  writer. A refused load whose reclaim read no row, after the name was swept, purged and re-created and a load of the same
+  ids took the freed number, deleted that load's generation and the row it then created named nothing (Medium, in
+  0.20.0); a refused erasure rewrite's discard could delete a load's generation of the same ids on a driver whose version
+  derives from the bytes (an S3 object without SSE-KMS or SSE-C), or after a rollback moved the pointer below it; a
+  publish settled by footer on a registry that reports no write tokens could report another load's publish as its own.
+  Each now meets a different footer: a refused load's reclaim and an erasure rewrite's discard delete only an object
+  whose footer is their own and leave another writer's, and a publish settled by the footer no longer takes another
+  writer's object of the same ids for its own (a load does not report it as published, an erasure's rewrite answers
+  `'superseded'`), keeping and deleting nothing there. A driver that ignores a delete's condition keeps the round trip
+  between the read and the delete, and an object whose identity field is all zero (one written with zero entropy) can
+  still have the same bytes as another's of the same ids.
 - **An erasure whose row lost its pointer mid-call answers `'superseded'`, where it answered `'no-generation'` with the id
   still stored.** When an erasure found a generation holding the id and its row then lost its pointer (a purge and a
   re-creation by an out-of-band registry edit, or a hand-made write that clears the pointer), the call

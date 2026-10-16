@@ -15,6 +15,7 @@ import { aadFor } from '@/core/crypto';
 import { openGenerationReader } from '@/core/crbm-open';
 import { incarnationOf } from '@/core/token';
 import type { MetricEvent } from '@/core/metrics';
+import { counterEntropy } from './entropy';
 
 const { RoaringBitmap32 } = roaring;
 export type Bitmap = InstanceType<typeof RoaringBitmap32>;
@@ -133,6 +134,8 @@ export async function makeWorld(options: WorldOptions = {}): Promise<World> {
   const store = new CloudRoaring({
     storage: brandAsBackend({ storage: storageProxy, registry }),
     cache: options.cache ?? { genTtlMs: 0 },
+    // Each world draws the same identities in the same order, so the two routes write the same bytes.
+    seams: { entropy: counterEntropy() },
     metrics: { onEvent: (e) => metrics.push(e) },
     ...(keystore === undefined ? {} : { encryption: { keystore } }),
   });

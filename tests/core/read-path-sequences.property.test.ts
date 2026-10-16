@@ -9,6 +9,7 @@ import { listGenerations, rollbackSegment } from '@/core/rollback';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 // Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
 vi.setConfig({ testTimeout: 60_000 });
@@ -65,7 +66,7 @@ async function run(ops: Op[], encrypted: boolean): Promise<void> {
     : undefined;
   const backend = new MemoryStorage();
   const { storage, registry } = backend;
-  const deps = { storage, registry, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   const writer = new CloudRoaring({ storage: backend, retry: false, encryption: { keystore } });
   const model = new Map<number, { ids: Set<number>; metadata: GenerationMetadata | undefined }>();
   await loadSegment(OTHER, OTHER_IDS, deps);
