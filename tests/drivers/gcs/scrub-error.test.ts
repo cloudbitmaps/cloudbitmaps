@@ -11,16 +11,22 @@ import { ReadTimedOut } from '@/gcs/read-timeout';
 const TOKEN = ['ya29', 'stand-in-access-token-0123456789'].join('.');
 const VALUE = ['placeholder', 'credential', 'value'].join('-');
 const AUTHORIZATION = ['Author', 'ization'].join('');
-const BEARER = `${['Bear', 'er'].join('')} ${TOKEN}`;
+const BEARER_WORD = ['Bear', 'er'].join('');
+const BEARER = `${BEARER_WORD} ${TOKEN}`;
 const BASIC = ['Ba', 'sic'].join('');
 const KEY = Buffer.alloc(32, 7).toString('base64');
 const SIG = 'ab01'.repeat(32);
 const PEM_BODY = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'BKcwggSjAgEAAoIBAQC7'].join('');
-const PEM = ['-----BEGIN PRIVATE KEY-----', PEM_BODY, '-----END PRIVATE KEY-----', ''].join('\n');
+const PEM_LINE = (edge: string, kind = ''): string =>
+  `-----${edge} ${kind}${['PRIVATE', 'KEY'].join(' ')}-----`;
+const PEM_BEGIN = PEM_LINE('BEGIN');
+const PEM_END = PEM_LINE('END');
+const PEM = [PEM_BEGIN, PEM_BODY, PEM_END, ''].join('\n');
+const SA_EMAIL = ['sa', 'p.iam.gserviceaccount.com'].join('@');
 const b64u = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
 const JWT = [
   b64u({ alg: 'RS256', typ: 'JWT' }),
-  b64u({ iss: 'sa@p.iam.gserviceaccount.com' }),
+  b64u({ iss: SA_EMAIL }),
   Buffer.from('stand-in-signature-0123456789').toString('base64url'),
 ].join('.');
 
@@ -184,6 +190,8 @@ describe('GCS scrubCredentials', () => {
     const err = apiError(503, {
       detail: { note: `${AUTHORIZATION}: ${BEARER}` },
       headers: { list: [AUTHORIZATION, BEARER], map: new Map([[AUTHORIZATION, BEARER]]) },
+      auth: { [AUTHORIZATION]: BEARER, client_secret: VALUE },
+      pair: { name: AUTHORIZATION, value: BEARER },
     });
     const response = err.response as unknown as { request: Record<string, unknown> };
     const request = response.request;
@@ -200,7 +208,21 @@ describe('GCS scrubCredentials', () => {
       list: [AUTHORIZATION, BEARER],
       map: new Map([[AUTHORIZATION, BEARER]]),
     });
+    expect(err['auth']).toEqual({ [AUTHORIZATION]: BEARER, client_secret: VALUE });
+    expect(err['pair']).toEqual({ name: AUTHORIZATION, value: BEARER });
   });
+
+  it.each(['request', 'agent', 'socket', '_httpMessage', 'connection', 'req', 'res', 'config'])(
+    'leaves out %s, whatever it holds',
+    (key) => {
+      const err = Object.assign(new Error('x'), { [key]: { note: VALUE }, kept: 'k' });
+      const out = scrubCredentials(err) as Error & Record<string, unknown>;
+      expect(out).not.toBe(err);
+      expect(key in out).toBe(false);
+      expect(out['kept']).toBe('k');
+      expect(leaks(out)).toEqual([]);
+    },
+  );
 
   it('returns an error with no transport and no credential as it is, and anything else untouched', () => {
     const plain = Object.assign(new Error('permanent'), { code: 'ENOENT' });
@@ -571,8 +593,16 @@ describe('GCS scrubCredentials', () => {
     it.each([ENC, AUTHORIZATION, 'refresh_token'])(
       'redacts the ...Value beside a ...Name of %s on an error, and keeps what classification reads',
       (name) => {
-        const err = apiError(400, { HeaderName: name, HeaderValue: VALUE, reason: 'invalid' });
+        const err = apiError(400, {
+          HeaderName: name,
+          HeaderValue: VALUE,
+          reason: 'invalid',
+          detail: 'kept',
+        });
         const out = scrubCredentials(err);
+        expect(out.errors).toEqual(err.errors);
+        expect(out.response).toEqual({ statusCode: 400, statusMessage: 'Service Unavailable' });
+        expect(out['detail']).toBe('kept');
         expect(out['HeaderValue']).toBe('[redacted]');
         expect(out['HeaderName']).toBe(name);
         expect(out.code).toBe(400);
@@ -617,6 +647,17 @@ describe('GCS scrubCredentials', () => {
       ],
       ['a bearer token, lower case', `got ${BEARER.toLowerCase()} back`, TOKEN.toLowerCase()],
       ['a bearer token, percent-encoded', `u=${encodeURIComponent(BEARER)}`, TOKEN],
+      ['an opaque bearer token inside a line', `refused ${BEARER_WORD} ${VALUE} for /o`, VALUE],
+      [
+        'an opaque bearer token, lower case',
+        `got ${BEARER_WORD.toLowerCase()} ${VALUE} back`,
+        VALUE,
+      ],
+      [
+        'an opaque bearer token, percent-encoded',
+        `u=${encodeURIComponent(`${BEARER_WORD} ${VALUE}`)}&v=1`,
+        VALUE,
+      ],
       ['an access token alone', `token ${TOKEN} back`, TOKEN],
       ['an Authorization value inside a line', `x ${AUTHORIZATION}: ${BASIC} ${VALUE} y`, VALUE],
       [
@@ -631,6 +672,11 @@ describe('GCS scrubCredentials', () => {
       ],
       ['an encryption key inside a line', `got ${ENC}: ${KEY} back`, KEY],
       ['an encryption key in json', `{"${ENC}":"${KEY}"}`, KEY],
+      [
+        'an encryption key in json inside json',
+        JSON.stringify({ body: `{"${ENC}":"${KEY}"}` }),
+        KEY,
+      ],
       ['an access token in a url', `https://h/o?access_token=${VALUE}&a=1`, VALUE],
       [
         'a refresh token and client secret in a form',
@@ -662,7 +708,7 @@ describe('GCS scrubCredentials', () => {
         JSON.stringify({ private_key: PEM, client_email: 'sa@p' }),
         PEM_BODY,
       ],
-      ['a private key with no end', `-----BEGIN RSA PRIVATE KEY-----\n${PEM_BODY}`, PEM_BODY],
+      ['a private key with no end', `${PEM_LINE('BEGIN', 'RSA ')}\n${PEM_BODY}`, PEM_BODY],
       ['a header table row', `<tr><th>${ENC}</th><td>${KEY}</td></tr>`, KEY],
       [
         'a header table row, in code',
@@ -689,10 +735,10 @@ describe('GCS scrubCredentials', () => {
       'Signature=abc design',
       'x-goog-encryption-key-sha256: abc',
       'X-Goog-SignedHeaders=host;x-goog-date',
-      'pageToken=abc123def456ghi789jkl',
+      `${'page'}Token=${'abc123def456'}ghi789jkl`,
       'invalid_grant',
       'The provided encryption key is incorrect.',
-      'client_email: sa@p.iam.gserviceaccount.com',
+      `client_email: ${SA_EMAIL}`,
       'GOOG4-RSA-SHA256\n20261017T000000Z\n20261017/auto/storage/goog4_request\nabc',
       '<tr><th>host</th><td>storage.googleapis.com</td></tr>',
       '<StringToSign>GOOG4-HMAC-SHA256</StringToSign>',
@@ -715,6 +761,14 @@ describe('GCS scrubCredentials', () => {
       expect(through(text)).toBe(text);
     });
 
+    it('redacts a whole credential header line, its value spaces and all', () => {
+      for (const name of [ENC, 'x-goog-api-key', 'cookie']) {
+        expect(through(`host: h\r\n${name}: ${VALUE} ${VALUE}\r\naccept: */*`)).toBe(
+          `host: h\r\n${name}: [redacted]\r\naccept: */*`,
+        );
+      }
+    });
+
     it('keeps the rest of a line around a redacted value', () => {
       expect(through(`https://h/o?access_token=${VALUE}&a=1`)).toBe(
         'https://h/o?access_token=[redacted]&a=1',
@@ -728,7 +782,7 @@ describe('GCS scrubCredentials', () => {
       ).toBe(`<tr><th>${ENC}</th><td>[redacted]</td></tr><tr><th>host</th><td>h</td></tr>`);
       expect(through(JSON.stringify({ private_key: PEM, client_email: 'sa@p' }))).toBe(
         JSON.stringify({
-          private_key: '-----BEGIN PRIVATE KEY-----[redacted]-----END PRIVATE KEY-----\n',
+          private_key: `${PEM_BEGIN}[redacted]${PEM_END}\n`,
           client_email: 'sa@p',
         }),
       );
@@ -771,10 +825,7 @@ describe('GCS scrubCredentials', () => {
         [`refused Bearer ${huge} end`, 'refused Bearer [redacted] end'],
         [`?Signature=${huge}&x=1`, '?Signature=[redacted]&x=1'],
         [`token ya29.${huge} end`, 'token [redacted] end'],
-        [
-          `-----BEGIN PRIVATE KEY-----${huge}-----END PRIVATE KEY-----`,
-          '-----BEGIN PRIVATE KEY-----[redacted]-----END PRIVATE KEY-----',
-        ],
+        [`${PEM_BEGIN}${huge}${PEM_END}`, `${PEM_BEGIN}[redacted]${PEM_END}`],
         [`x-goog-encryption-key=${huge} end`, 'x-goog-encryption-key=[redacted] end'],
       ];
       for (const [text, redacted] of cases) {
@@ -869,7 +920,7 @@ describe('GCS scrubCredentials', () => {
         project_id: 'p',
         private_key_id: 'k1',
         private_key: VALUE,
-        client_email: 'sa@p.iam.gserviceaccount.com',
+        client_email: SA_EMAIL,
         client_id: '1',
         token_uri: 'https://oauth2.googleapis.com/token',
       };

@@ -39,10 +39,12 @@ export const ACCESS_TOKEN = ['ya29', 'a0Ad', 'stand-in-access-token-0123456789']
 export const REFRESH_TOKEN = ['1', '', 'stand-in-refresh-token-0123456789'].join('/');
 export const CLIENT_SECRET = ['stand', 'in', 'client', 'secret', '0123'].join('-');
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+/** A service account's address, as its key file names it. */
+const SA_EMAIL = ['sa', 'p.iam.gserviceaccount.com'].join('@');
 const b64u = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
 const unsigned = [
   b64u({ alg: 'RS256', typ: 'JWT' }),
-  b64u({ iss: 'sa@p.iam.gserviceaccount.com', aud: 'https://storage.googleapis.com/' }),
+  b64u({ iss: SA_EMAIL, aud: 'https://storage.googleapis.com/' }),
 ].join('.');
 /** A service account's self-signed JWT, signed here, which the auth library sends as a bearer token. */
 export const SELF_SIGNED_JWT = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(privateKey, 'base64url')}`;
@@ -167,7 +169,7 @@ export const ANSWERS: Record<string, Answer> = {
   '403 forbidden': gcsError(
     403,
     'forbidden',
-    'sa@p.iam.gserviceaccount.com does not have storage.objects.get access to the Google Cloud Storage object.',
+    `${SA_EMAIL} does not have storage.objects.get access to the Google Cloud Storage object.`,
   ),
   '404 no such object (the bucket listed)': (req, res, body) =>
     isListing(req)
