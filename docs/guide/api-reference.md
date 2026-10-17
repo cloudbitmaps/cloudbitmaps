@@ -1101,16 +1101,12 @@ names a driver author imports are under `@cloudbitmaps/core/driver-kit`.
 
 ### `@cloudbitmaps/roaring` — values
 
-`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
-`destroySegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` ·
-`readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
-`excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
-`CrbmReader` · `BufferReader` ·
+`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` ·
+`destroySegment` · `eraseNamespace` · `InProcessKeystore` · `readRetentionPolicy` · `excludingReservedRows` ·
 `CountingMetricsSink` · `RecordingAuditSink` · `CloudRoaringError` ·
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
-`LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
-`errorKind`
+`LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `errorKind`
 
 ### `@cloudbitmaps/roaring` — types
 
@@ -1118,20 +1114,14 @@ names a driver author imports are under `@cloudbitmaps/core/driver-kit`.
 `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
 `MaterializeResult` · `MaterializeRefusal` · `Expr` · `MaterializeManyOptions` · `MaterializeManyDryRunOptions` · `MaterializeManyDryRun` · `MaterializeDryRunResult` · `MaterializeManyDryRunOutcome` · `MaterializeManyOutput` · `MaterializeManyFeed` · `MaterializeManyFeedRecord` · `MaterializeManyOutcome` · `MaterializeManyRun` · `MaterializeManyStats` · `MaterializeManyOperandStats` · `MaterializeManyOutputStats` · `CombineOptions`
 · `IdIterator` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
-· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
-· `CrbmStorageChunkSourceOptions` · `PinOptions` · `Lease` · `LeaseEntry` ·
+· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `GenerationMetadata` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
+· `PinOptions` · `Lease` · `PinnedAt` · `SegmentRef` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
-`ExportedSegment` · `ExportFailure` · `ExportSkipped` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
-`StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
-· `TailRead` · `StorageDeleteOptions` · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
-· `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `KnownGeneration` · `GenerationMetadata`
-· `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
+`ExportedSegment` · `ExportFailure` · `ExportSkipped` · `ExportManifest` ·
 `InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
-`SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
-`RetryPolicy` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` ·
+`SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` · `RetryPolicy` ·
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `Clock` ·
-`Rng` · `Entropy` · `Budget` · `BudgetOption` · `ErrorKind` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
-`CodecInterface` · `CodecBitmap` · `EncodedChunk` · `Token`
+`Rng` · `Entropy` · `Budget` · `BudgetOption` · `ErrorKind` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry`
 
 ### `@cloudbitmaps/core/driver-kit`
 
