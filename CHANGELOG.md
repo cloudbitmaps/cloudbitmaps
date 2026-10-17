@@ -102,17 +102,18 @@ so, and so do the module headers in the code.
   gateway's JSON or XML body listing the request's headers as `{ name, value }` records; and in a proxy's page listing
   them as a table or inside a line. In the error the driver throws these are now redacted: a credential header line, the
   string to sign's `x-ms-encryption-key` and `x-ms-source-encryption-key` lines included; an `Authorization` value, a
-  cookie, a customer-provided key or an API key after its name anywhere in a text; the text of the cell after one that
-  names a credential, after a heading or a caption too; and the value beside a credential's name in a record: the
-  `...Value` beside a `...Name` (`HeaderName` and `HeaderValue`, `name` and `value`), and, in a record that describes no
-  error, a header table row's other cell and the same index of a parallel list. A number, a boolean, `code`, `errorCode`
-  and `message` are kept beside a name, so every answer is classified as before. `x-ms-source-encryption-key` and the
-  SDK's `encryptionKey`, `accountKey` and `token` are credential names too, and a key that quotes a credential is
-  redacted. The copy of an error also left out an array's, a map's or a set's own named property without counting it as
-  a change, so an error whose only credential sat there was thrown as it came: it is now copied. A list, map or set the
-  scrubber is given is copied as an error is, a sparse list is copied as sparse and an accessor at an index is not
-  called, a copied `DOMException` keeps its name, message and code readable, and a copy scrubbed again is returned as it
-  is. The new text rules run in time linear in the text.
+  cookie, a customer-provided key, an API key or a connection string's `AccountKey` after its name anywhere in a text; a
+  JWT on its own; the text of the cell after one that names a credential, after a heading or a caption too; and the
+  value beside a credential's name in a record: the `...Value` beside a `...Name` (`HeaderName` and `HeaderValue`,
+  `name` and `value`), in a record that describes an error a `value` beside any credential name, and, in a record that
+  describes no error, a header table row's other cell and the same index of a parallel list. A number, a boolean,
+  `code`, `errorCode` and `message` are kept beside a name, so every answer is classified as before.
+  `x-ms-source-encryption-key` and the SDK's `encryptionKey`, `accountKey` and `token` are credential names too, and a
+  key that quotes a credential is redacted. The copy of an error also left out an array's, a map's or a set's own named
+  property without counting it as a change, so an error whose only credential sat there was thrown as it came: it is now
+  copied. A list, map or set the scrubber is given is copied as an error is, a sparse list is copied as sparse and an
+  accessor at an index is not called, a copied `DOMException` keeps its name, message and code readable, and a copy
+  scrubbed again is returned as it is. The new text rules run in time linear in the text.
 - **The GCS driver redacts a credential anywhere in an error's text, and throws the error as a deep native copy.** On a
   download, and wherever a body lists no errors, `@google-cloud/storage` makes the response body the error's message, so
   a proxy's error page or a JSON body that quotes the request put the bearer token in the message and stack of the error

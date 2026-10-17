@@ -20,15 +20,16 @@
  * than `MAX_DEPTH` is dropped rather than kept raw.
  *
  * The value under a credential's name is replaced by `[redacted]`, as is the value after one in a flat list, under one
- * in a map and beside one in a record: the `...Value` beside a `...Name` (Azure's `HeaderName` and `HeaderValue`), and
- * on a record that describes no error (no `code`, `errorCode` or `message`) a table row's other cell or the same index
- * of a parallel list. A key that quotes a credential is redacted as text. Beside a name, a number, a boolean, `code`
- * and `errorCode` (what classification reads) and `message` are kept. In the copy's text these are redacted: a
- * credential header line (the string to sign Azure quotes lists the `x-ms-` headers one to a line), an `Authorization`
- * value, a cookie, a customer-provided key or an API key after its name anywhere, a `SharedKey` or `Bearer` value, a
- * `sig=` value in any of its encoded forms, the SharedKey signature Azure echoes in a 403 body, and the text of the
- * cell after one that names a credential. A credential in any other form is not recognised, and a text too large for
- * these patterns is replaced whole.
+ * in a map and beside one in a record: the `...Value` beside a `...Name` (Azure's `HeaderName` and `HeaderValue`), on a
+ * record that describes an error a `value` beside any credential name, and on a record that describes no error (no
+ * `code`, `errorCode` or `message`) a table row's other cell or the same index of a parallel list. A key that quotes a
+ * credential is redacted as text. Beside a name, a number, a boolean, `code` and `errorCode` (what classification
+ * reads) and `message` are kept. In the copy's text these are redacted: a credential header line (the string to sign
+ * Azure quotes lists the `x-ms-` headers one to a line), an `Authorization` value, a cookie, a customer-provided key,
+ * an API key or a connection string's `AccountKey` after its name anywhere, a `SharedKey` or `Bearer` value, a JWT on
+ * its own, a `sig=` value (percent-encoded once, JSON-escaped or quoted too), the SharedKey signature Azure echoes in a
+ * 403 body, and the text of the cell after one that names a credential. A credential in any other form is not
+ * recognised, and a text too large for these patterns is replaced whole.
  */
 
 import { types } from 'node:util';
