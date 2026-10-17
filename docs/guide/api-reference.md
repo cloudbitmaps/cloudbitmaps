@@ -463,7 +463,7 @@ takes)
 | `intersectInto`, `unionInto` | every field |
 | `andNotInto` | every field but `exclude` |
 
-`audit`, `allowEmpty`, `guard`, `metadata` and `keep` decide what an `*Into` verb publishes; the streaming verbs write nothing and emit nothing. A field a verb does not take is refused with a `ValidationError` that names it, before any request: a streaming read fails when it is first read, and an `*Into` verb rejects.
+`audit`, `allowEmpty`, `guard`, `metadata` and `keep` decide what an `*Into` verb publishes; the streaming verbs write nothing and emit nothing. A field a verb does not take is refused with a `ValidationError` that names it, before any request, whether the object holds it as an own key, inherits it from a prototype or holds it in a getter: a streaming read fails when it is first read, and an `*Into` verb rejects.
 
 ---
 

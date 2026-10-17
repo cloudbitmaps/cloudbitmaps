@@ -152,6 +152,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A read or combine refuses a field it does not take when the options object inherits it or holds it in a getter.**
+  `iterate`, `everyNth`, `intersect`, `union`, `andNot`, `andNotInto` and `materializeMany` refused such a field only as
+  an own key, and read past one on a prototype or behind a getter, as `Object.create(defaults)` or a class with a getter
+  gives: an `exclude` so held on `andNot` was skipped, and the stream held the ids it should have subtracted. Each is a
+  `ValidationError` naming the field, before any request, as an own key is, and so is a `codec` held that way on
+  `exportSegments`.
 - **A delete decided from one read of an object's footer no longer removes another writer's object of the same cleartext
   ids.** Two loads of the same ids at the same number wrote the same bytes, so a footer match proved content and not the
   writer. A refused load whose reclaim read no row, after the name was swept, purged and re-created and a load of the same

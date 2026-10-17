@@ -301,6 +301,24 @@ const CALL_KEYS = {
   exportSegments: keysOf<ExportOptions>()(['format', 'namespace', 'ndjsonBatchBytes']),
 } as const;
 
+/** The keys of `wider` that `known` does not list. */
+const outside = (wider: readonly string[], known: readonly string[]): readonly string[] =>
+  wider.filter((k) => !known.includes(k));
+
+/**
+ * The fields of {@link CombineOptions} each read and combine does not take. A call reads each by name and refuses it
+ * (see `optionsError`), so one inherited from a prototype or held in a getter is refused as an own key is, not dropped:
+ * an `exclude` so held on `andNot` was skipped, and the stream was wider than asked. `intersectInto` and `unionInto`
+ * take every field. `exportSegments` refuses `codec` the same way: the store exports with its own codec.
+ */
+const MISPLACED = {
+  range: outside(CALL_KEYS.into, CALL_KEYS.range),
+  andNot: outside(CALL_KEYS.into, CALL_KEYS.andNot),
+  combine: outside(CALL_KEYS.into, CALL_KEYS.combine),
+  andNotInto: outside(CALL_KEYS.into, CALL_KEYS.andNotInto),
+  exportSegments: ['codec'],
+} as const;
+
 /**
  * Wiring for a {@link CloudRoaring} store. **Only `storage` is required** — the minimal call is
  * `new CloudRoaring({ storage: backend })`. A backend resolves generations with one strong read, reads
@@ -813,6 +831,23 @@ const MATERIALIZE_MANY_KEYS = [
   'feed',
   'mayBeEmpty',
 ] as const;
+/**
+ * The fields of {@link CombineOptions} a `materializeMany` call does not take at its top level (an output takes the
+ * write options), read by name as a read or combine reads its own, so one inherited or held in a getter is refused.
+ */
+const MATERIALIZE_MANY_MISPLACED = outside(CALL_KEYS.into, MATERIALIZE_MANY_KEYS);
+
+/** The keys of a `materializeMany` call's options it does not take: every own one it does not list, and the misplaced. */
+function unknownManyKeys(options: object): string[] {
+  const unknown = Object.keys(options).filter(
+    (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
+  );
+  const bag = options as Record<string, unknown>;
+  for (const k of MATERIALIZE_MANY_MISPLACED) {
+    if (!unknown.includes(k) && bag[k] !== undefined) unknown.push(k);
+  }
+  return unknown;
+}
 const MATERIALIZE_MANY_OUTPUT_KEYS = [
   'dest',
   'expr',
@@ -1405,9 +1440,7 @@ export class CloudRoaring {
     }
     // The erasure counter as the call begins: a fed call is refused once it has moved.
     const epochAt = options.feed === undefined ? 0 : this.epochNow();
-    const unknown = Object.keys(options).filter(
-      (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
-    );
+    const unknown = unknownManyKeys(options);
     if (unknown.length > 0) {
       throw new ValidationError(
         `materializeMany: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}`,
@@ -2777,7 +2810,7 @@ export class CloudRoaring {
    * CLI wraps this with a filesystem sink. The `'roaring'` format's bitmaps are built by the store's own codec.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
-    checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments);
+    checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments, [], MISPLACED.exportSegments);
     const opts = picked(options, CALL_KEYS.exportSegments);
     const registry = this.requireRegistry('exportSegments');
     // The store's own codec builds the `'roaring'` format's bitmap: core's `runExport` is codec-agnostic and needs one.
@@ -2798,8 +2831,9 @@ export class CloudRoaring {
  * | `andNotInto` | every field but `exclude` |
  *
  * `audit`, `allowEmpty`, `guard`, `metadata` and `keep` decide what an `*Into` verb publishes, and a read publishes
- * nothing. A field a verb does not take is refused with a {@link ValidationError} that names it, before any request: a
- * streaming read fails when it is first read, and an `*Into` verb rejects. The compiler catches one only in an object
+ * nothing. A field a verb does not take is refused with a {@link ValidationError} that names it, before any request,
+ * whether the object holds it as an own key, inherits it or holds it in a getter: a streaming read fails when it is first
+ * read, and an `*Into` verb rejects. The compiler catches one only in an object
  * literal given to `iterate` or `everyNth`, which take the range alone: `Pick<CombineOptions, 'after' | 'through'>`,
  * the part {@link MaterializeManyOptions} extends.
  *
@@ -3673,7 +3707,7 @@ export class Segment {
   iterate(options?: Pick<CombineOptions, 'after' | 'through'>): IdStream {
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
-    const bad = optionsError(options, 'iterate', CALL_KEYS.range);
+    const bad = optionsError(options, 'iterate', CALL_KEYS.range, [], MISPLACED.range);
     if (bad !== undefined) return failing(bad);
     // Neither bound set is no range at all, which the engine reads on its full-read path.
     const range = options == null ? undefined : rangeOf(options);
@@ -3720,7 +3754,7 @@ export class Segment {
     // The lease first: a leased handle past its lease throws, never reads empty.
     const lease = this.leaseError();
     if (lease !== undefined) return refusing(lease)();
-    const bad = optionsError(options, 'everyNth', CALL_KEYS.range);
+    const bad = optionsError(options, 'everyNth', CALL_KEYS.range, [], MISPLACED.range);
     if (bad !== undefined) return refusing(bad)();
     if (this.pinnedAt === undefined) {
       return refusing(
@@ -3787,7 +3821,13 @@ export class Segment {
    * first read, before any request.
    */
   intersect(others: Segment[], options?: CombineOptions): IdStream {
-    const bad = optionsError(options, 'intersect', CALL_KEYS.combine, ['allowAbsentOperands']);
+    const bad = optionsError(
+      options,
+      'intersect',
+      CALL_KEYS.combine,
+      ['allowAbsentOperands'],
+      MISPLACED.combine,
+    );
     if (bad !== undefined) return failing(bad);
     return this.combineAs(AS_IDS, 'intersect', others, options ?? undefined);
   }
@@ -3833,7 +3873,13 @@ export class Segment {
    * segment once (`unionInto`, or a load) is the cheaper shape. It takes the options {@link intersect} takes.
    */
   union(others: Segment[], options?: CombineOptions): IdStream {
-    const bad = optionsError(options, 'union', CALL_KEYS.combine, ['allowAbsentOperands']);
+    const bad = optionsError(
+      options,
+      'union',
+      CALL_KEYS.combine,
+      ['allowAbsentOperands'],
+      MISPLACED.combine,
+    );
     if (bad !== undefined) return failing(bad);
     return this.combineAs(AS_IDS, 'union', others, options ?? undefined);
   }
@@ -3863,7 +3909,13 @@ export class Segment {
    * option fails the stream with {@link ValidationError} when it is first read, before any request.
    */
   andNot(excludes: Segment[], options?: CombineOptions): IdStream {
-    const bad = optionsError(options, 'andNot', CALL_KEYS.andNot, ['allowAbsentOperands']);
+    const bad = optionsError(
+      options,
+      'andNot',
+      CALL_KEYS.andNot,
+      ['allowAbsentOperands'],
+      MISPLACED.andNot,
+    );
     if (bad !== undefined) return failing(bad);
     return this.combineAs(AS_IDS, 'andNot', excludes, options ?? undefined);
   }
@@ -3878,10 +3930,13 @@ export class Segment {
     excludes: Segment[],
     options?: CombineOptions,
   ): Promise<MaterializeResult> {
-    checkOptions(options, 'andNotInto', CALL_KEYS.andNotInto, [
-      'allowEmpty',
-      'allowAbsentOperands',
-    ]);
+    checkOptions(
+      options,
+      'andNotInto',
+      CALL_KEYS.andNotInto,
+      ['allowEmpty', 'allowAbsentOperands'],
+      MISPLACED.andNotInto,
+    );
     return this.combineInto('andNotInto', dest, excludes, options);
   }
   /**

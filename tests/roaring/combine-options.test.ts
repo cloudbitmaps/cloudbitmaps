@@ -17,7 +17,9 @@ import { counting } from '../helpers/counting';
  * Every read and combine on a segment takes one options type, `CombineOptions`, and each verb takes only the fields
  * that apply to it. A field a verb does not take type-checks, so the call is what refuses it: with a `ValidationError`
  * that names it, before any request reaches storage or the registry. Each verb is tried with each field it does not
- * take, over a backend that counts every driver call.
+ * take, over a backend that counts every driver call, as an own key, inherited from a prototype, and behind a getter
+ * (as a class declares one): the last two are not listed by `Object.keys`, and a read by name would otherwise drop
+ * them without a word, an `exclude` on `andNot` among them.
  */
 
 const drain = async (it: AsyncIterable<number>): Promise<number[]> => {
@@ -107,14 +109,27 @@ const CALLS: Record<Verb, (w: World, options: CombineOptions) => Promise<unknown
   intersectInto: (w, o) => w.a.intersectInto(w.dest, [w.b], o),
   unionInto: (w, o) => w.a.unionInto(w.dest, [w.b], o),
   andNotInto: (w, o) => w.a.andNotInto(w.dest, [w.b], o),
+  // Assigned onto the options rather than spread from them, so a field they inherit stays where it was.
   materializeMany: (w, o) =>
-    w.store.materializeMany({
-      operands: { a: w.a, b: w.b },
-      outputs: [{ dest: w.dest, expr: { and: ['a', 'b'] } }],
-      keep: 1,
-      ...(o as Partial<MaterializeManyOptions>),
-    }),
+    w.store.materializeMany(
+      Object.assign(o, {
+        operands: { a: w.a, b: w.b },
+        outputs: [{ dest: w.dest, expr: { and: ['a', 'b'] } }],
+        keep: (o as Partial<MaterializeManyOptions>).keep ?? 1,
+      }) as unknown as MaterializeManyOptions,
+    ),
 };
+
+/** Where a field sits on the options object: an own key, a prototype's key, or a getter on the prototype. */
+type Form = 'own' | 'inherited' | 'getter';
+const FORMS: readonly Form[] = ['own', 'inherited', 'getter'];
+function shaped(form: Form, key: string, value: unknown): object {
+  if (form === 'own') return { [key]: value };
+  if (form === 'inherited') return Object.create({ [key]: value }) as object;
+  class Options {}
+  Object.defineProperty(Options.prototype, key, { get: () => value, configurable: true });
+  return new Options();
+}
 
 const NO_CALLS = { storage: {}, registry: {} };
 
@@ -128,9 +143,10 @@ async function refusal(verb: Verb, w: World, options: object): Promise<unknown> 
 describe.each(VERBS)('%s refuses a field it does not take, before any request', (verb) => {
   const misplaced = ALL.filter((k) => !(TAKES[verb] as readonly Key[]).includes(k));
 
-  it.runIf(misplaced.length > 0).each(misplaced)('%s', async (key) => {
+  const cases = misplaced.flatMap((key) => FORMS.map((form) => [key, form] as const));
+  it.runIf(cases.length > 0).each(cases)('%s, %s', async (key, form) => {
     const w = await world();
-    const err = await refusal(verb, w, { [key]: VALUES[key](w) });
+    const err = await refusal(verb, w, shaped(form, key, VALUES[key](w)));
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as Error).message).toContain(`${verb}: unknown option "${key}"`);
     expect(w.calls()).toEqual(NO_CALLS);
