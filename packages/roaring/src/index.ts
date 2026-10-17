@@ -2580,8 +2580,8 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
-          'that cannot resolve a generation has nothing to pin)',
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (the store ' +
+          'cannot pin a StorageChunkSource of your own)',
       );
     }
     // A lease is taken between the pin's row read and its open (see `pinGeneration`). The holder is drawn once, here,
@@ -2676,8 +2676,8 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
-          'that cannot resolve a generation has nothing to pin)',
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (the store ' +
+          'cannot pin a StorageChunkSource of your own)',
       );
     }
     const pinned = new PinnedStorageChunkSource(crbm, pins);
@@ -3400,7 +3400,7 @@ export class Segment {
    * or misfiled one.
    *
    * Needs a store built on the `.crbm` storage source (the default when you pass a backend or a raw driver). Throws
-   * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
+   * {@link UnsupportedError} on a store wired with a `StorageChunkSource` of your own, which it cannot pin.
    */
   async pin(options?: PinOptions): Promise<Segment> {
     // A leased handle pins nothing once its lease is over. The pin it makes is an ordinary one: it takes the generation

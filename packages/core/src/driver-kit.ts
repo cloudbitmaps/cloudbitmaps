@@ -16,11 +16,13 @@
  * change for a driver package — including ours, which is the point of making it explicit.
  *
  * It is the one home of the driver contracts, and it is complete: every type a signature here names is exported
- * here too. A registry driver that does not extend `ObjectStoreRegistry` writes `IRegistryDriver`'s method
- * signatures from the record types below, a read source of your own implements `StorageChunkSource`, and a
- * keystore implements `IKeystore`, each without importing `@cloudbitmaps/core`'s main entry. `@cloudbitmaps/roaring`
- * names these types in its own signatures (`CloudRoaringOptions['storage']`, `EncryptionOptions['keystore']`) and
- * does not re-export them: an application that has to name one imports it from here.
+ * here too, but for the brand symbols, which no driver names: a backend writes the store's brand as
+ * `[STORAGE_BACKEND]`, and the errors carry their own. A registry driver that does not extend `ObjectStoreRegistry`
+ * writes `IRegistryDriver`'s method signatures from the record types below, a read source of your own implements
+ * `StorageChunkSource`, and a keystore implements `IKeystore`, each without importing `@cloudbitmaps/core`'s main
+ * entry. `@cloudbitmaps/roaring` names these types in its own signatures (`CloudRoaringOptions['storage']`,
+ * `EncryptionOptions['keystore']`) and does not re-export them: an application that has to name one imports it from
+ * here.
  *
  * WHAT A DRIVER MUST DO. The port doc comments (`IStorageDriver`, `IRegistryDriver`) carry the full list, each with
  * the caller that depends on it. In short:
