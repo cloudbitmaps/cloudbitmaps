@@ -67,6 +67,8 @@ const SHAPES: Record<string, () => Error> = {
 
 interface Backend {
   readonly storage: IStorageDriver;
+  /** How many requests the backend's service has received, for a cloud backend. */
+  readonly sent?: () => number;
   close(): Promise<void>;
 }
 
@@ -79,6 +81,7 @@ const BACKENDS: Record<string, () => Promise<Backend>> = {
         bucket: STUB_BUCKET,
         clock: INSTANT,
       }),
+      sent: () => bucket.sent.length,
       close: async () => undefined,
     };
   },
@@ -91,6 +94,7 @@ const BACKENDS: Record<string, () => Promise<Backend>> = {
         bucket: STUB_GCS_BUCKET,
         clock: INSTANT,
       }),
+      sent: () => stub.sent.length,
       close: () => stub.stop(),
     };
   },
@@ -100,6 +104,7 @@ const BACKENDS: Record<string, () => Promise<Backend>> = {
     const quick = { retryOptions: { maxTries: 1, retryDelayInMs: 1, maxRetryDelayInMs: 2 } };
     return {
       storage: new AzureBlobStorageDriver({ containerClient: stub.client(quick) }),
+      sent: () => stub.requests.length,
       close: () => stub.stop(),
     };
   },
@@ -156,6 +161,59 @@ describe.each(Object.keys(BACKENDS))('a sorted load on %s', (name) => {
       expect(await d.registry.get(SEG)).toBeNull();
     },
   );
+
+  it("leaves the caller's error as it was thrown, every field of it, and sends nothing for it", async () => {
+    // A plain error twice first: the control, after the one-off requests a driver makes on its first load.
+    const shapes = [
+      () => new Error('a plain error, the warm-up'),
+      () => new Error('a plain error, the control'),
+      () =>
+        Object.assign(new Error('upstream 503\nauthorization: Bearer caller-token'), {
+          headers: { authorization: 'Bearer caller-token', 'x-api-key': 'caller-key' },
+          $metadata: { httpStatusCode: 409 },
+          config: { password: 'caller-password' },
+        }),
+      // Shaped like a missing object, which the GCS driver answers by listing the bucket.
+      () => Object.assign(new Error('the warehouse row is gone'), { code: 404, status: 404 }),
+    ];
+    const requests: number[] = [];
+    for (const make of shapes) {
+      const raised = make();
+      const as = make();
+      async function* ids(): AsyncGenerator<number> {
+        yield 1;
+        yield 70_000;
+        throw raised;
+      }
+      const before = backend.sent?.() ?? 0;
+      expect(await thrown(loadSegment(SEG, ids(), deps(), { sorted: true }))).toBe(raised);
+      requests.push((backend.sent?.() ?? 0) - before);
+      expect(raised.message).toBe(as.message);
+      expect({ ...raised }).toEqual({ ...as });
+    }
+    // The load's own requests (its numbering's listing) and no more: none of the driver's answers to an error.
+    expect(requests.slice(1)).toEqual([requests[1], requests[1], requests[1]]);
+  });
+
+  it("throws the codec's own error when building a chunk fails, as the codec raised it", async () => {
+    const failure = Object.assign(new Error('the codec could not build a chunk'), {
+      $metadata: { httpStatusCode: 503 },
+      code: 'ECONNRESET',
+    });
+    let made = 0;
+    const codec = {
+      ...roaringCodec,
+      fromValues: (values: Iterable<number>) => {
+        if (++made === 3) throw failure;
+        return roaringCodec.fromValues(values);
+      },
+    };
+    const ids = [1, 70_000, 140_000, 210_000];
+    expect(await thrown(loadSegment(SEG, ids, { ...deps(), codec }, { sorted: true }))).toBe(
+      failure,
+    );
+    expect(await generations(backend.storage)).toEqual([]);
+  });
 
   it('throws the very error a sync source raised', async () => {
     const raised = SHAPES['409 conflict']!();

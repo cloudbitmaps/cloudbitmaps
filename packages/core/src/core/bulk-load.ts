@@ -4,7 +4,7 @@
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { KeyUnavailableError, ValidationError } from './errors';
-import { yieldEvery } from './cooperative';
+import { YIELD_EVERY_IDS, yieldEvery } from './cooperative';
 import type { Clock, Entropy } from './determinism';
 import { incarnationField } from './token';
 import { MAX_REMAINDER, isBadIdError, splitId } from './bit-route';
@@ -21,10 +21,11 @@ import type {
 } from './ports';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
-import { ChunkLoadInput, DecodedLoadInput, SortedLoadInput } from './load-input';
+import { ChunkLoadInput, DecodedLoadInput, SortedLoadInput, raisedBySource } from './load-input';
 import { sortedChunks } from './sorted-chunks';
 import { ownSummary } from './summary';
 import {
+  type WriteOptions,
   encodeEach,
   requireEntropy,
   writeCrbmGenerationStream,
@@ -42,36 +43,33 @@ import { publishGenerationKept } from './publish';
 const BULK_FLUSH_IDS = 1 << 20;
 
 /**
- * Ids between ingest-loop yields. 16x coarser than the per-chunk cadence because the per-id work is ~40 ns
- * (a `splitId` and an array push) against ~1.3 µs per chunk — matching cadences would put the yield cost on the
- * wrong side of the work it interrupts. Sized against the *slowest* ingest, an in-memory async generator at
- * ~220 ns/id, so the resulting stretch stays a few ms there and well under 1 ms on a plain array.
- */
-const YIELD_EVERY_IDS = 1 << 14;
-
-/**
- * The chunks a load of ids, or of a decoded bitmap, writes: ascending by key, each non-empty and run-optimized. A decoded
- * bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot encode its own
- * chunks, are bucketed per chunk instead; both give the same bytes.
+ * The chunks a load of ids, or of a decoded bitmap, writes: ascending by key, each non-empty and run-optimized, as a
+ * source that gives them again from the start for each run of the driver's write. A decoded bitmap writes its own
+ * chunks, which never touches an id. Ids, and the bitmap of a codec that cannot encode its own chunks, are bucketed per
+ * chunk instead; both give the same bytes.
  */
 async function encodedChunksOfInput(
   ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
   codec: CodecInterface,
   clock: Clock | undefined,
-): Promise<Iterable<EncodedChunk>> {
-  if (ids instanceof DecodedLoadInput && ids.bitmap.encodeChunks !== undefined) {
+): Promise<() => Iterable<EncodedChunk>> {
+  const { bitmap } = ids instanceof DecodedLoadInput ? ids : { bitmap: undefined };
+  if (bitmap?.encodeChunks !== undefined) {
     // The whole-bitmap steps each get a slice of their own: the decode the load made before its first request, the
     // re-encode and serialize `encodeChunks` makes when called, and then the cut, which is lazy, so the writer's
-    // periodic yield interrupts it.
+    // periodic yield interrupts it. A run after the first encodes again, which changes no byte.
     const pause = yieldEvery(clock, 1);
     await pause();
-    const chunks = ids.bitmap.encodeChunks();
+    let first: Iterable<EncodedChunk> | undefined = bitmap.encodeChunks();
     await pause();
-    return chunks;
+    return () => {
+      const chunks = first ?? bitmap.encodeChunks!();
+      first = undefined;
+      return chunks;
+    };
   }
-  return encodeEach(
-    await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, clock),
-  );
+  const bucketed = await bucketIds(bitmap ?? (ids as Iterable<number>), codec, clock);
+  return () => encodeEach(bucketed);
 }
 
 /** Route each id into its chunk's bitmap, consuming the source lazily. Returns the chunks, ascending by key. */
@@ -235,7 +233,8 @@ export interface BulkLoadResult {
  * distinct result. Note this is `O(distinct set)`, **not** window-bounded like {@link SegmentEngine.intersect}:
  * bulk-load holds the whole generation in RAM, which suits batch seed/rebuild jobs but not an
  * unbounded-cardinality stream. Ids the caller has sorted ({@link SortedLoadInput}) are the exception: they are cut
- * into one chunk at a time while the object uploads, so the load holds about one chunk, whatever the segment's size.
+ * into one chunk at a time while the object uploads, so the load holds one chunk and the writer's index, whatever the
+ * segment's size.
  *
  * Each id must be an integer in `[0, 2³²)` ({@link splitId} throws {@link ValidationError} otherwise) — the
  * source is consumed lazily, so a bad id aborts mid-stream without writing a partial object (the driver
@@ -314,6 +313,12 @@ export function bulkLoadCrbmGeneration(
   return bulkLoadAhead(driver, key, { generation: Promise.resolve(key.generation) }, ids, options);
 }
 
+/** What {@link bulkLoadCrbmGeneration} and {@link bulkLoadAhead} write from. */
+type BulkLoadInput = Parameters<typeof bulkLoadCrbmGeneration>[2];
+
+/** The options of {@link bulkLoadCrbmGeneration} and {@link bulkLoadAhead}. */
+type BulkLoadOptions = NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]>;
+
 /**
  * What a load has already started when it calls {@link bulkLoadAhead}: its number, and the segment's data key, each
  * still in flight so their round trips overlap the encoding. Both are joined where the write needs them, and neither
@@ -324,7 +329,8 @@ interface LoadAhead {
   readonly generation: PromiseLike<number>;
   /**
    * The key a caller already asked the keystore to unwrap, with the wrappings it asked about. Used only when the
-   * row the write reads after the ids carries exactly these wrappings; otherwise the write unwraps for itself.
+   * row the write reads again (after the ids, or before sorted ones) carries exactly these wrappings; otherwise the
+   * write unwraps for itself.
    */
   readonly unwrapped?: {
     readonly wrapped: readonly WrappedDek[];
@@ -378,29 +384,35 @@ export async function bulkLoadAhead(
   driver: IStorageDriver,
   ref: SegmentRef,
   ahead: LoadAhead,
-  ids: Parameters<typeof bulkLoadCrbmGeneration>[2],
-  options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
+  ids: BulkLoadInput,
+  options: BulkLoadOptions = {},
 ): Promise<BulkLoadResult> {
   requireKeystoreWhenEncryptionRequired(options);
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   const entropy = requireEntropy(options.entropy, 'a load');
-  const chunks =
-    ids instanceof SortedLoadInput
-      ? undefined
-      : await chunksBeforeTheRow(ids, codec, options.clock);
+  // Sorted ids are read during the write; any other input is encoded now, before the row is read.
+  let write: (key: GenKey, writeOptions: WriteOptions) => ReturnType<typeof writeEncodedChunks>;
+  if (ids instanceof SortedLoadInput) {
+    write = (key, writeOptions) => writeSorted(driver, key, ids, codec, writeOptions);
+  } else {
+    const chunks = await encodedBeforeTheRow(ids, codec, options.clock);
+    write = (key, writeOptions) => writeEncodedChunks(driver, key, chunks, writeOptions);
+  }
   const existing = await rowForWrite(ref, options);
 
-  // The number is joined only here, after the ids are bucketed and the row is read and judged: its existence check
-  // ran while they did, and a check that failed fails the load now, before anything is written.
+  // The number is joined only here, after the ids are bucketed (a sorted load reads its ids later, in the write) and
+  // the row is read and judged: its existence check ran meanwhile, and a check that failed fails the load now, before
+  // anything is written.
   const generation = await ahead.generation;
   const key: GenKey = { namespace: ref.namespace, segment: ref.segment, generation };
   const { crypto, newWrapped } = await keyForWrite(existing, key, ahead, options);
 
-  const writeOptions = { crypto, clock: options.clock, metadata: options.metadata, entropy };
-  const { size, sha256, chunkCount, cardinality, fingerprint, tailBytes } =
-    chunks === undefined
-      ? await writeSorted(driver, key, ids as SortedLoadInput, codec, writeOptions)
-      : await writeEncodedChunks(driver, key, chunks, writeOptions);
+  const { size, sha256, chunkCount, cardinality, fingerprint, tailBytes } = await write(key, {
+    crypto,
+    clock: options.clock,
+    metadata: options.metadata,
+    entropy,
+  });
   const summary = ownSummary(
     key,
     key.generation,
@@ -445,19 +457,26 @@ export async function bulkLoadAhead(
 }
 
 /**
- * The chunks of an input encoded before the row is read: a combine's chunks, held whole as the bucketed ids are, so the
- * reads they cost come where the ids' do and a read that fails writes nothing; ids, bucketed; a decoded bitmap, cut
- * from its own containers. Both of the last give the same bytes.
+ * The encoded chunks of an input that is read before the row: a combine's chunks, held whole as the bucketed ids are,
+ * so the reads they cost come where the ids' do and a read that fails writes nothing; ids, bucketed; a decoded bitmap,
+ * cut from its own containers. Both of the last give the same bytes. Each is a source a run of the driver's write reads
+ * from the start. An error reading the input raises is marked as the source's ({@link raisedBySource}), so a load
+ * never reads this library's own `WriteConflictError` from a source as its lost race.
  */
-async function chunksBeforeTheRow(
-  ids: Exclude<Parameters<typeof bulkLoadCrbmGeneration>[2], SortedLoadInput>,
+async function encodedBeforeTheRow(
+  ids: Exclude<BulkLoadInput, SortedLoadInput>,
   codec: CodecInterface,
   clock: Clock | undefined,
-): Promise<Iterable<EncodedChunk>> {
-  if (ids instanceof ChunkLoadInput) {
-    return encodeEach(rangeCheckedAtWrite(await collectChunks(ids, codec, clock)));
+): Promise<() => Iterable<EncodedChunk>> {
+  try {
+    if (ids instanceof ChunkLoadInput) {
+      const chunks = await collectChunks(ids, codec, clock);
+      return () => encodeEach(rangeCheckedAtWrite(chunks));
+    }
+    return await encodedChunksOfInput(ids, codec, clock);
+  } catch (err) {
+    throw raisedBySource(err);
   }
-  return encodedChunksOfInput(ids, codec, clock);
 }
 
 /**
@@ -467,7 +486,7 @@ async function chunksBeforeTheRow(
  */
 async function rowForWrite(
   ref: SegmentRef,
-  options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]>,
+  options: BulkLoadOptions,
 ): Promise<RegistryRecord | null> {
   if (options.keystore !== undefined && options.registry === undefined)
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
@@ -519,7 +538,7 @@ async function keyForWrite(
   existing: RegistryRecord | null,
   key: GenKey,
   ahead: LoadAhead,
-  options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]>,
+  options: BulkLoadOptions,
 ): Promise<{ crypto?: CrbmCrypto; newWrapped?: readonly WrappedDek[] }> {
   if (options.keystore === undefined) return {};
   if (existing?.wrappedDeks !== undefined && existing.wrappedDeks.length > 0) {
@@ -550,17 +569,16 @@ async function keyForWrite(
 
 /**
  * Write sorted ids as they are read, through the streaming writer, with the tally {@link writeEncodedChunks} gives. A
- * write that fails after the ids raised an error throws that error, the very object: the driver's upload maps the errors
- * it meets (a database error shaped like a conflict would otherwise read as a lost race, or one shaped like a throttle as
- * a transient fault), and the caller's own error is the answer.
+ * write that fails after the ids raised an error throws that error, the very object, marked as the source's: the driver
+ * saw only the chunker's sentinel, and the caller's own error is the answer.
  */
 async function writeSorted(
   driver: IStorageDriver,
   key: GenKey,
   input: SortedLoadInput,
   codec: CodecInterface,
-  options: Parameters<typeof writeEncodedChunks>[3] & { readonly clock?: Clock },
-): Promise<Awaited<ReturnType<typeof writeEncodedChunks>>> {
+  options: WriteOptions,
+): ReturnType<typeof writeEncodedChunks> {
   try {
     const { chunkKeys, ...written } = await writeCrbmGenerationStream(
       driver,

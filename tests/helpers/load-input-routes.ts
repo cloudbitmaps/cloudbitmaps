@@ -164,6 +164,12 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/core/load-sorted-heap.test.ts':
     'measures the memory a sorted load holds against an unsorted one while it reads the ids; a serialized rerouting would ' +
     'read every id before the load starts and measure the conversion instead',
+  'tests/core/load-rerun-write.test.ts':
+    'runs each kind of load under a driver that runs its write twice, its inputs written out case by case, the sorted ' +
+    "one included; a serialized rerouting would turn the ids' cases into the bitmap case it already has",
+  'tests/drivers/gcs/abort-resumable.test.ts':
+    'fails a sorted load past the GCS upload threshold to show the resumable request ends; a serialized rerouting would ' +
+    'refuse sorted: true on the bitmap it makes',
   'tests/drivers/sorted-load-source-errors.test.ts':
     'throws from inside the id stream to show the error reaches the caller through each driver; a serialized rerouting ' +
     'would drain the ids, and raise the error, before the load starts',

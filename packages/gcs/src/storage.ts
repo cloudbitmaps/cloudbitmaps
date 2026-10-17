@@ -576,6 +576,8 @@ class GcsUploadSink implements BlobSink {
   private readonly buffered: Uint8Array[] = [];
   private bufferedLen = 0;
   private stream: Writable | undefined; // set once we cross the threshold → resumable mode
+  /** The SDK's resumable upload under {@link stream}, which {@link abort} ends with an error: see there. */
+  private upload: Writable | undefined;
   private done: Promise<unknown[]> | undefined;
   private failure: unknown;
 
@@ -635,6 +637,7 @@ class GcsUploadSink implements BlobSink {
 
   /** Cross into resumable streaming: open the stream, flush the buffered bytes, keep only ~one threshold resident. */
   private startResumable(): void {
+    this.holdUpload();
     const stream = this.file.createWriteStream({ resumable: true, ...this.tagged() });
     this.stream = stream;
     this.done = once(stream, 'finish'); // resolves on a clean commit; rejects on 'error' (e.g. 412)
@@ -709,7 +712,39 @@ class GcsUploadSink implements BlobSink {
     }
   }
 
+  /**
+   * Keep the SDK's resumable upload, the writable its write stream pipes into, so {@link abort} can end its request.
+   * The SDK hands it to the stream's duplex through `setWritable` in `startResumableUpload_`, a method of the `File`
+   * its types declare; this wraps that method on this sink's own `File`, which no other write shares. Where the method
+   * is missing, nothing is kept, and an abort destroys the stream alone, as it did before.
+   */
+  private holdUpload(): void {
+    type Duplex = { setWritable(writable: Writable): void };
+    const file = this.file as unknown as {
+      startResumableUpload_?: (dup: Duplex, options?: unknown) => void;
+    };
+    const start = file.startResumableUpload_;
+    if (typeof start !== 'function') return;
+    file.startResumableUpload_ = (dup, options) => {
+      const setWritable = dup.setWritable.bind(dup);
+      dup.setWritable = (writable) => {
+        this.upload = writable;
+        setWritable(writable);
+      };
+      start.call(file, dup, options);
+    };
+  }
+
+  /**
+   * End an upload that will not be committed. Destroying the write stream alone leaves the resumable upload's request
+   * open: the SDK destroys its upload with no error, aborts the request only when the upload errors, and its request
+   * body waits for bytes that never come, so the socket stays open and the process alive until the service drops the
+   * connection. So the upload is destroyed with an error first, which aborts its request; the body was never ended, so
+   * no object is finalized. The error is the sink's own and reaches no caller.
+   */
   async abort(): Promise<void> {
-    if (this.stream !== undefined && !this.stream.destroyed) this.stream.destroy();
+    const abandoned = new Error('the upload was abandoned before its object was committed');
+    if (this.upload !== undefined && !this.upload.destroyed) this.upload.destroy(abandoned);
+    if (this.stream !== undefined && !this.stream.destroyed) this.stream.destroy(abandoned);
   }
 }

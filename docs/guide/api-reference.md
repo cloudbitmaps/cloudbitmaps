@@ -782,6 +782,14 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   that the request was not applied. A lost response or a timeout is never grounds to send it again.
 - Raise a transient fault as `TransientError`.
 
+**A driver that runs `write` again.** `putImmutable` calls `write` once, and the shipped drivers send a throttled part,
+block or object again rather than run it twice. A driver that does run it again after a failed attempt, which the port
+allows, commits only the last run's bytes. A load of ids, of a bitmap or of a combine's chunks holds its chunks in
+memory, so each run writes the whole object again (under a write identity of its own), and the load records the run
+that was committed. A write that streams its chunks, a load with `sorted: true` and an erasure's rewrite, reads them
+once: its second run throws `IntegrityError` before it writes a byte, the driver commits nothing, and the call throws
+that error.
+
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
 `WriteConflictError` and change nothing when they lose; a token is not reused, `delete` then `create` included, but for a collision of probability 2^-128 per pair of incarnations;
 reads are strongly consistent; a row is keyed by its namespace and segment together, so one segment name in two

@@ -58,27 +58,38 @@ export class ChunkLoadInput {
   constructor(readonly chunks: AsyncIterable<CombinedChunk>) {}
 }
 
+/** Errors a load's input raised as it was read, which a load hands on as they are, never as its own lost race. */
+const sourceErrors = new WeakSet<object>();
+
+/**
+ * Mark `err` as raised by a load's input (its ids, a bitmap's encoding, a combine's chunks) rather than by the write,
+ * and return it. A write-once conflict is a lost race only when the write raised it: a source that reads another
+ * segment (through a pin, say) can throw this library's own `WriteConflictError`, which is the source's to report.
+ */
+export function raisedBySource<T>(err: T): T {
+  if (typeof err === 'object' && err !== null) sourceErrors.add(err);
+  return err;
+}
+
+/** Whether a load's input raised `err` ({@link raisedBySource}). */
+export function isSourceError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && sourceErrors.has(err);
+}
+
 /**
  * Ids the caller says ascend (`sorted: true`), written chunk by chunk while they are read, during the object's upload,
- * so a load holds about one chunk rather than the whole generation. Made only by {@link sortedLoadInput}, from ids.
+ * so a load holds one chunk and the writer's index rather than the whole generation. Made only by
+ * {@link sortedLoadInput}, from ids.
  *
- * The ids are read once. A driver that runs its write again would find them consumed, so a second read is refused
- * with `IntegrityError` rather than writing a shorter object. The first error the ids raise, or their check raises
- * (an id out of range, or lower than the one before it), is kept, so the load hands that same error to its caller
- * whatever the driver made of it on the way out of the upload.
+ * The first error the ids raise, or their check raises (an id out of range, or lower than the one before it), or the
+ * chunker raises building a chunk, is kept here, and the load throws that same error. The driver's upload never sees
+ * it: the chunker throws a sentinel of its own into the writer instead, so no driver maps, redacts or probes the
+ * caller's error on its way out.
  */
 export class SortedLoadInput {
-  private taken = false;
   private failure: { readonly error: unknown } | undefined;
 
   constructor(readonly ids: Iterable<number> | AsyncIterable<number>) {}
-
-  /** Mark the ids read; `false` when they already were, so the caller refuses a second read. */
-  take(): boolean {
-    if (this.taken) return false;
-    this.taken = true;
-    return true;
-  }
 
   /** Keep `error` as what the ids raised, unless an earlier one is kept. */
   fail(error: unknown): void {
@@ -87,12 +98,7 @@ export class SortedLoadInput {
 
   /** What the load throws for a write that failed with `err`: the error the ids raised, when they raised one. */
   thrown(err: unknown): unknown {
-    return this.failure === undefined ? err : this.failure.error;
-  }
-
-  /** Whether `err` is the error the ids raised, which a load hands on as it is, never as a lost race. */
-  raised(err: unknown): boolean {
-    return this.failure !== undefined && this.failure.error === err;
+    return this.failure === undefined ? err : raisedBySource(this.failure.error);
   }
 }
 

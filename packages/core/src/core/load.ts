@@ -55,7 +55,7 @@ import {
 import {
   ChunkLoadInput,
   type LoadInput,
-  SortedLoadInput,
+  isSourceError,
   prepareLoadInput,
   sortedLoadInput,
   wantsSorted,
@@ -258,20 +258,22 @@ export interface LoadOptions {
   /** Audit sink for this load: it receives `segment.publish`, or `segment.load-refused` when the load is refused. */
   readonly audit?: IAuditSink;
   /**
-   * The ids ascend: write them as they are read, one chunk at a time, while the object uploads, so the load holds about
-   * one chunk rather than the whole generation, whatever the segment's size. Repeats are fine (an id equal to the one
-   * before is skipped); an id lower than the one before throws `ValidationError`, naming its position and never the id.
-   * The object is the same, byte for byte, as an unsorted load of the same ids writes under the same write identity.
+   * The ids ascend: write them as they are read, one chunk at a time, while the object uploads, so the load holds one
+   * chunk and the writer's index of the chunks written (up to about 14 MiB at the 65,536 chunks a segment can have)
+   * rather than the whole generation, whatever the segment's size. Repeats are fine (an id equal to the one before is
+   * skipped); an id lower than the one before throws `ValidationError`, naming its position and never the id. The
+   * object is the same, byte for byte, as an unsorted load of the same ids writes under the same write identity.
    *
-   * For ids only (an iterable or an async iterable): with `{ serialized }`, `{ bitmap }` or a bitmap, and on core's
+   * For ids only (an iterable or an async iterable): with `{ serialized }`, `{ bitmap }` or a `RoaringBitmap32` of the
+   * flavor's own `roaring` (one from another copy loads as its ids, and takes `sorted`), and on core's
    * `loadSegmentChunks`, it throws `ValidationError`, as does a value that is not a boolean, before any request.
    *
    * The ids are read after the segment's row is read and judged, and after its number and key are settled, so a load
    * that refuses a destroyed or keyless segment reads none of them. They are read while the object uploads: an error
    * they raise, or a refused id, fails the upload, and no object is committed, but the parts uploaded before it may
    * already have been billed (see the production guide). That error reaches the caller as the very object raised,
-   * whatever the storage driver would have made of it. The ids can be read once: a storage driver that runs its write
-   * again gets `IntegrityError`, and nothing is written.
+   * and the storage driver never sees it. The ids can be read once: a storage driver that runs its write again gets
+   * `IntegrityError`, and nothing is written.
    */
   readonly sorted?: boolean;
 }
@@ -463,11 +465,11 @@ export interface LoadResult {
 }
 
 /**
- * Whether a write that threw `err` lost its number to another load: a write-once conflict, unless it is the error the
- * caller's sorted ids raised, which is handed on as it is.
+ * Whether a write that threw `err` lost its number to another load: a write-once conflict the write raised. One the
+ * load's input raised (a source reading another segment through a pin, say) is the source's, and is handed on as it is.
  */
-function lostNumberRace(err: unknown, ids: unknown): boolean {
-  return isWriteConflictError(err) && !(ids instanceof SortedLoadInput && ids.raised(err));
+function lostNumberRace(err: unknown): boolean {
+  return isWriteConflictError(err) && !isSourceError(err);
 }
 
 /** `promise`, marked as observed: a caller that abandons it (a load that failed elsewhere) leaves no unhandled rejection. */
@@ -665,14 +667,15 @@ async function runLoad(
   // destroyed check, and the publish's first attempt all come from it. Reusing it is sound because the publish is
   // fenced on this row (its token, the pointer the guard judged, or its absence), so a row that changes before then
   // makes the publish lose rather than land on the strength of a stale read. The write reads the row again after
-  // the ids when this read found none, or found key material (see the `row` option of `bulkLoadCrbmGeneration`, whose write `bulkLoadAhead` shares).
+  // the ids (before them, for sorted ids, which it reads during the write) when this read found none, or found key
+  // material (see the `row` option of `bulkLoadCrbmGeneration`, whose write `bulkLoadAhead` shares).
   const row = await deps.registry.get(ref);
   const fromToken: Token | undefined = row?.token;
   const fromGeneration = row?.currentGen ?? undefined;
 
   // The segment's data key, asked for now so the keystore's round trip overlaps the guard's read and the encoding.
   // One unwrap serves both: the guard opens the current generation with it, and the write encrypts with it when the
-  // row it reads after the ids carries these same wrappings. Nothing is cached beyond this call. A failed unwrap
+  // row it reads again (after the ids, or before sorted ones) carries these same wrappings. Nothing is cached beyond this call. A failed unwrap
   // fails the load where the guard or the write awaits it, and `settled` keeps an abandoned one from rejecting
   // unobserved.
   const unwrapped = startUnwrap(row, deps.keystore);
@@ -686,10 +689,10 @@ async function runLoad(
     : { cardinality: null, fromSummary: false };
   const before = current.cardinality;
 
-  // The existence check starts here and is joined where the write needs the number (after the ids are bucketed), so
-  // its round trip overlaps the encoding. It reads only the row already in hand and the bucket, so nothing it learns
-  // depends on the guard or the ids, and the fences below are untouched: the publish still waits on the row read
-  // the guard judged, and the write still reads the row again after the ids.
+  // The existence check starts here and is joined where the write needs the number (after the ids are bucketed, or,
+  // for sorted ids, before the first is read), so its round trip overlaps the encoding. It reads only the row already
+  // in hand and the bucket, so nothing it learns depends on the guard or the ids, and the fences below are untouched:
+  // the publish still waits on the row read the guard judged, and the write still reads the row again first.
   const numbering = settled(nextLoadGeneration(ref, deps, row));
 
   // `publish: false`, deliberately: the guard has to run while the old generation is still authoritative, so the
@@ -721,7 +724,7 @@ async function runLoad(
     // make a caller who branches on `published` (as the doc-comment tells them to) miss the one outcome they were
     // told to expect. Nothing was written, so there is nothing to clean up; the refusal is still audited, as every
     // other one is, since a downstream reconciliation needs to know the replacement it asked for did not happen.
-    if (!lostNumberRace(err, ids)) throw err;
+    if (!lostNumberRace(err)) throw err;
     const { generation } = await numbering;
     audit.onEvent({
       kind: 'segment.load-refused',

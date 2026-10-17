@@ -3,13 +3,19 @@ import roaring from 'roaring';
 import { loadSegment, loadSegmentChunks } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-open';
 import { destroySegment } from '@/core/erasure';
-import { IntegrityError, KeyUnavailableError, ValidationError, errorKind } from '@/core/errors';
+import {
+  IntegrityError,
+  KeyUnavailableError,
+  ValidationError,
+  WriteConflictError,
+  errorKind,
+} from '@/core/errors';
 import { type BlobSink, BufferSink } from '@/core/blob';
 import type { Clock } from '@/core/determinism';
 import type { GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { CloudRoaring, MemoryStorage } from '@/index';
+import { CloudRoaring, MemoryStorage, RecordingAuditSink } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counterEntropy } from '../helpers/entropy';
 
@@ -346,7 +352,9 @@ describe('a sorted load reads its ids once', () => {
     const w = world(new TwiceRunning());
     const err = await rejection(loadSegment(SEG, [1, 2, 3], w.deps, { sorted: true }));
     expect(err).toBeInstanceOf(IntegrityError);
-    expect(err.message).toMatch(/read a second time/);
+    expect(err.message).toMatch(
+      /ran the write of s\.0 again: its chunks are streamed and can be read once/,
+    );
     expect(await generations(w.storage)).toEqual([]);
     expect(await w.registry.get(SEG)).toBeNull();
   });
@@ -487,5 +495,74 @@ describe('sorted is refused wherever it would do nothing, before any request', (
     await expect(
       a.intersectInto(store.segment('d'), [a], { sorted: true } as never),
     ).rejects.toThrow(/unknown option "sorted"/);
+  });
+});
+
+describe("a load hands on a WriteConflictError its source raised, sorted or not, as its source's error", () => {
+  // A source that reads another segment through a pin can raise this library's own lost race; the load did not lose one.
+  const raisedBy = (kind: string): WriteConflictError =>
+    new WriteConflictError(`the pin of another segment lost its race (${kind})`);
+
+  it.each<[string, (raised: Error) => Parameters<typeof loadSegment>[1], boolean]>([
+    [
+      'unsorted, sync',
+      (raised) =>
+        (function* () {
+          yield 1;
+          throw raised;
+        })(),
+      false,
+    ],
+    [
+      'unsorted, async',
+      (raised) =>
+        (async function* () {
+          yield 1;
+          throw raised;
+        })(),
+      false,
+    ],
+    [
+      'sorted, async',
+      (raised) =>
+        (async function* () {
+          yield 1;
+          throw raised;
+        })(),
+      true,
+    ],
+  ])('%s: throws it, and reports no refusal', async (kind, source, sorted) => {
+    const w = world();
+    const audit = new RecordingAuditSink();
+    const raised = raisedBy(kind);
+    const err = await loadSegment(SEG, source(raised), w.deps, { sorted, audit }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBe(raised);
+    expect(audit.snapshot().filter((e) => e.kind === 'segment.load-refused')).toEqual([]);
+    expect(await w.registry.get(SEG)).toBeNull();
+  });
+
+  it("from a combine's chunks: throws it", async () => {
+    const w = world();
+    const raised = raisedBy('chunks');
+    async function* chunks() {
+      yield { chunkKey: 0, bitmap: roaringCodec.fromValues([1]) };
+      throw raised;
+    }
+    expect(await loadSegmentChunks(SEG, chunks(), w.deps).catch((e: unknown) => e)).toBe(raised);
+  });
+
+  it("still reports a lost race the write raised as 'superseded'", async () => {
+    const w = world();
+    w.storage.putImmutable = async () => {
+      throw new WriteConflictError('generation already exists (write-once): s.0');
+    };
+    for (const sorted of [false, true]) {
+      expect(await loadSegment(SEG, [1, 2], w.deps, { sorted })).toMatchObject({
+        published: false,
+        reason: 'superseded',
+      });
+    }
   });
 });

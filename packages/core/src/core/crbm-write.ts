@@ -53,7 +53,7 @@ export async function writeCrbmGeneration(
   const { size, sha256, fingerprint, tailBytes } = await writeEncodedChunks(
     driver,
     key,
-    encodeEach(sorted),
+    () => encodeEach(sorted),
     options,
   );
   return { size, sha256, fingerprint, tailBytes };
@@ -75,11 +75,15 @@ export function* encodeEach(
 /**
  * Write one immutable generation from chunks already encoded, which must ascend by key (the writer refuses one
  * that does not). Returns the driver's `{ size, sha256 }` and a tally of what was written.
+ *
+ * `chunks` is called once for each run of the driver's write and must return the same chunks each time, so a driver
+ * that runs its write again after a failed attempt, as the port allows, commits a whole object. The tally is counted
+ * afresh on each run, so it describes the run that was committed.
  */
 export async function writeEncodedChunks(
   driver: IStorageDriver,
   key: GenKey,
-  chunks: Iterable<EncodedChunk>,
+  chunks: () => Iterable<EncodedChunk>,
   options: WriteOptions,
 ): Promise<{
   size: number;
@@ -98,13 +102,15 @@ export async function writeEncodedChunks(
   let cardinality = 0;
   let identity: CrbmWriter['identity'] | undefined;
   const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
+    chunkCount = 0;
+    cardinality = 0;
     const writer = new CrbmWriter(sink, {
       generation: key.generation,
       crypto: options.crypto,
       metadata: options.metadata,
       entropy: options.entropy,
     });
-    for (const chunk of chunks) {
+    for (const chunk of chunks()) {
       await writer.addChunk(chunk.chunkKey, chunk.payload, chunk.cardinality);
       chunkCount++;
       cardinality += chunk.cardinality;
@@ -148,9 +154,14 @@ interface StreamWriteResult {
  * Streaming variant of {@link writeCrbmGeneration} for a **constant-memory** rewrite (the erasure rewrite, a
  * sorted load): consumes an **already-ascending** async stream of `{ chunkKey, bitmap }`, feeding each to the
  * codec and freeing it, instead of materializing the whole generation. Paired with a streaming storage sink (S3
- * multipart / LocalFs temp file), the writer itself holds ~one chunk + one part. Returns a tally so the caller can verify
+ * multipart / LocalFs temp file), the writer itself holds one chunk, the index of the chunks written, and what the
+ * sink buffers. Returns a tally so the caller can verify
  * the re-opened object without re-iterating the (now-consumed) stream. Input **must** be ascending by `chunkKey`
  * — the codec rejects an out-of-order chunk; empty bitmaps are skipped.
+ *
+ * The stream is read once. A driver that runs its write again after a failed attempt, which the port allows, would
+ * find it consumed and commit an object without the chunks the first run took, so a second run throws
+ * {@link IntegrityError} and writes nothing, and the call throws that error.
  */
 export async function writeCrbmGenerationStream(
   driver: IStorageDriver,
@@ -165,7 +176,16 @@ export async function writeCrbmGenerationStream(
   // non-streaming writer above.
   const tick = yieldEvery(options.clock);
   let identity: CrbmWriter['identity'] | undefined;
-  const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
+  let runs = 0;
+  let rerun: IntegrityError | undefined;
+  const put = driver.putImmutable(key, async (sink) => {
+    if (++runs > 1) {
+      rerun = new IntegrityError(
+        `the storage driver ran the write of ${key.segment}.${key.generation} again: its chunks are streamed and ` +
+          'can be read once, so nothing was written',
+      );
+      throw rerun;
+    }
     const writer = new CrbmWriter(sink, {
       generation: key.generation,
       crypto: options.crypto,
@@ -183,6 +203,10 @@ export async function writeCrbmGenerationStream(
     }
     await writer.finish();
     identity = writer.identity;
+  });
+  // The refusal of a second run is the answer, whatever the driver made of it on the way out.
+  const { size, sha256 } = await put.catch((err: unknown) => {
+    throw rerun ?? err;
   });
   if (identity === undefined) {
     throw new IntegrityError(

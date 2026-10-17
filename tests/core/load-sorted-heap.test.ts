@@ -13,16 +13,23 @@ import { counterEntropy } from '../helpers/entropy';
 import { heavy } from '../helpers/strength';
 
 /**
- * A sorted load holds about one chunk, whatever the segment's size: what it promises, measured rather than reasoned.
+ * A sorted load holds one chunk and the writer's index, whatever the segment's size: what it promises, measured rather
+ * than reasoned.
  *
  * Three loads of 100 times as many ids from the smallest to the largest, each spread over the same 8,192 chunks, so the
- * writer's index (which a load holds until its footer) is the same size at every tier and only the ids grow. The ids
- * come from a generator, never an array, and the storage hashes each write and keeps nothing, so neither the input nor
- * a backend's buffer is in the figure. Every 65,536 ids, and at every write of 64 KiB or more (the index at the end),
- * the test lets a turn of the event loop pass, forces several synchronous major collections (`--expose-gc` is switched
- * on at run time, so no runner flag is needed), and reads the JS heap, external memory (a typed array's backing store)
- * and the native memory roaring's bitmaps hold, by roaring's own count. The figure is the highest such reading over the
- * one taken just before the load.
+ * writer's index (which a load holds until its footer) is the same size at every tier and only the ids grow. A warm-up
+ * load runs first, so no tier pays the one-off allocations of the first load in the process. The ids come from a
+ * generator, never an array, and the storage hashes each write and keeps nothing, so neither the input nor a backend's
+ * buffer is in the figure. Every 65,536 ids, and at every sink write of 64 KiB or more (the encoded index, once the
+ * footer's encoding is done), the test lets a turn of the event loop pass, forces several synchronous major
+ * collections (`--expose-gc` is switched on at run time, so no runner flag is needed), and reads the JS heap, external
+ * memory (a typed array's backing store) and the native memory roaring's bitmaps hold, by roaring's own count. The
+ * figure is the highest such reading over the one taken just before the load.
+ *
+ * These are samples after collection, not a high-water mark. What lives between two readings and is gone by the next
+ * is not in them: above all the temporary array the index's encoding builds while the footer is written, about as large
+ * again as the index (so about 200 bytes a chunk at that moment, derived from the encoder's code), which is garbage
+ * before the index is handed to the sink.
  *
  * What it holds, each in numbers, each failure message naming every figure:
  *   - a flat line: the largest tier's peak is within FLAT_SLACK of the smallest's;
@@ -53,10 +60,13 @@ const TIERS = [TOP / 100, TOP / 10, TOP];
 const SAMPLE_EVERY_IDS = 65_536;
 const SEG: SegmentRef = { namespace: 'ns', segment: 'heap' };
 
-/** The most the largest tier's peak may exceed the smallest's: the ids grow 100 times, the held state does not. */
-const FLAT_SLACK = 2 * MiB;
-/** The most a sorted load's peak may be, at any tier. */
-const CAP = 8 * MiB;
+/**
+ * The most the largest tier's peak may exceed the smallest's: the ids grow 100 times, the held state does not. Measured
+ * at most 0.04 MiB apart after the warm-up, locally and on CI's Node 22 and 24.
+ */
+const FLAT_SLACK = 0.5 * MiB;
+/** The most a sorted load's peak may be, at any tier: measured at most about 1.1 MiB, locally and on CI. */
+const CAP = 3 * MiB;
 /** How many times a sorted load's peak an unsorted load of the same ids must reach. */
 const CONTRAST = 4;
 /** The most chunk bitmaps alive at any reading of a sorted load. */
@@ -209,8 +219,9 @@ const mib = (bytes: number): string => `${(bytes / MiB).toFixed(2)} MiB`;
 const shown = (p: Peak): string =>
   `${mib(p.bytes)} (${p.readings} readings, ${p.liveBitmaps} live bitmaps, roaring ${mib(p.nativeBytes)})`;
 
-describe('a sorted load holds about one chunk, whatever the segment holds', () => {
+describe("a sorted load holds one chunk and the writer's index, whatever the segment holds", () => {
   it('peaks flat across 100 times the ids, under a cap, and far under an unsorted load', async () => {
+    await measure(TIERS[0]!, true); // the warm-up: the first load in a process allocates once what no later one does
     const sorted: Peak[] = [];
     for (const n of TIERS) sorted.push(await measure(n, true));
     const unsorted = await measure(TOP, false);
