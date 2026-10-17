@@ -66,9 +66,10 @@ Every change must pass these locally, and CI runs each of them on every pull req
   which a caller can reach but cannot import; export the type, or say in the row why it stays unexported. A **required**
   member (a property or method without `?`, or an index, call or construct signature) added to an interface or object
   type the base already has fails with "a required member added to an existing interface", because it breaks everyone
-  who implements or builds that type. A class that declares no constructor is recorded with the one it inherits, so
-  declaring one of another shape reads as a change. An empty allowlist is the normal state. A package can list an
-  entry in `cloudbitmaps.internalEntries` in its `package.json`:
+  who implements or builds that type. A class that declares no constructor is recorded with the one it inherits, or
+  with `constructor();` when its chain declares none, and a private constructor is recorded as declared, so declaring
+  one of another shape, a private one included, reads as a change. An empty allowlist is the normal state. A package
+  can list an entry in `cloudbitmaps.internalEntries` in its `package.json`:
   that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry). It is not in `surface.json`,
   a type only it exported is recorded as `(referenced)` when a public signature names it, and its own lines are in
   `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
@@ -76,10 +77,10 @@ Every change must pass these locally, and CI runs each of them on every pull req
   `workspace:^` lets `@cloudbitmaps/roaring` 0.22.0 be installed beside `@cloudbitmaps/core` 0.22.1, **core's main entry
   changes only additively within a minor**: a removal or a changed signature waits for the next minor, and the release
   reviewer reads the `api-surface/internal.json` diff for it. What it does not see: a change in behaviour behind an
-  unchanged signature (that is for tests); a type from outside the workspace, beyond its name in the signature; and a
-  `private constructor()` removed from a class with no base. An overload appended after the last one, and a member
-  added to a class, abstract or not, which binds a subclass, read as additions rather than changes, and still need a
-  row. After a TypeScript upgrade that changes how declarations print, it needs one `--write`.
+  unchanged signature (that is for tests); and a type from outside the workspace, beyond its name in the signature.
+  An overload appended after the last one, and a member added to a class, abstract or not, which binds a subclass,
+  read as additions rather than changes, and still need a row. After a TypeScript upgrade that changes how
+  declarations print, it needs one `--write`.
 
 CI runs more than these. Its `build & test` job also holds the site and the benchmark pages to their sources
 (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,

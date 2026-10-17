@@ -186,8 +186,20 @@ describe('the constructor a class inherits', () => {
     expect(surface['fx Own.constructor']).toBe('constructor(message: string, code: number);');
   });
 
-  it('is not recorded when no class in the chain declares one, when it comes from outside the workspace, or is private', () => {
-    for (const name of ['Bare', 'FromBare', 'FromError', 'FromDep', 'Closed']) {
+  it('is the one TypeScript gives, `constructor();`, when no class in the chain declares one', () => {
+    for (const name of ['Bare', 'FromBare']) {
+      expect(constructorsOf(name), name).toEqual([`fx ${name}.constructor`]);
+      expect(surface[`fx ${name}.constructor`], name).toBe('constructor();');
+    }
+  });
+
+  it('records a private constructor as declared, the one private member it records', () => {
+    expect(constructorsOf('Closed')).toEqual(['fx Closed.constructor']);
+    expect(surface['fx Closed.constructor']).toBe('private constructor();');
+  });
+
+  it('is not recorded when it comes from outside the workspace', () => {
+    for (const name of ['FromError', 'FromDep']) {
       expect(constructorsOf(name), name).toEqual([]);
     }
     expect(surface['fx FromError']).toBe('class FromError extends Error');

@@ -558,6 +558,9 @@ export declare class Own extends Root {
 export declare class Plain {}
 export declare class FromPlain extends Plain {}
 export declare class Oops extends Error {}
+export declare class Sink {
+  count(): number;
+}
 `;
   /** Writes the classes, edited, after the main fixture, regenerates the snapshot and compares it with HEAD. */
   const againstHead = (edit: (s: string) => string): Run => {
@@ -573,16 +576,40 @@ export declare class Oops extends Error {}
   });
   const DETAILS = 'constructor(message: string, details: { readonly limit: number });';
 
-  it('records it under the class own key as the base declares it, and nothing for a chain that declares none', () => {
+  it('records it under the class own key as the base declares it, `constructor();` for a chain that declares none, and nothing from outside the workspace', () => {
     const e = snapshot();
     expect(e['@fx/a Err.constructor']).toBe('constructor(message: string);');
     expect(e['@fx/a Own.constructor']).toBe('constructor(message: string, code: number);');
-    for (const name of ['Plain', 'FromPlain', 'Oops', 'Thing']) {
-      expect(
-        Object.keys(e).filter((k) => k.startsWith(`@fx/a ${name}.constructor`)),
-        name,
-      ).toEqual([]);
+    for (const name of ['Plain', 'FromPlain', 'Sink', 'Thing']) {
+      expect(e[`@fx/a ${name}.constructor`], name).toBe('constructor();');
     }
+    expect(Object.keys(e).filter((k) => k.startsWith('@fx/a Oops.constructor'))).toEqual([]);
+  });
+
+  it('fails a private constructor added to a class whose chain declared none, and its removal, as changes', () => {
+    let r = againstHead((s) =>
+      s.replace('  count(): number;\n', '  private constructor();\n  count(): number;\n'),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Sink.constructor\n    was: constructor();\n    now: private constructor();',
+    );
+    commit();
+    withMain((s) => s + CLASSES);
+    expect(run(['--write']).status).toBe(0);
+    r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Sink.constructor\n    was: private constructor();\n    now: constructor();',
+    );
+  });
+
+  it('passes a `constructor();` declared where the chain declared none, and the snapshot does not change', () => {
+    const r = againstHead((s) =>
+      s.replace('  count(): number;\n', '  constructor();\n  count(): number;\n'),
+    );
+    expect(r.status, r.err).toBe(0);
+    expect(git('status', '--porcelain', '--', 'api-surface')).toBe('');
   });
 
   it('fails a declared constructor that differs from the inherited one, as a change, and passes it with a row', () => {
@@ -634,7 +661,7 @@ export declare class Oops extends Error {}
     expect(r.err).not.toContain('@fx/a Own.constructor');
   });
 
-  it('reads a constructor declared where the chain declared none, or only outside the workspace, as an addition', () => {
+  it('reads a constructor declared where the chain declared none as a change, and where it came from outside the workspace as an addition', () => {
     const r = againstHead((s) =>
       s
         .replace(
@@ -647,7 +674,9 @@ export declare class Oops extends Error {}
         ),
     );
     expect(r.status).toBe(1);
-    expect(r.err).toContain('added: @fx/a FromPlain.constructor\n    a new public entry');
+    expect(r.err).toContain(
+      'changed: @fx/a FromPlain.constructor\n    was: constructor();\n    now: constructor(x: number);',
+    );
     expect(r.err).toContain('added: @fx/a Oops.constructor\n    a new public entry');
   });
 });

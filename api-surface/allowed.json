@@ -434,5 +434,17 @@
   {
     "entry": "@cloudbitmaps/roaring WriteConflictError.constructor",
     "reason": "the gate now records the constructor a class inherits; WriteConflictError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CountingMetricsSink.constructor",
+    "reason": "the gate now records the constructor TypeScript gives a class that declares none and has no base; CountingMetricsSink is such a class, so `new CountingMetricsSink()` takes no arguments, as it always has, and the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RecordingAuditSink.constructor",
+    "reason": "the gate now records the constructor TypeScript gives a class that declares none and has no base; RecordingAuditSink is such a class, so `new RecordingAuditSink()` takes no arguments, as it always has, and the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.constructor",
+    "reason": "the gate now records a private constructor, since it decides whether a caller can construct the class; Segment has always declared one (a handle comes from the store, never from `new`), so the line is new to the snapshot and nothing changes for a caller"
   }
 ]

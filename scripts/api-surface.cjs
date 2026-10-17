@@ -11,10 +11,11 @@
  * ordering noise beyond the declared order of overloads, which is part of a signature.
  *
  * A class that declares no constructor is recorded with the one it inherits, under its own `Class.constructor` key and
- * printed as the nearest base in the workspace declares it, so a class that later declares one of another shape reads
- * as a change, and a change to a base's constructor shows in every class that inherits it. A class whose chain declares
- * none records none, and so does one whose constructor comes from outside the workspace or from a base that is not a
- * class.
+ * printed as the nearest base that declares one declares it, when that base is in the workspace, so a class that later
+ * declares one of another shape reads as a change, and a change to a base's constructor shows in every class that
+ * inherits it. A class whose chain declares none is recorded with `constructor();`, the one TypeScript gives it, and a
+ * private constructor is recorded as declared, so adding or removing either reads as a change. A constructor that comes
+ * from outside the workspace, or from a base that is not a class, is not recorded.
  *
  * A type that a public signature names without any entry point exporting it is part of what a caller can reach, so
  * it is recorded too, with its members and, transitively, the types they name, under a `(referenced)` key. A type
@@ -44,11 +45,10 @@
  * change; a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a
  * move reads as a removal and an addition; a parameter rename is a change; an inherited constructor prints as its base
  * declares it, type parameters and all, so a class extending a generic base that declares the same constructor with
- * them filled in reads as a change; a class that records no constructor (its chain declares none, or it comes from
- * outside the workspace or from a base that is not a class) reads a constructor it declares as an addition, and
- * removing a `private constructor()` from a class with no base is not seen; only declarations are read, so a change in
- * behaviour behind an unchanged signature is for tests; a TypeScript upgrade that changes how declarations print needs
- * one `--write`.
+ * them filled in reads as a change; a class whose constructor comes from outside the workspace or from a base that is
+ * not a class records none, so a constructor it declares reads as an addition; only declarations are read, so a change
+ * in behaviour behind an unchanged signature is for tests; a TypeScript upgrade that changes how declarations print
+ * needs one `--write`.
  */
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
@@ -222,33 +222,46 @@ function buildSnapshot(entries, root) {
     ((ts.isPropertySignature(m) || ts.isMethodSignature(m)) && !m.questionToken);
 
   /**
-   * The constructor declarations a class that declares none inherits: the nearest base's in the workspace, as that
-   * base declares them, so they print and are keyed as declared ones are. None when no class in the chain declares one
-   * (the declarations print none; it takes no arguments), when it comes from outside the workspace (`extends Error`),
-   * whose base is known by its name in the header, or when the base is not a class (a value with a construct
-   * signature). A private one is left out with the other private members.
+   * How a class that declares no constructor is constructed. `nodes`: the constructor declarations of the nearest base
+   * that declares one, when that base is in the workspace, as it declares them, so they print and are keyed as declared
+   * ones are. `implicit`: no class in the chain declares one, so it has the constructor TypeScript gives it, which the
+   * declarations do not print. Neither when the constructor comes from outside the workspace (`extends Error`), whose
+   * base the header names, or from a base that is not a class (a value with a construct signature).
    */
   function inheritedConstructors(symbol, classes) {
-    if (classes.some((d) => d.members.some((m) => ts.isConstructorDeclaration(m)))) return [];
-    return checker
+    if (classes.some((d) => d.members.some((m) => ts.isConstructorDeclaration(m)))) {
+      return { nodes: [], implicit: false };
+    }
+    const declarations = checker
       .getSignaturesOfType(
         checker.getTypeOfSymbolAtLocation(symbol, classes[0]),
         ts.SignatureKind.Construct,
       )
-      .map((s) => s.declaration)
-      .filter(
+      .map((s) => s.declaration);
+    if (declarations.length > 0 && declarations.every((d) => d === undefined)) {
+      return { nodes: [], implicit: true };
+    }
+    return {
+      nodes: declarations.filter(
         (d) =>
           d !== undefined &&
           ts.isConstructorDeclaration(d) &&
           inWorkspace(d.getSourceFile().fileName),
-      );
+      ),
+      implicit: false,
+    };
   }
 
-  /** `forImplementers`: the nodes belong to an interface or an object type, whose required members bind implementers. */
+  /**
+   * `forImplementers`: the nodes belong to an interface or an object type, whose required members bind implementers.
+   * A private constructor is kept, though private members are not public: it decides whether a caller can `new` the
+   * class.
+   */
   function members(key, nodes, forImplementers) {
     const groups = new Map();
     for (const m of nodes) {
-      if (ts.isSemicolonClassElement(m) || (ts.isClassElement(m) && isPrivate(m))) continue;
+      if (ts.isSemicolonClassElement(m)) continue;
+      if (ts.isClassElement(m) && isPrivate(m) && !ts.isConstructorDeclaration(m)) continue;
       const name = memberKey(m, m.getSourceFile());
       if (name === null) throw new Error(`api-surface: a member of ${key} has no name`);
       groups.set(name, [...(groups.get(name) ?? []), m]);
@@ -307,12 +320,17 @@ function buildSnapshot(entries, root) {
     for (const nodes of Object.values(merged)) {
       if (nodes.length === 0) continue;
       nodes.forEach((d, i) => add(numbered(key, i), header(d)));
-      const inherited = nodes === merged.class ? inheritedConstructors(symbol, nodes) : [];
+      const inherited =
+        nodes === merged.class
+          ? inheritedConstructors(symbol, nodes)
+          : { nodes: [], implicit: false };
       members(
         key,
-        [...nodes.flatMap((d) => [...d.members]), ...inherited],
+        [...nodes.flatMap((d) => [...d.members]), ...inherited.nodes],
         nodes.every((d) => ts.isInterfaceDeclaration(d)),
       );
+      // Printed as a declared one would be, so declaring the same constructor changes nothing.
+      if (inherited.implicit) add(`${key}.constructor`, 'constructor();');
     }
     for (const d of decls) collectRefs(d);
   }
