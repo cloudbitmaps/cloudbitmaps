@@ -282,8 +282,85 @@ function copyRecord(value: object, ctx: Copying, depth: number): unknown {
     }
   }
   if (errorLike) keepSlotFields(value, copy, ctx, depth);
+  redactPairs(value, copy, errorLike, ctx);
   return copy;
 }
+
+/**
+ * The fields that name or describe an error rather than pair a name with a value: classification reads `code` and
+ * `errorCode`, and `message` says what went wrong. They are never taken as a credential's name and never redacted
+ * beside one; the text rules still apply to them.
+ */
+const DESCRIBING = new Set(['code', 'Code', 'errorCode', 'message', 'Message']);
+
+/** The own string keys of `record`, other than {@link DESCRIBING}, whose data value passes `test`. */
+function keysHolding(record: object, test: (held: unknown) => boolean): string[] {
+  return Reflect.ownKeys(record).filter(
+    (key): key is string =>
+      typeof key === 'string' &&
+      !DESCRIBING.has(key) &&
+      test(Object.getOwnPropertyDescriptor(record, key)?.value),
+  );
+}
+
+const namesCredential = (held: unknown): boolean =>
+  typeof held === 'string' && isCredentialName(held);
+
+/** The indexes of `list` that hold a credential's name, read by descriptor: a hole costs nothing, a getter is not called. */
+function nameIndexes(list: unknown[]): number[] {
+  return Reflect.ownKeys(list).flatMap((key) =>
+    isIndex(key) && namesCredential(Object.getOwnPropertyDescriptor(list, key)?.value)
+      ? [Number(key)]
+      : [],
+  );
+}
+
+/**
+ * Redact the value a record holds beside a credential's name. The `...Value` field beside a `...Name` one that names a
+ * credential is redacted on any record: Azure's `HeaderName` and `HeaderValue`, a `{ name, value }` pair, an XML
+ * header's `Name` and `Value`. On a plain record, a name in any other field (a header table's `{ th, td }` row, a
+ * `{ key, value }` pair) redacts every other field, and a name at an index of a list redacts that index of every other
+ * list (a row of several pairs, parsed to parallel lists). A number or a boolean is never a credential, and is kept.
+ */
+function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Copying): void {
+  const names = keysHolding(original, namesCredential);
+  const lists = errorLike
+    ? []
+    : keysHolding(original, (held) => Array.isArray(held) && nameIndexes(held).length > 0);
+  if (names.length === 0 && lists.length === 0) return;
+  const paired = names
+    .filter((key) => /name$/i.test(key))
+    .map((key) => `${key.slice(0, -4)}value`.toLowerCase());
+  const every = !errorLike && names.some((key) => !/name$/i.test(key));
+  const indexes = lists.flatMap((key) =>
+    nameIndexes(Object.getOwnPropertyDescriptor(original, key)?.value as unknown[]),
+  );
+  for (const key of Reflect.ownKeys(copy)) {
+    if (typeof key !== 'string' || names.includes(key) || DESCRIBING.has(key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(copy, key);
+    const held: unknown = descriptor?.value;
+    if (every || paired.includes(key.toLowerCase())) {
+      if (redactable(held)) {
+        define(copy, key, REDACTED, descriptor?.enumerable ?? false);
+        ctx.changed = true;
+      }
+    } else if (Array.isArray(held) && !lists.includes(key)) {
+      for (const i of indexes) {
+        if (redactable(held[i])) {
+          held[i] = REDACTED;
+          ctx.changed = true;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Whether a value beside a credential's name is redacted: text or an object that is not already `[redacted]`. A number
+ * or a boolean is what classification reads of a record, never a credential.
+ */
+const redactable = (held: unknown): boolean =>
+  held != null && held !== REDACTED && (typeof held === 'string' || typeof held === 'object');
 
 /** Carry an error's stack over, read through the original: it may be an accessor bound to the error itself. */
 function copyStack(original: object, copy: object, ctx: Copying, depth: number): void {

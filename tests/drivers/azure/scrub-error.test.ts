@@ -1,5 +1,6 @@
 import { types } from 'node:util';
 import { RestError } from '@azure/storage-blob';
+import { isMissingContainer, isNotFound, isTransient } from '@/azure-blob/azure-errors';
 import { scrubCredentials } from '@/azure-blob/scrub-error';
 
 const SIGNED = 'SharedKey acct:SIGNATUREVALUE=';
@@ -433,6 +434,128 @@ describe('scrubCredentials (Azure)', () => {
       expect(out.details).toEqual({
         rawHeaders: ['host', 'h', 'Authorization', '[redacted]', 'accept', '*/*'],
       });
+    });
+  });
+
+  describe('the value beside a credential name in a record', () => {
+    /** An error whose parsed body (in `details`) holds `body`, beside the fields classification reads. */
+    const withBody = (
+      body: Record<string, unknown>,
+    ): Error & { details: Record<string, unknown> } =>
+      Object.assign(new Error('refused'), {
+        statusCode: 400,
+        code: 'InvalidHeaderValue',
+        details: { errorCode: 'InvalidHeaderValue', requestId: 'r-1', date: 'd', ...body },
+      });
+    const detailsOf = (err: Error): Record<string, unknown> =>
+      (scrubCredentials(err) as unknown as { details: Record<string, unknown> }).details;
+
+    it('redacts the value Azure quotes beside the header it refused, and keeps the rest of the record', () => {
+      const err = withBody({ HeaderName: 'x-ms-encryption-key', HeaderValue: CPK, message: 'bad' });
+      expect(detailsOf(err)).toEqual({
+        errorCode: 'InvalidHeaderValue',
+        requestId: 'r-1',
+        date: 'd',
+        HeaderName: 'x-ms-encryption-key',
+        HeaderValue: '[redacted]',
+        message: 'bad',
+      });
+    });
+
+    it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+      [
+        'a name and value pair',
+        { name: 'cookie', value: 'sid=1', path: '/' },
+        { name: 'cookie', value: '[redacted]', path: '/' },
+      ],
+      [
+        "an XML header's Name and Value",
+        { Name: 'x-api-key', Value: 'K', Kind: 'request' },
+        { Name: 'x-api-key', Value: '[redacted]', Kind: 'request' },
+      ],
+      [
+        'a header table row',
+        { th: 'x-ms-encryption-key', td: CPK },
+        { th: 'x-ms-encryption-key', td: '[redacted]' },
+      ],
+      [
+        'a header table row with attributes',
+        { $: { class: 'v' }, th: 'Cookie', td: { '#': 'sid=1', $: { class: 'v' } } },
+        { $: '[redacted]', th: 'Cookie', td: '[redacted]' },
+      ],
+      [
+        'a key and value pair',
+        { key: 'x-api-key', value: 'K' },
+        { key: 'x-api-key', value: '[redacted]' },
+      ],
+      [
+        'a row with several pairs, parsed to parallel lists',
+        { th: ['host', 'x-api-key', 'accept'], td: ['h', 'K', '*/*'] },
+        // The list of names reads as a flat header list too, so the name after a credential's is redacted as well.
+        { th: ['host', 'x-api-key', '[redacted]'], td: ['h', '[redacted]', '*/*'] },
+      ],
+      [
+        'a pair whose value is a number or a boolean',
+        { name: 'cookie', value: 5, secure: true },
+        { name: 'cookie', value: 5, secure: true },
+      ],
+    ])('redacts %s', (_name, record, expected) => {
+      const err = withBody({ list: [record, { name: 'host', value: 'h' }] });
+      expect(detailsOf(err)['list']).toEqual([expected, { name: 'host', value: 'h' }]);
+    });
+
+    it('keeps what classification reads beside a field that spells a credential name', () => {
+      // A request id or a body field is the server's to choose: one that spells a credential name must not cost the
+      // record the code classification reads.
+      const err = Object.assign(new Error('busy'), {
+        statusCode: 503,
+        code: 'ServerBusy',
+        details: {
+          errorCode: 'ContainerNotFound',
+          requestId: 'token',
+          code: 'ServerBusy',
+          retry: true,
+        },
+      });
+      const out = scrubCredentials(err);
+      expect(out.details).toEqual({
+        errorCode: 'ContainerNotFound',
+        requestId: 'token',
+        code: 'ServerBusy',
+        retry: true,
+      });
+      for (const read of [isTransient, isNotFound, isMissingContainer])
+        expect(read(out)).toBe(read(err));
+      const headed = Object.assign(new Error('x'), {
+        statusCode: 404,
+        details: { errorCode: 'cookie', note: 'n' },
+      });
+      expect((scrubCredentials(headed).details as { errorCode: string }).errorCode).toBe('cookie');
+    });
+
+    it('on an error itself, redacts only the Value beside a Name', () => {
+      const err = Object.assign(new Error('refused'), {
+        code: 'InvalidHeaderValue',
+        HeaderName: 'x-ms-encryption-key',
+        HeaderValue: CPK,
+        header: 'cookie',
+        note: 'kept',
+      });
+      const out = scrubCredentials(err) as unknown as Record<string, unknown>;
+      expect(out['HeaderValue']).toBe('[redacted]');
+      expect(out['note']).toBe('kept');
+      expect(out['code']).toBe('InvalidHeaderValue');
+      expect(out['message']).toBe('refused');
+    });
+
+    it('returns an error whose records name no credential as it is', () => {
+      const err = withBody({
+        HeaderName: 'x-ms-version',
+        HeaderValue: '2099-01-01',
+        th: 'host',
+        td: 'h',
+      });
+      expect(scrubCredentials(err)).toBe(err);
     });
   });
 
