@@ -547,8 +547,8 @@ index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader c
 bitmap per non-empty chunk, and a buffer of up to about 28 MB; a bitmap load holds the bitmap decoded and re-encoded.
 A load with `sorted: true` holds one chunk's ids and bitmap and the writer's index, whatever the segment's size: up to
 about 7 MiB at the 65,536 chunks a segment can have, about 8 MiB for an encrypted segment, while the footer is written
-(derived from the writer's code and the measured figures;
-[the measured figures](../benchmarks.md#what-a-sorted-load-holds-in-memory)). Any load adds what the backend buffers of
+(derived from the writer's code; [the measured
+figures](../benchmarks.md#what-a-sorted-load-holds-in-memory)). Any load adds what the backend buffers of
 the object, derived from the drivers' code and not measured: up to about twice the part or block size on S3 and Azure
 Blob at a flush (16 MiB at the 8 MiB default), up to about twice the simple-upload threshold on GCS when it switches to
 a resumable upload, next to nothing on the local filesystem, and the whole object in `MemoryStorage`

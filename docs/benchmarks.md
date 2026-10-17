@@ -373,7 +373,7 @@ inside the region and not from a laptop.
 hundred times as many ids, spread over the same 8,192 chunks (array containers, ids three apart), so the writer's index
 is the same size at every tier, and an unsorted load of the largest tier's ids: a million on a pull request, ten
 million at full size. The ids come from a generator, and the storage hashes what it is sent and keeps none of it, so
-neither the input nor a backend's buffer is in the figure. Every 65,536 ids and at every sink write of 64 KiB or more,
+neither the input nor a backend's buffer is in the figure. Every 65,536 ids and at every sink write of 32 KiB or more,
 the test lets a turn of the event loop pass, forces four synchronous major collections, and reads the JS heap, external
 memory and the native memory roaring's bitmaps hold, by roaring's own count (on Node 24 the heap statistics' external
 figure leaves roaring's out). Each figure is the highest reading over the one taken just before the load. Every run
@@ -427,8 +427,9 @@ Node 24):
 | wide | 8,192 | 0.09 MiB | 0.92 MiB | 1.01 MiB | 0.09 MiB |
 | wide | 65,536 | 0.72 MiB | 6.97 MiB | 7.68 MiB | 0.72 MiB |
 
-The array is about eight times the index. At 65,536 chunks the encoding no longer holds about 4 MiB of it at the end
-(3.98 MiB for `load`, 6.25 MiB for `wide`), and no longer holds about 4.5 or 7 MiB at the peak (4.55 and 6.96 MiB). A
+The array is eight to ten times the index (8.1 for `load`, 9.7 for `wide`). At 65,536 chunks the encoding no longer
+holds about 4 or 6.3 MiB of it at the end (3.98 MiB for `load`, 6.25 MiB for `wide`), and no longer holds about 4.5 or
+7 MiB at the peak (4.55 and 6.96 MiB). A
 backend's upload buffer comes on top of all of it:
 [memory, and where a load runs](guide/loading.md#memory-and-where-a-load-runs).
 

@@ -297,7 +297,7 @@ export class CrbmWriter {
     }
     if (pos !== out.length) {
       throw new IntegrityError(
-        `the chunk index was sized at ${out.length} bytes and encoded as ${pos}; nothing was written`,
+        `the chunk index was sized at ${out.length} bytes and encoded as ${pos}; the index was not written`,
       );
     }
     return out;
