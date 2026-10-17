@@ -262,6 +262,44 @@ describe('scrubCredentials (Azure)', () => {
     });
   });
 
+  describe('a value that is neither an error nor plain data', () => {
+    class Holder {
+      request = liveRequest();
+    }
+    const kinds: [string, () => unknown][] = [
+      ['a class instance', () => new Holder()],
+      ['a date', () => new Date(0)],
+      ['a buffer', () => Buffer.from(URL_WITH_SIG)],
+      ['a typed array', () => new TextEncoder().encode(URL_WITH_SIG)],
+      ['a URL', () => new URL(URL_WITH_SIG)],
+    ];
+
+    it.each(kinds)('drops %s an error reaches, and throws the copy', (_kind, make) => {
+      const held = make();
+      const err = Object.assign(new Error('x'), { details: { held, keep: 'kept' } });
+      const out = scrubCredentials(err);
+      expect(out).not.toBe(err);
+      expect(out.details).toEqual({ keep: 'kept' });
+      expect(leaks(out)).toEqual([]);
+      expect((err.details as { held: unknown }).held).toBe(held);
+    });
+
+    it('copies a list, a map or a set it is given that holds an SDK error', () => {
+      for (const given of [[restError()], new Map([['e', restError()]]), new Set([restError()])]) {
+        const out = scrubCredentials(given);
+        expect(out).not.toBe(given);
+        expect(out.constructor).toBe(given.constructor);
+        expect(leaks(out)).toEqual([]);
+      }
+    });
+
+    it('returns a class instance it is given as it is, as the other drivers do', () => {
+      // Nothing could be thrown in its place that keeps its class; no SDK throws one.
+      const given = new Holder();
+      expect(scrubCredentials(given)).toBe(given);
+    });
+  });
+
   describe('credential key names', () => {
     it.each([
       'authorization',

@@ -245,12 +245,12 @@ function copyField(
 }
 
 /**
- * `err` as it is safe to throw: a credential-free deep copy of an error object when it holds a transport or shows a
- * credential, the error itself when it holds neither, any other value as it is. The live error is never changed.
+ * `err` as it is safe to throw: a credential-free deep copy of an error, plain data, a list, a map or a set when it
+ * holds a transport or shows a credential, the value itself when it holds neither, and any other value (a class
+ * instance that is not an error, a primitive) as it is. The live error is never changed.
  */
 export function scrubCredentials<T>(err: T): T {
   if (typeof err !== 'object' || err === null) return err;
-  if (!isError(err) && !isPlain(err)) return err;
   const ctx: Copying = { copies: new WeakMap(), changed: false };
   const copy = copyOf(err, ctx, 0);
   return (ctx.changed && copy !== OMIT ? copy : err) as T;
