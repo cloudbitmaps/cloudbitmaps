@@ -94,5 +94,45 @@
   {
     "entry": "@cloudbitmaps/core/driver-kit isWriteConflictError",
     "reason": "replaced by errorKind(err), exported from this entry too, which classifies an error across copies of the package the same way the predicate did: use `errorKind(err) === 'WriteConflictError'`"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Expr",
+    "reason": "Expr is declared once under its own name rather than as an alias of the engine's CombineExpr, so editor hovers and compiler errors print a name an application can import; the expressions it accepts are unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyStats*",
+    "reason": "MaterializeManyStats is declared once under its own name rather than as an alias of the engine's CombineManyStats, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOperandStats*",
+    "reason": "MaterializeManyOperandStats is declared once under its own name rather than as an alias of the engine's CombineManyOperandStats, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOutputStats*",
+    "reason": "MaterializeManyOutputStats is declared once under its own name rather than as an alias of the engine's CombineManyOutputStats, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyFeedRecord*",
+    "reason": "MaterializeManyFeedRecord is declared once under its own name rather than as an alias of the engine's CombineManyFeedRecord, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineExpr",
+    "reason": "the engine's CombineExpr is renamed Expr where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineExpr any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyStats*",
+    "reason": "the engine's CombineManyStats is renamed MaterializeManyStats where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyStats any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyOperandStats*",
+    "reason": "the engine's CombineManyOperandStats is renamed MaterializeManyOperandStats where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyOperandStats any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyOutputStats*",
+    "reason": "the engine's CombineManyOutputStats is renamed MaterializeManyOutputStats where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyOutputStats any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyFeedRecord*",
+    "reason": "the engine's CombineManyFeedRecord is renamed MaterializeManyFeedRecord where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyFeedRecord any more"
   }
 ]

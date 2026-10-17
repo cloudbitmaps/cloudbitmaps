@@ -11,7 +11,7 @@ import {
   runCombineMany,
   runCombineManyCounted,
 } from '@/core/combine-many';
-import type { CombineExpr, CombineManyOperand, PlanWork } from '@/core/combine-many';
+import type { Expr, CombineManyOperand, PlanWork } from '@/core/combine-many';
 import {
   BudgetExceededError,
   IntegrityError,
@@ -121,7 +121,7 @@ const operandsOf = (
 async function run(
   source: StorageChunkSource,
   names: string[],
-  specs: Array<{ expr: CombineExpr; exclude?: CombineExpr[] }>,
+  specs: Array<{ expr: Expr; exclude?: Expr[] }>,
   extra: Parameters<typeof request>[2] = {},
   publishHook?: () => Promise<void> | void,
 ) {
@@ -237,7 +237,7 @@ describe('pruning, counted', () => {
     src.opened.filter((s) => s.segment === name).flatMap((s) => [...s.keys]);
 
   it('and reads the intersection of keys, or the union, andNot the left keys, an exclude only where it overlaps', async () => {
-    const one = async (expr: CombineExpr, exclude?: CombineExpr[]) =>
+    const one = async (expr: Expr, exclude?: Expr[]) =>
       runBatch(sets, [{ expr, ...(exclude ? { exclude } : {}) }]);
     let r = await one({ and: ['a', 'b'] });
     expect(opened(r.setup.source, 'a')).toEqual([3, 4]);
@@ -265,13 +265,13 @@ describe('pruning, counted', () => {
           ? [...new Set((sets as Record<string, number[]>)[n]!.map((v) => v >>> 16))]
           : [],
       );
-    const S = (e: CombineExpr): Set<number> => {
+    const S = (e: Expr): Set<number> => {
       if (typeof e === 'string') return keysOf(e);
       if ('and' in e) return e.and.map(S).reduce((x, y) => new Set([...x].filter((k) => y.has(k))));
       if ('or' in e) return e.or.map(S).reduce((x, y) => new Set([...x, ...y]));
       return S(e.andNot[0]!);
     };
-    const demand = (e: CombineExpr, d: Set<number>, into: Map<string, Set<number>>): void => {
+    const demand = (e: Expr, d: Set<number>, into: Map<string, Set<number>>): void => {
       const here = new Set([...d].filter((k) => S(e).has(k)));
       if (typeof e === 'string') {
         const set = into.get(e) ?? new Set<number>();
@@ -280,7 +280,7 @@ describe('pruning, counted', () => {
       } else
         for (const kid of 'and' in e ? e.and : 'or' in e ? e.or : e.andNot) demand(kid, here, into);
     };
-    const tree = (depth: number): fc.Arbitrary<CombineExpr> =>
+    const tree = (depth: number): fc.Arbitrary<Expr> =>
       depth === 0
         ? fc.constantFrom(...names)
         : fc.oneof(
@@ -548,7 +548,7 @@ describe('the re-check of subtracted operands', () => {
   const sets = { a: ids([1]), b: ids([1]), c: ids([1]), opt: ids([1]) };
   const A = token('a');
   const run = async (
-    specs: Array<{ expr: CombineExpr; exclude?: CombineExpr[] }>,
+    specs: Array<{ expr: Expr; exclude?: Expr[] }>,
     now: Record<string, Row>,
     pinned: Record<string, [number | null, string]> = Object.fromEntries(
       Object.keys(sets).map((n) => [n, [0, A]]),
@@ -787,7 +787,7 @@ describe('absent operands, for every operand of the call', () => {
     source.existing = new Set(['a']);
     return source;
   };
-  const fresh = (extra: Parameters<typeof request>[2], names: string[], expr: CombineExpr) =>
+  const fresh = (extra: Parameters<typeof request>[2], names: string[], expr: Expr) =>
     run(build(), names, [{ expr }], { allowAbsentOperands: false, ...extra });
 
   it('refuses one that names no segment, whether or not an output reads it, and under an empty range', async () => {
@@ -1093,7 +1093,7 @@ describe('whether an output fits does not depend on where it sits in the call', 
       1,
     ),
   };
-  const spec = { expr: { or: ['a', 'b'] } as CombineExpr };
+  const spec = { expr: { or: ['a', 'b'] } as Expr };
 
   it('the budget a refusal names publishes every copy of the output, wherever it sits', async () => {
     for (const copies of [1, 2, 3, 5]) {

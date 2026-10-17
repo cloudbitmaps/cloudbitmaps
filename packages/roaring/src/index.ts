@@ -115,13 +115,11 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import type {
-  CombineExpr,
   CombineManyFeed,
-  CombineManyFeedRecord,
   CombineManyOperand,
-  CombineManyOperandStats,
-  CombineManyOutputStats,
-  CombineManyStats,
+  Expr,
+  MaterializeManyFeedRecord,
+  MaterializeManyStats,
 } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
@@ -576,23 +574,6 @@ export interface EraseSubjectResult {
  */
 export type MaterializeRefusal = Exclude<LoadRefusal, 'superseded'>;
 
-/**
- * An expression over the operands of a {@link CloudRoaring.materializeMany} call: a string names an operand; a node holds
- * exactly one of `and`, `or` or `andNot` over a non-empty list of expressions. `andNot` subtracts every entry after the
- * first from the first, so it takes at least two. Plain JSON, so it can be logged and sent between tasks.
- */
-export type Expr = CombineExpr;
-
-/** What the call did to one operand: see {@link MaterializeManyStats.operands}. */
-export type MaterializeManyOperandStats = CombineManyOperandStats;
-/** What the call did to one output: see {@link MaterializeManyStats.outputs}. */
-export type MaterializeManyOutputStats = CombineManyOutputStats;
-/**
- * What a {@link CloudRoaring.materializeMany} call did: the groups it ran, its requests by class, the chunk-read budget it
- * used, the most it held resident, and, for each operand, the generation it was pinned at, began at and ended at.
- */
-export type MaterializeManyStats = CombineManyStats;
-
 /** One output of a {@link CloudRoaring.materializeMany} call. */
 export interface MaterializeManyOutput {
   /** The segment this output becomes a new generation of. Not an operand of the call, and named by no other output. */
@@ -612,16 +593,6 @@ export interface MaterializeManyOutput {
   /** Generations to keep below the new one, as on {@link MaterializeOptions}; overrides the call's `keep`. */
   readonly keep?: number;
 }
-
-/**
- * One record of the feed of {@link CloudRoaring.materializeMany}: the ids some of the fed operands hold at one chunk key.
- * `key` is `id >>> 16`, an integer from 0 to 65,535, never below the previous record's; a key may arrive as several
- * consecutive records, each carrying some of the operands, and one record per key is the usual shape. `operands` maps a
- * declared fed name to its ids at the key: a real `Uint32Array` (not an `Int32Array`, `Buffer`, array or look-alike),
- * strictly ascending, every id inside the key. A name is given at most once per key, and an empty array is the same as
- * leaving the name out. The record is copied as it arrives, so the caller may drop or reuse its arrays once it has yielded it.
- */
-export type MaterializeManyFeedRecord = CombineManyFeedRecord;
 
 /**
  * Operands that arrive as records in chunk-key order instead of being stored, for {@link MaterializeManyOptions.feed}.
@@ -1733,7 +1704,7 @@ export class CloudRoaring {
     const f = feed as Record<string, unknown>;
     return {
       names: f.names as string[],
-      records: f.records as AsyncIterable<CombineManyFeedRecord>,
+      records: f.records as AsyncIterable<MaterializeManyFeedRecord>,
       counts: f.counts as CombineManyFeed['counts'],
       ...(mayBeEmpty === undefined ? {} : { mayBeEmpty: mayBeEmpty as string[] }),
       epoch: { moved: () => this.epochMoved(epochAt) },
@@ -4040,6 +4011,7 @@ export type {
   ExportSkipped,
   ExportWriter,
   ExportedSegment,
+  Expr,
   GenKey,
   GenerationEntry,
   GenerationMetadata,
@@ -4057,6 +4029,10 @@ export type {
   LoadRefusal,
   LoadResult,
   LocalFsStorageOptions,
+  MaterializeManyFeedRecord,
+  MaterializeManyOperandStats,
+  MaterializeManyOutputStats,
+  MaterializeManyStats,
   MemoryStorageOptions,
   MetricEvent,
   MetricOpName,
