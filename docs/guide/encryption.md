@@ -131,7 +131,7 @@ If the keystore fails, the read raises the keystore's error (`KeyUnavailableErro
 `TransientError` included) even when the object is also missing. An open that sent its tail early (every one but a
 `has()`'s first) has already sent that GET, so it is billed once for each attempt, and its answer is dropped: with the
 default read retry, a keystore that keeps throwing `TransientError` bills up to four tail reads for one read. A cold
-open waiting for the key holds up to `tailBytes` (256 KiB by default) of the object's tail. A store with no keystore
+open waiting for the key holds up to the reader's first tail read, a fixed 256 KiB, of the object's tail. A store with no keystore
 sends no tail read for an encrypted row.
 
 The tail read of an encrypted row is not sized from the row's summary, as a cleartext row's is: the summary is sealed
