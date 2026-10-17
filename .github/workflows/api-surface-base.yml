@@ -1,7 +1,8 @@
 name: Public signatures against the base
 
-# A pull request may not remove or change a public signature the base branch's snapshot lists, unless it adds a row with a
-# reason to api-surface/allowed.json. The comparison is of two committed files, so it needs no install and no build.
+# A pull request may not remove, change or add a public signature against the base branch's snapshot, unless it adds a
+# row with a reason to api-surface/allowed.json. The comparison is of two committed files, so it needs no install and no
+# build.
 #
 # Its own workflow, and with `edited` among the types, because `ci.yml` runs on opened, synchronized and reopened pull
 # requests only: retargeting a pull request at another branch triggers none of those, so the comparison would keep
