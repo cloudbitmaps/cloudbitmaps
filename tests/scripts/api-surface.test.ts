@@ -264,7 +264,7 @@ describe('diffSurfaces and breakingChanges', () => {
     const { problems } = surfaceTool.breakingChanges(was, now, []);
     expect(problems).toHaveLength(2);
     expect(problems[0]).toMatch(
-      /^added: p \(referenced\) Hidden\n\s+a new public entry; add a reason row\n/,
+      /^added: p \(referenced\) Hidden\n\s+a public signature names a type no entry exports: export it, or add a reason row\n/,
     );
     // A row for the exported name of the same symbol is another key, and covers neither.
     expect(

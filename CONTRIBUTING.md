@@ -61,9 +61,9 @@ Every change must pass these locally, and CI runs each of them on every pull req
   already has, with the same reason, excuses nothing. A removal or a change is a public-contract change and an addition
   is a new promise: each needs the maintainer's agreement before you build it. An addition (a new export, a new member,
   optional ones included, or a new type with its members, which one `Name*` row covers; the row stops where the name
-  ends, so it never covers `NameOptions`) fails with "a new public entry; add a reason row". So does a new
-  `(referenced)` key: a public signature that starts naming a type no entry exports,
-  which a caller can reach but cannot import; export the type, or say in the row why it stays unexported. A **required**
+  ends, so it never covers `NameOptions`) fails with "a new public entry; add a reason row". A new `(referenced)` key,
+  a public signature that starts naming a type no entry exports, which a caller can reach but cannot import, fails with
+  "… export it, or add a reason row": export the type, or say in the row why it stays unexported. A **required**
   member (a property or method without `?`, or an index, call or construct signature) added to an interface or object
   type the base already has fails with "a required member added to an existing interface", because it breaks everyone
   who implements or builds that type. A class that declares no constructor is recorded with the one it inherits, or

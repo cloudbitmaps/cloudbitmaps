@@ -176,6 +176,8 @@ describe('--write and --check', { timeout: 60_000 }, () => {
 
 describe('--against', { timeout: 60_000 }, () => {
   const NEW_MSG = 'a new public entry; add a reason row';
+  const REFERENCED_MSG =
+    'a public signature names a type no entry exports: export it, or add a reason row';
 
   it('passes with no change', () => {
     const r = run(['--against', 'HEAD']);
@@ -228,8 +230,9 @@ describe('--against', { timeout: 60_000 }, () => {
     let r = run(['--against', 'HEAD']);
     expect(r.status).toBe(1);
     expect(r.err).not.toContain('changed: @fx/a keep');
-    expect(r.err).toContain(`added: @fx/a (referenced) Hidden\n    ${NEW_MSG}`);
-    expect(r.err).toContain(`added: @fx/a (referenced) Hidden.x\n    ${NEW_MSG}`);
+    expect(r.err).toContain(`added: @fx/a (referenced) Hidden\n    ${REFERENCED_MSG}`);
+    expect(r.err).toContain(`added: @fx/a (referenced) Hidden.x\n    ${REFERENCED_MSG}`);
+    expect(r.err).not.toContain(`(referenced) Hidden\n    ${NEW_MSG}`);
     put(
       'api-surface/allowed.json',
       JSON.stringify([
@@ -858,7 +861,9 @@ export declare function other(): void;
     r = run(['--against', 'HEAD']);
     expect(r.status).toBe(1);
     expect(r.err).toContain('added: @fx/b/kit useFresh\n    a new public entry');
-    expect(r.err).toContain('added: @fx/b (referenced) Fresh.f\n    a new public entry');
+    expect(r.err).toContain(
+      'added: @fx/b (referenced) Fresh.f\n    a public signature names a type no entry exports: export it, or add a reason row',
+    );
   });
 
   it('fails making an entry internal without the row, and passes with it', () => {

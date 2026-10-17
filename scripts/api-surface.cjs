@@ -532,13 +532,15 @@ function breakingChanges(was, now, allowed, required = {}) {
     ...removed.map((k) => ({ k, text: `removed: ${k}\n    was: ${was[k]}` })),
     ...changed.map((k) => ({ k, text: `changed: ${k}\n    was: ${was[k]}\n    now: ${now[k]}` })),
     // Every addition is a new promise. A member an implementer must provide, added to an interface the base already
-    // has, also breaks every implementer, and says so.
+    // has, also breaks every implementer, and says so; a new referenced key says which way out there is.
     ...added.map((k) => ({
       k,
       text:
         k in required && required[k] in was
           ? `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`
-          : `added: ${k}\n    a new public entry; add a reason row\n    now: ${now[k]}`,
+          : splitKey(k).referenced
+            ? `added: ${k}\n    a public signature names a type no entry exports: export it, or add a reason row\n    now: ${now[k]}`
+            : `added: ${k}\n    a new public entry; add a reason row\n    now: ${now[k]}`,
     })),
   ]
     .filter(({ k }) => !usable.some((r) => excuses(r, k)))
