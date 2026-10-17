@@ -41,14 +41,19 @@
  *                                                   files, so it needs neither a build nor the TypeScript package.
  *   --root <dir>                                    run on another checkout (the tests' fixtures)
  *
- * Known limits: overloads are compared in declared order, so one appended after the last reads as an addition, not a
- * change; a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a
- * move reads as a removal and an addition; a parameter rename is a change; an inherited constructor prints as its base
- * declares it, type parameters and all, so a class extending a generic base that declares the same constructor with
- * them filled in reads as a change; a class whose constructor comes from outside the workspace or from a base that is
- * not a class records none, so a constructor it declares reads as an addition; only declarations are read, so a change
- * in behaviour behind an unchanged signature is for tests; a TypeScript upgrade that changes how declarations print
- * needs one `--write`.
+ * Known limits (api-surface/README.md lists the same): only declarations are read, so a change in behaviour behind an
+ * unchanged signature is for tests; a type from outside the workspace is known by its name; private members are not
+ * recorded, except a private constructor; overloads are compared in declared order, so one appended after the last
+ * reads as an addition, not a change; a member added to a class, abstract or not, reads as a new entry, not a required
+ * one; a parameter rename is a change; a constructor that comes from outside the workspace or from a base that is not a
+ * class is not recorded, so declaring one reads as an addition; an inherited constructor prints as its base declares
+ * it, type parameters and all, so a class extending a generic base that declares the same constructor with them filled
+ * in reads as a change; a base that is an intersection with a second construct signature records only the class's
+ * constructor, and its own line carries the whole type; a class merged with an interface of the same name stops the
+ * gate with `two entries for <key>`; a type the snapshot tells apart by file is not followed between its exported and
+ * referenced keys, so such a move reads as a removal, a change or an addition; a type of a newly internal entry is
+ * followed by its name, so another type of that name another entry newly exports reads as a change of it; a TypeScript
+ * upgrade that changes how declarations print needs one `--write`.
  */
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
