@@ -32,6 +32,8 @@
  *   --root <dir>                                    run on another checkout (the tests' fixtures)
  *
  * Known limits: overloads are compared in declared order, so one appended after the last passes as an addition;
+ * a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a move
+ * reads as a removal;
  * a parameter rename is a change; only declarations are read, so a change in behaviour behind an unchanged signature
  * is for tests; a TypeScript upgrade that changes how declarations print needs one `--write`.
  */
@@ -359,8 +361,11 @@ const symbolOf = (rest) => /^[^ .]+/.exec(rest)[0];
  * except a type it exported that is still promised: one a public signature names, which `now` records as referenced,
  * or one another public entry of its package now exports. Its base keys are compared under that key, so making the
  * entry internal excuses no change to the type. The other way, a referenced type that a public entry of its package now
- * exports is compared under that entry's key: exporting it adds a way to name it and removes nothing. A key the base
- * already has is never shadowed: it is compared as itself.
+ * exports is compared under that entry's key: exporting it adds a way to name it and removes nothing. A key is never
+ * moved onto one the base already has: an internal entry's line is then the same type, already compared there, and a
+ * referenced one is another type of the same name, compared as itself. Nor is a name
+ * the snapshot tells apart by file (`<package> (referenced) <name> [<path>]`) followed at all: its base keys are
+ * compared as they are, so a move of such a type reads as a removal.
  */
 function comparableBase(baseEntries, now, internal) {
   const exporter = new Map(); // `<package> <symbol>` -> the first public specifier in `now` that exports it
@@ -369,25 +374,31 @@ function comparableBase(baseEntries, now, internal) {
     const at = `${packageOfSpecifier(spec)} ${symbolOf(rest)}`;
     if (!referenced && !exporter.has(at)) exporter.set(at, spec);
   }
+  const toldApartByFile = new Set(); // `<package> <symbol>` of each name a referenced key carries a path for
+  for (const k of [...Object.keys(baseEntries), ...Object.keys(now)]) {
+    const { spec, referenced, rest } = splitKey(k);
+    if (referenced && / \[[^\]]*\]/.test(rest)) toldApartByFile.add(`${spec} ${symbolOf(rest)}`);
+  }
   const was = {};
   for (const [k, text] of Object.entries(baseEntries)) {
     const { spec, referenced, rest } = splitKey(k);
-    if (!referenced && !internal.includes(spec)) {
+    const pkg = packageOfSpecifier(spec);
+    const symbol = `${pkg} ${symbolOf(rest)}`;
+    if ((!referenced && !internal.includes(spec)) || toldApartByFile.has(symbol)) {
       was[k] = text;
       continue;
     }
-    const pkg = packageOfSpecifier(spec);
-    const asReferenced = `${pkg}${REFERENCED}${rest}`;
-    const to = exporter.get(`${pkg} ${symbolOf(rest)}`);
+    const to = exporter.get(symbol);
     const target =
       `${pkg}${REFERENCED}${symbolOf(rest)}` in now
-        ? asReferenced
+        ? `${pkg}${REFERENCED}${rest}`
         : to !== undefined
           ? `${to} ${rest}`
-          : referenced
-            ? k
-            : undefined;
+          : undefined;
     if (target !== undefined && (target === k || !(target in baseEntries))) was[target] = text;
+    // A referenced type with nowhere to go, or whose new key the base has for another type of that name, is compared
+    // as itself; an internal entry's own line is left out.
+    else if (referenced) was[k] = text;
   }
   return was;
 }
