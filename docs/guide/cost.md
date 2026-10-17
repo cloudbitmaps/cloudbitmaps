@@ -319,8 +319,8 @@ with this function, term by term, and says where a standing cache still wins.
 `store.load()` of a segment on S3 makes 2 PUT-class requests (the object and the pointer's write), 5 GET-class
 requests and one delete, 8 requests, with the delete free (the counts are in the [load term](#what-each-term-counts)
 above and are **measured** at `keep: 12` in [the in-region run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d)).
-At the default prices that is $12.00 per million loads that delete by name (2 × $5.00 + 5 × $0.40, **derived**), and
-$12.34 per million averaged over a 16-load cycle (**derived**, in the same run's table). The price does not shrink with
+At the default prices that is $12.00 per million loads that delete by name (2 × $5.00 + 5 × $0.40, **derived**). The
+run's whole 16-load cycle, priced together, comes to an average of $12.34 a million single-part loads (**derived**, in its table). The price does not shrink with
 the segment: a segment of a few hundred ids pays the same requests as a megabyte one, and for a small segment the requests, not the bytes, are the bill.
 
 Cost is therefore segments × refreshes × $12.34 per million (**derived**, worked here):
@@ -353,7 +353,7 @@ The figures leave out storage, reads and the registry's own cost, and assume a c
 - **Lower `keep`.** Fewer retained generations means fewer deletes and a smaller ledger in the row, and storage billed
   for fewer copies (the default is 1). A `keep` above 64 is the one setting that adds requests: its window does not fit
   the row's ledger, so every load lists to collect, one more PUT-class request and two more pointer reads,
-  $5.00 + 2 × $0.40 = $5.80 more per million loads (**derived**, from [the load term](#what-each-term-counts) and
+  $5.00 + 2 × $0.40 = $5.80 more for every million loads (**derived**, from [the load term](#what-each-term-counts) and
   [the loading guide](loading.md#generations-and-keep)).
 - **`materializeMany` for outputs of shared operands.** Many outputs computed from the same stored operands read each
   operand once for all of them ([the guide](loading.md#many-outputs-from-one-pass-materializemany)); each output is still
