@@ -28,8 +28,32 @@ so, and so do the module headers in the code.
   `CombineManyOperandStats`, `CombineManyOutputStats` or `CombineManyFeedRecord` renames it to the name here.
 - **`exportSegments` no longer takes `codec`.** The `'roaring'` format's bitmaps are built by the store's own roaring
   codec, which was the default; a `codec` passed to it throws `ValidationError` before any request. Drop the option.
+- **The 13 `isXError` predicates are gone from `@cloudbitmaps/roaring`, and the 5 of them `@cloudbitmaps/core/driver-kit`
+  exported (`isIntegrityError`, `isNotFoundError`, `isTransientError`, `isValidationError`, `isWriteConflictError`).**
+  Each has a one-line replacement with `errorKind`, which both entries now export, or use `instanceof` on an ordinary
+  install:
+
+  - `isCloudRoaringError(err)`: `errorKind(err) !== undefined`
+  - `isValidationError(err)`: `errorKind(err) === 'ValidationError'`
+  - `isWriteConflictError(err)`: `errorKind(err) === 'WriteConflictError'`
+  - `isIntegrityError(err)`: `errorKind(err) === 'IntegrityError'`
+  - `isNotFoundError(err)`: `errorKind(err) === 'NotFoundError'`
+  - `isUnsupportedError(err)`: `errorKind(err) === 'UnsupportedError'`
+  - `isCapabilityError(err)`: `errorKind(err) === 'CapabilityError'`
+  - `isTransientError(err)`: `errorKind(err) === 'TransientError'`
+  - `isKeyUnavailableError(err)`: `errorKind(err) === 'KeyUnavailableError'`
+  - `isBudgetExceededError(err)`: `errorKind(err) === 'BudgetExceededError'`
+  - `isLeaseExpiredError(err)`: `errorKind(err) === 'LeaseExpiredError'`
+  - `isLeaseLimitError(err)`: `errorKind(err) === 'LeaseLimitError'`
+  - `isStaleOperandError(err)`: `errorKind(err) === 'StaleOperandError'`
+
+  `errorKind` classifies across copies of the package the same way. It names the class and does not narrow the type. An
+  untyped JavaScript caller that `require`s a removed name gets `undefined`, and calling it inside a `catch` throws a
+  `TypeError` that hides the original error.
+- **`BudgetExceededError`'s constructor takes `(message, { option, limit, spent })`.** Code that constructs one, such as
+  a test double, passes the option name and the two numbers; the messages are unchanged.
 - **The main entry of `@cloudbitmaps/core` is internal, outside the stability promise.** It is the engine that
-  `@cloudbitmaps/roaring` and the driver packages are built on, so from now on it can change in any minor release and a
+  `@cloudbitmaps/roaring` and the driver packages are built on, so after this release it can change in any minor release and a
   change to it gets no entry here. Nothing in it was removed or changed. Depend on `@cloudbitmaps/roaring` and a driver
   package; to write a driver, depend on `@cloudbitmaps/core/driver-kit`, which stays public. The signature snapshot no
   longer holds the main entry (742 of its 1,604 entries), and `api-surface/internal.json` records it instead.
@@ -51,14 +75,6 @@ so, and so do the module headers in the code.
   brand; they refuse it, as `materializeMany` did, with a `ValidationError` that says it comes from another installed
   copy. A store belongs to one copy, so another copy's segment always comes from another store. Install one copy of the
   package in a process.
-- **The 13 `isXError` predicates are gone from `@cloudbitmaps/roaring` and `@cloudbitmaps/core/driver-kit`.** Use
-  `errorKind(err) === 'ValidationError'` (and so on for each class), `errorKind(err) !== undefined` in place of
-  `isCloudRoaringError`, or `instanceof` on an ordinary install. `errorKind` classifies across copies of the package
-  the same way. It names the class and does not narrow the type. An untyped JavaScript caller that `require`s a removed
-  name gets `undefined`, and calling it inside a `catch` throws a `TypeError` that hides the original error.
-- **`BudgetExceededError`'s constructor takes `(message, { option, limit, spent })`.** Code that constructs one, such as
-  a test double, passes the three numbers; the messages are unchanged.
-
 ### Added
 
 - **`errorKind(err)` and the `ErrorKind` type, from `@cloudbitmaps/roaring` and `@cloudbitmaps/core/driver-kit`.** It
@@ -67,8 +83,14 @@ so, and so do the module headers in the code.
   `'CloudRoaringError'`, except a subclass of `TransientError`, which returns `'TransientError'`.
 - **`BudgetExceededError` carries `option`, `limit` and `spent`.** `option` names the option to raise
   (`'budget.maxRequests'`, `'maxBufferedBytes'` or `'maxScanSegments'`), `limit` is the bound in force, and `spent` is
-  what the call had reached: exact before a fan-out, and `limit + 1`, a lower bound, for a scan abandoned at its bound.
-
+  what the call had reached, which means a different thing for each option: for `'budget.maxRequests'` the requests the
+  call needs (raise the budget to it); for `'maxBufferedBytes'` a lower bound, what the call held plus what it asked for
+  when refused, so raising the limit to it can be refused again (only the per-output refusal, "raise maxBufferedBytes to
+  at least N", names a figure that lets that output through); for `'maxScanSegments'` `limit + 1`, a lower bound.
+- **`store.checkConsistency` takes `maxScanSegments`**, as `retireExpired` does: the most registry rows the scan holds
+  resident (default 250,000, validated before any request). Past it the call throws `BudgetExceededError` with
+  `option: 'maxScanSegments'`, where it had no ceiling of its own and the limit could only be raised on
+  `runConsistencyCheck`.
 - **A format reference, [`docs/format.md`](docs/format.md).** Every byte of a `.crbm` object (the preamble, the chunk
   payloads, the extension block, the index, the 104-byte footer, the checksums and the sealing), the identity rules, and
   the registry row at schema 5, with how each cloud registry stores it, what a reader refuses and with which error, what

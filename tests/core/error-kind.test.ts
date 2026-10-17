@@ -139,6 +139,10 @@ describe('errorKind', () => {
   it.each([
     ['a branded clone', branded('ValidationError'), 'ValidationError'],
     ['a branded clone of an unknown name', branded('SomethingElse'), 'CloudRoaringError'],
+    // Names an object inherits are not kinds: a lookup that read the prototype would return them as one.
+    ['a branded clone named toString', branded('toString'), 'CloudRoaringError'],
+    ['a branded clone named constructor', branded('constructor'), 'CloudRoaringError'],
+    ['a branded clone named hasOwnProperty', branded('hasOwnProperty'), 'CloudRoaringError'],
     [
       'an application subclass of ValidationError',
       new (class Refused extends ValidationError {})('x'),

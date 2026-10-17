@@ -34,13 +34,13 @@ export { mapWithConcurrency } from './core/concurrency';
 export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
 export { segmentExists, listSegments } from './core/discover';
 export type { SegmentInfo } from './core/discover';
-// Driver-kit: the token shape a registry driver needs, and the key helpers the conformance fakes use.
+// The token shape a registry driver needs, and the key helper the conformance fakes use.
 export type { Token } from './core/ports';
 export { segmentKey } from './core/keys';
 
 // ---------------------------------------------------------------------------------------------------
-// The public surface. An application reaches most of these through its flavor package, which re-exports the ones it
-// needs by name; the rest of this entry is the flavor-author kit above and the standalone forms of the store's methods.
+// What the flavor re-exports by name to applications, and the standalone forms of the store's methods that our own
+// packages call.
 // `isStorageBackend` tests the brand a backend class carries.
 export { isStorageBackend } from './core/ports';
 // ---------------------------------------------------------------------------------------------------
@@ -74,7 +74,7 @@ export type { PinnedAt } from './core/pinned-storage-source';
 // the one whose last step gets left out when it is composed by hand.
 export { judgeLoad, loadSegment, loadSegmentChunks } from './core/load';
 // A batch combine: many outputs, each an expression over named stored operands, computed in one chunk-ordered pass.
-// The store's `materializeMany` runs it; the free functions are for a flavor or driver author.
+// The store's `materializeMany` runs it.
 export { compileCombineMany, rebindCombineMany, runCombineMany } from './core/combine-many';
 export type {
   CombineManyDeps,

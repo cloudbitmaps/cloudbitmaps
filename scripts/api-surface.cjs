@@ -332,6 +332,66 @@ function diffSurfaces(was, now) {
   return { removed, added, changed };
 }
 
+const REFERENCED = ' (referenced) ';
+
+/** A key's parts: the entry's specifier (the package, for a referenced key), whether it is referenced, and the rest. */
+function splitKey(k) {
+  const at = k.indexOf(REFERENCED);
+  if (at !== -1 && !k.slice(0, at).includes(' ')) {
+    return { spec: k.slice(0, at), referenced: true, rest: k.slice(at + REFERENCED.length) };
+  }
+  const space = k.indexOf(' ');
+  return { spec: k.slice(0, space), referenced: false, rest: k.slice(space + 1) };
+}
+
+/** The package a specifier is in: `@scope/name` or `name`, without the subpath. */
+const packageOfSpecifier = (spec) =>
+  spec
+    .split('/')
+    .slice(0, spec.startsWith('@') ? 2 : 1)
+    .join('/');
+
+/** The symbol a key's rest starts with (`Sym` of `Sym`, `Sym.member`, `Sym (value)`, `Sym.m #2`). */
+const symbolOf = (rest) => /^[^ .]+/.exec(rest)[0];
+
+/**
+ * The base's entries as `--against` compares them with `now`. The keys of an entry that is internal here are left out,
+ * except a type it exported that is still promised: one a public signature names, which `now` records as referenced,
+ * or one another public entry of its package now exports. Its base keys are compared under that key, so making the
+ * entry internal excuses no change to the type. The other way, a referenced type that a public entry of its package now
+ * exports is compared under that entry's key: exporting it adds a way to name it and removes nothing. A key the base
+ * already has is never shadowed: it is compared as itself.
+ */
+function comparableBase(baseEntries, now, internal) {
+  const exporter = new Map(); // `<package> <symbol>` -> the first public specifier in `now` that exports it
+  for (const k of Object.keys(now).sort(byKey)) {
+    const { spec, referenced, rest } = splitKey(k);
+    const at = `${packageOfSpecifier(spec)} ${symbolOf(rest)}`;
+    if (!referenced && !exporter.has(at)) exporter.set(at, spec);
+  }
+  const was = {};
+  for (const [k, text] of Object.entries(baseEntries)) {
+    const { spec, referenced, rest } = splitKey(k);
+    if (!referenced && !internal.includes(spec)) {
+      was[k] = text;
+      continue;
+    }
+    const pkg = packageOfSpecifier(spec);
+    const asReferenced = `${pkg}${REFERENCED}${rest}`;
+    const to = exporter.get(`${pkg} ${symbolOf(rest)}`);
+    const target =
+      `${pkg}${REFERENCED}${symbolOf(rest)}` in now
+        ? asReferenced
+        : to !== undefined
+          ? `${to} ${rest}`
+          : referenced
+            ? k
+            : undefined;
+    if (target !== undefined && (target === k || !(target in baseEntries))) was[target] = text;
+  }
+  return was;
+}
+
 /**
  * A row's `entry` names a key, or a prefix ending in `*` that holds at least a package and the start of a symbol's name
  * (after the `(referenced)` marker, for a referenced type).
@@ -505,16 +565,15 @@ function main(argv, defaultRoot) {
     }
     const baseAllowed = atRef(ALLOWED_PATH);
     const baseEntries = parseSnapshot(wasText, `${ref}:${SNAPSHOT_PATH}`).entries;
-    // An internal entry is outside the promise: its keys are not compared. `spec + ' '` never matches
-    // `spec + ' (referenced) '`, and a referenced key is keyed by package name, so it stays tracked.
+    // An internal entry is outside the promise: its keys are not compared, beyond the types it shares with the promise.
     const internal = internalSpecifiers(root);
-    const underInternal = (k, spec) =>
-      k.startsWith(`${spec} `) && !k.startsWith(`${spec} (referenced) `);
-    const was = Object.fromEntries(
-      Object.entries(baseEntries).filter(([k]) => !internal.some((spec) => underInternal(k, spec))),
-    );
+    const underInternal = (k, spec) => {
+      const parts = splitKey(k);
+      return !parts.referenced && parts.spec === spec;
+    };
     const current = parseSnapshot(read(SNAPSHOT_PATH), SNAPSHOT_PATH);
     const now = current.entries;
+    const was = comparableBase(baseEntries, now, internal);
     const rows = JSON.parse(read(ALLOWED_PATH));
     const fresh = newRows(rows, baseAllowed === null ? [] : JSON.parse(baseAllowed));
     const { problems } = breakingChanges(was, now, fresh, current.required);

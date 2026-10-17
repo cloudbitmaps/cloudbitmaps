@@ -195,7 +195,7 @@
     "@cloudbitmaps/roaring Clock.sleep": "sleep(ms: number): Promise<void>;",
     "@cloudbitmaps/roaring Clock.yieldNow": "yieldNow?(): Promise<void>;",
     "@cloudbitmaps/roaring CloudRoaring": "class CloudRoaring",
-    "@cloudbitmaps/roaring CloudRoaring.checkConsistency": "checkConsistency(options?: { namespace?: string; concurrency?: number; summaries?: boolean; generations?: boolean; }): Promise<ConsistencyReport>;",
+    "@cloudbitmaps/roaring CloudRoaring.checkConsistency": "checkConsistency(options?: { namespace?: string; concurrency?: number; maxScanSegments?: number; summaries?: boolean; generations?: boolean; }): Promise<ConsistencyReport>;",
     "@cloudbitmaps/roaring CloudRoaring.clearRetention": "clearRetention(ref: SegmentRef): Promise<boolean>;",
     "@cloudbitmaps/roaring CloudRoaring.constructor": "constructor(options: CloudRoaringOptions);",
     "@cloudbitmaps/roaring CloudRoaring.dropSegment": "dropSegment(ref: SegmentRef, options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink; }): Promise<DropResult>;",

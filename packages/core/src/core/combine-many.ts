@@ -1024,7 +1024,7 @@ class Run<R> {
       {
         option: 'maxBufferedBytes',
         limit: this.req.maxBufferedBytes,
-        spent: this.planCharge + bytes,
+        spent: this.ledger.used + bytes,
       },
     );
   }
