@@ -189,7 +189,8 @@ so, and so do the module headers in the code.
   request: no read, no write, no publish. The message names the verb and the role (an operand, an exclude, the
   destination) or, in `materializeMany`, where the handle sits (`operands["name"]`, `outputs[i].dest`), never the
   segment, its namespace or a key.
-- **An Azure Blob error carries no credential.** The driver threw the `@azure/storage-blob` error as it came, and the
+- **The Azure Blob driver removes the credentials it recognises from an error, and throws it as a deep native copy.**
+  The driver threw the `@azure/storage-blob` error as it came, and the
   SDK keeps the request it sent on `err.request` and on `err.response.request`: with a shared-key client its
   `Authorization: SharedKey <account>:<signature>` header, with a SAS client its URL, `sig=` included. The SDK hides
   both from `util.inspect` and `JSON.stringify`, so a logger never printed them, but code that reads the property, or
