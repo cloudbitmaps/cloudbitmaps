@@ -126,22 +126,36 @@ function copyOf(value: unknown, ctx: Copying, depth: number): unknown {
   return copyRecord(value, ctx, depth);
 }
 
-/** A copy of an array. A named property is left out. */
+/**
+ * A copy of an array, as sparse as the original: only its own indexes are read, so a hole costs nothing. A named
+ * property, and an index that is an accessor (it is not called), are left out.
+ */
 function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
-  const list: unknown[] = [];
+  const list: unknown[] = new Array<unknown>(value.length);
   ctx.copies.set(value, list);
   if (hasNamedKeys(value)) ctx.changed = true;
   let hidden = false;
-  for (const item of value) {
-    // A flat list of header names and values: the value after a credential name is one.
-    if (hidden && item != null) {
-      list.push(REDACTED);
+  let last = -1;
+  for (const key of Reflect.ownKeys(value)) {
+    if (!isIndex(key)) continue;
+    const index = Number(key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) {
+      ctx.changed = true;
+      hidden = false;
+      continue;
+    }
+    const item: unknown = descriptor.value;
+    // A flat list of header names and values: the value right after a credential name is one.
+    if (hidden && index === last + 1 && item != null) {
+      list[index] = REDACTED;
       ctx.changed = true;
     } else {
       const kept = copyOf(item, ctx, depth + 1);
-      list.push(kept === OMIT ? undefined : kept);
+      if (kept !== OMIT) list[index] = kept;
     }
     hidden = typeof item === 'string' && CREDENTIAL_NAME.test(item);
+    last = index;
   }
   return list;
 }

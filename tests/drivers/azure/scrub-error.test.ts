@@ -255,6 +255,53 @@ describe('scrubCredentials (Azure)', () => {
       expect(leaks(out)).toEqual([]);
     });
 
+    it('copies a sparse list as sparse, reading only the indexes it holds', () => {
+      const list: unknown[] = [];
+      list[2 ** 31] = 'last';
+      list[0] = 'authorization';
+      list[1] = SIGNED;
+      const err = Object.assign(restError(), { details: { list } });
+      const copy = (scrubCredentials(err).details as { list: unknown[] }).list;
+      expect(copy.length).toBe(2 ** 31 + 1);
+      expect(Object.keys(copy)).toEqual(['0', '1', String(2 ** 31)]);
+      expect(copy[1]).toBe('[redacted]');
+      expect(copy[2 ** 31]).toBe('last');
+    });
+
+    it('keeps a hole a hole', () => {
+      const list: unknown[] = [];
+      list[1000] = 'kept';
+      const err = Object.assign(restError(), { details: { list } });
+      const copy = (scrubCredentials(err).details as { list: unknown[] }).list;
+      expect(copy.length).toBe(1001);
+      expect(Object.keys(copy)).toEqual(['1000']);
+    });
+
+    it('does not take the item after a hole for the value of a credential name', () => {
+      // eslint-disable-next-line no-sparse-arrays
+      const err = Object.assign(restError(), { details: ['authorization', , 'kept'] });
+      expect((scrubCredentials(err).details as unknown[])[2]).toBe('kept');
+    });
+
+    it('leaves out an index that is an accessor, without calling it', () => {
+      let called = false;
+      const list = ['a'];
+      Object.defineProperty(list, 1, {
+        get: () => {
+          called = true;
+          return liveRequest();
+        },
+        enumerable: true,
+      });
+      const err = Object.assign(new Error('x'), { details: { list } });
+      const out = scrubCredentials(err);
+      // Read before any matcher runs: a matcher that compares `out` with `err` calls the getter itself.
+      const calledByTheScrub = called;
+      expect(calledByTheScrub).toBe(false);
+      expect(out).not.toBe(err);
+      expect(Object.keys((out.details as { list: unknown[] }).list)).toEqual(['0']);
+    });
+
     it('returns an error that holds only a plain list, map and set as it is', () => {
       const held = { list: ['a', 'b'], map: new Map([['a', 1]]), set: new Set(['a']) };
       const err = Object.assign(new Error('x'), { details: held });
