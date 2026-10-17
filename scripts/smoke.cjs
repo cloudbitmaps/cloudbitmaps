@@ -215,11 +215,7 @@ function assertDeclarationsMatchWhatTscLoads() {
   };
   const distKeys = dists.map((d) => key(d) + path.sep);
   const inDist = (f) => distKeys.some((d) => key(f).startsWith(d));
-  const modes = {
-    nodenext: [ts.ModuleKind.NodeNext, ts.ModuleResolutionKind.NodeNext, '.mts'],
-    bundler: [ts.ModuleKind.ESNext, ts.ModuleResolutionKind.Bundler, '.mts'],
-    node10: [ts.ModuleKind.CommonJS, ts.ModuleResolutionKind.Node10, '.ts'],
-  };
+  const modes = consumerModes(ts);
   const loadedAnywhere = new Map(); // key -> the file name tsc gave
   const rootKey = key(root) + path.sep;
   const problems = [];
@@ -228,17 +224,7 @@ function assertDeclarationsMatchWhatTscLoads() {
     // tsc hands the host its own spelling of the probe's name (forward slashes on Windows): compare keys.
     const probeKey = key(probe);
     const isProbe = (f) => key(f) === probeKey;
-    const options = {
-      noEmit: true,
-      strict: true,
-      skipLibCheck: false,
-      module,
-      moduleResolution,
-      target: ts.ScriptTarget.ES2022,
-      lib: ['lib.es2022.d.ts'],
-      types: ['node'],
-      typeRoots: [path.join(root, 'node_modules', '@types')],
-    };
+    const options = consumerOptions(ts, root, module, moduleResolution);
     const host = ts.createCompilerHost(options, true);
     const { fileExists, readFile, getSourceFile } = host;
     host.fileExists = (f) => isProbe(f) || fileExists.call(host, f);
@@ -291,6 +277,151 @@ function assertDeclarationsMatchWhatTscLoads() {
     `  shipped declarations == what tsc loads (nodenext, bundler, node10): ${shipped.length} file(s), ` +
       `${specs.length} entries`,
   );
+}
+
+/** The three ways a consumer's compiler resolves a package: `[module, moduleResolution, the probe's extension]`. */
+function consumerModes(ts) {
+  return {
+    nodenext: [ts.ModuleKind.NodeNext, ts.ModuleResolutionKind.NodeNext, '.mts'],
+    bundler: [ts.ModuleKind.ESNext, ts.ModuleResolutionKind.Bundler, '.mts'],
+    node10: [ts.ModuleKind.CommonJS, ts.ModuleResolutionKind.Node10, '.ts'],
+  };
+}
+
+/** A strict consumer's compiler options, `skipLibCheck` off, for one of `consumerModes`. */
+function consumerOptions(ts, root, module, moduleResolution) {
+  return {
+    noEmit: true,
+    strict: true,
+    skipLibCheck: false,
+    module,
+    moduleResolution,
+    target: ts.ScriptTarget.ES2022,
+    lib: ['lib.es2022.d.ts'],
+    types: ['node'],
+    typeRoots: [path.join(root, 'node_modules', '@types')],
+  };
+}
+
+/** Where the typed fixture lives, relative to the repository root. */
+const TYPED_SURFACE = path.join('tests', 'smoke', 'typed-surface.ts');
+
+/**
+ * What a reader copies compiles against the built packages, and the flavor's types are the ones the typed fixture
+ * names.
+ *
+ * Every `import { … } from '@cloudbitmaps/…'` line in the README, the guides and the package READMEs
+ * (`scripts/doc-imports.cjs` finds them) is compiled on its own, and so is `tests/smoke/typed-surface.ts`, under
+ * NodeNext, Bundler and Node10 resolution with `skipLibCheck` off, as one program per mode resolving the packages by
+ * name, as a consumer does. It fails on
+ *   (a) any diagnostic in a page's import: a name the package does not export is TS2305 or TS2724, a specifier no
+ *       package declares TS2307; each is reported at the page and line the import starts on;
+ *   (b) any diagnostic in the fixture: a kept type the flavor stops exporting, or a typed field that changes type;
+ *   (c) a type `@cloudbitmaps/roaring` exports that the fixture does not name, so the fixture stays a list of all of
+ *       them;
+ *   (d) fewer imports than a floor, so a scanner that stops matching fails rather than compiling nothing.
+ * The imports are compiled alone, not the samples around them. It lives here because it reads `dist/`.
+ */
+function assertDocImportsCompile() {
+  const fs = require('node:fs');
+  const ts = require('typescript');
+  const { docImportPages, docImports } = require('./doc-imports.cjs');
+  const root = path.join(__dirname, '..');
+  const imports = docImportPages(root).flatMap((page) =>
+    docImports(fs.readFileSync(path.join(root, page), 'utf8')).map((i) => ({ page, ...i })),
+  );
+  const FLOOR = 30;
+  if (imports.length < FLOOR) {
+    throw new Error(
+      `smoke: found ${imports.length} imports in the docs, fewer than ${FLOOR}; the scan in scripts/doc-imports.cjs has stopped matching`,
+    );
+  }
+  const fixture = fs.readFileSync(path.join(root, TYPED_SURFACE), 'utf8');
+  const problems = [];
+  for (const [mode, [module, moduleResolution, ext]] of Object.entries(consumerModes(ts))) {
+    // One virtual file per import, so two pages importing one name do not collide, and one for the fixture, each at
+    // the root so a package resolves by name through the root `node_modules`.
+    const virtual = new Map(); // path.resolve(file) -> { text, where(line) }
+    imports.forEach((imp, i) => {
+      virtual.set(path.resolve(root, `__doc_import_${i}__${ext}`), {
+        text: `${imp.statement}\n`,
+        where: (line) => `${imp.page}:${imp.line + line}`,
+      });
+    });
+    const fixtureFile = path.resolve(root, `__typed_surface__${ext}`);
+    virtual.set(fixtureFile, { text: fixture, where: (line) => `${TYPED_SURFACE}:${line + 1}` });
+    const options = consumerOptions(ts, root, module, moduleResolution);
+    const host = ts.createCompilerHost(options, true);
+    const { fileExists, readFile, getSourceFile } = host;
+    const own = (f) => virtual.get(path.resolve(f));
+    host.fileExists = (f) => own(f) !== undefined || fileExists.call(host, f);
+    host.readFile = (f) => own(f)?.text ?? readFile.call(host, f);
+    host.getSourceFile = (f, ...rest) => {
+      const v = own(f);
+      return v !== undefined
+        ? ts.createSourceFile(f, v.text, rest[0], true)
+        : getSourceFile.call(host, f, ...rest);
+    };
+    const program = ts.createProgram([...virtual.keys()], options, host);
+    const diagnostics = [
+      ...program.getOptionsDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ].filter((d) => !d.file || own(d.file.fileName) !== undefined);
+    for (const d of diagnostics) {
+      const where = d.file
+        ? own(d.file.fileName).where(d.file.getLineAndCharacterOfPosition(d.start ?? 0).line)
+        : '(program)';
+      problems.push(
+        `[${mode}] ${where} TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`,
+      );
+    }
+    if (mode === 'nodenext') problems.push(...typesTheFixtureLeavesOut(ts, program, fixtureFile));
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `the docs' imports or the typed fixture do not compile against the built packages (${problems.length}):\n  ` +
+        problems.join('\n  '),
+    );
+  }
+  console.log(
+    `  docs' imports + typed fixture compile (nodenext, bundler, node10): ${imports.length} import(s)`,
+  );
+}
+
+/** Each type `@cloudbitmaps/roaring` exports that the fixture's imports from it do not name. */
+function typesTheFixtureLeavesOut(ts, program, fixtureFile) {
+  const checker = program.getTypeChecker();
+  const sf = program.getSourceFile(fixtureFile);
+  const named = new Set();
+  let flavor;
+  for (const st of sf?.statements ?? []) {
+    if (!ts.isImportDeclaration(st) || st.moduleSpecifier.text !== PKG) continue;
+    flavor ??= checker.getSymbolAtLocation(st.moduleSpecifier);
+    const bindings = st.importClause?.namedBindings;
+    if (bindings !== undefined && ts.isNamedImports(bindings))
+      for (const el of bindings.elements) named.add((el.propertyName ?? el.name).text);
+  }
+  if (flavor === undefined) return [`${TYPED_SURFACE}: imports nothing from ${PKG}`];
+  const typesOnly = checker
+    .getExportsOfModule(flavor)
+    .filter((e) => {
+      const target = e.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(e) : e;
+      return (
+        (target.flags & ts.SymbolFlags.Type) !== 0 && (target.flags & ts.SymbolFlags.Value) === 0
+      );
+    })
+    .map((e) => e.name);
+  if (typesOnly.length < 50)
+    return [`${PKG}: only ${typesOnly.length} type exports read; the read is broken`];
+  return typesOnly
+    .filter((name) => !named.has(name))
+    .sort()
+    .map(
+      (name) =>
+        `${TYPED_SURFACE}: does not name ${name}, a type ${PKG} exports; add it to the list`,
+    );
 }
 
 /** Every package directory in the workspace. */
@@ -671,6 +802,7 @@ function assertRanLikeDirect(bin, how, viaLink, direct, out) {
 async function main() {
   // First, so a lost or stray declaration is reported by the compiler, not by the narrower checks below.
   assertDeclarationsMatchWhatTscLoads();
+  assertDocImportsCompile();
   for (const pkgDir of packageDirs()) {
     for (const specifier of entriesOf(pkgDir)) {
       await import(specifier); // ESM `import` condition
