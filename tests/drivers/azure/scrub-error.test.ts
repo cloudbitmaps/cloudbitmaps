@@ -752,6 +752,20 @@ describe('scrubCredentials (Azure)', () => {
       });
     });
 
+    it.each([
+      'authorization',
+      'Proxy-Authorization',
+      'x-ms-copy-source-authorization',
+      'x-ms-encryption-key',
+      'x-ms-source-encryption-key',
+      'x-api-key',
+      'cookie',
+    ])('redacts a whole %s line after the first, its value spaces and all', (name) => {
+      expect(through(`host: h\r\n${name}: VALUEONE VALUETWO\r\naccept: */*`)).toBe(
+        `host: h\r\n${name}: [redacted]\r\naccept: */*`,
+      );
+    });
+
     it('keeps the text around a cookie, a key and a proxy credential inside a line', () => {
       expect(through('refused; cookie: sid=COOKIEONE; pref=COOKIETWO (sent)')).toBe(
         'refused; cookie: [redacted]',
