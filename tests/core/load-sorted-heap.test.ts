@@ -21,16 +21,17 @@ import { heavy } from '../helpers/strength';
  * load runs first, as a precaution. The smallest tier reads a little higher than the larger two on every run, with the
  * warm-up or without it, for a reason not found; that makes the flat line's difference smaller. The ids come from a
  * generator, never an array, and the storage hashes each write and keeps nothing, so neither the input nor a backend's
- * buffer is in the figure. Every 65,536 ids, and at every sink write of 64 KiB or more (the encoded index, once the
- * footer's encoding is done), the test lets a turn of the event loop pass, forces several synchronous major
- * collections (`--expose-gc` is switched on at run time, so no runner flag is needed), and reads the JS heap, external
- * memory (a typed array's backing store) and the native memory roaring's bitmaps hold, by roaring's own count. The
- * figure is the highest such reading over the one taken just before the load.
+ * buffer is in the figure. Every 65,536 ids, and at every sink write of 32 KiB or more (the encoded index: the smallest
+ * tier writes one of exactly 64 KiB, and the two smallest on a pull request do, so the threshold is half of it and
+ * leaves a margin, and no chunk's payload comes near it), the test lets a turn of the event loop pass, forces several
+ * synchronous major collections (`--expose-gc` is switched on at run time, so no runner flag is needed), and reads the
+ * JS heap, external memory (a typed array's backing store) and the native memory roaring's bitmaps hold, by roaring's
+ * own count. The figure is the highest such reading over the one taken just before the load.
  *
- * These are samples after collection, not a high-water mark. What lives between two readings and is gone by the next
- * is not in them: above all the temporary array the index's encoding builds while the footer is written, about as large
- * again as the index (so about 200 bytes a chunk at that moment, derived from the encoder's code), which is garbage
- * before the index is handed to the sink.
+ * These are samples after collection, not a high-water mark: what lives between two readings and is gone by the next
+ * is not in them. The index's encoding writes into one buffer sized to the index, so the footer adds no temporary
+ * array; the last reading holds the writer's entries and the encoded index, about 110 bytes a chunk (derived from
+ * the encoder's code and the figures in `docs/benchmarks.md`).
  *
  * What it holds, each in numbers, each failure message naming every figure:
  *   - a flat line: the largest tier's peak is within FLAT_SLACK of the smallest's;
@@ -51,6 +52,9 @@ import { heavy } from '../helpers/strength';
  * Its resolution, measured by keeping part of what a load writes: it fails on a leak of more than about 20% of the
  * serialized data on a pull request, and about 5% at full strength. A smaller leak passes.
  */
+
+/** A sink write this size or larger is the encoded index; see the header. */
+const INDEX_WRITE_BYTES = 32 * 1024;
 
 // Ten million ids, sampled 150 times each way, take a while on a busy runner.
 vi.setConfig({ testTimeout: 180_000 });
@@ -126,7 +130,7 @@ class Readings {
   }
 }
 
-/** Storage that hashes what is written and keeps none of it, reading once at every write of 64 KiB or more. */
+/** Storage that hashes what is written and keeps none of it, reading once at every write of 32 KiB or more. */
 class DiscardStorage implements IStorageDriver {
   constructor(private readonly readings: Readings) {}
 
@@ -142,7 +146,7 @@ class DiscardStorage implements IStorageDriver {
     let size = 0;
     await write({
       write: async (bytes: Uint8Array) => {
-        if (bytes.length >= 64 * 1024) {
+        if (bytes.length >= INDEX_WRITE_BYTES) {
           await macrotask();
           this.readings.take();
         }

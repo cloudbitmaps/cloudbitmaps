@@ -20,14 +20,14 @@
  * AEAD nonce, for a cleartext one it is 12 bytes drawn from the injected `entropy`. The footer CRC covers it, so an
  * object's fingerprint names one write, never just a set of ids.
  */
-import { ValidationError } from '../errors';
+import { IntegrityError, ValidationError } from '../errors';
 import type { Entropy } from '../determinism';
 import type { AeadSealed, CrbmCrypto } from '../crypto';
 import { metadataBytes } from '../metadata';
 import type { GenerationMetadata } from '../ports';
 import { requireInteger } from '../check';
 import { crc32c } from './crc32c';
-import { writeVarint } from './varint';
+import { varintLength, writeVarintAt } from './varint';
 import type { BlobSink } from '../blob';
 import {
   AEAD_NONCE_BYTES,
@@ -259,26 +259,48 @@ export class CrbmWriter {
     return block;
   }
 
+  /**
+   * The index region: per entry, four varints (key delta, offset gap, length, cardinality) and a fixed 4-byte
+   * little-endian crc32c. A first pass sizes the region exactly, so the bytes are written once into one buffer and no
+   * intermediate array is built.
+   */
   private encodeIndex(): Uint8Array {
-    const out: number[] = [];
+    let size = 0;
     let prevKey = 0;
     let prevEnd = PAYLOAD_START;
     for (const e of this.entries) {
-      writeVarint(out, e.chunkKey - prevKey);
-      writeVarint(out, e.offset - prevEnd);
-      writeVarint(out, e.length);
-      writeVarint(out, e.cardinality);
-      // crc32c is high-entropy → fixed 4-byte LE, not varint.
-      out.push(
-        e.crc32c & 0xff,
-        (e.crc32c >>> 8) & 0xff,
-        (e.crc32c >>> 16) & 0xff,
-        (e.crc32c >>> 24) & 0xff,
-      );
+      size +=
+        varintLength(e.chunkKey - prevKey) +
+        varintLength(e.offset - prevEnd) +
+        varintLength(e.length) +
+        varintLength(e.cardinality) +
+        4;
       prevKey = e.chunkKey;
       prevEnd = e.offset + e.length;
     }
-    return Uint8Array.from(out);
+    const out = new Uint8Array(size);
+    let pos = 0;
+    prevKey = 0;
+    prevEnd = PAYLOAD_START;
+    for (const e of this.entries) {
+      pos = writeVarintAt(out, pos, e.chunkKey - prevKey);
+      pos = writeVarintAt(out, pos, e.offset - prevEnd);
+      pos = writeVarintAt(out, pos, e.length);
+      pos = writeVarintAt(out, pos, e.cardinality);
+      // crc32c is high-entropy → fixed 4-byte LE, not varint.
+      out[pos++] = e.crc32c & 0xff;
+      out[pos++] = (e.crc32c >>> 8) & 0xff;
+      out[pos++] = (e.crc32c >>> 16) & 0xff;
+      out[pos++] = (e.crc32c >>> 24) & 0xff;
+      prevKey = e.chunkKey;
+      prevEnd = e.offset + e.length;
+    }
+    if (pos !== out.length) {
+      throw new IntegrityError(
+        `the chunk index was sized at ${out.length} bytes and encoded as ${pos}; the index was not written`,
+      );
+    }
+    return out;
   }
 
   private buildFooter(

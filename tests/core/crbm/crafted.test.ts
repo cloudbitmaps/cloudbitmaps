@@ -2,7 +2,7 @@ import { CrbmReader } from '@/core/crbm/reader';
 import { CountingReader } from '../../helpers/crbm-extension';
 import { BufferReader } from '@/core/blob';
 import { crc32c } from '@/core/crbm/crc32c';
-import { writeVarint } from '@/core/crbm/varint';
+import { writeVarint } from '../../helpers/varint';
 import {
   CONTAINER_CODEC_NONE,
   ELEMENT_WIDTH_32,

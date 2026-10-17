@@ -1,4 +1,5 @@
-import { writeVarint, readVarint } from '@/core/crbm/varint';
+import { readVarint, varintLength, writeVarintAt } from '@/core/crbm/varint';
+import { writeVarint } from '../../helpers/varint';
 import { IntegrityError } from '@/core/errors';
 
 function roundTrip(value: number): number {
@@ -77,5 +78,44 @@ describe('varint (LEB128 unsigned)', () => {
       IntegrityError,
     );
     expect(readVarint(Uint8Array.of(0xff, 0xff, 0xff, 0xff, 0x0f), 0).value).toBe(0xffff_ffff);
+  });
+});
+
+describe('varintLength and writeVarintAt', () => {
+  const refused = [-1, 1.5, Number.NaN, 2 ** 32, Number.POSITIVE_INFINITY, -0.5];
+
+  it('refuse a value that is not a u32 with the RangeError writeVarint threw', () => {
+    for (const v of refused) {
+      expect(() => varintLength(v), `varintLength(${v})`).toThrow(RangeError);
+      const out = new Uint8Array(8).fill(0xaa);
+      expect(() => writeVarintAt(out, 0, v), `writeVarintAt(${v})`).toThrow(RangeError);
+      expect(Array.from(out), `nothing written for ${v}`).toEqual(new Array(8).fill(0xaa));
+      expect(() => writeVarint([], v)).toThrow(RangeError);
+    }
+  });
+
+  it('size and write what writeVarint appends, at a nonzero position, into an exact-fit buffer', () => {
+    for (const v of [
+      0,
+      1,
+      127,
+      128,
+      16_383,
+      16_384,
+      2 ** 21 - 1,
+      2 ** 21,
+      2 ** 28 - 1,
+      2 ** 28,
+      2 ** 32 - 1,
+    ]) {
+      const expected: number[] = [];
+      writeVarint(expected, v);
+      expect(varintLength(v)).toBe(expected.length);
+      const out = new Uint8Array(3 + expected.length);
+      expect(writeVarintAt(out, 3, v)).toBe(out.length);
+      expect(Array.from(out.subarray(0, 3))).toEqual([0, 0, 0]);
+      expect(Array.from(out.subarray(3))).toEqual(expected);
+      expect(readVarint(out, 3)).toEqual({ value: v, next: out.length });
+    }
   });
 });

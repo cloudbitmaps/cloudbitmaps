@@ -108,9 +108,10 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   compare-and-swap on the registry row. A load that finds a row fences on the row's token, and one that finds none
   on that absence, guarded or not; a default load also fences on the pointer it judged; and a duplicate publish is an
   idempotent no-op. Ids that already ascend load with `sorted: true`, which writes them one chunk at a time while the
-  object uploads, so the load holds one chunk and the writer's index (up to about 14 MiB) whatever the
-  segment's size, and writes the same object, byte for byte under the same write identity; an error the ids raise
-  reaches the caller as the very object raised. Unsorted ids for a segment larger than RAM want the external-merge bulk
+  object uploads, so the load holds one chunk and the writer's index (up to about 7 MiB, about 8 MiB for an encrypted
+  segment, derived) whatever the segment's size, and writes the same object, byte for byte under the same write
+  identity; an error the ids raise reaches the caller as the very object raised. Unsorted ids for a segment larger than
+  RAM want the external-merge bulk
   load listed under [Planned](#planned--exploring). A load also takes a whole
   bitmap, `{ bitmap }` (anything with `serialize('portable')`) or `{ serialized }` portable Roaring bytes: checked
   structurally and safely deserialized before anything is written, then written from the bitmap's own containers,

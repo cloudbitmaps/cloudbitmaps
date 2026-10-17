@@ -11,17 +11,36 @@ import { crbmIntegrity } from './integrity';
 
 const U32_CEIL = U32_MAX + 1;
 
-/** Append the LEB128 encoding of a u32 `value` to `out`. */
-export function writeVarint(out: number[], value: number): void {
+/**
+ * The number of bytes the LEB128 encoding of a u32 `value` takes (1 to 5). A value that is not an integer in
+ * `[0, 0xffffffff]` throws `RangeError`, so a sizing pass can never misjudge a value the writing pass would refuse.
+ */
+export function varintLength(value: number): number {
   if (!Number.isInteger(value) || value < 0 || value >= U32_CEIL) {
     throw new RangeError(`varint value must be a u32; got ${value}`);
   }
+  if (value < 0x80) return 1;
+  if (value < 0x4000) return 2;
+  if (value < 0x20_0000) return 3;
+  if (value < 0x1000_0000) return 4;
+  return 5;
+}
+
+/**
+ * Write the LEB128 encoding of a u32 `value` into `out` at `pos`, and return the offset just past it. A value that is
+ * not a u32 throws `RangeError` before anything is written. The caller sizes `out` (with {@link varintLength}) and
+ * checks where the writes ended: a typed array drops a write past its end without an error.
+ */
+export function writeVarintAt(out: Uint8Array, pos: number, value: number): number {
+  varintLength(value);
   let v = value;
+  let at = pos;
   while (v > 0x7f) {
-    out.push((v & 0x7f) | 0x80);
+    out[at++] = (v & 0x7f) | 0x80;
     v >>>= 7;
   }
-  out.push(v);
+  out[at++] = v;
+  return at;
 }
 
 interface VarintRead {

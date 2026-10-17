@@ -259,10 +259,11 @@ export interface LoadOptions {
   readonly audit?: IAuditSink;
   /**
    * The ids ascend: write them as they are read, one chunk at a time, while the object uploads, so the load holds one
-   * chunk and the writer's index of the chunks written (up to about 14 MiB at the 65,536 chunks a segment can have)
-   * rather than the whole generation, whatever the segment's size. Repeats are fine (an id equal to the one before is
-   * skipped); an id lower than the one before throws `ValidationError`, naming its position and never the id. The
-   * object is the same, byte for byte, as an unsorted load of the same ids writes under the same write identity.
+   * chunk and the writer's index of the chunks written (up to about 7 MiB, about 8 MiB for an encrypted segment,
+   * derived, at the 65,536 chunks a segment can have) rather than the whole generation, whatever the segment's size.
+   * Repeats are fine (an id equal to the one before is skipped); an id lower than the one before throws
+   * `ValidationError`, naming its position and never the id. The object is the same, byte for byte, as an unsorted load
+   * of the same ids writes under the same write identity.
    *
    * For ids only (an iterable or an async iterable): with `{ serialized }`, `{ bitmap }` or a `RoaringBitmap32` of the
    * flavor's own `roaring` (one from another copy loads as its ids, and takes `sorted`), and on core's
