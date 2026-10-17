@@ -2357,7 +2357,7 @@ export class CloudRoaring {
    * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry
    * cannot be read because of a transient fault, until a retry 500 ms apart reaches it again. A reader that never
    * touched it sees empty at once. **That bound needs a registry and `cache.genTtlMs > 0`.** A store with no registry
-   * (a bare `IStorageDriver`), with `cache.genTtlMs: 0`, or on a storage source built with no clock, has no timed
+   * (a bare `IStorageDriver`), with `cache.genTtlMs: 0`, or on a `StorageChunkSource` of your own, has no timed
    * refresh. It notices the drop only when a read has to fetch
    * from a deleted generation or its reader cache evicts the segment, and until then a chunk it has cached
    * answers without reaching storage, so it can keep answering `true` for a dropped segment indefinitely. Tell
@@ -2545,7 +2545,7 @@ export class CloudRoaring {
    *   A pin answers with no timed bound, until it is told or both caches let it go.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
    *   staleness by `cache.genTtlMs`, and a store with no registry (a bare `IStorageDriver`), with
-   *   `cache.genTtlMs: 0`, or on a storage source built with no clock has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
+   *   `cache.genTtlMs: 0`, or on a `StorageChunkSource` of your own has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
    *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
    * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
