@@ -116,12 +116,29 @@ It builds its own client from Application Default Credentials. Any other key is 
   store's clock).
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: backups of the data and the registry, and a schedule for your loads.
-- **An error the driver throws carries no credential.** The SDK keeps the request it sent on the error
-  (`response.request`, `config.headers`), bearer token included, and through it the HTTP agent it shares with other
-  calls. An SDK error the driver throws, or keeps as a `cause`, is a copy without the request, agent, socket and config,
-  with `response` reduced to its status; it keeps its prototype, name, message, stack, code, status and other plain
-  data, so classification is unchanged, and a credential header or header line in it is redacted. The live error is
-  never changed.
+- **The driver redacts the credentials it recognises from an error before it throws it.** The SDK keeps the response
+  it got on the error (`response`), and through it the request it sent, with the bearer token in its `Authorization`
+  header, and the HTTP agent it shares with other calls; a resumable upload's or a token request's error keeps the
+  request's `config`. On a download, and wherever a body lists no errors, the SDK makes the response body the error's
+  message, so a proxy's page or a JSON body that quotes the request puts the token in the message. In the error the
+  driver throws, the value under a credential's name is replaced by `[redacted]` (`authorization`,
+  `x-goog-encryption-key`, `x-goog-api-key`, `X-Goog-Signature`, `X-Goog-Credential`, `access_token`, `refresh_token`,
+  `client_secret`, `private_key` and the like; a service account's `client_email` and `private_key_id` are kept), and
+  so are the value after one in a header list or under one in a map, the value beside one in a record (a
+  `{ name, value }` pair, a `{ th, td }` row; a number, a boolean, and the `message`, `reason` and `location` of a
+  Google error item are kept), and, anywhere in its text, a credential header line; an `Authorization` value, an
+  encryption key, an API key, an OAuth token or client secret, or a signed URL's signature or credential after its
+  name; a bearer token after its scheme; a Google access token (`ya29.`) or a JWT on its own; a V2 signed URL's
+  `Signature=`; a PEM private key's body; the text of an element named for a credential, such as the
+  `<CanonicalRequest>` a service quotes back; and the text of the cell after one that names a credential (a
+  `<th>`/`<td>` row, a `<dt>`/`<dd>` pair). A credential in another form is not recognised (a header table laid out by
+  column, a user and password written into a URL), and a text these patterns cannot finish matching is replaced whole.
+  An SDK error that carries its transport or shows a credential, and every error it reaches (its `cause` chain, an
+  `AggregateError`'s `errors`), is thrown as a copy: a native error with the same prototype, name, message, stack,
+  `code`, `status` and `errors`, with `response` reduced to its status and status text, so classification is
+  unchanged, without `config`, the request, its agent or socket, any function or accessor property, or anything nested
+  deeper than ten levels. The live error is never changed, and an error that holds only plain data and shows no
+  credential is thrown as it is.
 
 ## Documentation
 

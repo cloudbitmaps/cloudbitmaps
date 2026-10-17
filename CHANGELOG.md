@@ -93,6 +93,30 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The GCS driver redacts a credential anywhere in an error's text, and throws the error as a deep native copy.** On a
+  download, and wherever a body lists no errors, `@google-cloud/storage` makes the response body the error's message, so
+  a proxy's error page or a JSON body that quotes the request put the bearer token in the message and stack of the error
+  the driver threw: as the cause of the `TransientError` a 502 becomes, or as the error itself after a 400, on a read, a
+  write, a delete, a listing and every registry call. The driver redacted a credential in text only where a header line
+  started a line. Now, in the error the driver throws, the value under a credential's name is replaced by `[redacted]`
+  (`authorization`, `x-goog-encryption-key`, `x-goog-api-key`, `X-Goog-Signature`, `X-Goog-Credential`, `access_token`,
+  `refresh_token`, `client_secret`, `private_key` and the like; `client_email` and `private_key_id` are kept), and so
+  are the value after one in a header list or under one in a map, the value beside one in a record (a `{ name, value }`
+  pair, a `{ th, td }` row; a number, a boolean, and the `message`, `reason` and `location` of a Google error item are
+  kept), and, anywhere in the text, a credential header line, a credential after its name, a bearer token after its
+  scheme, a Google access token (`ya29.`), a JWT, a signed URL's signature, a PEM private key's body, the text of an
+  element named for a credential (a `<CanonicalRequest>` a service quotes back) and the text of the cell after one that
+  names a credential. Each pattern is built to run in time linear in the text. A credential in any other form is not
+  recognised, and a text these patterns cannot finish matching is replaced whole. The copy the driver threw was also not
+  a native error (`util.types.isNativeError` was false, and `structuredClone` turned it into a plain object); a `cause`
+  chain of 20,000 links made the scrubber throw `RangeError`; and an error that held no transport was thrown as it came,
+  even when its text, or an error in its `errors`, held a credential. A GCS error that carries its transport or shows a
+  credential, and every error it reaches (its `cause` chain, an `AggregateError`'s `errors`), is now thrown as a deep
+  copy of its plain data: a native error with the same prototype, name, message, stack, `code`, `status` and `errors`,
+  with `response` reduced to its status and status text, so every answer is classified as before, with no `config`,
+  request, agent or socket, no function or accessor and nothing nested deeper than ten levels, and the live error is
+  never changed. An error that holds only plain data and shows no credential (most of the driver's own typed errors) is
+  thrown as it is.
 - **The S3 driver redacts the signature, canonical request and session token S3 quotes back in an error, and the
   credentials a proxy's page or an unparsed body quotes, and throws the error as a deep native copy.** The AWS SDK puts
   every field of an error body on the error, where a logger prints it. S3's answer to a signature it refused
@@ -205,8 +229,8 @@ so, and so do the module headers in the code.
   './build/Release/roaring.node'`, and says `store.segments()` is an async iterable. The README says that intersection
   reads merge chunks within 256 KiB, so spread-out overlaps fetch most of each object. The privacy notes say that error
   messages name the segment, the namespace, chunk keys, id counts, metadata keys, key ids, the bucket or container name,
-  or the account host, and an object's key, that the S3, GCS and Azure Blob drivers remove the credentials from an SDK
-  error, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal hides, and that a
+  or the account host, and an object's key, that the S3, GCS and Azure Blob drivers remove the credentials they recognise
+  from an SDK error, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal hides, and that a
   changed object can make a read raise one that names a sealed chunk key. Hover docs now cover the store, the three
   backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the in-process
   backends' options, and a load keeps up to 127 generations in its row's ledger. The README's license paragraph says the
