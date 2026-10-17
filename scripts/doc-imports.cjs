@@ -80,12 +80,17 @@ function pageText(root, rel) {
 }
 
 /**
- * An import from a workspace package: named bindings (which may span lines: `[^}]` crosses them), a namespace import,
- * or a default import with or without named bindings. The specifier stops at a quote, a line break or an ellipsis, so
- * a placeholder such as `@cloudbitmaps/…` in prose is not one.
+ * An import from a workspace package: named bindings, a namespace import, or a default import with or without named
+ * bindings. Named bindings may span lines, but not a blank line, a `;`, a backtick or another brace, so an import with a
+ * brace missing cannot run on to the next import's closing brace and swallow the page between them. The specifier stops
+ * at a quote, a line break or an ellipsis, so a placeholder such as `@cloudbitmaps/…` in prose is not one.
  */
-const IMPORT =
-  /\bimport\s+(?:type\s+)?(?:\{[^}]*\}|\*\s+as\s+[A-Za-z_$][\w$]*|[A-Za-z_$][\w$]*(?:\s*,\s*\{[^}]*\})?)\s*from\s*(['"])(@cloudbitmaps\/[^'"\n…]+)\1\s*;?/g;
+const BINDINGS = /\{(?:[^{};\x60\n]|\n(?![ \t>]*\n))*\}/.source;
+const IMPORT = new RegExp(
+  String.raw`\bimport\s+(?:type\s+)?(?:${BINDINGS}|\*\s+as\s+[A-Za-z_$][\w$]*|[A-Za-z_$][\w$]*(?:\s*,\s*${BINDINGS})?)` +
+    String.raw`\s*from\s*(['"])(@cloudbitmaps\/[^'"\n…]+)\1\s*;?`,
+  'g',
+);
 
 /**
  * Every such import in `text`, as `{ line, specifier, statement }`: the line it starts on, the package specifier,

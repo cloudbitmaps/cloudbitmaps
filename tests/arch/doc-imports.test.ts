@@ -97,6 +97,11 @@ describe('the docs-import scanner smoke compiles', () => {
         "```ts\nimport {\n  CloudRoaring,\n  MemoryStorage\nfrom '@cloudbitmaps/roaring';\n```",
       ),
     ).toEqual([2]);
+    // a brace missing does not run on to a later import's closing brace: that import is still read on its own line
+    const two =
+      "```ts\nimport { CloudRoaring from '@cloudbitmaps/roaring';\n```\n\nProse.\n\n```ts\nimport { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';\n```";
+    expect(unparsedLines(two)).toEqual([2]);
+    expect(docImports(two).map((i) => i.line)).toEqual([8]);
     // a closing quote missing
     expect(unparsedLines("import { CloudRoaring } from '@cloudbitmaps/roaring;")).toEqual([1]);
   });
