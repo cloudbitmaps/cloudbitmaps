@@ -7,7 +7,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import fc from 'fast-check';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { SegmentEngine, BoundedLru } from '@cloudbitmaps/core';
 import type { CodecBitmap, IMetricsSink, MetricEvent } from '@cloudbitmaps/core';
 import { chunkGenKey } from '@/core/keys';
@@ -260,6 +260,19 @@ const spread = (chunks: number, perChunk: number): number[] =>
 
 const WIDE_IDS = randomIds(300_000);
 
+/**
+ * The encrypted wide segment, built once, before the tests of the block that uses it: sealing 300,000 ids chunk by chunk
+ * takes over a second, which a loaded runner can stretch past a test's timeout. The tests that use it only read, so each
+ * one starts from `reset()` with a store of its own (a cold cache). `reset()` keeps a `hint()`, so a test on this shared
+ * segment must not call one.
+ */
+let encryptedWide: ReturnType<typeof wideWorld> | undefined;
+const encryptedWideWorld = async (): ReturnType<typeof wideWorld> => {
+  const w = await (encryptedWide ??= wideWorld(WIDE_IDS, { encrypted: true }));
+  w.reset();
+  return w;
+};
+
 interface Seen {
   registry: number;
   tails: number;
@@ -359,6 +372,10 @@ async function crowdOut(w: WideWorld, store: CloudRoaring): Promise<void> {
 }
 
 describe('a cold open sizes its tail read from the row summary', () => {
+  beforeAll(async () => {
+    await encryptedWideWorld();
+  }, 60_000);
+
   it('a cold has() of 300,000 random ids on a cleartext segment is a row, one tail and one range read', async () => {
     const w = await wideWorld(WIDE_IDS);
     const { tailBytes } = await w.facts();
@@ -375,7 +392,7 @@ describe('a cold open sizes its tail read from the row summary', () => {
   });
 
   it('an encrypted segment is opened as before: the default tail beside the key, then the index range read', async () => {
-    const w = await wideWorld(WIDE_IDS, { encrypted: true });
+    const w = await encryptedWideWorld();
     expect(await w.store().segment('wide').has(WIDE_IDS[1234]!)).toBe(true);
     // The same on main, measured: the encrypted open is not sized, so it keeps its overlap and its range read.
     expect({
@@ -551,7 +568,7 @@ describe('a cold open sizes its tail read from the row summary', () => {
   });
 
   it("an encrypted segment's consistency open waits for the key before its tail read, and is sized", async () => {
-    const w = await wideWorld(WIDE_IDS, { encrypted: true });
+    const w = await encryptedWideWorld();
     const { tailBytes } = await w.facts();
     const report = await w.store().checkConsistency({ summaries: true });
     expect(report.inconsistent).toEqual([]);
