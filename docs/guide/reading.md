@@ -255,7 +255,7 @@ the id, and a load, and because the store can open a generation some time after 
 from the row opens nothing, and the read after it opens whatever object is under the number by then. An object that is
 not the one the row named is a move: the read resolves the row again and reads what it names now, and never serves
 the other object, so a load that was refused, or whose publish
-[got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
+[got no answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
 earlier generation. A chunk cached from one object is never served for another, as far as their sizes and footer
 checksums tell them apart, so a read does not mix the two. A segment reopened after the reader cache let it go is the
 same object, and its cached chunks still answer; with a timed refresh it is reopened from the resolution the store
@@ -456,7 +456,7 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   the row's token, which a load, an erasure rewrite, a shred, a drop, a rollback and a retention write are fenced on.
   None of them is refused by it: a row that differs from the one the writer read only in its leases does not refuse the
   writer, which goes on against the row it finds, after a jittered wait and without redoing its work
-  ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one write per job, not per read, and its
+  ([how a load stays correct](correctness.md#how-a-load-stays-correct)). A lease is one write per job, not per read, and its
   release is one more. Neither changes the row's `pointerId`, so a store reading the segment keeps its open reader and
   its cached chunks across both: its next pointer refresh reads the row and nothing else.
 - **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment

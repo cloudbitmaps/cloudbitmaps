@@ -63,7 +63,7 @@ encrypted, or the row has no summary, and the index does not fit in that read.
 An erasure that finds the id only in generations below the pointer, with nothing to delete by name, reads the row ahead
 of its collection and writes it once when the row's ledger of known generations names a generation the collection will
 delete: the write takes those names out of the ledger before anything is deleted
-([how it stays correct](#how-it-stays-correct)). On a row with no usable ledger it also reads the row once more after the
+([how it stays correct](correctness.md#how-an-erasure-stays-correct)). On a row with no usable ledger it also reads the row once more after the
 collection, in case a load started a ledger meanwhile. Counted at an object-store registry on the in-memory backend,
 for a segment with one older generation that holds the id: 7 requests that read and 1 that writes when the ledger names
 it, 6 and none when a usable ledger does not, and 7 and none on a row with no usable ledger. An erasure that rewrites the
@@ -133,7 +133,7 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
 - **Do not roll the segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto
   a generation the erasure did not rewrite. Roll back before the erasure starts or after it returns, and re-run an
   erasure that reports otherwise once the pointer is where you want it.
-  [How it stays correct](#how-it-stays-correct) says what each landing point reports.
+  [How it stays correct](correctness.md#how-an-erasure-stays-correct) says what each landing point reports.
 
 **On an encrypted store, an erasure of any id refuses an encrypted first load in flight that has written its object onto
 a segment made ahead of its data.** A segment whose row `setRetention` made before its first load holds no key until
@@ -262,7 +262,7 @@ the table above.
 A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
 rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on
 against the row it finds, without streaming the object again, and so does the re-proof before each delete above the pointer
-([how a load stays correct](loading.md#how-it-stays-correct) states the rule). A change of anything else refuses, and
+([how a load stays correct](correctness.md#how-a-load-stays-correct) states the rule). A change of anything else refuses, and
 `eraseSubject` reports `superseded`: run it again.
 
 What a lease does not change is when a reader stops seeing the id. A leased handle in another store answers as any

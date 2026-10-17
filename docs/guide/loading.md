@@ -503,7 +503,7 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   rollback without `allowUnknown` cannot bring an erased generation back even when a delete failed, except through those
   two cases, until the erasure is re-run. Check
   `store.generations(ref)` before acting: while the pointer names a missing object, roll back to a generation in the
-  bucket ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
+  bucket ([a rollback that races a collection](correctness.md#a-rollback-that-races-a-collection)).
 - **A generation the row does not know** throws `ValidationError` before any request to storage, naming the ones it
   does know. That covers an object a crashed load left, one a refused load kept, one sealed under a key no row holds (such
   as the one the loser of two concurrent first loads leaves) and a load published after the point a registry was restored
@@ -698,7 +698,7 @@ otherwise. Five properties follow from "a write is a load":
   `allowEmpty: true` when emptying the destination is the point, and `guard: { minCardinality, minRetained, maxGrowth }` for the
   same bounds `load()` takes, judged against what the destination held. A refusal is reported, not thrown; a lost race
   still throws `WriteConflictError`, and a rollback onto the object the refusal deleted throws `NotFoundError`, as a
-  load's does ([what throws instead](#when-a-load-is-refused)). A refused call also emits `segment.load-refused` to
+  load's does ([what throws instead](correctness.md#when-a-load-is-refused)). A refused call also emits `segment.load-refused` to
   `audit`, since a materialization is a load.
 
 A `WriteConflictError` from an `*Into` means the destination changed underneath the call, and it does not by itself
@@ -706,7 +706,7 @@ mean nothing was published. The same error covers a pointer that moved, a row re
 supersession at all (a `setRetention`), and a purge. Re-read
 the destination and decide; do not treat it as "the write did not happen". A call that involves a released or lapsed
 lease is refused earlier and harder, with `LeaseExpiredError`. An `*Into` publishes with the fences a load does: see
-[which fence a publish carries](#how-it-stays-correct).
+[which fence a publish carries](correctness.md#how-a-load-stays-correct).
 
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
 then calling `andNotInto`. The suppression folds into the same chunk-aligned pass, and each exclude is read only where
@@ -1135,7 +1135,7 @@ is an ordinary one: every guard and every race check runs, judged against each `
 
 - **A growth ceiling with an absolute floor.** Set each output's `guard.maxGrowth` in the publishing call from the dry
   run's `cardinalityBefore`: `before ? Math.max(1.5, 1 + 1000 / before) : 0` refuses only above both `before × 1.5` and
-  `before + 1000` ([the two ratio bounds](#when-a-load-is-refused)).
+  `before + 1000` ([the two ratio bounds](correctness.md#when-a-load-is-refused)).
 - **The overlap with what is live.** A key shift keeps the size, so compare members. One call cannot read its own
   destination, so count the overlap in a second dry run that reads each `dest` as an operand:
 

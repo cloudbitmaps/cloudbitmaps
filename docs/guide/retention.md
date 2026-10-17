@@ -145,7 +145,7 @@ the same registry 24 times. Match the cadence to the granularity of your policie
 deletion to feel.
 
 - A fleet scan is a billed `LIST` over the registry prefix. The default `'fleet'` scan costs what the fleet holds: its
-  live segments, and the retired ones still inside their grace (see [what the purge removes](#how-it-stays-correct)).
+  live segments, and the retired ones still inside their grace (see [what the purge removes](correctness.md#how-retention-stays-correct)).
 - `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
@@ -215,7 +215,7 @@ it is charged to `limit`, and the purges go on.
 - **`policy-changed`**: the live row no longer says "expired": a `clearRetention`, a new `expiresAt`, or someone else's
   drop landed between the listing and this segment's turn. This is not an error. The sweep re-reads the authoritative
   row immediately before every deletion, precisely so cancelling an expiry works on a sweep that is already running.
-- **`tombstone-not-empty`**: see [Tombstones are purged, narrowly](#how-it-stays-correct).
+- **`tombstone-not-empty`**: see [Tombstones are purged, narrowly](correctness.md#how-retention-stays-correct).
 - **`failed: ...`**: that one segment's retirement threw, or, on a tombstone, its purge did, and a purge the registry
   refuses is also counted in `purgeFaults` (above). `dropSegment` writes the tombstone before the storage sweep,
   deliberately, so a fault there leaks bytes, not correctness. A fault after the tombstone landed is reported as
