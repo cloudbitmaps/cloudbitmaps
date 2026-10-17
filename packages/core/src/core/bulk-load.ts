@@ -305,8 +305,8 @@ export function bulkLoadCrbmGeneration(
      * after the ids, so a segment shredded while they streamed is refused before its key is used.
      *
      * Sorted ids ({@link SortedLoadInput}) are read during the write, so their row is read again before the first of
-     * them instead. A segment shredded while they stream is then caught by the fenced publish: the shred changes the
-     * row's token, the publish loses, and the object it wrote is deleted under the `destroyed` row.
+     * them instead. A segment shredded while they stream is then caught by the caller's fenced publish, which the
+     * shred's change of the row's token makes lose; `load()` then deletes the object under the `destroyed` row.
      */
     row?: RegistryRecord | null;
   } = {},

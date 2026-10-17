@@ -81,12 +81,12 @@ the bill will tell you. On S3, with a few days as the grace period:
 }
 ```
 
-A sorted load (`sorted: true`) adds a case the library does handle: its ids are read during the upload, so an error
-its source throws, or an id out of order, can come after several parts have gone up, where an unsorted load refuses a
-bad id before it uploads anything. S3 aborts that upload, so its parts are not billed past the abort, and a GCS
-resumable session that never completes never becomes an object; but Azure Blob has no call to discard staged blocks,
-so a sorted load refused late on Azure leaves its blocks billed until Azure collects them, a week after the last one
-was staged.
+A sorted load (`sorted: true`) can fail after several parts have gone up, where an unsorted one refuses a bad id before
+it uploads anything: its ids are read during the upload, so an error its source throws, or an id out of order, can come
+late. The process survives that, so S3's upload is aborted and its parts are not billed past the abort, and a GCS
+resumable session that never completes never becomes an object. Azure Blob has no call to discard staged blocks, so a
+sorted load refused late on Azure leaves its blocks billed until Azure collects them, a week after the last one was
+staged.
 
 Applying a lifecycle configuration replaces the bucket's whole configuration, so merge this with any rules you have.
 This rule is for S3. What a dead writer leaves on GCS and Azure Blob, and when each cloud removes it, is in [the backup checklist](disaster-recovery.md#backup-checklist).
