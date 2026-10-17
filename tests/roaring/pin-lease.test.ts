@@ -1,10 +1,7 @@
 import {
   CloudRoaring,
-  LEASE_SKEW_MS,
   LeaseExpiredError,
   LeaseLimitError,
-  MAX_LEASE_MS,
-  MAX_LEASES_PER_SEGMENT,
   MemoryStorage,
   NotFoundError,
   UnsupportedError,
@@ -13,6 +10,7 @@ import {
   type SegmentRef,
   errorKind,
 } from '@/index';
+import { LEASE_SKEW_MS, MAX_LEASE_MS, MAX_LEASES_PER_SEGMENT } from '@/core/leases';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';

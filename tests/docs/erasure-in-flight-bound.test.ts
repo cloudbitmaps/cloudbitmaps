@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CloudRoaring, MemoryStorage, NotFoundError } from '@/index';
-import type { IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { brandAsBackend } from '@/core/ports';
 import { MAX_RANGES_IN_FLIGHT } from '@/core/crbm/plan-reads';
 import { DEFAULT_INTERSECT_CONCURRENCY } from '@/core/engine';
