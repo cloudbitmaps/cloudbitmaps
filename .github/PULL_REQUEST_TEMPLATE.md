@@ -14,7 +14,7 @@
       component end to end; real findings fixed here, or recorded with a severity and a deferral
 - [ ] Docs updated in the same change (see [CONTRIBUTING → Documentation](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CONTRIBUTING.md#documentation--keeping-it-current)):
       README / `docs/guide/` / `CHANGELOG.md` (top of its `[Unreleased]` subsection, newest-first) / roadmap
-- [ ] Changes a public signature? `pnpm api:surface:check` and the `api-surface-base` workflow fail it unless
+- [ ] Changes or adds a public signature? `pnpm api:surface:check` and the `api-surface-base` workflow fail it unless
       `api-surface/allowed.json` carries a reason row this PR adds, agreed with the maintainer before building
 - [ ] Moves the version? A changeset from `pnpm changeset` records the bump type for the family (pre-`1.0`, a
       breaking change is a minor); a change to docs, tests or tooling alone needs none
