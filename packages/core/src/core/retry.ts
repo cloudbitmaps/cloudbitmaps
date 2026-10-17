@@ -21,8 +21,8 @@ import type { Clock, Rng } from './determinism';
 import { isTransientError, ValidationError } from './errors';
 
 /**
- * How the store retries a transient read: attempts, exponential backoff with a cap, and jitter.
- * {@link DEFAULT_RETRY_POLICY} is the default; the store's `retry` option overrides it a field at a time.
+ * How the store retries a transient read: attempts, exponential backoff with a cap, and jitter. By default 4 attempts,
+ * a 50 ms base delay, ×2, a 2 s cap and full jitter; the store's `retry` option overrides them a field at a time.
  */
 export interface RetryPolicy {
   /** Total attempts including the first (so `maxAttempts: 4` = 1 try + 3 retries). Must be ≥ 1. */

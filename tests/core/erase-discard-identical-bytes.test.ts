@@ -6,7 +6,12 @@ import { brandAsBackend } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import type { GenKey, IRegistryDriver, IStorageDriver, RegistryPatch } from '@/index';
+import type {
+  GenKey,
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryPatch,
+} from '@cloudbitmaps/core/driver-kit';
 import type { Clock, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';

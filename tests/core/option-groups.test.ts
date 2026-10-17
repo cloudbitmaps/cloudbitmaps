@@ -8,14 +8,13 @@ import { randomBytes } from 'node:crypto';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { TransientError } from '@/core/errors';
+import type { Clock, SegmentRef as Ref } from '@/index';
 import type {
   ChunkRef,
-  Clock,
   IRegistryDriver,
   IStorageDriver,
-  SegmentRef as Ref,
   StorageChunkSource,
-} from '@/index';
+} from '@cloudbitmaps/core/driver-kit';
 import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

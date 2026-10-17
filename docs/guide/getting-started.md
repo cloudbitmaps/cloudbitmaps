@@ -47,7 +47,8 @@ If you installed before allowing it, the package throws at `import` (the install
 `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped.
 
 `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the engine underneath; it arrives on
-its own and you never install or import it. Install one copy of `@cloudbitmaps/roaring` in a process; a combine
+its own, and you install or import it only to name a driver port's type, such as `IStorageDriver`, which
+`@cloudbitmaps/core/driver-kit` exports ([the storage interfaces](api-reference.md#the-storage-interfaces-used-to-type-storage--registry)). Install one copy of `@cloudbitmaps/roaring` in a process; a combine
 refuses a segment of another store, and a segment of another copy always belongs to another store.
 
 The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same

@@ -20,18 +20,14 @@ import {
   ValidationError,
   isStorageBackend,
 } from '@cloudbitmaps/core';
+import type { Clock, IMetricsSink, RetryPolicy, RetryingOptions, Rng } from '@cloudbitmaps/core';
 import type {
-  Clock,
-  IMetricsSink,
   IKeystore,
   IRegistryDriver,
   IStorageDriver,
-  RetryPolicy,
-  RetryingOptions,
-  Rng,
   StorageBackend,
   StorageChunkSource,
-} from '@cloudbitmaps/core';
+} from '@cloudbitmaps/core/driver-kit';
 
 /** The slice of a store's options the wiring reads; `CloudRoaringOptions` satisfies it. */
 interface StoreWiring {
@@ -279,11 +275,11 @@ function resolveStorageSource(
   }
   if (hasGetChunk) {
     // Already a StorageChunkSource — used as-is. `keystore`/`requireEncryption` only apply when the store
-    // builds the source itself; with a pre-built source they are inert, so reject them rather than mislead.
+    // builds the source itself; with a source of the caller's own they are inert, so reject them rather than mislead.
     if (options.encryption?.keystore !== undefined || options.encryption?.required === true) {
       throw new ValidationError(
-        'keystore/requireEncryption apply only when the store builds its own read path; configure them on ' +
-          'the StorageChunkSource you passed instead',
+        'keystore/requireEncryption apply only when the store builds its own read path: a StorageChunkSource of ' +
+          'your own reads an encrypted segment by itself, if it must; to have the store decrypt, pass a backend',
       );
     }
     return { source: storage as StorageChunkSource, driver: undefined, registry: undefined };

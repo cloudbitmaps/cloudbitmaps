@@ -4,7 +4,12 @@ import { loadSegment } from '@/core/load';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import type { GenKey, IRegistryDriver, IStorageDriver, RegistryPatch } from '@/index';
+import type {
+  GenKey,
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryPatch,
+} from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';

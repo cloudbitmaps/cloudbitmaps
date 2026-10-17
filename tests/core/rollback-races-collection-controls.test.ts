@@ -6,7 +6,7 @@ import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { RecordingAuditSink } from '@/index';
-import type { IRegistryDriver, IStorageDriver } from '@/index';
+import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
 import { testEntropy } from '../helpers/entropy';

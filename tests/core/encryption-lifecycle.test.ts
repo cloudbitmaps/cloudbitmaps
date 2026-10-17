@@ -1,11 +1,13 @@
 import { nextGeneration } from '@/core/generation-gc';
 import { publishGeneration } from '../helpers/publish';
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource, destroySegment, eraseNamespace } from '@/index';
+import { CloudRoaring, destroySegment, eraseNamespace } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { IKeystore, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import type { EraseIdDeps } from '@cloudbitmaps/core';

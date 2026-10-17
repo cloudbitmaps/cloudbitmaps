@@ -5,7 +5,7 @@ import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core
 import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { MIN_EXPIRES_AT_MS } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';

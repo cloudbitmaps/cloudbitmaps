@@ -4,7 +4,7 @@ import { WriteConflictError } from '@/core/errors';
 import type { LeaseEntry, RegistryRecord, SegmentRef } from '@/core/ports';
 import type { Clock } from '@/core/determinism';
 import { MemoryRegistryDriver } from '@/drivers/memory';
-import { MIN_EXPIRES_AT_MS } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 
 /**
  * `casRetry` reads a row, runs a step, and runs it again on a fresh read when the step loses a write race. A race lost to

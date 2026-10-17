@@ -15,7 +15,12 @@
  * read of a generation the call deleted that the row then names. A refusal of either is thrown in place of the call's
  * answer, so the call reports the budget, not what it deleted.
  */
-import type { GenKey, IStorageDriver, SegmentRef, StorageDeleteOptions } from '@cloudbitmaps/core';
+import type {
+  GenKey,
+  IStorageDriver,
+  SegmentRef,
+  StorageDeleteOptions,
+} from '@cloudbitmaps/core/driver-kit';
 
 export class OpenChargingStorage implements IStorageDriver {
   private readonly free = new Set<number>();

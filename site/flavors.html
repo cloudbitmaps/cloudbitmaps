@@ -254,7 +254,7 @@
               result as a new generation of a destination segment instead of returning it. <span class="m">iterate</span> and every combine also read an id range,
               <span class="m">{ after, through }</span>, fetching only the chunks it overlaps. Data arrives the one
               way whichever you pick — <span class="m">store.load</span>, one immutable object
-              then a compare-and-swap of the pointer. A flavor is a <span class="m">CodecInterface</span>: the
+              then a compare-and-swap of the pointer. A flavor is the codec the engine builds its bitmaps through: the
               engine hands it each chunk's bytes, above the same four drivers and two tiers, and every call on
               this card is the engine's, so no flavor changes its signature. The engine's main entry is internal, so
               the codec seam is not a public extension point.

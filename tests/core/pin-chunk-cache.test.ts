@@ -6,13 +6,13 @@ vi.mock('@/core/crbm/reader', async (original) =>
 import {
   MemoryStorage,
   CloudRoaring,
-  CrbmStorageChunkSource,
   InProcessKeystore,
   IntegrityError,
   NotFoundError,
   TransientError,
   ValidationError,
 } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';
 import { SegmentEngine } from '@/core/engine';
 import { destroySegment } from '@/core/erasure';

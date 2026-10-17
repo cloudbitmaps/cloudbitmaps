@@ -1,5 +1,6 @@
 import { MemoryStorage, CloudRoaring, NotFoundError } from '@/index';
-import type { IStorageDriver, Segment, SegmentRef } from '@/index';
+import type { Segment, SegmentRef } from '@/index';
+import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { brandAsBackend } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

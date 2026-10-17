@@ -23,7 +23,7 @@ import {
   UnsupportedError,
   ValidationError as CoreValidationError,
 } from '@/core/errors';
-import type { IRegistryDriver, IStorageDriver } from '@/index';
+import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { batchWorld, range } from '../helpers/batch-world';
 import { feedOf, lcg, recordsOf } from '../helpers/combine-feed';

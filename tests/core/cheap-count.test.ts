@@ -1,11 +1,8 @@
 import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { SafeBitmap } from '@/roaring-codec';
-import {
-  CountingMetricsSink,
-  CrbmStorageChunkSource,
-  type Clock,
-  type StorageChunkSource,
-} from '@/index';
+import { CountingMetricsSink, type Clock } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
 import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
 import { MemoryStorageDriver } from '@/drivers/memory';

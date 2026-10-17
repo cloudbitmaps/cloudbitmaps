@@ -8,8 +8,8 @@
  * prefix. Add `encryption: { keystore }` for encryption-at-rest / crypto-shred.
  *
  * Two narrower shapes are also accepted for `storage`: a bare {@link IStorageDriver}, which has no pointer and
- * so resolves generations by list-scanning storage (**cleartext and read-only**), and an already-built
- * {@link StorageChunkSource} for advanced reader options you configure yourself.
+ * so resolves generations by list-scanning storage (**cleartext and read-only**), and a {@link StorageChunkSource}
+ * of your own, a read source the store uses as it is (both ports are in `@cloudbitmaps/core/driver-kit`).
  *
  * **Data gets in by loading a generation**, never by mutating one: `store.load()` streams a set of ids into one
  * immutable object and advances the segment's pointer to it. The pointer only moves forward, so a load out-raced by
@@ -84,7 +84,6 @@ import type {
   Entropy,
   CodecBitmap,
   CodecInterface,
-  StorageChunkSource,
   ConsistencyReport,
   EngineDeps,
   DropResult,
@@ -92,11 +91,7 @@ import type {
   ExportOptions,
   ExportSink,
   IAuditSink,
-  IStorageDriver,
-  IKeystore,
   IMetricsSink,
-  IRegistryDriver,
-  StorageBackend,
   MetricOpName,
   RetentionPolicy,
   RetireExpiredOptions,
@@ -108,6 +103,13 @@ import type {
   PinnedAt,
   SegmentRef,
 } from '@cloudbitmaps/core';
+import type {
+  IKeystore,
+  IRegistryDriver,
+  IStorageDriver,
+  StorageBackend,
+  StorageChunkSource,
+} from '@cloudbitmaps/core/driver-kit';
 import { OpenChargingStorage } from './open-charging-storage';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
@@ -342,10 +344,13 @@ export interface CloudRoaringOptions {
    *
    * Two lower-level shapes stay accepted for wiring the facade does not cover:
    *
-   * - a **raw {@link IStorageDriver}**, which the store wraps in a {@link CrbmStorageChunkSource}. There is no
+   * - a **raw {@link IStorageDriver}**, which the store reads through its own `.crbm` reader. There is no
    *   registry in this shape, so the store resolves generations by list-scanning storage: **cleartext and
    *   read-only**. Encrypted segments, the `*Into` verbs and every lifecycle helper need a backend.
-   * - an already-built {@link StorageChunkSource}, used as-is, for advanced reader options.
+   * - a {@link StorageChunkSource} of your own, a read source used as it is: read-only, like the raw driver.
+   *
+   * The two port types are exported by `@cloudbitmaps/core/driver-kit`, not by this package; to name the option's
+   * type without importing them, write `CloudRoaringOptions['storage']`.
    */
   readonly storage: StorageBackend | IStorageDriver | StorageChunkSource;
 
@@ -363,7 +368,8 @@ export interface CloudRoaringOptions {
 
   /**
    * Resilience: by default every read that answers a query retries **transient** faults (throttling, 5xx, dropped
-   * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}): `has`, `count`,
+   * connections) with bounded, jittered exponential backoff (by default 4 attempts, a 50 ms base delay doubling each
+   * attempt, capped at 2 s, with full jitter): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
    * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
@@ -392,7 +398,7 @@ export interface CloudRoaringOptions {
    * `count`/`iterate`/`intersect`/`union`/`andNot`/`subjectReport`/`eraseSubject` may fan out into before it's
    * refused with {@link BudgetExceededError} (`eraseSubject` reports an over-budget segment in its ledger instead,
    * see {@link CloudRoaring.eraseSubject}) — so one runaway op can't drive unbounded GET cost on a shared
-   * backend. **On by default, generous** ({@link DEFAULT_BUDGET}: 1,000,000 requests — a normal op never hits it).
+   * backend. **On by default, generous** (1,000,000 requests — a normal op never hits it).
    * Tune with `{ maxRequests }`, override per op (on the combines / `subjectReport` / `eraseSubject`), or set
    * `false` to disable. The check is O(1) (before fan-out), so the hot path is untouched; per-request bytes are
    * separately size-capped, so bounding requests transitively bounds bytes.
@@ -490,9 +496,9 @@ export interface EncryptionOptions {
 /**
  * {@link CloudRoaringOptions.retry} — a partial {@link RetryPolicy} plus the retry callback.
  *
- * Partial on purpose, so tuning one field does not mean restating all five. Anything omitted here keeps its
- * {@link DEFAULT_RETRY_POLICY} value, except that an omitted `maxDelayMs` is the `baseDelayMs` when that is larger
- * than the default cap.
+ * Partial on purpose, so tuning one field does not mean restating all five. Anything omitted here keeps its default
+ * (`maxAttempts` 4, `baseDelayMs` 50, `maxDelayMs` 2000, `backoffFactor` 2, `jitter` `'full'`), except that an
+ * omitted `maxDelayMs` is the `baseDelayMs` when that is larger than the default cap.
  */
 export interface RetryOptions extends Partial<RetryPolicy> {
   /**
@@ -2351,7 +2357,7 @@ export class CloudRoaring {
    * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry
    * cannot be read because of a transient fault, until a retry 500 ms apart reaches it again. A reader that never
    * touched it sees empty at once. **That bound needs a registry and `cache.genTtlMs > 0`.** A store with no registry
-   * (a bare `IStorageDriver`), with `cache.genTtlMs: 0`, or on a storage source built with no clock, has no timed
+   * (a bare `IStorageDriver`), with `cache.genTtlMs: 0`, or on a `StorageChunkSource` of your own, has no timed
    * refresh. It notices the drop only when a read has to fetch
    * from a deleted generation or its reader cache evicts the segment, and until then a chunk it has cached
    * answers without reaching storage, so it can keep answering `true` for a dropped segment indefinitely. Tell
@@ -2403,7 +2409,7 @@ export class CloudRoaring {
    * enumerable by the sweep; the first load then publishes onto that row.
    *
    * A value in the past is legal and means "eligible on the next sweep" — backfilling a policy onto existing
-   * buckets is normal. A value below `MIN_EXPIRES_AT_MS` (2001-09-09) is rejected: it is almost certainly epoch
+   * buckets is normal. A value below `1_000_000_000_000` (2001-09-09) is rejected: it is almost certainly epoch
    * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a storage
    * backend (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
    */
@@ -2539,7 +2545,7 @@ export class CloudRoaring {
    *   A pin answers with no timed bound, until it is told or both caches let it go.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
    *   staleness by `cache.genTtlMs`, and a store with no registry (a bare `IStorageDriver`), with
-   *   `cache.genTtlMs: 0`, or on a storage source built with no clock has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
+   *   `cache.genTtlMs: 0`, or on a `StorageChunkSource` of your own has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
    *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
    * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
@@ -2574,8 +2580,8 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
-          'that cannot resolve a generation has nothing to pin)',
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (the store ' +
+          'cannot pin a StorageChunkSource of your own)',
       );
     }
     // A lease is taken between the pin's row read and its open (see `pinGeneration`). The holder is drawn once, here,
@@ -2670,8 +2676,8 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
-          'that cannot resolve a generation has nothing to pin)',
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (the store ' +
+          'cannot pin a StorageChunkSource of your own)',
       );
     }
     const pinned = new PinnedStorageChunkSource(crbm, pins);
@@ -3170,7 +3176,7 @@ interface LeaseHold {
 export interface PinOptions {
   /**
    * Hold the pinned generation until this instant: epoch-**milliseconds**, after now and at most
-   * {@link MAX_LEASE_MS} (14 days) from it. A load's collection leaves a leased generation in the bucket until the lease
+   * 14 days (1,209,600,000 ms) from it. A load's collection leaves a leased generation in the bucket until the lease
    * ends, and a read of the handle after it throws {@link LeaseExpiredError}, never empty.
    */
   readonly leaseUntil?: number;
@@ -3394,7 +3400,7 @@ export class Segment {
    * or misfiled one.
    *
    * Needs a store built on the `.crbm` storage source (the default when you pass a backend or a raw driver). Throws
-   * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
+   * {@link UnsupportedError} on a store wired with a `StorageChunkSource` of your own, which it cannot pin.
    */
   async pin(options?: PinOptions): Promise<Segment> {
     // A leased handle pins nothing once its lease is over. The pin it makes is an ordinary one: it takes the generation
@@ -4014,12 +4020,15 @@ export class Segment {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// What `@cloudbitmaps/roaring` re-exports from `@cloudbitmaps/core`, by name: the store's verbs' types, the errors,
-// the types its signatures name, the backends' shared types, and the constants and helpers an application calls.
-// An application installs this package and imports from it alone. Flavor and driver authors import everything
-// else (the engine, the free-function forms of the store's methods, the retry and budget internals) from
-// `@cloudbitmaps/core` and `@cloudbitmaps/core/driver-kit`. A name added here is a public name of this package, so
-// add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
+// What `@cloudbitmaps/roaring` re-exports from `@cloudbitmaps/core`, by name: the types the store's signatures name,
+// the backends, the errors and their classifier, and the helpers an application calls. An application installs this
+// package and imports from it alone. Nothing else of core's is re-exported: its main entry is internal. The driver
+// contracts the store's signatures stop at (`IStorageDriver`, `IRegistryDriver`, `StorageBackend`,
+// `StorageChunkSource`, `IKeystore` and the registry's record types) are exported by `@cloudbitmaps/core/driver-kit`,
+// their one home, and not here: an application that has to name one imports it from there, or derives it
+// (`CloudRoaringOptions['storage']`, `NonNullable<EncryptionOptions['keystore']>`). A name added here is a public name
+// of this package, so add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists
+// it.
 // ---------------------------------------------------------------------------------------------------
 // Decode portable bytes you hold, through the check a `{ serialized }` load makes.
 export { deserializePortable };
@@ -4027,21 +4036,13 @@ export {
   // Backends
   MemoryStorage,
   LocalFsStorage,
-  CrbmStorageChunkSource,
   // Crypto-shred and the retention policy helpers
   destroySegment,
   eraseNamespace,
   excludingReservedRows,
   readRetentionPolicy,
-  MIN_EXPIRES_AT_MS,
-  // The bounds of a lease on a pin
-  LEASE_SKEW_MS,
-  MAX_LEASE_MS,
-  MAX_LEASES_PER_SEGMENT,
   // Encryption
   InProcessKeystore,
-  NodeAead,
-  aadFor,
   // Errors and their copy-safe classifier
   CloudRoaringError,
   ValidationError,
@@ -4057,36 +4058,20 @@ export {
   LeaseLimitError,
   StaleOperandError,
   errorKind,
-  // The `.crbm` reader and its blob source
-  CrbmReader,
-  BufferReader,
-  // Metrics, audit and retry
+  // Metrics and audit
   CountingMetricsSink,
   RecordingAuditSink,
-  DEFAULT_RETRY_POLICY,
 } from '@cloudbitmaps/core';
 export type {
-  Aead,
-  AeadSealed,
   AuditEvent,
-  BlobReader,
-  BlobSink,
   Budget,
   BudgetOption,
-  ChunkRef,
   Clock,
-  CodecBitmap,
-  CodecInterface,
   ConsistencyErrorEntry,
   ConsistencyIssue,
   ConsistencyReport,
-  CrbmCrypto,
-  CrbmReaderOptions,
-  CrbmStorageChunkSourceOptions,
   DestroyResult,
-  ClearRegistrySummary,
   DropResult,
-  EncodedChunk,
   Entropy,
   EraseDeps,
   ErrorKind,
@@ -4099,15 +4084,10 @@ export type {
   ExportWriter,
   ExportedSegment,
   Expr,
-  GenKey,
   GenerationEntry,
   GenerationMetadata,
-  GovernanceMeta,
   IAuditSink,
-  IKeystore,
   IMetricsSink,
-  IRegistryDriver,
-  IStorageDriver,
   InProcessKeystoreOptions,
   LoadGuard,
   LoadInput,
@@ -4123,18 +4103,8 @@ export type {
   MetricEvent,
   MetricOpName,
   MetricsSnapshot,
-  NewRegistryRecord,
   PinnedAt,
-  PinnedObject,
   PortableBitmap,
-  RegCaps,
-  RegistryPatch,
-  RegistryRecord,
-  RegistryStatus,
-  RegistrySummary,
-  RegistryWriteOptions,
-  KnownGeneration,
-  LeaseEntry,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -4142,16 +4112,7 @@ export type {
   RetryPolicy,
   Rng,
   RollbackResult,
-  SealedRegistrySummary,
   SegmentInfo,
   SegmentRef,
-  SegmentSize,
   SetRetentionResult,
-  StorageBackend,
-  StorageCaps,
-  StorageChunkSource,
-  StorageDeleteOptions,
-  TailRead,
-  Token,
-  WrappedDek,
 } from '@cloudbitmaps/core';

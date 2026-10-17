@@ -323,7 +323,7 @@ of the procedure) rather than wait: a restored row's later writes are given toke
 `pointerId` they set, so no cache is misled, but each store answers from the generation it resolved before the restore
 until it re-reads the row. Some
 stores need more than waiting after a roll too. One with no registry (built on a bare
-`IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
+`IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a `StorageChunkSource` of your own, has no timed refresh, so nothing bounds how
 long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
 in each, as part of the procedure. One on a bare `IStorageDriver`, with **no registry**, reads no pointer: it lists
 the bucket and serves the newest generation there, whatever the restored pointer says, so while generations above
@@ -396,7 +396,9 @@ carries `status` and `retention` in its projection, so this is one scan, no per-
 row it cannot parse; see [a registry row the library did not write](#a-registry-row-the-library-did-not-write).
 
 ```ts
-import { MIN_EXPIRES_AT_MS } from '@cloudbitmaps/roaring';
+// The floor the sweep holds an instant to: 1,000,000,000,000 epoch milliseconds (2001-09-09), as the retention guide
+// states. A smaller value is almost certainly epoch seconds.
+const EPOCH_MS_FLOOR = 1_000_000_000_000;
 
 const { registry, storage } = backend; // used by the repairs below too
 for await (const rec of registry.list(/* namespace? */)) {
@@ -406,7 +408,7 @@ for await (const rec of registry.list(/* namespace? */)) {
   // unstamped as far as the sweep is concerned — it will never be auto-purged — so a looser check here
   // silently drops exactly the rows this audit exists to surface.
   const stamp = rec.retention?.retiredBySweepAt;
-  if (typeof stamp === 'number' && Number.isInteger(stamp) && stamp >= MIN_EXPIRES_AT_MS) continue;
+  if (typeof stamp === 'number' && Number.isInteger(stamp) && stamp >= EPOCH_MS_FLOOR) continue;
   console.log(rec.namespace ?? '_default', rec.segment, rec.retention);
 }
 ```
@@ -446,11 +448,11 @@ expiry pointer before the kill, and the pointer that finds a tombstone for its p
 the kill prevented. A stamp you write by hand files none.
 
 ```ts
-import { MIN_EXPIRES_AT_MS } from '@cloudbitmaps/roaring';
+const EPOCH_MS_FLOOR = 1_000_000_000_000; // the sweep's floor on an instant, as in the audit above
 
 const rec = await registry.get(ref);
 const stamp = rec?.retention?.retiredBySweepAt;
-const stamped = typeof stamp === 'number' && Number.isInteger(stamp) && stamp >= MIN_EXPIRES_AT_MS;
+const stamped = typeof stamp === 'number' && Number.isInteger(stamp) && stamp >= EPOCH_MS_FLOOR;
 if (rec?.status === 'destroyed' && !stamped) {
   await registry.compareAndSwap(ref, rec.token, {
     retention: { ...rec.retention, retiredBySweepAt: Date.now() },

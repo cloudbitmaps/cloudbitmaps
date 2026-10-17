@@ -194,5 +194,197 @@
   {
     "entry": "@cloudbitmaps/roaring ExportOptions.codec",
     "reason": "exportSegments always builds the 'roaring' format's bitmaps with the store's own roaring codec, which was the default, so it no longer takes a codec; a codec passed to it is refused with a ValidationError before any request"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Aead*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AeadSealed*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring BlobSink*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ChunkRef*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ClearRegistrySummary*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring GenKey*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring GovernanceMeta*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IKeystore*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IRegistryDriver*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IStorageDriver*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring KnownGeneration*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring LeaseEntry*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring NewRegistryRecord*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegCaps*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryPatch*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryRecord*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryStatus*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistrySummary*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryWriteOptions*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SealedRegistrySummary*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SegmentSize*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring StorageBackend*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring StorageCaps*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring StorageChunkSource*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring StorageDeleteOptions*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring TailRead*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Token*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring WrappedDek*",
+    "reason": "moved to `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring aadFor*",
+    "reason": "no public signature needs it; read a segment through the store or `exportSegments`, and `docs/format.md` specifies every byte for a reader of your own"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring BlobReader*",
+    "reason": "no public signature needs it; read a segment through the store or `exportSegments`, and `docs/format.md` specifies every byte for a reader of your own"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring BufferReader*",
+    "reason": "no public signature needs it; read a segment through the store or `exportSegments`, and `docs/format.md` specifies every byte for a reader of your own"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CodecBitmap*",
+    "reason": "no public signature needs it; the store binds the roaring codec itself, and there is no supported way to add another"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CodecInterface*",
+    "reason": "no public signature needs it; the store binds the roaring codec itself, and there is no supported way to add another"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CrbmCrypto*",
+    "reason": "no public signature needs it; read a segment through the store or `exportSegments`, and `docs/format.md` specifies every byte for a reader of your own"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CrbmReader*",
+    "reason": "no public signature needs it; read a segment through the store or `exportSegments`, and `docs/format.md` specifies every byte for a reader of your own"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CrbmReaderOptions*",
+    "reason": "no public signature needs it; read a segment through the store or `exportSegments`, and `docs/format.md` specifies every byte for a reader of your own"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CrbmStorageChunkSource*",
+    "reason": "no public signature needs it; pass a backend as `storage`, and set the reader's bounds with the store's `cache`, `encryption` and `seams` options"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CrbmStorageChunkSourceOptions*",
+    "reason": "no public signature needs it; pass a backend as `storage`, and set the reader's bounds with the store's `cache`, `encryption` and `seams` options"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring DEFAULT_RETRY_POLICY*",
+    "reason": "no public signature needs it; the API reference states the defaults (4 attempts, a 50 ms base delay doubling to a 2 s cap, full jitter), and the store's `retry` option overrides them a field at a time"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring EncodedChunk*",
+    "reason": "no public signature needs it; the store binds the roaring codec itself, and there is no supported way to add another"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring LEASE_SKEW_MS*",
+    "reason": "no public signature needs it; the reading guide states a lease's bounds (at most 14 days, 64 leases on a segment, 60 s of clock skew), and `pin` refuses past them"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MAX_LEASE_MS*",
+    "reason": "no public signature needs it; the reading guide states a lease's bounds (at most 14 days, 64 leases on a segment, 60 s of clock skew), and `pin` refuses past them"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MAX_LEASES_PER_SEGMENT*",
+    "reason": "no public signature needs it; the reading guide states a lease's bounds (at most 14 days, 64 leases on a segment, 60 s of clock skew), and `pin` refuses past them"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MIN_EXPIRES_AT_MS*",
+    "reason": "no public signature needs it; the retention guide states the floor on `expiresAt`, 1,000,000,000,000 epoch milliseconds (2001-09-09), and `setRetention` refuses a value below it"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring NodeAead*",
+    "reason": "no public signature needs it; read a segment through the store or `exportSegments`, and `docs/format.md` specifies every byte for a reader of your own"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PinnedObject*",
+    "reason": "no public signature needs it; pass a backend as `storage`, and set the reader's bounds with the store's `cache`, `encryption` and `seams` options"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) ChunkStream*",
+    "reason": "no public signature needs it; only `CrbmReader.readChunks` named it, and `CrbmReader` left the public surface"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) PinLease*",
+    "reason": "no public signature needs it; only `CrbmStorageChunkSource`'s pin methods named it, and the class left the public surface; a pin takes its lease with `pin({ leaseUntil })`"
   }
 ]

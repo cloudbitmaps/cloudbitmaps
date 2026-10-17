@@ -1,7 +1,8 @@
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { BoundedLru, SegmentEngine, ValidationError } from '@cloudbitmaps/core';
-import type { ChunkRead, CodecBitmap, ReadChunksOptions, SegmentRef } from '@cloudbitmaps/core';
+import type { CodecBitmap, SegmentRef } from '@cloudbitmaps/core';
+import type { ChunkRead, ReadChunksOptions } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { joinId } from '@/core/bit-route';
 import { REMEMBERED_INVALIDATIONS } from '@/core/invalidation-scope';

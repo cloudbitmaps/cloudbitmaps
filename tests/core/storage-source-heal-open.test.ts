@@ -1,10 +1,16 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CloudRoaring, CrbmStorageChunkSource, IntegrityError } from '@/index';
+import { CloudRoaring, IntegrityError } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { verifyGeneration } from '@/core/crbm-open';
-import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type {
+  IStorageDriver,
+  IRegistryDriver,
+  RegistryRecord,
+} from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';

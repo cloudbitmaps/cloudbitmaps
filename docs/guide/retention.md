@@ -62,7 +62,8 @@ record the segment, not on every load. It is idempotent, so re-running is harmle
   moves it.
 - **A value that looks like epoch seconds is rejected.** `Date.now() / 1000 + 30 * 86400` is a natural thing to type
   and lands in 1970, already expired. Without the check it would not be an error, it would be a deletion on the next
-  sweep. The floor is `MIN_EXPIRES_AT_MS`.
+  sweep. The floor is `1_000_000_000_000` epoch milliseconds (2001-09-09): `setRetention` throws `ValidationError` for
+  an `expiresAt` below it, and `retireExpired` for a `now` below it.
 - **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto segments that already
   exist is a normal migration.
 - **A tombstone is refused.** A crypto-shredded, dropped or retired segment throws `ValidationError`: there is nothing

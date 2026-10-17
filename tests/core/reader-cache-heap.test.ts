@@ -1,7 +1,7 @@
 import { getHeapStatistics, setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { randomBytes } from 'node:crypto';
-import { CrbmStorageChunkSource } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

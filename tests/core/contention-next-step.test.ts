@@ -6,7 +6,7 @@ import { rollbackSegment } from '@/core/rollback';
 import type { Clock } from '@/core/determinism';
 import type { IRegistryDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { MIN_EXPIRES_AT_MS } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { roaringCodec } from '@/roaring-codec';
 import { testEntropy } from '../helpers/entropy';
 

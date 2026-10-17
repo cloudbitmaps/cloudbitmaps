@@ -4,7 +4,7 @@ import { loadSegment } from '@/core/load';
 import type { IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { MIN_EXPIRES_AT_MS } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

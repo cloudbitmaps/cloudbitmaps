@@ -8,7 +8,7 @@ import { summaryAgrees, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
-import { MIN_EXPIRES_AT_MS } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { testEntropy } from '../helpers/entropy';
 
 /**

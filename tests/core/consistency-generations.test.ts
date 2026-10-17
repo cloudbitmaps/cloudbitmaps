@@ -2,13 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  MIN_EXPIRES_AT_MS,
-  CloudRoaring,
-  MemoryStorage,
-  TransientError,
-  ValidationError,
-} from '@/index';
+import { CloudRoaring, MemoryStorage, TransientError, ValidationError } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { brandAsBackend } from '@/core/ports';
 import type {
   GenKey,

@@ -3,7 +3,8 @@ vi.mock('@/core/crbm/reader', async (original) =>
 );
 import { randomBytes } from 'node:crypto';
 import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
-import type { Clock, IKeystore, SegmentRef } from '@/index';
+import type { Clock, SegmentRef } from '@/index';
+import type { IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord } from '@/core/ports';
 import { NotFoundError } from '@/core/errors';

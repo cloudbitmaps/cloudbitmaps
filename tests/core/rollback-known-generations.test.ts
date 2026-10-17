@@ -25,7 +25,8 @@ import type {
 import { openSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { MIN_EXPIRES_AT_MS, RecordingAuditSink } from '@/index';
+import { RecordingAuditSink } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import type { AuditEvent } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

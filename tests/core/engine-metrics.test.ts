@@ -2,13 +2,14 @@ import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import {
   CloudRoaring,
   CountingMetricsSink,
-  CrbmStorageChunkSource,
   MemoryStorage,
   TransientError,
   ValidationError,
 } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { IMetricsSink } from '@/index';
-import type { ChunkRef, Clock, StorageChunkSource, Rng, SegmentRef } from '@/index';
+import type { Clock, Rng, SegmentRef } from '@/index';
+import type { ChunkRef, StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';
 import { BoundedLru } from '@cloudbitmaps/core';

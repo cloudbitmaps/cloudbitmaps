@@ -34,7 +34,7 @@ import { requireCodec } from '../core/codec';
 import type { IRegistryDriver, SegmentRef } from '../core/ports';
 import { validateUserNamespace, validateSegmentRef } from '../core/validate';
 
-/** Output format for {@link runExport} / `CloudRoaring.exportSegments`. */
+/** Output format for `CloudRoaring.exportSegments`. */
 export type ExportFormat = 'roaring' | 'ndjson';
 
 /** A writer for one segment's output — inject a filesystem file, an S3 upload, stdout, or a test buffer. */
@@ -95,7 +95,7 @@ export interface ExportSkipped {
   readonly reason: 'destroyed';
 }
 
-/** What {@link runExport} produced — a self-describing summary the CLI persists as `manifest.json`. */
+/** What `CloudRoaring.exportSegments` produced — a self-describing summary the CLI persists as `manifest.json`. */
 export interface ExportManifest {
   /** Schema version of this manifest shape (currently `1`) — insurance for evolving the format post-1.0. */
   readonly version: number;

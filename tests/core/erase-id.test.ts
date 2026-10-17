@@ -5,7 +5,13 @@ import { openGenerationReader } from '@/core/crbm-open';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, RecordingAuditSink } from '@/index';
-import type { GenKey, IStorageDriver, IKeystore, SegmentRef, StorageDeleteOptions } from '@/index';
+import type { SegmentRef } from '@/index';
+import type {
+  GenKey,
+  IStorageDriver,
+  IKeystore,
+  StorageDeleteOptions,
+} from '@cloudbitmaps/core/driver-kit';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

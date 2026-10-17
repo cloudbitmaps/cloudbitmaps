@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { S3StorageDriver } from '@/s3/storage';
 import { ValidationError, WriteConflictError } from '@/core/errors';
-import type { GenKey } from '@/index';
+import type { GenKey } from '@cloudbitmaps/core/driver-kit';
 import type { S3Client } from '@aws-sdk/client-s3';
 
 const KEY: GenKey = { segment: 's', generation: 0 };

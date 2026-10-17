@@ -4,11 +4,13 @@
  * gate opens, so the order is the code's and not the clock's.
  */
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { brandAsBackend } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
-import type { IKeystore, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IKeystore, IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 

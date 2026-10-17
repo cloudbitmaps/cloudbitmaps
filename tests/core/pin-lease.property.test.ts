@@ -15,7 +15,7 @@ import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { MIN_EXPIRES_AT_MS } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { roaringCodec } from '@/roaring-codec';
 import { testEntropy } from '../helpers/entropy';
 
