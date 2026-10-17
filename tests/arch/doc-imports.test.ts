@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
  * The scanner `scripts/smoke.cjs` finds the docs' imports with, fired at planted inputs in BOTH directions.
  *
  * The smoke test compiles what this finds against the built packages, so a form it misses is a sample nobody
- * compiles: a guide can import a name the package no longer exports, and the check stays green. A form it matches
+ * compiles: a guide can import a name its package does not export, and the check stays green. A form it matches
  * wrongly is the other failure: a line that is not an import becomes a compile error asserting something false, and
  * the remedy a contributor reaches for is to reword the page. Every form it must read and must pass is planted here.
  */

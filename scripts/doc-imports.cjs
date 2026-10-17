@@ -5,7 +5,7 @@
  * directions: a scanner that silently stops matching leaves the check green with nothing compiled.
  *
  * WHY THE CHECK EXISTS. The smoke test already compiles every `exports` entry, so a lost entry or a broken `.d.ts`
- * fails it. It cannot see a sample in a guide that imports a name the package no longer exports: that sample
+ * fails it. It cannot see a sample in a guide that imports a name its package does not export: that sample
  * fails on the first line a reader copies, and nothing else in the repository compiles it.
  *
  * WHAT IT READS. The pages a reader copies samples from: the root README, every page of `docs/guide/` and every
