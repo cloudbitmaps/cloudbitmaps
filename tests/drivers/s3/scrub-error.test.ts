@@ -1,6 +1,6 @@
 import { types } from 'node:util';
 import { NoSuchKey, S3ServiceException } from '@aws-sdk/client-s3';
-import { ValidationError, isValidationError } from '@cloudbitmaps/core/driver-kit';
+import { ValidationError, errorKind } from '@cloudbitmaps/core/driver-kit';
 import { scrubCredentials } from '@/s3/scrub-error';
 
 // Every credential-looking value is built at run time, so the leak scan never reads one in this file.
@@ -188,7 +188,7 @@ describe('S3 scrubCredentials', () => {
     const err = new ValidationError(`no segment x-amz-security-token=${TOKEN}`);
     const out = scrubCredentials(err);
     expect(out).not.toBe(err);
-    expect(isValidationError(out)).toBe(true);
+    expect(errorKind(out)).toBe('ValidationError');
     expect(out).toBeInstanceOf(ValidationError);
     expect(out.message).toBe('no segment x-amz-security-token=[redacted]');
   });

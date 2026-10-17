@@ -2,12 +2,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { types } from 'node:util';
 import { RestError, type ContainerClient } from '@azure/storage-blob';
-import {
-  isTransientError,
-  isTransportFault,
-  isValidationError,
-  toTransient,
-} from '@cloudbitmaps/core/driver-kit';
+import { isTransportFault, toTransient, errorKind } from '@cloudbitmaps/core/driver-kit';
 import {
   asMissingContainer,
   isConditionalConflict,
@@ -77,8 +72,8 @@ function classify(err: unknown, withMessage: boolean): Record<string, unknown> {
     ...(withMessage ? { message: (err as Error).message } : {}),
     mapped: {
       same: mapped === err,
-      transient: isTransientError(mapped),
-      validation: isValidationError(mapped),
+      transient: errorKind(mapped) === 'TransientError',
+      validation: errorKind(mapped) === 'ValidationError',
       message: (mapped as Error).message,
     },
   };
