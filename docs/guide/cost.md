@@ -197,8 +197,8 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   that loses a race to another writer reads the pointer again, and a load whose check finds the number taken (a
   crashed load's object, or the generations a rollback left above the pointer) lists the segment to number past it
   and lists again to collect, two PUT-class requests and two more pointer reads. So does every load with a `keep`
-  above 64, whose window a row does not record and which therefore lists to collect: one more PUT-class request and two more
-  pointer reads than a load that deletes by name, and one check fewer, which the model prices. The first load over a row with a pointer and no ledger (a registry restored without one) lists twice when its number was free (once to seed the ledger, once to collect) and writes the window a count by `keep` keeps in the same write as the pointer, with no separate write, after one 104-byte footer read for each generation it keeps and each live-leased one beside them, run eight at a time, and, when it has a clock, one more read of the row just before, for the leases. A load after a rollback lists twice when the generations the rollback left above the pointer hold its number (once to number past them, once to collect), and otherwise lists only to collect where its `keep` calls for a listing.
+  above 64, whose window is wider than the 64 generations a load deletes by name from and which therefore lists to collect: one more PUT-class request and two more
+  pointer reads than a load that deletes by name, and one check fewer, which the model does not price: it counts a load at a `keep` from 1 to 64. The first load over a row with a pointer and no ledger (a registry restored without one) lists twice when its number was free (once to seed the ledger, once to collect) and writes the window a count by `keep` keeps in the same write as the pointer, with no separate write, after one 104-byte footer read for each generation it keeps and each live-leased one beside them, run eight at a time, and, when it has a clock, one more read of the row just before, for the leases. A load after a rollback lists twice when the generations the rollback left above the pointer hold its number (once to number past them, once to collect), and otherwise lists only to collect where its `keep` calls for a listing.
   These are a cleartext segment's counts: an encrypted segment's load reads its row once more, after its ids and
   before it unwraps the key, one more GET ($0.40 per million at the default prices), which the model leaves out, as
   it leaves out the key-management calls an encrypted load makes. Loads are cheap by construction: a thousand
@@ -323,7 +323,7 @@ At the default prices that is $12.00 per million loads that delete by name (2 ×
 load in sixteen lists the segment to collect instead: 3 PUT-class requests, 6 GETs and the delete, 10 requests; a load
 that lists costs $17.40 a million. Averaged over a whole cycle of 16 loads, a load makes 130 / 16 = 8.125 of these
 requests and costs (15 × $12.00 by name + $17.40 for the listing load) / 16. That is $12.34 per million single-part
-loads on average (**derived**, as the run's table is priced beneath it). The price does not shrink with the segment: a
+loads on average (**derived**, as the benchmarks page derives it under the run's table). The price does not shrink with the segment: a
 segment of a few hundred ids pays the same requests as a megabyte one, and for a small segment the requests, not the
 bytes, are the bill.
 
@@ -334,7 +334,7 @@ Cost is therefore segments × refreshes × $12.34 per million (**derived**, work
 | 100,000 | 4 times a day | 100,000 × 4 × 30 = 12,000,000 | 12,000,000 × 8.125 = 97,500,000 | 12 × $12.34 = $148.08 |
 | 100,000 | every hour | 100,000 × 24 × 30 = 72,000,000 | 72,000,000 × 8.125 = 585,000,000 | 72 × $12.34 = $888.48 |
 
-`estimateCost()` counts a month as 730 hours, so it gives about 1.4% more loads than these rows. The figures leave out
+The figures leave out
 storage and the reads your readers make, and assume a cleartext segment on S3 at list prices (an encrypted load adds a
 GET and key-management calls). They price the pointer's reads and write as S3 requests, which they are with the S3
 driver, whose registry rows live in the bucket; a registry of your own bills its own way.
@@ -353,8 +353,9 @@ driver, whose registry rows live in the bucket; a registry of your own bills its
 - **Publish only what changed.** `load()` never compares: loading the ids a segment already holds writes a newer
   generation of the same ids and pays every request above. Nothing in `guard` (`minCardinality`, `minRetained`,
   `maxGrowth`) skips an unchanged publish, and `load()` has no dry run, so detect change in your own code and call
-  `load()` only when the source moved. One way is to record the source's version (a timestamp, an ETag, a sequence
-  number) in the load's `metadata`, which the same write that moves the pointer stores, and compare it with what
+  `load()` only when the source moved. One way is to record the source's version (a modification time, an object version
+  id, a sequence number, a run id; not an ETag or a checksum of a file of the ids, which is a digest of them) in the
+  load's `metadata`, which the same write that moves the pointer stores, and compare it with what
   `seg.stat()` returns before the next load: one registry read, $0.40 a million (**derived**), against the $12.34 of the
   load it skips. Keep anything derived from the ids themselves, such as a digest, out of `metadata`: an erasure carries
   metadata over unchanged ([the loading guide](loading.md#metadata-what-a-generation-was-computed-from) says why).
@@ -363,7 +364,10 @@ driver, whose registry rows live in the bucket; a registry of your own bills its
 - **Keep `keep` at 64 or less.** At any `keep` from 1 to 64 a load makes the same requests and deletes one generation;
   a lower `keep` saves storage, one whole copy for each generation fewer (the default is 1). `keep: 0` also skips the
   zero-byte check of the generation it supersedes, which it deletes at once: $11.60 a million by name and $11.96
-  averaged over a cycle (**derived**), at the cost of leaving no earlier generation for a rollback. A `keep` above 64 is
+  averaged over a cycle (**derived**), at the cost of leaving no earlier generation for a rollback, and of making a
+  read still fetching from the superseded generation resolve again, and a pin of it fail, for any chunk not yet fetched;
+  the [loading guide](loading.md#generations-and-keep) keeps `keep: 0` for a large segment, where a re-read is cheaper
+  than a second copy. A `keep` above 64 is
   the one load option that adds requests: a load deletes by name only from a window of at most 64, so every load lists
   to collect, as the sixteenth of a cycle does, and costs what that load costs, $17.40 a million (**derived**). That is
   one more PUT-class request and two more pointer reads than a load that deletes by name, and one check fewer: $5.40 a
