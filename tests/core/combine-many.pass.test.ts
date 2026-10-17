@@ -22,6 +22,7 @@ import type { MetricEvent } from '@/core/metrics';
 import type { ChunkRead, ReadChunksOptions, SegmentRef, StorageChunkSource } from '@/core/ports';
 import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
+import { reachSite } from '../helpers/force-refusal';
 import { collecting, request, runBatch, seed } from '../helpers/combine-many';
 import type { Published } from '../helpers/combine-many';
 import { joinId } from '@/core/bit-route';
@@ -418,6 +419,24 @@ describe('the memory ledger', () => {
     r.outputs.forEach((o) => expect(ok(o).ids).toHaveLength(6 * 20_000));
   });
 
+  it('refuses a re-run past the request budget, counting the reads already taken with those it needs', async () => {
+    // A lying index puts 40 outputs in one group that outgrows the ledger: the evicted ones run again, and that second
+    // read of the six chunks passes a budget of 10 after the first took 6.
+    const error = await run(
+      liar(),
+      ['a'],
+      Array.from({ length: 40 }, () => ({ expr: 'a' })),
+      {
+        maxBufferedBytes: 600_000,
+        budget: { maxRequests: 10 },
+      },
+    ).then((r) => r.outputs.map((o) => (o as { error?: unknown }).error).find(Boolean));
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 10, spent: 12 });
+    expect((error as Error).message).toContain('would read 6 more chunks');
+    expect((error as Error).message).toContain('(6 read)');
+  });
+
   it('an output that cannot fit alone has BudgetExceededError, and the others publish', async () => {
     const source = liar();
     source.table.small = { 0: bytesOf([1, 2, 3]) };
@@ -426,8 +445,7 @@ describe('the memory ledger', () => {
     });
     const refused = (r.outputs[0] as { error: BudgetExceededError }).error;
     expect(refused).toBeInstanceOf(BudgetExceededError);
-    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 40_000 });
-    expect(refused.spent).toBeGreaterThan(40_000);
+    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 40_000, spent: 45552 });
     expect(ok(r.outputs[1]!).ids).toEqual([1, 2, 3]);
     expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(40_000);
   });
@@ -438,9 +456,8 @@ describe('the memory ledger', () => {
     const error = (r.outputs[0] as { error: BudgetExceededError }).error;
     expect(error.message).toMatch(/raise maxBufferedBytes to at least \d+/);
     // The refusal's `spent` is the very figure the message names as the least that would let the output through.
-    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 10_000 });
+    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 10_000, spent: 109246 });
     expect(error.message).toContain(`to at least ${error.spent}`);
-    expect(error.spent).toBeGreaterThan(10_000);
     expect(source.opens).toEqual([]);
   });
 
@@ -710,11 +727,8 @@ describe('budgets and absent operands', () => {
       { source: setup.source, codec: roaringCodec, clock },
     ).catch((e: unknown) => e);
     // `spent` is the count the plan needs, which the message states too.
-    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 2 });
-    expect((error as BudgetExceededError).spent).toBeGreaterThan(2);
-    expect((error as Error).message).toContain(
-      `would read ${(error as BudgetExceededError).spent} chunks`,
-    );
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 2, spent: 3 });
+    expect((error as Error).message).toContain('would read 3 chunks');
   });
 
   it('lifts the limit with budget null', async () => {
@@ -858,8 +872,7 @@ describe('the plan is charged to the budget', () => {
       compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })),
       { source, codec: roaringCodec, clock },
     ).catch((e: unknown) => e);
-    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 100_000 });
-    expect((refused as BudgetExceededError).spent).toBeGreaterThan(100_000);
+    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 100_000, spent: 100220 });
     expect(source.opened).toEqual([]);
     await expect(
       runCombineMany(compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })), {
@@ -1139,5 +1152,29 @@ describe('pruning counts an operand a group names and never reads', () => {
     ]);
     expect(r.run.stats.groups).toBe(1);
     expect(r.run.stats.chunks.pruned).toBe(4);
+  });
+});
+
+describe('each memory refusal reports what the ledger held plus the charge it refused', () => {
+  const limit = 256 << 20;
+  // The publish refusal of a stored output runs it again alone first, so it is held in the feed tests, where it is final.
+  const sites: Array<[string, RegExp]> = [
+    ['the operand streams', /^materializeMany: the operand streams would hold/],
+    ['an operand chunk', /^materializeMany: operand "o0" at chunk \d+ would hold/],
+    ['an output chunk', /^materializeMany: output 0 would hold/],
+    ['a chunk being evaluated', /^materializeMany: a chunk being evaluated would hold/],
+  ];
+
+  it.each(sites)('%s', async (_name, site) => {
+    const { error, forced } = await reachSite(site, () => {
+      const table = { o0: Object.fromEntries([0, 1].map((k) => [k, bytesOf([1, 2, 3])])) };
+      return run(new TableSource(table), ['o0'], [{ expr: 'o0' }], { maxBufferedBytes: limit });
+    });
+    expect(error.option).toBe('maxBufferedBytes');
+    expect(error.limit).toBe(limit);
+    // `spent` is the ledger's holding at the refusal plus the charge it refused, exactly.
+    expect(forced).toHaveLength(1);
+    expect(error.spent).toBe(forced[0]!.used + forced[0]!.asked);
+    expect(error.spent).toBeGreaterThan(0);
   });
 });

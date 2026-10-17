@@ -350,7 +350,8 @@ async function rowsFromDueIndex(
           `retireExpired: the due index yielded more than ${options.maxScanSegments} segments — the scan was ` +
             `abandoned there rather than completed. Raise \`maxScanSegments\`, narrow with \`namespace\`, or ` +
             `reduce \`lookbackBuckets\`.`,
-          // The scan stops at the first row past the bound, so `spent` is a lower bound on the true total.
+          // The scan refuses at the first pointer past the bound, before reading it, so `spent` is that pointer
+          // counted with the rows held. A stale pointer counts too, so it can pass the live rows by one.
           { option: 'maxScanSegments', limit: options.maxScanSegments, spent: rows.length + 1 },
         );
       }

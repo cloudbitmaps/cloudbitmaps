@@ -432,12 +432,6 @@ export async function runConsistencyCheck(
     namespace: options.namespace,
     maxScanSegments,
     op: 'checkConsistency',
-    // Two callers reach this refusal, and only one of them can raise the ceiling: `store.checkConsistency` takes
-    // no `maxScanSegments`, so the advice names the call that does.
-    raise:
-      'raise `maxScanSegments` on `runConsistencyCheck` (`store.checkConsistency` takes no ceiling, so run ' +
-      '`runConsistencyCheck({ storage: backend.storage, registry: backend.registry }, { maxScanSegments })` ' +
-      'over the same backend instead)',
   });
   const summaries = options.summaries === true;
   const generations = options.generations === true;

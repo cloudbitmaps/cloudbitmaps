@@ -94,5 +94,13 @@
   {
     "entry": "@cloudbitmaps/core/driver-kit isWriteConflictError",
     "reason": "replaced by errorKind(err), exported from this entry too, which classifies an error across copies of the package the same way the predicate did: use `errorKind(err) === 'WriteConflictError'`"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring BudgetExceededError.constructor",
+    "reason": "the constructor takes (message, { option, limit, spent }); it inherited (message) before, so code that builds one, such as a test double, now passes the option name and the two numbers"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.checkConsistency",
+    "reason": "takes an optional maxScanSegments, as retireExpired does, so the scan's ceiling can be raised on the store method; nothing that called it before changes"
   }
 ]

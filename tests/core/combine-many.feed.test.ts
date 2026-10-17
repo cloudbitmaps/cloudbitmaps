@@ -675,8 +675,11 @@ describe('memory', () => {
     });
     expect(error(run.outputs[0]!)).toBeInstanceOf(BudgetExceededError);
     expect(error(run.outputs[0]!).message).toMatch(/maxBufferedBytes/);
-    expect(error(run.outputs[0]!)).toMatchObject({ option: 'maxBufferedBytes', limit: budget });
-    expect((error(run.outputs[0]!) as BudgetExceededError).spent).toBeGreaterThan(budget);
+    expect(error(run.outputs[0]!)).toMatchObject({
+      option: 'maxBufferedBytes',
+      limit: budget,
+      spent: 128010,
+    });
     expect(pulled.taken).toBeLessThan(30);
     expect(pulled.returnedEarly).toBe(true);
     expect(run.stats.memory.highWaterBytes).toBeLessThanOrEqual(budget);
@@ -705,8 +708,11 @@ describe('memory', () => {
     for (const i of [0, 1]) {
       expect(error(run.outputs[i]!)).toBeInstanceOf(BudgetExceededError);
       expect(error(run.outputs[i]!).message).toMatch(/the feed and the fed outputs/);
-      expect(error(run.outputs[i]!)).toMatchObject({ option: 'maxBufferedBytes', limit: budget });
-      expect((error(run.outputs[i]!) as BudgetExceededError).spent).toBeGreaterThan(budget);
+      expect(error(run.outputs[i]!)).toMatchObject({
+        option: 'maxBufferedBytes',
+        limit: budget,
+        spent: 251422,
+      });
     }
     expect(pulled.returnedEarly).toBe(true);
     expect(pulled.taken).toBeLessThan(keys);
@@ -736,8 +742,11 @@ describe('memory', () => {
     expect(pulled.finished).toBe(true);
     expect(error(run.outputs[0]!)).toBeInstanceOf(BudgetExceededError);
     expect(error(run.outputs[0]!).message).toMatch(/publishing output 0/);
-    expect(error(run.outputs[0]!)).toMatchObject({ option: 'maxBufferedBytes', limit: budget });
-    expect((error(run.outputs[0]!) as BudgetExceededError).spent).toBeGreaterThan(budget);
+    expect(error(run.outputs[0]!)).toMatchObject({
+      option: 'maxBufferedBytes',
+      limit: budget,
+      spent: 474052,
+    });
     expect(ok(run.outputs[1]!).ids.length).toBe(3000 * keys);
     expect(ok(run.outputs[2]!).ids).toEqual(at(2, [1, 2]));
     expect(run.stats.memory.highWaterBytes).toBeLessThanOrEqual(budget);

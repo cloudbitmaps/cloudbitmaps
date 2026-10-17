@@ -134,17 +134,31 @@ export class CapabilityError extends CloudRoaringError {}
  * Each request's bytes are separately capped (the safe-deserialize ceiling), so bounding the request count
  * transitively bounds bytes.
  *
- * Carries three numbers and no data: `option` names the option to raise, `limit` is the bound in force, and
- * `spent` is the count or byte total the call reached when it was refused. `spent` is exact for a refusal made
- * before any fan-out; where the call is abandoned while it counts (a scan stopped at the bound) it is a lower
- * bound, `limit + 1`. The message states the same limit.
+ * Carries an option name and two numbers, and no data: `option` names the option to raise, `limit` is the bound in
+ * force, and `spent` is what the call had reached when it was refused. What `spent` measures depends on `option`:
+ *
+ * - `'budget.maxRequests'`: the requests the call needs, which raising the option to it lets through. For a plan, it
+ *   is the planned reads (with the reads already taken, when a run plans again); an enumeration that
+ *   stops at the bound reports `limit + 1`, a lower bound.
+ * - `'maxBufferedBytes'`: a **lower bound** on the bytes the call needs resident: what it held plus what it asked
+ *   for at the moment it was refused. Raising the limit to `spent` can be refused again, further on, because the
+ *   call had not finished growing. The one figure that lets an output through is the per-output refusal's, which
+ *   the message gives as "raise maxBufferedBytes to at least N". Otherwise raise the limit with room to spare, or
+ *   split the outputs across calls.
+ * - `'maxScanSegments'`: `limit + 1`, a lower bound: the scan stops at the first row past the bound, so it never
+ *   learns the fleet's size.
+ *
+ * The message states the same limit.
  */
 export class BudgetExceededError extends CloudRoaringError {
   /** The option to raise to let the call through. */
   readonly option: 'budget.maxRequests' | 'maxBufferedBytes' | 'maxScanSegments';
   /** The bound in force: requests, bytes or rows, by `option`. */
   readonly limit: number;
-  /** What the call reached when refused: exact before a fan-out, a lower bound (`limit + 1`) for an abandoned scan. */
+  /**
+   * What the call had reached when refused. By `option`: the requests the call needs (`'budget.maxRequests'`), a
+   * lower bound on the resident bytes it needs (`'maxBufferedBytes'`), or `limit + 1` (`'maxScanSegments'`).
+   */
   readonly spent: number;
   constructor(
     message: string,

@@ -6,7 +6,7 @@
  * being safe to add a second index at all.
  */
 import { describe, expect, it } from 'vitest';
-import { type SegmentRef } from '@/index';
+import { BudgetExceededError, type SegmentRef } from '@/index';
 import { drainRegistry } from '@/core/registry-scan';
 import { dueBucket, dueIndexRef, dueNamespace } from '@/core/due-index';
 import { loadedStore } from '../helpers/loaded';
@@ -207,5 +207,20 @@ describe('due index — an index scan holds a bounded number of stray pointers',
     advance(2 * DAY);
     const res = await store.retireExpired({ scan: 'index', maxScanSegments: 2 });
     expect(res).toMatchObject({ retired: 1, eligible: 1 });
+  });
+
+  it('refuses past the bound with the option, the limit and the pointer that passed it', async () => {
+    const { store, advance } = await harness();
+    const expiresAt = T0 + DAY;
+    for (const segment of ['a', 'b', 'c']) {
+      await store.setRetention({ namespace: 'active', segment }, { expiresAt });
+    }
+    advance(2 * DAY);
+    const error = await store
+      .retireExpired({ scan: 'index', maxScanSegments: 2 })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error).toMatchObject({ option: 'maxScanSegments', limit: 2, spent: 3 });
+    expect((error as Error).message).toContain('the due index yielded more than 2 segments');
   });
 });

@@ -60,7 +60,7 @@ describe('consistency check bounds its registry scan', () => {
     expect(error).toMatchObject({ option: 'maxScanSegments', limit: 5, spent: 6 });
   });
 
-  it('the retention sweep carries the same three fields', async () => {
+  it("the retention sweep's fleet scan carries the same three fields", async () => {
     const error = await retireExpired(depsWith(registryOf(3)), {
       now: MIN_EXPIRES_AT_MS,
       maxScanSegments: 2,
@@ -87,11 +87,10 @@ describe('consistency check bounds its registry scan', () => {
     expect(reg.yielded()).toBe(0);
   });
 
-  it('names a call that takes the ceiling, when the store method that ran it does not', async () => {
-    // `store.checkConsistency` takes no `maxScanSegments`, so advice to raise it would send the caller to an option
-    // that does not exist. The refusal has to name where the ceiling can be raised: `runConsistencyCheck`.
+  /** A store over a registry that lists `count` rows, and the registry's own record of how far it was read. */
+  const storeOver = (count: number) => {
     const backend = new MemoryStorage();
-    const reg = registryOf(DEFAULT_MAX_SCAN_SEGMENTS + 1);
+    const reg = registryOf(count);
     const registry = new Proxy(backend.registry, {
       get: (t, p, rx) => (p === 'list' ? () => reg.list() : (Reflect.get(t, p, rx) as unknown)),
     });
@@ -99,13 +98,48 @@ describe('consistency check bounds its registry scan', () => {
       storage: brandAsBackend({ storage: backend.storage, registry }),
       retry: false,
     });
+    return { store, reg };
+  };
+
+  it('the store method takes the ceiling, and refuses past the default with exact fields', async () => {
+    const { store, reg } = storeOver(DEFAULT_MAX_SCAN_SEGMENTS + 1);
     const err = (await store.checkConsistency().catch((e: unknown) => e)) as Error;
     expect(err).toBeInstanceOf(BudgetExceededError);
+    expect(err).toMatchObject({
+      option: 'maxScanSegments',
+      limit: DEFAULT_MAX_SCAN_SEGMENTS,
+      spent: DEFAULT_MAX_SCAN_SEGMENTS + 1,
+    });
     expect(err.message).toContain(String(DEFAULT_MAX_SCAN_SEGMENTS));
     expect(err.message).toContain('namespace');
-    expect(err.message).toMatch(/raise `maxScanSegments` on `runConsistencyCheck`/);
-    expect(err.message).toMatch(/`store\.checkConsistency` takes no ceiling/);
+    expect(err.message).toMatch(/raise `maxScanSegments`/);
+    expect(err.message).not.toContain('runConsistencyCheck');
     expect(reg.yielded()).toBe(DEFAULT_MAX_SCAN_SEGMENTS + 1);
+  });
+
+  it('store.checkConsistency refuses at a lower maxScanSegments with its limit and a lower bound', async () => {
+    const { store, reg } = storeOver(100);
+    const err = await store.checkConsistency({ maxScanSegments: 4 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BudgetExceededError);
+    expect(err).toMatchObject({ option: 'maxScanSegments', limit: 4, spent: 5 });
+    expect(reg.yielded()).toBe(5);
+  });
+
+  it('store.checkConsistency passes with a higher maxScanSegments', async () => {
+    const { store } = storeOver(3);
+    await expect(store.checkConsistency({ maxScanSegments: 3 })).resolves.toMatchObject({
+      checked: expect.any(Number) as number,
+    });
+  });
+
+  it('store.checkConsistency refuses a bad maxScanSegments before any request', async () => {
+    const { store, reg } = storeOver(100);
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      await expect(store.checkConsistency({ maxScanSegments: bad })).rejects.toThrow(
+        /maxScanSegments/,
+      );
+    }
+    expect(reg.yielded()).toBe(0);
   });
 
   it('still tells a caller that takes the ceiling itself to raise it', async () => {

@@ -41,11 +41,6 @@ export async function drainRegistry(
     maxScanSegments: number;
     op: string;
     /**
-     * How a caller of `op` raises the ceiling, completing "Narrow it with `namespace`, or …" in the refusal.
-     * Defaults to raising `maxScanSegments`, which is right wherever `op` takes that option itself.
-     */
-    raise?: string;
-    /**
      * Whether the caller could scope the scan down to a `namespace`. Defaults to true; `eraseNamespace` is already
      * one namespace, so it passes false and the refusal does not tell it to narrow what it cannot.
      */
@@ -60,7 +55,7 @@ export async function drainRegistry(
 ): Promise<RegistryRecord[]> {
   const { maxScanSegments, op } = options;
   validateMaxScanSegments(maxScanSegments, op);
-  const raise = options.raise ?? 'raise `maxScanSegments`';
+  const raise = 'raise `maxScanSegments`';
   const advice =
     options.narrowable === false
       ? `${raise[0]!.toUpperCase()}${raise.slice(1)} if the namespace really is that large and the memory is `
