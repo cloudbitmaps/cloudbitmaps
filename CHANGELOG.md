@@ -124,6 +124,10 @@ so, and so do the module headers in the code.
   package in a process.
 ### Added
 
+- **How it stays correct, [`docs/guide/correctness.md`](docs/guide/correctness.md).** The guides' mechanism sections
+  and the catalogue of a load's refusals, on one page: what a refused load means and what to do about it, and how a
+  load, a pin, the retention sweep, an erasure, encryption and the drivers' retries stay correct. Each guide keeps a
+  one-paragraph summary of its part and a link.
 - **`@cloudbitmaps/core/driver-kit` exports every type its own signatures and the store's ports name.** A registry that
   does not extend `ObjectStoreRegistry`, a read source of your own and a keystore are written against it alone, where
   they needed core's main entry: the registry row and its writes (`Token`, `RegCaps`, `RegistryRecord`,
@@ -303,9 +307,9 @@ so, and so do the module headers in the code.
   and `eraseSubject` dropped that answer without a note, so nothing told the operator to run it again. It now answers
   `'superseded'`, the answer that says the row moved on and a re-run is needed, and `eraseSubject` notes it; the re-run
   searches the bucket and erases the id. `'no-generation'` is unchanged for a row the call first read with no
-  generation and whose bucket holds nothing that holds the id. The erasure guide's bound on collecting again now states
-  the code's: at most six collections, the first and five more, whether or not a write was lost, where it said five
-  lost writes.
+  generation and whose bucket holds nothing that holds the id. The bound on collecting again in
+  [how an erasure stays correct](docs/guide/correctness.md#how-an-erasure-stays-correct) now states the code's: at most
+  six collections, the first and five more, whether or not a write was lost, where it said five lost writes.
 
 - **The install docs allowed `roaring`'s install script in a place pnpm 11 and 12 do not read, and said every
   unallowed install exits 0.** With pnpm 11 or 12 the `package.json` block

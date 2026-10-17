@@ -255,7 +255,7 @@ the id, and a load, and because the store can open a generation some time after 
 from the row opens nothing, and the read after it opens whatever object is under the number by then. An object that is
 not the one the row named is a move: the read resolves the row again and reads what it names now, and never serves
 the other object, so a load that was refused, or whose publish
-[got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
+[got no answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
 earlier generation. A chunk cached from one object is never served for another, as far as their sizes and footer
 checksums tell them apart, so a read does not mix the two. A segment reopened after the reader cache let it go is the
 same object, and its cached chunks still answer; with a timed refresh it is reopened from the resolution the store
@@ -456,7 +456,7 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   the row's token, which a load, an erasure rewrite, a shred, a drop, a rollback and a retention write are fenced on.
   None of them is refused by it: a row that differs from the one the writer read only in its leases does not refuse the
   writer, which goes on against the row it finds, after a jittered wait and without redoing its work
-  ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one write per job, not per read, and its
+  ([how a load stays correct](correctness.md#how-a-load-stays-correct)). A lease is one write per job, not per read, and its
   release is one more. Neither changes the row's `pointerId`, so a store reading the segment keeps its open reader and
   its cached chunks across both: its next pointer refresh reads the row and nothing else.
 - **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment
@@ -465,52 +465,13 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
 
 ### How a pin stays correct
 
-- **A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every
-  other reader. Its decoded chunks share the store's chunk cache and its bound, under keys of their own that no live
-  read writes. So a pin is never handed a chunk a live read fetched from another generation, and it pays one GET for a
-  chunk a live read of its generation already cached. A small generation's reader also holds that generation's
-  chunk bytes, which count in the reader cache's byte bound.
-- **One call reads a segment at one generation.** A combine that holds the same segment at two generations is refused
-  with `ValidationError` when it is read, as a combine's other errors are. That covers pins of two generations, pins of
-  one generation number in two incarnations of its name, and a pin beside a live handle of the same segment.
-  Materialize one side first with `intersectInto(dest, [])`. Two pins of one object combine freely, and an `*Into` of a
-  combine that is refused throws before it reads anything.
-- **A pin is safe across a re-creation.** `pin()` records the pinned object's size and footer checksum. If the segment
-  is purged and loaded again, which starts the new segment at generation 0 again, the pin never reads the new
-  segment: what it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, with
-  or without a registry. An object of another size counts as another object, damaged or not. A replacement it has
-  found is remembered, so later reads fail with no request, until the store forgets it. `store.invalidate(ref)` does
-  that, and so does a later `pin()` of the same version that opens the pinned object again. The store remembers at most
-  `cache.readerMax` of them. So once a restore puts the object back, invalidate its store: the pin then reads it
-  again, and a pin taken after that reads the object then stored as its generation.
-- **`pin()` opens its reader as it pins.** With a registry, pins of one generation taken while its row is unchanged
-  share that reader while the store keeps it open, pins taken at the same moment included. Only the first costs a tail
-  read, and a key unwrap for an encrypted segment, even if it is never read. Without a registry, every `pin()` lists the
-  segment's objects and makes the tail read. `pin()` and every pinned read are retried as the store's reads are.
-- **A segment with no current generation pins nothing and reads empty.** A pinned segment whose row is later dropped or
-  destroyed fails with `NotFoundError` once it must open its object again, rather than going empty part-way through a
-  call.
-- **A pin answers from what it holds.** It keeps the key its reader unwrapped while that reader stays open, and
-  answers from the chunks it decoded while they stay cached, and, for a small generation, from the chunk bytes its
-  reader kept while the reader stays open. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
-  `dropSegment` of its segment. It also invalidates it on a `retireExpired` whose ledger lists its segment, retired or
-  not, and on an `eraseSubject` that scans its segment while it is not destroyed. A dry run of `dropSegment` or
-  `retireExpired` invalidates nothing. An invalidated pin opens its
-  object again, and fails if that object is gone or replaced, or its row is gone or destroyed. A read of the pin
-  already running when the invalidation comes, a combine on the same store with the pin as an operand included, looks
-  the pin up again before it hands out its next chunk: it carries on with what it holds where the object is still
-  there, and fails with `NotFoundError` where it is gone, so after an erasure it yields no more than [the bound a read
-  in progress has](erasure.md#who-stops-seeing-the-id-and-when). It caches nothing more of what it began reading before
-  the invalidation, so the pin's next read opens the object again too.
-
-  Anything else leaves it as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement
-  through another store, in the same process or another, it answers from what it holds. That lasts until its store's
-  reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
-  `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
-  fails at once, unless its reader kept the generation's chunks, which it serves until the reader is evicted. A
-  combine on another store refuses the pin.
-- **It needs a `.crbm` reader**: the store builds one over a backend, and over a bare `IStorageDriver`. A
-  `StorageChunkSource` of your own throws `UnsupportedError`.
+A pin shares the store's bounded reader and chunk caches, under keys of its own, so it is never handed a chunk a live
+read fetched from another generation. One call reads a segment at one generation: a combine that holds a segment at two
+generations is refused with `ValidationError`. A pin records its object's size and footer checksum, so it never reads a
+re-created segment's object, and where its object is gone or replaced a read that must fetch fails with `NotFoundError`
+rather than going empty part-way through a call. What invalidates a pin, what it answers from meanwhile, and what it
+needs are in
+[How a pin stays correct](correctness.md#how-a-pin-stays-correct).
 
 ## Read a chunk at a time: `batches()`
 

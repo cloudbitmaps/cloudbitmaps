@@ -15,7 +15,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 ## Run it
 
 - [**Before production**](production.md): the checklist, with permissions, lifecycle rules, timeouts and limits.
-- [**Loading in depth**](loading.md): why a load is refused, generations and `keep`, rollback, the `*Into` verbs, `materializeMany` and its feed.
+- [**Loading in depth**](loading.md): generations and `keep`, rollback, the `*Into` verbs, `materializeMany` and its feed, and a summary of why a load is refused.
 - [**Reading in depth**](reading.md): the combines, what a read costs, freshness, pins and paging.
 - [**Retention**](retention.md): expiring segments, the sweep you schedule, and why there is no per-id TTL.
 - [**Encryption at rest**](encryption.md): turning it on, key management, and crypto-shred.
@@ -28,7 +28,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 ## When something fails
 
 - [**Errors and what to do**](api-reference.md#errors-typed--you-catch-these): every error, what it means, and whether to retry.
-- [**A load was refused**](loading.md#when-a-load-is-refused): each `reason` and what to do.
+- [**A load was refused**](correctness.md#when-a-load-is-refused): each `reason` and what to do.
 - [**Install or import fails**](getting-started.md#troubleshooting): the native addon, and the deprecation warning.
 
 ## Decide
@@ -42,6 +42,9 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 
 - [**API reference**](api-reference.md): every export with its shape, kept in sync by CI with each package's own
   `exports` map. Its [errors table](api-reference.md#errors-typed--you-catch-these) says what to do about each error.
+- [**How it stays correct**](correctness.md): the mechanism behind the guides' guarantees under crashes, races and
+  faults, for a refused load, a load, a pin, retention, an erasure, encryption and the drivers' retries. Each guide
+  keeps a summary of its part.
 - Writing a storage driver? The [driver kit](api-reference.md#cloudbitmapscoredriver-kit) is the declared contract. The
   conformance suite the in-repo drivers are held to (`packages/roaring/src/testing/conformance.ts`) is not exported as a
   public subpath, so a third-party driver cannot yet run it.
