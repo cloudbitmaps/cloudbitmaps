@@ -405,10 +405,13 @@ function barrelExports(rel: string): Set<string> {
   return names;
 }
 
-/** An HTML page's text as a reader sees it: without its tags, and with its quotes and brackets decoded. */
+/**
+ * An HTML page's text as a reader sees it: without its tags, and with its quotes and brackets decoded. A tag that
+ * spans lines (a comment, an attribute list) leaves its line breaks, so a line number still points into the page.
+ */
 export function stripMarkup(html: string): string {
   return html
-    .replace(/<[^>]*>/g, '')
+    .replace(/<[^>]*>/g, (tag) => tag.replace(/[^\n]/g, ''))
     .replace(/&#39;|&apos;/g, "'")
     .replace(/&quot;/g, '"')
     .replace(/&lt;/g, '<')
@@ -752,6 +755,13 @@ describe('a name the flavor stopped exporting stays off it', () => {
     expect(flavorImports("a\n\nimport { Token } from '@cloudbitmaps/roaring';")).toEqual([
       { line: 3, name: 'Token' },
     ]);
+    expect(
+      flavorImports(
+        stripMarkup(
+          "<!-- a\ncomment -->\n<p>\n<code>import { Token } from '@cloudbitmaps/roaring';</code>",
+        ),
+      ),
+    ).toEqual([{ line: 4, name: 'Token' }]);
     expect(names("import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';")).toEqual(
       [],
     );
