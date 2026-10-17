@@ -261,9 +261,10 @@ const spread = (chunks: number, perChunk: number): number[] =>
 const WIDE_IDS = randomIds(300_000);
 
 /**
- * The encrypted wide segment, built once for the file, before its tests: sealing 300,000 ids chunk by chunk takes over a
- * second, which a loaded runner can stretch past a test's timeout. The tests that use it only read, so each one starts
- * from `reset()` with a store of its own (a cold cache).
+ * The encrypted wide segment, built once, before the tests of the block that uses it: sealing 300,000 ids chunk by chunk
+ * takes over a second, which a loaded runner can stretch past a test's timeout. The tests that use it only read, so each
+ * one starts from `reset()` with a store of its own (a cold cache). `reset()` keeps a `hint()`, so a test on this shared
+ * segment must not call one.
  */
 let encryptedWide: ReturnType<typeof wideWorld> | undefined;
 const encryptedWideWorld = async (): ReturnType<typeof wideWorld> => {
