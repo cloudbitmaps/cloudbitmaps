@@ -499,15 +499,16 @@ The error says which option to raise without parsing its message: `option` is th
 scan), `limit` is the bound that was in force and `spent` is what the call had reached. What `spent` tells you depends
 on the option:
 
-- `'budget.maxRequests'`: the requests the call needs. Raising the budget to it lets the call through (an enumeration
-  stopped at the bound reports `limit + 1`, a lower bound).
+- `'budget.maxRequests'`: the requests a plan needs. Raising the budget to it lets the call through, except for an
+  enumeration stopped at its bound (`subjectReport`, `eraseSubject`'s scan), which reports `limit + 1`, a lower bound:
+  raising the budget to it can be refused again, so raise it with room to spare.
 - `'maxBufferedBytes'`: a **lower bound** on the memory the call needs, namely what it held plus what it asked for at the
   moment it was refused. Raising the limit to `spent` can be refused again further on, because the call had not finished
   growing. The one figure that lets an output through is the per-output refusal's, whose message says "raise
   maxBufferedBytes to at least N". For any other `maxBufferedBytes` refusal, raise the limit with room to spare, or split
   the outputs across calls, rather than loop on `spent`.
 - `'maxScanSegments'`: `limit + 1`, a lower bound and not the size of the fleet: the scan stops at the first row past the
-  bound. Narrow it with `namespace`, or raise the limit.
+  bound (for the retention sweep's due-index scan, the first pointer, unread, which may be stale). Narrow it with `namespace`, or raise the limit.
 
 `option` is a string and the other two are numbers: the error carries no id, key or segment name.
 
@@ -536,8 +537,7 @@ index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader c
 `cache.readerMaxBytes` for a memory-tight deployment, such as a small Lambda function that reads across many wide segments. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and the key it unwrapped on an encrypted segment) until it moves on or ends, outside `readerMax` and `readerMaxBytes`: one reader per streamed operand, for as long as the read runs, so a process with many reads open at once holds that many readers more than the cache's bound. Both caches are keyed on the segment's generation and its row's `pointerId`, so a load's publish, a rollback or an erasure's rewrite makes each store reading the segment open its reader again at its next pointer refresh and fetch again the chunks it reads next, and a lease or a `setRetention` does not ([what a lease costs](reading.md#hold-a-generation-for-a-job-a-lease)). A store with a timed refresh also keeps each segment's resolution, the few hundred bytes of its row a read resolves through and never an unwrapped key; the wrapped keys are in it. It keeps them apart from its readers: up to 8 × `readerMax` of them within `readerMaxBytes` / 16, so 8,192 and 4 MiB by default ([what they hold](sizing.md#what-each-reader-holds)). A segment whose reader the cache let go is reopened from it with no registry read, when a read needs its index or a chunk the chunk cache does not hold, and on an encrypted segment the key is unwrapped again through the keystore.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29
-billion members. `maxScanSegments`, an option of `store.retireExpired` (`store.checkConsistency` holds the default of
-250,000), counts segments, not members: 500 audience segments count as 500, whatever their size.
+billion members. `maxScanSegments`, an option of `store.retireExpired` and `store.checkConsistency` (default 250,000), counts segments, not members: 500 audience segments count as 500, whatever their size.
 
 ## What blocks the event loop, and where to run it
 
