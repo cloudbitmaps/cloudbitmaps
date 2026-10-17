@@ -19,6 +19,8 @@ const SIZES_BEFORE_THE_REDUCTION: Record<HeavyName, number> = {
   retentionPurgeSegments: 10_000,
   eraseNamespaceScanRows: 250_000,
   combineLedgerSamples: 8_000,
+  // Added with the switch already in place: the size it was written at.
+  sortedLoadHeapIds: 10_000_000,
 };
 
 const TESTS = fileURLToPath(new URL('..', import.meta.url));

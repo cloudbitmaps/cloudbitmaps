@@ -140,8 +140,9 @@ means being an early user.
 - You want an addressable bit buffer. `BITPOS`, `BITFIELD` and `BITOP NOT` have no equivalent, and the stored bytes
   are not a flat bit array.
 
-A load is a batch job, not a request handler: it replaces a whole segment and holds the set in memory while it runs.
-If you need fresher data, shorten the load interval. Coming from Redis bitmaps? See
+A load is a batch job, not a request handler: it replaces a whole segment and holds the set in memory while it runs,
+unless its ids already ascend and it is given `sorted: true`, which writes them one chunk at a time. If you need fresher
+data, shorten the load interval. Coming from Redis bitmaps? See
 [the mapping, command by command](docs/guide/getting-started.md#coming-from-redis-bitmaps).
 
 ## Why CloudBitmaps

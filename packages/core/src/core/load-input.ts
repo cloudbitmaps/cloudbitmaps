@@ -58,6 +58,85 @@ export class ChunkLoadInput {
   constructor(readonly chunks: AsyncIterable<CombinedChunk>) {}
 }
 
+/**
+ * Ids the caller says ascend (`sorted: true`), written chunk by chunk while they are read, during the object's upload,
+ * so a load holds about one chunk rather than the whole generation. Made only by {@link sortedLoadInput}, from ids.
+ *
+ * The ids are read once. A driver that runs its write again would find them consumed, so a second read is refused
+ * with `IntegrityError` rather than writing a shorter object. The first error the ids raise, or their check raises
+ * (an id out of range, or lower than the one before it), is kept, so the load hands that same error to its caller
+ * whatever the driver made of it on the way out of the upload.
+ */
+export class SortedLoadInput {
+  private taken = false;
+  private failure: { readonly error: unknown } | undefined;
+
+  constructor(readonly ids: Iterable<number> | AsyncIterable<number>) {}
+
+  /** Mark the ids read; `false` when they already were, so the caller refuses a second read. */
+  take(): boolean {
+    if (this.taken) return false;
+    this.taken = true;
+    return true;
+  }
+
+  /** Keep `error` as what the ids raised, unless an earlier one is kept. */
+  fail(error: unknown): void {
+    this.failure ??= { error };
+  }
+
+  /** What the load throws for a write that failed with `err`: the error the ids raised, when they raised one. */
+  thrown(err: unknown): unknown {
+    return this.failure === undefined ? err : this.failure.error;
+  }
+
+  /** Whether `err` is the error the ids raised, which a load hands on as it is, never as a lost race. */
+  raised(err: unknown): boolean {
+    return this.failure !== undefined && this.failure.error === err;
+  }
+}
+
+/** How a value given as `sorted` is named in a refusal: by its kind, never by its content. */
+function kindOfOption(value: unknown): string {
+  return value === null ? 'null' : Array.isArray(value) ? 'an array' : `a ${typeof value}`;
+}
+
+/**
+ * Whether a load was asked for `sorted: true`. `undefined` and `false` mean no; anything else that is not a boolean is
+ * refused before any request, since `sorted: 'yes'` read as absent would hold the whole generation in memory instead.
+ *
+ * @throws {ValidationError} for a value that is not a boolean.
+ */
+export function wantsSorted(sorted: unknown): boolean {
+  if (sorted === undefined || sorted === false) return false;
+  if (sorted !== true) {
+    throw new ValidationError(`sorted must be a boolean; got ${kindOfOption(sorted)}`);
+  }
+  return true;
+}
+
+/**
+ * The input a load reads under its `sorted` option: ids as {@link SortedLoadInput} when it is `true`, anything else
+ * unchanged.
+ *
+ * @throws {ValidationError} for a `sorted` that is not a boolean, and for `sorted: true` with `{ serialized }`,
+ * `{ bitmap }` or a bitmap of the flavor's own: those are written from their own chunks already, so the option would
+ * do nothing, and an option that does nothing is refused rather than ignored.
+ */
+export function sortedLoadInput(
+  prepared: ReturnType<typeof prepareLoadInput>,
+  sorted: unknown,
+): ReturnType<typeof prepareLoadInput> | SortedLoadInput {
+  if (!wantsSorted(sorted)) return prepared;
+  if (prepared instanceof DecodedLoadInput) {
+    throw new ValidationError(
+      'sorted: true applies to ids, and this load was given a bitmap ({ serialized }, { bitmap } or a bitmap ' +
+        'itself), which is already held whole and is written from its own chunks: leave sorted off',
+    );
+  }
+  return new SortedLoadInput(prepared);
+}
+
 /** `Object.prototype.toString`'s tag, which names a typed array's kind across realms and for `Buffer` too. */
 function tagOf(value: object): string {
   return Object.prototype.toString.call(value).slice(8, -1);

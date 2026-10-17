@@ -17,7 +17,7 @@ checklist: work down the table, and follow each link for the detail.
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
 | Metrics and audit sinks are wired to your stack | Both are off by default | [Observability](observability.md) |
 | Loads and the retention sweep are scheduled | Nothing in the library runs on a timer | [Schedule the work](#schedule-the-work) |
-| Loads run off the request path, on a runtime with the native addon | A load uses a core and holds a whole segment in memory | [Where to run it](#what-blocks-the-event-loop-and-where-to-run-it) |
+| Loads run off the request path, on a runtime with the native addon | A load uses a core and, unless its ids come sorted (`sorted: true`), holds a whole segment in memory | [Where to run it](#what-blocks-the-event-loop-and-where-to-run-it) |
 
 ## Permissions
 
@@ -80,6 +80,13 @@ the bill will tell you. On S3, with a few days as the grace period:
   ]
 }
 ```
+
+A sorted load (`sorted: true`) can fail after several parts have gone up, where an unsorted one refuses a bad id before
+it uploads anything: its ids are read during the upload, so an error its source throws, or an id out of order, can come
+late. The process survives that, so S3's upload is aborted and its parts are not billed past the abort, and a GCS
+resumable session that never completes never becomes an object. Azure Blob has no call to discard staged blocks, so a
+sorted load refused late on Azure leaves its blocks billed until Azure collects them, a week after the last one was
+staged.
 
 Applying a lifecycle configuration replaces the bucket's whole configuration, so merge this with any rules you have.
 This rule is for S3. What a dead writer leaves on GCS and Azure Blob, and when each cloud removes it, is in [the backup checklist](disaster-recovery.md#backup-checklist).
@@ -536,6 +543,15 @@ bound, and `budget: false` ("I know my fan-out") must not silently also mean "un
 index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. A reader also keeps the chunk bytes of a generation whose whole object arrived with its tail read, when they total at most `readerMaxBytes` / `readerMax` (64 KiB by default), and those count in the same bound, so a cache of readers that each kept a whole share holds fewer than `readerMax` of them. Each open reader counts a fixed 3.75 KiB for the objects it holds around its index besides, so readers that each kept a whole share weigh the share plus 3.75 KiB plus their index: `readerMax` readers of that kind fit in the ceiling only up to the fraction share / (share + 3.75 KiB + index), about 94% at the defaults (about 965 of 1,024), about 68% with `readerMaxBytes` at 8 MiB and about 51% at 4 MiB. A deployment that raises `readerMax` for many tiny segments is bounded by `readerMaxBytes` too: 64 MiB holds about 17,000 of them, and a `readerMaxBytes` below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Lower
 `cache.readerMaxBytes` for a memory-tight deployment, such as a small Lambda function that reads across many wide segments. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and the key it unwrapped on an encrypted segment) until it moves on or ends, outside `readerMax` and `readerMaxBytes`: one reader per streamed operand, for as long as the read runs, so a process with many reads open at once holds that many readers more than the cache's bound. Both caches are keyed on the segment's generation and its row's `pointerId`, so a load's publish, a rollback or an erasure's rewrite makes each store reading the segment open its reader again at its next pointer refresh and fetch again the chunks it reads next, and a lease or a `setRetention` does not ([what a lease costs](reading.md#hold-a-generation-for-a-job-a-lease)). A store with a timed refresh also keeps each segment's resolution, the few hundred bytes of its row a read resolves through and never an unwrapped key; the wrapped keys are in it. It keeps them apart from its readers: up to 8 × `readerMax` of them within `readerMaxBytes` / 16, so 8,192 and 4 MiB by default ([what they hold](sizing.md#what-each-reader-holds)). A segment whose reader the cache let go is reopened from it with no registry read, when a read needs its index or a chunk the chunk cache does not hold, and on an encrypted segment the key is unwrapped again through the keystore.
 
+**A load's memory is the generation, unless its ids are sorted.** A load of ids holds the generation it builds, one
+bitmap per non-empty chunk, and a buffer of up to about 28 MB; a bitmap load holds the bitmap decoded and re-encoded.
+A load with `sorted: true` holds one chunk's ids and bitmap and the writer's index (about 100 bytes a chunk, so about 7
+MiB at the most a segment can have, 65,536), whatever the segment's size. Any load adds what the backend buffers of the
+object: up to about twice the part or block size on S3 and Azure Blob at a flush (16 MiB at the 8 MiB default), up to
+about twice the simple-upload threshold on GCS when it switches to a resumable upload, next to nothing on the local
+filesystem, and the whole object in `MemoryStorage` ([memory, sorted or not](loading.md#memory-and-where-a-load-runs)). No
+budget bounds a load: size the process for these.
+
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29
 billion members. `maxScanSegments`, an option of `store.retireExpired` and `store.checkConsistency` (default 250,000), counts segments, not members: 500 audience segments count as 500, whatever their size.
 
@@ -573,7 +589,7 @@ which the store passes to its loads and its erasures.
 
 **The rule:** anything that touches a whole generation belongs out of the request path. Yielding makes a load a
 well-behaved neighbour, not a cheap one — it still burns a core for a fraction of a second, holds the whole
-generation in memory, and streams a multipart upload. Use a job runner, a queue consumer, or a short-lived task —
+generation in memory unless its ids are sorted, and streams a multipart upload. Use a job runner, a queue consumer, or a short-lived task —
 and keep `has`, `count` and `intersect` where the requests are.
 
 ## Deploying to AWS Lambda

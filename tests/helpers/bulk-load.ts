@@ -5,15 +5,23 @@
  *
  * In the `serialized` project it hands the loader its ids as `{ serialized }`, decoded the way core's load decodes
  * one (`tests/helpers/load-routing.ts`), so every test that seeds a segment through it, `loaded.ts`'s fixtures
- * included, writes through the bitmap path there.
+ * included, writes through the bitmap path there. In the `sorted` project it hands the loader the same ids sorted, as
+ * the sorted input a load with `sorted: true` writes from, so the same tests write through the sorted path.
  */
 import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/bulk-load';
-import { DecodedLoadInput, prepareLoadInput } from '@/core/load-input';
+import { DecodedLoadInput, SortedLoadInput, prepareLoadInput } from '@/core/load-input';
 import type { LoadInput } from '@/core/load-input';
 import { roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
 import { testEntropy } from './entropy';
-import { kindOf, routedProject, routing, toSerialized } from './load-routing';
+import {
+  kindOf,
+  routedProject,
+  routing,
+  sortedProject,
+  toSerialized,
+  toSorted,
+} from './load-routing';
 
 export type { BulkLoadResult } from '@/core/bulk-load';
 
@@ -30,6 +38,10 @@ export const bulkLoadCrbmGeneration: typeof coreBulkLoad = async (
     const converted = await toSerialized(ids);
     routing.received.push(kindOf(converted));
     input = prepareLoadInput(converted as LoadInput, codec) as typeof ids;
+  } else if (sortedProject() && !(ids instanceof DecodedLoadInput)) {
+    const sorted = await toSorted(ids);
+    routing.received.push(sorted === undefined ? kindOf(ids) : 'sorted');
+    if (sorted !== undefined) input = new SortedLoadInput(sorted);
   }
   return coreBulkLoad(driver, key, input, {
     ...options,

@@ -50,7 +50,8 @@ The `.crbm` storage path lives in `src/core/`, one module per concern. Arrows re
    publish.ts  crbm-write.ts  crbm-open.ts  <----  crbm-storage-source.ts     read path
 ```
 
-`publish.ts`, `crbm-write.ts` and `crbm-open.ts` import none of the others. Outside this group, `load.ts` imports
+`publish.ts`, `crbm-write.ts` and `crbm-open.ts` import none of the others. `bulk-load.ts` also imports
+`sorted-chunks.ts`, which cuts a sorted load's ids into chunks and imports none of them. Outside this group, `load.ts` imports
 `bulk-load.ts`, `publish.ts` and `crbm-open.ts`; `erase-id.ts` imports `publish.ts`, `crbm-write.ts` and
 `crbm-open.ts`; `rollback.ts` and `consistency.ts` import `crbm-open.ts`. `combine-many.ts`, `pinned-storage-source.ts`
 (types only) and the package entry import `crbm-storage-source.ts`.
@@ -58,8 +59,9 @@ The `.crbm` storage path lives in `src/core/`, one module per concern. Arrows re
 | File | Holds |
 |---|---|
 | `crbm-write.ts` | writing one immutable generation from in-memory bitmaps, from a stream or from already-encoded chunks |
+| `sorted-chunks.ts` | the chunks of a sorted load (`sorted: true`): ascending ids cut into one chunk at a time as they are read, each checked (a 32-bit id, not lower than the one before; a repeat skipped), the ids read once, and the first error they raise kept for the load to throw |
 | `publish.ts` | the forward-only pointer advance every write ends with, the lease patch, the refusal to point a keyed row at a cleartext generation, and the settling of a registry write that got no answer |
-| `bulk-load.ts` | the loader `load()` is built on, with its read-ahead: ids, a decoded bitmap or a combine's chunks in, made into chunks (ids bucketed, a bitmap split by its codec where the codec can, a combine's chunks checked), one generation written, and published when a registry is wired and the caller does not defer it; `load()` defers it and publishes through `publish.ts` after its guard |
+| `bulk-load.ts` | the loader `load()` is built on, with its read-ahead: ids, a decoded bitmap or a combine's chunks in, made into chunks (ids bucketed, a bitmap split by its codec where the codec can, a combine's chunks checked), one generation written, and published when a registry is wired and the caller does not defer it; `load()` defers it and publishes through `publish.ts` after its guard. Sorted ids are written through the streaming writer of `crbm-write.ts` while they are read, after the row, the number and the key are settled |
 | `known-generations.ts` | the row's ledger, `knownGens`: what a usable one is, the window a load collects by name, the cap, and the ledger a publish and a rollback write |
 | `ledger-seed.ts` | the first window of a ledger over a row that has none, read from the bucket |
 | `crbm-open.ts` | opening a stored generation without the cache: the blob reader over a driver object, the checked and noting opens, the identity checks that tie an open to the object it read, generation verification, and the rollback target open |

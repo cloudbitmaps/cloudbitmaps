@@ -446,5 +446,9 @@
   {
     "entry": "@cloudbitmaps/roaring Segment.constructor",
     "reason": "the gate now records a private constructor, since it decides whether a caller can construct the class; Segment has always declared one (a handle comes from the store, never from `new`), so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring LoadOptions.sorted",
+    "reason": "a new, optional load option, agreed with the maintainer: sorted: true writes ids that already ascend one chunk at a time while the object uploads, so a load holds about one chunk whatever the segment's size; an id lower than the one before is a ValidationError, and the option is refused with a bitmap input"
   }
 ]

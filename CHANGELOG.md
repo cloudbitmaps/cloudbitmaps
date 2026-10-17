@@ -124,6 +124,21 @@ so, and so do the module headers in the code.
   package in a process.
 ### Added
 
+- **`store.load(ref, ids, { sorted: true })` loads ids that already ascend one chunk at a time, while the object
+  uploads.** A load of ids holds the whole generation in memory before it writes; a sorted load holds one chunk's ids
+  and bitmap and the writer's index of the chunks written (about 100 bytes a chunk), whatever the segment's size:
+  measured at about 1.1 MiB for 100,000 to 10,000,000 ids over 8,192 chunks, and 6.8 MiB over all 65,536, where an
+  unsorted load of ten million peaked at 31 MiB. The backend's upload buffer comes on top, as for any load: up to about
+  twice the part or block size at a flush on S3 and Azure Blob (16 MiB at the default). It writes the same object, byte
+  for byte under the same write identity, as an unsorted load of the same ids. A repeat is skipped; an id lower than the
+  one before throws `ValidationError` naming its position and never the id. The row, the number and the key are settled
+  before the first id is read, so a destroyed or keyless segment is refused with no id read. The ids are read during
+  the upload, so an error your source throws fails it with no object committed, and reaches you as the very object
+  thrown, never re-read by the storage driver as a lost race or a transient fault; the parts uploaded before it may
+  already be billed (S3 aborts them; Azure Blob bills staged blocks until it collects them, a week on). A storage
+  driver that asks for the ids a second time gets `IntegrityError`. `sorted` with `{ serialized }`, `{ bitmap }` or a
+  bitmap, and a `sorted` that is not a boolean, throw `ValidationError` before any request. See
+  [ids that already ascend](docs/guide/loading.md#what-a-load-accepts).
 - **How it stays correct, [`docs/guide/correctness.md`](docs/guide/correctness.md).** The guides' mechanism sections
   and the catalogue of a load's refusals, on one page: what a refused load means and what to do about it, and how a
   load, a pin, the retention sweep, an erasure, encryption and the drivers' retries stay correct. Each guide keeps a
