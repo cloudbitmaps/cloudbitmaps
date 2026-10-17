@@ -14,8 +14,8 @@
  * printed as the nearest base that declares one declares it, when that base is in the workspace, so a class that later
  * declares one of another shape reads as a change, and a change to a base's constructor shows in every class that
  * inherits it. A class whose chain declares none is recorded with `constructor();`, the one TypeScript gives it, and a
- * private constructor is recorded as declared, so adding or removing either reads as a change. A constructor that comes
- * from outside the workspace, or from a base that is not a class, is not recorded.
+ * private constructor is recorded as declared, so adding or removing either reads as a change. A constructor declared
+ * outside the workspace, or on a base that is not a class, is not recorded.
  *
  * A type that a public signature names without any entry point exporting it is part of what a caller can reach, so
  * it is recorded too, with its members and, transitively, the types they name, under a `(referenced)` key. A type
@@ -45,12 +45,12 @@
  * unchanged signature is for tests; a type from outside the workspace is known by its name; private members are not
  * recorded, except a private constructor; overloads are compared in declared order, so one appended after the last
  * reads as an addition, not a change; a member added to a class, abstract or not, reads as a new entry, not a required
- * one; a parameter rename is a change; a constructor that comes from outside the workspace or from a base that is not a
- * class is not recorded, so declaring one reads as an addition; an inherited constructor prints as its base declares
+ * one; a parameter rename is a change; a constructor declared outside the workspace or on a base that is not a class is
+ * not recorded, so declaring one reads as an addition; an inherited constructor prints as its base declares
  * it, type parameters and all, so a class extending a generic base that declares the same constructor with them filled
  * in reads as a change; a base that is an intersection with a second construct signature records only the class's
  * constructor, and its own line carries the whole type; a class merged with an interface of the same name stops the
- * gate with `two entries for <key>`; a type the snapshot tells apart by file is not followed between its exported and
+ * gate with `two entries for <key>`, and one merged with a namespace stops it with `<key>.prototype has no declaration`; a type the snapshot tells apart by file is not followed between its exported and
  * referenced keys, so such a move reads as a removal, a change or an addition; a type of a newly internal entry is
  * followed by its name, so another type of that name another entry newly exports reads as a change of it; a TypeScript
  * upgrade that changes how declarations print needs one `--write`.

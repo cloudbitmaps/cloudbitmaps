@@ -21,10 +21,11 @@ reads and writes them; [CONTRIBUTING](../CONTRIBUTING.md#commands-the-gate) says
 - An overload appended after the last: overloads are compared in declared order, so it reads as an addition rather than a change (it still needs a row).
 - A member added to a class, abstract or not: it reads as a new entry, not as a required member, though an abstract one binds a subclass (it still needs a row).
 - A parameter rename: it reads as a change, and needs a row.
-- A constructor that comes from outside the workspace (`extends Error`) or from a base that is not a class: it is not recorded, so declaring one reads as an addition.
+- A constructor declared outside the workspace (`extends Error`) or on a base that is not a class: it is not recorded, so declaring one reads as an addition. A class whose chain reaches a dependency that declares none is recorded with `constructor();`.
 - A generic base: an inherited constructor prints as its base declares it, type parameters included, so a class extending `Base<string>` that then declares the same constructor with the type filled in reads as a change.
 - A base that is an intersection with a second construct signature (`typeof Root & (new (k: number) => Root)`): only the class's constructor is recorded; the base's own line carries the whole type, so a change to it is still seen.
 - A class merged with an interface of the same name: the gate stops with `two entries for <key>` rather than record it; give the two different names.
+- A class merged with a namespace of the same name: the gate stops with `<key>.prototype has no declaration`; give the two different names.
 - A type the snapshot tells apart by file (a name taken twice in one package, recorded with its path after the name): it is not followed between its exported and `(referenced)` keys, so such a move reads as a removal, a change or an addition, and needs a row.
 - A type of a newly internal entry is followed by its name, so another type of the same name that another entry of the package newly exports is compared with it, which reads as a change: rename the collision.
 - A TypeScript upgrade that changes how declarations print: it needs one `pnpm api:surface`.
