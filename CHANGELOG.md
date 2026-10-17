@@ -51,8 +51,8 @@ so, and so do the module headers in the code.
   `errorKind` classifies across copies of the package the same way. It names the class and does not narrow the type. An
   untyped JavaScript caller that `require`s a removed name gets `undefined`, and calling it inside a `catch` throws a
   `TypeError` that hides the original error.
-- **`maxScanSegments: null` is a `ValidationError` on `store.retireExpired`**, as a malformed value always was; it was read as
-  the default of 250,000. Leave the option out for the default.
+- **`maxScanSegments: null` is a `ValidationError` on `store.retireExpired` and `eraseNamespace`**, as a malformed value always was;
+  it was read as the default of 250,000. Leave the option out for the default.
 - **`BudgetExceededError`'s constructor takes `(message, { option, limit, spent })`.** Code that constructs one, such as
   a test double, passes the option name and the two numbers; the messages are unchanged.
 - **The main entry of `@cloudbitmaps/core` is internal, outside the stability promise.** It is the engine that
