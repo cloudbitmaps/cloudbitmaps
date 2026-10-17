@@ -11,6 +11,7 @@ import { AnonymousCredential, ContainerClient, RestError } from '@azure/storage-
 import { StorageSharedKeyCredential } from '@azure/storage-blob';
 import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/registry';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
+import { guardLoopback } from '../../helpers/loopback-guard';
 
 /**
  * An error the Azure driver throws carries no credential in anything code can reach, not only in what a logger prints.
@@ -379,6 +380,16 @@ describe('Azure: no credential is reachable from an error the driver throws', LI
   let server: Server;
   let url: string;
   let answer: { status: number; head: number; code?: string; echo?: boolean };
+  let guard: ReturnType<typeof guardLoopback>;
+
+  beforeAll(() => {
+    guard = guardLoopback();
+  });
+  afterAll(() => {
+    guard.restore();
+    // Nothing was sent anywhere but the loopback server.
+    expect(guard.attempts).toEqual([]);
+  });
 
   beforeEach(async () => {
     answer = { status: 503, head: 503 };

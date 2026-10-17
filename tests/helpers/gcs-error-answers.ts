@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import net from 'node:net';
 import { createRequire } from 'node:module';
 import { createSign, generateKeyPairSync } from 'node:crypto';
 import { Storage } from '@google-cloud/storage';
+
+export { guardLoopback } from './loopback-guard';
 
 /**
  * The answers a GCS client can get, from GCS, a GCS-compatible store, a proxy or the network, served from 127.0.0.1 to
@@ -102,34 +103,6 @@ export function clientFor(kind: CredentialKind, endpoint: string): Storage {
       },
     ] as never,
   });
-}
-
-/** Refuse, and record, every connection to anything but the loopback address. */
-export function guardLoopback(): { attempts: string[]; restore: () => void } {
-  const attempts: string[] = [];
-  const connect = net.Socket.prototype.connect;
-  net.Socket.prototype.connect = function guarded(this: net.Socket, ...args: unknown[]) {
-    const first = args[0] as { host?: unknown; path?: unknown } | number | string | undefined;
-    const host =
-      typeof first === 'object' && first !== null
-        ? first.path === undefined
-          ? String(first.host ?? 'localhost')
-          : 'pipe'
-        : typeof args[1] === 'string'
-          ? args[1]
-          : 'localhost';
-    if (!['127.0.0.1', 'localhost', '::1', 'pipe'].includes(host)) {
-      attempts.push(host);
-      throw new Error(`a test may connect only to the loopback address, not ${host}`);
-    }
-    return (connect as (...a: unknown[]) => net.Socket).apply(this, args);
-  } as typeof connect;
-  return {
-    attempts,
-    restore: () => {
-      net.Socket.prototype.connect = connect;
-    },
-  };
 }
 
 /** The variables that send the auth library to a metadata server or a credentials file, set so it asks neither. */
