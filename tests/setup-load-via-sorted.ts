@@ -15,7 +15,8 @@ import type * as LoadModule from '@/core/load';
  *
  * What it cannot preserve is the order the caller gave the ids in, and when the caller's own source is read: here it is
  * read whole before the load's first request, and the sorted copy is read during the write. A test that depends on
- * either is on the sorted project's exclusion list, with why.
+ * either belongs on the sorted project's exclusion list, with why; the list also holds a few heavy files whose loads only
+ * build what another behaviour is tested over.
  */
 vi.mock('@/core/load', async (importOriginal) => {
   const real = await importOriginal<typeof LoadModule>();

@@ -291,10 +291,35 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
 };
 
 /**
- * Routed files the `sorted` project does not run, each with the reason: what the file tests depends on the order the
- * caller gave the ids in, or on reading them the way an unsorted load does.
+ * Routed files the `sorted` project does not run, each with the reason. None depends on the order the caller gave the
+ * ids in. These are the seven heaviest routed files, about three quarters of the project's run time between them, whose
+ * loads only build what another behaviour is tested over: with them, the project made the suite about a quarter slower
+ * in CI. What the sorted path changes, the write, is held to the unsorted load's bytes by
+ * `tests/core/load-sorted.property.test.ts`, and every other routed file still runs.
  */
-export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {};
+export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {
+  'tests/drivers/azure/read-timeout.test.ts':
+    'times out reads against a stalled stub of the Blob service; its loads only seed the segment it reads, and its run ' +
+    'time is the timeouts it waits out, so a third run would wait them out again and exercise no part of the load path',
+  'tests/drivers/s3/read-timeout.test.ts':
+    'times out reads against a stalled stub S3 endpoint; its one load only seeds the segment it reads, and its run time is ' +
+    'the timeouts it waits out, so a third run would wait them out again and exercise no part of the load path',
+  'tests/core/known-generations.property.test.ts':
+    "a model of the row's ledger over publishes, collections, rollbacks and erasures, code a sorted load shares with an " +
+    'unsorted one; the write is the only step the sorted path changes, and a third run would repeat its property cases',
+  'tests/core/known-generations-cap.property.test.ts':
+    "holds the row's ledger to its cap over three hundred publishes per case, code a sorted load shares with an unsorted " +
+    'one; the write is the only step the sorted path changes, and a third run would repeat its property cases',
+  'tests/bench/calibrate-guards.test.ts':
+    "its time is the calibration harness's child processes, which no setup file reaches, and its own loads only seed the " +
+    'figures those children are compared with, so a third run would exercise no part of the load path',
+  'tests/core/exclude-batching.test.ts':
+    "counts the storage requests of an intersect's exclude over segments of a thousand chunks its loads only build; a " +
+    'third run would repeat those counts and exercise no part of the load path',
+  'tests/core/consistency-generations.test.ts':
+    "checks the generations a row's ledger names against their footers in the bucket, over segments its loads only " +
+    'build; a third run would repeat the check and exercise no part of the load path',
+};
 
 /** Run under ids, under `{ serialized }`, and with the ids sorted and `sorted: true`. */
 export const SORTED: readonly string[] = ROUTED.filter((f) => !(f in SORTED_EXCLUDED));
