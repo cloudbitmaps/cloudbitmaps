@@ -565,6 +565,70 @@ describe('scrubCredentials (Azure)', () => {
       expect(out).toContain('[redacted]');
     });
 
+    describe('a header table or list in a page', () => {
+      const API_KEY = 'APIKEYVALUE0123456789';
+      /** Credential rows first, none of them a SharedKey or bearer value, which the scheme rule redacts in any layout. */
+      const headers: [string, string][] = [
+        ['Cookie', 'sid=COOKIEONE; pref=COOKIETWO'],
+        ['x-api-key', API_KEY],
+        ['x-ms-encryption-key', CPK],
+        ['host', 'h'],
+      ];
+      const rows = headers
+        .map(([name, value]) => `<tr><th>${name}</th><td>${value}</td></tr>`)
+        .join('');
+      const items = headers.map(([name, value]) => `<dt>${name}:</dt><dd>${value}</dd>`).join('');
+      it.each([
+        ['the table alone', `<table>${rows}</table>`],
+        [
+          'a short heading before the table',
+          `<html><body><h1>Request headers</h1><table>${rows}</table></body></html>`,
+        ],
+        ['a caption', `<table><caption>Headers</caption>${rows}</table>`],
+        ['a heading before a definition list', `<h2>Headers</h2><dl>${items}</dl>`],
+        [
+          'two short elements before the table',
+          `<title>502</title><h1>Bad Gateway</h1><table>${rows}</table>`,
+        ],
+        [
+          'names and values wrapped in code',
+          headers.map(([n, v]) => `<th><code>${n}</code></th><td><code>${v}</code></td>`).join(''),
+        ],
+        [
+          'several pairs to a row',
+          `<table><tr>${headers.map(([n, v]) => `<th>${n}</th><td>${v}</td>`).join('')}</tr></table>`,
+        ],
+        [
+          'name and value elements, as an XML error writes them',
+          headers.map(([n, v]) => `<Header><Name>${n}</Name><Value>${v}</Value></Header>`).join(''),
+        ],
+      ])('redacts every credential cell in %s', (_name, page) => {
+        const out = through(page);
+        for (const secret of ['COOKIEONE', 'COOKIETWO', API_KEY, CPK])
+          expect(out).not.toContain(secret);
+        expect(out).toMatch(
+          /host(?::)?(?:<\/code>)?<\/(?:th|dt|Name)>(?:<td>|<dd>|<Value>)(?:<code>)?h</,
+        );
+        expect(through(out)).toBe(out);
+      });
+
+      it('keeps the cell after a name that is not a credential, and an empty cell after one that is', () => {
+        for (const page of [
+          '<tr><th>host</th><td>acct.blob.core.windows.net</td></tr>',
+          '<tr><th>cookie</th><td> </td></tr>',
+          '<p>Request headers</p><p>none</p>',
+        ]) {
+          expect(through(page)).toBe(page);
+        }
+      });
+
+      it('keeps the rest of the page around a redacted cell', () => {
+        expect(
+          through(`<tr><th>x-api-key</th><td>${API_KEY}</td></tr><tr><th>host</th><td>h</td></tr>`),
+        ).toBe('<tr><th>x-api-key</th><td>[redacted]</td></tr><tr><th>host</th><td>h</td></tr>');
+      });
+    });
+
     it('keeps the text around a cookie, a key and a proxy credential inside a line', () => {
       expect(through('refused; cookie: sid=COOKIEONE; pref=COOKIETWO (sent)')).toBe(
         'refused; cookie: [redacted]',

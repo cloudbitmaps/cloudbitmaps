@@ -84,6 +84,12 @@ const SAS_SIGNATURE =
 const AUTH_SCHEME = /\b(SharedKey(?:Lite)?|Bearer)(\s+)[A-Za-z0-9\-._~+/:]{16,}=*/gi;
 /** The signature Azure echoes in the 403 body for a SharedKey request it could not verify. */
 const MAC_ECHO = /(MAC signature found in the HTTP request ')[^']*/g;
+/**
+ * An element whose text may be a credential's name, and the text of the one after it, with up to four tags around
+ * either: a table's `<th>` and `<td>`, a list's `<dt>` and `<dd>`, `<b>name:</b> <span>value`.
+ */
+const CELL =
+  /(<([A-Za-z][\w-]{0,15})\b[^<>]{0,256}>\s{0,32}([^<>\s](?:[^<>]{0,62}[^<>\s])?)\s{0,32}<\/\2\s{0,32}>(?:\s{0,32}<\/[A-Za-z][\w-]{0,15}\s{0,32}>){0,4}(?:\s{0,32}<[A-Za-z][\w-]{0,15}\b[^<>]{0,256}>){1,4})([^<]*)/g;
 const REDACTED = '[redacted]';
 /** How deep into errors and plain data the copy goes; anything below is dropped. */
 const MAX_DEPTH = 10;
@@ -102,17 +108,40 @@ const isError = (value: object): boolean => value instanceof Error || types.isNa
  */
 function redactText(text: string): string {
   try {
-    return text
-      .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
-      .replace(AUTHORIZATION_VALUE, `$1${REDACTED}`)
-      .replace(COOKIE_VALUE, `$1${REDACTED}`)
-      .replace(NAMED_SECRET, `$1${REDACTED}`)
-      .replace(SAS_SIGNATURE, `$1${REDACTED}`)
-      .replace(AUTH_SCHEME, `$1$2${REDACTED}`)
-      .replace(MAC_ECHO, `$1${REDACTED}`);
+    return redactCells(
+      text
+        .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
+        .replace(AUTHORIZATION_VALUE, `$1${REDACTED}`)
+        .replace(COOKIE_VALUE, `$1${REDACTED}`)
+        .replace(NAMED_SECRET, `$1${REDACTED}`)
+        .replace(SAS_SIGNATURE, `$1${REDACTED}`)
+        .replace(AUTH_SCHEME, `$1$2${REDACTED}`)
+        .replace(MAC_ECHO, `$1${REDACTED}`),
+    );
   } catch {
     return REDACTED;
   }
+}
+
+/**
+ * `text` with the text of each element after one that names a credential redacted. A match whose first element names
+ * none is not taken past that element: the element after it is tried as the next name, so a heading or a caption
+ * before a table does not put every row out of step.
+ */
+function redactCells(text: string): string {
+  let out = '';
+  let from = 0;
+  CELL.lastIndex = 0;
+  for (let m = CELL.exec(text); m !== null; m = CELL.exec(text)) {
+    const [whole, head, , name, value] = m as unknown as [string, string, string, string, string];
+    if (isCredentialName(name) && value.trim() !== '') {
+      out += `${text.slice(from, m.index)}${head}${REDACTED}`;
+      from = m.index + whole.length;
+    } else {
+      CELL.lastIndex = m.index + 1;
+    }
+  }
+  return from === 0 ? text : out + text.slice(from);
 }
 
 /** The copies made so far, and whether any differs from its original. */
