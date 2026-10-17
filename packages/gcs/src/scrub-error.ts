@@ -97,9 +97,10 @@ const AUTHORIZATION_VALUE =
   /((?:proxy-)?authorization\\?["']?\s*(?::|=|%3D)\s*\\?["']?)(?:[A-Za-z][\w-]*(?:\s+|%20|\+))?[^\s&"'<>\\,;]+/gi;
 /**
  * A cookie header's value after its name anywhere in a text, every cookie in it: `cookie: a=1; b=2`, JSON's
- * `"cookie":"a=1; b=2"`. It runs to the end of the line, a quote or a tag.
+ * `"cookie":"a=1; b=2"`. The name starts a word (`fortunecookie: 7` is not one), and the value runs to the end of the
+ * line, a quote or a tag, since a cookie's value may itself hold `)` or `.`.
  */
-const COOKIE_VALUE = /((?:set-)?cookie\\?["']?\s*:\s*\\?["']?)[^\r\n"'<>\\]+/gi;
+const COOKIE_VALUE = /(?<![\w-])((?:set-)?cookie\\?["']?\s*:\s*\\?["']?)[^\r\n"'<>\\]+/gi;
 /** The headers and fields whose value follows their name in a text: an encryption key, an API key, a signed URL's parts. */
 const NAMED =
   'x-goog-(?:copy-source-)?encryption-key|x-goog-api-key|x-goog-signature|x-goog-credential|' +

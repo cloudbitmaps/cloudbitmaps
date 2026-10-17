@@ -749,6 +749,9 @@ describe('GCS scrubCredentials', () => {
       'GOOG4-RSA-SHA256\n20261017T000000Z\n20261017/auto/storage/goog4_request\nabc',
       '<tr><th>host</th><td>storage.googleapis.com</td></tr>',
       '<tr><th>cookie</th><td> </td></tr>',
+      // A cookie's name starts a word: these name none.
+      'fortunecookie: 7',
+      'x-cookie-mode: strict',
       [
         '-----BEGIN CERTIFICATE-----',
         'MIIBszCCAVmgAwIBAgIUStandIn',
