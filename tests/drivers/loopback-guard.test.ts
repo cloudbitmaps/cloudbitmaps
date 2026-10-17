@@ -69,3 +69,39 @@ describe('the loopback guard', () => {
     expect(net.Socket.prototype.connect.name).not.toBe('guarded');
   });
 });
+
+describe('the loopback guard over a recorder, so what it lets through is never sent', () => {
+  const real = net.Socket.prototype.connect;
+  let passed: unknown[];
+  let guard: ReturnType<typeof guardLoopback>;
+  beforeEach(() => {
+    passed = [];
+    net.Socket.prototype.connect = function recorded(this: net.Socket, ...args: unknown[]) {
+      passed.push(args);
+      return this;
+    } as typeof real;
+    guard = guardLoopback();
+  });
+  afterEach(() => {
+    guard.restore();
+    net.Socket.prototype.connect = real;
+  });
+
+  it.each<[string, net.NetConnectOpts]>([
+    ['an empty path beside a host', { path: '', host: AWAY, port: 80 } as net.NetConnectOpts],
+    [
+      'a null path beside a host',
+      { path: null, host: AWAY, port: 80 } as unknown as net.NetConnectOpts,
+    ],
+  ])('refuses %s, which Node connects to by TCP', (_form, options) => {
+    expect(() => new net.Socket().connect(options)).toThrow(/only to the loopback address/);
+    expect(guard.attempts).toEqual([AWAY]);
+    expect(passed).toEqual([]);
+  });
+
+  it('lets a pipe through', () => {
+    new net.Socket().connect({ path: '/tmp/a-pipe' });
+    expect(guard.attempts).toEqual([]);
+    expect(passed).toHaveLength(1);
+  });
+});
