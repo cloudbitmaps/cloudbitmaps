@@ -104,7 +104,10 @@ export class SortedLoadInput {
 
 /** How a value given as `sorted` is named in a refusal: by its kind, never by its content. */
 function kindOfOption(value: unknown): string {
-  return value === null ? 'null' : Array.isArray(value) ? 'an array' : `a ${typeof value}`;
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const kind = typeof value;
+  return kind === 'object' || kind === 'undefined' ? `an ${kind}` : `a ${kind}`;
 }
 
 /**

@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { loadSegment } from '@/core/load';
 import { ValidationError, WriteConflictError, errorKind } from '@/core/errors';
-import type { IStorageDriver, SegmentRef } from '@/core/ports';
+import type { BlobSink } from '@/core/blob';
+import type { GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { GcsStorageDriver } from '@/gcs/storage';
@@ -30,8 +31,8 @@ import { STUB_BUCKET, StubS3Bucket } from '../helpers/s3-bucket-stub';
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 const INSTANT = { sleep: async () => undefined };
 
-/** Errors a caller's own source can throw that look like what each driver maps. */
-const SHAPES: Record<string, () => Error> = {
+/** Errors a caller's own source can throw that look like what each driver maps, and values that are not errors. */
+const SHAPES: Record<string, () => unknown> = {
   '409 conflict': () =>
     Object.assign(new Error('the warehouse query conflicted'), {
       name: 'ConditionalRequestConflict',
@@ -63,7 +64,40 @@ const SHAPES: Record<string, () => Error> = {
       statusCode: 503,
       $metadata: { httpStatusCode: 503 },
     }),
+  // Not an Error at all: a plain object shaped like an SDK's conflict, a string, and nothing.
+  'plain object shaped like a 409': () => ({
+    name: 'ConditionalRequestConflict',
+    code: 409,
+    statusCode: 409,
+    $metadata: { httpStatusCode: 409 },
+  }),
+  string: () => 'the warehouse query conflicted',
+  undefined: () => undefined,
 };
+
+/**
+ * `storage`, recording what each write it is handed threw, which is what the driver's error mapping meets. Every
+ * other member is the driver's own.
+ */
+function recording(storage: IStorageDriver): { storage: IStorageDriver; met: unknown[] } {
+  const met: unknown[] = [];
+  const wrapped = new Proxy(storage, {
+    get(target, prop) {
+      if (prop === 'putImmutable') {
+        return (key: GenKey, write: (sink: BlobSink) => Promise<void>) =>
+          target.putImmutable(key, (sink) =>
+            write(sink).catch((err: unknown) => {
+              met.push(err);
+              throw err;
+            }),
+          );
+      }
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { storage: wrapped, met };
+}
 
 interface Backend {
   readonly storage: IStorageDriver;
@@ -148,15 +182,21 @@ describe.each(Object.keys(BACKENDS))('a sorted load on %s', (name) => {
   });
 
   it.each(Object.keys(SHAPES))(
-    'throws the very error its ids raised, shaped like a %s, and writes nothing',
+    'throws the very value its ids raised (%s), which the driver never meets, and writes nothing',
     async (shape) => {
       const raised = SHAPES[shape]!();
       async function* ids(): AsyncGenerator<number> {
         for (let i = 0; i < 2_000; i++) yield i * 70_000;
         throw raised;
       }
-      const d = deps();
+      const { storage, met } = recording(backend.storage);
+      const d = { ...deps(), storage };
       expect(await thrown(loadSegment(SEG, ids(), d, { sorted: true }))).toBe(raised);
+      // The driver met the load's own sentinel, an Error with no fields of the caller's.
+      expect(met).toHaveLength(1);
+      expect(met[0]).not.toBe(raised);
+      expect(met[0]).toBeInstanceOf(Error);
+      expect(Object.keys(met[0] as Error)).toEqual([]);
       expect(await generations(backend.storage)).toEqual([]);
       expect(await d.registry.get(SEG)).toBeNull();
     },

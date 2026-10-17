@@ -6,6 +6,7 @@ import { destroySegment } from '@/core/erasure';
 import {
   IntegrityError,
   KeyUnavailableError,
+  TransientError,
   ValidationError,
   WriteConflictError,
   errorKind,
@@ -74,8 +75,36 @@ function watched(ids: readonly number[]) {
   return { seen, source: source() };
 }
 
+/** {@link watched}, as an async source. */
+function watchedAsync(ids: readonly number[]) {
+  const seen = { pulled: false, closed: false };
+  async function* source(): AsyncGenerator<number> {
+    seen.pulled = true;
+    try {
+      for (const id of ids) yield id;
+    } finally {
+      seen.closed = true;
+    }
+  }
+  return { seen, source: source() };
+}
+
+/** An async source that never awaits anything itself: each id is ready on a microtask, never on a turn of the loop. */
 async function* async(ids: readonly number[]): AsyncGenerator<number> {
   for (const id of ids) yield id;
+}
+
+/** A clock that counts the turns of the event loop a load yields. */
+function countingClock(): Clock & { yields: number } {
+  const clock = {
+    yields: 0,
+    now: () => 0,
+    sleep: async () => undefined,
+    yieldNow: async () => {
+      clock.yields++;
+    },
+  };
+  return clock;
 }
 
 async function rejection(promise: Promise<unknown>): Promise<Error> {
@@ -181,20 +210,40 @@ describe('a sorted load writes what an unsorted load of the same ids writes', ()
     expect(await store.segment('e').has(997)).toBe(true);
   });
 
-  it('yields to the event loop while it reads the ids, as an unsorted load does', async () => {
-    let yields = 0;
-    const clock: Clock = {
-      now: () => 0,
-      sleep: async () => undefined,
-      yieldNow: async () => {
-        yields++;
-      },
-    };
-    const w = world();
+  it('yields to the event loop while it reads the ids, sync or async, as an unsorted load does', async () => {
     // One chunk, so the writer's own per-chunk yield never comes: these are the id reader's.
     const ids = Array.from({ length: CHUNK }, (_, i) => i);
-    await loadSegment(SEG, ids, { ...w.deps, clock }, { sorted: true, allowEmpty: true });
-    expect(yields).toBeGreaterThanOrEqual(3);
+    for (const source of [ids, async(ids)]) {
+      const clock = countingClock();
+      await loadSegment(SEG, source, { ...world().deps, clock }, { sorted: true });
+      expect(clock.yields).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('yields to the event loop while it writes the chunks, as an unsorted load does', async () => {
+    // One id a chunk, too few for the id reader to yield: these are the writer's, one every 1,024 chunks.
+    const clock = countingClock();
+    const ids = Array.from({ length: 8_192 }, (_, i) => i * CHUNK);
+    await loadSegment(SEG, ids, { ...world().deps, clock }, { sorted: true });
+    expect(clock.yields).toBeGreaterThanOrEqual(8);
+  });
+
+  it('reads a sync source in one synchronous run, not a microtask an id', async () => {
+    // One chunk and no clock, so nothing in the read awaits: a microtask queued at the first id runs after the last.
+    let pulled = 0;
+    let pulledByTheFirstMicrotask: number | undefined;
+    const source: Iterable<number> = {
+      [Symbol.iterator]: () => ({
+        next: () => {
+          if (pulled === 0) queueMicrotask(() => (pulledByTheFirstMicrotask = pulled));
+          return pulled < 10_000
+            ? { value: pulled++, done: false }
+            : { value: undefined, done: true };
+        },
+      }),
+    };
+    await loadSegment(SEG, source, world().deps, { sorted: true });
+    expect(pulledByTheFirstMicrotask).toBe(10_000);
   });
 });
 
@@ -359,6 +408,33 @@ describe('a sorted load reads its ids once', () => {
     expect(await w.registry.get(SEG)).toBeNull();
   });
 
+  it("throws IntegrityError, with the first run's error as its cause, whatever the driver makes of it", async () => {
+    const fault = new TransientError('the first part upload timed out');
+    /** A driver that runs `write` again after a fault, and wraps the second run's error in one of its own. */
+    class RetriesAndWraps extends MemoryStorageDriver {
+      override async putImmutable(
+        key: GenKey,
+        write: (sink: BlobSink) => Promise<void>,
+      ): Promise<{ size: number; sha256: string }> {
+        const failing: BlobSink = {
+          write: async () => {
+            throw fault;
+          },
+        };
+        await write(failing).catch(() => undefined);
+        return super.putImmutable(key, write).catch((err: unknown) => {
+          throw new TransientError('the upload failed', { cause: err });
+        });
+      }
+    }
+    const w = world(new RetriesAndWraps());
+    const err = await rejection(loadSegment(SEG, [1, 2, CHUNK], w.deps, { sorted: true }));
+    expect(err).toBeInstanceOf(IntegrityError);
+    expect(err.message).toMatch(/ran the write of s\.0 again/);
+    expect(err.cause).toBe(fault);
+    expect(await generations(w.storage)).toEqual([]);
+  });
+
   it('throws the error the ids raised on the first run, when the driver runs its write again after it', async () => {
     const w = world(new TwiceRunning());
     const raised = new Error('the warehouse cursor expired');
@@ -404,6 +480,22 @@ describe('a sorted load that fails mid-upload', () => {
     expect(await generations(w.storage)).toEqual([]);
   });
 
+  it('closes an async source too, when the upload fails and when an id is out of order', async () => {
+    const failure = new Error('disk full');
+    const ids = Array.from({ length: 50 }, (_, i) => i * CHUNK);
+    const failed = watchedAsync(ids);
+    expect(
+      await rejection(
+        loadSegment(SEG, failed.source, world(failingAfter(100, failure)).deps, { sorted: true }),
+      ),
+    ).toBe(failure);
+    expect(failed.seen.closed).toBe(true);
+    const refused = watchedAsync([...ids.slice(0, 10), 1, ...ids.slice(10)]);
+    const err = await rejection(loadSegment(SEG, refused.source, world().deps, { sorted: true }));
+    expect(err.message).toMatch(/^ids\[10\]: lower than the id before it/);
+    expect(refused.seen.closed).toBe(true);
+  });
+
   it("throws the upload's error, not one the caller's source throws as it is closed", async () => {
     const failure = new Error('disk full');
     const onClose = new Error('the cursor could not be released');
@@ -434,15 +526,19 @@ describe('sorted is refused wherever it would do nothing, before any request', (
   }
 
   it('refuses a value that is not a boolean, in core and in the store', async () => {
-    for (const value of ['yes', 1, null, {}]) {
+    for (const [value, kind] of [
+      ['yes', 'a string'],
+      [1, 'a number'],
+      [null, 'null'],
+      [{}, 'an object'],
+      [[true], 'an array'],
+    ] as const) {
       const { w, calls } = untouched();
       const err = await rejection(
         loadSegment(SEG, [1], w.deps, { sorted: value as unknown as boolean }),
       );
       expect(err).toBeInstanceOf(ValidationError);
-      expect(err.message).toMatch(
-        /^sorted must be a boolean; got (a string|a number|null|a object)$/,
-      );
+      expect(err.message).toBe(`sorted must be a boolean; got ${kind}`);
       expect(calls).toEqual([]);
     }
     const store = new CloudRoaring({ storage: new MemoryStorage() });
