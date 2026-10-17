@@ -22,6 +22,7 @@ import type { MetricEvent } from '@/core/metrics';
 import type { ChunkRead, ReadChunksOptions, SegmentRef, StorageChunkSource } from '@/core/ports';
 import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
+import { reachSite } from '../helpers/force-refusal';
 import { collecting, request, runBatch, seed } from '../helpers/combine-many';
 import type { Published } from '../helpers/combine-many';
 import { joinId } from '@/core/bit-route';
@@ -418,13 +419,50 @@ describe('the memory ledger', () => {
     r.outputs.forEach((o) => expect(ok(o).ids).toHaveLength(6 * 20_000));
   });
 
+  it('refuses a re-run past the request budget, counting the reads already taken with those it needs', async () => {
+    // A lying index puts 40 outputs in one group that outgrows the ledger: the evicted ones run again, and that second
+    // read of the six chunks passes a budget of 10 after the first took 6.
+    const error = await run(
+      liar(),
+      ['a'],
+      Array.from({ length: 40 }, () => ({ expr: 'a' })),
+      {
+        maxBufferedBytes: 600_000,
+        budget: { maxRequests: 10 },
+      },
+    ).then((r) => r.outputs.map((o) => (o as { error?: unknown }).error).find(Boolean));
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 10, spent: 12 });
+    expect((error as Error).message).toContain('would read 6 more chunks');
+    expect((error as Error).message).toContain('(6 read)');
+  });
+
+  it('refuses a real operand chunk that the index understated and the buffers left no room for', async () => {
+    // The small chunk before the last lets the buffers settle just under the limit, so the next big operand chunk is the
+    // first charge to cross it: the cost model's working room covers a chunk no bigger than the one before it.
+    const source = new TableSource({
+      a: { 0: big(), 1: big(), 2: big(), 3: bytesOf([1, 2, 3]), 4: big() },
+    });
+    source.cards = () => 1;
+    const r = await run(source, ['a'], [{ expr: 'a' }], { maxBufferedBytes: 41_505 });
+    const error = (r.outputs[0] as { error: BudgetExceededError }).error;
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error.message).toContain(
+      'operand "a" at chunk 4 would hold more than maxBufferedBytes (41505)',
+    );
+    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 41_505, spent: 42_040 });
+    expect(error.spent).toBeGreaterThan(41_505);
+  });
+
   it('an output that cannot fit alone has BudgetExceededError, and the others publish', async () => {
     const source = liar();
     source.table.small = { 0: bytesOf([1, 2, 3]) };
     const r = await run(source, ['a', 'small'], [{ expr: 'a' }, { expr: 'small' }], {
       maxBufferedBytes: 40_000,
     });
-    expect((r.outputs[0] as { error: Error }).error).toBeInstanceOf(BudgetExceededError);
+    const refused = (r.outputs[0] as { error: BudgetExceededError }).error;
+    expect(refused).toBeInstanceOf(BudgetExceededError);
+    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 40_000, spent: 45552 });
     expect(ok(r.outputs[1]!).ids).toEqual([1, 2, 3]);
     expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(40_000);
   });
@@ -432,9 +470,11 @@ describe('the memory ledger', () => {
   it('refuses at the plan an output whose own bound exceeds the budget, naming the minimum', async () => {
     const source = new TableSource({ a: Object.fromEntries([0, 1, 2].map((k) => [k, big()])) });
     const r = await run(source, ['a'], [{ expr: 'a' }], { maxBufferedBytes: 10_000 });
-    expect((r.outputs[0] as { error: Error }).error.message).toMatch(
-      /raise maxBufferedBytes to at least \d+/,
-    );
+    const error = (r.outputs[0] as { error: BudgetExceededError }).error;
+    expect(error.message).toMatch(/raise maxBufferedBytes to at least \d+/);
+    // The refusal's `spent` is the very figure the message names as the least that would let the output through.
+    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 10_000, spent: 109246 });
+    expect(error.message).toContain(`to at least ${error.spent}`);
     expect(source.opens).toEqual([]);
   });
 
@@ -695,6 +735,19 @@ describe('budgets and absent operands', () => {
     expect(setup.source.opened).toEqual([]);
   });
 
+  it('names the request budget, its limit and the chunk reads the plan needs', async () => {
+    const setup = seed({ a: ids([1, 2, 3]) });
+    const error = await runCombineMany(
+      compileCombineMany(
+        request(setup, [collecting({ expr: 'a' })], { budget: { maxRequests: 2 } }),
+      ),
+      { source: setup.source, codec: roaringCodec, clock },
+    ).catch((e: unknown) => e);
+    // `spent` is the count the plan needs, which the message states too.
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 2, spent: 3 });
+    expect((error as Error).message).toContain('would read 3 chunks');
+  });
+
   it('lifts the limit with budget null', async () => {
     const setup = seed({ a: ids([1, 2, 3]) });
     const r = await runCombineMany(
@@ -832,6 +885,11 @@ describe('the plan is charged to the budget', () => {
         clock,
       }),
     ).rejects.toThrow(/the plan alone .* passes maxBufferedBytes \(100000\)/);
+    const refused = await runCombineMany(
+      compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })),
+      { source, codec: roaringCodec, clock },
+    ).catch((e: unknown) => e);
+    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 100_000, spent: 100220 });
     expect(source.opened).toEqual([]);
     await expect(
       runCombineMany(compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })), {
@@ -1111,5 +1169,45 @@ describe('pruning counts an operand a group names and never reads', () => {
     ]);
     expect(r.run.stats.groups).toBe(1);
     expect(r.run.stats.chunks.pruned).toBe(4);
+  });
+});
+
+describe('each memory refusal reports what the ledger held plus the charge it refused', () => {
+  const limit = 256 << 20;
+  // The publish refusal of a stored output runs it again alone first, so it is held in the feed tests, where it is final.
+  const sites: Array<[string, RegExp]> = [
+    ['an operand chunk', /^materializeMany: operand "o0" at chunk \d+ would hold/],
+    ['an output chunk', /^materializeMany: output 0 would hold/],
+    ['a chunk being evaluated', /^materializeMany: a chunk being evaluated would hold/],
+  ];
+
+  it.each(sites)('%s', async (_name, site) => {
+    const { error, forced } = await reachSite(site, () => {
+      const table = { o0: Object.fromEntries([0, 1].map((k) => [k, bytesOf([1, 2, 3])])) };
+      return run(new TableSource(table), ['o0'], [{ expr: 'o0' }], { maxBufferedBytes: limit });
+    });
+    expect(error.option).toBe('maxBufferedBytes');
+    expect(error.limit).toBe(limit);
+    // `spent` is the ledger's holding at the refusal plus the charge it refused, exactly.
+    expect(forced).toHaveLength(1);
+    expect(error.spent).toBe(forced[0]!.used + forced[0]!.asked);
+    // The ledger was full, so a refusal is past the limit, as a real one is.
+    expect(error.spent).toBeGreaterThan(limit);
+  });
+
+  it('the operand streams, which give kept plans back before they refuse', async () => {
+    const { error, refused } = await reachSite(
+      /^materializeMany: the operand streams would hold/,
+      () => {
+        const table = { o0: Object.fromEntries([0, 1].map((k) => [k, bytesOf([1, 2, 3])])) };
+        return run(new TableSource(table), ['o0'], [{ expr: 'o0' }], { maxBufferedBytes: limit });
+      },
+    );
+    expect(error.option).toBe('maxBufferedBytes');
+    expect(error.limit).toBe(limit);
+    // The charge is retried once the kept plans are released, so it is the retry's failure that is reported: `spent` is
+    // what the ledger held then plus the charge, and past the limit.
+    expect(error.spent).toBeGreaterThan(limit);
+    expect(refused.map((r) => r.used + r.asked)).toContain(error.spent);
   });
 });

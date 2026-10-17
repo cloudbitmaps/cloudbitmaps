@@ -24,7 +24,7 @@ export const DEFAULT_MAX_SCAN_SEGMENTS = 250_000;
 
 /** Fail fast on a bad ceiling BEFORE the (possibly huge) scan, not after. */
 function validateMaxScanSegments(value: number, op: string): void {
-  requirePositiveInteger(value, `${op}: maxScanSegments`);
+  requirePositiveInteger(value, `${op}: \`maxScanSegments\``);
 }
 
 /**
@@ -41,11 +41,6 @@ export async function drainRegistry(
     maxScanSegments: number;
     op: string;
     /**
-     * How a caller of `op` raises the ceiling, completing "Narrow it with `namespace`, or …" in the refusal.
-     * Defaults to raising `maxScanSegments`, which is right wherever `op` takes that option itself.
-     */
-    raise?: string;
-    /**
      * Whether the caller could scope the scan down to a `namespace`. Defaults to true; `eraseNamespace` is already
      * one namespace, so it passes false and the refusal does not tell it to narrow what it cannot.
      */
@@ -60,11 +55,10 @@ export async function drainRegistry(
 ): Promise<RegistryRecord[]> {
   const { maxScanSegments, op } = options;
   validateMaxScanSegments(maxScanSegments, op);
-  const raise = options.raise ?? 'raise `maxScanSegments`';
   const advice =
     options.narrowable === false
-      ? `${raise[0]!.toUpperCase()}${raise.slice(1)} if the namespace really is that large and the memory is `
-      : `Narrow it with \`namespace\`, or ${raise} if the fleet really is that large and the memory is `;
+      ? 'Raise `maxScanSegments` if the namespace really is that large and the memory is '
+      : 'Narrow it with `namespace`, or raise `maxScanSegments` if the fleet really is that large and the memory is ';
   const rows: RegistryRecord[] = [];
   for await (const rec of registry.list(options.namespace)) {
     // A due-index pointer is bookkeeping, not a segment. It lives in a reserved namespace, so an unscoped fleet
@@ -79,6 +73,8 @@ export async function drainRegistry(
       throw new BudgetExceededError(
         `${op} would enumerate more than ${maxScanSegments} segments — the scan was abandoned there rather than ` +
           `completed. ${advice}available (a record is a few hundred bytes resident).`,
+        // The scan stops at the first row past the bound, so `spent` is a lower bound on the true total.
+        { option: 'maxScanSegments', limit: maxScanSegments, spent: rows.length + 1 },
       );
     }
     rows.push(rec);

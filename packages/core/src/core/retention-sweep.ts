@@ -350,6 +350,9 @@ async function rowsFromDueIndex(
           `retireExpired: the due index yielded more than ${options.maxScanSegments} segments — the scan was ` +
             `abandoned there rather than completed. Raise \`maxScanSegments\`, narrow with \`namespace\`, or ` +
             `reduce \`lookbackBuckets\`.`,
+          // The scan refuses at the first pointer past the bound, before reading it, so `spent` is that pointer
+          // counted with the rows held. A stale pointer counts too, so it can pass the live rows by one.
+          { option: 'maxScanSegments', limit: options.maxScanSegments, spent: rows.length + 1 },
         );
       }
       const live = await registry.get(ref);
@@ -556,7 +559,9 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
   const purgeTombstones = options.purgeTombstones ?? true;
   const grace = options.tombstoneGraceMs ?? DEFAULT_TOMBSTONE_GRACE_MS;
   requireFiniteNumber(grace, { min: 0, what: 'retireExpired: `tombstoneGraceMs`' });
-  const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
+  // Only an absent value means the default: a `null` or a malformed one is refused, as a malformed `budget` is.
+  const maxScanSegments =
+    options.maxScanSegments === undefined ? DEFAULT_MAX_SCAN_SEGMENTS : options.maxScanSegments;
   requirePositiveInteger(maxScanSegments, 'retireExpired: `maxScanSegments`');
   return {
     audit: options.audit,

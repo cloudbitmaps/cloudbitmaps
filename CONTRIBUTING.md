@@ -37,13 +37,13 @@ Every change must pass these locally, and CI runs each of them on every pull req
   directions.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
   the entry list is derived from each manifest, so a declared entry that does not load fails the build. It checks
-  that core's error predicates classify an error the built `@cloudbitmaps/s3` throws, and that the store takes a
-  backend that package builds, so the predicates are wired across a real package boundary; and it asserts that
+  that `errorKind`, from the flavor and from driver-kit, classifies an error the built `@cloudbitmaps/s3` throws, and that the store takes a
+  backend that package builds, so the classifier is wired across a real package boundary; and it asserts that
   core, the flavor and the S3 package share **one** copy of core — every package leaves `@cloudbitmaps/core`
   external, so `instanceof` holds across them and a regression to a bundled copy would break it silently. Both
   halves are the class of bug the source-graph tests structurally cannot see. It cannot see whether the brands are
   registered `Symbol.for`s, since with one shared copy of core a plain `Symbol` passes too; that is
-  [`tests/core/error-predicates.test.ts`](tests/core/error-predicates.test.ts)'s to prove.
+  [`tests/core/error-kind.test.ts`](tests/core/error-kind.test.ts)'s to prove.
 
 - `pnpm api:surface:check` (after `pnpm build`) guards **signatures**, which the API reference's name check does not.
   `scripts/api-surface.cjs` reads the declarations the build emitted for every public entry point and compares one line

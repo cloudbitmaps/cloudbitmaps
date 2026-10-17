@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { BudgetExceededError, ValidationError } from '@/core/errors';
 import { runBatch } from '../helpers/combine-many';
+import { reachSite } from '../helpers/force-refusal';
 import { feedOf, lcg, recordsOf, runFed } from '../helpers/combine-feed';
 import type { Published } from '../helpers/combine-many';
 
@@ -675,6 +676,11 @@ describe('memory', () => {
     });
     expect(error(run.outputs[0]!)).toBeInstanceOf(BudgetExceededError);
     expect(error(run.outputs[0]!).message).toMatch(/maxBufferedBytes/);
+    expect(error(run.outputs[0]!)).toMatchObject({
+      option: 'maxBufferedBytes',
+      limit: budget,
+      spent: 128010,
+    });
     expect(pulled.taken).toBeLessThan(30);
     expect(pulled.returnedEarly).toBe(true);
     expect(run.stats.memory.highWaterBytes).toBeLessThanOrEqual(budget);
@@ -703,6 +709,11 @@ describe('memory', () => {
     for (const i of [0, 1]) {
       expect(error(run.outputs[i]!)).toBeInstanceOf(BudgetExceededError);
       expect(error(run.outputs[i]!).message).toMatch(/the feed and the fed outputs/);
+      expect(error(run.outputs[i]!)).toMatchObject({
+        option: 'maxBufferedBytes',
+        limit: budget,
+        spent: 251422,
+      });
     }
     expect(pulled.returnedEarly).toBe(true);
     expect(pulled.taken).toBeLessThan(keys);
@@ -732,6 +743,11 @@ describe('memory', () => {
     expect(pulled.finished).toBe(true);
     expect(error(run.outputs[0]!)).toBeInstanceOf(BudgetExceededError);
     expect(error(run.outputs[0]!).message).toMatch(/publishing output 0/);
+    expect(error(run.outputs[0]!)).toMatchObject({
+      option: 'maxBufferedBytes',
+      limit: budget,
+      spent: 474052,
+    });
     expect(ok(run.outputs[1]!).ids.length).toBe(3000 * keys);
     expect(ok(run.outputs[2]!).ids).toEqual(at(2, [1, 2]));
     expect(run.stats.memory.highWaterBytes).toBeLessThanOrEqual(budget);
@@ -934,5 +950,22 @@ describe('a producer that is slow but ends', () => {
     expect(ok(run.outputs[1]!).ids).toEqual(at(4, [1]));
     // The stored-only output is in the same group, so it publishes after the feed ended too.
     expect(published.length).toBe(2);
+  });
+});
+
+describe('the feed charge, when the ledger has no room for a record', () => {
+  it('refuses with what the ledger held plus the record it was asked to hold', async () => {
+    const { error, forced } = await reachSite(/^materializeMany: the feed would hold/, async () => {
+      const { run } = await runFed([{ expr: 'a' }], {
+        fed: { a: [K + 1, K + 2] },
+        extra: { maxBufferedBytes: 64 << 20 },
+      });
+      return run;
+    });
+    expect(error.option).toBe('maxBufferedBytes');
+    expect(error.limit).toBe(64 << 20);
+    expect(forced).toHaveLength(1);
+    expect(error.spent).toBe(forced[0]!.used + forced[0]!.asked);
+    expect(error.spent).toBeGreaterThan(64 << 20);
   });
 });

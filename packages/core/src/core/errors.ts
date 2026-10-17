@@ -16,26 +16,26 @@
  * does not match — and silently, because a `catch` that stops matching just falls through, defeating
  * transient retry and the publish path's conflict handling with no error of its own.
  *
- * `Symbol.for` is identity-stable across copies, bundles and realms, so classify errors with the exported
- * predicates below (never `instanceof`) anywhere an error may cross that boundary.
+ * `Symbol.for` is identity-stable across copies, bundles and realms, so classify errors with `errorKind`
+ * (never `instanceof`) anywhere an error may cross that boundary.
  */
 const ERROR_BRAND: unique symbol = Symbol.for('cloudbitmaps.error');
 const TRANSIENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.error.transient');
 
 /**
  * Each class's name as written. A minifying bundler renames the classes themselves, so the name an error carries, which
- * the predicates match on and a log prints, comes from here: strings no minifier touches. A class not listed (an
+ * `errorKind` matches on and a log prints, comes from here: strings no minifier touches. A class not listed (an
  * application's own subclass) keeps the name its class has.
  */
 const NAMES = new WeakMap<abstract new (...args: never[]) => unknown, string>();
 
 /** Base class for every error CloudRoaring throws. */
 export class CloudRoaringError extends Error {
-  /** Cross-bundle brand — see the predicates ({@link isCloudRoaringError}, …). Non-enumerable-ish (symbol key ⇒ not in JSON). */
+  /** Cross-bundle brand — see {@link errorKind}. Non-enumerable-ish (symbol key ⇒ not in JSON). */
   readonly [ERROR_BRAND] = true as const;
   constructor(message: string) {
     super(message);
-    // Also the discriminator the predicates match on: a runtime string, so it survives a second copy of the package
+    // Also the discriminator `errorKind` matches on: a runtime string, so it survives a second copy of the package
     // where the class identity does not, and a minifier where the class's own name does not.
     this.name = NAMES.get(new.target) ?? new.target.name;
   }
@@ -126,15 +126,55 @@ export class UnsupportedError extends CloudRoaringError {}
 export class CapabilityError extends CloudRoaringError {}
 
 /**
- * An operation would exceed its per-op **denial-of-wallet budget** — too many backend requests for a single
- * `count`/`iterate`/`intersect`/`subjectReport`/`eraseSubject` call — so it is refused **before** fanning out
- * (hard invariant 6). Default-on but generous (normal ops never hit it); tune it
- * per store (`budget`) or per op, or disable with `budget: false`. Deterministic (never retried): the op is too
- * big by policy, not by luck. Each request's bytes are separately capped (the safe-deserialize ceiling), so
- * bounding the request count transitively bounds bytes. Its message states the limit and, when known before the
- * fan-out, the projected count; it has no fields for either. Carries no data.
+ * An operation would exceed one of its per-op **denial-of-wallet bounds** — too many backend requests
+ * (`budget.maxRequests`), too many bytes held at once by a combine (`maxBufferedBytes`), or too many registry rows
+ * in a scan (`maxScanSegments`) — so it is refused, before the fan-out where it can be known beforehand (hard
+ * invariant 6). Default-on but generous (normal ops never hit it); tune each per store or per op, or disable the
+ * request budget with `budget: false`. Deterministic (never retried): the op is too big by policy, not by luck.
+ * Each request's bytes are separately capped (the safe-deserialize ceiling), so bounding the request count
+ * transitively bounds bytes.
+ *
+ * Carries an option name and two numbers, and no data: `option` names the option to raise, `limit` is the bound in
+ * force, and `spent` is what the call had reached when it was refused. What `spent` measures depends on `option`:
+ *
+ * - `'budget.maxRequests'`: the requests the call needs, which raising the option to it lets through. For a plan, it
+ *   is the planned reads (with the reads already taken, when a run plans again); an enumeration that
+ *   stops at the bound reports `limit + 1`, a lower bound.
+ * - `'maxBufferedBytes'`: a **lower bound** on the bytes the call needs resident: what it held plus what it asked
+ *   for at the moment it was refused. Raising the limit to `spent` can be refused again, further on, because the
+ *   call had not finished growing. The one figure that lets an output through is the per-output refusal's, which
+ *   the message gives as "raise maxBufferedBytes to at least N". Otherwise raise the limit with room to spare, or
+ *   split the outputs across calls.
+ * - `'maxScanSegments'`: `limit + 1`, a lower bound: the scan stops at the first row past the bound (for the retention
+ *   sweep's due-index scan, the first due-index pointer, unread, which may be stale), so it never learns the fleet's
+ *   size.
+ *
+ * The message states the same limit.
  */
-export class BudgetExceededError extends CloudRoaringError {}
+export class BudgetExceededError extends CloudRoaringError {
+  /** The option to raise to let the call through. */
+  readonly option: 'budget.maxRequests' | 'maxBufferedBytes' | 'maxScanSegments';
+  /** The bound in force: requests, bytes or rows, by `option`. */
+  readonly limit: number;
+  /**
+   * What the call had reached when refused. By `option`: the requests the call needs (`'budget.maxRequests'`), a
+   * lower bound on the resident bytes it needs (`'maxBufferedBytes'`), or `limit + 1` (`'maxScanSegments'`).
+   */
+  readonly spent: number;
+  constructor(
+    message: string,
+    details: {
+      readonly option: 'budget.maxRequests' | 'maxBufferedBytes' | 'maxScanSegments';
+      readonly limit: number;
+      readonly spent: number;
+    },
+  ) {
+    super(message);
+    this.option = details.option;
+    this.limit = details.limit;
+    this.spent = details.spent;
+  }
+}
 
 /**
  * An encrypted segment's data key (DEK) cannot be unwrapped because the keystore holds none of the
@@ -184,9 +224,9 @@ NAMES.set(KeyUnavailableError, 'KeyUnavailableError');
 NAMES.set(TransientError, 'TransientError');
 
 /**
- * Bundle-safe error predicates — use these, not `instanceof`, wherever an error may cross the core↔driver
- * package boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
- * match the {@link ERROR_BRAND} registry brand + the runtime `name`, both of which survive separate bundling.
+ * Bundle-safe error predicates. Core's own modules use these, not `instanceof`, wherever an error may cross the
+ * core↔driver package boundary. They match the {@link ERROR_BRAND} registry brand + the runtime `name`, both of
+ * which survive separate bundling. No entry exports them: callers outside core use {@link errorKind}.
  */
 function hasBrand(err: unknown, brand: symbol): boolean {
   return (
@@ -259,4 +299,56 @@ export function isBudgetExceededError(err: unknown): err is BudgetExceededError 
 /** No key the keystore holds can unwrap an encrypted segment's data key. */
 export function isKeyUnavailableError(err: unknown): err is KeyUnavailableError {
   return isCloudRoaringError(err) && err.name === 'KeyUnavailableError';
+}
+
+/** The name of one of the library's error classes, as `errorKind` returns it. */
+export type ErrorKind =
+  | 'CloudRoaringError'
+  | 'ValidationError'
+  | 'WriteConflictError'
+  | 'IntegrityError'
+  | 'NotFoundError'
+  | 'UnsupportedError'
+  | 'CapabilityError'
+  | 'TransientError'
+  | 'KeyUnavailableError'
+  | 'BudgetExceededError'
+  | 'LeaseExpiredError'
+  | 'LeaseLimitError'
+  | 'StaleOperandError';
+
+/**
+ * Every {@link ErrorKind}, as a record so that a kind added to the type and left out here fails to compile. Not
+ * exported: a declaration that named it would put it in the public surface.
+ */
+const KIND_NAMES: Record<ErrorKind, true> = {
+  CloudRoaringError: true,
+  ValidationError: true,
+  WriteConflictError: true,
+  IntegrityError: true,
+  NotFoundError: true,
+  UnsupportedError: true,
+  CapabilityError: true,
+  TransientError: true,
+  KeyUnavailableError: true,
+  BudgetExceededError: true,
+  LeaseExpiredError: true,
+  LeaseLimitError: true,
+  StaleOperandError: true,
+};
+
+/**
+ * Which of the library's error classes `err` is, or `undefined` when it is none of them. Works on every copy of
+ * the package, every bundle and every realm, where `instanceof` can silently stop matching: it reads the
+ * `Symbol.for` brands and the error's `name`. An application's own subclass of one class returns
+ * `'CloudRoaringError'`, except a subclass of `TransientError`, which returns `'TransientError'`; an error
+ * cloned out of a worker (the brand is gone) returns `undefined`.
+ */
+export function errorKind(err: unknown): ErrorKind | undefined {
+  if (hasBrand(err, TRANSIENT_BRAND)) return 'TransientError';
+  if (!hasBrand(err, ERROR_BRAND)) return undefined;
+  const name = (err as { name?: unknown }).name;
+  return typeof name === 'string' && Object.hasOwn(KIND_NAMES, name)
+    ? (name as ErrorKind)
+    : 'CloudRoaringError';
 }
