@@ -1,4 +1,14 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -333,7 +343,7 @@ const LEFT_THE_FLAVOR: ReadonlyArray<{
   {
     name: 'BlobReader',
     instead: READER_INSTEAD,
-    onlyOn: ['AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md'],
+    onlyOn: ['AGENTS.md', 'CONTRIBUTING.md'],
   },
   ...['BufferReader', 'CrbmReaderOptions', 'CrbmCrypto', 'NodeAead', 'aadFor'].map((name) => ({
     name,
@@ -577,7 +587,10 @@ function hoverDocs(): {
 
 /** The name each `{@link …}` in `text` starts with: `Segment` of `{@link Segment.pin}`, `x` of `{@link x | text}`. */
 export function linkTargets(text: string): string[] {
-  return [...text.matchAll(/\{@link(?:code|plain)?\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1] ?? '');
+  // A link to a URL (`{@link https://… | text}`) names no symbol.
+  return [
+    ...text.matchAll(/\{@link(?:code|plain)?\s+(?![A-Za-z][\w+.-]*:\/\/)([A-Za-z_$][\w$]*)/g),
+  ].map((m) => m[1] ?? '');
 }
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
@@ -587,13 +600,20 @@ const PAGE_EXTS = ['.md', '.html', '.txt'];
 const CODE_EXTS = ['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs'];
 const SKIP_FILES = new Set(['CHANGELOG.md']);
 
-function files(exts: readonly string[]): string[] {
+/**
+ * Every file under `root` with one of `exts`, by its path from `root`, sorted. A symbolic link is skipped: it is another
+ * name for a file read under its own (`CLAUDE.md` is `AGENTS.md`), and a checkout that cannot make links holds a file of
+ * a few bytes in its place.
+ */
+function files(exts: readonly string[], root: string = ROOT): string[] {
   const out: string[] = [];
   const walk = (rel: string): void => {
-    for (const entry of readdirSync(join(ROOT, rel))) {
+    for (const entry of readdirSync(join(root, rel))) {
       if (SKIP_DIRS.has(entry) || SKIP_FILES.has(entry)) continue;
       const childRel = rel === '.' ? entry : join(rel, entry);
-      if (statSync(join(ROOT, childRel)).isDirectory()) walk(childRel);
+      const stat = lstatSync(join(root, childRel));
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) walk(childRel);
       else if (exts.some((e) => entry.endsWith(e)) && childRel !== SELF) out.push(childRel);
     }
   };
@@ -716,6 +736,22 @@ describe('a removed export is named nowhere a reader looks', () => {
       'utf8',
     ).replace(/\/\/.*$/gm, '');
     expect(retiredNames(kit, [{ name: 'createBackend' }])).toEqual([]);
+  });
+
+  it('skips a symbolic link, which is another name for a file it reads under its own', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'retired-names-'));
+    try {
+      writeFileSync(join(dir, 'AGENTS.md'), 'names BlobReader\n');
+      symlinkSync('AGENTS.md', join(dir, 'CLAUDE.md'));
+      writeFileSync(join(dir, 'GUIDE.md'), 'a page\n');
+      expect(files(['.md'], dir)).toEqual(['AGENTS.md', 'GUIDE.md']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // In this tree `CLAUDE.md` is a link to `AGENTS.md`, unless the checkout could not make one.
+    expect(pages()).toContain('AGENTS.md');
+    if (lstatSync(join(ROOT, 'CLAUDE.md')).isSymbolicLink())
+      expect(pages()).not.toContain('CLAUDE.md');
   });
 
   it('reads the pages, so the check below cannot pass vacuously', () => {
@@ -1016,5 +1052,11 @@ describe("the flavor's and driver-kit's hover docs name only what a reader can i
       ),
     ).toEqual(['Segment', 'errorKind', 'Uint8Array']);
     expect(linkTargets('a `{ link }` or @link without braces')).toEqual([]);
+    // a link to a URL names no symbol; one to a name beside it is still read
+    expect(
+      linkTargets(
+        '({@link https://www.rfc-editor.org/rfc/rfc5116 | RFC 5116}, {@link http://x.test}) and {@link DEFAULT_RETRY_POLICY}',
+      ),
+    ).toEqual(['DEFAULT_RETRY_POLICY']);
   });
 });
