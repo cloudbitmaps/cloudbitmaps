@@ -355,7 +355,7 @@ between here and there:
    supports and not what it merely happens to reach: the due-index scheduler, `.crbm` construction internals,
    object-key layout and defaults stated in prose are not importable. `1.0` freezes the format; a small surface is
    the other half of that promise, and a name is far cheaper to *add* later than to take away. A symbol stays when
-   a public type or field needs it to be produced, parsed or consumed, which is why `aadFor`, `checkBudget` and
+   a public type or field needs it to be produced, parsed or consumed, which is why `aadFor` and
    `readRetentionPolicy` are exported, and that is the test worth applying to any surface reduction. The API
    reference guard runs in both directions. `@cloudbitmaps/core`'s main entry has since become internal, outside the
    stability promise and out of the signature snapshot; the public surface is `@cloudbitmaps/roaring`, the drivers,

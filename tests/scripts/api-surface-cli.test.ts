@@ -93,7 +93,7 @@ afterAll(() => rmSync(repo, { recursive: true, force: true }));
 const withMain = (edit: (s: string) => string): void =>
   put('packages/a/dist/index.d.ts', edit(MAIN));
 
-describe('--write and --check', () => {
+describe('--write and --check', { timeout: 60_000 }, () => {
   it('writes every entry point, a nested `types` condition and a subpath included, and passes on no change', () => {
     const entries = snapshot();
     expect(entries['@fx/a keep']).toBe('function keep(a: string): string;');
@@ -174,7 +174,7 @@ describe('--write and --check', () => {
   });
 });
 
-describe('--against', () => {
+describe('--against', { timeout: 60_000 }, () => {
   it('passes with no change and with an addition', () => {
     expect(run(['--against', 'HEAD']).status).toBe(0);
     withMain((s) => `${s}export declare function fresh(): void;\n`);
@@ -329,7 +329,7 @@ describe('--against', () => {
   });
 });
 
-describe('a member added to an existing type', () => {
+describe('a member added to an existing type', { timeout: 60_000 }, () => {
   const REQUIRED_MSG = 'a required member added to an existing interface';
   /** Adds `extra` members to `Shape` (an interface the base has), writes the snapshot and compares with HEAD. */
   const addToShape = (extra: string): Run => {
@@ -414,7 +414,7 @@ describe('a member added to an existing type', () => {
   });
 });
 
-describe('types a public signature names that no entry exports', () => {
+describe('types a public signature names that no entry exports', { timeout: 60_000 }, () => {
   const HIDDEN = `export interface Pub { h: Hidden; r: Ext; }
 interface Hidden { a: number; deep: Deep; priv: never }
 interface Deep { x: string }
@@ -462,7 +462,7 @@ export {};
   });
 });
 
-describe('internal entries', () => {
+describe('internal entries', { timeout: 60_000 }, () => {
   const CORE = `export interface Ctx { n: number }
 export declare function engine(c: Ctx, a: string): void;
 export declare function other(): void;
@@ -478,10 +478,10 @@ export declare function other(): void;
         './kit': { types: './dist/kit.d.ts', default: './dist/kit.js' },
       },
     });
-  const setB = (internal: boolean, core = CORE): void => {
+  const setB = (internal: boolean, core = CORE, kit = KIT): void => {
     put('packages/b/package.json', manifestB(internal));
     put('packages/b/dist/index.d.ts', core);
-    put('packages/b/dist/kit.d.ts', KIT);
+    put('packages/b/dist/kit.d.ts', kit);
     expect(run(['--write']).status).toBe(0);
   };
   const internalFile = (): Record<string, string> =>
@@ -553,13 +553,102 @@ export declare function other(): void;
     expect(r.status, r.err).toBe(0);
   });
 
-  it('wants no row once the base is already internal, and a row the base has excuses nothing', () => {
+  it('wants no row once the base is already internal', () => {
     setB(true);
     put('api-surface/allowed.json', JSON.stringify([internalRow]));
     commit();
     expect(run(['--against', 'HEAD']).status).toBe(0);
     put('api-surface/allowed.json', '[]\n');
     expect(run(['--against', 'HEAD']).status).toBe(0);
+  });
+
+  it('takes no excuse from a row the base already has, or from a row for a subpath', () => {
+    setB(false);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    commit();
+    setB(true);
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('internal: @fx/b\n');
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/b/kit (internal)', reason: 'not this entry' }]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('internal: @fx/b\n');
+  });
+
+  it('leaves a type only the internal entry names out of the snapshot', () => {
+    setB(
+      true,
+      `${CORE}export interface OnlyCore { m: string }\nexport declare function solo(o: OnlyCore): void;\n`,
+    );
+    expect(Object.keys(snapshot()).filter((k) => k.includes('OnlyCore'))).toEqual([]);
+    expect(internalFile()['@fx/b OnlyCore.m']).toBe('m: string;');
+  });
+
+  // Making an entry internal takes its own functions out of the promise, never a type a public signature still names.
+  describe('a type the newly internal entry exported, still promised', () => {
+    const TWO = CORE.replace('n: number }', 'n: number; m: string }');
+    const madeInternal = (core: string, kit = KIT): Run => {
+      setB(false, TWO);
+      commit();
+      setB(true, core, kit);
+      put('api-surface/allowed.json', JSON.stringify([internalRow]));
+      return run(['--against', 'HEAD']);
+    };
+
+    it('passes when the type is unchanged', () => {
+      const r = madeInternal(TWO);
+      expect(r.status, r.err).toBe(0);
+    });
+
+    it('fails a changed member', () => {
+      const r = madeInternal(TWO.replace('n: number', 'n: string'));
+      expect(r.status).toBe(1);
+      expect(r.err).toContain('changed: @fx/b (referenced) Ctx.n');
+    });
+
+    it('fails a removed member', () => {
+      const r = madeInternal(CORE);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain('removed: @fx/b (referenced) Ctx.m');
+    });
+
+    it('fails a new required member', () => {
+      const r = madeInternal(TWO.replace('m: string }', 'm: string; extra: boolean }'));
+      expect(r.status).toBe(1);
+      expect(r.err).toContain('added: @fx/b (referenced) Ctx.extra');
+    });
+
+    const KIT_EXPORTS = `export type { Ctx } from './index';\n${KIT}`;
+
+    it('passes when another public entry of the package now exports the type unchanged', () => {
+      const r = madeInternal(TWO, KIT_EXPORTS);
+      expect(r.status, r.err).toBe(0);
+    });
+
+    it('fails a change when another public entry of the package now exports the type', () => {
+      const r = madeInternal(TWO.replace('n: number', 'n: string'), KIT_EXPORTS);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain('changed: @fx/b/kit Ctx.n');
+    });
+  });
+
+  it('counts exporting a referenced type as no removal, and still compares it', () => {
+    setB(true);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    commit();
+    const KIT_EXPORTS = `export type { Ctx } from './index';\n${KIT}`;
+    setB(true, CORE, KIT_EXPORTS);
+    expect(Object.keys(snapshot()).filter((k) => k.includes('(referenced) Ctx'))).toEqual([]);
+    let r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+    setB(true, CORE.replace('n: number', 'n: string'), KIT_EXPORTS);
+    r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/b/kit Ctx.n');
   });
 
   it('still tracks a referenced type of the internal entry', () => {

@@ -2755,8 +2755,7 @@ export class CloudRoaring {
    *
    * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
    * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
-   * ceiling of its own: narrow the scan with `namespace`, or call `runConsistencyCheck` over the backend's
-   * `storage` and `registry` with a higher `maxScanSegments`.
+   * ceiling of its own: narrow the scan with `namespace`.
    */
   async checkConsistency(
     options: {
