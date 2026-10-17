@@ -1,9 +1,11 @@
 # Loading in depth
 
 [Getting started](getting-started.md#load-real-data) shows one load. This page covers the rest of the write side:
-why a load is refused, what a load accepts, how many old generations to keep, how to roll back, how to write a
-result into another segment, and how to write many results from one pass, with operands that arrive as records, a set you hold included. How loads stay correct under crashes and races is in
-[How it stays correct](correctness.md#how-a-load-stays-correct).
+what a load accepts, how many old generations to keep, how to roll back, how to write a result into another segment,
+and how to write many results from one pass, with operands that arrive as records, a set you hold included. Why a load
+is refused, and how loads stay correct under crashes and races, each have a summary here; the full text is in
+[When a load is refused](correctness.md#when-a-load-is-refused) and
+[How a load stays correct](correctness.md#how-a-load-stays-correct).
 
 ## Load a segment
 
@@ -373,7 +375,7 @@ no usable ledger (a registry repaired by hand, or a row restored without its led
 starts a ledger from the bucket instead (the first publish of an incarnation, over no row or a row with no pointer, writes
 the new generation alone): the generations a count by `keep` keeps, with the live-leased ones beside them,
 which can include a number a refused or crashed load took, and the publishes after it carry that number until the
-window pushes it out ([below](#how-it-stays-correct)). A usable ledger is never started again, however wide: one that
+window pushes it out ([an orphan is collected later](correctness.md#how-a-load-stays-correct)). A usable ledger is never started again, however wide: one that
 names more than 64 generations below the pointer that no lease holds (a `keep` above 64 leaves up to 127) keeps its
 order, the generations a live lease holds and the ones a rollback left above the new number, and the load that follows
 it with a `keep` of 64 or less collects by listing, counting the ledger's own names first, instead of by name. The
@@ -1164,8 +1166,8 @@ A load takes the next generation number itself, writes its object first, and onl
 pointer, by a compare-and-swap that never moves it backwards and is fenced on the row the load read. So a crash never
 moves the pointer, a rerun is a newer identical generation, and of two loads racing on one segment at most one lands.
 A load that dies between its write and its publish leaves an orphan, which a later load's collection removes.
-Collection deletes only below the pointer on an active segment, keeps the window the row records, spares a generation a
-live lease holds, and re-proves the row before every delete. The whole mechanism is in
+A load's collection deletes only below the pointer on an active segment, keeps the window the row records, spares a
+generation a live lease holds, and re-proves the row before every delete. The whole mechanism is in
 [How a load stays correct](correctness.md#how-a-load-stays-correct).
 
 ### A rollback that races a collection
@@ -1173,7 +1175,9 @@ live lease holds, and re-proves the row before every delete. The whole mechanism
 Every loop that deletes generations reads the segment's row just before each delete, and a rollback held to the row's
 `knownGens` is kept out of all of them. One that is not (`allowUnknown`, or a target the pointer alone decides) can land
 on a generation in the round trip between that read and the delete. The deleting call then finds the pointer on a
-generation it deleted, and throws `NotFoundError` naming it rather than answer; it repairs nothing. Look with
-`store.generations(ref)` or `checkConsistency()` before acting:
+generation it deleted and, once its reads of the row over the next 1.75 s all still find it there, throws
+`NotFoundError` naming it rather than answer; it repairs nothing. One delete is not held to this, a refused erasure
+rewrite's delete of its own object, which only `checkConsistency()` finds. Look with `store.generations(ref)` or
+`checkConsistency()` before acting:
 [a rollback that races a collection](correctness.md#a-rollback-that-races-a-collection) says what each delete reports,
 what to do, and what the check costs.

@@ -467,9 +467,10 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
 
 A pin shares the store's bounded reader and chunk caches, under keys of its own, so it is never handed a chunk a live
 read fetched from another generation. One call reads a segment at one generation: a combine that holds a segment at two
-is refused with `ValidationError`. A pin records its object's size and footer checksum, so it never reads a re-created
-segment's object, and where its object is gone or replaced a read that must fetch fails with `NotFoundError` rather than
-going empty part-way through a call. What invalidates a pin, what it answers from meanwhile, and what it needs are in
+generations is refused with `ValidationError`. A pin records its object's size and footer checksum, so it never reads a
+re-created segment's object, and where its object is gone or replaced a read that must fetch fails with `NotFoundError`
+rather than going empty part-way through a call. What invalidates a pin, what it answers from meanwhile, and what it
+needs are in
 [How a pin stays correct](correctness.md#how-a-pin-stays-correct).
 
 ## Read a chunk at a time: `batches()`

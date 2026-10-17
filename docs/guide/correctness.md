@@ -2,8 +2,10 @@
 
 The guides say what each call does and what it promises. This page is how those promises hold under crashes, races and
 faults, guide by guide: what a refused load means, and how a load, a pin, the retention sweep, an erasure, encryption
-and the drivers' retries stay correct. You do not need it to use the library: it is here so you can check the
-guarantees. Each guide keeps a short summary of its part, with a link to it here.
+and the drivers' retries stay correct. The first section, [when a load is refused](#when-a-load-is-refused), is the
+one a running deployment reaches for: each `reason`, what to do about it, and what throws instead. The rest you do not
+need to use the library: it is here so you can check the guarantees. Each guide keeps a short summary of its part,
+with a link to it here.
 
 The protocol rules these sections keep are the [hard correctness invariants](../../AGENTS.md#hard-correctness-invariants),
 which code, tests and docs cite by number.
@@ -47,7 +49,7 @@ judges a first load, and `maxGrowth` does not judge a load onto an empty segment
 of zero; `0` means no bound, on both. The bounds are checked in the order of the table, so a load that breaks an older
 bound as well keeps that reason. Each compares in floating point, so do not rely on the exact boundary
 (`100 × 1.15` is `114.99999999999999`). Setting either one makes the load read the current size, `allowEmpty: true` or
-not, and fence its publish on what it read ([below](loading.md#where-the-guard-reads-the-size-of-the-current-generation)).
+not, and fence its publish on what it read ([in the loading guide](loading.md#where-the-guard-reads-the-size-of-the-current-generation)).
 
 A ratio judges a small segment harshly: 40 ids growing to 70 is 1.75 times. To refuse a growth only when it is also
 larger than an absolute number of ids, set each load's `maxGrowth` from the segment's current size `before`:
@@ -55,7 +57,7 @@ larger than an absolute number of ids, set each load's `maxGrowth` from the segm
 `before + 1000`, since `new > max(f × b, b + d)` is the same as `new > b × max(f, 1 + d / b)`. With no current size
 (a first load, or an empty segment) it passes `0`, no bound, as the bound itself would judge nothing there. `before` is
 `await segment.count()`, what your last load left (its `cardinality` if it published, its `cardinalityBefore` if it
-was refused), or a `materializeMany` dry run's `cardinalityBefore` ([below](loading.md#look-before-you-publish-a-dry-run)). The rule
+was refused), or a `materializeMany` dry run's `cardinalityBefore` ([in the loading guide](loading.md#look-before-you-publish-a-dry-run)). The rule
 is exact while nothing else writes the segment in between.
 
 A key shift keeps the size: a join on the wrong key can replace a segment's members with as many others, which no ratio
@@ -74,7 +76,7 @@ await store.load({ segment: 'active-us' }, { bitmap: next }, { guard: { maxGrowt
 ```
 
 It reads the current generation once, and nothing fences it against another writer between the count and the load. For
-the outputs of a `materializeMany` call, count it with a dry run ([below](loading.md#recipes-over-a-dry-run)).
+the outputs of a `materializeMany` call, count it with a dry run ([in the loading guide](loading.md#recipes-over-a-dry-run)).
 
 **What throws instead.** A refusal is an outcome. A throw is a fault:
 
@@ -166,9 +168,6 @@ rollback moved the pointer off it. The load cannot tell the two apart, so it rep
 generation may be current, and deletes nothing. A re-run publishes a new generation.
 
 ## How a load stays correct
-
-
-This section is the mechanism. You do not need it to use a load, and it is here so you can check the guarantees.
 
 **Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: the one
 after the pointer it read, `currentGen + 1`, when one existence check finds no object holding it, and otherwise one

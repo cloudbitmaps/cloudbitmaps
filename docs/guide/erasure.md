@@ -63,7 +63,7 @@ encrypted, or the row has no summary, and the index does not fit in that read.
 An erasure that finds the id only in generations below the pointer, with nothing to delete by name, reads the row ahead
 of its collection and writes it once when the row's ledger of known generations names a generation the collection will
 delete: the write takes those names out of the ledger before anything is deleted
-([how it stays correct](correctness.md#how-an-erasure-stays-correct)). On a row with no usable ledger it also reads the row once more after the
+([how an erasure stays correct](correctness.md#how-an-erasure-stays-correct)). On a row with no usable ledger it also reads the row once more after the
 collection, in case a load started a ledger meanwhile. Counted at an object-store registry on the in-memory backend,
 for a segment with one older generation that holds the id: 7 requests that read and 1 that writes when the ledger names
 it, 6 and none when a usable ledger does not, and 7 and none on a row with no usable ledger. An erasure that rewrites the
@@ -133,7 +133,7 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
 - **Do not roll the segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto
   a generation the erasure did not rewrite. Roll back before the erasure starts or after it returns, and re-run an
   erasure that reports otherwise once the pointer is where you want it.
-  [How it stays correct](correctness.md#how-an-erasure-stays-correct) says what each landing point reports.
+  [How an erasure stays correct](correctness.md#how-an-erasure-stays-correct) says what each landing point reports.
 
 **On an encrypted store, an erasure of any id refuses an encrypted first load in flight that has written its object onto
 a segment made ahead of its data.** A segment whose row `setRetention` made before its first load holds no key until
@@ -299,7 +299,11 @@ new one with that bit cleared, verifies it, publishes it fenced on the generatio
 deletes every generation in the bucket that holds the id, above the pointer or below. Before it deletes anything, it
 takes what it will delete out of the row's ledger of known generations, so a rollback without `allowUnknown` cannot
 bring an erased generation back, even when a delete fails, except where the pointer alone decides. A race with a load,
-a rollback or another erasure is reported, as `'superseded'`, an `error:` note or a thrown error, and a call that could
-not collect throws rather than report `erased: true` over bytes still there. The mechanism, its memory and request
-bounds, each race, which drivers apply a conditional delete, and what each result means are in
+a rollback or another erasure is reported, as `'superseded'`, an `error:` note or a thrown error, with two exceptions
+at a refused rewrite's delete of its own object above the winner's pointer: a rollback onto that object between the
+call's renewal of the row and the delete, and, on a storage driver that does not report `conditionalDelete`, a delete
+that removes a load's generation published under that object's number. Each leaves the pointer on a missing object
+with nothing reported, and only `checkConsistency()` finds it. A call that could not collect throws rather than report
+`erased: true` over bytes still there. The mechanism, its memory and request bounds, each race, which drivers apply a
+conditional delete, and what each result means are in
 [How an erasure stays correct](correctness.md#how-an-erasure-stays-correct).

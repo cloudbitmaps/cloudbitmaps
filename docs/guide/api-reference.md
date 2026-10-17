@@ -125,8 +125,7 @@ reports `true`; off, the version is ignored and the delete removes whatever is u
 holder by name (above the pointer, on a segment with no generation yet, or one it cannot search), a refused rewrite's
 delete of its own object above the winner's pointer, and a refused load's delete of the object whose footer matched
 what it wrote, are the ones the library sends that way, so a load that took the number since keeps its generation (within the
-limits in the erasure guide:
-[a number taken again during an erasure](correctness.md#how-an-erasure-stays-correct)). A precondition that no longer holds is a
+limits in [a number taken again during an erasure](correctness.md#how-an-erasure-stays-correct)). A precondition that no longer holds is a
 `WriteConflictError` while an object is under the key, and an absent object is a no-op whichever of `404` or `412` the
 service answers for it. The S3 storage half reads its default from the client as the registry does, on its first
 conditional delete: `capabilities().conditionalDelete` reads `false` until then unless you set the option, and stays

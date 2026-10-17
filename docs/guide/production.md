@@ -608,7 +608,10 @@ dispatched CI run can build one and attach it to that run.
 
 A fault costs a read some latency and a write a re-run, never correctness: generations are write-once, a publish only
 moves the pointer forward, and every byte is checksum-verified before use. A cloud SDK's own retry gives the wrong
-answer for a conditional write, since a write that lands and loses its response meets itself when it is sent again, so
-the S3 and GCS packages send each conditional write with that retry off, and a write that can still meet itself carries
-a random id that settles it. Each package's conditional writes, and how a tagged write is settled, are in
+answer for a conditional write, since a write that lands and loses its response meets itself when it is sent again. So
+the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone, except a GCS resumable
+upload, which the SDK retries within its session, and the GCS registry's delete. A write that can meet itself carries a
+random id that settles it: every Azure Blob write, a GCS resumable upload, and an S3 or GCS object sent again after a
+throttle. A registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to
+send twice because of its precondition. Each package's conditional writes, and how a tagged write is settled, are in
 [How retries stay correct](correctness.md#how-retries-stay-correct).
