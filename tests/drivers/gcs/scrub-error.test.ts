@@ -859,25 +859,36 @@ describe('GCS scrubCredentials', () => {
     });
 
     it('redacts a credential of 16 MiB in place, and the error still classifies', () => {
-      // Every pattern runs in linear time and in constant stack on these, so none is cut short and nothing is lost.
+      // Every step runs in linear time and in constant stack on these, so none is cut short and nothing is lost.
       const huge = 'a'.repeat(16 * 2 ** 20);
+      const MiB = 2 ** 20;
       const cases: [string, string][] = [
         [`refused Bearer ${huge} end`, 'refused Bearer [redacted] end'],
         [`?Signature=${huge}&x=1`, '?Signature=[redacted]&x=1'],
         [`token ya29.${huge} end`, 'token [redacted] end'],
         [`${PEM_BEGIN}${huge}${PEM_END}`, `${PEM_BEGIN}[redacted]${PEM_END}`],
         [`x-goog-encryption-key=${huge} end`, 'x-goog-encryption-key=[redacted] end'],
+        // A run that a pattern with an alternation in its loop would read one step at a time, on the engine's stack.
+        [`${PEM_BEGIN}${'-a'.repeat(8 * MiB)}`, `${PEM_BEGIN}[redacted]`],
+        [`?Signature=${'%25'.repeat(Math.floor((16 * MiB) / 3))} end`, '?Signature=[redacted] end'],
+        [`?Signature=${'%2B'.repeat(16)}%26x=1`, '?Signature=[redacted]%26x=1'],
       ];
       for (const [text, redacted] of cases) {
         const out = scrubCredentials(apiError(503, { message: text }));
         expect(out.message).toBe(redacted);
         expect(out.code).toBe(503);
       }
-      const missing = apiError(404, {
-        message: `The specified bucket does not exist. Signature=${huge}`,
-      });
-      expect(isMissingBucket(missing)).toBe(true);
-      expect(isMissingBucket(scrubCredentials(missing))).toBe(true);
+      for (const tail of [
+        `Signature=${huge}`,
+        `${PEM_BEGIN}${'-a'.repeat(8 * MiB)}`,
+        `Signature=${'%25'.repeat(Math.floor((16 * MiB) / 3))}`,
+      ]) {
+        const missing = apiError(404, { message: `The specified bucket does not exist. ${tail}` });
+        expect(isMissingBucket(missing)).toBe(true);
+        const copy = scrubCredentials(missing);
+        expect(copy.message).toMatch(/^The specified bucket does not exist\. .*\[redacted\]$/);
+        expect(isMissingBucket(copy)).toBe(true);
+      }
     }, 30_000);
 
     it.each([
@@ -888,6 +899,9 @@ describe('GCS scrubCredentials', () => {
       ['a name run of spaces', `<a> x${' '.repeat(60)}y`.repeat(2 ** 14)],
       ['repeated names with no value', 'access_token='.repeat(2 ** 18)],
       ['a name and a long run of spaces', `${AUTHORIZATION}${' '.repeat(4 * 2 ** 20)}`],
+      ['repeated key openings', `${PEM_BEGIN}x`.repeat(2 ** 16)],
+      ['repeated key openings with no end', `${PEM_BEGIN}${'-'.repeat(64)}`.repeat(2 ** 14)],
+      ['repeated signatures', 'Signature=%2'.repeat(2 ** 18)],
     ])('takes linear time on %s', (_name, text) => {
       const started = performance.now();
       scrubCredentials(apiError(503, { message: text }));

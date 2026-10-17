@@ -29,8 +29,9 @@
  * value after its name; a bearer token after its scheme; a Google access token (`ya29.`) or a JWT on its own; a V2
  * signed URL's `Signature=`; a PEM private key's body; the text of an element named for a credential
  * (`<CanonicalRequest>`); and the text of the cell after one that names a credential (a table's `<th>` and `<td>`, a
- * list's `<dt>` and `<dd>`). A credential in any other form is not recognised, and a text too large for these patterns
- * is replaced whole.
+ * list's `<dt>` and `<dd>`). A credential in any other form is not recognised (a header table laid out by column, a
+ * colon written as an HTML entity in a body the SDK did not decode), and a text these steps cannot finish is replaced
+ * whole.
  */
 
 import { types } from 'node:util';
@@ -116,11 +117,15 @@ const BEARER = /\b(Bearer)(\s+|%20|\+)(?=[A-Za-z0-9\-._~+/]{16})[A-Za-z0-9\-._~+
 /** A Google OAuth access token (`ya29.`), and a JWT: a signed assertion, an ID token, a self-signed account token. */
 const TOKEN_TEXT =
   /ya29\.(?=[A-Za-z0-9_.-]{16})[A-Za-z0-9_.-]+|(?<![A-Za-z0-9_-])eyJ(?=[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+\.eyJ(?=[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+\.(?=[A-Za-z0-9_-]{16})[A-Za-z0-9_-]+/g;
-/** A signed URL's `Signature=`: a V2 one is base64, percent-encoded; 16 characters or more. */
-const SIGNATURE = /(Signature(?:=|%3D))(?=[A-Za-z0-9%+/=_.-]{16})(?:[A-Za-z0-9+/=_.-]+|%(?!26))+/gi;
-/** A PEM private key's body, its line breaks escaped or not; the lines that open and close it are kept. */
-const PRIVATE_KEY =
-  /(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)(?:[^-]+|-(?!----END))*(-----END [A-Z0-9 ]*PRIVATE KEY-----)?/g;
+/** A signed URL's `Signature=`, also percent-encoded. Its value is read by {@link redactSignatures}, not by a pattern. */
+const SIGNATURE_NAME = /Signature(?:=|%3D)/gi;
+/** A run of the characters a base64 or hex signature is written in, `%` aside. */
+const SIGNATURE_RUN = /[A-Za-z0-9+/=_.-]*/y;
+/** The shortest value taken for a signature. */
+const SIGNATURE_MIN = 16;
+/** The lines that open and close a PEM private key, read where `indexOf` finds a `-----BEGIN ` or a `-----END`. */
+const PEM_OPEN = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----/y;
+const PEM_CLOSE = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/y;
 /** An XML element; its text is redacted when its name is a credential's (`<CanonicalRequest>`, `<x-goog-encryption-key>`). */
 const ELEMENT = /(<([A-Za-z][\w.:-]{0,63})>)([^<]*)(<\/\2>)/g;
 /**
@@ -148,28 +153,87 @@ const isCredentialName = (text: string): boolean =>
   text.length <= LONGEST_NAME && CREDENTIAL_NAME.has(fold(text));
 
 /**
- * `text` with every credential it shows replaced. Each pattern runs in time linear in the text, and none needs the
- * regular expression engine's stack to grow with it; a text a pattern still cannot finish matching is replaced whole,
- * so a hostile body neither leaks nor stops the error being thrown.
+ * `text` with every credential it shows replaced. Each step runs in time linear in the text, and none needs the
+ * regular expression engine's backtracking stack to grow with it: a pattern that reads an unbounded run reads it with
+ * one character class, and a value whose end a pattern would need alternation to find (a PEM key's body, a percent-
+ * encoded signature) is read by a loop here instead. The `catch` is a fail-closed guard for what no test input reaches
+ * (an engine limit, a result longer than a string can be): the text is then replaced whole, so a hostile body neither
+ * leaks nor stops the error being thrown.
  */
 function redactText(text: string): string {
   try {
-    return text
-      .replace(PRIVATE_KEY, `$1${REDACTED}$2`)
+    const named = redactPrivateKeys(text)
       .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
       .replace(AUTHORIZATION_VALUE, `$1${REDACTED}`)
       .replace(COOKIE_VALUE, `$1${REDACTED}`)
       .replace(NAMED_SECRET, `$1${REDACTED}`)
       .replace(BEARER, `$1$2${REDACTED}`)
-      .replace(TOKEN_TEXT, REDACTED)
-      .replace(SIGNATURE, `$1${REDACTED}`)
-      .replace(ELEMENT, (whole, open: string, tag: string, inner: string, close: string) =>
-        isCredentialName(tag) && inner.trim() !== '' ? `${open}${REDACTED}${close}` : whole,
-      )
-      .replace(/[\s\S]+/, redactCells);
+      .replace(TOKEN_TEXT, REDACTED);
+    return redactCells(
+      redactSignatures(named).replace(
+        ELEMENT,
+        (whole, open: string, tag: string, inner: string, close: string) =>
+          isCredentialName(tag) && inner.trim() !== '' ? `${open}${REDACTED}${close}` : whole,
+      ),
+    );
   } catch {
     return REDACTED;
   }
+}
+
+/**
+ * `text` with each PEM private key's body redacted, its line breaks escaped or not, up to the next `-----END` or the
+ * end of the text; the lines that open and close it are kept. The armour is found with `indexOf`.
+ */
+function redactPrivateKeys(text: string): string {
+  let out = '';
+  let from = 0;
+  for (
+    let at = text.indexOf('-----BEGIN ');
+    at !== -1;
+    at = text.indexOf('-----BEGIN ', Math.max(at + 1, from))
+  ) {
+    PEM_OPEN.lastIndex = at;
+    const open = PEM_OPEN.exec(text);
+    if (open === null) continue;
+    const body = at + open[0].length;
+    const end = text.indexOf('-----END', body);
+    let close = '';
+    if (end !== -1) {
+      PEM_CLOSE.lastIndex = end;
+      close = PEM_CLOSE.exec(text)?.[0] ?? '';
+    }
+    out += `${text.slice(from, body)}${REDACTED}${close}`;
+    from = end === -1 ? text.length : end + close.length;
+  }
+  return from === 0 ? text : out + text.slice(from);
+}
+
+/**
+ * `text` with the value after each `Signature=` redacted when it is {@link SIGNATURE_MIN} characters or more: base64 or
+ * hex, percent-encoded or not, up to an encoded `&` (`%26`) or a character no signature is written in.
+ */
+function redactSignatures(text: string): string {
+  let out = '';
+  let from = 0;
+  SIGNATURE_NAME.lastIndex = 0;
+  for (let m = SIGNATURE_NAME.exec(text); m !== null; m = SIGNATURE_NAME.exec(text)) {
+    const start = m.index + m[0].length;
+    let end = start;
+    for (;;) {
+      SIGNATURE_RUN.lastIndex = end;
+      SIGNATURE_RUN.exec(text);
+      end = SIGNATURE_RUN.lastIndex;
+      if (text[end] !== '%' || text.startsWith('%26', end)) break;
+      end += 1;
+    }
+    if (end - start >= SIGNATURE_MIN) {
+      out += `${text.slice(from, start)}${REDACTED}`;
+      from = end;
+    }
+    SIGNATURE_NAME.lastIndex = end;
+  }
+  return from === 0 ? text : out + text.slice(from);
 }
 
 /**
