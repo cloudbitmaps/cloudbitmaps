@@ -365,9 +365,9 @@ inside the region and not from a laptop.
 ## What a sorted load holds in memory
 
 > **Measured** by `tests/core/load-sorted-heap.test.ts` on every pull request, at the reduced size, and nightly at the
-> full size, on CI's Node 22 and 24 (GitHub's Ubuntu runners, two runs each), and once on an Apple M3 Pro with Node
-> 24.18.1, all on 2026-10-17. The figures are heap readings, not RSS. CI holds the bounds below, never these exact
-> figures.
+> full size, on CI's Node 22 and 24 (GitHub's Ubuntu runners, two runs each), and once on an Apple M3 Pro with
+> Node 24.18.1, all on 2026-10-17. The figures are heap readings, not RSS. CI holds the bounds below, never these
+> exact figures.
 
 **How it is measured.** A warm-up load runs first, so no tier pays the one-off allocations of the first load in a
 process. Then three `sorted: true` loads of ten and a hundred times as many ids, spread over the same 8,192 chunks
