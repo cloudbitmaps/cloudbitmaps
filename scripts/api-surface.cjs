@@ -22,20 +22,23 @@
  *
  *   node scripts/api-surface.cjs --write            regenerate api-surface/surface.json and api-surface/internal.json
  *   node scripts/api-surface.cjs --check            fail if the built surface differs from either committed file
- *   node scripts/api-surface.cjs --against <ref>    fail if an entry in the snapshot committed at <ref> is removed or
- *                                                   changed in the committed snapshot, unless a row of
+ *   node scripts/api-surface.cjs --against <ref>    fail if the committed snapshot removes, changes or adds an entry
+ *                                                   against the one committed at <ref>, unless a row of
  *                                                   api-surface/allowed.json that the base does not already have lists it
- *                                                   with a reason. An entry that is internal on this branch but has
- *                                                   keys in the base snapshot needs the row `<specifier> (internal)`.
- *                                                   Additions pass, except a required member added to an interface the ref already has. Compares committed files, so it
- *                                                   needs neither a build nor the TypeScript package.
+ *                                                   with a reason. A new `(referenced)` key is an addition too: a public
+ *                                                   signature that starts naming a type no entry exports. A required
+ *                                                   member added to an interface the ref already has is reported as
+ *                                                   one. An entry that is internal on this branch but has keys in the
+ *                                                   base snapshot needs the row `<specifier> (internal)`. Compares
+ *                                                   committed files, so it needs neither a build nor the TypeScript
+ *                                                   package.
  *   --root <dir>                                    run on another checkout (the tests' fixtures)
  *
- * Known limits: overloads are compared in declared order, so one appended after the last passes as an addition;
- * a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a move
- * reads as a removal;
- * a parameter rename is a change; only declarations are read, so a change in behaviour behind an unchanged signature
- * is for tests; a TypeScript upgrade that changes how declarations print needs one `--write`.
+ * Known limits: overloads are compared in declared order, so one appended after the last reads as an addition, not a
+ * change; a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a
+ * move reads as a removal and an addition; a parameter rename is a change; only declarations are read, so a change in
+ * behaviour behind an unchanged signature is for tests; a TypeScript upgrade that changes how declarations print needs
+ * one `--write`.
  */
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
@@ -447,9 +450,10 @@ function newRows(rows, baseRows) {
 }
 
 /**
- * The entries of `was` that `now` removes or changes without a usable row of `allowed` excusing them, and the problems
- * with the rows. An addition is a problem only when it is a required member of an interface the base already has
- * (`required` maps such a member's key to its parent's).
+ * The entries `now` removes from `was`, changes or adds without a usable row of `allowed` excusing them, and the
+ * problems with the rows. A `(referenced)` key is an entry like any other, so a public signature that starts naming a
+ * type no entry exports needs a row too. A required member added to an interface the base already has (`required` maps
+ * such a member's key to its parent's) is reported as one, because it breaks every implementer.
  */
 function breakingChanges(was, now, allowed, required = {}) {
   const rowProblems = allowlistProblems(allowed);
@@ -467,13 +471,14 @@ function breakingChanges(was, now, allowed, required = {}) {
   const lines = [
     ...removed.map((k) => ({ k, text: `removed: ${k}\n    was: ${was[k]}` })),
     ...changed.map((k) => ({ k, text: `changed: ${k}\n    was: ${was[k]}\n    now: ${now[k]}` })),
-    // A member an implementer must provide, added to an interface the base already has, breaks every implementer.
-    ...added
-      .filter((k) => k in required && required[k] in was)
-      .map((k) => ({
-        k,
-        text: `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`,
-      })),
+    ...added.map((k) => ({
+      k,
+      text:
+        k in required && required[k] in was
+          ? // A member an implementer must provide, added to an interface the base already has, breaks every implementer.
+            `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`
+          : `added: ${k}\n    a new public entry; add a reason row\n    now: ${now[k]}`,
+    })),
   ]
     .filter(({ k }) => !usable.some((r) => excuses(r, k)))
     .map(({ text }) => text);
@@ -609,13 +614,15 @@ function main(argv, defaultRoot) {
     const rowProblems = allowlistProblems(rows).filter((p) => !problems.includes(p));
     problems.push(...rowProblems);
     if (problems.length === 0) {
-      console.log(`api-surface: no entry present at ${ref} is removed or changed`);
+      console.log(
+        `api-surface: no entry is removed, changed or added against ${ref} without a reason row`,
+      );
       return 0;
     }
     console.error(`api-surface: the public surface changed against ${ref}:`);
     for (const p of problems) console.error(`  ${p}`);
     console.error(
-      `A removed or changed entry is a public-contract change. If it is agreed, add a row {"entry", "reason"} to ${ALLOWED_PATH} in this change; a row the base already has excuses nothing.`,
+      `A removed, changed or added entry is a public-contract change. If it is agreed, add a row {"entry", "reason"} to ${ALLOWED_PATH} in this change; a row the base already has excuses nothing.`,
     );
     return 1;
   }

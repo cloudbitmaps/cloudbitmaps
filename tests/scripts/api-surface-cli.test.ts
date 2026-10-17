@@ -175,16 +175,30 @@ describe('--write and --check', { timeout: 60_000 }, () => {
 });
 
 describe('--against', { timeout: 60_000 }, () => {
-  it('passes with no change and with an addition', () => {
-    expect(run(['--against', 'HEAD']).status).toBe(0);
-    withMain((s) => `${s}export declare function fresh(): void;\n`);
-    expect(run(['--write']).status).toBe(0);
+  const NEW_MSG = 'a new public entry; add a reason row';
+
+  it('passes with no change', () => {
     const r = run(['--against', 'HEAD']);
     expect(r.status).toBe(0);
-    expect(r.out).toContain('no entry present at HEAD is removed or changed');
+    expect(r.out).toContain(
+      'no entry is removed, changed or added against HEAD without a reason row',
+    );
   });
 
-  it('fails a removal and a change, and says nothing of an addition', () => {
+  it('fails an addition without a row, as a new public entry, and passes it with one', () => {
+    withMain((s) => `${s}export declare function fresh(): void;\n`);
+    expect(run(['--write']).status).toBe(0);
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(`added: @fx/a fresh\n    ${NEW_MSG}\n    now: function fresh(): void;`);
+    expect(r.err).toContain('A removed, changed or added entry is a public-contract change');
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a fresh', reason: 'agreed' }]));
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+    expect(r.out).toContain('without a reason row');
+  });
+
+  it('fails a removal, a change and an addition, each named as what it is', () => {
     withMain(
       (s) =>
         `${s.replace('export declare function drop(a: number): number;\n', '').replace('widen(a: string)', 'widen(a: number)')}export declare function fresh(): void;\n`,
@@ -196,7 +210,55 @@ describe('--against', { timeout: 60_000 }, () => {
     expect(r.err).toMatch(
       /changed: @fx\/a widen\n\s+was: function widen\(a: string\): void;\n\s+now: function widen\(a: number\): void;/,
     );
-    expect(r.err).not.toContain('fresh');
+    expect(r.err).toContain(`added: @fx/a fresh\n    ${NEW_MSG}`);
+  });
+
+  it('fails a new referenced key without a row: a public signature that starts naming a type no entry exports', () => {
+    put('packages/a/dist/hidden.d.ts', 'export interface Hidden { x: string }\n');
+    withMain(
+      (s) =>
+        `${s.replace('keep(a: string)', 'keep(a: string | Hidden)')}import type { Hidden } from './hidden';\n`,
+    );
+    run(['--write']);
+    expect(snapshot()['@fx/a (referenced) Hidden.x']).toBe('x: string;');
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a keep', reason: 'takes a Hidden too' }]),
+    );
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).not.toContain('changed: @fx/a keep');
+    expect(r.err).toContain(`added: @fx/a (referenced) Hidden\n    ${NEW_MSG}`);
+    expect(r.err).toContain(`added: @fx/a (referenced) Hidden.x\n    ${NEW_MSG}`);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([
+        { entry: '@fx/a keep', reason: 'takes a Hidden too' },
+        {
+          entry: '@fx/a (referenced) Hidden*',
+          reason: 'callers name it as Parameters<typeof keep>[0]',
+        },
+      ]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+  });
+
+  it('takes a narrow prefix row for a new type and its members, and refuses one too wide', () => {
+    withMain((s) => `${s}export interface Fresh { r: string; m(): void }\n`);
+    run(['--write']);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a Fresh*', reason: 'new type' }]),
+    );
+    expect(run(['--against', 'HEAD']).status).toBe(0);
+    for (const entry of ['*', '@fx/a *', '@fx/a (*']) {
+      put('api-surface/allowed.json', JSON.stringify([{ entry, reason: 'wide' }]));
+      const r = run(['--against', 'HEAD']);
+      expect(r.status, entry).toBe(1);
+      expect(r.err, entry).toContain('too wide');
+      expect(r.err, entry).toContain(`added: @fx/a Fresh.r\n    ${NEW_MSG}`);
+    }
   });
 
   const breakIt = (): void => {
@@ -351,35 +413,69 @@ describe('a member added to an existing type', { timeout: 60_000 }, () => {
     expect(r.err).toContain(`added: ${key}`);
   });
 
-  it.each([
-    ['an optional property', 'c?: string;'],
-    ['an optional method', 'run?(x: number): void;'],
-  ])('passes %s', (_what, member) => {
-    const r = addToShape(member);
-    expect(r.status).toBe(0);
-  });
+  const NEW_MSG = 'a new public entry; add a reason row';
 
-  it('fails a required member of an existing object type alias, and passes an optional one', () => {
+  // An optional member breaks no implementer, and is still a new public entry: every addition is reviewed.
+  it.each([
+    ['an optional property', 'c?: string;', '@fx/a Shape.c'],
+    ['an optional method', 'run?(x: number): void;', '@fx/a Shape.run'],
+  ])(
+    'fails %s without a row, as a new public entry, and passes it with one',
+    (_what, member, key) => {
+      let r = addToShape(member);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain(`added: ${key}\n    ${NEW_MSG}`);
+      expect(r.err).not.toContain(REQUIRED_MSG);
+      put('api-surface/allowed.json', JSON.stringify([{ entry: key, reason: 'agreed' }]));
+      r = run(['--against', 'HEAD']);
+      expect(r.status, r.err).toBe(0);
+    },
+  );
+
+  it('fails a required member of an existing object type alias, and an optional one as a new entry', () => {
     withMain((s) => s.replace('{ a: string }', '{ a: string; b: number }'));
     run(['--write']);
     const bad = run(['--against', 'HEAD']);
     expect(bad.status).toBe(1);
-    expect(bad.err).toContain('added: @fx/a Opts.b');
+    expect(bad.err).toContain(`added: @fx/a Opts.b\n    ${REQUIRED_MSG} (@fx/a Opts)`);
     withMain((s) => s.replace('{ a: string }', '{ a: string; b?: number }'));
     run(['--write']);
-    expect(run(['--against', 'HEAD']).status).toBe(0);
+    const optional = run(['--against', 'HEAD']);
+    expect(optional.status).toBe(1);
+    expect(optional.err).toContain(`added: @fx/a Opts.b\n    ${NEW_MSG}`);
   });
 
-  it('passes a required member of an interface that is itself new, a new class method and a new export', () => {
+  it('fails a new interface, a new class method and a new export as new entries, with no required-member message', () => {
     withMain(
       (s) =>
         `${s.replace('  get size(): number;', '  get size(): number;\n  extra(): void;')}export interface Fresh { r: string; m(): void }\nexport declare function more(): void;\n`,
     );
     run(['--write']);
-    const r = run(['--against', 'HEAD']);
-    expect(r.status).toBe(0);
     expect(snapshot()['@fx/a Thing.extra']).toBe('extra(): void;');
     expect(snapshot()['@fx/a Fresh.r']).toBe('r: string;');
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    for (const key of [
+      '@fx/a Thing.extra',
+      '@fx/a Fresh',
+      '@fx/a Fresh.r',
+      '@fx/a Fresh.m',
+      '@fx/a more',
+    ]) {
+      expect(r.err).toContain(`added: ${key}\n    ${NEW_MSG}`);
+    }
+    // A required member of a type that is itself new binds no existing implementer.
+    expect(r.err).not.toContain(REQUIRED_MSG);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([
+        { entry: '@fx/a Thing.extra', reason: 'agreed' },
+        { entry: '@fx/a Fresh*', reason: 'agreed' },
+        { entry: '@fx/a more', reason: 'agreed' },
+      ]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
   });
 
   it('fails a required member of an existing referenced interface', () => {
@@ -536,6 +632,26 @@ export declare function other(): void;
     const r = run(['--against', 'HEAD']);
     expect(r.status, r.err).toBe(0);
     expect(internalFile()['@fx/b engine']).toBe('function engine(c: Ctx, a: number): void;');
+  });
+
+  it('needs no row for an addition to an internal entry, and wants one when a public signature names its new type', () => {
+    setB(true);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    commit();
+    const MORE = `${CORE}export interface Fresh { f: number }\nexport declare function fresh(x: Fresh): void;\n`;
+    setB(true, MORE);
+    expect(internalFile()['@fx/b fresh']).toBe('function fresh(x: Fresh): void;');
+    let r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+    setB(
+      true,
+      MORE,
+      `${KIT}import type { Fresh } from './index';\nexport declare function useFresh(f: Fresh): void;\n`,
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('added: @fx/b/kit useFresh\n    a new public entry');
+    expect(r.err).toContain('added: @fx/b (referenced) Fresh.f\n    a new public entry');
   });
 
   it('fails making an entry internal without the row, and passes with it', () => {
