@@ -365,8 +365,9 @@ inside the region and not from a laptop.
 ## What a sorted load holds in memory
 
 > **Measured** by `tests/core/load-sorted-heap.test.ts`, which every pull request runs at the reduced size and a
-> nightly run at the full size, on GitHub's Ubuntu runners with Node 22.23.3 and Node 24.21.0, and which was run by
-> hand on an Apple M3 Pro with Node 24.18.1, on 2026-10-17. The figures are heap readings, not RSS.
+> nightly run at the full size, on GitHub's Ubuntu runners with the newest Node 22 and Node 24 that `setup-node`
+> installs, and which was run by hand on an Apple M3 Pro with Node 24.18.1, on 2026-10-17. The figures are heap
+> readings, not RSS.
 
 **How it is measured.** A warm-up load runs first, as a precaution. Then three `sorted: true` loads of ten and a
 hundred times as many ids, spread over the same 8,192 chunks (array containers, ids three apart), so the writer's index
