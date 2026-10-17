@@ -122,7 +122,11 @@ describe('S3 scrubCredentials', () => {
   });
 
   it('never changes the live error, its plain data or its transport', () => {
-    const err = sdkError({ Detail: { note: `x-amz-security-token: ${TOKEN}` } });
+    const err = sdkError({
+      Detail: { note: `x-amz-security-token: ${TOKEN}` },
+      SignatureProvided: SIG,
+      headers: { list: ['Cookie', VALUE], map: new Map([['x-amz-security-token', TOKEN]]) },
+    });
     const response = err['$response'] as { body: { req: Record<string, unknown> } };
     const request = response.body.req;
     const header = request['_header'];
@@ -135,6 +139,11 @@ describe('S3 scrubCredentials', () => {
     expect(err.$metadata).toBe(metadata);
     // The copy is deep: what the live error's field holds is the original text, not the redacted one.
     expect(err['Detail']).toEqual({ note: `x-amz-security-token: ${TOKEN}` });
+    expect(err['SignatureProvided']).toBe(SIG);
+    expect(err['headers']).toEqual({
+      list: ['Cookie', VALUE],
+      map: new Map([['x-amz-security-token', TOKEN]]),
+    });
   });
 
   it('returns an error with no transport as it is, and anything else untouched', () => {
