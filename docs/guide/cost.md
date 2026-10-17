@@ -344,8 +344,8 @@ The figures leave out storage, reads and the registry's own cost, and assume a c
 
 **The levers that remain:**
 
-- **Publish only what changed.** `load()` never compares: loading the ids a segment already holds writes a newer,
-  identical generation and pays every request above. Nothing in `guard` (`minCardinality`, `minRetained`, `maxGrowth`)
+- **Publish only what changed.** `load()` never compares: loading the ids a segment already holds writes a newer
+  generation of the same ids and pays every request above. Nothing in `guard` (`minCardinality`, `minRetained`, `maxGrowth`)
   or `dryRun` skips an unchanged publish, so detect change in your own code, for example by comparing a digest of the
   source ids with the one you stored when you last loaded, and call `load()` only when it differs.
 - **Refresh each segment only as often as it needs.** The bill is linear in refreshes: the hourly row above costs six
