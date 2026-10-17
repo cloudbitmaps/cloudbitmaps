@@ -137,6 +137,52 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The Azure Blob driver redacts what Azure, a proxy's page or a gateway's body quotes of a request, and a credential
+  in a list's, map's or set's own named property.** The SDK puts the response's headers and the body it parsed in
+  `err.details`, keeping the fields it does not know, and makes a body it does not parse (an HTML page) the error's
+  message as it came. So a credential header a user's pipeline adds to every request (a cookie, an API key, a
+  customer-provided key in `x-ms-encryption-key`) reached the error the driver threw: in the string to sign a 403
+  quotes, which lists every `x-ms-` header with its value; in the `HeaderValue` of Azure's `InvalidHeaderValue`; in a
+  gateway's JSON or XML body listing the request's headers as `{ name, value }` records; and in a proxy's page listing
+  them as a table or inside a line. In the error the driver throws these are now redacted: a credential header line, the
+  string to sign's `x-ms-encryption-key` and `x-ms-source-encryption-key` lines included; an `Authorization` value, a
+  cookie, a customer-provided key, an API key or a connection string's `AccountKey` after its name anywhere in a text; a
+  JWT on its own; the text of the cell after one that names a credential, after a heading or a caption too; and the
+  value beside a credential's name in a record: the `...Value` beside a `...Name` (`HeaderName` and `HeaderValue`,
+  `name` and `value`), in a record that describes an error a `value` beside any credential name, and, in a record that
+  describes no error, a header table row's other cell and the same index of a parallel list. A number, a boolean,
+  `code`, `errorCode` and `message` are kept beside a name, so every answer is classified as before.
+  `x-ms-source-encryption-key` and the SDK's `encryptionKey`, `accountKey` and `token` are credential names too, and a
+  key that quotes a credential is redacted. The copy of an error also left out an array's, a map's or a set's own named
+  property without counting it as a change, so an error whose only credential sat there was thrown as it came: it is now
+  copied. A list, map or set the scrubber is given is copied as an error is, a sparse list is copied as sparse and an
+  accessor at an index is not called, a copied `DOMException` keeps its name, message and code readable, and a copy
+  scrubbed again is returned as it is. The new text rules run in time linear in the text.
+- **The GCS driver redacts a credential anywhere in an error's text, and throws the error as a deep native copy.** On a
+  download, and wherever a body lists no errors, `@google-cloud/storage` makes the response body the error's message, so
+  a proxy's error page or a JSON body that quotes the request put the bearer token in the message and stack of the error
+  the driver threw: as the cause of the `TransientError` a 502 becomes, or as the error itself after a 400, on a read, a
+  write, a delete, a listing and every registry call. The driver redacted a credential in text only where a header line
+  started a line. Now, in the error the driver throws, the value under a credential's name is replaced by `[redacted]`
+  (`authorization`, `x-goog-encryption-key`, `x-goog-api-key`, `X-Goog-Signature`, `X-Goog-Credential`, `access_token`,
+  `refresh_token`, `client_secret`, `private_key` and the like; `client_email` and `private_key_id` are kept), and so
+  are the value after one in a header list or under one in a map, the value beside one in a record (a `{ name, value }`
+  pair, a `{ th, td }` row; a number, a boolean, and the `message`, `reason` and `location` of a Google error item are
+  kept), and, anywhere in the text, a credential header line, a credential after its name (a cookie's every value
+  included), a bearer token after its scheme, a Google access token (`ya29.`), a JWT, a signed URL's signature, a PEM
+  private key's body, the text of an element named for a credential (a `<CanonicalRequest>` a service quotes back) and
+  the text of the cell after one that names a credential, after a heading or a caption too. Each step is built to run in
+  time linear in the text, without growing the regular expression engine's stack. A credential in any other form is not
+  recognised, and a text these steps cannot finish is replaced whole. The copy the driver threw was also not a native
+  error (`util.types.isNativeError` was false, and `structuredClone` turned it into a plain object); a `cause` chain of
+  20,000 links made the scrubber throw `RangeError`; and an error that held no transport was thrown as it came, even
+  when its text, or an error in its `errors`, held a credential. A GCS error that carries its transport or shows a
+  credential, and every error it reaches (its `cause` chain, an `AggregateError`'s `errors`), is now thrown as a deep
+  copy of its plain data: a native error with the same prototype, name, message, stack, `code`, `status` and `errors`,
+  with `response` reduced to its status and status text, so every answer is classified as before, with no `config`,
+  request, agent or socket, no function or accessor and nothing nested deeper than ten levels, and the live error is
+  never changed. An error that holds only plain data and shows no credential (most of the driver's own typed errors) is
+  thrown as it is.
 - **The S3 driver redacts the signature, canonical request and session token S3 quotes back in an error, and the
   credentials a proxy's page or an unparsed body quotes, and throws the error as a deep native copy.** The AWS SDK puts
   every field of an error body on the error, where a logger prints it. S3's answer to a signature it refused
@@ -208,7 +254,8 @@ so, and so do the module headers in the code.
   request: no read, no write, no publish. The message names the verb and the role (an operand, an exclude, the
   destination) or, in `materializeMany`, where the handle sits (`operands["name"]`, `outputs[i].dest`), never the
   segment, its namespace or a key.
-- **An Azure Blob error carries no credential.** The driver threw the `@azure/storage-blob` error as it came, and the
+- **The Azure Blob driver removes the credentials it recognises from an error, and throws it as a deep native copy.**
+  The driver threw the `@azure/storage-blob` error as it came, and the
   SDK keeps the request it sent on `err.request` and on `err.response.request`: with a shared-key client its
   `Authorization: SharedKey <account>:<signature>` header, with a SAS client its URL, `sig=` included. The SDK hides
   both from `util.inspect` and `JSON.stringify`, so a logger never printed them, but code that reads the property, or
@@ -249,8 +296,8 @@ so, and so do the module headers in the code.
   './build/Release/roaring.node'`, and says `store.segments()` is an async iterable. The README says that intersection
   reads merge chunks within 256 KiB, so spread-out overlaps fetch most of each object. The privacy notes say that error
   messages name the segment, the namespace, chunk keys, id counts, metadata keys, key ids, the bucket or container name,
-  or the account host, and an object's key, that the S3, GCS and Azure Blob drivers remove the credentials from an SDK
-  error, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal hides, and that a
+  or the account host, and an object's key, that the S3, GCS and Azure Blob drivers remove the credentials they recognise
+  from an SDK error, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal hides, and that a
   changed object can make a read raise one that names a sealed chunk key. Hover docs now cover the store, the three
   backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the in-process
   backends' options, and a load keeps up to 127 generations in its row's ledger. The README's license paragraph says the

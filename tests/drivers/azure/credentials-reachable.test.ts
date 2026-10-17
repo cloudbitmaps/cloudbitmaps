@@ -7,20 +7,29 @@ import {
   ValidationError,
   WriteConflictError,
 } from '@cloudbitmaps/core/driver-kit';
-import { AnonymousCredential, ContainerClient, RestError } from '@azure/storage-blob';
-import { StorageSharedKeyCredential } from '@azure/storage-blob';
+import { type ContainerClient, RestError } from '@azure/storage-blob';
 import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/registry';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
+import {
+  ACCOUNT_KEY,
+  ANSWERS,
+  CREDENTIAL_KINDS,
+  PLANTED,
+  SAS_SIGNATURE,
+  clientFor,
+  type CredentialKind,
+} from '../../helpers/azure-error-answers';
+import { guardLoopback } from '../../helpers/loopback-guard';
 
 /**
  * An error the Azure driver throws carries no credential in anything code can reach, not only in what a logger prints.
  * The SDK keeps the request it sent on `err.request` and `err.response.request`, with the signed `Authorization`
  * header (SharedKey) or the SAS signature in the URL (`sig=`), on properties `util.inspect` and `JSON.stringify` hide.
  * Every object reachable from the error is walked here: own properties (non-enumerable and symbol-keyed included),
- * map entries and the `cause` chain. The error class and the driver's classification are checked unchanged.
+ * map entries and the `cause` chain. The error class and the driver's classification are checked unchanged. Every
+ * request also carries the credential headers a user's pipeline can add (a cookie, an API key, a customer-provided
+ * key), and the answers that quote the request (Azure's own, a proxy's page, a gateway's body) quote them too.
  */
-const ACCOUNT_KEY = Buffer.from('stand-in-account-key-0123456789').toString('base64');
-const SAS_SIGNATURE = 'SECRETSIGNATUREVALUE0123456789';
 const GEN = { segment: 's', generation: 1 };
 const LIMIT = { timeout: 30_000 };
 /** The code Azure sends with a status that has a specific one. */
@@ -30,9 +39,14 @@ const CODES: Record<number, string> = {
   412: 'ConditionNotMet',
 };
 
-/** Anything that shows a credential: a SharedKey header, an account key, or a `sig=` that is not redacted. */
+/**
+ * Anything that shows a credential: a SharedKey header, an account key, a planted header's value, or a `sig=` that is
+ * not redacted.
+ */
 const LEAK = new RegExp(
-  `SharedKey\\s|${ACCOUNT_KEY.replace(/[+/=]/g, '\\$&')}|${SAS_SIGNATURE}|sig=(?!\\[redacted\\])`,
+  [`SharedKey\\s`, ACCOUNT_KEY, SAS_SIGNATURE, ...PLANTED]
+    .map((text, i) => (i === 0 ? text : text.replace(/[+/=]/g, '\\$&')))
+    .join('|') + '|sig=(?!\\[redacted\\])',
 );
 
 /** The signatures the requests carried, as the server saw them: the SharedKey MAC and the SAS `sig`, both encodings. */
@@ -95,7 +109,6 @@ async function outcome(run: () => Promise<unknown>): Promise<unknown> {
   throw new Error('expected a failure');
 }
 
-type Client = 'sharedkey' | 'sas';
 interface Case {
   name: string;
   /** The status the server answers a write with, and a HEAD or GET with (the same when absent). */
@@ -107,6 +120,8 @@ interface Case {
   echo?: boolean;
   /** The error's `cause` is the SDK's error: the driver raised its own class around it. */
   cause?: boolean;
+  /** One of the shared answers, in place of the Azure error document the fields above describe. */
+  page?: keyof typeof ANSWERS;
   run: (c: ContainerClient) => Promise<unknown>;
   /** The class the driver raises; the SDK's own `RestError` when it passes it on. */
   expected: abstract new (...args: never[]) => Error;
@@ -375,16 +390,70 @@ const more: Case[] = [
 ];
 cases.push(...more);
 
+/**
+ * The calls each shared answer that quotes the request is given: a read, a write, a registry read and a listing, which
+ * between them send every kind of request the driver signs.
+ */
+const QUOTING: [keyof typeof ANSWERS, abstract new (...args: never[]) => Error][] = [
+  ['403 AuthenticationFailed quoting the signature and the string to sign', RestError],
+  ['400 InvalidHeaderValue quoting the customer-provided key', RestError],
+  ['502 proxy page listing the request headers', TransientError],
+  ['502 proxy page served as XML', TransientError],
+  ['400 JSON body listing the request headers', RestError],
+  ['400 XML body listing the request headers', RestError],
+  ['502 body with no content type quoting the request', TransientError],
+];
+const CALLS: [string, (c: ContainerClient) => Promise<unknown>][] = [
+  ['storage read', (c) => new AzureBlobStorageDriver({ containerClient: c }).getRange(GEN, 0, 8)],
+  ['storage write', put],
+  ['registry read', (c) => registry(c).get({ segment: 's' })],
+  [
+    'storage list',
+    (c) => drain(new AzureBlobStorageDriver({ containerClient: c }).list({ segment: 's' })),
+  ],
+];
+for (const [page, expected] of QUOTING) {
+  for (const [call, run] of CALLS) {
+    cases.push({ name: `${call}, ${page}`, status: 0, page, run, expected });
+  }
+}
+
 describe('Azure: no credential is reachable from an error the driver throws', LIMIT, () => {
   let server: Server;
   let url: string;
-  let answer: { status: number; head: number; code?: string; echo?: boolean };
+  let answer: {
+    status: number;
+    head: number;
+    code?: string;
+    echo?: boolean;
+    page?: keyof typeof ANSWERS;
+  };
+  let guard: ReturnType<typeof guardLoopback>;
+
+  beforeAll(() => {
+    guard = guardLoopback();
+  });
+  afterAll(() => {
+    guard.restore();
+    // Nothing was sent anywhere but the loopback server.
+    expect(guard.attempts).toEqual([]);
+  });
 
   beforeEach(async () => {
     answer = { status: 503, head: 503 };
     seen.signatures.clear();
     server = createServer((req, res) => {
       req.resume();
+      if (answer.page !== undefined) {
+        // The signatures the request carried, which a shared answer may quote.
+        for (const signature of [
+          /^SharedKey [^:]+:(.+)$/.exec(String(req.headers.authorization ?? ''))?.[1],
+          /[?&]sig=([^&]+)/.exec(req.url ?? '')?.[1],
+        ]) {
+          if (signature !== undefined) seen.signatures.add(signature);
+        }
+        return void ANSWERS[answer.page]!(req, res);
+      }
       const code = answer.code ?? CODES[answer.status] ?? 'Refused';
       const headers: Record<string, string> = {
         'content-type': 'application/xml',
@@ -426,20 +495,11 @@ describe('Azure: no credential is reachable from an error the driver throws', LI
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  const client = (kind: Client): ContainerClient =>
-    kind === 'sharedkey'
-      ? new ContainerClient(`${url}/c`, new StorageSharedKeyCredential('stand-in', ACCOUNT_KEY), {
-          retryOptions: { maxTries: 1 },
-        })
-      : new ContainerClient(
-          `${url}/c?sv=2022-11-02&sp=rw&sig=${SAS_SIGNATURE}`,
-          new AnonymousCredential(),
-          { retryOptions: { maxTries: 1 } },
-        );
+  const client = (kind: CredentialKind): ContainerClient => clientFor(kind, url);
 
-  describe.each<Client>(['sharedkey', 'sas'])('%s client', (kind) => {
-    it.each(cases)('$name', async ({ status, head, code, echo, cause, run, expected }) => {
-      answer = { status, head: head ?? status, code, echo };
+  describe.each(CREDENTIAL_KINDS)('%s client', (kind) => {
+    it.each(cases)('$name', async ({ status, head, code, echo, cause, page, run, expected }) => {
+      answer = { status, head: head ?? status, code, echo, page };
       const err = await outcome(() => run(client(kind)));
       expect(err).toBeInstanceOf(expected);
       if (echo) expect(seen.signatures.size).toBeGreaterThan(0);

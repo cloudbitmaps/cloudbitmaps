@@ -1,7 +1,6 @@
 {
   "limit": 100,
   "functions": {
-    "packages/azure-blob/src/scrub-error.ts::copyOf": 111,
     "packages/core/src/core/bulk-load.ts::bulkLoadAhead": 117,
     "packages/core/src/core/combine-many.ts::class Run > pass": 222,
     "packages/core/src/core/combine-many.ts::class Run > publishWave": 119,
