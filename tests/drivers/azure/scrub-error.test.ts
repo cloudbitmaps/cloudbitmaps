@@ -7,6 +7,10 @@ const SIGNED = 'SharedKey acct:SIGNATUREVALUE=';
 const URL_WITH_SIG = 'https://acct.blob.core.windows.net/c/b?sv=2022-11-02&sig=SECRETSIG%3D&se=1';
 /** A stand-in customer-provided key, as its header carries one: 32 bytes in base64. */
 const CPK = Buffer.from('stand-in-customer-key-0123456789').toString('base64');
+/** A stand-in account key, in base64 as a connection string writes one. */
+const ACCOUNT_KEY = Buffer.from('stand-in-account-key-0123456789').toString('base64');
+/** A connection string with that key, as a caller's own text could quote one. */
+const CONNECTION = `DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=${ACCOUNT_KEY};EndpointSuffix=core.windows.net`;
 
 /** An error shaped as the SDK's `RestError`: the request and response on hidden properties. */
 type Rest = Error & { request: object; response: object; details: unknown };
@@ -697,6 +701,8 @@ describe('scrubCredentials (Azure)', () => {
         '{"authorization":"Basic dXNlcjpwYXNzd29yZA=="}',
         'dXNlcjpw',
       ],
+      ['a connection string', `could not use ${CONNECTION}`, ACCOUNT_KEY],
+      ['an account key in JSON', JSON.stringify({ AccountKey: ACCOUNT_KEY }), ACCOUNT_KEY],
     ];
     const lookAlikes = [
       'Bearer token authentication is not permitted for non-TLS protected (non-https) URLs.',
@@ -710,6 +716,7 @@ describe('scrubCredentials (Azure)', () => {
       'signature=abc design',
       'x_sig=keep',
       'The specified blob does not exist.',
+      'The AccountKey setting is missing from the connection string.',
     ];
     const through = (text: string): string => scrubCredentials(restErrorWith(text)).message;
     function restErrorWith(text: string): Error {
@@ -809,6 +816,17 @@ describe('scrubCredentials (Azure)', () => {
       expect(through(`host: h\r\n${name}: VALUEONE VALUETWO\r\naccept: */*`)).toBe(
         `host: h\r\n${name}: [redacted]\r\naccept: */*`,
       );
+    });
+
+    it('keeps the rest of a connection string around its account key', () => {
+      expect(through(`could not use ${CONNECTION}`)).toBe(
+        'could not use DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=[redacted];EndpointSuffix=core.windows.net',
+      );
+    });
+
+    it('redacts a connection string a parsed body holds', () => {
+      const err = Object.assign(restError(), { details: { errorCode: 'X', setting: CONNECTION } });
+      expect(JSON.stringify(scrubCredentials(err).details)).not.toContain(ACCOUNT_KEY);
     });
 
     it('keeps the text around a cookie, a key and a proxy credential inside a line', () => {

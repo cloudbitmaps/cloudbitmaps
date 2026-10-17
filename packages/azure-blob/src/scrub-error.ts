@@ -81,11 +81,12 @@ const AUTHORIZATION_VALUE =
  */
 const COOKIE_VALUE = /(?<![\w-])((?:set-)?cookie\\?["']?\s*:\s*\\?["']?)[^\r\n"'<>\\]+/gi;
 /**
- * A customer-provided key or an API key after its header name anywhere in a text: `name: value`, `name=value` (also
- * percent-encoded) or JSON's `"name":"value"` (also escaped once more).
+ * A customer-provided key, an API key or a connection string's account key after its name anywhere in a text:
+ * `name: value`, `name=value` (also percent-encoded; a connection string's next `;` ends it) or JSON's `"name":"value"`
+ * (also escaped once more).
  */
 const NAMED_SECRET = new RegExp(
-  `((?:${KEY_HEADERS}|x-api-key)\\\\?["']?\\s*(?::|=|%3D)\\s*\\\\?["']?)[^\\s&"'<>\\\\,;]+`,
+  `((?:${KEY_HEADERS}|x-api-key|AccountKey)\\\\?["']?\\s*(?::|=|%3D)\\s*\\\\?["']?)[^\\s&"'<>\\\\,;]+`,
   'gi',
 );
 /**
