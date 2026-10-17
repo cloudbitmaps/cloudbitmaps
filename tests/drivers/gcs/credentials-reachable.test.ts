@@ -1,11 +1,6 @@
 import { inspect } from 'node:util';
 import type { Storage } from '@google-cloud/storage';
-import {
-  isNotFoundError,
-  isTransientError,
-  isValidationError,
-  isWriteConflictError,
-} from '@cloudbitmaps/core/driver-kit';
+import { errorKind } from '@cloudbitmaps/core/driver-kit';
 import { GcsRegistryDriver, GcsRegistryStore } from '@/gcs/registry';
 import { scrubCredentials } from '@/gcs/scrub-error';
 import { GcsStorageDriver } from '@/gcs/storage';
@@ -44,13 +39,13 @@ type Kind = 'none' | 'sdk' | 'transient' | 'validation' | 'notFound' | 'conflict
 const kindOf = (err: unknown): Kind | 'other' =>
   err === undefined
     ? 'none'
-    : isTransientError(err)
+    : errorKind(err) === 'TransientError'
       ? 'transient'
-      : isValidationError(err)
+      : errorKind(err) === 'ValidationError'
         ? 'validation'
-        : isNotFoundError(err)
+        : errorKind(err) === 'NotFoundError'
           ? 'notFound'
-          : isWriteConflictError(err)
+          : errorKind(err) === 'WriteConflictError'
             ? 'conflict'
             : err instanceof Error
               ? 'sdk'

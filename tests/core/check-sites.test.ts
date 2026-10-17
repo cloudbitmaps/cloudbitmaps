@@ -43,7 +43,7 @@ describe('number checks across the core share one wording', () => {
     await expect(
       drainRegistry(registry, { maxScanSegments: 1.5, op: 'checkConsistency' }),
     ).rejects.toThrow(
-      'checkConsistency: maxScanSegments must be an integer of at least 1; got 1.5',
+      'checkConsistency: `maxScanSegments` must be an integer of at least 1; got 1.5',
     );
   });
 

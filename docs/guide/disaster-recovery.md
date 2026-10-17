@@ -523,8 +523,8 @@ if (report.errored.length > 0) {
   a backend.
 - It fans out at a bounded `concurrency` (default 8; pass `{ concurrency }`), and can be scoped to one
   `{ namespace }`. It holds the registry listing in memory, and refuses with `BudgetExceededError` past 250,000
-  rows rather than materialize a fleet it cannot hold. `store.checkConsistency` takes no option to raise that
-  ceiling, so check a larger fleet one namespace at a time.
+  rows rather than materialize a fleet it cannot hold. Pass `maxScanSegments` to raise that ceiling when the fleet
+  really is that large and the memory is there, or check it one namespace at a time.
 - **Fault-isolated per segment, not at the listing.** The check first drains `registry.list()` (over the
   namespace, or over every namespace), and a failure there aborts the whole check with that error and no report:
   a list call that fails, or one registry row it cannot parse, which throws `IntegrityError` naming the row's key

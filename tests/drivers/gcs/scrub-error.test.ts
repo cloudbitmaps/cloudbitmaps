@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import { types } from 'node:util';
 import { createRequire } from 'node:module';
 import { ApiError } from '@google-cloud/storage';
-import { TransientError, ValidationError, isTransientError } from '@cloudbitmaps/core/driver-kit';
+import { TransientError, ValidationError, errorKind } from '@cloudbitmaps/core/driver-kit';
 import { scrubCredentials } from '@/gcs/scrub-error';
 import { isMissingBucket, isTransient } from '@/gcs/gcs-errors';
 import { ReadTimedOut } from '@/gcs/read-timeout';
@@ -254,7 +254,7 @@ describe('GCS scrubCredentials', () => {
     const transient = new TransientError('transient GCS fault: 503', { cause: apiError(503) });
     const out = scrubCredentials(transient);
     expect(out).not.toBe(transient);
-    expect(isTransientError(out)).toBe(true);
+    expect(errorKind(out)).toBe('TransientError');
     expect(out).toBeInstanceOf(TransientError);
     expect(leaks(out)).toEqual([]);
     const timedOut = new ReadTimedOut('tail read of s.1', 50, apiError(503));

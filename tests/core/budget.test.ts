@@ -1,5 +1,5 @@
 import { BudgetExceededError } from '@/index';
-import { resolveBudget, resolvePerOpBudget, checkBudget } from '@/core/budget';
+import { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from '@/core/budget';
 import { ValidationError } from '@/core/errors';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
 import { DEFAULT_BUDGET } from '@cloudbitmaps/core';
@@ -49,6 +49,47 @@ describe('budget helper (core/budget)', () => {
     expect(resolvePerOpBudget({}, store)).toEqual({ maxRequests: 5 });
     // Only when the store itself has no ceiling does a partial override fall back to the generous default.
     expect(resolvePerOpBudget({}, null)).toEqual(DEFAULT_BUDGET);
+  });
+});
+
+describe('the request budget names what it refused', () => {
+  /** The error a call threw. */
+  const thrown = async (call: () => unknown): Promise<unknown> => {
+    try {
+      await call();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  it('checkBudget carries the option, the limit and the exact projected count', () => {
+    const error = (() => {
+      try {
+        checkBudget({ maxRequests: 3 }, 4, 'op');
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 3, spent: 4 });
+  });
+
+  it('a store op refuses with the fan-out it projected, exact before any fetch', async () => {
+    const { store } = seededStore(
+      { s: THREE_CHUNKS },
+      { budget: { maxRequests: 2 }, retry: false },
+    );
+    const error = await thrown(() => collect(store.segment('s').iterate()));
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 2, spent: 3 });
+  });
+
+  it('collectWithinBudget stops at the first item past the bound, so spent is limit + 1', async () => {
+    async function* source(): AsyncGenerator<number> {
+      for (let i = 0; i < 100; i++) yield i;
+    }
+    const error = await thrown(() => collectWithinBudget(source(), { maxRequests: 3 }, 'op'));
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 3, spent: 4 });
   });
 });
 

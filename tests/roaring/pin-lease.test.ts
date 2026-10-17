@@ -9,9 +9,9 @@ import {
   NotFoundError,
   UnsupportedError,
   ValidationError,
-  isLeaseExpiredError,
   type Segment,
   type SegmentRef,
+  errorKind,
 } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
@@ -306,7 +306,7 @@ describe('every read site of a leased handle', () => {
         () => undefined,
         (e: unknown) => e,
       );
-      expect(isLeaseExpiredError(err)).toBe(true);
+      expect(errorKind(err)).toBe('LeaseExpiredError');
       expect(err).toBeInstanceOf(LeaseExpiredError);
       expect((err as LeaseExpiredError).reason).toBe('expired');
       expect((err as LeaseExpiredError).until).toBe(T0 + HOUR);
@@ -455,7 +455,7 @@ describe('a stream checks the lease each time it reads a chunk', () => {
       .catch((e: unknown) => e);
     h.memory.storage.getRange = real;
     expect(reads).toBeGreaterThan(1);
-    expect(isLeaseExpiredError(err)).toBe(true);
+    expect(errorKind(err)).toBe('LeaseExpiredError');
     expect(await dest(h).count()).toBe(1);
   });
 });
@@ -527,7 +527,7 @@ describe('a stream built while the lease is live and pulled after it ended never
       .intersectInto(dest(h), [snap], { allowEmpty: true })
       .catch((e: unknown) => e);
     reg.get = real;
-    expect(isLeaseExpiredError(err)).toBe(true);
+    expect(errorKind(err)).toBe('LeaseExpiredError');
     expect(await dest(h).count()).toBe(1);
   });
 });
@@ -649,7 +649,7 @@ describe('pinAt(at, { leaseUntil })', () => {
         () => undefined,
         (e: unknown) => e,
       );
-      expect(isLeaseExpiredError(err)).toBe(true);
+      expect(errorKind(err)).toBe('LeaseExpiredError');
     },
   );
 });

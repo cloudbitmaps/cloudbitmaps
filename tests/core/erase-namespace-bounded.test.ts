@@ -71,6 +71,14 @@ describe('eraseNamespace bounds its registry scan', () => {
     expect(await statuses(registry)).toEqual(Array(6).fill('active'));
   });
 
+  it('refuses a null ceiling before listing anything, as it does any malformed one', async () => {
+    const reg = listingOf(3);
+    await expect(
+      eraseNamespace(NS, reg, { confirmNamespace: NS, maxScanSegments: null as unknown as number }),
+    ).rejects.toThrow(/maxScanSegments/);
+    expect(reg.yielded()).toBe(0);
+  });
+
   it('abandons the listing at the ceiling, and never reads or writes a row', async () => {
     const reg = listingOf(10_000);
     await expect(

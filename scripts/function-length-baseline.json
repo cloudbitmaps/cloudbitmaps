@@ -2,7 +2,7 @@
   "limit": 100,
   "functions": {
     "packages/core/src/core/bulk-load.ts::bulkLoadAhead": 117,
-    "packages/core/src/core/combine-many.ts::class Run > pass": 225,
+    "packages/core/src/core/combine-many.ts::class Run > pass": 222,
     "packages/core/src/core/combine-many.ts::class Run > publishWave": 119,
     "packages/core/src/core/crbm/reader.ts::class CrbmReader > open": 196,
     "packages/core/src/core/erasure.ts::dropSegmentFor": 109,

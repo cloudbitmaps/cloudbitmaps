@@ -87,6 +87,7 @@ export function checkBudget(budget: Budget | null, projectedRequests: number, op
     throw new BudgetExceededError(
       `${op} would fan out to ${projectedRequests} units, over the per-op budget of ` +
         `${budget.maxRequests} — raise \`budget.maxRequests\`, override it per-op, or set \`budget: false\``,
+      { option: 'budget.maxRequests', limit: budget.maxRequests, spent: projectedRequests },
     );
   }
 }
@@ -128,6 +129,8 @@ export async function collectWithinBudget<T>(
         `${op} would fan out to more than ${budget.maxRequests} units, over the per-op budget — the scan was ` +
           `abandoned at that point rather than completed, so no exact total is available. Raise ` +
           `\`budget.maxRequests\`, override it per-op, or set \`budget: false\``,
+        // The scan stops at the first item past the bound, so `spent` is a lower bound on the true total.
+        { option: 'budget.maxRequests', limit: budget.maxRequests, spent: out.length },
       );
     }
   }

@@ -11,12 +11,7 @@ import {
   S3Client,
   S3ServiceException,
 } from '@aws-sdk/client-s3';
-import {
-  isTransientError,
-  isTransportFault,
-  isValidationError,
-  toTransient,
-} from '@cloudbitmaps/core/driver-kit';
+import { isTransportFault, toTransient, errorKind } from '@cloudbitmaps/core/driver-kit';
 import {
   errorCode,
   errorName,
@@ -161,8 +156,8 @@ function classify(err: unknown): Record<string, unknown> {
     native: types.isNativeError(err),
     mapped: {
       same: mapped === err,
-      transient: isTransientError(mapped),
-      validation: isValidationError(mapped),
+      transient: errorKind(mapped) === 'TransientError',
+      validation: errorKind(mapped) === 'ValidationError',
       message: (mapped as Error).message,
     },
   };

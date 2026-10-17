@@ -6,7 +6,7 @@ import {
   StaleOperandError,
   ValidationError,
   WriteConflictError,
-  isStaleOperandError,
+  errorKind,
 } from '@/index';
 import type { MaterializeManyOutput, MaterializeResult, MetricEvent } from '@/index';
 import { batchWorld, bitmapOf, range } from '../helpers/batch-world';
@@ -138,7 +138,7 @@ describe('store.materializeMany', () => {
     for (const i of [0, 2, 3]) {
       const refused = run.outputs[i] as { published: false; error: Error };
       expect(refused.published).toBe(false);
-      expect(isStaleOperandError(refused.error)).toBe(true);
+      expect(errorKind(refused.error)).toBe('StaleOperandError');
       expect(refused.error).toBeInstanceOf(StaleOperandError);
       expect(refused.error).toMatchObject({
         code: 'stale-operand',

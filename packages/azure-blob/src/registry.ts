@@ -33,8 +33,8 @@
  * - Blob versioning and soft delete are neither required nor used; the driver always reads the current blob.
  */
 import {
+  errorKind,
   IntegrityError,
-  isIntegrityError,
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
@@ -112,7 +112,9 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       try {
         return await readRow(res, key, new URL(blob.url).host, abortSignal);
       } catch (err) {
-        throw isIntegrityError(err) ? err : mapError(err, this.container.containerName);
+        throw errorKind(err) === 'IntegrityError'
+          ? err
+          : mapError(err, this.container.containerName);
       }
     });
   }

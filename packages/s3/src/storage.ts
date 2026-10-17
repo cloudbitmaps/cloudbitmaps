@@ -40,15 +40,13 @@
  * two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes.
  */
 import {
+  errorKind,
   IntegrityError,
   NotFoundError,
   TransientError,
   ValidationError,
   WriteConflictError,
   concatBytes,
-  isNotFoundError,
-  isValidationError,
-  isWriteConflictError,
   normalizeObjectPrefix,
   parseGenerationFromKey,
   requireBool,
@@ -121,6 +119,13 @@ type Sleeper = Pick<Clock, 'sleep'>;
 const REAL_TIME: Sleeper = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+
+/** A refusal this driver already typed: it passes on unmapped, where a raw SDK error is mapped. */
+function isTypedPassThrough(err: unknown): boolean {
+  const kind = errorKind(err);
+  return kind === 'ValidationError' || kind === 'WriteConflictError' || kind === 'NotFoundError';
+}
+
 /** Where the backoff's jitter comes from when none is injected. */
 const REAL_RNG: Rng = { next: () => Math.random() };
 
@@ -264,9 +269,7 @@ export class S3StorageDriver implements IStorageDriver {
           `generation already exists (write-once): ${key.segment}.${key.generation}`,
         );
       }
-      if (isValidationError(err) || isWriteConflictError(err) || isNotFoundError(err)) {
-        throw err;
-      }
+      if (isTypedPassThrough(err)) throw err;
       throw this.mapError(err);
     }
   }
@@ -470,7 +473,7 @@ export class S3StorageDriver implements IStorageDriver {
       await this.head(key, objectKey);
       return true;
     } catch (err) {
-      if (isNotFoundError(err)) return false;
+      if (errorKind(err) === 'NotFoundError') return false;
       throw err;
     }
   }
@@ -513,7 +516,7 @@ export class S3StorageDriver implements IStorageDriver {
   /** Map S3 read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
     err = scrubCredentials(err);
-    if (isValidationError(err)) return err;
+    if (errorKind(err) === 'ValidationError') return err;
     if (isNotFound(err)) {
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
     }

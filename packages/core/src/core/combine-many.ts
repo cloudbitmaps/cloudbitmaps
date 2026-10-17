@@ -703,10 +703,11 @@ interface Held {
   charge: number;
 }
 
-const budgetError = (limit: number, what: string): BudgetExceededError =>
+const budgetError = (limit: number, spent: number, what: string): BudgetExceededError =>
   new BudgetExceededError(
     `materializeMany: ${what} would hold more than maxBufferedBytes (${limit}) resident — raise maxBufferedBytes, ` +
       'or split the outputs across calls',
+    { option: 'maxBufferedBytes', limit, spent },
   );
 
 /**
@@ -858,8 +859,8 @@ class Run<R> {
       codec: this.codec,
       base: this.fedBase,
       charge: (bytes) => {
-        if (!this.ledger.reserve(bytes, () => this.reclaim())) {
-          throw budgetError(this.req.maxBufferedBytes, 'the feed');
+        if (!this.ledger.reserve(bytes, (needed) => this.reclaim(needed))) {
+          throw this.refuse(bytes, 'the feed');
         }
       },
       release: (bytes) => this.ledger.release(bytes),
@@ -897,20 +898,25 @@ class Run<R> {
     }
   }
 
+  /** The refusal for `needed` more resident bytes than the ledger has room for: what it held plus what it was asked for. */
+  private refuse(needed: number, what: string): BudgetExceededError {
+    return budgetError(this.req.maxBufferedBytes, this.ledger.used + needed, what);
+  }
+
   /**
    * Make room in the ledger. The plans kept for later groups give way first: they are rebuilt when their group starts,
    * and the outputs were judged without them. A fed output cannot be run again (the feed is read once), so a fed call
    * gives up its fed outputs and the feed next, as soon as the ledger passes the budget; only then is a stored-only
    * buffer evicted, to run again alone.
    */
-  private reclaim(): boolean {
+  private reclaim(needed: number): boolean {
     if (this.dropKeptPlans()) return true;
     if (this.feed !== undefined) {
       let fed = this.feed.heldBytes;
       for (const o of this.running)
         if (o.compiled.fed.length > 0 && o.status === 'live') fed += o.charged;
       if (fed > 0) {
-        this.failFed(budgetError(this.req.maxBufferedBytes, 'the feed and the fed outputs'));
+        this.failFed(this.refuse(needed, 'the feed and the fed outputs'));
         return true;
       }
     }
@@ -1011,6 +1017,11 @@ class Run<R> {
       `materializeMany: the plan alone (${what}) passes maxBufferedBytes (${this.req.maxBufferedBytes}) with ` +
         `${this.planCharge} bytes already held for it, before any chunk is read — raise maxBufferedBytes, or split ` +
         'the outputs across calls',
+      {
+        option: 'maxBufferedBytes',
+        limit: this.req.maxBufferedBytes,
+        spent: this.ledger.used + bytes,
+      },
     );
   }
 
@@ -1095,6 +1106,7 @@ class Run<R> {
             `materializeMany: output ${o.index} needs about ${alone} bytes resident with its operands, and the plan holds ` +
               `${base}, over maxBufferedBytes (${this.req.maxBufferedBytes}) — raise maxBufferedBytes to at least ` +
               `${alone + base}`,
+            { option: 'maxBufferedBytes', limit: this.req.maxBufferedBytes, spent: alone + base },
           ),
         );
         continue;
@@ -1199,6 +1211,7 @@ class Run<R> {
           `materializeMany would read ${this.planned} chunks over ${groups.length} group(s), over the budget of ` +
             `${this.limit} — raise \`budget.maxRequests\`, raise maxBufferedBytes so fewer groups re-read the operands, ` +
             'or set `budget: false`',
+          { option: 'budget.maxRequests', limit: this.limit, spent: this.planned },
         );
       }
     }
@@ -1242,6 +1255,7 @@ class Run<R> {
       const error = new BudgetExceededError(
         `materializeMany: re-running outputs would read ${plan.reads} more chunks, past the budget of ${budget} ` +
           `(${this.chunkReads} read)`,
+        { option: 'budget.maxRequests', limit: budget, spent: this.chunkReads + plan.reads },
       );
       for (const o of members) this.fail(o, error);
       return;
@@ -1259,7 +1273,7 @@ class Run<R> {
     // plans kept for later groups give way first: the outputs were judged without them.
     const fixed = plan.fixedBytes + plan.planBytes;
     if (!this.ledger.tryCharge(fixed) && !(this.dropKeptPlans() && this.ledger.tryCharge(fixed))) {
-      const error = budgetError(this.req.maxBufferedBytes, 'the operand streams');
+      const error = this.refuse(fixed, 'the operand streams');
       for (const o of members) this.fail(o, error);
       return;
     }
@@ -1351,7 +1365,7 @@ class Run<R> {
       for (const o of victims) if (o.status === 'live') this.fail(o, error);
     };
     const w = this.window === 'empty' ? null : this.window;
-    const makeRoom = (): boolean => this.reclaim();
+    const makeRoom = (needed: number): boolean => this.reclaim(needed);
     const feed = this.feed !== undefined && this.feed.active ? this.feed : undefined;
     const fedBase = this.fedBase;
     let at = 0;
@@ -1475,10 +1489,7 @@ class Run<R> {
               try {
                 const resident = residentBytes(bytes.length);
                 if (!this.ledger.reserve(resident, makeRoom)) {
-                  throw budgetError(
-                    this.req.maxBufferedBytes,
-                    `operand "${c.op.spec.name}" at chunk ${key}`,
-                  );
+                  throw this.refuse(resident, `operand "${c.op.spec.name}" at chunk ${key}`);
                 }
                 held += resident;
                 decoded.set(
@@ -1566,7 +1577,7 @@ class Run<R> {
     key: number,
     kc: KeyContext,
     w: IdWindow | null,
-    makeRoom: () => boolean,
+    makeRoom: (needed: number) => boolean,
   ): void {
     const result = evaluate(o.compiled.node, kc);
     if (result === null) return;
@@ -1588,7 +1599,7 @@ class Run<R> {
     // The chunk now belongs to the buffer: its temporary charge is exchanged for the buffer's.
     kc.drop(held);
     if (!this.ledger.reserve(resident, makeRoom)) {
-      throw budgetError(this.req.maxBufferedBytes, `output ${o.index}`);
+      throw this.refuse(resident, `output ${o.index}`);
     }
     if (o.status !== 'live') {
       // This very output was evicted to make room, and its buffer went with it.
@@ -1678,7 +1689,7 @@ class Run<R> {
         if (!admitted) {
           if (o.solo || o.compiled.fed.length > 0) {
             // A fed output cannot run again: the feed was read once.
-            this.fail(o, budgetError(this.req.maxBufferedBytes, `publishing output ${o.index}`));
+            this.fail(o, this.refuse(transient, `publishing output ${o.index}`));
           } else {
             // The buffers filled the budget, so the object it would write has no room beside them: it runs again alone.
             this.dropBuffer(o);
@@ -1889,14 +1900,14 @@ class KeyContext {
 
   constructor(
     private readonly ledger: ResidentLedger,
-    private readonly makeRoom: () => boolean,
+    private readonly makeRoom: (needed: number) => boolean,
     readonly chunks: { get(operand: number): CodecBitmap | undefined },
   ) {}
 
   /** Charge `bytes` for a bitmap this evaluation made. */
   take(bytes: number): void {
     if (!this.ledger.reserve(bytes, this.makeRoom)) {
-      throw budgetError(this.ledger.limit, 'a chunk being evaluated');
+      throw budgetError(this.ledger.limit, this.ledger.used + bytes, 'a chunk being evaluated');
     }
     this.temp += bytes;
   }

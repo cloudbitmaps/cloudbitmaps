@@ -284,6 +284,7 @@ const CALL_KEYS = {
   checkConsistency: keysOf<NonNullable<Parameters<CloudRoaring['checkConsistency']>[0]>>()([
     'namespace',
     'concurrency',
+    'maxScanSegments',
     'summaries',
     'generations',
   ]),
@@ -2754,13 +2755,16 @@ export class CloudRoaring {
    * be used is counted in `generationsUnchecked`, and none of its objects is read.
    *
    * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
-   * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
-   * ceiling of its own: narrow the scan with `namespace`.
+   * `BudgetExceededError` (`option: 'maxScanSegments'`) past that rather than report a partial scan as a whole one.
+   * Narrow the scan with `namespace`, or raise `maxScanSegments` when the fleet really is that large and the memory
+   * is there.
    */
   async checkConsistency(
     options: {
       namespace?: string;
       concurrency?: number;
+      /** The most registry rows the scan holds resident (default 250,000); past it the call throws `BudgetExceededError`. */
+      maxScanSegments?: number;
       summaries?: boolean;
       generations?: boolean;
     } = {},
@@ -3983,7 +3987,7 @@ export {
   InProcessKeystore,
   NodeAead,
   aadFor,
-  // Errors and their copy-safe predicates
+  // Errors and their copy-safe classifier
   CloudRoaringError,
   ValidationError,
   WriteConflictError,
@@ -3997,19 +4001,7 @@ export {
   LeaseExpiredError,
   LeaseLimitError,
   StaleOperandError,
-  isCloudRoaringError,
-  isWriteConflictError,
-  isTransientError,
-  isNotFoundError,
-  isIntegrityError,
-  isValidationError,
-  isLeaseExpiredError,
-  isLeaseLimitError,
-  isStaleOperandError,
-  isUnsupportedError,
-  isCapabilityError,
-  isBudgetExceededError,
-  isKeyUnavailableError,
+  errorKind,
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,
@@ -4042,6 +4034,7 @@ export type {
   EncodedChunk,
   Entropy,
   EraseDeps,
+  ErrorKind,
   ExportFailure,
   ExportFormat,
   ExportManifest,

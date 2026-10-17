@@ -4,10 +4,9 @@ import { types } from 'node:util';
 import { createRequire } from 'node:module';
 import { ApiError, type Storage } from '@google-cloud/storage';
 import {
-  isTransientError,
   isTransportFault as isNodeTransportFault,
-  isValidationError,
   toTransient,
+  errorKind,
 } from '@cloudbitmaps/core/driver-kit';
 import {
   asMissingBucket,
@@ -120,8 +119,8 @@ function classify(err: unknown): Record<string, unknown> {
     native: types.isNativeError(err),
     mapped: {
       same: mapped === err,
-      transient: isTransientError(mapped),
-      validation: isValidationError(mapped),
+      transient: errorKind(mapped) === 'TransientError',
+      validation: errorKind(mapped) === 'ValidationError',
       message: mapped === err ? undefined : (mapped as Error).message,
     },
   };
