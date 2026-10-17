@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -678,6 +678,42 @@ export declare class Sink {
       'changed: @fx/a FromPlain.constructor\n    was: constructor();\n    now: constructor(x: number);',
     );
     expect(r.err).toContain('added: @fx/a Oops.constructor\n    a new public entry');
+  });
+});
+
+describe('a constructor inherited from another workspace package', { timeout: 60_000 }, () => {
+  const ROOT_CLASS = 'export declare class Root {\n  constructor(message: string);\n}\n';
+  // Package d's class extends package a's, reached the way a workspace dependency is: through d's node_modules.
+  beforeEach(() => {
+    withMain((s) => s + ROOT_CLASS);
+    put(
+      'packages/d/package.json',
+      JSON.stringify({
+        name: '@fx/d',
+        exports: { '.': { types: './dist/index.d.ts', default: './dist/index.js' } },
+      }),
+    );
+    put(
+      'packages/d/dist/index.d.ts',
+      "import { Root } from '@fx/a';\nexport declare class Sub extends Root {}\n",
+    );
+    mkdirSync(join(repo, 'packages/d/node_modules/@fx'), { recursive: true });
+    symlinkSync('../../../a', join(repo, 'packages/d/node_modules/@fx/a'));
+    expect(run(['--write']).status).toBe(0);
+    commit();
+  });
+
+  it('is recorded under the subclass own key, and a change to the base shows in both packages', () => {
+    expect(snapshot()['@fx/d Sub']).toBe('class Sub extends Root');
+    expect(snapshot()['@fx/d Sub.constructor']).toBe('constructor(message: string);');
+    withMain((s) => s + ROOT_CLASS.replace('message: string', 'message: string, code?: number'));
+    expect(run(['--write']).status).toBe(0);
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/a Root.constructor');
+    expect(r.err).toContain(
+      'changed: @fx/d Sub.constructor\n    was: constructor(message: string);\n    now: constructor(message: string, code?: number);',
+    );
   });
 });
 

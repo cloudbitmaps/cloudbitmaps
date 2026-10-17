@@ -150,8 +150,14 @@ describe('the constructor a class inherits', () => {
   const surface = surfaceOf({
     'node_modules/dep/package.json': JSON.stringify({ name: 'dep', types: 'index.d.ts' }),
     'node_modules/dep/index.d.ts': 'export declare class DepBase { constructor(x: number); }\n',
+    // A class no entry exports, named by a public signature, so it is recorded as referenced.
+    'hiddensub.d.ts':
+      "import { Root } from './index';\nexport declare class HiddenSub extends Root {}\n",
     'index.d.ts': `
       import { DepBase } from 'dep';
+      import type { HiddenSub } from './hiddensub';
+      export declare function makeSub(): HiddenSub;
+      export declare abstract class FromAbs extends Root {}
       export declare class FromDep extends DepBase {}
       declare const MixBase: { new (a: string): { m(): void } };
       export declare class FromMix extends MixBase {}
@@ -179,6 +185,16 @@ describe('the constructor a class inherits', () => {
     expect(surface['fx FromTwo.constructor']).toBe('constructor(a: number);');
     expect(surface['fx FromTwo.constructor #2']).toBe('constructor(a: string, b: boolean);');
     expect(surface['fx FromGuarded.constructor']).toBe('protected constructor(n: number);');
+  });
+
+  it('is recorded for an abstract class and for a class recorded as referenced', () => {
+    expect(surface['fx FromAbs']).toBe('abstract class FromAbs extends Root');
+    expect(surface['fx FromAbs.constructor']).toBe('constructor(message: string);');
+    // A referenced key starts with the name of the package that holds the file, which this temporary directory lacks.
+    const referenced = (rest: string): string | undefined =>
+      Object.entries(surface).find(([k]) => k.endsWith(` (referenced) ${rest}`))?.[1];
+    expect(referenced('HiddenSub')).toBe('class HiddenSub extends Root');
+    expect(referenced('HiddenSub.constructor')).toBe('constructor(message: string);');
   });
 
   it('gives way to a constructor the class declares', () => {
