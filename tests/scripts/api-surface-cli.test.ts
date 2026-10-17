@@ -309,7 +309,7 @@ describe('--against', { timeout: 60_000 }, () => {
     expect(r.err).toContain('too wide');
   });
 
-  it('refuses a prefix that stops before a name, and takes one that starts a name', () => {
+  it('refuses a prefix that stops before a name, excuses nothing by one that stops inside a name, and takes the whole name', () => {
     breakIt();
     for (const entry of ['@fx/a (*', '@fx/a (referenced) *']) {
       put('api-surface/allowed.json', JSON.stringify([{ entry, reason: 'wide' }]));
@@ -317,8 +317,43 @@ describe('--against', { timeout: 60_000 }, () => {
       expect(r.status, entry).toBe(1);
       expect(r.err, entry).toContain('too wide');
     }
-    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a d*', reason: 'narrow' }]));
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a d*', reason: 'part of a name' }]),
+    );
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('removed: @fx/a drop');
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a drop*', reason: 'replaced' }]));
     expect(run(['--against', 'HEAD']).status).toBe(0);
+  });
+
+  it('lets a prefix row for one type excuse nothing of a longer name that starts with it', () => {
+    withMain((s) => `${s}export interface ShapeOptions { x: number }\n`);
+    run(['--write']);
+    commit();
+    withMain(
+      (s) =>
+        `${s.replace('  b: number;\n}', '  b: number;\n  c?: string;\n}')}export interface ShapeOptions { x: string }\n`,
+    );
+    run(['--write']);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a Shape*', reason: 'Shape gains c' }]),
+    );
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/a ShapeOptions.x');
+    expect(r.err).not.toContain('@fx/a Shape.c');
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([
+        { entry: '@fx/a Shape*', reason: 'Shape gains c' },
+        { entry: '@fx/a ShapeOptions*', reason: 'x takes a string' },
+      ]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
   });
 
   it('passes with a note when the ref has no snapshot, and fails on a ref that is not a commit', () => {

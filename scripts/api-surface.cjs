@@ -443,8 +443,8 @@ function comparableBase(baseEntries, now, internal) {
 }
 
 /**
- * A row's `entry` names a key, or a prefix ending in `*` that holds at least a package and the start of a symbol's name
- * (after the `(referenced)` marker, for a referenced type).
+ * A row's `entry` names a key, or a prefix ending in `*` that holds at least a package and a symbol's name (after the
+ * `(referenced)` marker, for a referenced type). `excuses` matches the prefix only where a name ends.
  */
 const wildcardIsNarrow = (entry) =>
   !entry.endsWith('*') || /^\S+ (?:\(referenced\) )?[A-Za-z_$]/.test(entry.slice(0, -1));
@@ -458,7 +458,7 @@ function allowlistProblems(rows) {
       problems.push(`${ALLOWED_PATH} row ${i} has no entry`);
     } else if (!wildcardIsNarrow(r.entry)) {
       problems.push(
-        `${ALLOWED_PATH} row ${i} (${r.entry}) is too wide: a prefix must name a package and at least the start of a symbol`,
+        `${ALLOWED_PATH} row ${i} (${r.entry}) is too wide: a prefix must name a package and a symbol`,
       );
     }
     if (typeof r?.reason !== 'string' || r.reason.trim() === '') {
@@ -470,9 +470,17 @@ function allowlistProblems(rows) {
   return problems;
 }
 
-/** Whether a row excuses `key`: its entry is the key, or ends in `*` and is a prefix of it. */
-const excuses = (row, key) =>
-  row.entry.endsWith('*') ? key.startsWith(row.entry.slice(0, -1)) : row.entry === key;
+/**
+ * Whether a row excuses `key`: its entry is the key, or ends in `*` and is a prefix of it that stops where a name
+ * ends (the key ends there or goes on with a space or a dot), or that itself ends in a space or a dot.
+ */
+const excuses = (row, key) => {
+  if (!row.entry.endsWith('*')) return row.entry === key;
+  const prefix = row.entry.slice(0, -1);
+  if (!key.startsWith(prefix)) return false;
+  // Only where a name ends: `Foo*` covers `Foo`, `Foo.m`, `Foo #2`, `Foo (value)` and `Foo [path]`, never `FooOptions`.
+  return /[ .]$/.test(prefix) || key.length === prefix.length || /[ .]/.test(key[prefix.length]);
+};
 
 /** The rows of `rows` whose entry the base's rows do not already have: a row left over from an earlier change excuses nothing. */
 function newRows(rows, baseRows) {

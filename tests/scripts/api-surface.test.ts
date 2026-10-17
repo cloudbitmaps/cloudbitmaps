@@ -254,14 +254,64 @@ describe('diffSurfaces and breakingChanges', () => {
       'p Fresh': 'interface Fresh',
       'p Fresh.a': 'a: number;',
       'p Fresh.m': 'm(): void;',
+      'p Fresh.m #2': 'm(x: number): void;',
+      'p Fresh (value)': 'const Fresh: number',
+      // Names that start with the prefix's name are other symbols.
+      'p FreshOptions': 'interface FreshOptions',
+      'p FreshOptions.x': 'x: number;',
       'p Other': 'function Other(): void;',
     };
     const { problems } = surfaceTool.breakingChanges(was, now, [
       { entry: 'p Fresh*', reason: 'new' },
     ]);
-    expect(problems).toEqual([
-      'added: p Other\n    a new public entry; add a reason row\n    now: function Other(): void;',
+    expect(problems.map((p) => p.split('\n')[0])).toEqual([
+      'added: p FreshOptions',
+      'added: p FreshOptions.x',
+      'added: p Other',
     ]);
+  });
+
+  it('matches a prefix row only where a symbol name ends, so a longer name keeps its removal and its change', () => {
+    const base = {
+      'p Thing': 'interface Thing',
+      'p Thing.a': 'a: number;',
+      'p ThingOptions': 'interface ThingOptions',
+      'p ThingOptions.x': 'x: number;',
+      'p (referenced) Deep [src/deep]': 'interface Deep',
+      'p (referenced) Deeper': 'interface Deeper',
+    };
+    const row = (entry: string) => [{ entry, reason: 'Thing changes' }];
+    const without = (...keys: string[]) =>
+      Object.fromEntries(Object.entries(base).filter(([k]) => !keys.includes(k)));
+    const changedOptions = { ...base, 'p Thing.a': 'a: string;', 'p ThingOptions.x': 'x: string;' };
+    expect(surfaceTool.breakingChanges(base, changedOptions, row('p Thing*')).problems).toEqual([
+      'changed: p ThingOptions.x\n    was: x: number;\n    now: x: string;',
+    ]);
+    expect(
+      surfaceTool
+        .breakingChanges(base, without('p ThingOptions', 'p ThingOptions.x'), row('p Thing*'))
+        .problems.map((p) => p.split('\n')[0]),
+    ).toEqual(['removed: p ThingOptions', 'removed: p ThingOptions.x']);
+    // A prefix that ends in `.` covers the members alone.
+    expect(
+      surfaceTool
+        .breakingChanges(
+          base,
+          { ...base, 'p Thing': 'interface Thing<T>', 'p Thing.a': 'a: T;' },
+          row('p Thing.*'),
+        )
+        .problems.map((p) => p.split('\n')[0]),
+    ).toEqual(['changed: p Thing']);
+    // A referenced key told apart by file continues after its name with a space.
+    expect(
+      surfaceTool
+        .breakingChanges(
+          base,
+          without('p (referenced) Deep [src/deep]', 'p (referenced) Deeper'),
+          row('p (referenced) Deep*'),
+        )
+        .problems.map((p) => p.split('\n')[0]),
+    ).toEqual(['removed: p (referenced) Deeper']);
   });
 
   it('refuses a too-wide row for an addition, and the addition still fails', () => {
