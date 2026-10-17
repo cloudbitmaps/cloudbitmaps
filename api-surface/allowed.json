@@ -182,5 +182,9 @@
   {
     "entry": "@cloudbitmaps/roaring Segment.unionInto",
     "reason": "takes CombineOptions in place of MaterializeOptions, which is merged into it with the same fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ExportOptions.codec",
+    "reason": "exportSegments always builds the 'roaring' format's bitmaps with the store's own roaring codec, which was the default, so it no longer takes a codec; a codec passed to it is refused with a ValidationError before any request"
   }
 ]

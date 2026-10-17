@@ -297,7 +297,7 @@ const CALL_KEYS = {
     'summaries',
     'generations',
   ]),
-  exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
+  exportSegments: keysOf<ExportOptions>()(['format', 'namespace', 'ndjsonBatchBytes']),
 } as const;
 
 /**
@@ -2771,14 +2771,14 @@ export class CloudRoaring {
    * **iff** this store was wired with their keystore — the export is therefore **cleartext**; protect it.
    * Crypto-shredded segments are skipped. A segment that can't be read is isolated into the manifest's `failed[]`
    * (the run continues), so "a manifest exists" means the run finished — check `failed`. The `export-segments`
-   * CLI wraps this with a filesystem sink.
+   * CLI wraps this with a filesystem sink. The `'roaring'` format's bitmaps are built by the store's own codec.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
     checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments);
     const opts = picked(options, CALL_KEYS.exportSegments);
     const registry = this.requireRegistry('exportSegments');
-    // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
-    return runExport(this, registry, sink, { ...opts, codec: opts.codec ?? roaringCodec });
+    // The store's own codec builds the `'roaring'` format's bitmap: core's `runExport` is codec-agnostic and needs one.
+    return runExport(this, registry, sink, { ...opts, codec: roaringCodec });
   }
 }
 

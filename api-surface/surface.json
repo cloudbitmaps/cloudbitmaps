@@ -386,7 +386,6 @@
     "@cloudbitmaps/roaring ExportManifest.totalSegments": "readonly totalSegments: number;",
     "@cloudbitmaps/roaring ExportManifest.version": "readonly version: number;",
     "@cloudbitmaps/roaring ExportOptions": "interface ExportOptions",
-    "@cloudbitmaps/roaring ExportOptions.codec": "readonly codec?: CodecInterface;",
     "@cloudbitmaps/roaring ExportOptions.format": "readonly format?: ExportFormat;",
     "@cloudbitmaps/roaring ExportOptions.namespace": "readonly namespace?: string;",
     "@cloudbitmaps/roaring ExportOptions.ndjsonBatchBytes": "readonly ndjsonBatchBytes?: number;",

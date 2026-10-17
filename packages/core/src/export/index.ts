@@ -58,11 +58,6 @@ export interface ExportSink {
 export interface ExportOptions {
   /** Output format; defaults to `'roaring'`. */
   readonly format?: ExportFormat;
-  /**
-   * Bitmap codec that builds the exported bitmap for the `'roaring'` format. Optional in the type; a **flavor**'s
-   * store passes its own (see `requireCodec`). Not needed for `'ndjson'`, which streams plain ids.
-   */
-  readonly codec?: CodecInterface;
   /** Scope the export to one namespace; omit to export every registered segment. */
   readonly namespace?: string;
   /** `ndjson` flush threshold in ~bytes (ids are ASCII, so ≈ chars); defaults to 64 KiB. */
@@ -162,12 +157,16 @@ const errMessage = (err: unknown): string => (err instanceof Error ? err.message
  * `reader` is any object with `segment(name, { namespace? })` returning a handle with `pin()`, which resolves to
  * `{ iterate(): AsyncIterable<number> }` (see {@link SegmentReader}). A reader without that shape throws a
  * `ValidationError` before any file is opened.
+ *
+ * `options.codec` builds the exported bitmap for the `'roaring'` format, and a **flavor**'s store passes its own (see
+ * `requireCodec`); `'ndjson'` streams plain ids and needs none. It is this function's alone: the store's
+ * `exportSegments` takes {@link ExportOptions}, which has no codec, because the store always exports with its own.
  */
 export async function runExport(
   reader: SegmentReader,
   registry: IRegistryDriver,
   sink: ExportSink,
-  options: ExportOptions = {},
+  options: ExportOptions & { readonly codec?: CodecInterface } = {},
 ): Promise<ExportManifest> {
   // A sink without `open` would fail every segment, one by one, into `failed`: refused before anything is read.
   if (sink === null || typeof sink !== 'object' || typeof sink.open !== 'function') {
