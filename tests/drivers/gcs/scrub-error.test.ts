@@ -748,6 +748,13 @@ describe('GCS scrubCredentials', () => {
       `client_email: ${SA_EMAIL}`,
       'GOOG4-RSA-SHA256\n20261017T000000Z\n20261017/auto/storage/goog4_request\nabc',
       '<tr><th>host</th><td>storage.googleapis.com</td></tr>',
+      '<tr><th>cookie</th><td> </td></tr>',
+      [
+        '-----BEGIN CERTIFICATE-----',
+        'MIIBszCCAVmgAwIBAgIUStandIn',
+        '-----END CERTIFICATE-----',
+      ].join('\n'),
+      `-----BEGIN ${['PUBLIC', 'KEY'].join(' ')}-----\nMFkwEwYHKoZIzj0CAQYIStandIn\n-----END PUBLIC KEY-----`,
       '<StringToSign>GOOG4-HMAC-SHA256</StringToSign>',
       'request to http://127.0.0.1:1/storage/v1/b/b/o?prefix=p failed, reason: socket hang up',
       'At least one of the pre-conditions you specified did not hold.',
