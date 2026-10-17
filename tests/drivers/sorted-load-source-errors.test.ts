@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { loadSegment } from '@/core/load';
-import { ValidationError, errorKind } from '@/core/errors';
+import { ValidationError, WriteConflictError, errorKind } from '@/core/errors';
 import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -54,6 +54,8 @@ const SHAPES: Record<string, () => Error> = {
       errno: -54,
       syscall: 'read',
     }),
+  // The library's own lost race, from another call the source made: the load would read it as its own otherwise.
+  'WriteConflictError of its own': () => new WriteConflictError('another store lost a race'),
   SlowDown: () =>
     Object.assign(new Error('please reduce your request rate'), {
       name: 'SlowDown',
