@@ -479,19 +479,100 @@ describe('GCS scrubCredentials', () => {
   });
 
   describe('credential key names', () => {
-    it.each(['authorization', 'Proxy-Authorization', 'cookie', 'set-cookie', 'x-api-key'])(
-      'redacts the value under %s',
-      (name) => {
-        const err = apiError(503, { detail: { [name]: VALUE, keep: 'visible' } });
-        expect(scrubCredentials(err)['detail']).toEqual({ [name]: '[redacted]', keep: 'visible' });
-      },
-    );
+    it.each([
+      'authorization',
+      'Proxy-Authorization',
+      'cookie',
+      'set-cookie',
+      'x-api-key',
+      'X-Goog-Api-Key',
+      'x-goog-encryption-key',
+      'x-goog-copy-source-encryption-key',
+      'encryptionKey',
+      'encryptionKeyBase64',
+      'X-Goog-Signature',
+      'x-goog-credential',
+      'Signature',
+      'SignatureProvided',
+      'CanonicalRequest',
+      'token',
+      'access_token',
+      'accessToken',
+      'refresh_token',
+      'refreshToken',
+      'id_token',
+      'subject_token',
+      'client_secret',
+      'clientSecret',
+      'private_key',
+      'privateKey',
+      'assertion',
+      ' Authorization: ',
+    ])('redacts the value under %s', (name) => {
+      const err = apiError(503, { detail: { [name]: VALUE, keep: 'visible' } });
+      const out = scrubCredentials(err);
+      expect(out['detail']).toEqual({ [name]: '[redacted]', keep: 'visible' });
+      expect(out).not.toBe(err);
+    });
 
-    it.each(['x-goog-api-client', 'x-goog-generation', 'pageToken', 'nextPageToken', 'location'])(
-      'keeps the value under %s',
+    it.each([
+      'x-goog-api-client',
+      'x-goog-generation',
+      'x-goog-encryption-key-sha256',
+      'x-goog-encryption-algorithm',
+      'encryptionKeyHash',
+      'kmsKeyName',
+      'pageToken',
+      'nextPageToken',
+      'client_email',
+      'client_id',
+      'private_key_id',
+      'token_uri',
+      'tokenType',
+      'location',
+      'key',
+      'StringToSign',
+    ])('keeps the value under %s', (name) => {
+      const err = apiError(503, { detail: { [name]: 'visible' } });
+      expect(scrubCredentials(err)['detail']).toEqual({ [name]: 'visible' });
+    });
+
+    it('redacts the secrets of a service-account key and an OAuth client, and keeps what names them', () => {
+      const key = {
+        type: 'service_account',
+        project_id: 'p',
+        private_key_id: 'k1',
+        private_key: VALUE,
+        client_email: 'sa@p.iam.gserviceaccount.com',
+        client_id: '1',
+        token_uri: 'https://oauth2.googleapis.com/token',
+      };
+      const user = {
+        type: 'authorized_user',
+        client_id: '2',
+        client_secret: VALUE,
+        refresh_token: VALUE,
+      };
+      const out = scrubCredentials(Object.assign(new Error('x'), { key, user }));
+      expect(out.key).toEqual({ ...key, private_key: '[redacted]' });
+      expect(out.user).toEqual({
+        ...user,
+        client_secret: '[redacted]',
+        refresh_token: '[redacted]',
+      });
+      expect(leaks(out)).toEqual([]);
+    });
+
+    it.each(['x-goog-encryption-key', 'access_token', 'Cookie'])(
+      'redacts the value after %s in a flat list and under it in a map',
       (name) => {
-        const err = apiError(503, { detail: { [name]: 'visible' } });
-        expect(scrubCredentials(err)['detail']).toEqual({ [name]: 'visible' });
+        const err = apiError(503, {
+          list: ['host', 'h', name, VALUE],
+          map: new Map([[name, VALUE]]),
+        });
+        const out = scrubCredentials(err);
+        expect(out['list']).toEqual(['host', 'h', name, '[redacted]']);
+        expect((out['map'] as Map<string, string>).get(name)).toBe('[redacted]');
       },
     );
   });

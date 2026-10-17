@@ -33,8 +33,43 @@ const TRANSPORT = new Set([
 ]);
 /** What a copy keeps of a `response`: what the server said, as numbers and text. */
 const RESPONSE_FIELDS = ['status', 'statusText', 'statusCode', 'statusMessage'];
-/** Header and field names whose value is a credential. */
-const CREDENTIAL_NAME = /^(?:proxy-)?authorization$|^cookie$|^set-cookie$|^x-api-key$/i;
+/**
+ * Header and field names whose value is a credential: the credential headers, a customer-supplied encryption key (as
+ * a header and as the SDK's option), a signed URL's signature and credential, what a service quotes of a request whose
+ * signature it refused, and the OAuth and service-account fields that hold a secret. A service account's `client_email`
+ * and `private_key_id` are not among them: they name the account and its key, and sign nothing.
+ */
+const CREDENTIAL_NAMES = [
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'x-goog-api-key',
+  'x-goog-encryption-key',
+  'x-goog-copy-source-encryption-key',
+  'encryption-key',
+  'encryption-key-base64',
+  'x-goog-signature',
+  'x-goog-credential',
+  'signature',
+  'signature-provided',
+  'canonical-request',
+  'token',
+  'access-token',
+  'refresh-token',
+  'id-token',
+  'subject-token',
+  'client-secret',
+  'private-key',
+  'assertion',
+];
+/** A name as it is compared: without the spaces and colon around it, in lower case, with `-` and `_` taken out. */
+const fold = (name: string): string =>
+  name.trim().replace(/:$/, '').replace(/[-_]/g, '').toLowerCase();
+const CREDENTIAL_NAME = new Set(CREDENTIAL_NAMES.map(fold));
+/** The longest text that can spell one of the names. */
+const LONGEST_NAME = 64;
 /** A credential header line inside raw request or response text. */
 const CREDENTIAL_LINES = /^((?:proxy-)?authorization|cookie|set-cookie|x-api-key):[^\r\n]*/gim;
 const REDACTED = '[redacted]';
@@ -48,8 +83,12 @@ const isPlain = (value: object): boolean => {
 
 const isError = (value: object): boolean => value instanceof Error || types.isNativeError(value);
 
-/** Whether `text` is a credential's name, as a key, a list item or a map key holds it. */
-const isCredentialName = (text: string): boolean => CREDENTIAL_NAME.test(text);
+/**
+ * Whether `text` is a credential's name, as a key, a list item or a map key holds it. The whole name must match, in any
+ * case and with `-` or `_` between its words or neither (`accessToken`, `access_token`): `pageToken` does not.
+ */
+const isCredentialName = (text: string): boolean =>
+  text.length <= LONGEST_NAME && CREDENTIAL_NAME.has(fold(text));
 
 /**
  * `text` with every credential it shows replaced. A text the patterns cannot finish matching (one of several MiB that
