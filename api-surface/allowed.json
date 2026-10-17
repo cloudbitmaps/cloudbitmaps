@@ -386,5 +386,53 @@
   {
     "entry": "@cloudbitmaps/core (referenced) PinLease*",
     "reason": "no public signature needs it; only `CrbmStorageChunkSource`'s pin methods named it, and the class left the public surface; a pin takes its lease with `pin({ leaseUntil })`"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit IntegrityError.constructor",
+    "reason": "the gate now records the constructor a class inherits; IntegrityError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit NotFoundError.constructor",
+    "reason": "the gate now records the constructor a class inherits; NotFoundError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit ValidationError.constructor",
+    "reason": "the gate now records the constructor a class inherits; ValidationError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit WriteConflictError.constructor",
+    "reason": "the gate now records the constructor a class inherits; WriteConflictError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CapabilityError.constructor",
+    "reason": "the gate now records the constructor a class inherits; CapabilityError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IntegrityError.constructor",
+    "reason": "the gate now records the constructor a class inherits; IntegrityError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring KeyUnavailableError.constructor",
+    "reason": "the gate now records the constructor a class inherits; KeyUnavailableError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring LeaseLimitError.constructor",
+    "reason": "the gate now records the constructor a class inherits; LeaseLimitError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring NotFoundError.constructor",
+    "reason": "the gate now records the constructor a class inherits; NotFoundError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring UnsupportedError.constructor",
+    "reason": "the gate now records the constructor a class inherits; UnsupportedError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ValidationError.constructor",
+    "reason": "the gate now records the constructor a class inherits; ValidationError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring WriteConflictError.constructor",
+    "reason": "the gate now records the constructor a class inherits; WriteConflictError declares none and inherits CloudRoaringError's constructor(message: string), which it has always had, so the line is new to the snapshot and nothing changes for a caller"
   }
 ]

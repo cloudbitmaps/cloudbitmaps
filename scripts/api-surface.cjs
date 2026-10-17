@@ -10,6 +10,11 @@
  * separately. The text comes from the printed declaration with comments dropped, so it carries no path and no
  * ordering noise beyond the declared order of overloads, which is part of a signature.
  *
+ * A class that declares no constructor is recorded with the one it inherits, under its own `Class.constructor` key and
+ * printed as the nearest base in the workspace declares it, so a class that later declares one of another shape reads
+ * as a change, and a change to a base's constructor shows in every class that inherits it. A class whose chain declares
+ * none, or inherits one from outside the workspace, records none.
+ *
  * A type that a public signature names without any entry point exporting it is part of what a caller can reach, so
  * it is recorded too, with its members and, transitively, the types they name, under a `(referenced)` key. A type
  * from outside the workspace (a dependency, the platform) is recorded by name only: it appears in the signature text.
@@ -36,9 +41,12 @@
  *
  * Known limits: overloads are compared in declared order, so one appended after the last reads as an addition, not a
  * change; a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a
- * move reads as a removal and an addition; a parameter rename is a change; only declarations are read, so a change in
- * behaviour behind an unchanged signature is for tests; a TypeScript upgrade that changes how declarations print needs
- * one `--write`.
+ * move reads as a removal and an addition; a parameter rename is a change; an inherited constructor prints as its base
+ * declares it, type parameters and all, so a class extending a generic base that declares the same constructor with
+ * them filled in reads as a change; a class whose chain declares no constructor, or inherits one from outside the
+ * workspace, records none, so declaring one reads as an addition, and removing a `private constructor()` from a class
+ * with no base is not seen; only declarations are read, so a change in behaviour behind an unchanged signature is for
+ * tests; a TypeScript upgrade that changes how declarations print needs one `--write`.
  */
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
@@ -211,6 +219,28 @@ function buildSnapshot(entries, root) {
     ts.isIndexSignatureDeclaration(m) ||
     ((ts.isPropertySignature(m) || ts.isMethodSignature(m)) && !m.questionToken);
 
+  /**
+   * The constructor declarations a class that declares none inherits: the nearest base's in the workspace, as that
+   * base declares them, so they print and are keyed as declared ones are. None when no class in the chain declares one
+   * (the declarations print none; it takes no arguments), or when it comes from outside the workspace (`extends
+   * Error`), whose base is known by its name in the header. A private one is left out with the other private members.
+   */
+  function inheritedConstructors(symbol, classes) {
+    if (classes.some((d) => d.members.some((m) => ts.isConstructorDeclaration(m)))) return [];
+    return checker
+      .getSignaturesOfType(
+        checker.getTypeOfSymbolAtLocation(symbol, classes[0]),
+        ts.SignatureKind.Construct,
+      )
+      .map((s) => s.declaration)
+      .filter(
+        (d) =>
+          d !== undefined &&
+          ts.isConstructorDeclaration(d) &&
+          inWorkspace(d.getSourceFile().fileName),
+      );
+  }
+
   /** `forImplementers`: the nodes belong to an interface or an object type, whose required members bind implementers. */
   function members(key, nodes, forImplementers) {
     const groups = new Map();
@@ -274,9 +304,10 @@ function buildSnapshot(entries, root) {
     for (const nodes of Object.values(merged)) {
       if (nodes.length === 0) continue;
       nodes.forEach((d, i) => add(numbered(key, i), header(d)));
+      const inherited = nodes === merged.class ? inheritedConstructors(symbol, nodes) : [];
       members(
         key,
-        nodes.flatMap((d) => [...d.members]),
+        [...nodes.flatMap((d) => [...d.members]), ...inherited],
         nodes.every((d) => ts.isInterfaceDeclaration(d)),
       );
     }

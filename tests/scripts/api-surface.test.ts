@@ -144,6 +144,49 @@ describe('buildSurface', () => {
   });
 });
 
+describe('the constructor a class inherits', () => {
+  // Its own file, so the FIXTURE above stays as it is; `surfaceOf` writes every file it is given before each read.
+  const surface = surfaceOf({
+    'index.d.ts': `
+      export declare class Root { constructor(message: string); }
+      export declare class Child extends Root {}
+      export declare class Grandchild extends Child { readonly code: number; }
+      export declare class Own extends Root { constructor(message: string, code: number); }
+      export declare class Two { constructor(a: number); constructor(a: string, b: boolean); }
+      export declare class FromTwo extends Two {}
+      declare class Guarded { protected constructor(n: number); }
+      export declare class FromGuarded extends Guarded {}
+      export declare class Bare {}
+      export declare class FromBare extends Bare {}
+      export declare class FromError extends Error {}
+      export declare class Closed { private constructor(); }
+    `,
+  });
+  const constructorsOf = (name: string): string[] =>
+    Object.keys(surface).filter((k) => k.startsWith(`fx ${name}.constructor`));
+
+  it('is recorded under the class own key, printed as the nearest base that declares one prints it', () => {
+    expect(surface['fx Root.constructor']).toBe('constructor(message: string);');
+    expect(surface['fx Child.constructor']).toBe('constructor(message: string);');
+    expect(surface['fx Grandchild.constructor']).toBe('constructor(message: string);');
+    expect(surface['fx FromTwo.constructor']).toBe('constructor(a: number);');
+    expect(surface['fx FromTwo.constructor #2']).toBe('constructor(a: string, b: boolean);');
+    expect(surface['fx FromGuarded.constructor']).toBe('protected constructor(n: number);');
+  });
+
+  it('gives way to a constructor the class declares', () => {
+    expect(constructorsOf('Own')).toEqual(['fx Own.constructor']);
+    expect(surface['fx Own.constructor']).toBe('constructor(message: string, code: number);');
+  });
+
+  it('is not recorded when no class in the chain declares one, when it comes from outside the workspace, or is private', () => {
+    for (const name of ['Bare', 'FromBare', 'FromError', 'Closed']) {
+      expect(constructorsOf(name), name).toEqual([]);
+    }
+    expect(surface['fx FromError']).toBe('class FromError extends Error');
+  });
+});
+
 describe('diffSurfaces and breakingChanges', () => {
   const was = { 'p A': 'function A(): void;', 'p B': 'function B(): void;', 'p C.x': 'x: number;' };
 

@@ -510,6 +510,113 @@ describe('a member added to an existing type', { timeout: 60_000 }, () => {
   });
 });
 
+describe('the constructor a class inherits', { timeout: 60_000 }, () => {
+  const CLASSES = `export declare class Root {
+  constructor(message: string);
+}
+export declare class Err extends Root {
+  readonly code: number;
+}
+export declare class Own extends Root {
+  constructor(message: string, code: number);
+}
+export declare class Plain {}
+export declare class FromPlain extends Plain {}
+export declare class Oops extends Error {}
+`;
+  /** Writes the classes, edited, after the main fixture, regenerates the snapshot and compares it with HEAD. */
+  const againstHead = (edit: (s: string) => string): Run => {
+    withMain((s) => s + edit(CLASSES));
+    expect(run(['--write']).status).toBe(0);
+    return run(['--against', 'HEAD']);
+  };
+  // Every test starts from a commit that has the classes as they are above.
+  beforeEach(() => {
+    withMain((s) => s + CLASSES);
+    expect(run(['--write']).status).toBe(0);
+    commit();
+  });
+  const DETAILS = 'constructor(message: string, details: { readonly limit: number });';
+
+  it('records it under the class own key as the base declares it, and nothing for a chain that declares none', () => {
+    const e = snapshot();
+    expect(e['@fx/a Err.constructor']).toBe('constructor(message: string);');
+    expect(e['@fx/a Own.constructor']).toBe('constructor(message: string, code: number);');
+    for (const name of ['Plain', 'FromPlain', 'Oops', 'Thing']) {
+      expect(
+        Object.keys(e).filter((k) => k.startsWith(`@fx/a ${name}.constructor`)),
+        name,
+      ).toEqual([]);
+    }
+  });
+
+  it('fails a declared constructor that differs from the inherited one, as a change, and passes it with a row', () => {
+    let r = againstHead((s) =>
+      s.replace('  readonly code: number;\n', `  readonly code: number;\n  ${DETAILS}\n`),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Err.constructor\n    was: constructor(message: string);\n    now: constructor(message: string, details: { readonly limit: number; });',
+    );
+    expect(r.err).not.toContain('added: @fx/a Err.constructor');
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a Err.constructor', reason: 'takes its details' }]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+  });
+
+  it('passes a declared constructor identical to the inherited one, and the snapshot does not change', () => {
+    const r = againstHead((s) =>
+      s.replace(
+        '  readonly code: number;\n',
+        '  readonly code: number;\n  constructor(message: string);\n',
+      ),
+    );
+    expect(r.status, r.err).toBe(0);
+    expect(git('status', '--porcelain', '--', 'api-surface')).toBe('');
+  });
+
+  it('fails a removed constructor that leaves the class one of another shape to inherit', () => {
+    const r = againstHead((s) => s.replace('  constructor(message: string, code: number);\n', ''));
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Own.constructor\n    was: constructor(message: string, code: number);\n    now: constructor(message: string);',
+    );
+  });
+
+  it('sees a change to the base constructor in every class that inherits it', () => {
+    const r = againstHead((s) =>
+      s.replace(
+        'constructor(message: string);\n}\nexport declare class Err',
+        'constructor(message: string, cause?: unknown);\n}\nexport declare class Err',
+      ),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/a Root.constructor');
+    expect(r.err).toContain('changed: @fx/a Err.constructor');
+    expect(r.err).not.toContain('@fx/a Own.constructor');
+  });
+
+  it('reads a constructor declared where the chain declared none, or only outside the workspace, as an addition', () => {
+    const r = againstHead((s) =>
+      s
+        .replace(
+          'class FromPlain extends Plain {}',
+          'class FromPlain extends Plain {\n  constructor(x: number);\n}',
+        )
+        .replace(
+          'class Oops extends Error {}',
+          'class Oops extends Error {\n  constructor(code: number);\n}',
+        ),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('added: @fx/a FromPlain.constructor\n    a new public entry');
+    expect(r.err).toContain('added: @fx/a Oops.constructor\n    a new public entry');
+  });
+});
+
 describe('types a public signature names that no entry exports', { timeout: 60_000 }, () => {
   const HIDDEN = `export interface Pub { h: Hidden; r: Ext; }
 interface Hidden { a: number; deep: Deep; priv: never }
