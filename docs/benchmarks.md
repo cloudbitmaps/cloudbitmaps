@@ -396,26 +396,41 @@ more than about 20% of the serialized data on a pull request, and about 5% at fu
 and is gone by the next is not in them. The index's encoding writes into one buffer sized to the index, so it builds no
 temporary array beside it. Measured by hand once, the same way, over all 65,536 chunks (4,000,000 ids, before the
 warm-up was added): 6.76 MiB for a sorted load, against 37.78 MiB for the unsorted load. That reading is taken as the
-encoded index reaches the sink, so it holds the writer's entries and the encoded index (752,020 bytes over 65,536
-chunks, about 11.5 bytes a chunk; at most 24 a chunk). At the footer a sorted load therefore holds about 110 bytes a
-chunk, **up to about 7 MiB at the 65,536 chunks a segment can have**, and about 7.5 MiB on an encrypted segment, which
-holds a sealed copy of the index beside the plain one (derived from the writer's code and the measured figures). The
-index grows with the chunk count, never with the ids.
+encoded index reaches the sink, so it holds the writer's entries and the encoded index. For that load's shape (an
+inference from "the same way": the heap test's generator, 61 to 62 ids and a payload of 138 to 140 bytes in each
+chunk) the index is 589,824 bytes, 9 bytes a chunk, 0.56 MiB, so the entries are about 6.2 MiB. At the footer a sorted
+load therefore holds about 110 bytes a chunk, **up to about 7 MiB at the 65,536 chunks a segment can have** (6.76 MiB
+measured; 6.9 MiB at the densest index roaring payloads give, 11 bytes a chunk).
 
-Before the encoding wrote into a buffer it built a temporary array of about 9 to 11 numbers a chunk first, and that
-array was live beside the entries while the index was encoded. A probe that replays the encoding over entries held
-live (a plain Node process, a forced major collection before each reading; the heap and the array buffers together),
-before and after:
+An encrypted segment holds more. The cipher seals the index with `cipher.update` and then `Buffer.concat` of its
+output (`packages/core/src/drivers/crypto.ts`), so while it runs the plain index, `update`'s output and the
+concatenated copy are all live: three index-sized buffers, two more than a cleartext segment holds. That is
+6.2 + 3 x 0.56 = 7.9 MiB for the measured shape and 6.2 + 3 x 0.69 = 8.3 MiB for the densest, so **about 8 MiB**, about
+125 bytes a chunk (derived from the writer's code and the measured figures). The index grows with the chunk count,
+never with the ids.
 
-| Chunks | Before: at the end of the encoding | Before: with the copy made | After |
-| -----: | ---------------------------------: | -------------------------: | ----: |
-|  8,192 |                           0.92 MiB |                   1.01 MiB | 0.12 MiB |
-| 65,536 |                           7.76 MiB |                   8.43 MiB | 1.48 MiB |
+Before the encoding wrote into a buffer it built a temporary array first, one number for each byte of the index (9 to
+11.5 a chunk), and that array was live beside the entries while the index was encoded. The probe
+`bench/index-encoder.cjs` replays the old and the new encoding over entries held live, each in a fresh process, with a
+forced major collection before each reading, over the heap and the array buffers together. Run
+`node bench/index-encoder.cjs` (or `--shape wide`) to reproduce the figures. Its `load` shape is the heap test's
+generator described above; its `wide` shape is synthetic, with payloads of 64 to 60,063 bytes (more than a roaring chunk
+makes) and cardinalities of 1 to 65,536, so its index is 11.5 bytes a chunk. Every entry is read once before the
+baseline. Figures are MiB over the entries; the three columns are the array at the end of the encoding, the array and
+the copy `Uint8Array.from` makes together (the peak), and the index buffer the new encoding writes (measured, M3 Pro,
+Node 24):
 
-Both columns are over the entries and keys, which both versions hold. The index itself is 0.09 MiB and 0.72 MiB, so the
-"After" column holds about 0.03 MiB and 0.76 MiB beyond it that the probe's own bookkeeping adds, and the saving at
-65,536 chunks is about 6.3 MiB at the end of the encoding and about 7 MiB at the peak. A backend's upload buffer comes
-on top of all of it: [memory, and where a load runs](guide/loading.md#memory-and-where-a-load-runs).
+| Shape | Chunks | Index | Before: array | Before: array and copy | After: index buffer |
+| ----- | -----: | ----: | ------------: | ---------------------: | ------------------: |
+| load | 8,192 | 0.07 MiB | 0.60 MiB | 0.67 MiB | 0.07 MiB |
+| load | 65,536 | 0.56 MiB | 4.54 MiB | 5.11 MiB | 0.56 MiB |
+| wide | 8,192 | 0.09 MiB | 0.92 MiB | 1.01 MiB | 0.09 MiB |
+| wide | 65,536 | 0.72 MiB | 6.97 MiB | 7.68 MiB | 0.72 MiB |
+
+The array is about eight times the index. At 65,536 chunks the encoding no longer holds about 4 MiB of it at the end
+(3.98 MiB for `load`, 6.25 MiB for `wide`), and no longer holds about 4.5 or 7 MiB at the peak (4.55 and 6.96 MiB). A
+backend's upload buffer comes on top of all of it:
+[memory, and where a load runs](guide/loading.md#memory-and-where-a-load-runs).
 
 ## Caveats
 

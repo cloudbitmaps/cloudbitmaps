@@ -11,21 +11,14 @@ import { crbmIntegrity } from './integrity';
 
 const U32_CEIL = U32_MAX + 1;
 
-/** Append the LEB128 encoding of a u32 `value` to `out`. */
-export function writeVarint(out: number[], value: number): void {
+/**
+ * The number of bytes the LEB128 encoding of a u32 `value` takes (1 to 5). A value that is not an integer in
+ * `[0, 0xffffffff]` throws `RangeError`, so a sizing pass can never misjudge a value the writing pass would refuse.
+ */
+export function varintLength(value: number): number {
   if (!Number.isInteger(value) || value < 0 || value >= U32_CEIL) {
     throw new RangeError(`varint value must be a u32; got ${value}`);
   }
-  let v = value;
-  while (v > 0x7f) {
-    out.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  out.push(v);
-}
-
-/** The number of bytes `writeVarint` appends for a u32 `value` (1 to 5). */
-export function varintLength(value: number): number {
   if (value < 0x80) return 1;
   if (value < 0x4000) return 2;
   if (value < 0x20_0000) return 3;
@@ -34,16 +27,12 @@ export function varintLength(value: number): number {
 }
 
 /**
- * Write the LEB128 encoding of a u32 `value` into `out` at `pos`, and return the offset just past it. The bytes are
- * those `writeVarint` appends; the caller sizes `out`, and a value that does not fit throws before it writes.
+ * Write the LEB128 encoding of a u32 `value` into `out` at `pos`, and return the offset just past it. A value that is
+ * not a u32 throws `RangeError` before anything is written. The caller sizes `out` (with {@link varintLength}) and
+ * checks where the writes ended: a typed array drops a write past its end without an error.
  */
 export function writeVarintAt(out: Uint8Array, pos: number, value: number): number {
-  if (!Number.isInteger(value) || value < 0 || value >= U32_CEIL) {
-    throw new RangeError(`varint value must be a u32; got ${value}`);
-  }
-  if (pos + varintLength(value) > out.length) {
-    throw new RangeError('varint does not fit in the buffer');
-  }
+  varintLength(value);
   let v = value;
   let at = pos;
   while (v > 0x7f) {

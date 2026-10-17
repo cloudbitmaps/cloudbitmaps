@@ -20,7 +20,7 @@
  * AEAD nonce, for a cleartext one it is 12 bytes drawn from the injected `entropy`. The footer CRC covers it, so an
  * object's fingerprint names one write, never just a set of ids.
  */
-import { ValidationError } from '../errors';
+import { IntegrityError, ValidationError } from '../errors';
 import type { Entropy } from '../determinism';
 import type { AeadSealed, CrbmCrypto } from '../crypto';
 import { metadataBytes } from '../metadata';
@@ -294,6 +294,11 @@ export class CrbmWriter {
       out[pos++] = (e.crc32c >>> 24) & 0xff;
       prevKey = e.chunkKey;
       prevEnd = e.offset + e.length;
+    }
+    if (pos !== out.length) {
+      throw new IntegrityError(
+        `the chunk index was sized at ${out.length} bytes and encoded as ${pos}; nothing was written`,
+      );
     }
     return out;
   }

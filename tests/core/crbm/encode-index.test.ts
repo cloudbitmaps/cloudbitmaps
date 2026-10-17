@@ -1,7 +1,8 @@
 import fc from 'fast-check';
 import { PAYLOAD_START } from '@/core/crbm/format';
-import { writeVarint } from '@/core/crbm/varint';
+import { writeVarint } from '../../helpers/varint';
 import { CrbmWriter } from '@/core/crbm/writer';
+import { IntegrityError } from '@/core/errors';
 
 interface Entry {
   chunkKey: number;
@@ -152,5 +153,31 @@ describe('CrbmWriter.encodeIndex matches the array-building encoding byte for by
     ]);
     expect(() => actualEncode(entries)).toThrow(RangeError);
     expect(() => oracleEncode(entries)).toThrow(RangeError);
+  });
+});
+
+describe('CrbmWriter.encodeIndex checks its own sizing', () => {
+  /** An entry whose length reads as 1 in the sizing pass and 300 in the writing pass, so the two passes disagree. */
+  function shifting(): Entry {
+    let reads = 0;
+    return {
+      chunkKey: 1,
+      offset: PAYLOAD_START,
+      get length(): number {
+        reads += 1;
+        return reads <= 2 ? 1 : 300;
+      },
+      cardinality: 5,
+      crc32c: 7,
+    };
+  }
+
+  it('throws IntegrityError, and not a truncated index, when the passes disagree', () => {
+    expect(() => actualEncode([shifting()])).toThrow(IntegrityError);
+  });
+
+  it('returns exactly the bytes it sized when they agree', () => {
+    const entries = toEntries([{ keyDelta: 1, gap: 0, length: 300, cardinality: 5, crc32c: 7 }]);
+    expect(actualEncode(entries).length).toBe(1 + 1 + 2 + 1 + 4);
   });
 });

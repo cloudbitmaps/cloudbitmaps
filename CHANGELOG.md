@@ -126,7 +126,7 @@ so, and so do the module headers in the code.
 
 - **`store.load(ref, ids, { sorted: true })` loads ids that already ascend one chunk at a time, while the object
   uploads.** A load of ids holds the whole generation in memory before it writes; a sorted load holds one chunk's ids
-  and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 7 MiB at the
+  and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 7 MiB, about 8 MiB for an encrypted segment, at the
   65,536 chunks a segment can have (derived; the measured figures are in
   [the benchmarks](docs/benchmarks.md#what-a-sorted-load-holds-in-memory)). The backend's upload buffer comes on top,
   as for any load. It writes the same object, byte
@@ -175,10 +175,12 @@ so, and so do the module headers in the code.
 ### Changed
 
 - **A load's footer no longer builds a temporary array of numbers to encode the chunk index.** The index is now
-  written into one buffer sized to it, so the bytes are the same and the peak is lower: a load holds about 7 MiB at
-  most at the 65,536 chunks a segment can have, where the array added about 7 MiB while the footer was written (derived
-  from the writer's code; the measured figures are in
-  [the benchmarks](docs/benchmarks.md#what-a-sorted-load-holds-in-memory)). Every load gains it, sorted or not.
+  written into one buffer sized to it, so the bytes are the same and the footer no longer holds an array beside the
+  index. Every load gains it, sorted or not: at the 65,536 chunks a segment can have, the array it dropped held about
+  4.5 MiB over an index of 9 bytes a chunk and about 7 MiB over one of 11.5 (measured with a probe,
+  `bench/index-encoder.cjs`; the figures are in
+  [the benchmarks](docs/benchmarks.md#what-a-sorted-load-holds-in-memory)). Only a sorted load is bounded by the
+  writer's index, and its ceiling is now about 7 MiB at that size, about 8 MiB for an encrypted segment (derived).
 - **The packages no longer contain declaration files for internal modules.** A package's tarball held a `.d.ts` for
   every source file, though no `exports` entry made those modules importable and no public declaration imported them;
   it now holds only the declarations its `exports` entries reach, and the files they import. The conformance suite's

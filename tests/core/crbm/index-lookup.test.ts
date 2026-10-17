@@ -4,7 +4,7 @@ import { CrbmReader, indexCapacity, parseIndex } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 import { IntegrityError } from '@/core/errors';
 import { PAYLOAD_START } from '@/core/crbm/format';
-import { writeVarint } from '@/core/crbm/varint';
+import { writeVarint } from '../../helpers/varint';
 import { zeroEntropy } from '../../helpers/entropy';
 
 async function build(keys: number[]): Promise<Uint8Array> {
