@@ -225,7 +225,7 @@ the size its `stat()` reports.
   publish moves it, a lease or a policy write does not) or the reader cache evicts its reader part-way through (an
   index, and a pointer too where the store keeps no resolution of the segment), and, for an encrypted segment or a row with no summary the store can use, a second index read for an index
   larger than the reader's tail read.
-- **A store of very many small segments refreshed often.** Each load pays the same requests whatever the segment's size, which makes the load term the one to watch; [the cost guide](cost.md#many-small-segments-refreshed-often) works an example and says why the library does not pack or batch.
+- **A store of very many small segments refreshed often.** Each load pays the same requests whatever the size of a single-part segment (up to 8 MiB on S3), which makes the load term the one to watch; [the cost guide](cost.md#many-small-segments-refreshed-often) works an example and says why the library does not pack or batch.
 - **Memory.** What the caches above take in each reader is not priced; it is your reader's memory, not S3's bill.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer
   out of the region is not modeled.
