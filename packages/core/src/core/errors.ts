@@ -145,8 +145,9 @@ export class CapabilityError extends CloudRoaringError {}
  *   call had not finished growing. The one figure that lets an output through is the per-output refusal's, which
  *   the message gives as "raise maxBufferedBytes to at least N". Otherwise raise the limit with room to spare, or
  *   split the outputs across calls.
- * - `'maxScanSegments'`: `limit + 1`, a lower bound: the scan stops at the first row past the bound, so it never
- *   learns the fleet's size.
+ * - `'maxScanSegments'`: `limit + 1`, a lower bound: the scan stops at the first row past the bound (for the retention
+ *   sweep's due-index scan, the first due-index pointer, unread, which may be stale), so it never learns the fleet's
+ *   size.
  *
  * The message states the same limit.
  */

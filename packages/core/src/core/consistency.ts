@@ -425,7 +425,9 @@ export async function runConsistencyCheck(
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
   // Fail fast before the (possibly huge) registry scan, not after.
   requirePositiveInteger(concurrency, 'concurrency');
-  const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
+  // Only an absent value means the default: a `null` or a malformed one is refused by the scan, as a malformed `budget` is.
+  const maxScanSegments =
+    options.maxScanSegments === undefined ? DEFAULT_MAX_SCAN_SEGMENTS : options.maxScanSegments;
   // Bounded enumeration, shared with the retention sweep — see `registry-scan.ts` for why a fleet-wide scan is
   // drained rather than streamed, and why the ceiling is not optional.
   const recs = await drainRegistry(deps.registry, {

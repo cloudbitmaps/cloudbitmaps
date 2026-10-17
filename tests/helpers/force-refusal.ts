@@ -14,6 +14,12 @@ export interface Forced {
  * what the ledger held and the charge asked for at each refused call, so a test can hold a refusal's `spent` to `held + asked` exactly. Restore with
  * `vi.restoreAllMocks()`.
  */
+/** Fill a ledger to its limit, as one with no room is, and report what it holds. */
+function fill(ledger: ResidentLedger): number {
+  (ledger as unknown as { held: number }).held = ledger.limit;
+  return ledger.used;
+}
+
 export function failNthCharge(n: number): { forced: () => Forced[] } {
   let calls = 0;
   let inside = false;
@@ -27,7 +33,7 @@ export function failNthCharge(n: number): { forced: () => Forced[] } {
     makeRoom: (needed: number) => boolean,
   ) {
     if (fails()) {
-      forced.push({ used: this.used, asked: bytes });
+      forced.push({ used: fill(this), asked: bytes });
       return false;
     }
     inside = true;
@@ -42,7 +48,7 @@ export function failNthCharge(n: number): { forced: () => Forced[] } {
     bytes: number,
   ) {
     if (!inside && fails()) {
-      forced.push({ used: this.used, asked: bytes });
+      forced.push({ used: fill(this), asked: bytes });
       return false;
     }
     return tryCharge.call(this, bytes);
@@ -80,7 +86,10 @@ export async function reachSite(
     }
     const forced = hook.forced();
     if (forced.length === 0) break; // fewer charges than n: every one has been tried
-    const error = refusalsOf(outcome).find((e) => site.test(e.message));
+    // The refusal the failed charge itself caused, not a later one on the ledger it left full.
+    const error = refusalsOf(outcome).find(
+      (e) => site.test(e.message) && e.spent === forced[0]!.used + forced[0]!.asked,
+    );
     if (error !== undefined) return { error, forced };
   }
   throw new Error(`no failed charge reached a refusal matching ${String(site)}`);

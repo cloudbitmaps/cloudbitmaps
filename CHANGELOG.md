@@ -50,6 +50,8 @@ so, and so do the module headers in the code.
   `errorKind` classifies across copies of the package the same way. It names the class and does not narrow the type. An
   untyped JavaScript caller that `require`s a removed name gets `undefined`, and calling it inside a `catch` throws a
   `TypeError` that hides the original error.
+- **`maxScanSegments: null` is a `ValidationError` on `store.retireExpired`**, as a malformed value always was; it was read as
+  the default of 250,000. Leave the option out for the default.
 - **`BudgetExceededError`'s constructor takes `(message, { option, limit, spent })`.** Code that constructs one, such as
   a test double, passes the option name and the two numbers; the messages are unchanged.
 - **The main entry of `@cloudbitmaps/core` is internal, outside the stability promise.** It is the engine that
@@ -83,14 +85,14 @@ so, and so do the module headers in the code.
   `'CloudRoaringError'`, except a subclass of `TransientError`, which returns `'TransientError'`.
 - **`BudgetExceededError` carries `option`, `limit` and `spent`.** `option` names the option to raise
   (`'budget.maxRequests'`, `'maxBufferedBytes'` or `'maxScanSegments'`), `limit` is the bound in force, and `spent` is
-  what the call had reached, which means a different thing for each option: for `'budget.maxRequests'` the requests the
-  call needs (raise the budget to it); for `'maxBufferedBytes'` a lower bound, what the call held plus what it asked for
+  what the call had reached, which means a different thing for each option: for `'budget.maxRequests'` the requests a
+  plan needs (raise the budget to it; an enumeration stopped at its bound, as in `subjectReport` and `eraseSubject`'s scan,
+  reports `limit + 1`, a lower bound); for `'maxBufferedBytes'` a lower bound, what the call held plus what it asked for
   when refused, so raising the limit to it can be refused again (only the per-output refusal, "raise maxBufferedBytes to
   at least N", names a figure that lets that output through); for `'maxScanSegments'` `limit + 1`, a lower bound.
 - **`store.checkConsistency` takes `maxScanSegments`**, as `retireExpired` does: the most registry rows the scan holds
   resident (default 250,000, validated before any request). Past it the call throws `BudgetExceededError` with
-  `option: 'maxScanSegments'`, where it had no ceiling of its own and the limit could only be raised on
-  `runConsistencyCheck`.
+  `option: 'maxScanSegments'`, where its ceiling could only be raised on `runConsistencyCheck`.
 - **A format reference, [`docs/format.md`](docs/format.md).** Every byte of a `.crbm` object (the preamble, the chunk
   payloads, the extension block, the index, the 104-byte footer, the checksums and the sealing), the identity rules, and
   the registry row at schema 5, with how each cloud registry stores it, what a reader refuses and with which error, what

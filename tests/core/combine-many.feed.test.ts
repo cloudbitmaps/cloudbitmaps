@@ -966,5 +966,6 @@ describe('the feed charge, when the ledger has no room for a record', () => {
     expect(error.limit).toBe(64 << 20);
     expect(forced).toHaveLength(1);
     expect(error.spent).toBe(forced[0]!.used + forced[0]!.asked);
+    expect(error.spent).toBeGreaterThan(64 << 20);
   });
 });
