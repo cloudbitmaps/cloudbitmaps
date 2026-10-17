@@ -73,10 +73,18 @@ function stripMarkup(html) {
     .replace(/&amp;/g, '&');
 }
 
-/** A page's text as `docImports` reads it: an HTML page through `stripMarkup`, any other as it is. */
+/** A page's text as `docImports` reads it: its line breaks as `\n`, and an HTML page through `stripMarkup`. */
 function pageText(root, rel) {
-  const raw = fs.readFileSync(path.join(root, rel), 'utf8');
+  const raw = lf(fs.readFileSync(path.join(root, rel), 'utf8'));
   return rel.endsWith('.html') ? stripMarkup(raw) : raw;
+}
+
+/**
+ * `text` with its line breaks as `\n`. A checkout on Windows can turn every one into `\r\n`, and each reader here
+ * starts from this, so a page gives the same imports, statements and line numbers whichever way it was checked out.
+ */
+function lf(text) {
+  return text.replace(/\r\n?/g, '\n');
 }
 
 /**
@@ -96,7 +104,8 @@ const IMPORT = new RegExp(
  * Every such import in `text`, as `{ line, specifier, statement }`: the line it starts on, the package specifier,
  * and the statement as a reader copies it, with each continuation line's indentation and block-quote marker removed.
  */
-function docImports(text) {
+function docImports(raw) {
+  const text = lf(raw);
   const out = [];
   for (const m of text.matchAll(IMPORT)) {
     const line = text.slice(0, m.index).split('\n').length;
@@ -118,7 +127,8 @@ const STARTS_AN_IMPORT = /^[ \t>]*import\b/;
  * blank line or a code fence; it is one of a workspace package when it quotes a specifier that starts
  * `@cloudbitmaps/`. A line on which `docImports` found an import is never reported.
  */
-function unparsedImports(text) {
+function unparsedImports(raw) {
+  const text = lf(raw);
   const lines = text.split('\n');
   const read = new Set(docImports(text).map((i) => i.line));
   const out = [];
@@ -135,4 +145,32 @@ function unparsedImports(text) {
   return out;
 }
 
-module.exports = { docImportPages, docImports, pageText, stripMarkup, unparsedImports };
+/**
+ * The fenced ```ts blocks of a page that contain `mark`, each as `{ body, firstLine, aliases }`: the block's text, the
+ * page's line its first line is on, and each `type Name = …; // Port` line in it as `{ name, port, line }` (`line`
+ * counted from the block's first). The smoke test compiles the one block of the API reference's derived port types
+ * this way, and holds each alias to the port its comment names.
+ */
+function derivedForms(raw, mark) {
+  const text = lf(raw);
+  return [...text.matchAll(/^```ts\n([\s\S]*?)^```/gm)]
+    .filter((m) => (m[1] ?? '').includes(mark))
+    .map((m) => {
+      const body = m[1] ?? '';
+      const aliases = body.split('\n').flatMap((l, i) => {
+        const a = /^type (\w+) = .*;\s*\/\/\s*(.+?)\s*$/.exec(l);
+        return a === null ? [] : [{ name: a[1], port: a[2], line: i }];
+      });
+      return { body, firstLine: text.slice(0, m.index).split('\n').length + 1, aliases };
+    });
+}
+
+module.exports = {
+  derivedForms,
+  docImportPages,
+  docImports,
+  lf,
+  pageText,
+  stripMarkup,
+  unparsedImports,
+};

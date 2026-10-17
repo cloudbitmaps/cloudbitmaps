@@ -319,23 +319,14 @@ const DERIVED_FORMS_MARK = "type Storage = CloudRoaringOptions['storage'];";
  * union of `@cloudbitmaps/core/driver-kit`'s types. `{ text, where(line) }`, or a problem when the block is not there.
  */
 function derivedFormsProbe(root) {
-  const fs = require('node:fs');
-  const page = fs.readFileSync(path.join(root, DERIVED_FORMS_PAGE), 'utf8');
-  const blocks = [...page.matchAll(/^```ts\n([\s\S]*?)^```/gm)].filter((m) =>
-    (m[1] ?? '').includes(DERIVED_FORMS_MARK),
-  );
+  const { derivedForms, pageText } = require('./doc-imports.cjs');
+  const blocks = derivedForms(pageText(root, DERIVED_FORMS_PAGE), DERIVED_FORMS_MARK);
   if (blocks.length !== 1)
     return {
       problem: `${DERIVED_FORMS_PAGE}: ${blocks.length} blocks declare \`${DERIVED_FORMS_MARK}\`, not one`,
     };
-  const block = blocks[0];
-  const body = block[1] ?? '';
-  const firstLine = page.slice(0, block.index).split('\n').length + 1; // the line after the fence
+  const { body, firstLine, aliases } = blocks[0];
   const lines = body.split('\n');
-  const aliases = lines.flatMap((l, i) => {
-    const m = /^type (\w+) = .*;\s*\/\/\s*(.+?)\s*$/.exec(l);
-    return m === null ? [] : [{ name: m[1], port: m[2], line: i }];
-  });
   if (aliases.length < 4)
     return {
       problem: `${DERIVED_FORMS_PAGE}:${firstLine}: the block holds ${aliases.length} aliases with their port, fewer than 4`,

@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,15 +14,22 @@ import { fileURLToPath } from 'node:url';
  * and so is every malformed import it must report rather than skip.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const { docImports, docImportPages, pageText, stripMarkup, unparsedImports } = createRequire(
-  import.meta.url,
-)('../../scripts/doc-imports.cjs') as {
-  docImports: (text: string) => Array<{ line: number; specifier: string; statement: string }>;
-  docImportPages: (root: string) => string[];
-  pageText: (root: string, rel: string) => string;
-  stripMarkup: (html: string) => string;
-  unparsedImports: (text: string) => Array<{ line: number; text: string }>;
-};
+const { derivedForms, docImports, docImportPages, pageText, stripMarkup, unparsedImports } =
+  createRequire(import.meta.url)('../../scripts/doc-imports.cjs') as {
+    derivedForms: (
+      text: string,
+      mark: string,
+    ) => Array<{
+      body: string;
+      firstLine: number;
+      aliases: Array<{ name: string; port: string; line: number }>;
+    }>;
+    docImports: (text: string) => Array<{ line: number; specifier: string; statement: string }>;
+    docImportPages: (root: string) => string[];
+    pageText: (root: string, rel: string) => string;
+    stripMarkup: (html: string) => string;
+    unparsedImports: (text: string) => Array<{ line: number; text: string }>;
+  };
 
 const specifiers = (text: string): string[] => docImports(text).map((i) => i.specifier);
 const unparsedLines = (text: string): number[] => unparsedImports(text).map((u) => u.line);
@@ -163,5 +171,50 @@ describe('the docs-import scanner smoke compiles', () => {
     expect(found.length).toBeGreaterThanOrEqual(floor);
     expect(found.filter((i) => i.page.startsWith('site')).length).toBeGreaterThan(0);
     expect(docImportPages(ROOT).flatMap((p) => unparsedImports(pageText(ROOT, p)))).toEqual([]);
+  });
+
+  it('reads a CRLF checkout of a page as it reads the page: the same imports, lines, statements and refusals', () => {
+    const crlf = (text: string): string => text.replace(/\n/g, '\r\n');
+    for (const page of docImportPages(ROOT)) {
+      const text = pageText(ROOT, page);
+      expect(docImports(crlf(text)), page).toEqual(docImports(text));
+      expect(unparsedImports(crlf(text)), page).toEqual(unparsedImports(text));
+    }
+    // a blank line still ends a statement, so a brace missing is still reported, not read through the page
+    const two =
+      "```ts\nimport { CloudRoaring from '@cloudbitmaps/roaring';\n```\n\nProse.\n\n```ts\nimport { CloudRoaring } from '@cloudbitmaps/roaring';\n```";
+    expect(unparsedLines(crlf(two))).toEqual([2]);
+    expect(docImports(crlf(two)).map((i) => i.line)).toEqual([8]);
+    // the API reference's block of derived forms, which smoke compiles, is found the same way
+    const smoke = readFileSync(join(ROOT, 'scripts', 'smoke.cjs'), 'utf8');
+    const mark = /const DERIVED_FORMS_MARK = "([^"]+)";/.exec(smoke)?.[1] ?? '';
+    expect(mark).not.toBe('');
+    const api = pageText(ROOT, join('docs', 'guide', 'api-reference.md'));
+    const blocks = derivedForms(api, mark);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.aliases.length).toBeGreaterThanOrEqual(4);
+    expect(derivedForms(crlf(api), mark)).toEqual(blocks);
+  });
+
+  it('reads a page checked out with CRLF from disk, an HTML page included, as it reads the page', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doc-imports-'));
+    try {
+      mkdirSync(join(dir, 'site'));
+      const md = "Intro\n\n```ts\nimport { CloudRoaring } from '@cloudbitmaps/roaring';\n```\n";
+      const html =
+        '<!-- a\ncomment -->\n<pre><code><span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">&#39;@cloudbitmaps/s3&#39;</span>;</code></pre>\n';
+      writeFileSync(join(dir, 'README.md'), md.replace(/\n/g, '\r\n'));
+      writeFileSync(join(dir, 'site', 'x.html'), html.replace(/\n/g, '\r\n'));
+      expect(pageText(dir, 'README.md')).toBe(md);
+      expect(docImports(pageText(dir, join('site', 'x.html')))).toEqual([
+        {
+          line: 3,
+          specifier: '@cloudbitmaps/s3',
+          statement: "import { S3Storage } from '@cloudbitmaps/s3';",
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
