@@ -6,19 +6,21 @@
  * object-store registry that gives an S3-shaped service compare-and-swap semantics. A subpath is how a
  * separate package reaches them without reaching into core's source.
  *
- * WHY A SUBPATH AND NOT THE MAIN ENTRY. Two reasons pull the same way. The main entry is what a flavor
- * builds on, and none of it needs `ObjectStoreRegistry`, so widening that entry here would move in the
- * opposite direction of keeping it to what a flavor uses. And a driver's contract deserves to be a deliberate list rather than whatever core
- * happens to export: everything below is imported by at least one driver or the flavor's export CLI today, so
- * the surface is the real dependency and not a guess. A third-party driver builds against exactly this.
+ * WHY A SUBPATH AND NOT THE MAIN ENTRY. The main entry is the engine the flavor builds on, and it is internal:
+ * outside the stability promise, free to change in any minor release. A driver's contract has to be public, and
+ * it deserves to be a deliberate list rather than whatever core happens to export: the ports a driver implements,
+ * the errors it throws, the helpers it builds on, and every type those signatures name. A third-party driver
+ * builds against exactly this.
  *
  * It is versioned public API. Anything added here is something we support; anything removed is a breaking
  * change for a driver package — including ours, which is the point of making it explicit.
  *
- * Not quite self-sufficient, and worth saying rather than letting someone discover it: a registry driver
- * that does NOT extend `ObjectStoreRegistry` needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`,
- * `RegistryPatch` and `RegistryWriteOptions` to write `IRegistryDriver`'s method signatures, and those come from
- * `@cloudbitmaps/core`'s main entry. The contract is this subpath PLUS those record types.
+ * It is the one home of the driver contracts, and it is complete: every type a signature here names is exported
+ * here too. A registry driver that does not extend `ObjectStoreRegistry` writes `IRegistryDriver`'s method
+ * signatures from the record types below, a read source of your own implements `StorageChunkSource`, and a
+ * keystore implements `IKeystore`, each without importing `@cloudbitmaps/core`'s main entry. `@cloudbitmaps/roaring`
+ * names these types in its own signatures (`CloudRoaringOptions['storage']`, `EncryptionOptions['keystore']`) and
+ * does not re-export them: an application that has to name one imports it from here.
  *
  * WHAT A DRIVER MUST DO. The port doc comments (`IStorageDriver`, `IRegistryDriver`) carry the full list, each with
  * the caller that depends on it. In short:
@@ -67,10 +69,49 @@ export type {
 } from './core/ports';
 export { brandAsBackend, STORAGE_BACKEND } from './core/ports';
 
-// The metrics sink a store hands a backend that implements `StorageBackend.attachMetrics`, and the event union it emits to.
-export type { IMetricsSink, MetricEvent } from './core/metrics';
+// The registry row and what a registry driver's methods take and return: the record, a new row, a patch, the write
+// options, the capabilities, and the types a row's fields are made of. `GenerationMetadata` is a row summary's, and
+// `@cloudbitmaps/roaring` exports it too, for a load's `metadata`.
+export type {
+  ClearRegistrySummary,
+  GenerationMetadata,
+  GovernanceMeta,
+  KnownGeneration,
+  LeaseEntry,
+  NewRegistryRecord,
+  RegCaps,
+  RegistryPatch,
+  RegistryRecord,
+  RegistryStatus,
+  RegistrySummary,
+  RegistryWriteOptions,
+  SealedRegistrySummary,
+  Token,
+} from './core/ports';
 
-// The typed errors a driver must throw, and `errorKind`, which classifies one.
+// The read-source port: a store takes a `StorageChunkSource` of your own as its `storage`, and these are the types its
+// methods name.
+export type {
+  ChunkRead,
+  ChunkRef,
+  GenerationSummary,
+  ReadChunksOptions,
+  SegmentSize,
+  StorageChunkSource,
+} from './core/ports';
+
+// The keystore port: what a store's `encryption.keystore` implements, the wrapped key a row stores, and the cipher a
+// keystore hands back for a segment's key.
+export type { Aead, AeadSealed, IKeystore, WrappedDek } from './core/crypto';
+
+// The randomness `ObjectStoreRegistry` draws its tokens from, when a test injects it.
+export type { Entropy } from './core/determinism';
+
+// The metrics sink a store hands a backend that implements `StorageBackend.attachMetrics`, the event union it emits
+// to, and the operation names an event carries.
+export type { IMetricsSink, MetricEvent, MetricOpName } from './core/metrics';
+
+// The typed errors a driver must throw, the class they extend, and `errorKind`, which classifies one.
 //
 // In an ordinary install `instanceof` holds: every package here leaves `@cloudbitmaps/core` external, so one
 // copy of these classes is shared. Throw and catch them normally. `errorKind` matters where that stops
@@ -78,6 +119,7 @@ export type { IMetricsSink, MetricEvent } from './core/metrics';
 // worker or vm realm — because each error is `Symbol.for`-branded and so is identified by brand rather than
 // by prototype identity. Prefer it in library code that cannot see how it will be bundled.
 export {
+  CloudRoaringError,
   errorKind,
   IntegrityError,
   NotFoundError,

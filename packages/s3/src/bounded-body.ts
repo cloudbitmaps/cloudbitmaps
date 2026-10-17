@@ -5,7 +5,7 @@
  *
  * A body that is not a stream (a stand-in with only `transformToByteArray`) is read whole and its length checked after.
  */
-import { NotFoundError } from '@cloudbitmaps/core';
+import { NotFoundError } from '@cloudbitmaps/core/driver-kit';
 
 /** The `GetObject` response body, narrowed to the parts used. */
 type ResponseBody =

@@ -1142,7 +1142,18 @@ not import these.
 Ports and the backend brand: `IStorageDriver` · `IRegistryDriver` · `StorageBackend` · `StorageCaps` ·
 `TailRead` · `StorageDeleteOptions` · `SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
 
-Metrics: `IMetricsSink` · `MetricEvent`
+The registry row and its writes: `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` ·
+`RegCaps` · `Token` · `RegistryStatus` · `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` ·
+`KnownGeneration` · `LeaseEntry` · `GovernanceMeta` · `GenerationMetadata`
+
+The read-source port: `StorageChunkSource` · `ChunkRef` · `ChunkRead` · `ReadChunksOptions` · `SegmentSize` ·
+`GenerationSummary`
+
+The keystore port: `IKeystore` · `WrappedDek` · `Aead` · `AeadSealed`
+
+Seams: `Entropy`
+
+Metrics: `IMetricsSink` · `MetricEvent` · `MetricOpName`
 
 A row's `pointerId`: `RESOLVED_FIELDS` · `renewsPointer` · `renewPointer` · `pointerIdOf`
 
@@ -1155,8 +1166,8 @@ Keys, paths and prefixes: `normalizeObjectPrefix` · `prefixPart` · `encodeName
 Driver helpers: `refuseUnknownOptions` · `requirePositiveInt` · `requireBool` · `isTransportFault` · `toTransient` ·
 `concatBytes`
 
-Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationError` · `WriteConflictError` ·
-`NotFoundError` · `IntegrityError` · `TransientError` · `errorKind` · `ErrorKind`
+Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `CloudRoaringError` · `ValidationError` ·
+`WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError` · `errorKind` · `ErrorKind`
 
 ### `@cloudbitmaps/s3`
 
