@@ -347,6 +347,16 @@ describe('scrubCredentials (Azure)', () => {
     });
   });
 
+  it('redacts a key that quotes a credential', () => {
+    const err = Object.assign(new Error('x'), { details: { [`refused ${URL_WITH_SIG}`]: 1 } });
+    const out = scrubCredentials(err);
+    expect(out).not.toBe(err);
+    expect(Object.keys(out.details as object)).toEqual([
+      'refused https://acct.blob.core.windows.net/c/b?sv=2022-11-02&sig=[redacted]&se=1',
+    ]);
+    expect(Object.keys(err.details as object)).toEqual([`refused ${URL_WITH_SIG}`]);
+  });
+
   describe('credential key names', () => {
     it.each([
       'authorization',

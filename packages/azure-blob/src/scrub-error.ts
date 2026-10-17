@@ -242,6 +242,9 @@ function copyField(
     ctx.changed = true;
     return;
   }
+  // A key is text too: one that quotes a credential is carried redacted.
+  const name = typeof key === 'string' ? redactText(key) : key;
+  if (name !== key) ctx.changed = true;
   let kept: unknown;
   if (typeof key === 'string' && CREDENTIAL_NAME.test(key) && descriptor.value != null) {
     kept = REDACTED;
@@ -250,7 +253,7 @@ function copyField(
     kept = copyOf(descriptor.value, ctx, depth + 1);
     if (kept === OMIT) return;
   }
-  Object.defineProperty(copy, key, {
+  Object.defineProperty(copy, name, {
     value: kept,
     writable: descriptor.writable ?? true,
     configurable: true,
