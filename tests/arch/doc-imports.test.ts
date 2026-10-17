@@ -217,4 +217,63 @@ describe('the docs-import scanner smoke compiles', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('takes a comment inside the braces whole, so a `;` or a backtick in one is the comment, not the import', () => {
+    const commented =
+      "```ts\nimport {\n  CloudRoaring, // the store; it takes a `storage`\n  /* the backend; `MemoryStorage` */ MemoryStorage,\n} from '@cloudbitmaps/roaring';\n```";
+    expect(docImports(commented).map((i) => i.line)).toEqual([2]);
+    expect(unparsedLines(commented)).toEqual([]);
+    // outside a comment, a `;` or a backtick in the braces still breaks the import, and it is reported
+    expect(
+      unparsedLines("import { CloudRoaring; MemoryStorage } from '@cloudbitmaps/roaring';"),
+    ).toEqual([1]);
+    expect(
+      unparsedLines("import { CloudRoaring, `MemoryStorage` } from '@cloudbitmaps/roaring';"),
+    ).toEqual([1]);
+  });
+
+  it('passes a placeholder, an ellipsis in the braces, in prose or starting a line, and still reads an import beside one', () => {
+    expect(specifiers("Every `import { … } from '@cloudbitmaps/roaring'` keeps working.")).toEqual(
+      [],
+    );
+    expect(unparsedLines("import { … } from '@cloudbitmaps/roaring';")).toEqual([]);
+    expect(unparsedLines('import {\n  …\n} from "@cloudbitmaps/roaring";')).toEqual([]);
+    expect(
+      specifiers("import { CloudRoaring } from '@cloudbitmaps/roaring'; // not `import { … }`"),
+    ).toEqual(['@cloudbitmaps/roaring']);
+  });
+
+  it('passes a dynamic import and import.meta that start a line, and still reports a broken declaration', () => {
+    expect(unparsedLines("import('@cloudbitmaps/roaring').then((m) => m);")).toEqual([]);
+    expect(unparsedLines("import ('@cloudbitmaps/roaring');")).toEqual([]);
+    expect(unparsedLines("import.meta.resolve('@cloudbitmaps/roaring');")).toEqual([]);
+    expect(unparsedLines("import {CloudRoaring from '@cloudbitmaps/roaring';")).toEqual([1]);
+  });
+
+  it('reports an import broken by a blank line inside its braces, and passes two imports a blank line apart', () => {
+    const broken =
+      "```ts\nimport {\n  CloudRoaring,\n\n  MemoryStorage,\n} from '@cloudbitmaps/roaring';\n```";
+    expect(docImports(broken)).toEqual([]);
+    expect(unparsedLines(broken)).toEqual([2]);
+    const apart =
+      "import { CloudRoaring } from '@cloudbitmaps/roaring';\n\nimport { S3Storage } from '@cloudbitmaps/s3';";
+    expect(docImports(apart).map((i) => i.line)).toEqual([1, 3]);
+    expect(unparsedLines(apart)).toEqual([]);
+    // prose that starts with the word ends at a blank line: a specifier quoted after it is not its
+    expect(
+      unparsedLines(
+        "import it from `@cloudbitmaps/core`, then\n\nthe page quotes '@cloudbitmaps/roaring'.",
+      ),
+    ).toEqual([]);
+  });
+
+  it('decodes every numeric character reference in an HTML page, and an escaped one only once', () => {
+    expect(stripMarkup('&#x27;a&#X27; &#39;b&#39; &#8230;')).toBe("'a' 'b' …");
+    expect(stripMarkup('&amp;#x27; &amp;#39;')).toBe('&#x27; &#39;');
+    expect(
+      specifiers(
+        stripMarkup('<code>import { S3Storage } from &#x27;@cloudbitmaps/s3&#x27;;</code>'),
+      ),
+    ).toEqual(['@cloudbitmaps/s3']);
+  });
 });
