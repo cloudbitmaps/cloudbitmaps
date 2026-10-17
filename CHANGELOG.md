@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-17
+
 ### Breaking
 
 - **`@cloudbitmaps/roaring` no longer exports the driver contracts: import them from `@cloudbitmaps/core/driver-kit`,

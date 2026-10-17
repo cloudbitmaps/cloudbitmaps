@@ -74,7 +74,7 @@ the data: what a cold intersect, an `andNot` and a load cost, and how long they 
 ### The in-region run — run `2026-10-13-b329d`
 
 > **Measured** against real S3 in `us-east-1` on 2026-10-13 (UTC), from AWS CloudShell in the same region, with the
-> published `0.21.0` packages and a client of 128 sockets, the number this release's own client allows: a round-trip
+> packages then published (the evidence names the version, as `packageVersion`) and a client of 128 sockets, the number this release's own client allows: a round-trip
 > floor of 8 ms (7.63 ms). The run's report explains every figure:
 > [`bench/calibration/2026-10-13-b329d.md`](../bench/calibration/2026-10-13-b329d.md). The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
@@ -106,10 +106,10 @@ chunks lie in the object, not how many there are.
   Every load was a segment's first, and made 2 PUT + 3 GET single-part and, for a multipart load, 5 PUT-class + 3 GET.
 - **`andNot`** of a 1,999-chunk segment against ten excludes took 297.13 ms at the median and made 33 GETs: for each
   of the eleven operands, a pointer read, a tail read and one range read.
-- **A steady `store.load()` at `keep: 12` is measured**, on `0.21.0`. One segment was loaded in 18 loads, and each
+- **A steady `store.load()` at `keep: 12` is measured**, on the same run. One segment was loaded in 18 loads, and each
   load made the requests of its kind (the table below). A segment's first load made 2 PUT + 3 GET. A reload made
-  2 PUT + 2 GET. A load that deleted by name made 2 PUT + 5 GET and a delete. Each load that collects, by name or by listing, reads the registry once more after its last delete, the GET `0.21.0` adds to a load that
-  collects, which sees a rollback that landed during the collection
+  2 PUT + 2 GET. A load that deleted by name made 2 PUT + 5 GET and a delete. Each load that collects, by name or by listing, reads the registry once more after its last delete, a GET a load that
+  collects makes to see a rollback that landed during the collection
   ([the loading guide](guide/loading.md#a-rollback-that-races-a-collection)). The table has what each made.
 - **The rounds sit above the rounds model.** A cold intersect took 3.7 rounds against the model's 3, and the sweeps
   5.9 and 8.7. The client had 128 sockets and no stage held more than 11 requests in flight, so a socket limit did not
@@ -122,7 +122,7 @@ chunks lie in the object, not how many there are.
 | A segment's first single-part `store.load()` in the calibration run, a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
 | A segment's first multipart `store.load()` in the calibration run, a 12.6 MB segment | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
 
-A steady load, by kind of load, at `keep: 12` on the same run, on `0.21.0`: the requests are measured, and
+A steady load, by kind of load, at `keep: 12` on the same run: the requests are measured, and
 the price is the list price.
 
 | Kind of load | Loads | Requests | One | Per million | Median time |
