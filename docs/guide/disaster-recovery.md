@@ -385,7 +385,7 @@ segments by design. **The symptom you will actually notice is downstream**, and 
 
 | | What you see |
 |---|---|
-| **The name is fenced, permanently** | A load **throws** on a `destroyed` row, and `eraseSubject` finds no generation of it to rewrite: it searches only the objects under the tombstone, and deletes them all when a cleartext one holds the id ([erasure](erasure.md#how-it-stays-correct)). Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
+| **The name is fenced, permanently** | A load **throws** on a `destroyed` row, and `eraseSubject` finds no generation of it to rewrite: it searches only the objects under the tombstone, and deletes them all when a cleartext one holds the id ([erasure](correctness.md#how-an-erasure-stays-correct)). Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
 | **The row and its objects are billed forever** | the sweep will not purge an unstamped tombstone, and nothing else in the library runs the collection for a tombstone the sweep does not own — so any generations left behind (and any object a late load wrote) stay. |
 
 ### Detect

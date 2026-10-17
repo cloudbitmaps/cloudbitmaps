@@ -314,7 +314,7 @@ one row per item, each linking to the detail.
 - **An error from the library.** Every error says whether to fix your call, retry, or look at the data. The
   [errors table](api-reference.md#errors-typed--you-catch-these) lists each one with what to do.
 - **A load returned `published: false`.** Read `result.reason`:
-  [when a load is refused](loading.md#when-a-load-is-refused).
+  [when a load is refused](correctness.md#when-a-load-is-refused).
 - **The install or the first `import` fails**, or Node prints a deprecation warning: see
   [Troubleshooting](#troubleshooting) below.
 - **Timeouts and retries.** <a id="6-reliability-retries-backoff--timeouts"></a>Reads retry by themselves, and a write is

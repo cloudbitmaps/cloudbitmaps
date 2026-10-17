@@ -90,7 +90,7 @@ an id is in).
 
 An erasure that finds the id in no generation but an older one also writes the segment's registry row once, before it
 deletes anything, when the row's ledger of known generations names a generation the call is about to delete: it takes
-those names out of the ledger first (see [how it stays correct](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#how-it-stays-correct)). That write
+those names out of the ledger first (see [how it stays correct](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#how-an-erasure-stays-correct)). That write
 is a timing signal. Someone who can read the registry and knows when an erasure ran can tell that this segment's row
 changed then, and so that the segment held the subject in a generation older than its current one. The row also
 changes at erasure time when the segment's current generation held the id, or one above the pointer, a first load's
@@ -111,7 +111,7 @@ replaced, so it still holds the winner's id, and when it sits above the winner's
 returning, unless writes other than lease writes and other erasures' renewals beat its renewal of the segment's
 row 8 times: it then keeps that object, one `rollback({ allowUnknown: true })` from being served, until a later call
 removes it: an erasure that rewrites the segment (the loser's re-run, while the loser's id is still in the current
-generation), an erasure of the winner's id, or the collection of loads that number past it ([how it stays correct](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#how-it-stays-correct)). **Read the ledger**: an `erased: false` entry means *this run* did not erase the id from that segment,
+generation), an erasure of the winner's id, or the collection of loads that number past it ([how it stays correct](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#how-an-erasure-stays-correct)). **Read the ledger**: an `erased: false` entry means *this run* did not erase the id from that segment,
 which is not the same as the id still being present — if the racing writer was another erasure of the same id, it
 is already gone. For `'superseded'` re-run `eraseSubject`: it is idempotent, it erases the id if the id is still
 there, and a segment the id is no longer in is simply not listed — though "not listed" alone does not prove the
@@ -146,7 +146,7 @@ object is refused at its publish and never names an object that is gone. Each de
 read: on a storage driver that reports `conditionalDelete`, another erasure of the id that deletes it first, followed
 by a load that takes the number freed and publishes, does not lose that load's generation to this erasure's delete; on
 one that does not, it can, and the row then names a missing object, which `store.checkConsistency()` reports
-([a number taken again](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#how-it-stays-correct)). On an encrypted store such an object cannot
+([a number taken again](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#how-an-erasure-stays-correct)). On an encrypted store such an object cannot
 be searched until its load publishes the key, so it is deleted whatever id is erased: an erasure of any id refuses an
 encrypted first load in flight that has written its object onto a segment whose row was made ahead of its data, and
 that load is re-run ([the erasure guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#three-rules-while-you-erase)). On an encrypted segment,
