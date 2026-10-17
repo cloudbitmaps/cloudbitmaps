@@ -62,7 +62,7 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 'heap' };
 
 /**
  * The most the largest tier's peak may exceed the smallest's: the ids grow 100 times, the held state does not. Measured
- * at most 0.17 MiB above it, locally and on CI's Node 22 and 24, at both strengths.
+ * at most about 0.2 MiB above it, locally and on CI's Node 22 and 24, at both strengths.
  */
 const FLAT_SLACK = 0.5 * MiB;
 /** The most a sorted load's peak may be, at any tier: measured at most 1.23 MiB, locally and on CI. */

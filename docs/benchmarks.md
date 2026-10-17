@@ -365,8 +365,9 @@ inside the region and not from a laptop.
 ## What a sorted load holds in memory
 
 > **Measured** by `tests/core/load-sorted-heap.test.ts` on every pull request, at the reduced size, and nightly at the
-> full size, on CI's Node 22 and 24 (GitHub's Ubuntu runners), and once on an Apple M3 Pro with Node 24.18.1, all on
-> 2026-10-17. The figures are heap readings, not RSS. CI holds the bounds below, never these exact figures.
+> full size, on CI's Node 22 and 24 (GitHub's Ubuntu runners, two runs each), and once on an Apple M3 Pro with Node
+> 24.18.1, all on 2026-10-17. The figures are heap readings, not RSS. CI holds the bounds below, never these exact
+> figures.
 
 **How it is measured.** A warm-up load runs first, so no tier pays the one-off allocations of the first load in a
 process. Then three `sorted: true` loads of ten and a hundred times as many ids, spread over the same 8,192 chunks
@@ -379,12 +380,12 @@ figure leaves roaring's out). Each figure is the highest reading over the one ta
 
 | ids | sorted, CI Node 22 | sorted, CI Node 24 | sorted, M3 Pro | unsorted, CI Node 22 / 24 | unsorted, M3 Pro |
 |---|---|---|---|---|---|
-| 10,000 | 1.23 MiB | 1.21 MiB | 1.22 MiB | | |
-| 100,000 | 0.96–1.03 MiB | 0.96–1.02 MiB | 0.96–1.03 MiB | | |
-| 1,000,000 | 1.11–1.17 MiB | 1.08–1.10 MiB | 1.09–1.10 MiB | 9.24 MiB | 9.24 MiB |
-| 10,000,000 | 1.13 MiB | 1.08 MiB | 1.08 MiB | 28.73 / 28.79 MiB | 30.98 MiB |
+| 10,000 | 1.21–1.23 MiB | 1.21–1.22 MiB | 1.22 MiB | | |
+| 100,000 | 0.95–1.03 MiB | 0.96–1.04 MiB | 0.96–1.03 MiB | | |
+| 1,000,000 | 1.05–1.17 MiB | 1.08–1.10 MiB | 1.09–1.10 MiB | 9.24 MiB | 9.24 MiB |
+| 10,000,000 | 1.13 MiB | 1.08 MiB | 1.08 MiB | 28.73–28.74 / 28.79 MiB | 30.98 MiB |
 
-The 100,000 and 1,000,000 rows are measured at both sizes, whose figures differ a little; the ranges are both. At most
+The 100,000 and 1,000,000 rows are measured at both sizes, and each figure is the range over the runs. At most
 two chunk bitmaps were alive at any reading of a sorted load, and all 8,192 at the unsorted load's. The sorted and
 unsorted loads of the largest tier wrote the same object.
 
