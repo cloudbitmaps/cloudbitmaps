@@ -31,12 +31,29 @@ const TRANSPORT = new Set([
   'connection',
   'agent',
 ]);
-/** Header and field names whose value is a credential. */
-const CREDENTIAL_NAME =
-  /^(?:proxy-)?authorization$|^cookie$|^set-cookie$|^x-api-key$|^x-ms-copy-source-authorization$|^x-ms-encryption-key$|^x-identity-header$|^signature$|^sig$/i;
-/** A credential header line inside raw request or response text. */
-const CREDENTIAL_LINES =
-  /^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|x-ms-copy-source-authorization):[^\r\n]*/gim;
+/** The headers, besides the `Authorization` ones, whose value is a credential: a customer-provided key, a copy source's. */
+const KEY_HEADERS = 'x-ms-(?:source-)?encryption-key';
+/**
+ * Header and field names whose value is a credential: the credential headers, a SAS signature, the SDK's own fields
+ * for a customer-provided key (`encryptionKey`) and an account key (`accountKey`), and an access token's `token`. The
+ * whole name must match: `encryptionKeySha256` and `continuationToken` do not.
+ */
+const CREDENTIAL_NAME = new RegExp(
+  `^(?:(?:proxy-|x-ms-copy-source-)?authorization|cookie|set-cookie|x-api-key|${KEY_HEADERS}|x-identity-header|` +
+    'signature|sig|encryptionkey|accountkey|token)$',
+  'i',
+);
+/** Whether `text` is a credential's name, as a key, a list item or a table cell holds it: spaces and a colon aside. */
+const isCredentialName = (text: string): boolean =>
+  CREDENTIAL_NAME.test(text.trim().replace(/:$/, ''));
+/**
+ * A credential header line inside raw request or response text, or in the string to sign Azure quotes when it refuses
+ * a SharedKey signature, which lists every `x-ms-` header the request signed with its value.
+ */
+const CREDENTIAL_LINES = new RegExp(
+  `^((?:proxy-|x-ms-copy-source-)?authorization|cookie|set-cookie|x-api-key|${KEY_HEADERS}):[^\\r\\n]*`,
+  'gim',
+);
 /**
  * A SAS signature in a URL, a query string or text that quotes one: after `?`, `&`, `;`, a space, a quote, at the start,
  * or percent-encoded (`%26`, `%3F`) or JSON-escaped (`\u0026`); its `=` may be `%3D` and its value quoted.
@@ -154,7 +171,7 @@ function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
       const kept = copyOf(item, ctx, depth + 1);
       if (kept !== OMIT) list[index] = kept;
     }
-    hidden = typeof item === 'string' && CREDENTIAL_NAME.test(item);
+    hidden = typeof item === 'string' && isCredentialName(item);
     last = index;
   }
   return list;
@@ -168,7 +185,7 @@ function copyMap(value: Map<unknown, unknown>, ctx: Copying, depth: number): Map
   for (const [k, v] of value) {
     const key = copyOf(k, ctx, depth + 1);
     if (key === OMIT) continue;
-    if (typeof k === 'string' && CREDENTIAL_NAME.test(k) && v != null) {
+    if (typeof k === 'string' && isCredentialName(k) && v != null) {
       map.set(key, REDACTED);
       if (v !== REDACTED) ctx.changed = true;
       continue;
@@ -247,7 +264,7 @@ function copyField(
   const name = typeof key === 'string' ? redactText(key) : key;
   if (name !== key) ctx.changed = true;
   let kept: unknown;
-  if (typeof key === 'string' && CREDENTIAL_NAME.test(key) && descriptor.value != null) {
+  if (typeof key === 'string' && isCredentialName(key) && descriptor.value != null) {
     kept = REDACTED;
     if (descriptor.value !== REDACTED) ctx.changed = true;
   } else {

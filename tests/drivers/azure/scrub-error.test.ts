@@ -4,6 +4,8 @@ import { scrubCredentials } from '@/azure-blob/scrub-error';
 
 const SIGNED = 'SharedKey acct:SIGNATUREVALUE=';
 const URL_WITH_SIG = 'https://acct.blob.core.windows.net/c/b?sv=2022-11-02&sig=SECRETSIG%3D&se=1';
+/** A stand-in customer-provided key, as its header carries one: 32 bytes in base64. */
+const CPK = Buffer.from('stand-in-customer-key-0123456789').toString('base64');
 
 /** An error shaped as the SDK's `RestError`: the request and response on hidden properties. */
 type Rest = Error & { request: object; response: object; details: unknown };
@@ -390,12 +392,38 @@ describe('scrubCredentials (Azure)', () => {
       'signature',
       'x-ms-encryption-key',
       'x-identity-header',
+      'x-ms-source-encryption-key',
       'sig',
+      'encryptionKey',
+      'accountKey',
+      'token',
     ])('redacts the value under %s', (name) => {
       const err = restError();
       err.details = { [name]: 'SECRETVALUE', keep: 'visible' };
       const out = scrubCredentials(err);
       expect(out.details).toEqual({ [name]: '[redacted]', keep: 'visible' });
+    });
+
+    it.each([
+      'continuationToken',
+      'encryptionKeySha256',
+      'accountName',
+      'x-ms-encryption-key-sha256',
+    ])('keeps the value under %s, which only starts or ends like a credential name', (name) => {
+      const err = Object.assign(new Error('x'), { details: { [name]: 'visible' } });
+      expect(scrubCredentials(err)).toBe(err);
+    });
+
+    it('takes a name with spaces or a colon around it as the name', () => {
+      const err = restError();
+      err.details = {
+        rawHeaders: [' Authorization: ', 'SECRETVALUE', 'host', 'h'],
+        map: new Map([[' Cookie ', 'SECRETVALUE']]),
+      };
+      expect(scrubCredentials(err).details).toEqual({
+        rawHeaders: [' Authorization: ', '[redacted]', 'host', 'h'],
+        map: new Map([[' Cookie ', '[redacted]']]),
+      });
     });
 
     it('redacts the value after a credential name in a flat header list', () => {
@@ -454,6 +482,16 @@ describe('scrubCredentials (Azure)', () => {
         "The MAC signature found in the HTTP request 'AAA+/x=' is not the same as any computed signature.",
         'AAA+/x=',
       ],
+      [
+        'a customer-provided key in the string to sign Azure quotes',
+        `Server used following string to sign: 'GET\n\nx-ms-date:d\nx-ms-encryption-key:${CPK}\nx-ms-version:v\n/a/c/b'.`,
+        CPK,
+      ],
+      [
+        "a copy source's customer-provided key in the string to sign",
+        `Server used following string to sign: 'PUT\n\nx-ms-source-encryption-key:${CPK}\n/a/c/b'.`,
+        CPK,
+      ],
     ];
     const lookAlikes = [
       'Bearer token authentication is not permitted for non-TLS protected (non-https) URLs.',
@@ -482,6 +520,18 @@ describe('scrubCredentials (Azure)', () => {
       const out = through(text);
       expect(out).not.toContain(secret);
       expect(out).toContain('[redacted]');
+    });
+
+    it('keeps the rest of the string to sign around a customer-provided key', () => {
+      const lines = [
+        'GET',
+        'x-ms-encryption-key-sha256:HASH',
+        `x-ms-encryption-key:${CPK}`,
+        'x-ms-range:bytes=0-7',
+      ];
+      expect(through(`Server used following string to sign: '${lines.join('\n')}'.`)).toBe(
+        "Server used following string to sign: 'GET\nx-ms-encryption-key-sha256:HASH\nx-ms-encryption-key: [redacted]\nx-ms-range:bytes=0-7'.",
+      );
     });
 
     it('keeps the rest of a url around a redacted signature', () => {
