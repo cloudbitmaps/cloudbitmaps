@@ -24,12 +24,13 @@
  * key id are kept: they name the account and sign nothing); and so is the value after one in a flat list, under one
  * in a map, or beside one in a record (a `{ name, value }` pair, a `{ th, td }` row), except a number, a boolean and
  * the fields a Google error item describes an error with (`message`, `reason`, `location`), which classification reads.
- * In the copy's text, these are redacted: a credential header line; an `Authorization` value, an encryption
- * key, an API key, an OAuth token or client secret and a signed URL's signature or credential after its name; a bearer
- * token after its scheme; a Google access token (`ya29.`) or a JWT on its own; a V2 signed URL's `Signature=`; a PEM
- * private key's body; the text of an element named for a credential (`<CanonicalRequest>`); and the text of the cell
- * after one that names a credential (a table's `<th>` and `<td>`, a list's `<dt>` and `<dd>`). A credential in any
- * other form is not recognised, and a text too large for these patterns is replaced whole.
+ * In the copy's text, these are redacted: a credential header line; an `Authorization` value, an encryption key, an API
+ * key, an OAuth token or client secret and a signed URL's signature or credential after its name; a cookie header's
+ * value after its name; a bearer token after its scheme; a Google access token (`ya29.`) or a JWT on its own; a V2
+ * signed URL's `Signature=`; a PEM private key's body; the text of an element named for a credential
+ * (`<CanonicalRequest>`); and the text of the cell after one that names a credential (a table's `<th>` and `<td>`, a
+ * list's `<dt>` and `<dd>`). A credential in any other form is not recognised, and a text too large for these patterns
+ * is replaced whole.
  */
 
 import { types } from 'node:util';
@@ -93,6 +94,11 @@ const CREDENTIAL_LINES =
  */
 const AUTHORIZATION_VALUE =
   /((?:proxy-)?authorization\\?["']?\s*(?::|=|%3D)\s*\\?["']?)(?:[A-Za-z][\w-]*(?:\s+|%20|\+))?[^\s&"'<>\\,;]+/gi;
+/**
+ * A cookie header's value after its name anywhere in a text, every cookie in it: `cookie: a=1; b=2`, JSON's
+ * `"cookie":"a=1; b=2"`. It runs to the end of the line, a quote or a tag.
+ */
+const COOKIE_VALUE = /((?:set-)?cookie\\?["']?\s*:\s*\\?["']?)[^\r\n"'<>\\]+/gi;
 /** The headers and fields whose value follows their name in a text: an encryption key, an API key, a signed URL's parts. */
 const NAMED =
   'x-goog-(?:copy-source-)?encryption-key|x-goog-api-key|x-goog-signature|x-goog-credential|' +
@@ -152,6 +158,7 @@ function redactText(text: string): string {
       .replace(PRIVATE_KEY, `$1${REDACTED}$2`)
       .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
       .replace(AUTHORIZATION_VALUE, `$1${REDACTED}`)
+      .replace(COOKIE_VALUE, `$1${REDACTED}`)
       .replace(NAMED_SECRET, `$1${REDACTED}`)
       .replace(BEARER, `$1$2${REDACTED}`)
       .replace(TOKEN_TEXT, REDACTED)

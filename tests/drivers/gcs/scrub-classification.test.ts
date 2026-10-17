@@ -30,6 +30,7 @@ import {
   ANSWERS,
   CLIENT_SECRET,
   CREDENTIAL_KINDS,
+  PLANTED_SECRETS,
   REFRESH_TOKEN,
   SELF_SIGNED_JWT,
   TOKEN_ANSWERS,
@@ -159,6 +160,7 @@ describe('GCS: a scrubbed SDK error classifies as the raw one', LIMIT, () => {
     SELF_SIGNED_JWT,
     REFRESH_TOKEN,
     CLIENT_SECRET,
+    ...PLANTED_SECRETS,
     ...[...loop.seen].map((value) => value.replace(/^Bearer /, '')),
   ];
   const quotesSecret = (text: unknown): boolean =>
@@ -247,11 +249,11 @@ describe('GCS: a scrubbed SDK error classifies as the raw one', LIMIT, () => {
 });
 
 /**
- * 9 requests, 15 answers and 3 credentials make 405 cases. A 404 for an object answers a listing as a bucket that holds
- * nothing, so the two listings succeed under it, which leaves 399 errors; then 9 reads with no answer in time, 27
- * requests refused, and 9 after a refused refresh: 444. Each error that carries the SDK's response or config is copied:
- * the 372 HTTP answers, the resumable upload's 6 reset or refused (gaxios keeps its config), the 8 refused requests
+ * 9 requests, 18 answers and 3 credentials make 486 cases. A 404 for an object answers a listing as a bucket that holds
+ * nothing, so the two listings succeed under it, which leaves 480 errors; then 9 reads with no answer in time, 27
+ * requests refused, and 9 after a refused refresh: 525. Each error that carries the SDK's response or config is copied:
+ * the 453 HTTP answers, the resumable upload's 6 reset or refused (gaxios keeps its config), the 8 refused requests
  * whose refresh token the auth library could not exchange (the token request's error, with its config), and the 9
  * after a refused refresh. The other 49 (a connection reset or refused on a JSON API request, a read cut off) are not.
  */
-const COUNTS = { compared: 444, copied: 395 };
+const COUNTS = { compared: 525, copied: 476 };

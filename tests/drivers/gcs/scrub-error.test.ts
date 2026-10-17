@@ -639,6 +639,13 @@ describe('GCS scrubCredentials', () => {
         VALUE,
       ],
       ['a cookie on a later line', `host: h\r\ncookie: s=${VALUE}\r\n`, VALUE],
+      ['a cookie inside a line', `got cookie: a=1; s=${VALUE}; b=2 back`, VALUE],
+      ['a cookie in json', `{"headers":{"cookie":"a=1; s=${VALUE}","host":"h"}}`, VALUE],
+      [
+        'a cookie in json inside json',
+        JSON.stringify({ body: `{"cookie":"a=1; s=${VALUE}"}` }),
+        VALUE,
+      ],
       ['an encryption key header line', `${ENC}: ${KEY}`, KEY],
       [
         'a bearer token inside a line',

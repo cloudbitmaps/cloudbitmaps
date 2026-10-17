@@ -49,6 +49,21 @@ const unsigned = [
 /** A service account's self-signed JWT, signed here, which the auth library sends as a bearer token. */
 export const SELF_SIGNED_JWT = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(privateKey, 'base64url')}`;
 
+/**
+ * The other credentials a request can carry, which a client's own request interceptor adds here to every JSON API
+ * request: a cookie (a proxy's session, say), an API key and a customer-supplied encryption key. An answer that quotes
+ * the request quotes these too, so each is held to the same redaction as the bearer token, in every layout.
+ */
+export const PLANTED_HEADERS: Record<string, string> = {
+  cookie: `sid=${['stand', 'in', 'cookie', 'value', '0123456789'].join('-')}`,
+  'x-goog-api-key': ['AIza', 'Sy', 'StandInApiKey', '0123456789abcdefghij'].join(''),
+  'x-goog-encryption-key': Buffer.alloc(32, 11).toString('base64'),
+};
+/** The values of {@link PLANTED_HEADERS}, with a cookie's name taken off. */
+export const PLANTED_SECRETS = Object.values(PLANTED_HEADERS).map((value) =>
+  value.replace(/^sid=/, ''),
+);
+
 /** How a client authenticates. */
 export type CredentialKind = 'access token' | 'self-signed JWT' | 'refresh token';
 export const CREDENTIAL_KINDS: CredentialKind[] = [
@@ -78,6 +93,14 @@ export function clientFor(kind: CredentialKind, endpoint: string): Storage {
     useAuthWithCustomEndpoint: true,
     authClient: new auth.GoogleAuth({ authClient: oauth }) as never,
     retryOptions: { autoRetry: false },
+    interceptors_: [
+      {
+        request: (options: { headers?: Record<string, string> }) => ({
+          ...options,
+          headers: { ...options.headers, ...PLANTED_HEADERS },
+        }),
+      },
+    ] as never,
   });
 }
 
@@ -195,6 +218,21 @@ export const ANSWERS: Record<string, Answer> = {
       `<html><body><h1>Bad Gateway</h1><p>upstream refused authorization ${String(req.headers.authorization)}` +
         ` for ${String(req.url)}</p><table>${headerTable(req)}</table></body></html>`,
     );
+  },
+  '502 proxy page listing the request headers after a short heading': (req, res) => {
+    res.writeHead(502, { 'content-type': 'text/html' });
+    res.end(`<html><body><h1>Request headers</h1><table>${headerTable(req)}</table></body></html>`);
+  },
+  '502 proxy page listing the request headers under a caption': (req, res) => {
+    res.writeHead(502, { 'content-type': 'text/html' });
+    res.end(`<table><caption>Headers</caption>${headerTable(req)}</table>`);
+  },
+  '502 proxy page listing the request headers as a definition list': (req, res) => {
+    res.writeHead(502, { 'content-type': 'text/html' });
+    const items = Object.entries(req.headers)
+      .map(([name, value]) => `<dt>${name}</dt><dd>${String(value)}</dd>`)
+      .join('');
+    res.end(`<h2>Headers</h2><dl>${items}</dl>`);
   },
   '500 text body quoting the raw request': (req, res) => {
     res.writeHead(500, { 'content-type': 'text/plain' });

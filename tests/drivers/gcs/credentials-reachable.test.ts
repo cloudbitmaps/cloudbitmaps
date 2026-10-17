@@ -14,6 +14,7 @@ import {
   ANSWERS,
   CLIENT_SECRET,
   CREDENTIAL_KINDS,
+  PLANTED_SECRETS,
   REFRESH_TOKEN,
   SELF_SIGNED_JWT,
   TOKEN_ANSWERS,
@@ -124,6 +125,9 @@ const EXPECTED: Record<string, [Kind, Record<string, Kind>?]> = {
   '500 backendError': ['transient'],
   '503 backendError': ['transient'],
   '502 proxy page quoting the request': ['transient'],
+  '502 proxy page listing the request headers after a short heading': ['transient'],
+  '502 proxy page listing the request headers under a caption': ['transient'],
+  '502 proxy page listing the request headers as a definition list': ['transient'],
   '500 text body quoting the raw request': ['transient'],
   '400 JSON error quoting the request': ['sdk'],
   '400 JSON body quoting the request': ['sdk'],
@@ -253,6 +257,7 @@ describe('GCS: no credential is reachable from an error the driver throws', LIMI
       SELF_SIGNED_JWT.split('.')[2] ?? SELF_SIGNED_JWT,
       REFRESH_TOKEN,
       CLIENT_SECRET,
+      ...PLANTED_SECRETS,
       ...[...loop.seen].flatMap((value) => [value, value.replace(/^Bearer /, '')]),
     ].filter((secret) => text.includes(secret));
 
