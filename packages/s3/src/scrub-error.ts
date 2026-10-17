@@ -37,7 +37,7 @@ const TRANSPORT = new Set([
   'connection',
   'agent',
 ]);
-/** The headers whose value is a credential: the signature, the session tokens, an SSE-C key. */
+/** The headers, besides `Authorization`, whose value is a credential: the session tokens and an SSE-C key. */
 const SECRET_HEADER =
   'x-amz-security-token|x-amz-s3session-token|x-amz-(?:copy-source-)?server-side-encryption-customer-key';
 /**
