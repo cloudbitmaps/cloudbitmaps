@@ -312,3 +312,49 @@ on real S3.
 
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment
 with this function, term by term, and says where a standing cache still wins.
+
+### Many small segments, refreshed often
+
+**Every load is a whole new generation, so every refresh pays the same requests, however small the segment.** A steady
+`store.load()` of a segment on S3 makes 2 PUT-class requests (the object and the pointer's write), 5 GET-class
+requests and one delete, 8 requests, with the delete free (the counts are in the [load term](#what-each-term-counts)
+above and are **measured** at `keep: 12` in [the in-region run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d)).
+At the default prices that is $12.00 per million loads that delete by name (2 × $5.00 + 5 × $0.40, **derived**), and
+$12.34 per million averaged over a 16-load cycle (**derived**, in the same run's table). The price does not shrink with
+the segment: a segment of a few hundred ids pays the same requests as a megabyte one, and for a small segment the requests, not the bytes, are the bill.
+
+Cost is therefore segments × refreshes × $12.34 per million (**derived**, worked here):
+
+| Segments | Refreshed | Loads a month | Requests a month (8 each) | Dollars a month at $12.34 per million |
+| --- | --- | ---: | ---: | ---: |
+| 100,000 | 4 times a day | 100,000 × 4 × 30 = 12,000,000 | 12,000,000 × 8 = 96,000,000 | 12 × $12.34 = $148.08 |
+| 100,000 | every hour | 100,000 × 24 × 30 = 72,000,000 | 72,000,000 × 8 = 576,000,000 | 72 × $12.34 = $888.48 |
+
+The figures leave out storage, reads and the registry's own cost, and assume a cleartext segment on S3 at list prices
+(an encrypted load adds a GET and key-management calls).
+
+**Why the library does not pack segments into one object, or batch their publishes.**
+
+- **A generation is the unit everything else names.** An erasure rewrites a generation, a pin holds one, a rollback
+  moves the pointer to one and collection deletes one by name. Segments sharing an object would share that unit: erasing
+  an id from one segment would rewrite the others' bytes, and rolling one back would move or hold the others with it.
+- **A store has no write across objects or rows.** A load's publish is one conditional write to one segment's row, and
+  the registry port offers no multi-row transaction. A batched publish of N segments would be N conditional writes that
+  can each succeed or lose a race, which is N publishes with the same requests.
+
+**The levers that remain:**
+
+- **Publish only what changed.** `load()` never compares: loading the ids a segment already holds writes a newer,
+  identical generation and pays every request above. Nothing in `guard` (`minCardinality`, `minRetained`, `maxGrowth`)
+  or `dryRun` skips an unchanged publish, so detect change in your own code, for example by comparing a digest of the
+  source ids with the one you stored when you last loaded, and call `load()` only when it differs.
+- **Refresh each segment only as often as it needs.** The bill is linear in refreshes: the hourly row above costs six
+  times the four-a-day row.
+- **Lower `keep`.** Fewer retained generations means fewer deletes and a smaller ledger in the row, and storage billed
+  for fewer copies (the default is 1). A `keep` above 64 is the one setting that adds requests: its window does not fit
+  the row's ledger, so every load lists to collect, one more PUT-class request and two more pointer reads,
+  $5.00 + 2 × $0.40 = $5.80 more per million loads (**derived**, from [the load term](#what-each-term-counts) and
+  [the loading guide](loading.md#generations-and-keep)).
+- **`materializeMany` for outputs of shared operands.** Many outputs computed from the same stored operands read each
+  operand once for all of them ([the guide](loading.md#many-outputs-from-one-pass-materializemany)); each output is still
+  published as its own generation, so it saves reads, not the publish floor.
