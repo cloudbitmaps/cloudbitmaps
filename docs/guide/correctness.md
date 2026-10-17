@@ -910,6 +910,20 @@ repaired. These limits hold on every driver:
 - `erased: true` means no generation of the segment holds the id, checked by listing the bucket and reading what is
   left. Otherwise `reason` is `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no generation in the bucket
   holds it) or `'superseded'`.
+- That last read skips a generation the call already found clean (one it searched, the generation it found current,
+  or its own rewrite) only while the row, read after the listing, names it in `knownGens` with the footer checksum of
+  the object the call read or wrote: a number with that checksum, as invariant 2 identifies a generation, never the
+  number alone. A number can be taken again once its object is deleted. Within one row, another erasure can delete a
+  generation this call found clean and a load take its number; across rows, a drop, a purge and a first load of the
+  name number from 0 again. The object listed is then another one, which the row does not name with that checksum
+  (the checksum covers the write identity, so a load of the same ids writes another), so the call reads it, and one
+  that holds the id makes it answer `'superseded'` or throw `WriteConflictError`, never `erased: true`. A row with no
+  usable `knownGens` (a row with no pointer has none) vouches for nothing, so there every generation found clean is
+  read again. The row's incarnation would not be enough: the load within one row takes the number under the same
+  incarnation. The row is read after the listing, not before: a drop, a purge and a load that land between the two
+  would leave the earlier row vouching for an object no longer there. The read is made only when the listing names a
+  generation found clean. Every route needs a load of the id while it is erased, which
+  [the first rule](erasure.md#three-rules-while-you-erase) asks you not to run.
 - A tombstoned row has its bucket searched too. A crypto-shred leaves objects no key opens, but a cleartext destroy, a
   drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
   id, every object under the tombstone is deleted and the entry reads `erased: true`. Otherwise the result is

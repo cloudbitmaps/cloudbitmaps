@@ -42,6 +42,24 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An erasure no longer answers `erased: true` while an object under a number it found clean holds the id.** Before
+  it answers, an erasure lists the bucket and reads every generation it has not already found clean, and it skipped
+  one it had found clean by its number alone. A number can be taken again once its object is deleted, so a load of the
+  id during the erasure could put the id under such a number and the erasure still answered `erased: true`: a drop, a
+  purge and a first load of the name, which numbers from 0 again, or, within one row, another erasure that deletes a
+  generation this one found clean and a load that takes its number and publishes it as current. A generation found
+  clean is now skipped only while the row, read after that listing, names it in its ledger of known generations with
+  the footer checksum of the object the call read or wrote; any other is read, and one that holds the id makes the
+  call answer `'superseded'` or throw `WriteConflictError`. Both need a load of the id while it is erased, which
+  [the erasure guide](docs/guide/erasure.md#three-rules-while-you-erase) asks you not to run. It costs one registry
+  read more whenever that listing names a generation the call found clean, which every erasure that rewrites or
+  deletes on a segment with a generation does: a rewrite is 10 reads and 1 write, and an id held only by an older
+  generation 8 and 1, 7 and none, or 8 and none, where 0.22.0 made 9, 7, 6 and 7. An erasure that finds nothing to
+  delete is unchanged, and so is the `4 + n` of one that deletes `n` objects on a segment with no generation yet and
+  finds none clean. Where no ledger vouches for a generation found clean (a row with no usable ledger, a segment with
+  no generation yet) it is opened again, and the per-op budget is charged for that open unless it is the generation
+  the row named when the scan listed the segment or the call's own rewrite. See
+  [reading the ledger](docs/guide/erasure.md#reading-the-ledger).
 - **A storage driver that runs `write` again after a failed attempt, as the storage port allows, gets the whole object
   from a load.** Under such a driver a load of ids, of a bitmap or of a combine's chunks published a generation whose
   object and count disagreed (an empty object, for ids): its chunks were read once and its tally kept counting. Each run now encodes the
