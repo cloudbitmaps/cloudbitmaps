@@ -189,8 +189,8 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   generations, at any `keep` from 1 to 64, and about $12.34 per million single-part loads at the default prices
   (derived from the counted kinds, weighted as every 16 generations make them: 15 loads that delete by name and one
   that lists). The requests are counted by the engine's tests at every `keep` from 1 to 64
-  ([the run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d) measured each kind of load at `keep: 12` on
-  `0.21.0`, each in the requests counted here); a segment's first two loads collect
+  ([the run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d) measured each kind of load at `keep: 12`, each in
+  the requests counted here); a segment's first two loads collect
   nothing and make fewer requests, and the first load onto a row with no summary of its current generation (one a
   rollback left when it could not open the key, one a registry of your own stores without one, or one this store cannot use) reads that
   generation's index, a tail read, in place of the check that its object is there. A publish
