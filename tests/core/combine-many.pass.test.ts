@@ -437,6 +437,23 @@ describe('the memory ledger', () => {
     expect((error as Error).message).toContain('(6 read)');
   });
 
+  it('refuses a real operand chunk that the index understated and the buffers left no room for', async () => {
+    // The small chunk before the last lets the buffers settle just under the limit, so the next big operand chunk is the
+    // first charge to cross it: the cost model's working room covers a chunk no bigger than the one before it.
+    const source = new TableSource({
+      a: { 0: big(), 1: big(), 2: big(), 3: bytesOf([1, 2, 3]), 4: big() },
+    });
+    source.cards = () => 1;
+    const r = await run(source, ['a'], [{ expr: 'a' }], { maxBufferedBytes: 41_505 });
+    const error = (r.outputs[0] as { error: BudgetExceededError }).error;
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error.message).toContain(
+      'operand "a" at chunk 4 would hold more than maxBufferedBytes (41505)',
+    );
+    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 41_505, spent: 42_040 });
+    expect(error.spent).toBeGreaterThan(41_505);
+  });
+
   it('an output that cannot fit alone has BudgetExceededError, and the others publish', async () => {
     const source = liar();
     source.table.small = { 0: bytesOf([1, 2, 3]) };
@@ -1159,7 +1176,6 @@ describe('each memory refusal reports what the ledger held plus the charge it re
   const limit = 256 << 20;
   // The publish refusal of a stored output runs it again alone first, so it is held in the feed tests, where it is final.
   const sites: Array<[string, RegExp]> = [
-    ['the operand streams', /^materializeMany: the operand streams would hold/],
     ['an operand chunk', /^materializeMany: operand "o0" at chunk \d+ would hold/],
     ['an output chunk', /^materializeMany: output 0 would hold/],
     ['a chunk being evaluated', /^materializeMany: a chunk being evaluated would hold/],
@@ -1177,5 +1193,21 @@ describe('each memory refusal reports what the ledger held plus the charge it re
     expect(error.spent).toBe(forced[0]!.used + forced[0]!.asked);
     // The ledger was full, so a refusal is past the limit, as a real one is.
     expect(error.spent).toBeGreaterThan(limit);
+  });
+
+  it('the operand streams, which give kept plans back before they refuse', async () => {
+    const { error, refused } = await reachSite(
+      /^materializeMany: the operand streams would hold/,
+      () => {
+        const table = { o0: Object.fromEntries([0, 1].map((k) => [k, bytesOf([1, 2, 3])])) };
+        return run(new TableSource(table), ['o0'], [{ expr: 'o0' }], { maxBufferedBytes: limit });
+      },
+    );
+    expect(error.option).toBe('maxBufferedBytes');
+    expect(error.limit).toBe(limit);
+    // The charge is retried once the kept plans are released, so it is the retry's failure that is reported: `spent` is
+    // what the ledger held then plus the charge, and past the limit.
+    expect(error.spent).toBeGreaterThan(limit);
+    expect(refused.map((r) => r.used + r.asked)).toContain(error.spent);
   });
 });

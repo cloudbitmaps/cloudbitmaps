@@ -138,7 +138,9 @@ export async function eraseNamespace(
   // ceiling is refused with nothing erased, not abandoned part-way through an irreversible loop.
   const rows = await drainRegistry(deps.registry, {
     namespace,
-    maxScanSegments: options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS,
+    // Only an absent value means the default: a `null` or a malformed one is refused, as a malformed `budget` is.
+    maxScanSegments:
+      options.maxScanSegments === undefined ? DEFAULT_MAX_SCAN_SEGMENTS : options.maxScanSegments,
     op: 'eraseNamespace',
     narrowable: false, // already one namespace: the only remedy is a higher ceiling
   });
