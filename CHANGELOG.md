@@ -93,28 +93,32 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **An S3 error no longer carries the signature or session token that S3 or a proxy quotes back, and the copy the
-  driver throws is a deep native copy.** The AWS SDK puts every field of an error body on the error, where a logger
-  prints it, and S3's answer to a signature it refused (`SignatureDoesNotMatch`) quotes the request back: its signature
-  (`SignatureProvided`) and the canonical request S3 computed (`CanonicalRequest`, and in hex `CanonicalRequestBytes`),
-  which holds the session token. The driver redacted the token's line in the text and kept the signature and the hex
-  form, the token in it included. A proxy's error page, and a body the SDK could not parse (`$responseBodyText`), can
-  quote the `Authorization` value or the token inside a line, and the driver redacted a credential header only where
-  it started a line. The copy was also shallow: an error more than six links down a `cause` chain, or on a cycle, was
-  kept raw with its `$response`; an error in any other field (an `AggregateError`'s `errors`) was not copied; a
-  function or accessor property was carried over; the copy was not a native error (`util.types.isNativeError` was
-  false, and `structuredClone` lost its prototype); and the redaction wrote the live error's nested data, or the error
-  itself when it held no transport. An S3 error that carries its transport or shows a credential, and every error it
-  reaches, is now thrown as a deep copy of its plain data: a native error with the same prototype, name, message,
-  stack, `$metadata`, `$fault`, `Code` and request id, so every answer is classified as before, with no `$response`,
-  no `$responseBodyText`, no function or accessor and nothing nested deeper than ten levels, and the live error is
-  never changed. An error with no transport and no credential in it (the driver's own typed errors) is thrown as it
-  is. In the copy, the value under a credential header or field name is replaced by `[redacted]` (`authorization`,
-  `x-amz-security-token`, `x-amz-s3session-token`, an SSE-C key, `secretAccessKey`, `sessionToken`,
-  `SignatureProvided`, `CanonicalRequest`, `CanonicalRequestBytes`), and so are a credential header line, a SigV4
-  signature (`Signature=`, `X-Amz-Signature=`, also percent-encoded) and a session token or SSE-C key after its header
-  name, anywhere in the text; the access key id S3 names is kept. A credential in any other form is not recognised,
-  and a text too large for these patterns is replaced whole.
+- **The S3 driver redacts the signature, canonical request and session token S3 quotes back in an error, and the
+  credentials a proxy's page or an unparsed body quotes, and throws the error as a deep native copy.** The AWS SDK puts
+  every field of an error body on the error, where a logger prints it. S3's answer to a signature it refused
+  (`SignatureDoesNotMatch`) quotes the request back: its signature (`SignatureProvided`) and the canonical request S3
+  computed (`CanonicalRequest`, and in hex `CanonicalRequestBytes`), which holds the session token; its answer to a
+  session token it refused (`ExpiredToken`, `InvalidToken`) quotes the token in `Token-0`. The driver redacted the
+  token's line in the canonical request's text and kept the signature, the hex form and `Token-0`. A proxy's error
+  page, and a body the SDK could not parse (`$responseBodyText`), can quote the `Authorization` value or the token
+  inside a line or in a table of the request headers, and the driver redacted a credential header only where it
+  started a line. Now, in the error the driver throws, the value under a credential header or field name is replaced
+  by `[redacted]` (`authorization`, `x-amz-security-token`, `x-amz-s3session-token`, an SSE-C key, `secretAccessKey`,
+  `sessionToken`, `SignatureProvided`, `CanonicalRequest`, `CanonicalRequestBytes`, `Token-0`), and so are the value
+  beside a credential's name in a list or a record (a header table's row, a `{ name, value }` pair, S3's
+  `ArgumentName` and `ArgumentValue`), a credential header line, a SigV4 signature (`Signature=`, `X-Amz-Signature=`,
+  also percent-encoded) and a session token or SSE-C key after its header name, anywhere in the text; the access key id
+  S3 names is kept. A credential in any other form is not recognised, and a text too large for these patterns is
+  replaced whole. The copy the driver threw was also shallow: an error more than six links down a `cause` chain, or on
+  a cycle, was kept raw with its `$response`; an error in any other field (an `AggregateError`'s `errors`) was not
+  copied; a function or accessor property was carried over; the copy was not a native error (`util.types.isNativeError`
+  was false, and `structuredClone` turned it into a plain object); and the redaction wrote the live error's nested
+  data, or the error itself when it held no transport. An S3 error that carries its transport or shows a credential,
+  and every error it reaches, is now thrown as a deep copy of its plain data: a native error with the same prototype,
+  name, message, stack, `$metadata`, `$fault`, `Code` and request id, so every answer is classified as before, with no
+  `$response`, no `$responseBodyText`, no function or accessor and nothing nested deeper than ten levels, and the live
+  error is never changed. An error with no transport and no credential in it (the driver's own typed errors) is thrown
+  as it is.
 - **A delete decided from one read of an object's footer no longer removes another writer's object of the same cleartext
   ids.** Two loads of the same ids at the same number wrote the same bytes, so a footer match proved content and not the
   writer. A refused load whose reclaim read no row, after the name was swept, purged and re-created and a load of the same

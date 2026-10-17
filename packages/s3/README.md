@@ -95,20 +95,22 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   For the writes and listings, give your client a timeout of its own.
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, with a sample IAM policy, and the ones every backend shares: a request timeout on your client for the requests the library does not time, backups of the data and the registry, and a schedule for your loads.
-- **An error the driver throws carries no credential.** The AWS SDK keeps the response it got on the error
-  (`$response`), and through its socket the request it sent, with the signed `Authorization` header and
-  `x-amz-security-token`. It also puts every field of the error body on the error, and S3's answer to a signature it
-  refused (`SignatureDoesNotMatch`) quotes the request back: its signature and its canonical request, session token
-  included. An SDK error that carries its transport or shows a credential, and every error it reaches (its `cause`
-  chain, an `AggregateError`'s `errors`), is thrown as a copy: a native error with the same prototype, name, message,
-  stack, `$metadata`, `$fault`, `Code` and request id, so classification is unchanged, without `$response`, the body
-  the SDK could not parse (`$responseBodyText`), any function or accessor property, or anything nested deeper than ten
-  levels. The live error is never changed, and an error with no transport and no credential in it is thrown as it is.
-  In the copy, the value under a credential header or field name is replaced by `[redacted]` (`authorization`,
-  `x-amz-security-token`, `x-amz-s3session-token`, an SSE-C key, `SignatureProvided`, `CanonicalRequest` and the like;
-  the access key id S3 names is kept), and so are a credential header line, a SigV4 signature (`Signature=`,
-  `X-Amz-Signature=`) and a session token or SSE-C key after its header name, anywhere in its text. A credential in
-  another form is not recognised, and a text too large for these patterns is replaced whole.
+- **The driver redacts the credentials it recognises from an error before it throws it.** The AWS SDK keeps the
+  response it got on the error (`$response`), and through its socket the request it sent, with the signed
+  `Authorization` header and `x-amz-security-token`. It also puts every field of the error body on the error, and S3
+  quotes the request back when it refuses it: its signature and canonical request (`SignatureDoesNotMatch`), or its
+  session token (`Token-0`, on `ExpiredToken` and `InvalidToken`). In the error the driver throws, the value under a
+  credential header or field name is replaced by `[redacted]` (`authorization`, `x-amz-security-token`,
+  `x-amz-s3session-token`, an SSE-C key, `SignatureProvided`, `CanonicalRequest`, `Token-0` and the like; the access
+  key id S3 names is kept), and so are the value beside a credential's name in a list or a record (a header table's
+  row, a `{ name, value }` pair, `ArgumentName` and `ArgumentValue`), a credential header line, a SigV4 signature
+  (`Signature=`, `X-Amz-Signature=`) and a session token or SSE-C key after its header name, anywhere in its text. A
+  credential in another form is not recognised, and a text too large for these patterns is replaced whole. An SDK
+  error that carries its transport or shows a credential, and every error it reaches (its `cause` chain, an
+  `AggregateError`'s `errors`), is thrown as a copy: a native error with the same prototype, name, message, stack,
+  `$metadata`, `$fault`, `Code` and request id, so classification is unchanged, without `$response`, the body the SDK
+  could not parse (`$responseBodyText`), any function or accessor property, or anything nested deeper than ten levels.
+  The live error is never changed, and an error with no transport and no credential in it is thrown as it is.
 
 ## Documentation
 
