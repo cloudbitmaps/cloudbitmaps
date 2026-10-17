@@ -24,6 +24,36 @@ export function writeVarint(out: number[], value: number): void {
   out.push(v);
 }
 
+/** The number of bytes `writeVarint` appends for a u32 `value` (1 to 5). */
+export function varintLength(value: number): number {
+  if (value < 0x80) return 1;
+  if (value < 0x4000) return 2;
+  if (value < 0x20_0000) return 3;
+  if (value < 0x1000_0000) return 4;
+  return 5;
+}
+
+/**
+ * Write the LEB128 encoding of a u32 `value` into `out` at `pos`, and return the offset just past it. The bytes are
+ * those `writeVarint` appends; the caller sizes `out`, and a value that does not fit throws before it writes.
+ */
+export function writeVarintAt(out: Uint8Array, pos: number, value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value >= U32_CEIL) {
+    throw new RangeError(`varint value must be a u32; got ${value}`);
+  }
+  if (pos + varintLength(value) > out.length) {
+    throw new RangeError('varint does not fit in the buffer');
+  }
+  let v = value;
+  let at = pos;
+  while (v > 0x7f) {
+    out[at++] = (v & 0x7f) | 0x80;
+    v >>>= 7;
+  }
+  out[at++] = v;
+  return at;
+}
+
 interface VarintRead {
   readonly value: number;
   /** Offset just past the bytes consumed. */

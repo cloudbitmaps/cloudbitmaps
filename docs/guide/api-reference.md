@@ -282,7 +282,7 @@ Anything that is none of these throws `ValidationError` too ([what a load accept
 
 **`sorted: true` writes ascending ids one chunk at a time.** For ids that already ascend, the load writes each chunk
 while the object uploads instead of holding the generation in memory first, so it holds one chunk and the writer's
-index (up to about 14 MiB at the 65,536 chunks a segment can have), whatever the segment's size, and writes the same
+index (up to about 7 MiB at the 65,536 chunks a segment can have), whatever the segment's size, and writes the same
 object an unsorted load of the same ids writes. A repeat is skipped; an id lower than the one before throws
 `ValidationError` naming its position. The row, the number and the key are settled before the first id is read. An
 error the ids raise reaches the caller as the very object raised, never seen by the storage driver, and a storage

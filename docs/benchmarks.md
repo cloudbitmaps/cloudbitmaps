@@ -393,13 +393,29 @@ difference smaller, never larger. What the test can detect, measured by keeping 
 more than about 20% of the serialized data on a pull request, and about 5% at full size.
 
 **What these leave out.** They are samples after collection, not a high-water mark: what lives between two readings
-and is gone by the next is not in them. Above all, the array the index's encoding builds while the footer is written,
-about as large again as the index, is garbage before the index reaches the sink. At the footer a sorted load holds
-about 200 bytes a chunk, the index and that array, so **up to about 14 MiB at the 65,536 chunks a segment can have**
-(derived from the writer's code). Measured by hand once, the same way, over all 65,536 chunks (4,000,000 ids, before
-the warm-up was added): 6.76 MiB, the index's share without the encoding's array, against 37.78 MiB for the unsorted
-load. The index grows with the chunk count, never with the ids. A backend's upload buffer comes on top of all of it:
-[memory, and where a load runs](guide/loading.md#memory-and-where-a-load-runs).
+and is gone by the next is not in them. The index's encoding writes into one buffer sized to the index, so it builds no
+temporary array beside it. Measured by hand once, the same way, over all 65,536 chunks (4,000,000 ids, before the
+warm-up was added): 6.76 MiB for a sorted load, against 37.78 MiB for the unsorted load. That reading is taken as the
+encoded index reaches the sink, so it holds the writer's entries and the encoded index (752,020 bytes over 65,536
+chunks, about 11.5 bytes a chunk; at most 24 a chunk). At the footer a sorted load therefore holds about 110 bytes a
+chunk, **up to about 7 MiB at the 65,536 chunks a segment can have**, and about 7.5 MiB on an encrypted segment, which
+holds a sealed copy of the index beside the plain one (derived from the writer's code and the measured figures). The
+index grows with the chunk count, never with the ids.
+
+Before the encoding wrote into a buffer it built a temporary array of about 9 to 11 numbers a chunk first, and that
+array was live beside the entries while the index was encoded. A probe that replays the encoding over entries held
+live (a plain Node process, a forced major collection before each reading; the heap and the array buffers together),
+before and after:
+
+| Chunks | Before: at the end of the encoding | Before: with the copy made | After |
+| -----: | ---------------------------------: | -------------------------: | ----: |
+|  8,192 |                           0.92 MiB |                   1.01 MiB | 0.12 MiB |
+| 65,536 |                           7.76 MiB |                   8.43 MiB | 1.48 MiB |
+
+Both columns are over the entries and keys, which both versions hold. The index itself is 0.09 MiB and 0.72 MiB, so the
+"After" column holds about 0.03 MiB and 0.76 MiB beyond it that the probe's own bookkeeping adds, and the saving at
+65,536 chunks is about 6.3 MiB at the end of the encoding and about 7 MiB at the peak. A backend's upload buffer comes
+on top of all of it: [memory, and where a load runs](guide/loading.md#memory-and-where-a-load-runs).
 
 ## Caveats
 

@@ -2229,7 +2229,7 @@ export class CloudRoaring {
    *
    * Ids are held whole in memory before the object is written: the generation's bitmaps and a buffer of up to about
    * 28 MB. Ids that already ascend can be loaded with `sorted: true` instead, which writes them one chunk at a time
-   * while the object uploads, so the load holds one chunk and the writer's index (up to about 14 MiB), whatever the
+   * while the object uploads, so the load holds one chunk and the writer's index (up to about 7 MiB), whatever the
    * segment's size, and writes the same object ({@link LoadOptions.sorted}).
    *
    * The whole write path in one call: take the next generation number, write the object, check the result is

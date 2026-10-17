@@ -78,7 +78,7 @@ Pass the cursor itself. The one way to make a load expensive is to build the who
 ([memory](#memory-and-where-a-load-runs), below). When your source yields its ids in ascending order, as a query with an
 `ORDER BY` on the id, a sorted file or a merge of sorted runs does, pass `sorted: true`: the load cuts the ids into one
 chunk at a time and writes each chunk while the object uploads, so it holds one chunk and the writer's index of the
-chunks written, up to about 14 MiB whatever the segment's size.
+chunks written, up to about 7 MiB whatever the segment's size.
 
 ```ts
 // Your function: yields the ids in ascending order, as `ORDER BY user_id` returns them.
@@ -295,8 +295,9 @@ holds the whole generation in memory, which suits a batch job and not a request 
 **With `sorted: true`, memory does not grow with the ids.** The load holds one chunk's ids (a fixed buffer of 65,536 of
 them, 256 KiB) and that chunk's bitmap, and the writer's index of the chunks written so far, which it needs for the
 object's footer. The index grows with the chunks a segment has, never with its ids: while the footer is written it
-takes about 200 bytes a chunk, the index and the array its encoding builds, so **up to about 14 MiB** at the 65,536
-chunks a segment can have (derived from the writer's code). The measured figures, how they were taken, and what an
+takes about 110 bytes a chunk (about 120 on an encrypted segment, which holds a sealed copy of the index beside the
+plain one), so **up to about 7 MiB** at the 65,536 chunks a segment can have, about 7.5 MiB encrypted (derived from the
+writer's code and the measured figures). The measured figures, how they were taken, and what an
 unsorted load of the same ids holds are in [the benchmarks](../benchmarks.md#what-a-sorted-load-holds-in-memory).
 
 **Either way, the backend buffers some of the object** (derived from the drivers' code, not measured). On S3 and Azure

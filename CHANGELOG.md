@@ -126,7 +126,7 @@ so, and so do the module headers in the code.
 
 - **`store.load(ref, ids, { sorted: true })` loads ids that already ascend one chunk at a time, while the object
   uploads.** A load of ids holds the whole generation in memory before it writes; a sorted load holds one chunk's ids
-  and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 14 MiB at the
+  and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 7 MiB at the
   65,536 chunks a segment can have (derived; the measured figures are in
   [the benchmarks](docs/benchmarks.md#what-a-sorted-load-holds-in-memory)). The backend's upload buffer comes on top,
   as for any load. It writes the same object, byte
@@ -174,6 +174,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A load's footer no longer builds a temporary array of numbers to encode the chunk index.** The index is now
+  written into one buffer sized to it, so the bytes are the same and the peak is lower: a load holds about 7 MiB at
+  most at the 65,536 chunks a segment can have, where the array added about 7 MiB while the footer was written (derived
+  from the writer's code; the measured figures are in
+  [the benchmarks](docs/benchmarks.md#what-a-sorted-load-holds-in-memory)). Every load gains it, sorted or not.
 - **The packages no longer contain declaration files for internal modules.** A package's tarball held a `.d.ts` for
   every source file, though no `exports` entry made those modules importable and no public declaration imported them;
   it now holds only the declarations its `exports` entries reach, and the files they import. The conformance suite's
