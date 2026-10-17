@@ -7,7 +7,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import fc from 'fast-check';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { SegmentEngine, BoundedLru } from '@cloudbitmaps/core';
 import type { CodecBitmap, IMetricsSink, MetricEvent } from '@cloudbitmaps/core';
 import { chunkGenKey } from '@/core/keys';
@@ -263,10 +263,17 @@ const spread = (chunks: number, perChunk: number): number[] =>
 const WIDE_IDS = randomIds(300_000);
 
 /**
- * The time an encrypted test of the wide segment may take. Loading and sealing 300,000 random ids took 2 to 5 seconds
- * on CI's runners (measured), against vitest's default of 5, so these two tests get more room than the default.
+ * The encrypted wide segment, built once, before the tests of the block that uses it: sealing 300,000 ids chunk by chunk
+ * takes over a second, which a loaded runner can stretch past a test's timeout. The tests that use it only read, so each
+ * one starts from `reset()` with a store of its own (a cold cache). `reset()` keeps a `hint()`, so a test on this shared
+ * segment must not call one.
  */
-const ENCRYPTED_WIDE_MS = 30_000;
+let encryptedWide: ReturnType<typeof wideWorld> | undefined;
+const encryptedWideWorld = async (): ReturnType<typeof wideWorld> => {
+  const w = await (encryptedWide ??= wideWorld(WIDE_IDS, { encrypted: true }));
+  w.reset();
+  return w;
+};
 
 interface Seen {
   registry: number;
@@ -367,6 +374,10 @@ async function crowdOut(w: WideWorld, store: CloudRoaring): Promise<void> {
 }
 
 describe('a cold open sizes its tail read from the row summary', () => {
+  beforeAll(async () => {
+    await encryptedWideWorld();
+  }, 60_000);
+
   it('a cold has() of 300,000 random ids on a cleartext segment is a row, one tail and one range read', async () => {
     const w = await wideWorld(WIDE_IDS);
     const { tailBytes } = await w.facts();
@@ -382,22 +393,18 @@ describe('a cold open sizes its tail read from the row summary', () => {
     expect(w.seen.tailSizes).toEqual([tailBytes]);
   });
 
-  it(
-    'an encrypted segment is opened as before: the default tail beside the key, then the index range read',
-    async () => {
-      const w = await wideWorld(WIDE_IDS, { encrypted: true });
-      expect(await w.store().segment('wide').has(WIDE_IDS[1234]!)).toBe(true);
-      // The same on main, measured: the encrypted open is not sized, so it keeps its overlap and its range read.
-      expect({
-        registry: w.seen.registry,
-        tails: w.seen.tails,
-        ranges: w.seen.ranges,
-        keystore: w.seen.keystore,
-      }).toEqual({ registry: 1, tails: 1, ranges: 2, keystore: 1 });
-      expect(w.seen.tailSizes).toEqual([DEFAULT_TAIL]);
-    },
-    ENCRYPTED_WIDE_MS,
-  );
+  it('an encrypted segment is opened as before: the default tail beside the key, then the index range read', async () => {
+    const w = await encryptedWideWorld();
+    expect(await w.store().segment('wide').has(WIDE_IDS[1234]!)).toBe(true);
+    // The same on main, measured: the encrypted open is not sized, so it keeps its overlap and its range read.
+    expect({
+      registry: w.seen.registry,
+      tails: w.seen.tails,
+      ranges: w.seen.ranges,
+      keystore: w.seen.keystore,
+    }).toEqual({ registry: 1, tails: 1, ranges: 2, keystore: 1 });
+    expect(w.seen.tailSizes).toEqual([DEFAULT_TAIL]);
+  });
 
   it('answers the same whatever the summary says', async () => {
     // One segment serves every hint: `hint` only rewrites what the row read answers, and each store starts cold.
@@ -562,17 +569,13 @@ describe('a cold open sizes its tail read from the row summary', () => {
     ]);
   });
 
-  it(
-    "an encrypted segment's consistency open waits for the key before its tail read, and is sized",
-    async () => {
-      const w = await wideWorld(WIDE_IDS, { encrypted: true });
-      const { tailBytes } = await w.facts();
-      const report = await w.store().checkConsistency({ summaries: true });
-      expect(report.inconsistent).toEqual([]);
-      expect(w.seen.ranges).toBe(0);
-      expect(w.seen.keystore).toBe(1);
-      expect(w.seen.tailSizes.filter((n) => n > 0)).toEqual([tailBytes]);
-    },
-    ENCRYPTED_WIDE_MS,
-  );
+  it("an encrypted segment's consistency open waits for the key before its tail read, and is sized", async () => {
+    const w = await encryptedWideWorld();
+    const { tailBytes } = await w.facts();
+    const report = await w.store().checkConsistency({ summaries: true });
+    expect(report.inconsistent).toEqual([]);
+    expect(w.seen.ranges).toBe(0);
+    expect(w.seen.keystore).toBe(1);
+    expect(w.seen.tailSizes.filter((n) => n > 0)).toEqual([tailBytes]);
+  });
 });
