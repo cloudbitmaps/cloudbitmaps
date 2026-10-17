@@ -77,8 +77,8 @@ Pass the cursor itself. The one way to make a load expensive is to build the who
 **Ids that already ascend: `sorted: true`.** A load of ids holds the whole generation in memory before it writes it
 ([memory](#memory-and-where-a-load-runs), below). When your source yields its ids in ascending order, as a query with an
 `ORDER BY` on the id, a sorted file or a merge of sorted runs does, pass `sorted: true`: the load cuts the ids into one
-chunk at a time and writes each chunk while the object uploads, so it holds about one chunk's ids, whatever the
-segment's size.
+chunk at a time and writes each chunk while the object uploads, so it holds one chunk and the writer's index of the
+chunks written, up to about 14 MiB whatever the segment's size.
 
 ```ts
 // Your function: yields the ids in ascending order, as `ORDER BY user_id` returns them.
@@ -93,9 +93,10 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
 - **Ascending, with repeats.** An id equal to the one before it is skipped. An id lower than the one before it throws
   `ValidationError` naming its position and never the id (`ids[41]: lower than the id before it; …`): sort at the
   source, or leave `sorted` off. A bad id is refused as it is without the option, at its position.
-- **For ids only.** With `{ serialized }`, `{ bitmap }` or a bitmap, `sorted: true` throws `ValidationError` before any
-  request: those are held whole already and written from their own containers. So does a `sorted` that is not a
-  boolean. The `*Into` verbs do not take it.
+- **For ids only.** With `{ serialized }`, `{ bitmap }` or a `RoaringBitmap32` of the `roaring` this package uses,
+  `sorted: true` throws `ValidationError` before any request: those are held whole already and written from their own
+  containers. A bitmap from another copy of `roaring` loads as the ids it iterates, which ascend, so it takes `sorted`.
+  A `sorted` that is not a boolean throws too. The `*Into` verbs do not take it.
 - **The segment is judged before an id is read.** The row and its refusals (a destroyed segment, an encrypted one the
   load has no keystore for, `requireEncryption` on a cleartext one), the generation number and the key are all settled
   first, so a load refused there reads none of your ids.
@@ -284,36 +285,26 @@ allows, or larger than `guard.maxGrowth` allows, is refused. A guard that has to
 no usable summary, meets an object it cannot read and judges against nothing. Leave `minRetained` and `maxGrowth` out to
 repair a segment whose row remembers a size: `allowEmpty: true` lifts neither refusal. See [disaster recovery](disaster-recovery.md).
 
-### Memory, and where a load runs
+## Memory, and where a load runs
 
 **Without `sorted`, memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per
 non-empty chunk, so a billion duplicate-heavy ids stream through holding only the distinct result. The buffer between
 the input and the bitmaps holds at most 1,048,576 ids, about 28 MB measured, whatever the key distribution. Such a load
 holds the whole generation in memory, which suits a batch job and not a request handler.
 
-**With `sorted: true`, memory does not grow with the segment.** The load holds one chunk's ids (a fixed buffer of
-65,536 of them, 256 KiB) and that chunk's bitmap, and the writer's index of the chunks written so far, which it needs
-for the object's footer: about 100 bytes a chunk, up to 65,536 chunks. Measured on 2026-10-17 over a storage that keeps
-nothing, on an Apple M3 Pro with Node 24.18, as the highest reading of the JS heap, external memory and roaring's native
-memory after forced collections, over the reading before the load:
+**With `sorted: true`, memory does not grow with the ids.** The load holds one chunk's ids (a fixed buffer of 65,536 of
+them, 256 KiB) and that chunk's bitmap, and the writer's index of the chunks written so far, which it needs for the
+object's footer. The index grows with the chunks a segment has, never with its ids: while the footer is written it
+takes about 200 bytes a chunk, the index and the array its encoding builds, so **up to about 14 MiB** at the 65,536
+chunks a segment can have (derived from the writer's code). The measured figures, how they were taken, and what an
+unsorted load of the same ids holds are in [the benchmarks](../benchmarks.md#what-a-sorted-load-holds-in-memory).
 
-| ids | chunks | sorted load, at its peak | unsorted load, at its peak |
-|---|---|---|---|
-| 100,000 | 8,192 | 1.1 MiB | |
-| 1,000,000 | 8,192 | 1.1 MiB | 9.2 MiB |
-| 10,000,000 | 8,192 | 1.1 MiB | 31.0 MiB |
-| 4,000,000 | 65,536 | 6.8 MiB | 37.8 MiB |
-
-The first three rows are `tests/core/load-sorted-heap.test.ts`, which holds the flat line, a cap and the contrast on
-every change (at a million ids; at ten million in the full-strength run). The last row is the same measurement with the
-ids spread over every chunk a segment can have, run once by hand: the index is what grows with the chunk count.
-
-**Either way, the backend buffers some of the object.** On S3 and Azure Blob the writer buffers up to one upload part
-or block (8 MiB by default) and copies it into one body to send it, so it holds up to about twice that at a flush, 16 MiB
-at the default; an object smaller than one part goes up as a single request. On GCS it buffers up to the simple-upload
-threshold (8 MiB by default), about twice that when it switches to a resumable upload, and then the stream's own
-buffer. `LocalFsStorage` writes to a file as it goes and holds next to nothing. `MemoryStorage` holds the whole object,
-as it holds every object.
+**Either way, the backend buffers some of the object** (derived from the drivers' code, not measured). On S3 and Azure
+Blob the writer buffers up to one upload part or block (8 MiB by default) and copies it into one body to send it, so it
+holds up to about twice that at a flush, 16 MiB at the default; an object smaller than one part goes up as a single
+request. On GCS it buffers up to the simple-upload threshold (8 MiB by default), about twice that when it switches to a
+resumable upload, and then the stream's own buffer. `LocalFsStorage` writes to a file as it goes and holds next to
+nothing. `MemoryStorage` holds the whole object, as it holds every object.
 
 **A load is a batch job, not a request handler.** It streams the object to the bucket and is CPU-heavy in short bursts
 (serializing about 65,000 chunks for a segment spread across the id space). It yields the event loop periodically, so

@@ -545,12 +545,14 @@ index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader c
 
 **A load's memory is the generation, unless its ids are sorted.** A load of ids holds the generation it builds, one
 bitmap per non-empty chunk, and a buffer of up to about 28 MB; a bitmap load holds the bitmap decoded and re-encoded.
-A load with `sorted: true` holds one chunk's ids and bitmap and the writer's index (about 100 bytes a chunk, so about 7
-MiB at the most a segment can have, 65,536), whatever the segment's size. Any load adds what the backend buffers of the
-object: up to about twice the part or block size on S3 and Azure Blob at a flush (16 MiB at the 8 MiB default), up to
-about twice the simple-upload threshold on GCS when it switches to a resumable upload, next to nothing on the local
-filesystem, and the whole object in `MemoryStorage` ([memory, sorted or not](loading.md#memory-and-where-a-load-runs)). No
-budget bounds a load: size the process for these.
+A load with `sorted: true` holds one chunk's ids and bitmap and the writer's index, whatever the segment's size: up to
+about 14 MiB at the 65,536 chunks a segment can have, while the footer is written (derived from the writer's code;
+[the measured figures](../benchmarks.md#what-a-sorted-load-holds-in-memory)). Any load adds what the backend buffers of
+the object, derived from the drivers' code and not measured: up to about twice the part or block size on S3 and Azure
+Blob at a flush (16 MiB at the 8 MiB default), up to about twice the simple-upload threshold on GCS when it switches to
+a resumable upload, next to nothing on the local filesystem, and the whole object in `MemoryStorage`
+([memory, and where a load runs](loading.md#memory-and-where-a-load-runs)). No budget bounds a load: size the process
+for these.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29
 billion members. `maxScanSegments`, an option of `store.retireExpired` and `store.checkConsistency` (default 250,000), counts segments, not members: 500 audience segments count as 500, whatever their size.

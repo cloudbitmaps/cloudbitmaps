@@ -154,7 +154,7 @@ Three things to know:
   [Loading in depth](loading.md#when-a-load-is-refused).
 - **A load is a batch job, not a request handler.** It holds the whole set in memory and uses a core for a moment.
   Run it from a scheduled job, a queue consumer or a short-lived container, and keep the request path for reads. Ids
-  that already ascend can load with `sorted: true`, which holds about one chunk instead
+  that already ascend can load with `sorted: true`, which holds one chunk and the writer's index instead
   ([what a load accepts](loading.md#what-a-load-accepts)).
 - **There is no `create`.** `store.exists({ segment })` answers "has this segment been loaded?" with one registry
   read, and `store.segments()` streams what the registry holds as an async iterable:

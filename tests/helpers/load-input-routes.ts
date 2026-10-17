@@ -298,10 +298,11 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
 
 /**
  * Routed files the `sorted` project does not run, each with the reason. None depends on the order the caller gave the
- * ids in. These are the seven heaviest routed files, about three quarters of the project's run time between them, whose
- * loads only build what another behaviour is tested over: with them, the project made the suite about a quarter slower
- * in CI. What the sorted path changes, the write, is held to the unsorted load's bytes by
- * `tests/core/load-sorted.property.test.ts`, and every other routed file still runs.
+ * ids in. These are the seven heaviest routed files, whose loads only build what another behaviour is tested over:
+ * measured locally at `--maxWorkers=2`, they took about three quarters of the project's summed file time, and leaving
+ * them out cut its wall time from 61 s to 22 s, about 8% of the suite's. What a sorted load changes, its write and the
+ * order it reads the row in, is held by `tests/core/load-sorted.test.ts` and the property test of its bytes, and every
+ * other routed file still runs.
  */
 export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {
   'tests/drivers/azure/read-timeout.test.ts':
@@ -311,11 +312,13 @@ export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {
     'times out reads against a stalled stub S3 endpoint; its one load only seeds the segment it reads, and its run time is ' +
     'the timeouts it waits out, so a third run would wait them out again and exercise no part of the load path',
   'tests/core/known-generations.property.test.ts':
-    "a model of the row's ledger over publishes, collections, rollbacks and erasures, code a sorted load shares with an " +
-    'unsorted one; the write is the only step the sorted path changes, and a third run would repeat its property cases',
+    "a model of the row's ledger over publishes, collections, rollbacks and erasures, code a sorted load shares; the races " +
+    'it steps through are run for sorted loads by the routed files that stay (load, publish-reconcile and ' +
+    'registry-write-token race the number and the publish), so a third run would repeat its property cases',
   'tests/core/known-generations-cap.property.test.ts':
-    "holds the row's ledger to its cap over three hundred publishes per case, code a sorted load shares with an unsorted " +
-    'one; the write is the only step the sorted path changes, and a third run would repeat its property cases',
+    "holds the row's ledger to its cap over three hundred publishes per case, publish code a sorted load shares; its " +
+    'loads only drive those publishes, which the routed files that stay run for sorted loads, so a third run would ' +
+    'repeat its property cases',
   'tests/bench/calibrate-guards.test.ts':
     "its time is the calibration harness's child processes, which no setup file reaches, and its own loads only seed the " +
     'figures those children are compared with, so a third run would exercise no part of the load path',

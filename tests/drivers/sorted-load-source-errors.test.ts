@@ -168,12 +168,12 @@ describe.each(Object.keys(BACKENDS))('a sorted load on %s', (name) => {
       () => new Error('a plain error, the warm-up'),
       () => new Error('a plain error, the control'),
       () =>
-        Object.assign(new Error('upstream 503\nauthorization: Bearer caller-token'), {
-          headers: { authorization: 'Bearer caller-token', 'x-api-key': 'caller-key' },
-          $metadata: { httpStatusCode: 409 },
+        Object.assign(new Error('the warehouse answered 503'), {
+          // Credential-shaped fields, which a driver's scrubber redacts on an error it maps.
+          headers: { 'x-api-key': 'caller-key' },
           config: { password: 'caller-password' },
         }),
-      // Shaped like a missing object, which the GCS driver answers by listing the bucket.
+      // Shaped like a missing object, which the GCS driver would answer by checking its bucket.
       () => Object.assign(new Error('the warehouse row is gone'), { code: 404, status: 404 }),
     ];
     const requests: number[] = [];
@@ -195,25 +195,31 @@ describe.each(Object.keys(BACKENDS))('a sorted load on %s', (name) => {
     expect(requests.slice(1)).toEqual([requests[1], requests[1], requests[1]]);
   });
 
-  it("throws the codec's own error when building a chunk fails, as the codec raised it", async () => {
-    const failure = Object.assign(new Error('the codec could not build a chunk'), {
-      $metadata: { httpStatusCode: 503 },
-      code: 'ECONNRESET',
-    });
-    let made = 0;
-    const codec = {
-      ...roaringCodec,
-      fromValues: (values: Iterable<number>) => {
-        if (++made === 3) throw failure;
-        return roaringCodec.fromValues(values);
-      },
-    };
-    const ids = [1, 70_000, 140_000, 210_000];
-    expect(await thrown(loadSegment(SEG, ids, { ...deps(), codec }, { sorted: true }))).toBe(
-      failure,
-    );
-    expect(await generations(backend.storage)).toEqual([]);
-  });
+  it.each([
+    ['a chunk the next id closes', 3],
+    ['the last chunk', 4],
+  ])(
+    "throws the codec's own error when building %s fails, as the codec raised it",
+    async (_, at) => {
+      const failure = Object.assign(new Error('the codec could not build a chunk'), {
+        $metadata: { httpStatusCode: 503 },
+        code: 'ECONNRESET',
+      });
+      let made = 0;
+      const codec = {
+        ...roaringCodec,
+        fromValues: (values: Iterable<number>) => {
+          if (++made === at) throw failure;
+          return roaringCodec.fromValues(values);
+        },
+      };
+      const ids = [1, 70_000, 140_000, 210_000];
+      expect(await thrown(loadSegment(SEG, ids, { ...deps(), codec }, { sorted: true }))).toBe(
+        failure,
+      );
+      expect(await generations(backend.storage)).toEqual([]);
+    },
+  );
 
   it('throws the very error a sync source raised', async () => {
     const raised = SHAPES['409 conflict']!();

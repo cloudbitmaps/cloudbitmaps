@@ -51,7 +51,7 @@ Any other key is refused by name.
 | `connectionString` and `container` | build a container client for you |
 | `containerClient` | your own container-scoped client, instead of the two above; giving both is refused |
 | `prefix` | a key prefix for everything this store writes |
-| `blockBytes` | the staged block size (default 8 MiB; the upload buffers one block at a time and copies it into one body to stage it, so it holds up to about twice the block size at a flush, 16 MiB at the default). Above Azure's 4,000 MiB block limit is a `ValidationError` |
+| `blockBytes` | the staged block size (default 8 MiB; the upload buffers one block at a time and copies it into one body to stage it, so it holds up to about twice the block size at a flush, 16 MiB at the default, derived from the driver's code). Above Azure's 4,000 MiB block limit is a `ValidationError` |
 | `maxObjectBytes` | the largest blob (default `blockBytes` × 50,000, about 390 GiB). Above 50,000 blocks of 4,000 MiB, about 190.7 TiB, is a `ValidationError` |
 | `readTimeoutMs` | how long each read request may take, its body included, before it is cut off with a `TransientError` the store's read retry repeats (default `0`, off) |
 | `conditionalDelete` | whether the service applies `ifMatch` on a Delete Blob: the registry then removes a deleted row rather than leaving a tombstone every full listing reads, and the storage half deletes an erasure's holder only while it is the blob the erasure read, by its ETag. On by default: Azure Blob applies the precondition, and so does Azurite. A blob with a snapshot refuses the delete (`409 SnapshotsPresent`), which the sweep counts in `purgeFaults`. Needs a role that may delete blobs on the registry prefix |

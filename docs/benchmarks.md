@@ -362,6 +362,41 @@ an x64 Linux runner and fails the build if the workload is OOM-killed or creeps;
 number moves with the machine and the network as well, which is why the latency figures above come from a run
 inside the region and not from a laptop.
 
+## What a sorted load holds in memory
+
+> **Measured** by `tests/core/load-sorted-heap.test.ts` on every pull request, at the reduced size, and nightly at the
+> full size, on CI's Node 22 and 24 (GitHub's Ubuntu runners), and once on an Apple M3 Pro with Node 24.18.1, all on
+> 2026-10-17. The figures are heap readings, not RSS. CI holds the bounds below, never these exact figures.
+
+**How it is measured.** A warm-up load runs first, so no tier pays the one-off allocations of the first load in a
+process. Then three `sorted: true` loads of ten and a hundred times as many ids, spread over the same 8,192 chunks
+(array containers, ids three apart), so the writer's index is the same size at every tier, and an unsorted load of the
+largest tier's ids. The ids come from a generator, and the storage hashes what it is sent and keeps none of it, so
+neither the input nor a backend's buffer is in the figure. Every 65,536 ids and at every sink write of 64 KiB or more,
+the test lets a turn of the event loop pass, forces four synchronous major collections, and reads the JS heap, external
+memory and the native memory roaring's bitmaps hold, by roaring's own count (on Node 24 the heap statistics' external
+figure leaves roaring's out). Each figure is the highest reading over the one taken just before the load.
+
+| ids | sorted, CI Node 22 | sorted, CI Node 24 | sorted, M3 Pro | unsorted, CI Node 22 / 24 | unsorted, M3 Pro |
+|---|---|---|---|---|---|
+| 10,000 | 1.23 MiB | 1.21 MiB | 1.22 MiB | | |
+| 100,000 | 0.96–1.03 MiB | 0.96–1.02 MiB | 0.96–1.03 MiB | | |
+| 1,000,000 | 1.11–1.17 MiB | 1.08–1.10 MiB | 1.09–1.10 MiB | 9.24 MiB | 9.24 MiB |
+| 10,000,000 | 1.13 MiB | 1.08 MiB | 1.08 MiB | 28.73 / 28.79 MiB | 30.98 MiB |
+
+The 100,000 and 1,000,000 rows are measured at both sizes, whose figures differ a little; the ranges are both. At most
+two chunk bitmaps were alive at any reading of a sorted load, and all 8,192 at the unsorted load's. The sorted and
+unsorted loads of the largest tier wrote the same object.
+
+**What these leave out.** They are samples after collection, not a high-water mark: what lives between two readings
+and is gone by the next is not in them. Above all, the array the index's encoding builds while the footer is written,
+about as large again as the index, is garbage before the index reaches the sink. At the footer a sorted load holds
+about 200 bytes a chunk, the index and that array, so **up to about 14 MiB at the 65,536 chunks a segment can have**
+(derived from the writer's code). Measured by hand once, the same way, over all 65,536 chunks (4,000,000 ids, before
+the warm-up was added): 6.76 MiB, the index's share without the encoding's array, against 37.78 MiB for the unsorted
+load. The index grows with the chunk count, never with the ids. A backend's upload buffer comes on top of all of it:
+[memory, and where a load runs](guide/loading.md#memory-and-where-a-load-runs).
+
 ## Caveats
 
 - **Default rates, one cluster** (`aws-us-east-1-ondemand` against `ONE_REDIS_HA_CLUSTER`, cache off). Your
@@ -370,10 +405,11 @@ inside the region and not from a laptop.
   works through. Feed your own `PricingProfile` and workload to `estimateCost()` from `@cloudbitmaps/tools`.
 - **Model, not a cloud bill** — the dollars in the crossover chart come from the cost formulas + published
   rates. Measured AWS dollars live in [Real-cloud calibration](#real-cloud-calibration--aws).
-- **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
+- **Three kinds of number here, and one table of heap readings.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
   the at-scale table is _measured memory + wall-clock_ (a real run, the fleet on local disk and the large
-  intersect in memory, machine-dependent, never CI-gated — shared runners are too noisy); and the real-cloud section is _measured AWS cost_ (owner-run against
-  a real account, on 2026-10-13, from inside the region). Only the third is cloud-calibrated, and even then the dollars are
+  intersect in memory, machine-dependent, never CI-gated — shared runners are too noisy); the sorted load's table is
+  _measured heap_ from a unit test, whose bounds CI holds; and the real-cloud section is _measured AWS cost_ (owner-run against
+  a real account, on 2026-10-13, from inside the region). Only the last is cloud-calibrated, and even then the dollars are
   published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
   default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
