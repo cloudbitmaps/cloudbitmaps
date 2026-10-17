@@ -251,6 +251,9 @@ function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Co
     if (values !== undefined && !values.includes(key.toLowerCase())) continue;
     const descriptor = Object.getOwnPropertyDescriptor(copy, key);
     if (descriptor?.value == null || descriptor.value === REDACTED) continue;
+    // A number or a boolean is never a credential, and it is what classification reads from a record such as
+    // `$metadata` (`httpStatusCode`), which a response can pair with a request id that spells a credential name.
+    if (typeof descriptor.value !== 'string' && typeof descriptor.value !== 'object') continue;
     define(copy, key, REDACTED, descriptor.enumerable ?? false);
     ctx.changed = true;
   }

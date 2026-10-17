@@ -96,6 +96,13 @@ const ANSWERS: Record<string, Answer> = {
   '500 InternalError': s3Error(500, 'InternalError'),
   '503 SlowDown': s3Error(503, 'SlowDown'),
   '503 ServiceUnavailable': s3Error(503, 'ServiceUnavailable'),
+  // A request id is the store's to choose: one that spells a credential name must not cost the status its record holds.
+  '503 ServiceUnavailable, request id "token"': s3Error(503, 'ServiceUnavailable', '', {
+    'x-amz-request-id': 'token',
+  }),
+  '500 InternalError, request id "cookie"': s3Error(500, 'InternalError', '', {
+    'x-amz-request-id': 'cookie',
+  }),
   '502 proxy page quoting the request': raw(
     502,
     'text/html',
@@ -180,11 +187,11 @@ describe('S3: a scrubbed SDK error classifies as the raw one', LIMIT, () => {
   afterAll(async () => {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    // 5 commands, 20 answers and 2 credentials make 200 cases; a 200 whose body is not XML is a success for all but the
-    // listing, which leaves 192 errors. Each of the 152 that carries the SDK's response is copied; the reset, the
+    // 5 commands, 22 answers and 2 credentials make 220 cases; a 200 whose body is not XML is a success for all but the
+    // listing, which leaves 212 errors. Each of the 172 that carries the SDK's response is copied; the reset, the
     // timeout, the abort and the refused connection carry none.
-    expect(compared).toBe(192);
-    expect(copied).toBe(152);
+    expect(compared).toBe(212);
+    expect(copied).toBe(172);
   });
 
   const client = (session: boolean, endpoint = url): S3Client =>

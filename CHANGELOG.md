@@ -105,7 +105,7 @@ so, and so do the module headers in the code.
   started a line. Now, in the error the driver throws, the value under a credential header or field name is replaced
   by `[redacted]` (`authorization`, `x-amz-security-token`, `x-amz-s3session-token`, an SSE-C key, `secretAccessKey`,
   `sessionToken`, `SignatureProvided`, `CanonicalRequest`, `CanonicalRequestBytes`, `Token-0`), and so are the value
-  beside a credential's name in a list or a record (a header table's row, a `{ name, value }` pair, S3's
+  beside a credential's name in a list or a record (a table row that parses to `{ th, td }` with one name and one value, a `{ name, value }` pair, S3's
   `ArgumentName` and `ArgumentValue`), a credential header line, a SigV4 signature (`Signature=`, `X-Amz-Signature=`,
   also percent-encoded) and a session token or SSE-C key after its header name, anywhere in the text; the access key id
   S3 names is kept. A credential in any other form is not recognised, and a text too large for these patterns is

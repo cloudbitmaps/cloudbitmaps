@@ -102,8 +102,8 @@ The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/mai
   session token (`Token-0`, on `ExpiredToken` and `InvalidToken`). In the error the driver throws, the value under a
   credential header or field name is replaced by `[redacted]` (`authorization`, `x-amz-security-token`,
   `x-amz-s3session-token`, an SSE-C key, `SignatureProvided`, `CanonicalRequest`, `Token-0` and the like; the access
-  key id S3 names is kept), and so are the value beside a credential's name in a list or a record (a header table's
-  row, a `{ name, value }` pair, `ArgumentName` and `ArgumentValue`), a credential header line, a SigV4 signature
+  key id S3 names is kept), and so are the value beside a credential's name in a list or a record (a table row that
+  parses to `{ th, td }` with one name and one value, a `{ name, value }` pair, `ArgumentName` and `ArgumentValue`), a credential header line, a SigV4 signature
   (`Signature=`, `X-Amz-Signature=`) and a session token or SSE-C key after its header name, anywhere in its text. A
   credential in another form is not recognised, and a text too large for these patterns is replaced whole. An SDK
   error that carries its transport or shows a credential, and every error it reaches (its `cause` chain, an
