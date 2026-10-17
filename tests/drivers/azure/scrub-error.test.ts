@@ -347,6 +347,18 @@ describe('scrubCredentials (Azure)', () => {
     });
   });
 
+  it('keeps a DOMException readable in a copy', () => {
+    const abort = new DOMException('This operation was aborted', 'AbortError');
+    const err = Object.assign(restError(), { cause: abort });
+    const out = scrubCredentials(err);
+    const copy = out.cause as DOMException;
+    expect(copy).not.toBe(abort);
+    expect(copy.name).toBe('AbortError');
+    expect(copy.message).toBe('This operation was aborted');
+    expect(copy.code).toBe(abort.code);
+    expect(String(copy)).toBe('AbortError: This operation was aborted');
+  });
+
   it('redacts a key that quotes a credential', () => {
     const err = Object.assign(new Error('x'), { details: { [`refused ${URL_WITH_SIG}`]: 1 } });
     const out = scrubCredentials(err);

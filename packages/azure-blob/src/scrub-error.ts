@@ -212,6 +212,7 @@ function copyRecord(value: object, ctx: Copying, depth: number): unknown {
       copyField(value, copy, key, ctx, depth);
     }
   }
+  if (errorLike) keepSlotFields(value, copy, ctx, depth);
   return copy;
 }
 
@@ -259,6 +260,31 @@ function copyField(
     configurable: true,
     enumerable: descriptor.enumerable ?? false,
   });
+}
+
+/**
+ * Carry over a `name`, `message` or `code` the original reads through its prototype and the copy cannot: a
+ * `DOMException`'s are getters over the instance's internal state, which throw on any other object.
+ */
+function keepSlotFields(original: object, copy: object, ctx: Copying, depth: number): void {
+  for (const key of ['name', 'message', 'code'] as const) {
+    if (Object.prototype.hasOwnProperty.call(original, key)) continue;
+    let held: unknown;
+    try {
+      held = (original as Record<string, unknown>)[key];
+    } catch {
+      continue;
+    }
+    let read: unknown = OMIT;
+    try {
+      read = (copy as Record<string, unknown>)[key];
+    } catch {
+      // the copy cannot read it
+    }
+    if (read === held) continue;
+    const kept = copyOf(held, ctx, depth + 1);
+    if (kept !== OMIT) define(copy, key, kept, false);
+  }
 }
 
 /**
