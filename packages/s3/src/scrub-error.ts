@@ -100,12 +100,20 @@ interface Copying {
 /** Marker for a value the copy leaves out. */
 const OMIT = Symbol('omit');
 
+/** An array index as an own key spells it. */
+const INDEX = /^(?:0|[1-9]\d*)$/;
+
 /**
- * Whether `value` has own properties other than the `carried` ones its copy keeps (an array's indices and `length`,
- * none on a map or a set): the copy leaves them out.
+ * Whether `value` has an own property its copy leaves out: any key but an index and `length` on an array, any key at
+ * all on a map or a set.
  */
-function hasExtraKeys(value: object, carried: number): boolean {
-  return Reflect.ownKeys(value).length !== carried;
+function hasNamedKeys(value: object): boolean {
+  if (!Array.isArray(value)) return Reflect.ownKeys(value).length > 0;
+  return Reflect.ownKeys(value).some(
+    (key) =>
+      key !== 'length' &&
+      !(typeof key === 'string' && INDEX.test(key) && Number(key) < 2 ** 32 - 1),
+  );
 }
 
 /** Define `key` on `copy` as a plain data property. */
@@ -140,7 +148,7 @@ function copyOf(value: unknown, ctx: Copying, depth: number): unknown {
 function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
   const list: unknown[] = [];
   ctx.copies.set(value, list);
-  if (hasExtraKeys(value, value.length + 1)) ctx.changed = true;
+  if (hasNamedKeys(value)) ctx.changed = true;
   let hidden = false;
   for (const item of value) {
     // A flat list of header names and values: the value after a credential name is one.
@@ -160,7 +168,7 @@ function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
 function copyMap(value: Map<unknown, unknown>, ctx: Copying, depth: number): Map<unknown, unknown> {
   const map = new Map<unknown, unknown>();
   ctx.copies.set(value, map);
-  if (hasExtraKeys(value, 0)) ctx.changed = true;
+  if (hasNamedKeys(value)) ctx.changed = true;
   for (const [k, v] of value) {
     const key = copyOf(k, ctx, depth + 1);
     if (key === OMIT) continue;
@@ -179,7 +187,7 @@ function copyMap(value: Map<unknown, unknown>, ctx: Copying, depth: number): Map
 function copySet(value: Set<unknown>, ctx: Copying, depth: number): Set<unknown> {
   const set = new Set<unknown>();
   ctx.copies.set(value, set);
-  if (hasExtraKeys(value, 0)) ctx.changed = true;
+  if (hasNamedKeys(value)) ctx.changed = true;
   for (const v of value) {
     const kept = copyOf(v, ctx, depth + 1);
     if (kept !== OMIT) set.add(kept);

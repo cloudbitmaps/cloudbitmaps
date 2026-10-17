@@ -397,6 +397,16 @@ describe('S3 scrubCredentials', () => {
     }
   });
 
+  it('copies a sparse list with as many named properties as holes, without them', () => {
+    // eslint-disable-next-line no-sparse-arrays
+    const list = Object.assign([, 'a'], { held: { authorization: VALUE } });
+    const err = Object.assign(new Error('x'), { list });
+    const out = scrubCredentials(err);
+    expect(out).not.toBe(err);
+    expect(Object.keys(out.list)).not.toContain('held');
+    expect(leaks(out)).toEqual([]);
+  });
+
   it('redacts a key that quotes a credential', () => {
     const err = Object.assign(new Error('x'), { [`x-amz-security-token: ${TOKEN}`]: 1 });
     const out = scrubCredentials(err);
