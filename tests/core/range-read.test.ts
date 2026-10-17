@@ -12,13 +12,16 @@ import fc from 'fast-check';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { chunkReads } from '../helpers/chunk-reads';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
-import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
+import type { CloudRoaringOptions, CombineOptions, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, seedSegment } from '../helpers/loaded';
 import { SafeBitmap } from '@/roaring-codec';
 import { SegmentEngine } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
+
+/** The range a read takes: the part of the shared options `iterate` and `everyNth` accept. */
+type Range = Pick<CombineOptions, 'after' | 'through'>;
 
 /** The chunks each read asked the reader for: coalescing makes the request count smaller than the chunk count. */
 const reads = chunkReads();
@@ -198,7 +201,7 @@ describe('a bad bound throws ValidationError when the stream is first read', () 
       const w = await world({ a: IDS, b: IDS });
       const a = w.store.segment('a');
       const b = w.store.segment('b');
-      const bad = range as IdRange;
+      const bad = range as Range;
       const reads = [
         () => a.iterate(bad),
         () => a.intersect([b], bad),
@@ -234,7 +237,7 @@ describe('every combine takes the range, on every operand and every exclude', ()
     const s = w.store.segment('s');
     for (const [after, through] of RANGES) {
       const range = { after, through };
-      const combos: Array<[string, (o: IdRange) => AsyncIterable<number>]> = [
+      const combos: Array<[string, (o: Range) => AsyncIterable<number>]> = [
         ['intersect', (o) => a.intersect([b], o)],
         ['intersect, exclude', (o) => a.intersect([b], { ...o, exclude: [s] })],
         ['union', (o) => a.union([b], o)],
@@ -354,7 +357,7 @@ describe('a range is read from any object that holds it, once, when the read is 
       return 2 * K + 1;
     }
   }
-  const inherited = (): IdRange => Object.create({ after: K, through: 2 * K + 1 }) as IdRange;
+  const inherited = (): Range => Object.create({ after: K, through: 2 * K + 1 }) as Range;
 
   it('a getter or an inherited bound is honoured by every verb, the *Into verbs included', async () => {
     const w = await world({ a: IDS, b: IDS, s: [K + 2] });
@@ -396,7 +399,7 @@ describe('a range is read from any object that holds it, once, when the read is 
   it('a Symbol bound is refused with ValidationError, not a TypeError from the message', async () => {
     const w = await world();
     await expect(
-      collect(w.store.segment('a').iterate({ after: Symbol('x') } as unknown as IdRange)),
+      collect(w.store.segment('a').iterate({ after: Symbol('x') } as unknown as Range)),
     ).rejects.toThrow(ValidationError);
   });
 
@@ -458,7 +461,7 @@ describe('a pin keeps its guarantees under a range', () => {
 
 describe('union, andNot and excludes fetch, and are charged, only in range — live and pinned', () => {
   const range = { after: K + 1, through: 3 * K + 5 }; // keys 1..3
-  type Run = (h: (n: string) => Promise<Segment>, o: IdRange) => Promise<AsyncIterable<number>>;
+  type Run = (h: (n: string) => Promise<Segment>, o: Range) => Promise<AsyncIterable<number>>;
   const CASES: Array<[string, Run, number]> = [
     ['union', async (h, o) => (await h('a')).union([await h('b')], o), 3 + 3],
     [

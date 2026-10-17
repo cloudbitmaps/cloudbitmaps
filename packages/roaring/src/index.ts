@@ -106,7 +106,6 @@ import type {
   Rng,
   SetRetentionResult,
   PinnedAt,
-  IdRange,
   SegmentRef,
 } from '@cloudbitmaps/core';
 import { OpenChargingStorage } from './open-charging-storage';
@@ -115,13 +114,11 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import type {
-  CombineExpr,
   CombineManyFeed,
-  CombineManyFeedRecord,
   CombineManyOperand,
-  CombineManyOperandStats,
-  CombineManyOutputStats,
-  CombineManyStats,
+  Expr,
+  MaterializeManyFeedRecord,
+  MaterializeManyStats,
 } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
@@ -197,20 +194,33 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
   }
 }
 
+/** The options of {@link CombineOptions} that decide what an `*Into` verb publishes: a read verb refuses them. */
+type WriteOption = 'audit' | 'allowEmpty' | 'guard' | 'metadata' | 'keep';
+/** The range of a read: all that `iterate` and `everyNth` take. */
+type RangeOptions = Pick<CombineOptions, 'after' | 'through'>;
+/** How a combine reads its operands: what `andNot` takes, and what the engine is handed beside the `exclude` refs. */
+type ReadOptions = Omit<CombineOptions, 'exclude' | WriteOption>;
+/** What `intersect` and `union` take: a read that can also subtract. */
+type StreamOptions = Omit<CombineOptions, WriteOption>;
+/** What `andNotInto` takes: every option but `exclude`, since its `excludes` argument is the subtraction. */
+type AndNotIntoKeys = Omit<CombineOptions, 'exclude'>;
+
 /**
- * What each call that takes options takes. Each table is held to the call's options type in both directions: a key the
- * type does not have, or one it has and the table leaves out, fails to compile.
+ * What each call that takes options takes. Each table is held in both directions to the type of what the call takes: a
+ * key the type does not have, or one it has and the table leaves out, fails to compile. The combines and the reads
+ * share one public options type, {@link CombineOptions}, and each takes part of it, so their tables are held to the
+ * parts above; a key outside a call's part type-checks and is refused here, at run time.
  */
 const CALL_KEYS = {
-  range: keysOf<IdRange>()(['after', 'through']),
-  andNot: keysOf<BaseCombineOptions>()([
+  range: keysOf<RangeOptions>()(['after', 'through']),
+  andNot: keysOf<ReadOptions>()([
     'after',
     'through',
     'concurrency',
     'budget',
     'allowAbsentOperands',
   ]),
-  combine: keysOf<CombineOptions>()([
+  combine: keysOf<StreamOptions>()([
     'after',
     'through',
     'concurrency',
@@ -218,7 +228,7 @@ const CALL_KEYS = {
     'allowAbsentOperands',
     'exclude',
   ]),
-  into: keysOf<MaterializeOptions>()([
+  into: keysOf<CombineOptions>()([
     'after',
     'through',
     'concurrency',
@@ -231,7 +241,7 @@ const CALL_KEYS = {
     'metadata',
     'keep',
   ]),
-  andNotInto: keysOf<AndNotIntoOptions>()([
+  andNotInto: keysOf<AndNotIntoKeys>()([
     'after',
     'through',
     'concurrency',
@@ -288,7 +298,25 @@ const CALL_KEYS = {
     'summaries',
     'generations',
   ]),
-  exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
+  exportSegments: keysOf<ExportOptions>()(['format', 'namespace', 'ndjsonBatchBytes']),
+} as const;
+
+/** The keys of `wider` that `known` does not list. */
+const outside = (wider: readonly string[], known: readonly string[]): readonly string[] =>
+  wider.filter((k) => !known.includes(k));
+
+/**
+ * The fields of {@link CombineOptions} each read and combine does not take. A call reads each by name and refuses it
+ * (see `optionsError`), so one inherited from a prototype or held in a getter is refused as an own key is, not dropped:
+ * an `exclude` so held on `andNot` was skipped, and the stream was wider than asked. `intersectInto` and `unionInto`
+ * take every field. `exportSegments` refuses `codec` the same way: the store exports with its own codec.
+ */
+const MISPLACED = {
+  range: outside(CALL_KEYS.into, CALL_KEYS.range),
+  andNot: outside(CALL_KEYS.into, CALL_KEYS.andNot),
+  combine: outside(CALL_KEYS.into, CALL_KEYS.combine),
+  andNotInto: outside(CALL_KEYS.into, CALL_KEYS.andNotInto),
+  exportSegments: ['codec'],
 } as const;
 
 /**
@@ -577,23 +605,6 @@ export interface EraseSubjectResult {
  */
 export type MaterializeRefusal = Exclude<LoadRefusal, 'superseded'>;
 
-/**
- * An expression over the operands of a {@link CloudRoaring.materializeMany} call: a string names an operand; a node holds
- * exactly one of `and`, `or` or `andNot` over a non-empty list of expressions. `andNot` subtracts every entry after the
- * first from the first, so it takes at least two. Plain JSON, so it can be logged and sent between tasks.
- */
-export type Expr = CombineExpr;
-
-/** What the call did to one operand: see {@link MaterializeManyStats.operands}. */
-export type MaterializeManyOperandStats = CombineManyOperandStats;
-/** What the call did to one output: see {@link MaterializeManyStats.outputs}. */
-export type MaterializeManyOutputStats = CombineManyOutputStats;
-/**
- * What a {@link CloudRoaring.materializeMany} call did: the groups it ran, its requests by class, the chunk-read budget it
- * used, the most it held resident, and, for each operand, the generation it was pinned at, began at and ended at.
- */
-export type MaterializeManyStats = CombineManyStats;
-
 /** One output of a {@link CloudRoaring.materializeMany} call. */
 export interface MaterializeManyOutput {
   /** The segment this output becomes a new generation of. Not an operand of the call, and named by no other output. */
@@ -602,27 +613,17 @@ export interface MaterializeManyOutput {
   readonly expr: Expr;
   /** Subtracted from the result, as the entries of an `andNot` after the first are. Pinned operands it names are re-checked before the publish. */
   readonly exclude?: Expr[];
-  /** As on {@link MaterializeOptions}. */
+  /** As {@link CombineOptions.guard} on an `*Into` verb. */
   readonly guard?: LoadGuard;
-  /** As on {@link MaterializeOptions}. */
+  /** As {@link CombineOptions.allowEmpty} on an `*Into` verb. */
   readonly allowEmpty?: boolean;
-  /** As on {@link MaterializeOptions}. */
+  /** As {@link CombineOptions.metadata} on an `*Into` verb. */
   readonly metadata?: GenerationMetadata;
-  /** As on {@link MaterializeOptions}. */
+  /** As {@link CombineOptions.audit} on an `*Into` verb. */
   readonly audit?: IAuditSink;
-  /** Generations to keep below the new one, as on {@link MaterializeOptions}; overrides the call's `keep`. */
+  /** Generations to keep below the new one, as {@link CombineOptions.keep} on an `*Into` verb; overrides the call's `keep`. */
   readonly keep?: number;
 }
-
-/**
- * One record of the feed of {@link CloudRoaring.materializeMany}: the ids some of the fed operands hold at one chunk key.
- * `key` is `id >>> 16`, an integer from 0 to 65,535, never below the previous record's; a key may arrive as several
- * consecutive records, each carrying some of the operands, and one record per key is the usual shape. `operands` maps a
- * declared fed name to its ids at the key: a real `Uint32Array` (not an `Int32Array`, `Buffer`, array or look-alike),
- * strictly ascending, every id inside the key. A name is given at most once per key, and an empty array is the same as
- * leaving the name out. The record is copied as it arrives, so the caller may drop or reuse its arrays once it has yielded it.
- */
-export type MaterializeManyFeedRecord = CombineManyFeedRecord;
 
 /**
  * Operands that arrive as records in chunk-key order instead of being stored, for {@link MaterializeManyOptions.feed}.
@@ -644,7 +645,7 @@ export interface MaterializeManyFeed {
 }
 
 /** The options of {@link CloudRoaring.materializeMany}. */
-export interface MaterializeManyOptions extends IdRange {
+export interface MaterializeManyOptions extends Pick<CombineOptions, 'after' | 'through'> {
   /**
    * The stored segments the expressions name. A set the caller holds in memory arrives as a {@link MaterializeManyOptions.feed}.
    */
@@ -830,6 +831,23 @@ const MATERIALIZE_MANY_KEYS = [
   'feed',
   'mayBeEmpty',
 ] as const;
+/**
+ * The fields of {@link CombineOptions} a `materializeMany` call does not take at its top level (an output takes the
+ * write options), read by name as a read or combine reads its own, so one inherited or held in a getter is refused.
+ */
+const MATERIALIZE_MANY_MISPLACED = outside(CALL_KEYS.into, MATERIALIZE_MANY_KEYS);
+
+/** The keys of a `materializeMany` call's options it does not take: every own one it does not list, and the misplaced. */
+function unknownManyKeys(options: object): string[] {
+  const unknown = Object.keys(options).filter(
+    (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
+  );
+  const bag = options as Record<string, unknown>;
+  for (const k of MATERIALIZE_MANY_MISPLACED) {
+    if (!unknown.includes(k) && bag[k] !== undefined) unknown.push(k);
+  }
+  return unknown;
+}
 const MATERIALIZE_MANY_OUTPUT_KEYS = [
   'dest',
   'expr',
@@ -884,7 +902,7 @@ export interface MaterializeResult {
   /**
    * The superseded generations collected after publishing. Empty when nothing was published — and **also
    * empty on a successful publish** unless you passed `keep`, because a materialisation collects nothing by
-   * default. See {@link MaterializeOptions.keep}.
+   * default. See {@link CombineOptions.keep}.
    */
   readonly collected: readonly number[];
 }
@@ -1220,7 +1238,7 @@ export class CloudRoaring {
     dest: SegmentRef,
     ids: LoadInput | CombineChunks,
     op: string,
-    options?: MaterializeOptions,
+    options?: CombineOptions,
   ): Promise<MaterializeResult> {
     // A materialisation's `keep` collects every generation below the new one beyond it, which a destination that
     // earlier materialisations kept in full needs a listing for.
@@ -1422,9 +1440,7 @@ export class CloudRoaring {
     }
     // The erasure counter as the call begins: a fed call is refused once it has moved.
     const epochAt = options.feed === undefined ? 0 : this.epochNow();
-    const unknown = Object.keys(options).filter(
-      (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
-    );
+    const unknown = unknownManyKeys(options);
     if (unknown.length > 0) {
       throw new ValidationError(
         `materializeMany: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}`,
@@ -1734,7 +1750,7 @@ export class CloudRoaring {
     const f = feed as Record<string, unknown>;
     return {
       names: f.names as string[],
-      records: f.records as AsyncIterable<CombineManyFeedRecord>,
+      records: f.records as AsyncIterable<MaterializeManyFeedRecord>,
       counts: f.counts as CombineManyFeed['counts'],
       ...(mayBeEmpty === undefined ? {} : { mayBeEmpty: mayBeEmpty as string[] }),
       epoch: { moved: () => this.epochMoved(epochAt) },
@@ -2791,24 +2807,52 @@ export class CloudRoaring {
    * **iff** this store was wired with their keystore — the export is therefore **cleartext**; protect it.
    * Crypto-shredded segments are skipped. A segment that can't be read is isolated into the manifest's `failed[]`
    * (the run continues), so "a manifest exists" means the run finished — check `failed`. The `export-segments`
-   * CLI wraps this with a filesystem sink.
+   * CLI wraps this with a filesystem sink. The `'roaring'` format's bitmaps are built by the store's own codec.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
-    checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments);
+    checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments, [], MISPLACED.exportSegments);
     const opts = picked(options, CALL_KEYS.exportSegments);
     const registry = this.requireRegistry('exportSegments');
-    // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
-    return runExport(this, registry, sink, { ...opts, codec: opts.codec ?? roaringCodec });
+    // The store's own codec builds the `'roaring'` format's bitmap: core's `runExport` is codec-agnostic and needs one.
+    return runExport(this, registry, sink, { ...opts, codec: roaringCodec });
   }
 }
 
 /**
- * Options common to every chunk-aligned combine (`intersect` / `union` / `andNot`), and the `*Into` verbs.
+ * The options of a read or a combine on a {@link Segment}: one type for all of them, and each verb takes the fields that
+ * apply to it.
  *
- * The range, `after` and `through`, applies to every operand and every `exclude`: the combine yields only the ids
- * in `(after, through]` and fetches only the chunks the range overlaps, as {@link Segment.iterate} does.
+ * | verb | takes |
+ * |---|---|
+ * | `iterate`, `everyNth` | `after`, `through` |
+ * | `intersect`, `union` | the range, `concurrency`, `budget`, `allowAbsentOperands`, `exclude` |
+ * | `andNot` | the same but `exclude`: its `excludes` argument is the subtraction |
+ * | `intersectInto`, `unionInto` | every field |
+ * | `andNotInto` | every field but `exclude` |
+ *
+ * `audit`, `allowEmpty`, `guard`, `metadata` and `keep` decide what an `*Into` verb publishes, and a read publishes
+ * nothing. A field a verb does not take is refused with a {@link ValidationError} that names it, before any request,
+ * whether the object holds it as an own key, inherits it or holds it in a getter: a streaming read fails when it is first
+ * read, and an `*Into` verb rejects. The compiler catches one only in an object
+ * literal given to `iterate` or `everyNth`, which take the range alone: `Pick<CombineOptions, 'after' | 'through'>`,
+ * the part {@link MaterializeManyOptions} extends.
+ *
+ * **The range**, `after` and `through`, is the ids greater than `after` and no greater than `through`, `(after,
+ * through]`, built for keyset paging: `after` is the last id the caller already has, `through` the end of its window.
+ * Each is optional: left out, the read starts at the first id or runs to the last. Each is an integer in
+ * `0..4294967295`, or the read throws {@link ValidationError} when it is first read. `after >= through` is an empty range,
+ * not an error, because a cursor that has reached the end of its window is normal; an empty range reads nothing, not even
+ * whether a combine's operands exist. On a combine the range applies to every operand and every `exclude`, and a read
+ * with a range fetches only the chunks it overlaps. The per-op budget is charged before the first fetch, for every chunk
+ * in the range, so with `after` alone it is charged to the end of the segment however early the caller stops; pass
+ * `through` to bound it. A read that lists its keys again after a move is charged again, with the chunks it has already
+ * taken.
  */
-export interface BaseCombineOptions extends IdRange {
+export interface CombineOptions {
+  /** Exclusive lower bound: the read yields only ids greater than this. */
+  readonly after?: number | undefined;
+  /** Inclusive upper bound: the read yields only ids up to and including this. */
+  readonly through?: number | undefined;
   /**
    * How far ahead each operand is read: a positive integer, default 32. The library's own stores read each operand as
    * one stream of coalesced ranges (chunks that sit near each other are one request), and `concurrency` is how many
@@ -2842,59 +2886,46 @@ export interface BaseCombineOptions extends IdRange {
    * operand that resolved to no chunks at all, so a normal combine pays nothing for it.
    */
   readonly allowAbsentOperands?: boolean;
-}
-
-/**
- * A combine that can also subtract.
- *
- * `exclude` is why suppression does not need an intermediate segment: applied here it folds into the same
- * chunk-aligned pass, and each exclude is read **only at the keys that survived** — so a large global opt-out
- * list costs reads proportional to the audience, not to itself.
- */
-export interface CombineOptions extends BaseCombineOptions {
-  /** Segments whose ids are subtracted from the result. */
-  readonly exclude?: Segment[];
-}
-
-/**
- * A combine that WRITES its result — the extra options `intersect`/`union`/`andNot` have no use for.
- *
- * Separate from {@link CombineOptions} on purpose: `allowEmpty` and `guard` decide whether a generation is
- * published, and a read verb publishes nothing. Offering them on `intersect()` would be offering a parameter
- * that cannot do anything.
- */
-export interface MaterializeOptions extends CombineOptions {
   /**
-   * Audit sink. A materialisation publishes a generation, and a publish is an auditable event
+   * Segments whose ids are subtracted from the result, on `intersect`, `union`, `intersectInto` and `unionInto`.
+   *
+   * `exclude` is why suppression does not need an intermediate segment: applied here it folds into the same
+   * chunk-aligned pass, and each exclude is read **only at the keys that survived** — so a large global opt-out
+   * list costs reads proportional to the audience, not to itself. `andNot` and `andNotInto` refuse it: their `excludes`
+   * argument is the subtraction, and a second one in the options would be two spellings of one thing.
+   */
+  readonly exclude?: Segment[];
+  /**
+   * Audit sink, for the `*Into` verbs. A materialisation publishes a generation, and a publish is an auditable event
    * (`segment.publish`, exactly as a load emits) — as is a refusal (`segment.load-refused`).
    *
    * It is on the call rather than on the store because that is where every other auditable operation takes it
    * (`eraseSubject`, `dropSegment`, `retireExpired`): the caller who performs the act decides where the record
    * goes. Without it a `*Into` would be the one write path in the library that could make a generation current
-   * and leave no trace in the compliance trail.
-   *
-   * It sits HERE rather than on {@link BaseCombineOptions} for the reason this type exists: the streaming verbs
-   * write nothing, so an audit sink on `intersect()` would be a parameter that could not do anything.
+   * and leave no trace in the compliance trail. A read verb writes nothing and emits nothing, so it refuses one.
    */
   readonly audit?: IAuditSink;
   /**
-   * Publish an empty result over a non-empty destination. Off by default, exactly as on {@link CloudRoaring.load}:
-   * an empty combine is far more often a mistake upstream — a typo'd operand, a segment that has not loaded
-   * yet, an `exclude` that swallowed everything — than an intent, and once it lands it is indistinguishable
-   * from a correct run.
+   * For the `*Into` verbs: publish an empty result over a non-empty destination. Off by default, exactly as on
+   * {@link CloudRoaring.load}: an empty combine is far more often a mistake upstream — a typo'd operand, a segment that
+   * has not loaded yet, an `exclude` that swallowed everything — than an intent, and once it lands it is
+   * indistinguishable from a correct run.
    */
   readonly allowEmpty?: boolean;
-  /** Refuse an implausible result rather than publish it. Same bounds, and same meaning, as on `load()`. */
+  /**
+   * For the `*Into` verbs: refuse an implausible result rather than publish it. Same bounds, and same meaning, as on
+   * `load()`.
+   */
   readonly guard?: LoadGuard;
   /**
-   * Metadata for the generation this call publishes, under the rules and with the meaning of
+   * For the `*Into` verbs: metadata for the generation the call publishes, under the rules and with the meaning of
    * {@link LoadOptions.metadata}: small, immutable, published with the pointer, never a subject's id. A value that
    * breaks a rule throws {@link ValidationError} before any request is made.
    */
   readonly metadata?: GenerationMetadata;
   /**
-   * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
-   * integer throws `ValidationError`.
+   * For the `*Into` verbs: generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is
+   * not a non-negative integer throws `ValidationError`.
    *
    * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects what it supersedes. An operator's
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
@@ -2991,17 +3022,17 @@ const twoPins = (a: PinnedAt | undefined, b: PinnedAt | undefined): string => {
 type EveryField<T> = { [K in keyof Required<T>]: T[K] | undefined };
 
 /** A read's range, read once, now, from whatever object holds it: a getter or an inherited bound included. */
-const rangeOf = (options: IdRange): EveryField<IdRange> => ({
+const rangeOf = (options: RangeOptions): EveryField<RangeOptions> => ({
   after: options.after,
   through: options.through,
 });
 
 /**
- * A combine's options, read once, now, field by field, for the same reason as {@link rangeOf}. Typed to name every
- * field, so an option added to {@link BaseCombineOptions} and not listed here fails to compile instead of being
- * dropped.
+ * How a combine reads its operands, read once, now, field by field, for the same reason as {@link rangeOf}. Typed to
+ * name every field, so a read option added to {@link CombineOptions} and not listed here fails to compile instead of
+ * being dropped.
  */
-const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions> => ({
+const readOptions = (options: ReadOptions): EveryField<ReadOptions> => ({
   ...rangeOf(options),
   concurrency: options.concurrency,
   budget: options.budget,
@@ -3080,15 +3111,6 @@ const AS_CHUNKS: CombineOutput<ChunkStream> = {
 };
 
 /**
- * What `andNotInto` takes: the write options without `exclude`, because its `excludes` argument IS the
- * subtraction — a second one in the options would be two spellings of one thing.
- *
- * Named rather than left as an inline `Omit` so it can be imported and annotated. The read sibling `andNot`
- * solves the same problem the same way, by taking {@link BaseCombineOptions}.
- */
-export type AndNotIntoOptions = Omit<MaterializeOptions, 'exclude'>;
-
-/**
  * The `keep` a materialisation passes when the caller does not: a grace window wide enough to collect nothing.
  *
  * The collection keeps `keep` generations below the pointer and deletes the rest, so an
@@ -3112,7 +3134,7 @@ type Materialize = (
   dest: SegmentRef,
   ids: LoadInput | CombineChunks,
   op: string,
-  options?: MaterializeOptions,
+  options?: CombineOptions,
 ) => Promise<MaterializeResult>;
 
 /** What a {@link Segment} is built from: the store's own wiring, which is why a handle is not constructible. */
@@ -3683,10 +3705,10 @@ export class Segment {
    * Each bound is optional and an integer in `0..4294967295`; a bad one throws {@link ValidationError} when the
    * stream is first read. `after >= through` is an empty range, which reads nothing.
    */
-  iterate(options?: IdRange): IdStream {
+  iterate(options?: Pick<CombineOptions, 'after' | 'through'>): IdStream {
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
-    const bad = optionsError(options, 'iterate', CALL_KEYS.range);
+    const bad = optionsError(options, 'iterate', CALL_KEYS.range, [], MISPLACED.range);
     if (bad !== undefined) return failing(bad);
     // Neither bound set is no range at all, which the engine reads on its full-read path.
     const range = options == null ? undefined : rangeOf(options);
@@ -3729,11 +3751,11 @@ export class Segment {
    * for await (const id of audience.everyNth(1_000)) ends.push(id); // the end of each window of 1,000
    * ```
    */
-  everyNth(n: number, options?: IdRange): IdIterator {
+  everyNth(n: number, options?: Pick<CombineOptions, 'after' | 'through'>): IdIterator {
     // The lease first: a leased handle past its lease throws, never reads empty.
     const lease = this.leaseError();
     if (lease !== undefined) return refusing(lease)();
-    const bad = optionsError(options, 'everyNth', CALL_KEYS.range);
+    const bad = optionsError(options, 'everyNth', CALL_KEYS.range, [], MISPLACED.range);
     if (bad !== undefined) return refusing(bad)();
     if (this.pinnedAt === undefined) {
       return refusing(
@@ -3768,7 +3790,7 @@ export class Segment {
   private refsIn(
     options: CombineOptions | null | undefined,
     exclude: readonly Segment[],
-  ): (BaseCombineOptions & { exclude?: SegmentRef[] }) | undefined {
+  ): (ReadOptions & { exclude?: SegmentRef[] }) | undefined {
     if (options == null) return undefined;
     return {
       ...readOptions(options),
@@ -3794,9 +3816,19 @@ export class Segment {
    * requests held ahead per operand: a positive integer, 32 by default).
    * AND is commutative, so `a.intersect([b])` and `b.intersect([a])` yield the same ids. Pass `budget` to
    * override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
+   *
+   * Of {@link CombineOptions} it takes the range, `concurrency`, `budget`, `allowAbsentOperands` and `exclude`; a write
+   * option (`audit`, `allowEmpty`, `guard`, `metadata`, `keep`) fails the stream with {@link ValidationError} when it is
+   * first read, before any request.
    */
   intersect(others: Segment[], options?: CombineOptions): IdStream {
-    const bad = optionsError(options, 'intersect', CALL_KEYS.combine, ['allowAbsentOperands']);
+    const bad = optionsError(
+      options,
+      'intersect',
+      CALL_KEYS.combine,
+      ['allowAbsentOperands'],
+      MISPLACED.combine,
+    );
     if (bad !== undefined) return failing(bad);
     return this.combineAs(AS_IDS, 'intersect', others, options ?? undefined);
   }
@@ -3820,11 +3852,12 @@ export class Segment {
    * materialisation that silently did not take effect is the one thing a caller cannot detect on its own.
    *
    * A call involving a handle whose lease has ended, or anything that is not a segment, is refused before any of this.
+   * It takes every field of {@link CombineOptions}, as `unionInto` does.
    */
   async intersectInto(
     dest: Segment,
     others: Segment[],
-    options?: MaterializeOptions,
+    options?: CombineOptions,
   ): Promise<MaterializeResult> {
     checkOptions(options, 'intersectInto', CALL_KEYS.into, ['allowEmpty', 'allowAbsentOperands']);
     return this.combineInto('intersectInto', dest, others, options);
@@ -3838,10 +3871,16 @@ export class Segment {
    * `intersect` prunes any key missing from any operand; union has nothing to prune. It is charged against the
    * same per-op budget, so a wide union is refused rather than quietly billed — pass `budget` to raise it
    * deliberately. If you find yourself unioning the same segments on every read, materializing the combined
-   * segment once (`unionInto`, or a load) is the cheaper shape.
+   * segment once (`unionInto`, or a load) is the cheaper shape. It takes the options {@link intersect} takes.
    */
   union(others: Segment[], options?: CombineOptions): IdStream {
-    const bad = optionsError(options, 'union', CALL_KEYS.combine, ['allowAbsentOperands']);
+    const bad = optionsError(
+      options,
+      'union',
+      CALL_KEYS.combine,
+      ['allowAbsentOperands'],
+      MISPLACED.combine,
+    );
     if (bad !== undefined) return failing(bad);
     return this.combineAs(AS_IDS, 'union', others, options ?? undefined);
   }
@@ -3850,7 +3889,7 @@ export class Segment {
   async unionInto(
     dest: Segment,
     others: Segment[],
-    options?: MaterializeOptions,
+    options?: CombineOptions,
   ): Promise<MaterializeResult> {
     checkOptions(options, 'unionInto', CALL_KEYS.into, ['allowEmpty', 'allowAbsentOperands']);
     return this.combineInto('unionInto', dest, others, options);
@@ -3866,23 +3905,39 @@ export class Segment {
    *
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
+   *
+   * It takes the options {@link intersect} takes but `exclude`, since `excludes` is its subtraction: `exclude` or a write
+   * option fails the stream with {@link ValidationError} when it is first read, before any request.
    */
-  andNot(excludes: Segment[], options?: BaseCombineOptions): IdStream {
-    const bad = optionsError(options, 'andNot', CALL_KEYS.andNot, ['allowAbsentOperands']);
+  andNot(excludes: Segment[], options?: CombineOptions): IdStream {
+    const bad = optionsError(
+      options,
+      'andNot',
+      CALL_KEYS.andNot,
+      ['allowAbsentOperands'],
+      MISPLACED.andNot,
+    );
     if (bad !== undefined) return failing(bad);
     return this.combineAs(AS_IDS, 'andNot', excludes, options ?? undefined);
   }
 
-  /** Materialize `this \ (excludes…)` as a **new generation of `dest`** — see {@link intersectInto}. */
+  /**
+   * Materialize `this \ (excludes…)` as a **new generation of `dest`** — see {@link intersectInto}. It takes every field
+   * of {@link CombineOptions} but `exclude`, since `excludes` is its subtraction: `exclude` is refused with
+   * {@link ValidationError} before any request.
+   */
   async andNotInto(
     dest: Segment,
     excludes: Segment[],
-    options?: AndNotIntoOptions,
+    options?: CombineOptions,
   ): Promise<MaterializeResult> {
-    checkOptions(options, 'andNotInto', CALL_KEYS.andNotInto, [
-      'allowEmpty',
-      'allowAbsentOperands',
-    ]);
+    checkOptions(
+      options,
+      'andNotInto',
+      CALL_KEYS.andNotInto,
+      ['allowEmpty', 'allowAbsentOperands'],
+      MISPLACED.andNotInto,
+    );
     return this.combineInto('andNotInto', dest, excludes, options);
   }
   /**
@@ -3934,7 +3989,7 @@ export class Segment {
     name: `${CombineVerb}Into`,
     dest: Segment,
     operands: Segment[],
-    options: MaterializeOptions | undefined,
+    options: CombineOptions | undefined,
   ): Promise<MaterializeResult> {
     const verb = name.slice(0, -'Into'.length) as CombineVerb;
     const listed = segmentList(
@@ -4043,6 +4098,7 @@ export type {
   ExportSkipped,
   ExportWriter,
   ExportedSegment,
+  Expr,
   GenKey,
   GenerationEntry,
   GenerationMetadata,
@@ -4052,7 +4108,6 @@ export type {
   IMetricsSink,
   IRegistryDriver,
   IStorageDriver,
-  IdRange,
   InProcessKeystoreOptions,
   LoadGuard,
   LoadInput,
@@ -4060,6 +4115,10 @@ export type {
   LoadRefusal,
   LoadResult,
   LocalFsStorageOptions,
+  MaterializeManyFeedRecord,
+  MaterializeManyOperandStats,
+  MaterializeManyOutputStats,
+  MaterializeManyStats,
   MemoryStorageOptions,
   MetricEvent,
   MetricOpName,

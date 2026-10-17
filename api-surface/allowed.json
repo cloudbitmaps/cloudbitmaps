@@ -102,5 +102,97 @@
   {
     "entry": "@cloudbitmaps/roaring CloudRoaring.checkConsistency",
     "reason": "takes an optional maxScanSegments, as retireExpired does, so the scan's ceiling can be raised on the store method; nothing that called it before changes"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Expr",
+    "reason": "Expr is declared once under its own name rather than as an alias of the engine's CombineExpr, so editor hovers and compiler errors print a name an application can import; the expressions it accepts are unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyStats*",
+    "reason": "MaterializeManyStats is declared once under its own name rather than as an alias of the engine's CombineManyStats, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOperandStats*",
+    "reason": "MaterializeManyOperandStats is declared once under its own name rather than as an alias of the engine's CombineManyOperandStats, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOutputStats*",
+    "reason": "MaterializeManyOutputStats is declared once under its own name rather than as an alias of the engine's CombineManyOutputStats, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyFeedRecord*",
+    "reason": "MaterializeManyFeedRecord is declared once under its own name rather than as an alias of the engine's CombineManyFeedRecord, so editor hovers and compiler errors print a name an application can import; its members are the alias's, unchanged"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineExpr",
+    "reason": "the engine's CombineExpr is renamed Expr where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineExpr any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyStats*",
+    "reason": "the engine's CombineManyStats is renamed MaterializeManyStats where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyStats any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyOperandStats*",
+    "reason": "the engine's CombineManyOperandStats is renamed MaterializeManyOperandStats where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyOperandStats any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyOutputStats*",
+    "reason": "the engine's CombineManyOutputStats is renamed MaterializeManyOutputStats where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyOutputStats any more"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) CombineManyFeedRecord*",
+    "reason": "the engine's CombineManyFeedRecord is renamed MaterializeManyFeedRecord where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyFeedRecord any more"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CombineOptions",
+    "reason": "CombineOptions is the one options type for every read and combine on a segment: it declares all eleven fields itself, each optional, rather than extending the types it replaces, and a verb refuses at run time, with a ValidationError before any request, a field it does not take; so a write option (audit, allowEmpty, guard, metadata, keep) on intersect or union, which take this type by name, type-checks and still throws a ValidationError before any request"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdRange*",
+    "reason": "merged into CombineOptions, which has the same after and through fields; iterate and everyNth take Pick<CombineOptions, 'after' | 'through'> and MaterializeManyOptions extends it"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring BaseCombineOptions*",
+    "reason": "merged into CombineOptions, which has its concurrency, budget and allowAbsentOperands fields unchanged; andNot takes CombineOptions and refuses exclude and the write options with a ValidationError before any request"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeOptions*",
+    "reason": "merged into CombineOptions, which has its audit, allowEmpty, guard, metadata and keep fields unchanged; intersectInto and unionInto take CombineOptions"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AndNotIntoOptions",
+    "reason": "merged into CombineOptions; andNotInto takes CombineOptions and refuses exclude with a ValidationError before any request, since its excludes argument is the subtraction"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOptions",
+    "reason": "it extends Pick<CombineOptions, 'after' | 'through'> in place of IdRange, which is merged into CombineOptions; the two fields are the same"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.iterate",
+    "reason": "the range parameter is Pick<CombineOptions, 'after' | 'through'> in place of IdRange, which is merged into CombineOptions; it takes the same two fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.everyNth",
+    "reason": "the range parameter is Pick<CombineOptions, 'after' | 'through'> in place of IdRange, which is merged into CombineOptions; it takes the same two fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.andNot",
+    "reason": "takes CombineOptions in place of BaseCombineOptions, which is merged into it; a field andNot does not take, such as exclude or a write option, type-checks and is refused with a ValidationError before any request"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.andNotInto",
+    "reason": "takes CombineOptions in place of AndNotIntoOptions, which is merged into it; exclude type-checks and is refused with a ValidationError before any request, as it was at run time"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.intersectInto",
+    "reason": "takes CombineOptions in place of MaterializeOptions, which is merged into it with the same fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.unionInto",
+    "reason": "takes CombineOptions in place of MaterializeOptions, which is merged into it with the same fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ExportOptions.codec",
+    "reason": "exportSegments always builds the 'roaring' format's bitmaps with the store's own roaring codec, which was the default, so it no longer takes a codec; a codec passed to it is refused with a ValidationError before any request"
   }
 ]

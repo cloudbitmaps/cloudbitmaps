@@ -26,12 +26,17 @@ export const kindOf = (v: unknown): string =>
  * options keeps working; and each of `booleans` present must be a boolean, `null` included. A bag of the wrong shape, a misspelt key or
  * a switch given as a string would otherwise read as no option at all, and silently widen what the call does: a scope
  * passed as a string swept every namespace, and `dryRun: 'true'` deleted.
+ *
+ * `misplaced` names the keys of a wider options type that the call does not take, such as `exclude` on `andNot`, which
+ * shares its options type with the combines that do. Each is read by name, so one inherited from a prototype or held
+ * in a getter, which `Object.keys` does not list, is refused as an own key is, rather than dropped without a word.
  */
 export function optionsError(
   options: unknown,
   op: string,
   known: readonly string[],
   booleans: readonly string[] = [],
+  misplaced: readonly string[] = [],
 ): ValidationError | undefined {
   if (options === undefined || options === null) return undefined;
   if (typeof options !== 'object' || Array.isArray(options)) {
@@ -39,6 +44,7 @@ export function optionsError(
   }
   const bag = options as Record<string, unknown>;
   const unknown = Object.keys(bag).filter((k) => !known.includes(k) && bag[k] !== undefined);
+  for (const k of misplaced) if (!unknown.includes(k) && bag[k] !== undefined) unknown.push(k);
   if (unknown.length > 0) {
     return new ValidationError(
       `${op}: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
@@ -92,7 +98,8 @@ export function checkOptions(
   op: string,
   known: readonly string[],
   booleans?: readonly string[],
+  misplaced?: readonly string[],
 ): void {
-  const err = optionsError(options, op, known, booleans);
+  const err = optionsError(options, op, known, booleans, misplaced);
   if (err !== undefined) throw err;
 }

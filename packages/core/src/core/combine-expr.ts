@@ -22,9 +22,12 @@
  */
 import { ValidationError } from './errors';
 
-/** A string names an operand; a node holds exactly one operator over a non-empty list of expressions. */
-export type CombineExpr =
-  string | { and: CombineExpr[] } | { or: CombineExpr[] } | { andNot: CombineExpr[] };
+/**
+ * An expression over the operands of a batch combine (a store's `materializeMany`): a string names an operand; a node
+ * holds exactly one of `and`, `or` or `andNot` over a non-empty list of expressions. `andNot` subtracts every entry after
+ * the first from the first, so it takes at least two. Plain JSON, so it can be logged and sent between tasks.
+ */
+export type Expr = string | { and: Expr[] } | { or: Expr[] } | { andNot: Expr[] };
 
 /** The most operator nodes one expression may nest. A literal that contains itself is refused by it. */
 export const MAX_EXPR_DEPTH = 64;

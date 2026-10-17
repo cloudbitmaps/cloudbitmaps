@@ -9,7 +9,7 @@ import {
   UnsupportedError,
   ValidationError,
 } from '@/index';
-import type { IdRange, Segment } from '@/index';
+import type { CombineOptions, Segment } from '@/index';
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { chunkReads } from '../helpers/chunk-reads';
@@ -18,6 +18,9 @@ import { FOOTER, FOOTER_BYTES, FOOTER_CRC_COVERAGE } from '@/core/crbm/format';
 import { layoutOf, writeCrbm } from '../helpers/crbm-extension';
 import type { RawChunk } from '../helpers/crbm-extension';
 import { collect, loadedStore } from '../helpers/loaded';
+
+/** The range a read takes: the part of the shared options `iterate` and `everyNth` accept. */
+type Range = Pick<CombineOptions, 'after' | 'through'>;
 
 /**
  * `everyNth` on a pinned handle: the ids at ranks n, 2n, 3n … of the ids in `(after, through]`. A walk of the same
@@ -29,7 +32,7 @@ const CHUNK = 65_536;
 const U32_MAX = 4_294_967_295;
 
 /** The oracle: a walk of the ids in range, keeping every nth. */
-function walked(ids: readonly number[], n: number, range: IdRange = {}): number[] {
+function walked(ids: readonly number[], n: number, range: Range = {}): number[] {
   const lo = range.after === undefined ? 0 : range.after + 1;
   const hi = range.through ?? U32_MAX;
   const inRange = [...new Set(ids)].sort((a, b) => a - b).filter((id) => id >= lo && id <= hi);
@@ -52,7 +55,7 @@ async function pinned(ids: readonly number[]) {
   return { ...w, seg: await w.store.segment('s').pin() };
 }
 
-const read = (seg: Segment, n: number, range?: IdRange) => collect(seg.everyNth(n, range));
+const read = (seg: Segment, n: number, range?: Range) => collect(seg.everyNth(n, range));
 
 // Four shapes, scaled to run fast: sparse over many chunks, dense, a few chunks, three chunks.
 const SHAPES: Record<string, number[]> = {

@@ -18,8 +18,16 @@ import type { CodecBitmap, CodecInterface } from './codec';
 import { residentBound } from './combine-ledger';
 import { ValidationError } from './errors';
 
-/** One record of a feed: the ids each named operand holds at one chunk key. */
-export interface CombineManyFeedRecord {
+/**
+ * One record of the feed of a batch combine (a store's `materializeMany`): the ids some of the fed operands hold at one
+ * chunk key. `key` is `id >>> 16`, an integer from 0 to 65,535, never below the previous record's; a key may arrive as
+ * several consecutive records, each carrying some of the operands, and one record per key is the usual shape. `operands`
+ * maps a declared fed name to its ids at the key: a real `Uint32Array` (not an `Int32Array`, `Buffer`, array or
+ * look-alike), strictly ascending, every id inside the key. A name is given at most once per key, and an empty array is
+ * the same as leaving the name out. The record is copied as it arrives, so the caller may drop or reuse its arrays once
+ * it has yielded it.
+ */
+export interface MaterializeManyFeedRecord {
   /** The chunk key, `id >>> 16`, from 0 to 65,535. Non-decreasing over the feed; a key may arrive as several records. */
   readonly key: number;
   /** Ids by operand name: ascending, unique, every one inside `key`. An operand is named at most once per key. */
@@ -31,7 +39,7 @@ export interface CombineManyFeed {
   /** The fed operand names, declared up front. */
   readonly names: readonly string[];
   /** The records, read once, in key order. */
-  readonly records: AsyncIterable<CombineManyFeedRecord>;
+  readonly records: AsyncIterable<MaterializeManyFeedRecord>;
   /**
    * The ids each fed operand holds over the whole feed, keyed by exactly `names`: an object, or a function called once
    * after the last record. A count that differs from what the feed held refuses every fed output.
