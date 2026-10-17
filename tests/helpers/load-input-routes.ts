@@ -162,6 +162,12 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     'its one load only seeds a segment to read through a leased handle; the shape of the stream is what it tests, and the input form is not',
   'tests/roaring/call-options.test.ts':
     'its loads only seed segments for the option checks of other calls; the input form is not what it tests',
+  'tests/roaring/combine-options.test.ts':
+    'its loads only seed segments for the option checks of the reads and combines, and the counters are reset after ' +
+    'them; the refusal is what it tests, and the input form is not',
+  'tests/export/export.test.ts':
+    'its one store load seeds a segment for the option check of the export, whose other fixtures are written without a ' +
+    'load; the export is what it tests, and the input form is not',
   'tests/drivers/localfs/exact-case.test.ts':
     'its loads only create names to compare by case, and where the temp root is case-sensitive (Linux) those tests skip ' +
     'and no load runs, so a serialized second run would route nothing; the input form is not what it tests',
