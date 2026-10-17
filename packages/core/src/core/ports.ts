@@ -357,7 +357,7 @@ export interface IStorageDriver {
    * holds its chunks in memory, so each run writes the whole object again, under a write identity of its own, and the
    * load records the run that was committed. A write that streams its chunks, a load with `sorted: true` and an
    * erasure's rewrite, reads them once, so its second run throws {@link IntegrityError} before writing a byte: commit
-   * nothing then, and the call throws that error.
+   * nothing then, and the call throws that error, with the first run's error as its `cause`.
    */
   putImmutable(
     key: GenKey,

@@ -161,7 +161,8 @@ interface StreamWriteResult {
  *
  * The stream is read once. A driver that runs its write again after a failed attempt, which the port allows, would
  * find it consumed and commit an object without the chunks the first run took, so a second run throws
- * {@link IntegrityError} and writes nothing, and the call throws that error.
+ * {@link IntegrityError} and writes nothing, and the call throws that error, with the first run's error as its
+ * `cause`.
  */
 export async function writeCrbmGenerationStream(
   driver: IStorageDriver,
@@ -178,31 +179,39 @@ export async function writeCrbmGenerationStream(
   let identity: CrbmWriter['identity'] | undefined;
   let runs = 0;
   let rerun: IntegrityError | undefined;
+  let firstRun: { error: unknown } | undefined;
   const put = driver.putImmutable(key, async (sink) => {
     if (++runs > 1) {
+      // The first run's failure is why the driver ran it again, so the refusal carries it.
       rerun = new IntegrityError(
         `the storage driver ran the write of ${key.segment}.${key.generation} again: its chunks are streamed and ` +
           'can be read once, so nothing was written',
       );
+      if (firstRun !== undefined) rerun.cause = firstRun.error;
       throw rerun;
     }
-    const writer = new CrbmWriter(sink, {
-      generation: key.generation,
-      crypto: options.crypto,
-      metadata: options.metadata,
-      entropy: options.entropy,
-    });
-    for await (const { chunkKey, bitmap } of chunks) {
-      if (bitmap.isEmpty) continue;
-      bitmap.optimize?.(); // same storage-write rationale as the non-streaming writer above
-      await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
-      chunkKeys.push(chunkKey);
-      cardinality += bitmap.size;
-      const pause = tick();
-      if (pause !== null) await pause;
+    try {
+      const writer = new CrbmWriter(sink, {
+        generation: key.generation,
+        crypto: options.crypto,
+        metadata: options.metadata,
+        entropy: options.entropy,
+      });
+      for await (const { chunkKey, bitmap } of chunks) {
+        if (bitmap.isEmpty) continue;
+        bitmap.optimize?.(); // same storage-write rationale as the non-streaming writer above
+        await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
+        chunkKeys.push(chunkKey);
+        cardinality += bitmap.size;
+        const pause = tick();
+        if (pause !== null) await pause;
+      }
+      await writer.finish();
+      identity = writer.identity;
+    } catch (err) {
+      firstRun = { error: err };
+      throw err;
     }
-    await writer.finish();
-    identity = writer.identity;
   });
   // The refusal of a second run is the answer, whatever the driver made of it on the way out.
   const { size, sha256 } = await put.catch((err: unknown) => {

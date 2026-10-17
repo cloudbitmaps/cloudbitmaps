@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { CRC32C, Storage } from '@google-cloud/storage';
+import { CRC32C, File, Storage } from '@google-cloud/storage';
 import { loadSegment } from '@/core/load';
 import type { SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver } from '@/drivers/memory';
@@ -28,13 +28,28 @@ const BUCKET = 'b';
 const THRESHOLD = 256 * 1024;
 
 /**
- * The resumable upload endpoints, enough for one session, and an empty listing: what each upload's request did. A
- * finished upload is answered with the object's hashes, which the SDK checks against what it sent.
+ * The resumable upload endpoints, enough for one session, and an empty listing: what each session's creation asked
+ * for, and what each upload's request did. A finished upload is answered with the object's hashes, which the SDK
+ * checks against what it sent.
  */
 class ResumableStub {
   private readonly server: Server = createServer((req, res) => this.serve(req, res));
   endpoint = '';
   finalized = 0;
+  /** Each session's creation: its query, and the object metadata in its body. */
+  readonly sessions: Array<{ query: URLSearchParams; body: Record<string, unknown> }> = [];
+  /** While set, a session's creation is answered only once it settles. */
+  answerSessions: Promise<void> | undefined;
+  private onSession: () => void = () => undefined;
+  /** Settles when the first session's creation arrives. */
+  readonly sessionAsked = new Promise<void>((resolve) => {
+    this.onSession = resolve;
+  });
+  private onSessionAnswered: () => void = () => undefined;
+  /** Settles once the first session's creation has been answered in full. */
+  readonly sessionAnswered = new Promise<void>((resolve) => {
+    this.onSessionAnswered = resolve;
+  });
   /** Settles when a session's upload request closes: `true` if its body ended, `false` if it was cut off first. */
   private closed: Array<(ended: boolean) => void> = [];
   readonly uploads: Promise<boolean>[] = [];
@@ -57,12 +72,20 @@ class ResumableStub {
   private serve(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? '/', 'http://stub');
     if (req.method === 'POST' && url.searchParams.get('uploadType') === 'resumable') {
-      req.resume();
+      const body: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => body.push(chunk));
       req.on('end', () => {
-        res.writeHead(200, {
-          location: `${this.endpoint}/upload/storage/v1/b/${BUCKET}/o?uploadType=resumable&upload_id=session`,
+        this.sessions.push({
+          query: url.searchParams,
+          body: JSON.parse(Buffer.concat(body).toString('utf8') || '{}') as Record<string, unknown>,
         });
-        res.end('{}');
+        this.onSession();
+        void (this.answerSessions ?? Promise.resolve()).then(() => {
+          res.writeHead(200, {
+            location: `${this.endpoint}/upload/storage/v1/b/${BUCKET}/o?uploadType=resumable&upload_id=session`,
+          });
+          res.end('{}', () => this.onSessionAnswered());
+        });
       });
       return;
     }
@@ -112,6 +135,25 @@ class ResumableStub {
 const within = <T>(promise: Promise<T>, ms: number): Promise<T | 'still open'> =>
   Promise.race([promise, new Promise<'still open'>((r) => setTimeout(() => r('still open'), ms))]);
 
+/** The uploads the SDK hands the driver's write streams, recorded on the way past the driver's own hold. */
+function handedUploads(): object[] {
+  const handed: object[] = [];
+  const start = File.prototype.startResumableUpload_;
+  vi.spyOn(File.prototype, 'startResumableUpload_').mockImplementation(function (
+    this: File,
+    dup,
+    options,
+  ) {
+    const handOver = dup.setWritable;
+    dup.setWritable = (upload) => {
+      handOver.call(dup, upload);
+      if (upload) handed.push(upload);
+    };
+    start.call(this, dup, options);
+  });
+  return handed;
+}
+
 let stub: ResumableStub;
 let guard: ReturnType<typeof guardLoopback>;
 beforeEach(async () => {
@@ -120,6 +162,7 @@ beforeEach(async () => {
   await stub.start();
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await stub.stop();
   guard.restore();
   expect(guard.attempts).toEqual([]);
@@ -176,12 +219,42 @@ describe('GCS: an upload abandoned past the simple-upload threshold', () => {
     expect(stub.finalized).toBe(0);
   });
 
+  it('starts no request when the write fails before its upload has a session', async () => {
+    let answer: () => void = () => undefined;
+    stub.answerSessions = new Promise((resolve) => (answer = resolve));
+    const failure = new Error('the rewrite could not read a chunk');
+    const err = await driver()
+      .putImmutable({ ...SEG, generation: 0 }, async (sink) => {
+        for (let i = 0; i < 2; i++) await sink.write(new Uint8Array(THRESHOLD).fill(i));
+        await stub.sessionAsked;
+        throw failure;
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    // The session is created only now, after the abort: the SDK would start its upload's request on it.
+    answer();
+    await stub.sessionAnswered;
+    expect(await within(stub.uploading, 500)).toBe('still open');
+    expect(stub.uploads).toHaveLength(0);
+    expect(stub.finalized).toBe(0);
+  });
+
   it('commits an upload that completes, through the same stub (the control)', async () => {
+    const handed = handedUploads();
     const written = await driver().putImmutable({ ...SEG, generation: 0 }, async (sink) => {
       for (let i = 0; i < 4; i++) await sink.write(new Uint8Array(THRESHOLD).fill(i));
     });
     expect(written.size).toBe(4 * THRESHOLD);
     expect(await within(stub.uploads[0]!, 3_000)).toBe(true);
     expect(stub.finalized).toBe(1);
+    // The driver held the upload, the hold an abort depends on: an SDK that stops handing it over fails here.
+    expect(handed).toHaveLength(1);
+    expect(Object.hasOwn(handed[0]!, 'startUploading')).toBe(true);
+    // The session was created write-once, with the write id the driver reads back on a 412.
+    expect(stub.sessions).toHaveLength(1);
+    expect(stub.sessions[0]!.query.get('ifGenerationMatch')).toBe('0');
+    expect(stub.sessions[0]!.body).toMatchObject({
+      metadata: { cbwid: expect.stringMatching(/^[0-9a-f]{32}$/) },
+    });
   });
 });

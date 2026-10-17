@@ -578,6 +578,8 @@ class GcsUploadSink implements BlobSink {
   private stream: Writable | undefined; // set once we cross the threshold → resumable mode
   /** The SDK's resumable upload under {@link stream}, which {@link abort} ends with an error: see there. */
   private upload: Writable | undefined;
+  /** Set by {@link abort}: the held upload starts no request from then on. */
+  private abandoned = false;
   private done: Promise<unknown[]> | undefined;
   private failure: unknown;
 
@@ -716,23 +718,42 @@ class GcsUploadSink implements BlobSink {
    * Keep the SDK's resumable upload, the writable its write stream pipes into, so {@link abort} can end its request.
    * The SDK hands it to the stream's duplex through `setWritable` in `startResumableUpload_`, a method of the `File`
    * its types declare; this wraps that method on this sink's own `File`, which no other write shares. Where the method
-   * is missing, nothing is kept, and an abort destroys the stream alone, as it did before.
+   * or the duplex's `setWritable` is missing, the SDK runs unchanged, nothing is kept, and an abort destroys the
+   * stream alone, as it did before.
    */
   private holdUpload(): void {
-    type Duplex = { setWritable(writable: Writable): void };
+    type Duplex = { setWritable?: (writable: Writable) => void };
     const file = this.file as unknown as {
       startResumableUpload_?: (dup: Duplex, options?: unknown) => void;
     };
     const start = file.startResumableUpload_;
     if (typeof start !== 'function') return;
     file.startResumableUpload_ = (dup, options) => {
-      const setWritable = dup.setWritable.bind(dup);
-      dup.setWritable = (writable) => {
-        this.upload = writable;
-        setWritable(writable);
-      };
+      const setWritable = dup.setWritable;
+      if (typeof setWritable === 'function') {
+        dup.setWritable = (writable) => {
+          this.hold(writable);
+          setWritable.call(dup, writable);
+        };
+      }
       start.call(file, dup, options);
     };
+  }
+
+  /**
+   * Keep `upload`, and let it start no request once this sink is abandoned. The SDK registers the listener that
+   * aborts an upload's request only as that request starts, after the session is created, so an upload abandoned
+   * before then would start its request anyway, with nothing left to end it. Each request that sends the upload's
+   * bytes, its first and every retry, begins in `startUploading`, a public method of the SDK's `Upload`. On an
+   * abandoned upload it resolves at once: the upload is destroyed already, and some of the SDK's callers do not
+   * catch a rejection.
+   */
+  private hold(upload: Writable): void {
+    this.upload = upload;
+    const held = upload as Writable & { startUploading?: () => Promise<void> };
+    const startUploading = held.startUploading;
+    if (typeof startUploading !== 'function') return;
+    held.startUploading = () => (this.abandoned ? Promise.resolve() : startUploading.call(held));
   }
 
   /**
@@ -740,9 +761,11 @@ class GcsUploadSink implements BlobSink {
    * open: the SDK destroys its upload with no error, aborts the request only when the upload errors, and its request
    * body waits for bytes that never come, so the socket stays open and the process alive until the service drops the
    * connection. So the upload is destroyed with an error first, which aborts its request; the body was never ended, so
-   * no object is finalized. The error is the sink's own and reaches no caller.
+   * no object is finalized. An upload whose request has not started yet starts none: see {@link hold}. The error is
+   * the sink's own and reaches no caller.
    */
   async abort(): Promise<void> {
+    this.abandoned = true;
     const abandoned = new Error('the upload was abandoned before its object was committed');
     if (this.upload !== undefined && !this.upload.destroyed) this.upload.destroy(abandoned);
     if (this.stream !== undefined && !this.stream.destroyed) this.stream.destroy(abandoned);

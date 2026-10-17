@@ -790,7 +790,7 @@ allows, commits only the last run's bytes. A load of ids, of a bitmap or of a co
 memory, so each run writes the whole object again (under a write identity of its own), and the load records the run
 that was committed. A write that streams its chunks, a load with `sorted: true` and an erasure's rewrite, reads them
 once: its second run throws `IntegrityError` before it writes a byte, the driver commits nothing, and the call throws
-that error.
+that error, with the first run's error as its `cause`.
 
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
 `WriteConflictError` and change nothing when they lose; a token is not reused, `delete` then `create` included, but for a collision of probability 2^-128 per pair of incarnations;
