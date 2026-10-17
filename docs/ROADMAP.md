@@ -93,7 +93,8 @@ On npm 12 and pnpm 10 and later, allow `roaring`'s install script first; see the
 [Install section of the getting-started guide](guide/getting-started.md#install).
 
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
-is a dependency of both and is never installed directly. The storage drivers are their own packages
+is a dependency of both, installed directly only to name a driver port's type from `@cloudbitmaps/core/driver-kit`
+([the storage interfaces](guide/api-reference.md#the-storage-interfaces-used-to-type-storage--registry) say how, or how to derive the type instead). The storage drivers are their own packages
 (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each depending on its SDK for real. `@cloudbitmaps/tools`, the offline
 cost model, is an optional sixth package that needs neither a flavor nor a driver.
 

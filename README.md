@@ -51,7 +51,9 @@ setting, then run `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the s
 
 You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
 package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
-arrives on its own and you never install it. Install one copy of `@cloudbitmaps/roaring` in a process; a combine
+arrives on its own, and you install it only to name a driver port's type, such as `IStorageDriver`, which
+`@cloudbitmaps/core/driver-kit` exports ([the storage interfaces](docs/guide/api-reference.md#the-storage-interfaces-used-to-type-storage--registry) say how, or how to
+derive the type instead). Install one copy of `@cloudbitmaps/roaring` in a process; a combine
 refuses a segment of another store, and a segment of another copy always belongs to another store.
 The family is six packages, released together at one version:
 
