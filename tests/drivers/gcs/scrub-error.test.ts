@@ -11,6 +11,17 @@ const TOKEN = ['ya29', 'stand-in-access-token-0123456789'].join('.');
 const VALUE = ['placeholder', 'credential', 'value'].join('-');
 const AUTHORIZATION = ['Author', 'ization'].join('');
 const BEARER = `${['Bear', 'er'].join('')} ${TOKEN}`;
+const BASIC = ['Ba', 'sic'].join('');
+const KEY = Buffer.alloc(32, 7).toString('base64');
+const SIG = 'ab01'.repeat(32);
+const PEM_BODY = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'BKcwggSjAgEAAoIBAQC7'].join('');
+const PEM = ['-----BEGIN PRIVATE KEY-----', PEM_BODY, '-----END PRIVATE KEY-----', ''].join('\n');
+const b64u = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
+const JWT = [
+  b64u({ alg: 'RS256', typ: 'JWT' }),
+  b64u({ iss: 'sa@p.iam.gserviceaccount.com' }),
+  Buffer.from('stand-in-signature-0123456789').toString('base64url'),
+].join('.');
 
 const nodeRequire = createRequire(import.meta.url);
 const { GaxiosError } = nodeRequire(
@@ -110,8 +121,9 @@ const sharesAnObject = (original: unknown, copy: unknown): boolean => {
   return [...objectsIn(copy)].some((value) => before.has(value) && typeof value !== 'function');
 };
 
+const SECRETS = [TOKEN, VALUE, KEY, SIG, PEM_BODY, JWT];
 const leaks = (value: unknown): string[] =>
-  stringsIn(value).filter((text) => text.includes(TOKEN) || text.includes(VALUE));
+  stringsIn(value).filter((text) => SECRETS.some((secret) => text.includes(secret)));
 
 describe('GCS scrubCredentials', () => {
   it('copies an ApiError: the transport goes, the fields classification reads stay', () => {
@@ -476,6 +488,207 @@ describe('GCS scrubCredentials', () => {
     const err: Record<string, unknown> = { note: 'fine', code: 'X' };
     err['self'] = err;
     expect(scrubCredentials(err)).toBe(err);
+  });
+
+  describe('credential text', () => {
+    const ENC = ['x-goog', 'encryption', 'key'].join('-');
+    /** Each form a credential takes in text, with the part that must not survive. */
+    const forms: [string, string, string][] = [
+      ['an Authorization header line', `${AUTHORIZATION}: ${BEARER}\r\nhost: h`, TOKEN],
+      [
+        'a header line on a later line',
+        `GET /o HTTP/1.1\r\nhost: h\r\n${AUTHORIZATION}: ${BEARER}\r\n`,
+        TOKEN,
+      ],
+      [
+        'a proxy credential on a later line',
+        `host: h\r\nproxy-${AUTHORIZATION}: ${BASIC} ${VALUE}`,
+        VALUE,
+      ],
+      ['a cookie on a later line', `host: h\r\ncookie: s=${VALUE}\r\n`, VALUE],
+      ['an encryption key header line', `${ENC}: ${KEY}`, KEY],
+      [
+        'a bearer token inside a line',
+        `<p>upstream refused ${AUTHORIZATION} ${BEARER} for /o</p>`,
+        TOKEN,
+      ],
+      ['a bearer token, lower case', `got ${BEARER.toLowerCase()} back`, TOKEN.toLowerCase()],
+      ['a bearer token, percent-encoded', `u=${encodeURIComponent(BEARER)}`, TOKEN],
+      ['an access token alone', `token ${TOKEN} back`, TOKEN],
+      ['an Authorization value inside a line', `x ${AUTHORIZATION}: ${BASIC} ${VALUE} y`, VALUE],
+      [
+        'an Authorization value in json',
+        `{"headers":{"${AUTHORIZATION}":"${BASIC} ${VALUE}"}}`,
+        VALUE,
+      ],
+      [
+        'an Authorization value in json inside json',
+        JSON.stringify({ body: `{"${AUTHORIZATION}":"${BASIC} ${VALUE}"}` }),
+        VALUE,
+      ],
+      ['an encryption key inside a line', `got ${ENC}: ${KEY} back`, KEY],
+      ['an encryption key in json', `{"${ENC}":"${KEY}"}`, KEY],
+      ['an access token in a url', `https://h/o?access_token=${VALUE}&a=1`, VALUE],
+      [
+        'a refresh token and client secret in a form',
+        `refresh_token=${VALUE}&client_secret=${KEY}`,
+        KEY,
+      ],
+      ['a refresh token in a form', `refresh_token=${VALUE}&client_id=1`, VALUE],
+      [
+        'a V4 signed url',
+        `https://storage.googleapis.com/b/k?X-Goog-Signature=${SIG}&X-Goog-Date=1`,
+        SIG,
+      ],
+      [
+        'a V4 signed url, percent-encoded',
+        `https://p/?u=${encodeURIComponent(`https://h/k?X-Goog-Expires=60&X-Goog-Signature=${SIG}`)}`,
+        SIG,
+      ],
+      [
+        'a V2 signed url',
+        `https://h/b/k?GoogleAccessId=sa&Expires=1&Signature=${encodeURIComponent(KEY)}`,
+        KEY,
+      ],
+      ['a signed url credential', `?X-Goog-Credential=${VALUE}%2F20261017&X-Goog-Date=1`, VALUE],
+      ['a JWT', `assertion=${JWT}`, JWT],
+      ['a JWT alone', `got ${JWT} back`, JWT],
+      ['a private key', `key ${PEM}`, PEM_BODY],
+      [
+        'a private key in json',
+        JSON.stringify({ private_key: PEM, client_email: 'sa@p' }),
+        PEM_BODY,
+      ],
+      ['a private key with no end', `-----BEGIN RSA PRIVATE KEY-----\n${PEM_BODY}`, PEM_BODY],
+      ['a header table row', `<tr><th>${ENC}</th><td>${KEY}</td></tr>`, KEY],
+      [
+        'a header table row, in code',
+        `<th><code>${ENC}</code></th><td><code>${KEY}</code></td>`,
+        KEY,
+      ],
+      ['a definition list', `<dl><dt>${AUTHORIZATION}:</dt><dd>${BASIC} ${VALUE}</dd></dl>`, VALUE],
+      ['an element named for a credential', `<${ENC}>${KEY}</${ENC}>`, KEY],
+      [
+        'a canonical request a service quotes back',
+        `<Error><CanonicalRequest>GET\n/b/k\n\n${ENC}:${KEY}\nhost:h</CanonicalRequest></Error>`,
+        KEY,
+      ],
+    ];
+    const lookAlikes = [
+      'Invalid Credentials',
+      'Anonymous caller does not have storage.objects.get access to the Google Cloud Storage object.',
+      'The specified bucket does not exist.',
+      'No such object: b/s.1',
+      'Request failed with status code 503',
+      'Bearer token authentication is not permitted for non-TLS protected (non-https) URLs.',
+      'Request is missing required authentication credential. Expected OAuth 2 access token.',
+      'The request signature we calculated does not match the signature you provided.',
+      'Signature=abc design',
+      'x-goog-encryption-key-sha256: abc',
+      'X-Goog-SignedHeaders=host;x-goog-date',
+      'pageToken=abc123def456ghi789jkl',
+      'invalid_grant',
+      'The provided encryption key is incorrect.',
+      'client_email: sa@p.iam.gserviceaccount.com',
+      'GOOG4-RSA-SHA256\n20261017T000000Z\n20261017/auto/storage/goog4_request\nabc',
+      '<tr><th>host</th><td>storage.googleapis.com</td></tr>',
+      '<StringToSign>GOOG4-HMAC-SHA256</StringToSign>',
+      'request to http://127.0.0.1:1/storage/v1/b/b/o?prefix=p failed, reason: socket hang up',
+      'At least one of the pre-conditions you specified did not hold.',
+      'Multiple errors occurred during the request. Please see the `errors` array for complete details.\n',
+    ];
+    const through = (text: string): string =>
+      scrubCredentials(apiError(503, { message: text })).message;
+
+    it.each(forms)('redacts %s', (_name, text, secret) => {
+      const out = through(text);
+      expect(out).not.toContain(secret);
+      expect(out).toContain('[redacted]');
+      // What is left is already clean: the copy's text is a fixed point.
+      expect(through(out)).toBe(out);
+    });
+
+    it.each(lookAlikes)('leaves %s alone', (text) => {
+      expect(through(text)).toBe(text);
+    });
+
+    it('keeps the rest of a line around a redacted value', () => {
+      expect(through(`https://h/o?access_token=${VALUE}&a=1`)).toBe(
+        'https://h/o?access_token=[redacted]&a=1',
+      );
+      expect(through(`refused ${BEARER} for /o`)).toBe('refused Bearer [redacted] for /o');
+      expect(through(`x ${AUTHORIZATION}: ${BASIC} ${VALUE} y`)).toBe(
+        `x ${AUTHORIZATION}: [redacted] y`,
+      );
+      expect(
+        through(`<tr><th>${ENC}</th><td>${KEY}</td></tr><tr><th>host</th><td>h</td></tr>`),
+      ).toBe(`<tr><th>${ENC}</th><td>[redacted]</td></tr><tr><th>host</th><td>h</td></tr>`);
+      expect(through(JSON.stringify({ private_key: PEM, client_email: 'sa@p' }))).toBe(
+        JSON.stringify({
+          private_key: '-----BEGIN PRIVATE KEY-----[redacted]-----END PRIVATE KEY-----\n',
+          client_email: 'sa@p',
+        }),
+      );
+    });
+
+    it('leaves an error with only a look-alike as it is', () => {
+      const err = new Error('Bearer token authentication is not permitted');
+      expect(scrubCredentials(err)).toBe(err);
+    });
+
+    it('redacts the stack as the message, and the errors a body lists', () => {
+      const err = apiError(400, { message: `bad ${BEARER}` });
+      Object.defineProperty(err, 'stack', {
+        value: `Error: bad ${BEARER}\n    at x`,
+        configurable: true,
+      });
+      err.errors = [{ message: `bad ${BEARER}`, reason: 'invalid' }] as never;
+      const out = scrubCredentials(err);
+      expect(String(out.stack)).not.toContain(TOKEN);
+      expect(String(err.stack)).toContain(TOKEN);
+      expect(out.errors).toEqual([{ message: 'bad Bearer [redacted]', reason: 'invalid' }]);
+    });
+
+    it('a resumable upload that failed keeps the body it quotes, redacted', () => {
+      const err = Object.assign(new Error('Upload failed'), {
+        name: 'Upload failed',
+        code: 502,
+        errors: [`<html><p>refused ${BEARER}</p></html>`],
+      });
+      const out = scrubCredentials(err);
+      expect(out).not.toBe(err);
+      expect(out.errors).toEqual(['<html><p>refused Bearer [redacted]</p></html>']);
+      expect(out.code).toBe(502);
+    });
+
+    it('replaces a text too large for its patterns whole, and still classifies', () => {
+      // Every pattern runs in linear time and in constant stack on these, so none is cut short.
+      const huge = 'a'.repeat(16 * 2 ** 20);
+      for (const text of [
+        `Bearer ${huge}`,
+        `Signature=${huge}`,
+        `ya29.${huge}`,
+        `-----BEGIN PRIVATE KEY-----${huge}`,
+      ]) {
+        const out = scrubCredentials(apiError(503, { message: text }));
+        expect(out.message.length).toBeLessThan(64);
+        expect(out.code).toBe(503);
+      }
+    });
+
+    it.each([
+      ['repeated JWT starts', 'eyJ'.repeat(2 ** 20)],
+      ['a JWT start with no dot', `eyJ${'a'.repeat(4 * 2 ** 20)}`],
+      ['repeated table cells', '<th>x</th><td>'.repeat(2 ** 18)],
+      ['tags around long runs of spaces', `<a>${' '.repeat(100)}`.repeat(2 ** 14)],
+      ['a name run of spaces', `<a> x${' '.repeat(60)}y`.repeat(2 ** 14)],
+      ['repeated names with no value', 'access_token='.repeat(2 ** 18)],
+      ['a name and a long run of spaces', `${AUTHORIZATION}${' '.repeat(4 * 2 ** 20)}`],
+    ])('takes linear time on %s', (_name, text) => {
+      const started = performance.now();
+      scrubCredentials(apiError(503, { message: text }));
+      expect(performance.now() - started).toBeLessThan(5_000);
+    });
   });
 
   describe('credential key names', () => {

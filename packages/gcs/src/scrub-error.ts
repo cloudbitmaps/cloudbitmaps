@@ -5,17 +5,29 @@
  * stream, whose `request` holds the headers it sent, the bearer token in `Authorization` included, and the HTTP agent
  * it shares with every other call, whose sockets hold the raw text of requests still in flight. A `GaxiosError` (a
  * resumable upload's, or a token request's) keeps the request's `config`, with its headers and body, and a `response`
- * that holds another copy of it. The live objects are never changed (a socket still sending reads them): an error that
- * holds a transport, or whose data shows a credential, is replaced by a deep copy of its plain data. An error with
- * neither is returned as it is.
+ * that holds another copy of it. On a download, and wherever a body lists no errors, the SDK makes the body the error's
+ * message as it came, so a proxy's error page or a JSON body can quote the `Authorization` value, or any other header,
+ * anywhere in a line. The live objects are never changed (a socket still sending reads them): an error that holds a
+ * transport, or whose data shows a credential, is replaced by a deep copy of its plain data. An error with neither is
+ * returned as it is.
  *
  * The copy is a native error with the original's prototype (so `instanceof ApiError` holds), name, message, stack,
  * `code`, `status`, `errors` and every other plain field, with `response` reduced to its status and status text: what
  * classification reads. It has no `config`, request, agent or socket, no function or accessor (a `toJSON` or
  * `util.inspect` hook is a closure over the original) and no class instance other than an error. Errors are copied
  * wherever they sit: the `cause` chain, an `AggregateError`'s `errors`, any array or field. A table of copies keeps a
- * cycle a cycle, and anything nested deeper than `MAX_DEPTH` is dropped rather than kept raw. The value under a
- * credential header's name, and a credential header line in the copy's text, are replaced by `[redacted]`.
+ * cycle a cycle, and anything nested deeper than `MAX_DEPTH` is dropped rather than kept raw.
+ *
+ * The value under a credential's name is replaced by `[redacted]`: a credential header's (`authorization`, the
+ * encryption key's `x-goog-encryption-key`), a signed URL's signature and credential, what a service quotes of a request
+ * whose signature it refused, an OAuth token or client secret, a service account's private key (its `client_email` and
+ * key id are kept: they name the account and sign nothing); and so is the value after one in a flat list or under one
+ * in a map. In the copy's text, these are redacted: a credential header line; an `Authorization` value, an encryption
+ * key, an API key, an OAuth token or client secret and a signed URL's signature or credential after its name; a bearer
+ * token after its scheme; a Google access token (`ya29.`) or a JWT on its own; a V2 signed URL's `Signature=`; a PEM
+ * private key's body; the text of an element named for a credential (`<CanonicalRequest>`); and the text of the cell
+ * after one that names a credential (a table's `<th>` and `<td>`, a list's `<dt>` and `<dd>`). A credential in any
+ * other form is not recognised, and a text too large for these patterns is replaced whole.
  */
 
 import { types } from 'node:util';
@@ -71,7 +83,44 @@ const CREDENTIAL_NAME = new Set(CREDENTIAL_NAMES.map(fold));
 /** The longest text that can spell one of the names. */
 const LONGEST_NAME = 64;
 /** A credential header line inside raw request or response text. */
-const CREDENTIAL_LINES = /^((?:proxy-)?authorization|cookie|set-cookie|x-api-key):[^\r\n]*/gim;
+const CREDENTIAL_LINES =
+  /^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|x-goog-api-key|x-goog-(?:copy-source-)?encryption-key):[^\r\n]*/gim;
+/**
+ * An `Authorization` value after its name anywhere in a text, its scheme with it: `authorization: Basic <value>`,
+ * `authorization=Bearer%20<token>`, JSON's `"authorization":"Bearer <token>"` (also escaped once more).
+ */
+const AUTHORIZATION_VALUE =
+  /((?:proxy-)?authorization\\?["']?\s*(?::|=|%3D)\s*\\?["']?)(?:[A-Za-z][\w-]*(?:\s+|%20|\+))?[^\s&"'<>\\,;]+/gi;
+/** The headers and fields whose value follows their name in a text: an encryption key, an API key, a signed URL's parts. */
+const NAMED =
+  'x-goog-(?:copy-source-)?encryption-key|x-goog-api-key|x-goog-signature|x-goog-credential|' +
+  '(?:access|refresh|id|subject)[-_]token|client[-_]secret';
+/**
+ * One of those after its name anywhere in a text: `name: value`, `name=value` (also percent-encoded) or JSON's
+ * `"name":"value"` (also escaped once more).
+ */
+const NAMED_SECRET = new RegExp(
+  `((?:${NAMED})\\\\?["']?\\s*(?::|=|%3D)\\s*\\\\?["']?)[^\\s&"'<>\\\\,;]+`,
+  'gi',
+);
+/** A bearer token after its scheme, wherever the text shows it, also percent-encoded. */
+const BEARER = /\b(Bearer)(\s+|%20|\+)(?=[A-Za-z0-9\-._~+/]{16})[A-Za-z0-9\-._~+/]+=*/gi;
+/** A Google OAuth access token (`ya29.`), and a JWT: a signed assertion, an ID token, a self-signed account token. */
+const TOKEN_TEXT =
+  /ya29\.(?=[A-Za-z0-9_.-]{16})[A-Za-z0-9_.-]+|(?<![A-Za-z0-9_-])eyJ(?=[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+\.eyJ(?=[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+\.(?=[A-Za-z0-9_-]{16})[A-Za-z0-9_-]+/g;
+/** A signed URL's `Signature=`: a V2 one is base64, percent-encoded; 16 characters or more. */
+const SIGNATURE = /(Signature(?:=|%3D))(?=[A-Za-z0-9%+/=_.-]{16})(?:[A-Za-z0-9+/=_.-]+|%(?!26))+/gi;
+/** A PEM private key's body, its line breaks escaped or not; the lines that open and close it are kept. */
+const PRIVATE_KEY =
+  /(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)(?:[^-]+|-(?!----END))*(-----END [A-Z0-9 ]*PRIVATE KEY-----)?/g;
+/** An XML element; its text is redacted when its name is a credential's (`<CanonicalRequest>`, `<x-goog-encryption-key>`). */
+const ELEMENT = /(<([A-Za-z][\w.:-]{0,63})>)([^<]*)(<\/\2>)/g;
+/**
+ * An element whose text may be a credential's name, and the text of the one after it, with up to four tags around
+ * either: a table's `<th>` and `<td>`, a list's `<dt>` and `<dd>`, `<b>name:</b> <span>value`.
+ */
+const CELL =
+  /(<([A-Za-z][\w-]{0,15})\b[^<>]{0,256}>\s{0,32}([^<>\s](?:[^<>]{0,62}[^<>\s])?)\s{0,32}<\/\2\s{0,32}>(?:\s{0,32}<\/[A-Za-z][\w-]{0,15}\s{0,32}>){0,4}(?:\s{0,32}<[A-Za-z][\w-]{0,15}\b[^<>]{0,256}>){1,4})([^<]*)/g;
 const REDACTED = '[redacted]';
 /** How deep into errors and plain data the copy goes; anything below is dropped. */
 const MAX_DEPTH = 10;
@@ -91,13 +140,26 @@ const isCredentialName = (text: string): boolean =>
   text.length <= LONGEST_NAME && CREDENTIAL_NAME.has(fold(text));
 
 /**
- * `text` with every credential it shows replaced. A text the patterns cannot finish matching (one of several MiB that
- * exhausts the regular expression engine's stack) is replaced whole, so a hostile body neither leaks nor changes the
- * error the driver throws.
+ * `text` with every credential it shows replaced. Each pattern runs in time linear in the text, and none needs the
+ * regular expression engine's stack to grow with it; a text a pattern still cannot finish matching is replaced whole,
+ * so a hostile body neither leaks nor stops the error being thrown.
  */
 function redactText(text: string): string {
   try {
-    return text.replace(CREDENTIAL_LINES, `$1: ${REDACTED}`);
+    return text
+      .replace(PRIVATE_KEY, `$1${REDACTED}$2`)
+      .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
+      .replace(AUTHORIZATION_VALUE, `$1${REDACTED}`)
+      .replace(NAMED_SECRET, `$1${REDACTED}`)
+      .replace(BEARER, `$1$2${REDACTED}`)
+      .replace(TOKEN_TEXT, REDACTED)
+      .replace(SIGNATURE, `$1${REDACTED}`)
+      .replace(ELEMENT, (whole, open: string, tag: string, inner: string, close: string) =>
+        isCredentialName(tag) && inner.trim() !== '' ? `${open}${REDACTED}${close}` : whole,
+      )
+      .replace(CELL, (whole, head: string, _tag: string, name: string, value: string) =>
+        isCredentialName(name) && value.trim() !== '' ? `${head}${REDACTED}` : whole,
+      );
   } catch {
     return REDACTED;
   }
