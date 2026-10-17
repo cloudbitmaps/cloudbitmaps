@@ -223,6 +223,12 @@ describe('the docs-import scanner smoke compiles', () => {
       "```ts\nimport {\n  CloudRoaring, // the store; it takes a `storage`\n  /* the backend; `MemoryStorage` */ MemoryStorage,\n} from '@cloudbitmaps/roaring';\n```";
     expect(docImports(commented).map((i) => i.line)).toEqual([2]);
     expect(unparsedLines(commented)).toEqual([]);
+    // a brace left open over many comment markers is refused at once: each character has one way to match, where an
+    // ambiguous pattern backtracks exponentially and would hold this test past its timeout
+    for (const open of ['import {' + '//'.repeat(60), 'import {/*' + '*//*'.repeat(60)]) {
+      expect(docImports(open)).toEqual([]);
+      expect(unparsedLines(open)).toEqual([]);
+    }
     // outside a comment, a `;` or a backtick in the braces still breaks the import, and it is reported
     expect(
       unparsedLines("import { CloudRoaring; MemoryStorage } from '@cloudbitmaps/roaring';"),

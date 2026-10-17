@@ -99,7 +99,11 @@ function lf(text) {
  * the bindings nor the specifier may hold an ellipsis, which stops the specifier too, so a placeholder such as
  * `import { … } from '@cloudbitmaps/…'` in prose is not an import.
  */
-const BINDINGS = /\{(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/|[^{};\x60\n…]|\n(?![ \t>]*\n))*\}/.source;
+// Each character between the braces is matched one way only, so a match that fails backtracks in linear time: a `/`
+// starts a line comment (run to its line's end), a block comment (ended by its first `*/`) or is a `/` alone.
+const BINDINGS =
+  /\{(?:\/\/[^\n]*(?=\n|$)|\/\*(?:[^*]|\*(?!\/))*\*\/|\/(?![/*])|[^{};\x60\n…/]|\n(?![ \t>]*\n))*\}/
+    .source;
 const IMPORT = new RegExp(
   String.raw`\bimport\s+(?:type\s+)?(?:${BINDINGS}|\*\s+as\s+[A-Za-z_$][\w$]*|[A-Za-z_$][\w$]*(?:\s*,\s*${BINDINGS})?)` +
     String.raw`\s*from\s*(['"])(@cloudbitmaps\/[^'"\n…]+)\1\s*;?`,
