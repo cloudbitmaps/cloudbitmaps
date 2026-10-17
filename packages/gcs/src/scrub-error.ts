@@ -159,12 +159,31 @@ function redactText(text: string): string {
       .replace(ELEMENT, (whole, open: string, tag: string, inner: string, close: string) =>
         isCredentialName(tag) && inner.trim() !== '' ? `${open}${REDACTED}${close}` : whole,
       )
-      .replace(CELL, (whole, head: string, _tag: string, name: string, value: string) =>
-        isCredentialName(name) && value.trim() !== '' ? `${head}${REDACTED}` : whole,
-      );
+      .replace(/[\s\S]+/, redactCells);
   } catch {
     return REDACTED;
   }
+}
+
+/**
+ * `text` with the text of each element after one that names a credential redacted. A match whose first element names
+ * none is not taken past that element: the element after it is tried as the next name, so a heading or a caption
+ * before a table does not put every row out of step.
+ */
+function redactCells(text: string): string {
+  let out = '';
+  let from = 0;
+  CELL.lastIndex = 0;
+  for (let m = CELL.exec(text); m !== null; m = CELL.exec(text)) {
+    const [whole, head, , name, value] = m as unknown as [string, string, string, string, string];
+    if (isCredentialName(name) && value.trim() !== '') {
+      out += `${text.slice(from, m.index)}${head}${REDACTED}`;
+      from = m.index + whole.length;
+    } else {
+      CELL.lastIndex = m.index + 1;
+    }
+  }
+  return from === 0 ? text : out + text.slice(from);
 }
 
 /** The copies made so far, and whether any differs from its original. */

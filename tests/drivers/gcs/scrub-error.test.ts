@@ -761,6 +761,39 @@ describe('GCS scrubCredentials', () => {
       expect(through(text)).toBe(text);
     });
 
+    describe('a header table or list after another element', () => {
+      const API_KEY = ['AIza', 'Sy', 'StandIn', '0123456789abcdefghijklmn'].join('');
+      /** Credential rows first, none of them a bearer token, which the bearer rule redacts in any layout. */
+      const headers: [string, string][] = [
+        ['cookie', `sid=${VALUE}`],
+        ['x-goog-api-key', API_KEY],
+        [ENC, KEY],
+        ['host', 'h'],
+      ];
+      const rows = headers
+        .map(([name, value]) => `<tr><th>${name}</th><td>${value}</td></tr>`)
+        .join('');
+      const items = headers.map(([name, value]) => `<dt>${name}</dt><dd>${value}</dd>`).join('');
+      it.each([
+        [
+          'a short heading before the table',
+          `<html><body><h1>Request headers</h1><table>${rows}</table></body></html>`,
+        ],
+        ['a caption', `<table><caption>Headers</caption>${rows}</table>`],
+        ['a heading before a definition list', `<h2>Headers</h2><dl>${items}</dl>`],
+        [
+          'two short elements before the table',
+          `<title>502</title><h1>Bad Gateway</h1><table>${rows}</table>`,
+        ],
+        ['the table alone', `<table>${rows}</table>`],
+      ])('redacts every credential cell after %s', (_name, page) => {
+        const out = through(page);
+        for (const secret of [VALUE, API_KEY, KEY]) expect(out).not.toContain(secret);
+        expect(out).toMatch(/host<\/(?:th|dt)><(?:td|dd)>h</);
+        expect(through(out)).toBe(out);
+      });
+    });
+
     it('redacts a whole credential header line, its value spaces and all', () => {
       for (const name of [ENC, 'x-goog-api-key', 'cookie']) {
         expect(through(`host: h\r\n${name}: ${VALUE} ${VALUE}\r\naccept: */*`)).toBe(
