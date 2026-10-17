@@ -706,7 +706,7 @@ describe('scrubCredentials (Azure)', () => {
     });
 
     describe('a header table or list in a page', () => {
-      const API_KEY = 'APIKEYVALUE0123456789';
+      const API_KEY = 'placeholder-api-key-0123456789';
       /** Credential rows first, none of them a SharedKey or bearer value, which the scheme rule redacts in any layout. */
       const headers: [string, string][] = [
         ['Cookie', 'sid=COOKIEONE; pref=COOKIETWO'],

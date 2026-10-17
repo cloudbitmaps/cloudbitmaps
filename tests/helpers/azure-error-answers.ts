@@ -23,7 +23,7 @@ export const ACCOUNT_KEY = Buffer.from('stand-in-account-key-0123456789').toStri
 export const SAS_SIGNATURE = 'SECRETSIGNATUREVALUE0123456789';
 /** A cookie of two pairs, each of which must go. */
 export const COOKIE = 'sid=STANDINCOOKIEVALUE0123; pref=STANDINPREFVALUE4567';
-export const API_KEY = 'STANDINAPIKEYVALUE0123456789';
+export const API_KEY = 'placeholder-api-key-0123456789';
 /** A stand-in customer-provided key, as its header carries one: 32 bytes in base64. */
 export const CUSTOMER_KEY = Buffer.from('stand-in-customer-key-0123456789').toString('base64');
 /** The planted credentials a user's pipeline adds, as a search for them reads each. */
