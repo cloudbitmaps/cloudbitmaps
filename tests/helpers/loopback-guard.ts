@@ -6,8 +6,8 @@ import net from 'node:net';
  *
  * `connect` is called with its arguments as given (`connect(port, host)`, `connect({ host, port })`, `connect(path)`),
  * or, from `net.connect` and so from every HTTP agent, with them already gathered into one array (`[options, cb]`).
- * Both are read. An agent's options carry `path: null`, so only a `path` that is set names a pipe. A connection the guard
- * refuses throws before anything is sent.
+ * Both are read. An agent's options carry `path: null`, and Node connects to the host when `path` is empty, so only a
+ * `path` that is set and not empty names a pipe. A connection the guard refuses throws before anything is sent.
  */
 export function guardLoopback(): { attempts: string[]; restore: () => void } {
   const attempts: string[] = [];
@@ -17,7 +17,7 @@ export function guardLoopback(): { attempts: string[]; restore: () => void } {
     const first = given[0] as { host?: unknown; path?: unknown } | number | string | undefined;
     const host =
       typeof first === 'object' && first !== null
-        ? first.path == null
+        ? !first.path
           ? String(first.host ?? 'localhost')
           : 'pipe'
         : typeof first === 'string' && !/^\d+$/.test(first)
