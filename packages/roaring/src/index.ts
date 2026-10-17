@@ -398,7 +398,7 @@ export interface CloudRoaringOptions {
    * `count`/`iterate`/`intersect`/`union`/`andNot`/`subjectReport`/`eraseSubject` may fan out into before it's
    * refused with {@link BudgetExceededError} (`eraseSubject` reports an over-budget segment in its ledger instead,
    * see {@link CloudRoaring.eraseSubject}) — so one runaway op can't drive unbounded GET cost on a shared
-   * backend. **On by default, generous** ({@link DEFAULT_BUDGET}: 1,000,000 requests — a normal op never hits it).
+   * backend. **On by default, generous** (1,000,000 requests — a normal op never hits it).
    * Tune with `{ maxRequests }`, override per op (on the combines / `subjectReport` / `eraseSubject`), or set
    * `false` to disable. The check is O(1) (before fan-out), so the hot path is untouched; per-request bytes are
    * separately size-capped, so bounding requests transitively bounds bytes.

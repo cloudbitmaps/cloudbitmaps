@@ -256,7 +256,7 @@ export interface RetireExpiredResult {
    *
    * A refused purge is not charged to `limit`, so retirements go on: a tombstone that cannot be purged does not hold
    * the segments behind it past their expiry. **Purging stops for the rest of the call after
-   * {@link MAX_CONSECUTIVE_PURGE_FAULTS} (3) refused purges in a row**, and a purge that succeeds starts the count
+   * 3 refused purges in a row**, and a purge that succeeds starts the count
    * again. A blanket refusal therefore costs three attempts a call, and a refusal particular to one row (a blob with a
    * snapshot, an object under a legal hold) holds nothing behind it. The next call tries again. Check this field; a
    * ledger entry for each is `skipped`, but a caller that reads only `retired` sees none of it.

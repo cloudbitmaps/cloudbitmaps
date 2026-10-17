@@ -452,6 +452,103 @@ export function flavorImports(text: string): Array<{ line: number; name: string 
   return found;
 }
 
+/** The public entries' barrels, by specifier. The hover docs of the first two are read; the rest are where a link may point. */
+const PUBLIC_BARRELS: ReadonlyArray<readonly [string, string]> = [
+  ['@cloudbitmaps/roaring', 'packages/roaring/src/index.ts'],
+  ['@cloudbitmaps/core/driver-kit', 'packages/core/src/driver-kit.ts'],
+  ['@cloudbitmaps/s3', 'packages/s3/src/index.ts'],
+  ['@cloudbitmaps/gcs', 'packages/gcs/src/index.ts'],
+  ['@cloudbitmaps/azure-blob', 'packages/azure-blob/src/index.ts'],
+  ['@cloudbitmaps/tools', 'packages/tools/src/index.ts'],
+];
+
+/** One doc comment a reader's editor shows: on an export of the flavor or driver-kit, or on a public member of one. */
+interface HoverDoc {
+  readonly where: string;
+  readonly text: string;
+  /** The names of the declaration's own members, which a link may name without a qualifier. */
+  readonly members: ReadonlySet<string>;
+  readonly node: ts.Node;
+}
+
+/**
+ * Every doc comment on an export of `@cloudbitmaps/roaring` or `@cloudbitmaps/core/driver-kit` and on its public members,
+ * read from the sources with the compiler (the declarations the build ships carry the same comments), and every name any
+ * public entry exports. A private or protected member is skipped: an editor shows its doc to no caller.
+ */
+function hoverDocs(): {
+  exported: Set<string>;
+  docs: HoverDoc[];
+  checker: ts.TypeChecker;
+  program: ts.Program;
+} {
+  const config = ts.readConfigFile(join(ROOT, 'tsconfig.json'), ts.sys.readFile);
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT);
+  const files = PUBLIC_BARRELS.map(([, rel]) => join(ROOT, rel));
+  const program = ts.createProgram(files, { ...parsed.options, noEmit: true });
+  const checker = program.getTypeChecker();
+  const modules = files.map((f) => {
+    const sf = program.getSourceFile(f);
+    const mod = sf === undefined ? undefined : checker.getSymbolAtLocation(sf);
+    if (mod === undefined) throw new Error(`no module for ${f}`);
+    return mod;
+  });
+  const exported = new Set(
+    modules.flatMap((m) => checker.getExportsOfModule(m).map((e) => e.name)),
+  );
+  const hidden = (node: ts.Node): boolean =>
+    ts.canHaveModifiers(node) &&
+    (ts.getModifiers(node) ?? []).some(
+      (m) => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword,
+    );
+  const docs: HoverDoc[] = [];
+  PUBLIC_BARRELS.slice(0, 2).forEach(([entry], i) => {
+    for (const exp of checker.getExportsOfModule(modules[i] as ts.Symbol)) {
+      const target = exp.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
+      for (const decl of target.declarations ?? []) {
+        const members = new Set<string>();
+        ts.forEachChild(decl, (c) => {
+          const name = (c as { name?: ts.Node }).name;
+          if (name !== undefined && ts.isIdentifier(name)) members.add(name.text);
+        });
+        const visit = (node: ts.Node, owner: string): void => {
+          if (hidden(node)) return;
+          for (const d of ts.getJSDocCommentsAndTags(node))
+            docs.push({ where: `${entry} ${exp.name}${owner}`, text: d.getText(), members, node });
+          if (
+            node === decl ||
+            ts.isClassDeclaration(node) ||
+            ts.isInterfaceDeclaration(node) ||
+            ts.isTypeLiteralNode(node)
+          ) {
+            ts.forEachChild(node, (c) => {
+              const name = (c as { name?: ts.Node }).name;
+              visit(
+                c,
+                name !== undefined && ts.isIdentifier(name) ? `${owner}.${name.text}` : owner,
+              );
+            });
+          } else if (
+            (ts.isPropertySignature(node) ||
+              ts.isPropertyDeclaration(node) ||
+              ts.isTypeAliasDeclaration(node)) &&
+            node.type !== undefined
+          ) {
+            visit(node.type, owner);
+          }
+        };
+        visit(decl, '');
+      }
+    }
+  });
+  return { exported, docs, checker, program };
+}
+
+/** The name each `{@link …}` in `text` starts with: `Segment` of `{@link Segment.pin}`, `x` of `{@link x | text}`. */
+export function linkTargets(text: string): string[] {
+  return [...text.matchAll(/\{@link(?:code|plain)?\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1] ?? '');
+}
+
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
 /** A page is anything a reader opens: markdown, HTML, and the plain-text pages the site serves. */
 const PAGE_EXTS = ['.md', '.html', '.txt'];
@@ -774,5 +871,69 @@ describe('a name the flavor stopped exporting stays off it', () => {
         "import { CloudRoaring } from '@cloudbitmaps/core';\nimport { MemoryStorage } from '@cloudbitmaps/roaring';",
       ),
     ).toEqual(['MemoryStorage']);
+  });
+});
+
+describe("the flavor's and driver-kit's hover docs name only what a reader can import", () => {
+  const { exported, docs, checker, program } = hoverDocs();
+
+  it('reads the hover docs of both entries, so the checks below cannot pass vacuously', () => {
+    expect(docs.length).toBeGreaterThan(500);
+    for (const where of [
+      '@cloudbitmaps/roaring CloudRoaring.load',
+      '@cloudbitmaps/core/driver-kit IStorageDriver.putImmutable',
+    ]) {
+      expect(
+        docs.some((d) => d.where === where),
+        where,
+      ).toBe(true);
+    }
+    for (const name of ['CloudRoaring', 'IStorageDriver', 'S3Storage', 'estimateCost'])
+      expect(exported.has(name), name).toBe(true);
+  });
+
+  it('none names a name the flavor stopped exporting that no public entry exports', () => {
+    const gone = LEFT_THE_FLAVOR.filter((r) => !exported.has(r.name));
+    const out = docs.flatMap((d) =>
+      retiredNames(d.text, gone).map(
+        ({ name }) =>
+          `${d.where} names ${name}; use ${gone.find((r) => r.name === name)?.instead ?? ''}`,
+      ),
+    );
+    expect([...new Set(out)]).toEqual([]);
+  });
+
+  it('every `{@link …}` names a public export, a member of its own declaration, or a name of the language or a package', () => {
+    const external = (name: string, node: ts.Node): boolean => {
+      const symbol = checker.resolveName(
+        name,
+        node,
+        ts.SymbolFlags.Type | ts.SymbolFlags.Value,
+        false,
+      );
+      const decls = symbol?.declarations ?? [];
+      return (
+        decls.length > 0 &&
+        decls.every((x) => {
+          const sf = x.getSourceFile();
+          return program.isSourceFileDefaultLibrary(sf) || sf.fileName.includes('/node_modules/');
+        })
+      );
+    };
+    const out = docs.flatMap((d) =>
+      linkTargets(d.text)
+        .filter((n) => !exported.has(n) && !d.members.has(n) && !external(n, d.node))
+        .map((n) => `${d.where}: {@link ${n}} names nothing a reader can import`),
+    );
+    expect([...new Set(out)]).toEqual([]);
+  });
+
+  it('reads a link the way the compiler does, and passes a name from the language', () => {
+    expect(
+      linkTargets(
+        'see {@link Segment.pin} and {@link errorKind | the classifier}, or {@linkcode Uint8Array}',
+      ),
+    ).toEqual(['Segment', 'errorKind', 'Uint8Array']);
+    expect(linkTargets('a `{ link }` or @link without braces')).toEqual([]);
   });
 });
