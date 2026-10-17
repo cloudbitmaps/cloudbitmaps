@@ -7,6 +7,12 @@ const SIGNED = 'SharedKey acct:SIGNATUREVALUE=';
 const URL_WITH_SIG = 'https://acct.blob.core.windows.net/c/b?sv=2022-11-02&sig=SECRETSIG%3D&se=1';
 /** A stand-in customer-provided key, as its header carries one: 32 bytes in base64. */
 const CPK = Buffer.from('stand-in-customer-key-0123456789').toString('base64');
+/** A stand-in JWT, the shape of an Entra ID access token: a header, a payload and a signature, base64url. */
+const JWT = [
+  Buffer.from('{"alg":"RS256","typ":"JWT"}').toString('base64url'),
+  Buffer.from('{"aud":"https://storage.azure.com","sub":"stand-in"}').toString('base64url'),
+  'S'.repeat(43),
+].join('.');
 /** A stand-in account key, in base64 as a connection string writes one. */
 const ACCOUNT_KEY = Buffer.from('stand-in-account-key-0123456789').toString('base64');
 /** A connection string with that key, as a caller's own text could quote one. */
@@ -719,6 +725,9 @@ describe('scrubCredentials (Azure)', () => {
       ],
       ['a connection string', `could not use ${CONNECTION}`, ACCOUNT_KEY],
       ['an account key in JSON', JSON.stringify({ AccountKey: ACCOUNT_KEY }), ACCOUNT_KEY],
+      ['a JWT on its own', `token ${JWT} refused`, JWT.split('.')[2]!],
+      ['a JWT in JSON', JSON.stringify({ access_token: JWT }), JWT.split('.')[2]!],
+      ['a JWT in a query', `https://h/c?token=${JWT}&a=1`, JWT.split('.')[2]!],
     ];
     const lookAlikes = [
       'Bearer token authentication is not permitted for non-TLS protected (non-https) URLs.',
@@ -733,6 +742,8 @@ describe('scrubCredentials (Azure)', () => {
       'x_sig=keep',
       'The specified blob does not exist.',
       'The AccountKey setting is missing from the connection string.',
+      'an unsigned JWT: eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.',
+      'eyJ is how a JSON object starts in base64',
     ];
     const through = (text: string): string => scrubCredentials(restErrorWith(text)).message;
     function restErrorWith(text: string): Error {

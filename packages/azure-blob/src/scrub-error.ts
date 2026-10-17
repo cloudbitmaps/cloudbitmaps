@@ -97,6 +97,13 @@ const SAS_SIGNATURE =
   /((?:^|[^A-Za-z0-9_]|%26|%3F|\\u0026)sig(?:=|%3D)["']?)(?:(?!%26|\\u0026)[^&\s"'<>)\\])*/gi;
 /** An `Authorization` scheme and its value, wherever the text shows it. */
 const AUTH_SCHEME = /\b(SharedKey(?:Lite)?|Bearer)(\s+)[A-Za-z0-9\-._~+/:]{16,}=*/gi;
+/**
+ * A JWT on its own, as an Entra ID access token is written without its scheme: three base64url parts, the first two
+ * JSON objects (`eyJ`), the signature 16 characters at least. Each run is read with one character class after a
+ * lookahead, and a part must not start inside a longer run, so the pattern runs in time linear in the text.
+ */
+const JWT_TEXT =
+  /(?<![A-Za-z0-9_-])eyJ(?=[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+\.eyJ(?=[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+\.(?=[A-Za-z0-9_-]{16})[A-Za-z0-9_-]+/g;
 /** The signature Azure echoes in the 403 body for a SharedKey request it could not verify. */
 const MAC_ECHO = /(MAC signature found in the HTTP request ')[^']*/g;
 /**
@@ -131,6 +138,7 @@ function redactText(text: string): string {
         .replace(NAMED_SECRET, `$1${REDACTED}`)
         .replace(SAS_SIGNATURE, `$1${REDACTED}`)
         .replace(AUTH_SCHEME, `$1$2${REDACTED}`)
+        .replace(JWT_TEXT, REDACTED)
         .replace(MAC_ECHO, `$1${REDACTED}`),
     );
   } catch {
