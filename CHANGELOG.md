@@ -13,6 +13,22 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **`IdRange`, `BaseCombineOptions`, `MaterializeOptions` and `AndNotIntoOptions` are now `CombineOptions`.** One
+  interface of `@cloudbitmaps/roaring` declares all eleven fields, each optional, and every combine takes it; `iterate`
+  and `everyNth` take its range, `Pick<CombineOptions, 'after' | 'through'>`, which `MaterializeManyOptions` extends.
+  Rename an annotation to `CombineOptions`, or to that `Pick` for a range. A misplaced option, such as `audit` on
+  `intersect` or `exclude` on `andNot` or `andNotInto`, type-checks and still throws `ValidationError` before any
+  request, so the compiler does not catch it. `interface X extends MaterializeOptions` stops compiling: extend
+  `CombineOptions`. A declaration merged into one of the four names (`declare module '@cloudbitmaps/roaring'`) no longer
+  applies.
+- **`Expr` and the four `MaterializeMany*` stats and feed types are declared types.** `Expr`, `MaterializeManyStats`,
+  `MaterializeManyOperandStats`, `MaterializeManyOutputStats` and `MaterializeManyFeedRecord` are declared under these
+  names, where they were aliases of names in `@cloudbitmaps/core`, so an editor's hover and a compiler error print the
+  name you import; what each describes is unchanged. Code that named core's types renames them: `CombineExpr` →
+  `Expr`, `CombineManyStats` → `MaterializeManyStats`, `CombineManyOperandStats` → `MaterializeManyOperandStats`,
+  `CombineManyOutputStats` → `MaterializeManyOutputStats` and `CombineManyFeedRecord` → `MaterializeManyFeedRecord`.
+- **`exportSegments` no longer takes `codec`.** The `'roaring'` format's bitmaps are built by the store's own roaring
+  codec, which was the default; a `codec` passed to it throws `ValidationError` before any request. Drop the option.
 - **The 13 `isXError` predicates are gone from `@cloudbitmaps/roaring`, and the 5 of them `@cloudbitmaps/core/driver-kit`
   exported (`isIntegrityError`, `isNotFoundError`, `isTransientError`, `isValidationError`, `isWriteConflictError`).**
   Each has a one-line replacement with `errorKind`, which both entries now export, or use `instanceof` on an ordinary
@@ -137,6 +153,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A read or combine refuses a field it does not take when the options object inherits it or holds it in a getter.**
+  `iterate`, `everyNth`, `intersect`, `union`, `andNot`, `andNotInto` and `materializeMany` refused such a field only as
+  an own key, and read past one on a prototype or behind a getter, as `Object.create(defaults)` or a class with a getter
+  gives: an `exclude` so held on `andNot` was skipped, and the stream held the ids it should have subtracted. Each is a
+  `ValidationError` naming the field, before any request, as an own key is, and so is a `codec` held that way on
+  `exportSegments`.
 - **A delete decided from one read of an object's footer no longer removes another writer's object of the same cleartext
   ids.** Two loads of the same ids at the same number wrote the same bytes, so a footer match proved content and not the
   writer. A refused load whose reclaim read no row, after the name was swept, purged and re-created and a load of the same

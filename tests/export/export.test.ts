@@ -4,7 +4,8 @@ import { randomBytes } from 'node:crypto';
 import { MemoryStorage, CloudRoaring } from '@/index';
 import type { ExportSink, ExportWriter, IKeystore, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { UnsupportedError } from '@/core/errors';
+import { UnsupportedError, ValidationError } from '@/core/errors';
+import { counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -222,6 +223,45 @@ describe('store.exportSegments', () => {
     const { sink, files } = captureSink();
     await freshStore(registry, storage, keystore).exportSegments(sink);
     expect(roaringIds(files.get('_default/pii.roaring')!.bytes)).toEqual([7, 8, 9]); // decrypted, cleartext
+  });
+
+  it('refuses a codec, own or inherited, before any request: the store exports with its own', async () => {
+    const memory = new MemoryStorage();
+    const calls: Record<string, number> = {};
+    const store = new CloudRoaring({
+      storage: brandAsBackend({
+        storage: counting<IStorageDriver>(memory.storage, calls),
+        registry: counting<IRegistryDriver>(memory.registry, calls),
+      }),
+    });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    expect(Object.keys(calls).length).toBeGreaterThan(0); // the counter sees requests
+    for (const key of Object.keys(calls)) delete calls[key];
+    const { sink, files } = captureSink();
+    let built = 0;
+    const codec = { empty: () => (built++, SafeBitmap.empty()) };
+    // An own key, one inherited from a prototype, and one behind a getter, as a class declares one: the last two are not
+    // listed by `Object.keys`, and would otherwise be ignored without a word.
+    class WithGetter {
+      get codec() {
+        return codec;
+      }
+    }
+    for (const options of [{ codec }, Object.create({ codec }) as object, new WithGetter()]) {
+      const err = await store.exportSegments(sink, options as never).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as Error).message).toContain('exportSegments: unknown option "codec"');
+    }
+    expect(calls).toEqual({});
+    expect(files.size).toBe(0);
+    expect(built).toBe(0);
+    // Without it the same store exports the segment, built by its own codec.
+    const ok = captureSink();
+    await store.exportSegments(ok.sink);
+    expect(roaringIds(ok.files.get('_default/a.roaring')!.bytes)).toEqual([1, 2, 3]);
   });
 
   it('throws UnsupportedError when the store has no registry', async () => {

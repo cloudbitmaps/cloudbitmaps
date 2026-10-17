@@ -39,7 +39,7 @@ import {
 } from './combine-expr';
 import { checkFeed, FeedClosed, FeedCursor, FeedStale } from './combine-feed';
 import type { CheckedFeed, CombineManyFeed } from './combine-feed';
-import type { CombineExpr, ExprNode, KeyBounds, NodeKeys } from './combine-expr';
+import type { Expr, ExprNode, KeyBounds, NodeKeys } from './combine-expr';
 import { residentBound, residentBytes, ResidentLedger, serializedBound } from './combine-ledger';
 import { mapWithConcurrency } from './concurrency';
 import { yieldEvery } from './cooperative';
@@ -63,9 +63,9 @@ import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
 import type { ChunkRead, GenerationMetadata, SegmentRef, StorageChunkSource } from './ports';
 
-export type { CombineExpr } from './combine-expr';
+export type { Expr } from './combine-expr';
 export { MAX_EXPR_DEPTH, MAX_EXPR_NODES } from './combine-expr';
-export type { CombineManyFeed, CombineManyFeedRecord } from './combine-feed';
+export type { CombineManyFeed, MaterializeManyFeedRecord } from './combine-feed';
 
 /** The range requests a pass keeps in flight at once across all its operands, inside a client's socket pool. */
 export const MAX_RANGES_IN_FLIGHT = 64;
@@ -117,9 +117,9 @@ export interface CombineManyOperand {
 
 /** What one output asks for. */
 export interface CombineManyOutput<R> {
-  readonly expr: CombineExpr;
+  readonly expr: Expr;
   /** Subtracted from the result: a root `andNot`. */
-  readonly exclude?: readonly CombineExpr[];
+  readonly exclude?: readonly Expr[];
   readonly allowEmpty?: boolean;
   readonly guard?: LoadGuard;
   readonly metadata?: GenerationMetadata;
@@ -192,8 +192,8 @@ export interface CombineManyDeps {
 export type CombineManyOutcome<R> =
   { readonly ok: true; readonly value: R } | { readonly ok: false; readonly error: unknown };
 
-/** What the call did to one operand. */
-export interface CombineManyOperandStats {
+/** What a batch combine (a store's `materializeMany`) did to one operand: see {@link MaterializeManyStats.operands}. */
+export interface MaterializeManyOperandStats {
   /** Whether an output of the call read it. An operand no output names is not read. */
   readonly read: boolean;
   /** Whether the operand was read at a pinned generation. */
@@ -222,8 +222,8 @@ export interface CombineManyOperandStats {
   readonly chunkReads: number;
 }
 
-/** What the call did to one output. */
-export interface CombineManyOutputStats {
+/** What a batch combine (a store's `materializeMany`) did to one output: see {@link MaterializeManyStats.outputs}. */
+export interface MaterializeManyOutputStats {
   /** The names of the operands its expression reads: the stored ones in call order, then the fed ones in `feed.names` order. */
   readonly operands: readonly string[];
   /** The group that computed it (from 0), or `null` when it never ran. */
@@ -239,7 +239,11 @@ export interface CombineManyOutputStats {
   readonly peakBytes: number;
 }
 
-export interface CombineManyStats {
+/**
+ * What a batch combine (a store's `materializeMany`) did: the groups it ran, its requests by class, the chunk-read budget
+ * it used, the most it held resident, and, for each operand, the generation it was pinned at, began at and ended at.
+ */
+export interface MaterializeManyStats {
   /** Groups run, the re-runs of outputs a lying index made too big included. */
   readonly groups: number;
   readonly requests: {
@@ -294,13 +298,13 @@ export interface CombineManyStats {
   /** What the feed delivered, when the call had one: records read, chunk keys evaluated from it, ids checked. */
   readonly feed?: { readonly records: number; readonly keys: number; readonly ids: number };
   /** By operand name, an object with no prototype, so any name is a key. */
-  readonly operands: Readonly<Record<string, CombineManyOperandStats>>;
-  readonly outputs: readonly CombineManyOutputStats[];
+  readonly operands: Readonly<Record<string, MaterializeManyOperandStats>>;
+  readonly outputs: readonly MaterializeManyOutputStats[];
 }
 
 export interface CombineManyRun<R> {
   readonly outputs: readonly CombineManyOutcome<R>[];
-  readonly stats: CombineManyStats;
+  readonly stats: MaterializeManyStats;
 }
 
 interface CompiledOutput {
@@ -1768,10 +1772,10 @@ class Run<R> {
 
   // ---- stats ------------------------------------------------------------------------------------------------
 
-  private stats(): CombineManyStats {
-    const operands: Record<string, CombineManyOperandStats> = Object.create(null) as Record<
+  private stats(): MaterializeManyStats {
+    const operands: Record<string, MaterializeManyOperandStats> = Object.create(null) as Record<
       string,
-      CombineManyOperandStats
+      MaterializeManyOperandStats
     >;
     for (const op of this.operands) {
       const pinned = op.spec.pinnedGeneration !== undefined;

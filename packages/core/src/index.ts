@@ -77,20 +77,20 @@ export { judgeLoad, loadSegment, loadSegmentChunks } from './core/load';
 // The store's `materializeMany` runs it.
 export { compileCombineMany, rebindCombineMany, runCombineMany } from './core/combine-many';
 export type {
-  CombineExpr,
   CombineManyDeps,
   CombineManyFeed,
-  CombineManyFeedRecord,
   CombineManyOperand,
-  CombineManyOperandStats,
   CombineManyOutcome,
   CombineManyOutput,
-  CombineManyOutputStats,
   CombineManyRequest,
   CombineManyRun,
-  CombineManyStats,
   CombineManyWrite,
   CompiledCombineMany,
+  Expr,
+  MaterializeManyFeedRecord,
+  MaterializeManyOperandStats,
+  MaterializeManyOutputStats,
+  MaterializeManyStats,
 } from './core/combine-many';
 export type {
   LoadDeps,

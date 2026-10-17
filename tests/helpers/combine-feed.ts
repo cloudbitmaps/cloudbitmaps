@@ -5,7 +5,7 @@
 import { compileCombineMany, runCombineMany } from '@/core/combine-many';
 import type {
   CombineManyFeed,
-  CombineManyFeedRecord,
+  MaterializeManyFeedRecord,
   CombineManyRequest,
   CombineManyRun,
 } from '@/core/combine-many';
@@ -13,7 +13,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { collecting, request, seed } from './combine-many';
 import type { OutputSpec, Published, Setup } from './combine-many';
 
-export type Rec = CombineManyFeedRecord;
+export type Rec = MaterializeManyFeedRecord;
 
 /** A small deterministic generator, so a failing case replays. */
 export function lcg(seed0: number): () => number {

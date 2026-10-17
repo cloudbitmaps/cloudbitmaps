@@ -5,7 +5,7 @@
 import roaring from 'roaring';
 import { compileCombineMany, runCombineMany } from '@/core/combine-many';
 import type {
-  CombineExpr,
+  Expr,
   CombineManyOperand,
   CombineManyOutput,
   CombineManyRequest,
@@ -20,8 +20,8 @@ const { RoaringBitmap32 } = roaring;
 type Native = InstanceType<typeof RoaringBitmap32>;
 
 export interface OutputSpec {
-  expr: CombineExpr;
-  exclude?: CombineExpr[];
+  expr: Expr;
+  exclude?: Expr[];
   keep?: number;
   beforePublish?: () => void;
 }
@@ -32,7 +32,7 @@ export interface Published {
   keys: number[];
 }
 
-export function nativeOf(expr: CombineExpr, sets: Record<string, Native>): Native {
+export function nativeOf(expr: Expr, sets: Record<string, Native>): Native {
   if (typeof expr === 'string') return RoaringBitmap32.from(sets[expr]!.toArray());
   if ('and' in expr) {
     const [first, ...rest] = expr.and.map((e) => nativeOf(e, sets));
@@ -127,15 +127,15 @@ export async function runBatch(
  * one-kid `and` or `or`, an `andNot` of `empty`), so the deepest node's value is what the output holds. They use the
  * property files' operands `mid`, `runs`, `sparse` and `empty`.
  */
-const pass = (e: CombineExpr, level: number): CombineExpr =>
+const pass = (e: Expr, level: number): Expr =>
   (level % 3 === 0
     ? { and: [e] }
     : level % 3 === 1
       ? { or: [e] }
-      : { andNot: [e, 'empty'] }) as CombineExpr;
+      : { andNot: [e, 'empty'] }) as Expr;
 
-const deepest = (op: 'and' | 'or' | 'andNot', shift: number): CombineExpr => {
-  let e = { [op]: ['mid', 'runs'] } as unknown as CombineExpr;
+const deepest = (op: 'and' | 'or' | 'andNot', shift: number): Expr => {
+  let e = { [op]: ['mid', 'runs'] } as unknown as Expr;
   for (let level = 0; level < 11; level++) e = pass(e, level + shift);
   return e;
 };

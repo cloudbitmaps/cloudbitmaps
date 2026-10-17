@@ -6,7 +6,7 @@
 import fc from 'fast-check';
 import { heavy } from '../helpers/strength';
 import { describe, expect, it } from 'vitest';
-import type { CombineExpr } from '@/core/combine-many';
+import type { Expr } from '@/core/combine-many';
 import { nativeOutput, runBatch, toNative, widestOutputs } from '../helpers/combine-many';
 import type { OutputSpec, Published } from '../helpers/combine-many';
 import { lcg, runFed } from '../helpers/combine-feed';
@@ -43,17 +43,17 @@ const POOL: Record<string, number[]> = {
 };
 const NAMES = Object.keys(POOL);
 
-const trees = new Map<number, fc.Arbitrary<CombineExpr>>();
-function tree(depth: number): fc.Arbitrary<CombineExpr> {
+const trees = new Map<number, fc.Arbitrary<Expr>>();
+function tree(depth: number): fc.Arbitrary<Expr> {
   let t = trees.get(depth);
   if (t === undefined) trees.set(depth, (t = build(depth)));
   return t;
 }
 
-function build(depth: number): fc.Arbitrary<CombineExpr> {
+function build(depth: number): fc.Arbitrary<Expr> {
   const leaf = fc.constantFrom(...NAMES);
   if (depth === 0) return leaf;
-  const kids = (min: number): fc.Arbitrary<CombineExpr[]> =>
+  const kids = (min: number): fc.Arbitrary<Expr[]> =>
     fc
       .tuple(
         tree(depth - 1),
