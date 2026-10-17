@@ -84,6 +84,25 @@ interface Copying {
 /** Marker for a value the copy leaves out. */
 const OMIT = Symbol('omit');
 
+/** An array index as an own key spells it. */
+const INDEX = /^(?:0|[1-9]\d*)$/;
+const isIndex = (key: string | symbol): key is string =>
+  typeof key === 'string' && INDEX.test(key) && Number(key) < 2 ** 32 - 1;
+
+/**
+ * Whether `value` has an own property its copy leaves out: any key but an index and `length` on an array, any key at
+ * all on a map or a set.
+ */
+function hasNamedKeys(value: object): boolean {
+  if (!Array.isArray(value)) return Reflect.ownKeys(value).length > 0;
+  return Reflect.ownKeys(value).some((key) => key !== 'length' && !isIndex(key));
+}
+
+/** Define `key` on `copy` as a plain data property. */
+function define(copy: object, key: string | symbol, value: unknown, enumerable: boolean): void {
+  Object.defineProperty(copy, key, { value, writable: true, configurable: true, enumerable });
+}
+
 /** A credential-free copy of `value`: plain data and errors only, `OMIT` for anything else. */
 function copyOf(value: unknown, ctx: Copying, depth: number): unknown {
   if (typeof value === 'string') {
@@ -101,48 +120,65 @@ function copyOf(value: unknown, ctx: Copying, depth: number): unknown {
     ctx.changed = true;
     return OMIT;
   }
-  if (Array.isArray(value)) {
-    const list: unknown[] = [];
-    ctx.copies.set(value, list);
-    let hidden = false;
-    for (const item of value) {
-      // A flat list of header names and values: the value after a credential name is one.
-      if (hidden && item != null) {
-        list.push(REDACTED);
-        ctx.changed = true;
-      } else {
-        const kept = copyOf(item, ctx, depth + 1);
-        list.push(kept === OMIT ? undefined : kept);
-      }
-      hidden = typeof item === 'string' && CREDENTIAL_NAME.test(item);
+  if (Array.isArray(value)) return copyList(value as unknown[], ctx, depth);
+  if (value instanceof Map) return copyMap(value as Map<unknown, unknown>, ctx, depth);
+  if (value instanceof Set) return copySet(value as Set<unknown>, ctx, depth);
+  return copyRecord(value, ctx, depth);
+}
+
+/** A copy of an array. A named property is left out. */
+function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
+  const list: unknown[] = [];
+  ctx.copies.set(value, list);
+  if (hasNamedKeys(value)) ctx.changed = true;
+  let hidden = false;
+  for (const item of value) {
+    // A flat list of header names and values: the value after a credential name is one.
+    if (hidden && item != null) {
+      list.push(REDACTED);
+      ctx.changed = true;
+    } else {
+      const kept = copyOf(item, ctx, depth + 1);
+      list.push(kept === OMIT ? undefined : kept);
     }
-    return list;
+    hidden = typeof item === 'string' && CREDENTIAL_NAME.test(item);
   }
-  if (value instanceof Map) {
-    const map = new Map<unknown, unknown>();
-    ctx.copies.set(value, map);
-    for (const [k, v] of value as Map<unknown, unknown>) {
-      const key = copyOf(k, ctx, depth + 1);
-      if (key === OMIT) continue;
-      if (typeof k === 'string' && CREDENTIAL_NAME.test(k) && v != null) {
-        map.set(key, REDACTED);
-        ctx.changed = true;
-        continue;
-      }
-      const kept = copyOf(v, ctx, depth + 1);
-      if (kept !== OMIT) map.set(key, kept);
+  return list;
+}
+
+/** A copy of a map: the value under a credential name is redacted. A named property is left out. */
+function copyMap(value: Map<unknown, unknown>, ctx: Copying, depth: number): Map<unknown, unknown> {
+  const map = new Map<unknown, unknown>();
+  ctx.copies.set(value, map);
+  if (hasNamedKeys(value)) ctx.changed = true;
+  for (const [k, v] of value) {
+    const key = copyOf(k, ctx, depth + 1);
+    if (key === OMIT) continue;
+    if (typeof k === 'string' && CREDENTIAL_NAME.test(k) && v != null) {
+      map.set(key, REDACTED);
+      ctx.changed = true;
+      continue;
     }
-    return map;
+    const kept = copyOf(v, ctx, depth + 1);
+    if (kept !== OMIT) map.set(key, kept);
   }
-  if (value instanceof Set) {
-    const set = new Set<unknown>();
-    ctx.copies.set(value, set);
-    for (const v of value as Set<unknown>) {
-      const kept = copyOf(v, ctx, depth + 1);
-      if (kept !== OMIT) set.add(kept);
-    }
-    return set;
+  return map;
+}
+
+/** A copy of a set. A named property is left out. */
+function copySet(value: Set<unknown>, ctx: Copying, depth: number): Set<unknown> {
+  const set = new Set<unknown>();
+  ctx.copies.set(value, set);
+  if (hasNamedKeys(value)) ctx.changed = true;
+  for (const v of value) {
+    const kept = copyOf(v, ctx, depth + 1);
+    if (kept !== OMIT) set.add(kept);
   }
+  return set;
+}
+
+/** A copy of an error or a plain object, `OMIT` for any other object (a class instance: a stream, a socket). */
+function copyRecord(value: object, ctx: Copying, depth: number): unknown {
   const errorLike = isError(value);
   if (!errorLike && !isPlain(value)) {
     ctx.changed = true;
@@ -156,48 +192,56 @@ function copyOf(value: unknown, ctx: Copying, depth: number): unknown {
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key === 'string' && TRANSPORT.has(key)) {
       ctx.changed = true;
-      continue;
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined) continue;
-    let kept: unknown;
-    if (errorLike && key === 'stack') {
-      // Read through the original: the stack may be an accessor bound to the error itself.
-      let stack: unknown;
-      try {
-        stack = (value as { stack?: unknown }).stack;
-      } catch {
-        continue;
-      }
-      kept = copyOf(stack, ctx, depth + 1);
-      Object.defineProperty(copy, key, {
-        value: kept,
-        writable: true,
-        configurable: true,
-        enumerable: false,
-      });
-      continue;
-    }
-    // A function or accessor is a closure over the original (a `toJSON`, an inspect hook): it is not carried over.
-    if (!('value' in descriptor)) {
-      ctx.changed = true;
-      continue;
-    }
-    if (typeof key === 'string' && CREDENTIAL_NAME.test(key) && descriptor.value != null) {
-      kept = REDACTED;
-      ctx.changed = true;
+    } else if (errorLike && key === 'stack') {
+      copyStack(value, copy, ctx, depth);
     } else {
-      kept = copyOf(descriptor.value, ctx, depth + 1);
-      if (kept === OMIT) continue;
+      copyField(value, copy, key, ctx, depth);
     }
-    Object.defineProperty(copy, key, {
-      value: kept,
-      writable: descriptor.writable ?? true,
-      configurable: true,
-      enumerable: descriptor.enumerable ?? false,
-    });
   }
   return copy;
+}
+
+/** Carry an error's stack over, read through the original: it may be an accessor bound to the error itself. */
+function copyStack(original: object, copy: object, ctx: Copying, depth: number): void {
+  let stack: unknown;
+  try {
+    stack = (original as { stack?: unknown }).stack;
+  } catch {
+    return;
+  }
+  const kept = copyOf(stack, ctx, depth + 1);
+  if (kept !== OMIT) define(copy, 'stack', kept, false);
+}
+
+/** Carry one own property over, as a data property: redacted under a credential name, left out when it is not data. */
+function copyField(
+  original: object,
+  copy: object,
+  key: string | symbol,
+  ctx: Copying,
+  depth: number,
+): void {
+  const descriptor = Object.getOwnPropertyDescriptor(original, key);
+  if (descriptor === undefined) return;
+  // A function or accessor is a closure over the original (a `toJSON`, an inspect hook): it is not carried over.
+  if (!('value' in descriptor)) {
+    ctx.changed = true;
+    return;
+  }
+  let kept: unknown;
+  if (typeof key === 'string' && CREDENTIAL_NAME.test(key) && descriptor.value != null) {
+    kept = REDACTED;
+    ctx.changed = true;
+  } else {
+    kept = copyOf(descriptor.value, ctx, depth + 1);
+    if (kept === OMIT) return;
+  }
+  Object.defineProperty(copy, key, {
+    value: kept,
+    writable: descriptor.writable ?? true,
+    configurable: true,
+    enumerable: descriptor.enumerable ?? false,
+  });
 }
 
 /**

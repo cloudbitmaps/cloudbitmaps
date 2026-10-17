@@ -23,6 +23,35 @@ function restError(): Rest {
   return err as unknown as Rest;
 }
 
+/** A request as the SDK keeps one: a live object whose URL and headers hold the credentials. */
+const liveRequest = (): object => ({
+  url: URL_WITH_SIG,
+  headers: new Map([['authorization', SIGNED]]),
+});
+
+/** Every string reachable from `root`: values and keys, non-enumerable and symbol-keyed ones, map and set entries. */
+function strings(root: unknown): string[] {
+  const out: string[] = [];
+  const seen = new Set<unknown>();
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') return void out.push(value);
+    if (typeof value !== 'object' || value === null || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof Map) for (const [k, v] of value) [k, v].forEach(visit);
+    if (value instanceof Set) for (const v of value) visit(v);
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key === 'string') out.push(key);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor !== undefined && 'value' in descriptor) visit(descriptor.value);
+    }
+  };
+  visit(root);
+  return out;
+}
+/** The credentials of {@link restError} that a walk of `root` still finds. */
+const leaks = (root: unknown): string[] =>
+  strings(root).filter((text) => /SECRETSIG|SIGNATUREVALUE/.test(text));
+
 describe('scrubCredentials (Azure)', () => {
   it('copies a RestError: the transport goes, the fields classification reads stay', () => {
     const err = restError();
@@ -189,6 +218,48 @@ describe('scrubCredentials (Azure)', () => {
     expect(map.get('note')).not.toContain('SECRETSIG');
     expect([...set].join()).not.toContain('SECRETSIG');
     expect((err.details as { map: Map<string, string> }).map.get('authorization')).toBe('x');
+  });
+
+  describe('what a copy leaves out of a list, a map or a set', () => {
+    it('copies a list, a map or a set with a named property of its own, without that property', () => {
+      const list = Object.assign(['a'], { request: liveRequest() });
+      const map = Object.assign(new Map([['a', 1]]), { request: liveRequest() });
+      const set = Object.assign(new Set(['a']), { request: liveRequest() });
+      for (const held of [list, map, set]) {
+        const err = Object.assign(new Error('x'), { details: { held } });
+        const out = scrubCredentials(err);
+        expect(out).not.toBe(err);
+        const copy = (out as unknown as { details: { held: object } }).details.held;
+        expect(Object.keys(copy)).not.toContain('request');
+        expect(leaks(out)).toEqual([]);
+      }
+    });
+
+    it('copies a list with a symbol-keyed property of its own, without it', () => {
+      const hidden = Symbol('request');
+      const list = Object.assign(['a'], { [hidden]: liveRequest() });
+      const err = Object.assign(new Error('x'), { details: { list } });
+      const out = scrubCredentials(err);
+      expect(out).not.toBe(err);
+      expect(Object.getOwnPropertySymbols((out.details as { list: unknown[] }).list)).toEqual([]);
+      expect(leaks(out)).toEqual([]);
+    });
+
+    it('copies a sparse list with as many named properties as holes, without them', () => {
+      // eslint-disable-next-line no-sparse-arrays
+      const list = Object.assign([, 'a'], { held: { authorization: SIGNED } });
+      const err = Object.assign(new Error('x'), { details: { list } });
+      const out = scrubCredentials(err);
+      expect(out).not.toBe(err);
+      expect(Object.keys((out.details as { list: unknown[] }).list)).not.toContain('held');
+      expect(leaks(out)).toEqual([]);
+    });
+
+    it('returns an error that holds only a plain list, map and set as it is', () => {
+      const held = { list: ['a', 'b'], map: new Map([['a', 1]]), set: new Set(['a']) };
+      const err = Object.assign(new Error('x'), { details: held });
+      expect(scrubCredentials(err)).toBe(err);
+    });
   });
 
   describe('credential key names', () => {
