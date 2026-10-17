@@ -21,7 +21,7 @@ import type {
 } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
-import { CountingObjectStore } from '../helpers/counting';
+import { CountingObjectStore, counting as countingCalls } from '../helpers/counting';
 import { recordedWaits, unansweredRegistry } from '../helpers/unanswered-registry';
 import { testEntropy } from '../helpers/entropy';
 
@@ -801,10 +801,11 @@ describe('the write is made only when the ledger names something to delete', () 
   }
 
   // The fence reads the row once before the sweep, and a row with no usable ledger is read once more after it, in case a
-  // load started a ledger meanwhile.
+  // load started a ledger meanwhile. The receipt reads it once after its listing, which names the current generation the
+  // call found clean.
   it.each([
-    ['nothing' as const, 6],
-    ['unusable' as const, 7],
+    ['nothing' as const, 7],
+    ['unusable' as const, 8],
   ])('ledger names %s: no compare-and-swap, %i registry reads', async (shape, gets) => {
     const w = await names(shape);
     const c = counting(w.registry);
@@ -830,15 +831,17 @@ describe('the write is made only when the ledger names something to delete', () 
     const c = counting(w.registry);
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage, registry: c.registry });
     expect(res).toMatchObject({ erased: true, collected: [0] });
-    expect(c.tally).toEqual({ gets: 6, attempts: 1, landed: 1 });
+    // The last read is the receipt's, after its listing, which names the current generation the call found clean.
+    expect(c.tally).toEqual({ gets: 7, attempts: 1, landed: 1 });
     expect(seen).toEqual([[1]]);
   });
 });
 
 describe('what an erasure costs at the store an object-store registry is over', () => {
+  /** The registry's reads and writes, and the storage requests by method, that one erasure of the id makes. */
   async function requests(
-    shape: 'older' | 'unnamed' | 'no-ledger' | 'rewrite',
-  ): Promise<[number, number]> {
+    shape: 'older' | 'unnamed' | 'no-ledger' | 'rewrite' | 'above',
+  ): Promise<{ registry: [number, number]; storage: Record<string, number> }> {
     const storage = new MemoryStorageDriver();
     const store = new CountingObjectStore(0, { conditionalDelete: true });
     let t = 1_000;
@@ -850,6 +853,11 @@ describe('what an erasure costs at the store an object-store registry is over', 
     } else if (shape === 'rewrite') {
       await loadSegment(SEG, [1], load, { keep: 1 });
       await loadSegment(SEG, [1, 999], load, { keep: 1 }); // the current generation holds
+    } else if (shape === 'above') {
+      await loadSegment(SEG, [1], load, { keep: 5 });
+      await loadSegment(SEG, [1, 2], load, { keep: 5 }); // clean, above the pointer after the rollback
+      await loadSegment(SEG, [1, 999], load, { keep: 5 }); // holds, above the pointer after the rollback
+      await rollbackSegment(SEG, 0, load);
     } else {
       for (let i = 0; i < 3; i++) await loadSegment(SEG, [1], load, { keep: 0 });
       await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 999]); // an orphan the ledger does not name
@@ -859,21 +867,48 @@ describe('what an erasure costs at the store an object-store registry is over', 
       }
     }
     const [reads, writes] = [store.reads, store.writes];
-    expect(await eraseIdFromSegment(SEG, 999, load)).toMatchObject({ erased: true });
-    return [store.reads - reads, store.writes - writes];
+    const calls: Record<string, number> = {};
+    const counted = { ...load, storage: countingCalls(storage, calls) };
+    expect(await eraseIdFromSegment(SEG, 999, counted)).toMatchObject({ erased: true });
+    delete calls.capabilities;
+    return { registry: [store.reads - reads, store.writes - writes], storage: calls };
   }
 
-  it('an id held only by an older generation the ledger names: 7 reads and 1 write', async () => {
-    expect(await requests('older')).toEqual([7, 1]);
+  // Each count includes one read of the row after the call's last listing of the bucket, made because that listing names
+  // a generation the call found clean (the current one, here), which it skips only while the row names it with the
+  // footer checksum of the object it read. The storage counts pin that the skip happens: a generation the row vouches
+  // for is listed, not opened again.
+  it('an id held only by an older generation the ledger names: 8 reads and 1 write', async () => {
+    expect(await requests('older')).toEqual({
+      registry: [8, 1],
+      storage: { list: 3, getTail: 2, getRange: 2, delete: 1 },
+    });
   });
-  it('an id held only by an older generation, with a usable ledger that does not name it: 6 reads and no write', async () => {
-    expect(await requests('unnamed')).toEqual([6, 0]);
+  it('an id held only by an older generation, with a usable ledger that does not name it: 7 reads and no write', async () => {
+    expect(await requests('unnamed')).toEqual({
+      registry: [7, 0],
+      storage: { list: 3, getTail: 2, getRange: 2, delete: 1 },
+    });
   });
-  it('an id held only by an older generation, on a row with no usable ledger: 7 reads and no write', async () => {
-    expect(await requests('no-ledger')).toEqual([7, 0]);
+  it('an id held only by an older generation, on a row with no usable ledger: 8 reads and no write, and the current generation is opened again', async () => {
+    // No ledger vouches for the generation the call found clean, so the receipt opens it again: one tail read and one
+    // chunk read more than where the row has a ledger.
+    expect(await requests('no-ledger')).toEqual({
+      registry: [8, 0],
+      storage: { list: 3, getTail: 3, getRange: 3, delete: 1 },
+    });
   });
-  it('an id held by the current generation (a rewrite): 9 reads and 1 write', async () => {
-    expect(await requests('rewrite')).toEqual([9, 1]);
+  it('an id held by the current generation (a rewrite): 10 reads and 1 write', async () => {
+    expect(await requests('rewrite')).toEqual({
+      registry: [10, 1],
+      storage: { list: 3, getTail: 2, getRange: 1, putImmutable: 1, delete: 2 },
+    });
+  });
+  it('an id held only above the pointer, beside a generation there it found clean: that generation is not opened again', async () => {
+    expect(await requests('above')).toEqual({
+      registry: [8, 1],
+      storage: { list: 3, getTail: 3, getRange: 3, delete: 1 },
+    });
   });
 });
 
@@ -946,7 +981,9 @@ describe('a row with no usable ledger that a load starts between the fence and t
     await holderBelow(w);
     const c = counting(w.registry);
     await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
-    expect(c.tally.gets).toBe(6);
+    // None after the collection: the last of the seven is the receipt's, after its listing, which names the current
+    // generation the call found clean.
+    expect(c.tally.gets).toBe(7);
   });
 });
 

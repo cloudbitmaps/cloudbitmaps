@@ -1,8 +1,11 @@
-import { eraseIdFromSegment } from '@/core/erase-id';
-import { NotFoundError, TransientError } from '@/core/errors';
+import { randomBytes } from 'node:crypto';
+import { type EraseIdResult, eraseIdFromSegment } from '@/core/erase-id';
+import { dropSegment } from '@/core/erasure';
+import { NotFoundError, TransientError, WriteConflictError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
+import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IAuditSink, SegmentRef } from '@/index';
 import type {
@@ -23,6 +26,7 @@ import { testEntropy, zeroEntropy } from '../helpers/entropy';
  */
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 const X = 42;
+const Y = 43;
 
 function world() {
   const storage = new MemoryStorageDriver();
@@ -519,5 +523,135 @@ describe('an erasure that races another writer', () => {
     expect(res).toMatchObject({ erased: true, generation: 3 });
     expect(await generationsOf(zero.storage)).toEqual([3]);
     expect(kinds).toContain('segment.rewrite');
+  });
+});
+
+/**
+ * The name dropped (its tombstone's sweep deletes every object), the tombstone purged, and a first load of `[1, 2, 3, X]`
+ * that takes number 0: published, it creates the row again; unpublished, it writes onto a row a retention policy made,
+ * which has no pointer.
+ */
+async function recreatedHolding(
+  w: ReturnType<typeof world>,
+  shape: 'published' | 'unpublished',
+): Promise<void> {
+  await dropSegment(SEG, { storage: w.storage, registry: w.registry }, { confirmSegment: 's' });
+  await w.registry.delete(SEG);
+  if (shape === 'published') {
+    await loadSegment(SEG, [1, 2, 3, X], w.deps);
+    return;
+  }
+  await setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: Date.now() + 1e9 });
+  await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3, X], {
+    registry: new MemoryRegistryDriver(),
+    publish: false,
+  });
+}
+
+describe('a generation the erasure found clean, whose number another object takes', () => {
+  it.each(['published', 'unpublished'] as const)(
+    'reads it again when the name is dropped, purged and created again and a first load of the id takes that number (%s)',
+    async (shape) => {
+      const w = world();
+      await holderAbovePointer(w.deps);
+      // Generation 0 is current and clean, 1 holds the id. After the fence's write, the object the call found clean
+      // is swept with the name, and a first load of the id takes its number.
+      const registry = afterFirstWrite(w.registry, () => recreatedHolding(w, shape));
+      const res = await eraseIdFromSegment(SEG, X, { ...w.deps, registry });
+      expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 1 });
+      expect(await generationsOf(w.storage)).toEqual([0]);
+      // The re-run finds the id in the object under 0, on the row as it now is.
+      expect(await eraseIdFromSegment(SEG, X, w.deps)).toMatchObject({
+        erased: true,
+        collected: [0],
+      });
+    },
+  );
+
+  it('reads the row after its last listing, so a re-creation that lands inside that listing is read', async () => {
+    const w = world();
+    await holderAbovePointer(w.deps);
+    // The call deletes generation 1, which holds the id, then lists the bucket for its receipt. The drop, the purge and
+    // the first load land inside that listing: the row it read before the listing still names the clean object under 0.
+    let deleted = false;
+    let acted = false;
+    const storage = overStorage(w.storage, {
+      delete: async (key, options) => {
+        await w.storage.delete(key, options);
+        deleted = true;
+      },
+      list: (ref: SegmentRef) =>
+        (async function* () {
+          if (deleted && !acted) {
+            acted = true;
+            await recreatedHolding(w, 'published');
+          }
+          yield* w.storage.list(ref);
+        })(),
+    });
+    await expect(eraseIdFromSegment(SEG, X, { ...w.deps, storage })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(acted).toBe(true);
+    expect(await generationsOf(w.storage)).toEqual([0]);
+  });
+
+  it('reads it again when another erasure deletes it and a load takes its number, within one incarnation of the row', async () => {
+    const w = world();
+    const keep = { keep: 5 };
+    await loadSegment(SEG, [1, 2, 3], w.deps, keep);
+    await loadSegment(SEG, [1, 2, 3, Y], w.deps, keep);
+    await loadSegment(SEG, [1, 2, 3, X], w.deps, keep);
+    await rollbackSegment(SEG, 0, w.deps);
+    // The erasure of X finds 0 and 1 clean and 2 holding it. Right after its delete of 2, an erasure of Y deletes 1,
+    // and a load of X reads that row and numbers 1, which is free and one above the pointer, and publishes it.
+    let other: EraseIdResult | undefined;
+    const storage = overStorage(w.storage, {
+      delete: async (key, options) => {
+        await w.storage.delete(key, options);
+        if (key.generation === 2 && other === undefined) {
+          other = await eraseIdFromSegment(SEG, Y, w.deps);
+          await loadSegment(SEG, [1, 2, 3, X], w.deps);
+        }
+      },
+    });
+    await expect(eraseIdFromSegment(SEG, X, { ...w.deps, storage })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(other).toMatchObject({ erased: true, collected: [1] });
+    // The current generation holds the id, under a number the call found clean, and the re-run erases it there.
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    expect(await eraseIdFromSegment(SEG, X, w.deps)).toMatchObject({
+      erased: true,
+      fromGeneration: 1,
+    });
+  });
+
+  it('names a holder it can search as one that still holds the id, when a load takes the number of an object it could not search', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps); // 0, cleartext
+    // A first load that minted a key and lost the race to the cleartext one: an object no read of the segment can open,
+    // above the pointer, which the erasure counts as a holder and deletes.
+    const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [7], {
+      registry: new MemoryRegistryDriver(),
+      keystore,
+      publish: false,
+    });
+    // Right after that delete, a load of X numbers 1, one above the pointer and free, and publishes it.
+    let loaded = false;
+    const storage = overStorage(w.storage, {
+      delete: async (key, options) => {
+        await w.storage.delete(key, options);
+        if (key.generation === 1 && !loaded) {
+          loaded = true;
+          await loadSegment(SEG, [1, 2, 3, X], w.deps);
+        }
+      },
+    });
+    const err = await settled(eraseIdFromSegment(SEG, X, { ...w.deps, storage }));
+    expect(loaded).toBe(true);
+    expect(err).toBeInstanceOf(WriteConflictError);
+    expect((err as Error).message).toMatch(/generation 1, which still holds the id and/);
   });
 });
