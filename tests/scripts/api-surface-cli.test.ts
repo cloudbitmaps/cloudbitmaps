@@ -636,6 +636,83 @@ export declare function other(): void;
     });
   });
 
+  it('reports a type removed when only the newly internal entry still names it', () => {
+    // In its own file, which no entry exports: a declaration file exports every top-level declaration of its own.
+    put('packages/b/dist/hidden.d.ts', 'export interface Hidden { h: number }\n');
+    const HIDDEN = `${CORE}import type { Hidden } from './hidden';\nexport declare function onlyMain(x: Hidden): void;\n`;
+    setB(false, HIDDEN);
+    expect(snapshot()['@fx/b (referenced) Hidden.h']).toBe('h: number;');
+    commit();
+    setB(true, HIDDEN);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('removed: @fx/b (referenced) Hidden.h');
+  });
+
+  // Two types of one name in one package: the gate compares each as itself rather than guess which is which.
+  describe('a name two types share', () => {
+    const manifestC = (internal: boolean): string =>
+      JSON.stringify({
+        name: '@fx/c',
+        ...(internal ? { cloudbitmaps: { internalEntries: ['.'] } } : {}),
+        exports: {
+          '.': { types: './dist/index.d.ts', default: './dist/index.js' },
+          './kit': { types: './dist/kit.d.ts', default: './dist/kit.js' },
+          './other': { types: './dist/other.d.ts', default: './dist/other.js' },
+        },
+      });
+    const setC = (internal: boolean, files: Record<string, string>): void => {
+      put('packages/c/package.json', manifestC(internal));
+      put('packages/c/dist/hidden.d.ts', 'export interface Foo { a: number }\n');
+      put('packages/c/dist/other.d.ts', 'export interface Foo { a: string }\n');
+      for (const [name, text] of Object.entries(files)) put(`packages/c/dist/${name}`, text);
+      expect(run(['--write']).status).toBe(0);
+    };
+    const USES = (from: string): string =>
+      `import type { Foo } from './${from}';\nexport declare function use(f: Foo): void;\n`;
+
+    it('reports a referenced type removed when a signature moves to an exported type of the same name', () => {
+      setC(false, {
+        'index.d.ts': 'export declare function e(): void;\n',
+        'kit.d.ts': USES('hidden'),
+      });
+      commit();
+      setC(false, {
+        'index.d.ts': 'export declare function e(): void;\n',
+        'kit.d.ts': USES('other'),
+      });
+      expect(snapshot()['@fx/c/kit use']).toBe('function use(f: Foo): void;');
+      const r = run(['--against', 'HEAD']);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain('removed: @fx/c (referenced) Foo.a');
+    });
+
+    it('compares a name it tells apart by file as it is, so making its entry internal reads as a removal', () => {
+      put(
+        'api-surface/allowed.json',
+        JSON.stringify([{ entry: '@fx/c (internal)', reason: 'ours only' }]),
+      );
+      // The main entry exports a second hidden Foo; once it is internal, the kit names both, and one is told apart by file.
+      const MAIN = "export type { Foo } from './hidden2';\nexport declare function e(): void;\n";
+      const TWO_REFS = `${USES('hidden')}import type { Foo as F2 } from './hidden2';\nexport declare function use2(f: F2): void;\n`;
+      put('packages/c/dist/hidden2.d.ts', 'export interface Foo { b: boolean }\n');
+      setC(false, { 'index.d.ts': MAIN, 'kit.d.ts': USES('hidden') });
+      commit();
+      setC(true, { 'index.d.ts': MAIN, 'kit.d.ts': TWO_REFS });
+      expect(Object.keys(snapshot()).some((k) => /^@fx\/c \(referenced\) Foo \[/.test(k))).toBe(
+        true,
+      );
+      put(
+        'api-surface/allowed.json',
+        JSON.stringify([{ entry: '@fx/c (internal)', reason: 'ours only' }]),
+      );
+      const r = run(['--against', 'HEAD']);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain('removed: @fx/c Foo');
+    });
+  });
+
   it('counts exporting a referenced type as no removal, and still compares it', () => {
     setB(true);
     put('api-surface/allowed.json', JSON.stringify([internalRow]));
