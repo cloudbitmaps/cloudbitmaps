@@ -18,7 +18,8 @@ import { heavy } from '../helpers/strength';
  *
  * Three loads of 100 times as many ids from the smallest to the largest, each spread over the same 8,192 chunks, so the
  * writer's index (which a load holds until its footer) is the same size at every tier and only the ids grow. A warm-up
- * load runs first, so no tier pays the one-off allocations of the first load in the process. The ids come from a
+ * load runs first, as a precaution. The smallest tier reads a little higher than the larger two on every run, with the
+ * warm-up or without it, for a reason not found; that makes the flat line's difference smaller. The ids come from a
  * generator, never an array, and the storage hashes each write and keeps nothing, so neither the input nor a backend's
  * buffer is in the figure. Every 65,536 ids, and at every sink write of 64 KiB or more (the encoded index, once the
  * footer's encoding is done), the test lets a turn of the event loop pass, forces several synchronous major
@@ -43,8 +44,12 @@ import { heavy } from '../helpers/strength';
  * The turn of the event loop matters for that count: a weak reference keeps its target alive until the end of the
  * job that made it, so a reading inside the job that made the bitmaps would count them all.
  *
- * Thresholds were calibrated at more than twice the figures measured (see the constants); no time is measured. The
- * largest tier is a million ids on a pull request and ten million in the full-strength run.
+ * The cap and the flat line's slack leave more than twice the room the measured figures need, and the contrast about
+ * twice; `docs/benchmarks.md` gives the figures. No time is measured. The largest tier is a million ids on a pull
+ * request and ten million in the full-strength run.
+ *
+ * Its resolution, measured by keeping part of what a load writes: it fails on a leak of more than about 20% of the
+ * serialized data on a pull request, and about 5% at full strength. A smaller leak passes.
  */
 
 // Ten million ids, sampled 150 times each way, take a while on a busy runner.
@@ -60,12 +65,9 @@ const TIERS = [TOP / 100, TOP / 10, TOP];
 const SAMPLE_EVERY_IDS = 65_536;
 const SEG: SegmentRef = { namespace: 'ns', segment: 'heap' };
 
-/**
- * The most the largest tier's peak may exceed the smallest's: the ids grow 100 times, the held state does not. Measured
- * at most about 0.2 MiB above it, locally and on CI's Node 22 and 24, at both strengths.
- */
+/** The most the largest tier's peak may exceed the smallest's: the ids grow 100 times, the held state does not. */
 const FLAT_SLACK = 0.5 * MiB;
-/** The most a sorted load's peak may be, at any tier: measured at most 1.23 MiB, locally and on CI. */
+/** The most a sorted load's peak may be, at any tier. */
 const CAP = 3 * MiB;
 /** How many times a sorted load's peak an unsorted load of the same ids must reach. */
 const CONTRAST = 4;
@@ -221,7 +223,7 @@ const shown = (p: Peak): string =>
 
 describe("a sorted load holds one chunk and the writer's index, whatever the segment holds", () => {
   it('peaks flat across 100 times the ids, under a cap, and far under an unsorted load', async () => {
-    await measure(TIERS[0]!, true); // the warm-up: the first load in a process allocates once what no later one does
+    await measure(TIERS[0]!, true); // the warm-up, a precaution: nothing it allocates once lands in a tier
     const sorted: Peak[] = [];
     for (const n of TIERS) sorted.push(await measure(n, true));
     const unsorted = await measure(TOP, false);
@@ -239,6 +241,8 @@ describe("a sorted load holds one chunk and the writer's index, whatever the seg
     // The unsorted load holds every chunk's bitmap at once, which the count above would see.
     expect(unsorted.liveBitmaps, `live bitmaps, unsorted. ${report}`).toBeGreaterThan(CHUNKS / 2);
     expect(top.sha256).toBe(unsorted.sha256);
+    // The readings of a passing run, in the run's log. CI's reporter prints it; vitest's minimal reporter, the one it
+    // picks under a coding agent, hides a passing test's console.
     console.log(`load-sorted-heap: ${report}`);
   });
 });
