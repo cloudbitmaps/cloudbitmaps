@@ -30,14 +30,14 @@
  *   node scripts/api-surface.cjs --check            fail if the built surface differs from either committed file
  *   node scripts/api-surface.cjs --against <ref>    fail if the committed snapshot removes, changes or adds an entry
  *                                                   against the one committed at <ref>, unless a row of
- *                                                   api-surface/allowed.json that the base does not already have lists it
- *                                                   with a reason. A new `(referenced)` key is an addition too: a public
- *                                                   signature that starts naming a type no entry exports. A required
- *                                                   member added to an interface the ref already has is reported as
- *                                                   one. An entry that is internal on this branch but has keys in the
- *                                                   base snapshot needs the row `<specifier> (internal)`. Compares
- *                                                   committed files, so it needs neither a build nor the TypeScript
- *                                                   package.
+ *                                                   api-surface/allowed.json that the base does not already have lists
+ *                                                   it with a reason. A new `(referenced)` key is an addition too: a
+ *                                                   public signature that starts naming a type no entry exports. A
+ *                                                   required member added to an interface the ref already has is
+ *                                                   reported as a required member added to an existing interface. An
+ *                                                   entry that is internal on this branch but has keys in the base
+ *                                                   snapshot needs the row `<specifier> (internal)`. Compares committed
+ *                                                   files, so it needs neither a build nor the TypeScript package.
  *   --root <dir>                                    run on another checkout (the tests' fixtures)
  *
  * Known limits: overloads are compared in declared order, so one appended after the last reads as an addition, not a
@@ -46,8 +46,9 @@
  * declares it, type parameters and all, so a class extending a generic base that declares the same constructor with
  * them filled in reads as a change; a class that records no constructor (its chain declares none, or it comes from
  * outside the workspace or from a base that is not a class) reads a constructor it declares as an addition, and
- * removing a `private constructor()` from a class with no base is not seen; only declarations are read, so a change in behaviour behind an unchanged signature is for
- * tests; a TypeScript upgrade that changes how declarations print needs one `--write`.
+ * removing a `private constructor()` from a class with no base is not seen; only declarations are read, so a change in
+ * behaviour behind an unchanged signature is for tests; a TypeScript upgrade that changes how declarations print needs
+ * one `--write`.
  */
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
@@ -486,7 +487,7 @@ function newRows(rows, baseRows) {
  * The entries `now` removes from `was`, changes or adds without a usable row of `allowed` excusing them, and the
  * problems with the rows. A `(referenced)` key is an entry like any other, so a public signature that starts naming a
  * type no entry exports needs a row too. A required member added to an interface the base already has (`required` maps
- * such a member's key to its parent's) is reported as one, because it breaks every implementer.
+ * such a member's key to its parent's) has a message of its own, because it breaks every implementer.
  */
 function breakingChanges(was, now, allowed, required = {}) {
   const rowProblems = allowlistProblems(allowed);
@@ -504,12 +505,13 @@ function breakingChanges(was, now, allowed, required = {}) {
   const lines = [
     ...removed.map((k) => ({ k, text: `removed: ${k}\n    was: ${was[k]}` })),
     ...changed.map((k) => ({ k, text: `changed: ${k}\n    was: ${was[k]}\n    now: ${now[k]}` })),
+    // Every addition is a new promise. A member an implementer must provide, added to an interface the base already
+    // has, also breaks every implementer, and says so.
     ...added.map((k) => ({
       k,
       text:
         k in required && required[k] in was
-          ? // A member an implementer must provide, added to an interface the base already has, breaks every implementer.
-            `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`
+          ? `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`
           : `added: ${k}\n    a new public entry; add a reason row\n    now: ${now[k]}`,
     })),
   ]
