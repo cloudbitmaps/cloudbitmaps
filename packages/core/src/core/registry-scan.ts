@@ -24,7 +24,7 @@ export const DEFAULT_MAX_SCAN_SEGMENTS = 250_000;
 
 /** Fail fast on a bad ceiling BEFORE the (possibly huge) scan, not after. */
 function validateMaxScanSegments(value: number, op: string): void {
-  requirePositiveInteger(value, `${op}: maxScanSegments`);
+  requirePositiveInteger(value, `${op}: \`maxScanSegments\``);
 }
 
 /**
@@ -55,11 +55,10 @@ export async function drainRegistry(
 ): Promise<RegistryRecord[]> {
   const { maxScanSegments, op } = options;
   validateMaxScanSegments(maxScanSegments, op);
-  const raise = 'raise `maxScanSegments`';
   const advice =
     options.narrowable === false
-      ? `${raise[0]!.toUpperCase()}${raise.slice(1)} if the namespace really is that large and the memory is `
-      : `Narrow it with \`namespace\`, or ${raise} if the fleet really is that large and the memory is `;
+      ? 'Raise `maxScanSegments` if the namespace really is that large and the memory is '
+      : 'Narrow it with `namespace`, or raise `maxScanSegments` if the fleet really is that large and the memory is ';
   const rows: RegistryRecord[] = [];
   for await (const rec of registry.list(options.namespace)) {
     // A due-index pointer is bookkeeping, not a segment. It lives in a reserved namespace, so an unscoped fleet

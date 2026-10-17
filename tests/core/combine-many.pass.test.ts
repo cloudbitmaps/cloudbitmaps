@@ -1175,6 +1175,7 @@ describe('each memory refusal reports what the ledger held plus the charge it re
     // `spent` is the ledger's holding at the refusal plus the charge it refused, exactly.
     expect(forced).toHaveLength(1);
     expect(error.spent).toBe(forced[0]!.used + forced[0]!.asked);
-    expect(error.spent).toBeGreaterThan(0);
+    // The ledger was full, so a refusal is past the limit, as a real one is.
+    expect(error.spent).toBeGreaterThan(limit);
   });
 });
