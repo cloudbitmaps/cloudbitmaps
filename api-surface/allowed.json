@@ -134,5 +134,53 @@
   {
     "entry": "@cloudbitmaps/core (referenced) CombineManyFeedRecord*",
     "reason": "the engine's CombineManyFeedRecord is renamed MaterializeManyFeedRecord where it is declared, and @cloudbitmaps/roaring exports it under that name, so no public signature names CombineManyFeedRecord any more"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CombineOptions",
+    "reason": "CombineOptions is the one options type for every read and combine on a segment: it declares all eleven fields itself, each optional, rather than extending the types it replaces, and a verb refuses at run time, with a ValidationError before any request, a field it does not take"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdRange*",
+    "reason": "merged into CombineOptions, which has the same after and through fields; iterate and everyNth take Pick<CombineOptions, 'after' | 'through'> and MaterializeManyOptions extends it"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring BaseCombineOptions*",
+    "reason": "merged into CombineOptions, which has its concurrency, budget and allowAbsentOperands fields unchanged; andNot takes CombineOptions and refuses exclude and the write options with a ValidationError before any request"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeOptions*",
+    "reason": "merged into CombineOptions, which has its audit, allowEmpty, guard, metadata and keep fields unchanged; intersectInto and unionInto take CombineOptions"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AndNotIntoOptions",
+    "reason": "merged into CombineOptions; andNotInto takes CombineOptions and refuses exclude with a ValidationError before any request, since its excludes argument is the subtraction"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOptions",
+    "reason": "it extends Pick<CombineOptions, 'after' | 'through'> in place of IdRange, which is merged into CombineOptions; the two fields are the same"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.iterate",
+    "reason": "the range parameter is Pick<CombineOptions, 'after' | 'through'> in place of IdRange, which is merged into CombineOptions; it takes the same two fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.everyNth",
+    "reason": "the range parameter is Pick<CombineOptions, 'after' | 'through'> in place of IdRange, which is merged into CombineOptions; it takes the same two fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.andNot",
+    "reason": "takes CombineOptions in place of BaseCombineOptions, which is merged into it; a field andNot does not take, such as exclude or a write option, type-checks and is refused with a ValidationError before any request"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.andNotInto",
+    "reason": "takes CombineOptions in place of AndNotIntoOptions, which is merged into it; exclude type-checks and is refused with a ValidationError before any request, as it was at run time"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.intersectInto",
+    "reason": "takes CombineOptions in place of MaterializeOptions, which is merged into it with the same fields"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.unionInto",
+    "reason": "takes CombineOptions in place of MaterializeOptions, which is merged into it with the same fields"
   }
 ]

@@ -239,7 +239,7 @@ over 128 bytes. A record that breaks a rule is a `ValidationError` before the lo
 the generation's id count, by the same compare-and-swap that moves the pointer, so a reader that sees a generation as
 current sees its metadata. It is immutable: a new generation is how it changes. A rollback puts the target's own back,
 and an erasure rewrite carries it over unchanged without scanning it, so keep a subject's id out of it. Sealed under
-the segment's key on an encrypted segment. `MaterializeOptions` takes it too, so each `*Into` verb does
+the segment's key on an encrypted segment. Each `*Into` verb takes it too, in its options
 ([details](loading.md#metadata-what-a-generation-was-computed-from)). `seg.stat()` and the current entry of
 `store.generations()` read it back, with the generation's id count.
 
@@ -300,8 +300,8 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | chunk-skipping intersection, streamed. Each operand's chunks are read as coalesced ranges: chunks within 256 KiB of each other come in one request, up to 1 MiB. `concurrency` is the range requests held ahead per operand (32 by default; the window opens 4 wide and widens as ranges are taken); on a source that reads chunk by chunk it is the chunk keys in flight (opening 8 wide). `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
 | `seg.union([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read, or every chunk inside the range when one is given |
 | `seg.andNot([sup, …], { after?, through?, concurrency?, budget?, allowAbsentOperands? })` → `IdStream` | `this \ (sup…)`. Reads all of `this`, or all of it inside the range, but each exclude **only where it overlaps** |
-| *every combine, streamed or `*Into`* | **refuses an operand that names no segment, or one dropped, retired or shredded**, `this` and every `exclude` included, with `ValidationError`, unless you pass `allowAbsentOperands: true` ([why](reading.md#combine-segments-intersect-union-andnot)); it also refuses, with `ValidationError` before any request, an operand, an `exclude` or a destination that this store did not make: a segment of another store, of a second store object over the same backend, or of another installed copy of `@cloudbitmaps/roaring`, which always belongs to another store ([as reading explains](reading.md#combine-segments-intersect-union-andnot)); `materializeMany` applies the same rule to every operand and every `dest` |
-| `seg.intersectInto(dest, [other, …], opts?)` · `seg.unionInto(dest, [other, …], opts?)` · `seg.andNotInto(dest, [sup, …], opts?)` → `Promise<MaterializeResult>` | materialize the result as a **new generation of `dest`**, superseding it ([the `*Into` verbs](loading.md#write-a-result-into-another-segment-the-into-verbs)). `opts` takes the combine's options, a range included, and `keep`, `allowEmpty`, `guard` and `metadata`. An empty result over a non-empty `dest` is refused (`published: false`); a lost race throws `WriteConflictError`. Collects nothing unless you pass `keep`. Needs a backend |
+| *every combine, streamed or `*Into`* | **refuses an operand that names no segment, or one dropped, retired or shredded**, `this` and every `exclude` included, with `ValidationError`, unless you pass `allowAbsentOperands: true` ([why](reading.md#combine-segments-intersect-union-andnot)); it also refuses, with `ValidationError` before any request, an operand, an `exclude` or a destination that this store did not make: a segment of another store, of a second store object over the same backend, or of another installed copy of `@cloudbitmaps/roaring`, which always belongs to another store ([as reading explains](reading.md#combine-segments-intersect-union-andnot)); `materializeMany` applies the same rule to every operand and every `dest`. Every read and combine here takes one options type, `CombineOptions`, and each takes the fields its row lists: a field it does not take, such as a write option (`audit`, `allowEmpty`, `guard`, `metadata`, `keep`) on a streaming combine or `exclude` on `andNot` or `andNotInto`, type-checks and is refused with a `ValidationError` naming it, before any request |
+| `seg.intersectInto(dest, [other, …], opts?)` · `seg.unionInto(dest, [other, …], opts?)` · `seg.andNotInto(dest, [sup, …], opts?)` → `Promise<MaterializeResult>` | materialize the result as a **new generation of `dest`**, superseding it ([the `*Into` verbs](loading.md#write-a-result-into-another-segment-the-into-verbs)). `opts` is a `CombineOptions`: the combine's options, a range included, and `audit`, `keep`, `allowEmpty`, `guard` and `metadata`; `andNotInto` takes every one but `exclude`, since `[sup, …]` is its subtraction. An empty result over a non-empty `dest` is refused (`published: false`); a lost race throws `WriteConflictError`. Collects nothing unless you pass `keep`. Needs a backend |
 | `seg.pinnedAt` | on a handle from `pin()` or `pinAt()`, the `PinnedAt` it is held at; `undefined` on a live handle. Its `version` is the generation with the row's `pointerId`, so it is the same across a lease or a policy write, and two pins of one generation, leased or not, share one open |
 | `seg.lease` | on a handle from `pin({ leaseUntil })`, the `Lease` it holds, `{ holder, until }` (`until` in epoch milliseconds); `undefined` otherwise |
 | `seg.release()` → `Promise<void>` | end this handle's lease now, so a load's collection may take its generation. Idempotent: a handle with no lease, one already released, and one whose lease has ended make no request; otherwise one registry read and one write. Every read of the handle after it, and after the lease's own end, throws `LeaseExpiredError` |
@@ -451,9 +451,19 @@ decodes it with `new TextDecoder().decode(bytes)`.
 `TailRead` (what `getTail` answers: `{ bytes, size, version? }`) · `StorageDeleteOptions` (`{ ifVersion? }`, what `delete`
 takes)
 
-### Read and combine options (used to type `iterate`, `intersect` / `union` / `andNot` and the `*Into` verbs)
+### Read and combine options (used to type `iterate`, `everyNth`, `intersect` / `union` / `andNot` and the `*Into` verbs)
 
-`IdRange` (`{ after?, through? }` — the ids in `(after, through]`; `iterate` takes it, and every combine's options type extends it) · `BaseCombineOptions` (`{ after?, through?, concurrency?, budget?, allowAbsentOperands? }`) · `CombineOptions` (adds `exclude?: Segment[]`) · `MaterializeOptions` (adds, for the `*Into` verbs, which publish, `audit?`, `allowEmpty?`, `guard?`, `keep?` and `metadata?`; the streaming verbs write nothing and emit nothing) · `AndNotIntoOptions` (`MaterializeOptions` without `exclude`)
+`CombineOptions` (`{ after?, through?, concurrency?, budget?, allowAbsentOperands?, exclude?: Segment[], audit?, allowEmpty?, guard?, metadata?, keep? }`, every field optional) — one type for every read and combine, each taking the fields that apply to it:
+
+| verb | takes |
+|---|---|
+| `iterate`, `everyNth` | `after`, `through`: their parameter is `Pick<CombineOptions, 'after' \| 'through'>`, as `MaterializeManyOptions` extends it |
+| `intersect`, `union` | the range (the ids in `(after, through]`), `concurrency`, `budget`, `allowAbsentOperands`, `exclude` |
+| `andNot` | the same but `exclude`: its `[sup, …]` is the subtraction |
+| `intersectInto`, `unionInto` | every field |
+| `andNotInto` | every field but `exclude` |
+
+`audit`, `allowEmpty`, `guard`, `metadata` and `keep` decide what an `*Into` verb publishes; the streaming verbs write nothing and emit nothing. A field a verb does not take is refused with a `ValidationError` that names it, before any request: a streaming read fails when it is first read, and an `*Into` verb rejects.
 
 ---
 
@@ -1106,8 +1116,8 @@ names a driver author imports are under `@cloudbitmaps/core/driver-kit`.
 
 `CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
 `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
-`MaterializeResult` · `MaterializeRefusal` · `Expr` · `MaterializeManyOptions` · `MaterializeManyDryRunOptions` · `MaterializeManyDryRun` · `MaterializeDryRunResult` · `MaterializeManyDryRunOutcome` · `MaterializeManyOutput` · `MaterializeManyFeed` · `MaterializeManyFeedRecord` · `MaterializeManyOutcome` · `MaterializeManyRun` · `MaterializeManyStats` · `MaterializeManyOperandStats` · `MaterializeManyOutputStats` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
-· `AndNotIntoOptions` · `IdIterator` · `IdRange` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
+`MaterializeResult` · `MaterializeRefusal` · `Expr` · `MaterializeManyOptions` · `MaterializeManyDryRunOptions` · `MaterializeManyDryRun` · `MaterializeDryRunResult` · `MaterializeManyDryRunOutcome` · `MaterializeManyOutput` · `MaterializeManyFeed` · `MaterializeManyFeedRecord` · `MaterializeManyOutcome` · `MaterializeManyRun` · `MaterializeManyStats` · `MaterializeManyOperandStats` · `MaterializeManyOutputStats` · `CombineOptions`
+· `IdIterator` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
 · `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
 · `CrbmStorageChunkSourceOptions` · `PinOptions` · `Lease` · `LeaseEntry` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·

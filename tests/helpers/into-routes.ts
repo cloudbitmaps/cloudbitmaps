@@ -7,7 +7,7 @@
 import { randomBytes } from 'node:crypto';
 import roaring from 'roaring';
 import { CloudRoaring, MemoryStorage, RecordingAuditSink } from '@/index';
-import type { CloudRoaringOptions, MaterializeOptions, MaterializeResult } from '@/index';
+import type { CloudRoaringOptions, CombineOptions, MaterializeResult } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -27,7 +27,7 @@ export interface Call {
   verb: Verb;
   /** `intersect` and `union`: the operands beside the receiver; `andNot`: the segments subtracted from it. */
   others: string[];
-  options?: Omit<MaterializeOptions, 'exclude' | 'audit'> & { exclude?: string[] };
+  options?: Omit<CombineOptions, 'exclude' | 'audit'> & { exclude?: string[] };
 }
 
 export const DEST: SegmentRef = { segment: 'dest' };
@@ -153,7 +153,7 @@ export function run(w: World, call: Call, route: 'chunks' | 'ids'): Promise<Mate
   const { verb, others, options } = call;
   const { exclude, ...rest } = options ?? {};
   const handles = others.map((n) => w.store.segment(n));
-  const opts: MaterializeOptions = {
+  const opts: CombineOptions = {
     ...rest,
     ...(exclude === undefined ? {} : { exclude: exclude.map((n) => w.store.segment(n)) }),
     audit: w.audit,
@@ -176,7 +176,7 @@ export function run(w: World, call: Call, route: 'chunks' | 'ids'): Promise<Mate
         d: SegmentRef,
         ids: AsyncIterable<number>,
         op: string,
-        o?: MaterializeOptions,
+        o?: CombineOptions,
       ) => Promise<MaterializeResult>;
     }
   ).materialize.bind(w.store);

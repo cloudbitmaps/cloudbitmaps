@@ -532,11 +532,10 @@ describe('a materialisation reports whether it actually landed', () => {
     ]);
   });
 
-  it('a streaming combine cannot even be handed an audit sink', async () => {
-    // `audit` lives on `MaterializeOptions`, which only the writing verbs take, so handing a sink to a read verb
-    // (which could only ignore it, never attest to a publish that did not happen) is a compile error, and from plain
-    // JavaScript a `ValidationError`, rather than a silent no-op. The `@ts-expect-error` below fails the build if a read
-    // verb ever takes one.
+  it('a streaming combine refuses an audit sink', async () => {
+    // `audit` is one of the options only the writing verbs take, so a sink handed to a read verb (which could only
+    // ignore it, never attest to a publish that did not happen) is a `ValidationError` when the stream is first read,
+    // rather than a silent no-op. The options type is shared, so this is the call's check, not the compiler's.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -545,10 +544,7 @@ describe('a materialisation reports whether it actually landed', () => {
 
     const store = w.reader();
     await expect(
-      collect(
-        // @ts-expect-error a read verb writes nothing, so it does not take an audit sink
-        store.segment('a').intersect([store.segment('b')], { audit }),
-      ),
+      collect(store.segment('a').intersect([store.segment('b')], { audit })),
     ).rejects.toThrow('intersect: unknown option "audit"');
     expect(events).toEqual([]);
   });
