@@ -51,7 +51,7 @@ sample reaches less often; those shapes are pinned as examples that run at every
 | `bench/calibrate-large.test.ts` | random layouts the range-cap property is tried on (when reduced, a subset that holds every chunk weight and wanted share) | 40 | 10 |
 | `core/combine-many.property.test.ts` | cases, one group; cases, many groups under a range | 30; 20 | 8; 6 |
 | `core/combine-many.feed.property.test.ts` | cases, fed operands; cases, fed operands under a range | 60; 30 | 15; 8 |
-| `core/retention-hard-purge.test.ts` | segments created, retired and purged (`docs/guide/retention.md` quotes the full size) | 10,000 | 1,000 |
+| `core/retention-hard-purge.test.ts` | segments created, retired and purged (`docs/guide/correctness.md` quotes the full size) | 10,000 | 1,000 |
 | `core/erase-namespace-bounded.test.ts` | rows in the listing admitted exactly at the ceiling and destroyed one by one (full passes no ceiling, so it is the shared default of 250,000); the refusal one row over the default runs at 250,001 rows on every run | 250,000 | 25,000 |
 | `core/combine-ledger.test.ts` | bitmaps measured per cardinality, at 3,000 and 20,000 ids a chunk only (the smaller cardinalities, which have the least headroom and cost the least, always use 8,000) | 8,000 | 4,000 |
 
