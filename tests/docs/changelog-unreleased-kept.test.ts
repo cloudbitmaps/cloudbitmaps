@@ -113,6 +113,12 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
     reason:
       'retitled in the 0.21.0 notes: its refused inputs moved to the Breaking entry, leaving the entry on a total `estimateCost` cannot price',
   },
+  {
+    title: 'An Azure Blob error carries no credential.',
+    reason:
+      'retitled, unreleased, to match the S3 and GCS entries: the driver removes the credentials it recognises, and a ' +
+      'credential in another form is not recognised, so "carries no credential" is more than it does',
+  },
 ];
 
 const FETCH = `fetch the history and the base branch (\`git fetch --unshallow origin main\`, or check out with \`fetch-depth: 0\`)`;
