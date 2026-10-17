@@ -582,6 +582,22 @@ describe('scrubCredentials (Azure)', () => {
       });
     });
 
+    it('on a record that describes an error, redacts the value beside any credential name', () => {
+      const err = withBody({ header: 'x-api-key', value: 'K' });
+      expect(detailsOf(err)).toEqual({
+        errorCode: 'InvalidHeaderValue',
+        requestId: 'r-1',
+        date: 'd',
+        header: 'x-api-key',
+        value: '[redacted]',
+      });
+      const plain = withBody({ header: 'x-ms-version', value: '2099-01-01' });
+      expect(scrubCredentials(plain)).toBe(plain);
+      const own = Object.assign(new Error('x'), { header: 'cookie', value: 'c=1', note: 'kept' });
+      const out = scrubCredentials(own) as unknown as Record<string, unknown>;
+      expect([out['value'], out['note']]).toEqual(['[redacted]', 'kept']);
+    });
+
     it('on an error itself, redacts only the Value beside a Name', () => {
       const err = Object.assign(new Error('refused'), {
         code: 'InvalidHeaderValue',

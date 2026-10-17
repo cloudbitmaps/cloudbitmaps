@@ -337,8 +337,8 @@ function nameIndexes(list: unknown[]): number[] {
  * in any other field (a header table's `{ th, td }` row, a `{ key, value }` pair) redacts every other field, and a name
  * at an index of a list redacts that index of every other list (a row of several pairs, parsed to parallel lists). An
  * error, and a record that describes one (a `details` with its `errorCode`), are read field by field: a response
- * header whose value spells a credential's name (`vary: Cookie`) costs them nothing. A number or a boolean is never a
- * credential, and is kept.
+ * header whose value spells a credential's name (`vary: Cookie`) costs them nothing, and only a `value` field beside
+ * such a name is redacted with it. A number or a boolean is never a credential, and is kept.
  */
 function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Copying): void {
   const fieldwise =
@@ -352,6 +352,8 @@ function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Co
   const paired = names
     .filter((key) => /name$/i.test(key))
     .map((key) => `${key.slice(0, -4)}value`.toLowerCase());
+  // On a record read field by field, a plain `value` beside a name in any other field (`header`, `key`) is its value.
+  if (fieldwise && names.length > 0) paired.push('value');
   const every = !fieldwise && names.some((key) => !/name$/i.test(key));
   const indexes = lists.flatMap((key) =>
     nameIndexes(Object.getOwnPropertyDescriptor(original, key)?.value as unknown[]),
