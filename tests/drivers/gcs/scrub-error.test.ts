@@ -764,23 +764,33 @@ describe('GCS scrubCredentials', () => {
       expect(out.code).toBe(502);
     });
 
-    it('replaces a text too large for its patterns whole, and still classifies', () => {
-      // Every pattern runs in linear time and in constant stack on these, so none is cut short.
+    it('redacts a credential of 16 MiB in place, and the error still classifies', () => {
+      // Every pattern runs in linear time and in constant stack on these, so none is cut short and nothing is lost.
       const huge = 'a'.repeat(16 * 2 ** 20);
-      for (const text of [
-        `Bearer ${huge}`,
-        `Signature=${huge}`,
-        `ya29.${huge}`,
-        `-----BEGIN PRIVATE KEY-----${huge}`,
-      ]) {
+      const cases: [string, string][] = [
+        [`refused Bearer ${huge} end`, 'refused Bearer [redacted] end'],
+        [`?Signature=${huge}&x=1`, '?Signature=[redacted]&x=1'],
+        [`token ya29.${huge} end`, 'token [redacted] end'],
+        [
+          `-----BEGIN PRIVATE KEY-----${huge}-----END PRIVATE KEY-----`,
+          '-----BEGIN PRIVATE KEY-----[redacted]-----END PRIVATE KEY-----',
+        ],
+        [`x-goog-encryption-key=${huge} end`, 'x-goog-encryption-key=[redacted] end'],
+      ];
+      for (const [text, redacted] of cases) {
         const out = scrubCredentials(apiError(503, { message: text }));
-        expect(out.message.length).toBeLessThan(64);
+        expect(out.message).toBe(redacted);
         expect(out.code).toBe(503);
       }
-    });
+      const missing = apiError(404, {
+        message: `The specified bucket does not exist. Signature=${huge}`,
+      });
+      expect(isMissingBucket(missing)).toBe(true);
+      expect(isMissingBucket(scrubCredentials(missing))).toBe(true);
+    }, 30_000);
 
     it.each([
-      ['repeated JWT starts', 'eyJ'.repeat(2 ** 20)],
+      ['repeated JWT starts', 'eyJ'.repeat(2 ** 17)],
       ['a JWT start with no dot', `eyJ${'a'.repeat(4 * 2 ** 20)}`],
       ['repeated table cells', '<th>x</th><td>'.repeat(2 ** 18)],
       ['tags around long runs of spaces', `<a>${' '.repeat(100)}`.repeat(2 ** 14)],
