@@ -246,8 +246,8 @@ export interface Workload {
    * place of the check that its object is there. A publish that loses a race to another writer
    * reads the pointer again, and a load whose check finds the number taken (a crashed load's object, or the
    * generations a rollback left above the pointer) lists the segment's objects to number past them and to collect,
-   * two PUT-class requests on S3 and two more pointer reads. So does every load whose `keep` is above 64, which lists
-   * to collect: one more PUT-class request and two more pointer reads than the model counts. The counts
+   * two PUT-class requests on S3 and two more pointer reads, and one check fewer. So does every load whose `keep` is above 64, which lists
+   * to collect: one more PUT-class request and two more pointer reads than the model counts, and one check fewer. The counts
    * are a cleartext segment's: an encrypted segment's load reads its row once more, after its ids and before it
    * unwraps the key, one more GET ($0.40 per million at the default prices) that the model leaves out, beside the
    * key-management calls it does not price either.
@@ -409,9 +409,11 @@ const GIB = 1024 ** 3;
  * that the next generation number is free, on every load, and that the current generation's object is there, before
  * the collection deletes by name, so on every load but the listing one. `tests/tools/cost.test.ts` holds these to the
  * engine over sixteen consecutive loads at a `keep` of 1, 2, 12 and 64. A load whose `keep` is above 64 records no list
- * and lists on every load, and so does the first load of a row that records none, and one whose check meets an object:
- * one more PUT-class request and two more pointer reads than these, and one check fewer. This model prices the first
- * kind and not the others.
+ * and lists on every load: one more PUT-class request and two more pointer reads than these, and one check fewer. A load
+ * whose check meets an object lists twice, to number past it and to collect, and so does the first load of a row that
+ * records none, which also reads a footer for each generation its seed keeps: two more PUT-class requests than these,
+ * two more pointer reads, and one check fewer. This model prices none of these: it counts the load described first, at
+ * a `keep` from 1 to 64.
  */
 const STORE_LOAD_PUT_CLASS = 1 + 1 / LIST_COLLECTION_CADENCE;
 const STORE_LOAD_POINTER_READS = 3 + 2 / LIST_COLLECTION_CADENCE;
