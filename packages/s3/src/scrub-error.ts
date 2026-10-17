@@ -19,10 +19,11 @@
  * nested deeper than `MAX_DEPTH` is dropped rather than kept raw. The value under a credential key is replaced by
  * `[redacted]`: a credential header's, an SSE-C key's, an AWS credential's fields, the signature and canonical request
  * S3 quotes, and the session token it quotes in `Token-0` when it refuses one (the access key id it names is kept: it
- * names a key and signs nothing). In the copy's text, a credential header line, a SigV4 signature (`Signature=` in an
- * `Authorization` value, `X-Amz-Signature=` in a URL) and a session token or SSE-C key written after its header name
- * are redacted. A credential in any other form is not recognised, and a text too large for these patterns is replaced
- * whole.
+ * names a key and signs nothing). So is the value beside a credential's name in a list (`['x-amz-security-token', v]`)
+ * or a record (a header table's `{ th, td }` row, `{ name, value }`, S3's `ArgumentName` and `ArgumentValue`). In the
+ * copy's text, a credential header line, a SigV4 signature (`Signature=` in an `Authorization` value, `X-Amz-Signature=`
+ * in a URL) and a session token or SSE-C key written after its header name are redacted. A credential in any other form
+ * is not recognised, and a text too large for these patterns is replaced whole.
  */
 
 import { types } from 'node:util';
@@ -53,6 +54,9 @@ const CREDENTIAL_NAME = new RegExp(
     'token(?:-\\d+)?)$',
   'i',
 );
+/** Whether `text` is a credential's name, as a key, a list item or a table cell holds it: spaces and a colon aside. */
+const isCredentialName = (text: string): boolean =>
+  CREDENTIAL_NAME.test(text.trim().replace(/:$/, ''));
 /** A credential header line inside raw request or response text. */
 const CREDENTIAL_LINES = new RegExp(
   `^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|${PRIVATE_HEADERS}):[^\\r\\n]*`,
@@ -163,7 +167,7 @@ function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
       const kept = copyOf(item, ctx, depth + 1);
       list.push(kept === OMIT ? undefined : kept);
     }
-    hidden = typeof item === 'string' && CREDENTIAL_NAME.test(item);
+    hidden = typeof item === 'string' && isCredentialName(item);
   }
   return list;
 }
@@ -176,7 +180,7 @@ function copyMap(value: Map<unknown, unknown>, ctx: Copying, depth: number): Map
   for (const [k, v] of value) {
     const key = copyOf(k, ctx, depth + 1);
     if (key === OMIT) continue;
-    if (typeof k === 'string' && CREDENTIAL_NAME.test(k) && v != null) {
+    if (typeof k === 'string' && isCredentialName(k) && v != null) {
       map.set(key, REDACTED);
       if (v !== REDACTED) ctx.changed = true;
       continue;
@@ -221,7 +225,35 @@ function copyRecord(value: object, ctx: Copying, depth: number): unknown {
     }
   }
   if (errorLike) keepSlotFields(value, copy, ctx, depth);
+  redactPairs(value, copy, errorLike, ctx);
   return copy;
+}
+
+/**
+ * Redact the value a record holds beside a credential's name: a header table's `{ th, td }` row, a `{ name, value }`
+ * pair, S3's `ArgumentName` and `ArgumentValue`. On a plain record every field but the name is redacted. On an error,
+ * whose other fields are what classification reads, only the `...Value` field beside a `...Name` one is.
+ */
+function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Copying): void {
+  const names = Reflect.ownKeys(original).filter((key): key is string => {
+    if (typeof key !== 'string') return false;
+    const held = Object.getOwnPropertyDescriptor(original, key)?.value as unknown;
+    return typeof held === 'string' && isCredentialName(held);
+  });
+  if (names.length === 0) return;
+  const values = errorLike
+    ? names
+        .filter((key) => /name$/i.test(key))
+        .map((key) => `${key.slice(0, -4)}value`.toLowerCase())
+    : undefined;
+  for (const key of Reflect.ownKeys(copy)) {
+    if (typeof key !== 'string' || names.includes(key)) continue;
+    if (values !== undefined && !values.includes(key.toLowerCase())) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(copy, key);
+    if (descriptor?.value == null || descriptor.value === REDACTED) continue;
+    define(copy, key, REDACTED, descriptor.enumerable ?? false);
+    ctx.changed = true;
+  }
 }
 
 /** Carry an error's stack over, read through the original: it may be an accessor bound to the error itself. */
@@ -255,7 +287,7 @@ function copyField(
   const name = typeof key === 'string' ? redactText(key) : key;
   if (name !== key) ctx.changed = true;
   let kept: unknown;
-  if (typeof key === 'string' && CREDENTIAL_NAME.test(key) && descriptor.value != null) {
+  if (typeof key === 'string' && isCredentialName(key) && descriptor.value != null) {
     kept = REDACTED;
     if (descriptor.value !== REDACTED) ctx.changed = true;
   } else {

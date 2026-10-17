@@ -14,6 +14,7 @@ const AUTH = [
   'SignedHeaders=host;x-amz-date;x-amz-security-token, ',
   `Signature=${SIG}`,
 ].join('');
+const AUTHORIZATION = ['author', 'ization'].join('');
 const hex = (text: string): string =>
   [...Buffer.from(text)].map((b) => b.toString(16).padStart(2, '0')).join(' ');
 
@@ -517,6 +518,77 @@ describe('S3 scrubCredentials', () => {
       expect(out).not.toBe(holder);
       expect(out[key]).toEqual({ 'x-amz-security-token': '[redacted]' });
       expect(holder[key]['x-amz-security-token']).toEqual(['x-amz-security-token', VALUE]);
+    });
+  });
+
+  describe('a credential name beside its value in a record', () => {
+    /** A proxy page that lists the request headers as a table, as the SDK parses it. */
+    const table = (rows: [string, unknown][]): Record<string, unknown> => ({
+      table: { tr: rows.map(([th, td]) => ({ th, td })) },
+    });
+
+    it('redacts the value cell of a header table row, and keeps the other rows', () => {
+      const err = sdkError({
+        body: table([
+          ['host', 'h'],
+          ['x-amz-security-token', TOKEN],
+          [' X-Amz-Server-Side-Encryption-Customer-Key: ', { '#text': VALUE, class: 'v' }],
+          [AUTHORIZATION, AUTH],
+        ]),
+      });
+      const out = scrubCredentials(err);
+      expect(out['body']).toEqual(
+        table([
+          ['host', 'h'],
+          ['x-amz-security-token', '[redacted]'],
+          [' X-Amz-Server-Side-Encryption-Customer-Key: ', '[redacted]'],
+          [AUTHORIZATION, '[redacted]'],
+        ]),
+      );
+      expect(leaks(out)).toEqual([]);
+      expect(leaks(err)).not.toEqual([]);
+    });
+
+    it('redacts the value of a name and value pair', () => {
+      const err = sdkError({
+        headers: [
+          { name: 'Cookie', value: VALUE },
+          { name: 'x-amz-s3session-token', value: TOKEN },
+          { name: 'max-keys', value: '5' },
+        ],
+      });
+      const out = scrubCredentials(err);
+      expect(out['headers']).toEqual([
+        { name: 'Cookie', value: '[redacted]' },
+        { name: 'x-amz-s3session-token', value: '[redacted]' },
+        { name: 'max-keys', value: '5' },
+      ]);
+    });
+
+    it.each(['x-amz-security-token', 'x-amz-server-side-encryption-customer-key', 'Authorization'])(
+      "redacts S3's ArgumentValue beside an ArgumentName of %s, and keeps what classification reads",
+      (name) => {
+        const err = sdkError({ Code: 'InvalidArgument', ArgumentName: name, ArgumentValue: TOKEN });
+        Object.assign(err, { name: 'InvalidArgument' });
+        const out = scrubCredentials(err);
+        expect(out['ArgumentValue']).toBe('[redacted]');
+        expect(out['ArgumentName']).toBe(name);
+        expect(out.name).toBe('InvalidArgument');
+        expect(out['Code']).toBe('InvalidArgument');
+        expect(out.message).toBe('The specified key does not exist.');
+        expect(out.$metadata).toEqual(err.$metadata);
+      },
+    );
+
+    it('keeps an ArgumentValue beside an ArgumentName that is not a credential', () => {
+      const err = sdkError({ ArgumentName: 'max-keys', ArgumentValue: '5000' });
+      expect(scrubCredentials(err)['ArgumentValue']).toBe('5000');
+    });
+
+    it('keeps the fields of a record that names no credential', () => {
+      const err = new Error('x') as Error & Record<string, unknown>;
+      Object.assign(err, { body: table([['host', 'h']]), meta: { name: 'request', value: 'v' } });
+      expect(scrubCredentials(err)).toBe(err);
     });
   });
 

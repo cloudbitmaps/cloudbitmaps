@@ -112,7 +112,11 @@ type Body =
   /** A JSON body that quotes every request header: the SDK cannot parse it, and keeps it as text. */
   | 'json'
   /** S3's answer to a session token it refuses (`ExpiredToken`, `InvalidToken`), which quotes it in `Token-0`. */
-  | 'token';
+  | 'token'
+  /** A proxy's HTML page that lists the request headers as a table, one `<th>` name and `<td>` value a row. */
+  | 'table'
+  /** S3's `InvalidArgument` naming a credential header in `ArgumentName` and quoting its value in `ArgumentValue`. */
+  | 'argument';
 
 type Client = 'session' | 'static';
 interface Case {
@@ -190,9 +194,15 @@ const calls: [string, (c: S3Client) => Promise<unknown>][] = [
 const quoting: Omit<Case, 'name' | 'run'>[] = [
   { status: 400, code: 'ExpiredToken', body: 'token', expected: SDK },
   { status: 400, code: 'InvalidToken', body: 'token', expected: SDK },
+  { status: 502, body: 'table', cause: true, expected: TransientError },
+  { status: 400, code: 'InvalidArgument', body: 'argument', expected: SDK },
 ];
 const answerName = (answer: Omit<Case, 'name' | 'run'>): string =>
-  `${String(answer.code)} quoting the token`;
+  answer.body === 'table'
+    ? 'a proxy page listing the request headers'
+    : answer.body === 'argument'
+      ? 'InvalidArgument quoting a credential header'
+      : `${String(answer.code)} quoting the token`;
 
 const cases: Case[] = [
   { name: 'storage read, 403', ...refused, run: read },
@@ -298,6 +308,21 @@ function bodyOf(req: IncomingMessage, body: Body, code: string): string {
       '<RequestId>r</RequestId></Error>'
     );
   }
+  if (body === 'table') {
+    const rows = Object.entries(req.headers)
+      .map(([name, value]) => `<tr><th>${name}</th><td>${String(value)}</td></tr>`)
+      .join('');
+    return `<html><body><h1>Bad Gateway</h1><table>${rows}</table></body></html>`;
+  }
+  if (body === 'argument') {
+    const [name, value] =
+      typeof token === 'string' ? ['x-amz-security-token', token] : ['Authorization', auth];
+    return (
+      `<Error><Code>${code}</Code><Message>Unsupported header value.</Message>` +
+      `<ArgumentName>${name}</ArgumentName><ArgumentValue>${value}</ArgumentValue>` +
+      '<RequestId>r</RequestId></Error>'
+    );
+  }
   return `<Error><Code>${code}</Code><Message>refused</Message><RequestId>r</RequestId></Error>`;
 }
 
@@ -318,7 +343,7 @@ describe('S3: no credential is reachable from an error the driver throws', LIMIT
       if (typeof token === 'string') seen.tokens.add(token);
       const status = req.method === 'HEAD' ? answer.head : answer.status;
       const type =
-        answer.body === 'proxy'
+        answer.body === 'proxy' || answer.body === 'table'
           ? 'text/html'
           : answer.body === 'json'
             ? 'application/json'
