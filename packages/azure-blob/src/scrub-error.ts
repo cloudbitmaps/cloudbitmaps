@@ -3,18 +3,31 @@
  *
  * A `RestError` keeps the request it sent on `request`, and the response it got on `response` (whose `request` is the
  * same one), on properties `util.inspect` and `JSON.stringify` hide. The request holds the signed `Authorization`
- * header (`SharedKey <account>:<signature>`, or a bearer token) and, with a SAS credential, the signature in its URL
- * (`sig=`). Those objects are live (the pipeline may still read them), so nothing is ever changed in place: an error
- * that holds one, or whose text shows a credential, is replaced by a deep copy of its plain data, the way the GCS
- * driver does it. An error with neither is returned as it is.
+ * header (`SharedKey <account>:<signature>`, or a bearer token), with a SAS credential the signature in its URL
+ * (`sig=`), and any header a user's pipeline adds (a cookie, an API key, a customer-provided key). The error's
+ * `details` holds the response's headers and the body the SDK parsed, the fields it does not know included; a body it
+ * does not parse (a proxy's HTML page) is the error's message as it came. So a 403 quotes the string Azure signed, an
+ * `InvalidHeaderValue` the value it refused, and a proxy's page or a gateway's body the request's headers. The live
+ * objects are never changed (the pipeline may still read them): an error that holds a transport, or whose data shows a
+ * credential, is replaced by a deep copy of its plain data, as the S3 and GCS drivers do it. An error with neither is
+ * returned as it is.
  *
  * The copy is a native error with the original's prototype (so `instanceof RestError` holds), name, message, stack,
- * `code`, `statusCode` and `details`, which is what classification reads. It has no transport property, no function
- * or accessor (a `toJSON` or `util.inspect` hook is a closure over the original) and no class instance other than an
- * error. Errors are copied wherever they sit: the `cause` chain, an `AggregateError`'s `errors`, any array or field.
- * A table of copies keeps a cycle a cycle, and anything nested deeper than `MAX_DEPTH` is dropped rather than kept raw.
- * A credential in the copy's text (an `Authorization` header line or scheme value, a `sig=` value in any of its
- * encoded forms, the SharedKey signature Azure echoes in a 403 body) or under a credential key is redacted.
+ * `code`, `statusCode` and `details`, which is what classification reads. It has no transport property, no function or
+ * accessor (a `toJSON` or `util.inspect` hook is a closure over the original), no class instance other than an error,
+ * and no named property of a list, a map or a set. Errors are copied wherever they sit: the `cause` chain, an
+ * `AggregateError`'s `errors`, any array or field. A table of copies keeps a cycle a cycle, and anything nested deeper
+ * than `MAX_DEPTH` is dropped rather than kept raw.
+ *
+ * The value under a credential's name is replaced by `[redacted]`, as is the value after one in a flat list, under one
+ * in a map and beside one in a record: the `...Value` beside a `...Name` (Azure's `HeaderName` and `HeaderValue`), and
+ * on plain data a table row's other cell or the same index of a parallel list. A key that quotes a credential is
+ * redacted as text. Beside a name, a number, a boolean, `code` and `errorCode` (what classification reads) and
+ * `message` are kept. In the copy's text these are redacted: a credential header line (the string to sign Azure quotes
+ * lists the `x-ms-` headers one to a line), an `Authorization` value, a cookie, a customer-provided key or an API key
+ * after its name anywhere, a `SharedKey` or `Bearer` value, a `sig=` value in any of its encoded forms, the SharedKey
+ * signature Azure echoes in a 403 body, and the text of the cell after one that names a credential. A credential in any
+ * other form is not recognised, and a text too large for these patterns is replaced whole.
  */
 
 import { types } from 'node:util';
