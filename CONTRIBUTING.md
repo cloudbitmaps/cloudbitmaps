@@ -58,7 +58,14 @@ Every change must pass these locally, and CI runs each of them on every pull req
   additions and pass. A **required** member (a property or method without `?`, or an index, call or construct signature)
   added to an interface or object type the base already has is a change, because it breaks everyone who implements or
   builds that type: it fails with "a required member added to an existing interface" unless a row excuses it. An empty
-  allowlist is the normal state. What it does not see: a change in behaviour behind an
+  allowlist is the normal state. A package can list an entry in `cloudbitmaps.internalEntries` in its `package.json`:
+  that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry). It is not in `surface.json`,
+  a type only it exported is recorded as `(referenced)` when a public signature names it, and its own lines are in
+  `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
+  internal is itself a change the gate asks for: a row `{"entry": "<specifier> (internal)", "reason": …}`. Because
+  `workspace:^` lets `@cloudbitmaps/roaring` 0.22.0 be installed beside `@cloudbitmaps/core` 0.22.1, **core's main entry
+  changes only additively within a minor**: a removal or a changed signature waits for the next minor, and the release
+  reviewer reads the `api-surface/internal.json` diff for it. What it does not see: a change in behaviour behind an
   unchanged signature (that is for tests); an overload appended after the last one (it reads as an addition); a type
   from outside the workspace, beyond its name in the signature; a member added to a class, abstract or not, which
   binds a subclass; and, after a TypeScript upgrade that changes how

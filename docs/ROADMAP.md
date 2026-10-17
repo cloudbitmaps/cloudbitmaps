@@ -357,7 +357,9 @@ between here and there:
    the other half of that promise, and a name is far cheaper to *add* later than to take away. A symbol stays when
    a public type or field needs it to be produced, parsed or consumed, which is why `aadFor`, `checkBudget` and
    `readRetentionPolicy` are exported, and that is the test worth applying to any surface reduction. The API
-   reference guard runs in both directions.
+   reference guard runs in both directions. `@cloudbitmaps/core`'s main entry has since become internal, outside the
+   stability promise and out of the signature snapshot; the public surface is `@cloudbitmaps/roaring`, the drivers,
+   the tools and `@cloudbitmaps/core/driver-kit`.
 6. **A public docs + site pass leading with the loaded store's strengths — ✅ Shipped.** The README, the guide,
    the API reference and the site lead with what this is: one bucket, immutable generations, cheap
    chunk-skipping reads from anywhere. A gate derives the site's driver counts from the driver classes in the

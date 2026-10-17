@@ -39,8 +39,7 @@ reads nothing of a store and needs none to run:
 @cloudbitmaps/gcs             GcsStorage                                          (dep: @google-cloud/storage)
 @cloudbitmaps/azure-blob      AzureBlobStorage                                    (dep: @azure/storage-blob)
 @cloudbitmaps/tools           estimateCost, groundedReport, the price lists       (offline; dep: @cloudbitmaps/core)
-@cloudbitmaps/core            the engine, the standalone forms of the store's methods,  (flavor and driver authors only)
-                              the retry and budget internals
+@cloudbitmaps/core            the internal engine; its main entry is outside the stability promise
 @cloudbitmaps/core/driver-kit the declared contract for writing a driver package   (driver authors only)
 CLI (binary):                 export-segments
 ```
@@ -51,8 +50,8 @@ Each cloud SDK is a **real dependency** of its backend package, not an optional 
 **Where the code actually lives.** The flavor package is the roaring codec (internal, not exported),
 the `CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports, by name, the store's
 types, the errors, the backends' shared types and the constants and helpers an application calls, which is why an
-application never needs to name core. What it leaves on core is the engine, the standalone forms of the store's
-methods and the retry and budget internals, for a flavor or driver author. The storage packages are codec-agnostic — they move
+application never needs to name core. What it leaves on core is the engine, whose main entry is internal: the
+packages here import it, and it is not part of the public API. The storage packages are codec-agnostic — they move
 opaque payload bytes — so one package per storage **service** serves every codec, which is what makes adding
 a codec cost nothing on the storage axis. A driver author builds against
 [`@cloudbitmaps/core/driver-kit`](#cloudbitmapscoredriver-kit), and a flavor never re-exports a driver
@@ -350,8 +349,7 @@ segment mid-call and how the timed refresh behaves.
 ### Standalone functions (imported, called directly)
 
 These take a backend's `registry` rather than a store, and have no store method: a crypto-shred needs only a registry, so a job
-that holds one can run it. Every other verb is a store method; the standalone forms of those are on
-[`@cloudbitmaps/core`](#the-standalone-forms-of-the-stores-methods).
+that holds one can run it. Every other verb is a store method.
 
 | Call | Does |
 |---|---|
@@ -505,14 +503,12 @@ prices the pointer refresh at the store's default, 2 s, otherwise.
 
 ## Advanced / driver-author surface
 
-You **do not** import these to _use_ CloudBitmaps — only to **write a driver or a flavor**, or to build tooling
+You **do not** import these to _use_ CloudBitmaps — only to **write a driver**, or to build tooling
 against the on-disk format. Each section says where its names import from. Most come from the
-`@cloudbitmaps/roaring` barrel. The exceptions are the names that live only on `@cloudbitmaps/core`, listed in the
-[flavor-author kit](#flavor-author-kit-cloudbitmapscore) and [the standalone forms of the store's
-methods](#the-standalone-forms-of-the-stores-methods); the
+`@cloudbitmaps/roaring` barrel. The exceptions are the
 [driver kit](#driver-kit--what-you-need-to-implement-a-driver), which is its own subpath,
-`@cloudbitmaps/core/driver-kit`; and the cloud drivers' option types, which come from `@cloudbitmaps/s3`, `/gcs`
-and `/azure-blob`.
+`@cloudbitmaps/core/driver-kit`, and the cloud drivers' option types, which come from `@cloudbitmaps/s3`, `/gcs`
+and `/azure-blob`. The main entry of `@cloudbitmaps/core` is internal: it is outside the stability promise and is not documented here.
 
 ### `.crbm` on-disk format
 
@@ -588,56 +584,6 @@ a codec of your own — the `CloudRoaring` facade injects the roaring codec for 
 | `CodecInterface.owns?(bitmap)` | whether a bitmap is one this codec made; `loadSegmentChunks` refuses any chunk whose bitmap it does not vouch for, and a codec without it has every chunk refused. The roaring codec vouches for the bitmaps its own type made. The answer is the whole check: an `owns` that answers `true` for anything lets any object through |
 | `decodeSerialized(bytes, codec, what?)` → `CodecBitmap` | the one check every bitmap input of a load goes through, for a flavor to offer its users: `bytes` must be a `Uint8Array` of at most 537,403,396 bytes holding exactly one bitmap, read over the bytes it really holds (a `SharedArrayBuffer`'s are copied first), and `codec.safeDeserialize` decodes it. Anything else throws `ValidationError` before the codec's native decoder runs; `what` names the input in the message. `deserializePortable` is this over the roaring codec |
 | `EncodedChunk` | `{ chunkKey, payload, cardinality }`: one chunk as a `.crbm` generation stores it, what `encodeChunks?()` yields |
-
-### Flavor-author kit (`@cloudbitmaps/core`)
-
-These are the pieces a **flavor** package (codec + facade) or a **driver** author composes — `@cloudbitmaps/core`'s
-actual audience. An application never calls them: it uses the flavor's `CloudRoaring` facade, which wires all of
-this for you. They import from **`@cloudbitmaps/core`** and are not on `@cloudbitmaps/roaring`.
-
-| Symbol | What it does |
-|---|---|
-| `SegmentEngine` / `EngineDeps` | the codec-agnostic **read** engine over a `StorageChunkSource` (`has` / `count` / `stat` / `iterate` / `intersect` / `union` / `andNot`) + its injected deps (**`codec` is required** — core has no default; `cache?`, `maxBitmapBytes?`, `clock?`, `metrics?`, `budget?`, `sharesInvalidationsWith?`). Read-only by design — there are no `*Into` verbs here. `sharesInvalidationsWith` names another engine over the same `cache`: the two share their invalidations, so an `invalidate` through either reaches a read already running on the other, which then caches nothing more of what it began reading before it, and they share their requests in flight, so a cache miss on one joins a request the other opened for the same key and gets what that engine's storage, codec and `maxBitmapBytes` made of it. It is opt-in: engines built over one cache without it share nothing, and a read running on one when the other invalidates its segment writes stale chunks back into the cache, so engines that read through one cache must be built with it (the facade builds its pins' engines and those of combines with a pinned operand so). An engine over another cache throws `ValidationError`. `maxBitmapBytes` (default 1 MiB per chunk) is the decode ceiling, and above 1 MiB you must also set `maxPayloadBytes` on the chunk source; the `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes on an encrypted object) when it opens the object, so a caller who raises `maxBitmapBytes` also sets `maxPayloadBytes` on the chunk source. |
-| `EngineCombineOptions` | the engine-level `{ after?, through?, concurrency?, budget?, exclude?: SegmentRef[], allowAbsentOperands? }` (the facade's `CombineOptions` maps `Segment` handles down to these refs) |
-| `BoundedLru` | the count+byte-bounded LRU the facade uses for the chunk cache and the `.crbm` reader cache |
-| `safeMetrics` / `NOOP_METRICS` | wrap a user `IMetricsSink` so a throwing sink can never break the data path, and the no-op sink that stands in when none is given |
-| `segmentKey` | the canonical key string of a `SegmentRef`, namespace included — the cache and pin key the engine and the facade use. `seg.key()` is the handle's opaque form |
-| `isStorageBackend` | test the brand a backend carries |
-| `PinnedStorageChunkSource` | a `StorageChunkSource` view holding one segment at one generation and passing every other segment through to the live source — what `seg.pin()` is built on (`PinnedAt` and `PinnedObject`, its types, are on `@cloudbitmaps/roaring`) |
-| `DEFAULT_BUDGET` | `{ maxRequests: 1_000_000 }`, the per-op request ceiling a store applies when `budget` is omitted |
-| `withRetry` · `RetryDeps` | the retry primitive (4 attempts, 50 ms base, ×2, 2 s cap, full jitter by default, from `DEFAULT_RETRY_POLICY`, which is on `@cloudbitmaps/roaring`). It retries whatever `isTransientError` accepts unless you pass `RetryDeps.isRetryable` |
-| `RetryingStorageChunkSource` · `RetryingOptions` | the read-source wrapper the store builds around the source it reads segment data through, a `StorageChunkSource` passed as `storage` included, so each of those reads retries transient faults. Do not wrap a source you then hand to the store, which multiplies each read's attempts; wrap one only for a source you read outside a store, such as under your own `SegmentEngine` |
-| `splitId` | an id → its `(chunkKey, remainder)` bit routing, and a range check on the way: it throws `ValidationError` for anything that is not a u32, which is how a bad id fails fast |
-| `mapWithConcurrency` | the bounded, order-preserving fan-out primitive (admin scans, the Storage sweep) |
-| `resolveBudget` / `resolvePerOpBudget` / `checkBudget` | the denial-of-wallet budget plumbing: normalize a `BudgetOption` into a `Budget`, pick the one that applies to a given op, and enforce it against a **computed** unit count. `collectWithinBudget` is the streaming form; `checkBudget` is the O(1) one, and its `>` threshold is what makes a budget of N admit exactly N units |
-| `compileCombineMany(request)` → `CompiledCombineMany` · `rebindCombineMany(compiled, operands)` → `CompiledCombineMany` · `runCombineMany(compiled, deps)` → `Promise<CombineManyRun>` | the seam a flavor builds `store.materializeMany` on, as `loadSegmentChunks` is the seam of the `*Into` verbs: `compileCombineMany` checks every expression and option with no I/O and throws `ValidationError` naming the output index and path; `rebindCombineMany` gives the checked request its operands again, the same names in the same order, once they are pinned, without checking the expressions twice; `runCombineMany` runs the pass over a `StorageChunkSource` (`deps.source`, already pinned and retrying as the flavor wants), a `codec` and a `clock`, and hands each output's chunks to its `publish`. It never touches a chunk cache, and returns one outcome per output (`{ ok: true, value }` or `{ ok: false, error }`) beside the stats. The types in their signatures are exported with them: `CombineManyRequest`, `CombineManyOperand`, `CombineManyOutput`, `CombineManyWrite`, `CombineManyDeps`, `CombineManyOutcome`, `CombineManyStats`, `CombineManyOperandStats`, `CombineManyOutputStats`, `CombineManyFeed`, `CombineManyFeedRecord`, `CombineExpr`. A request's `feed` is checked by `compileCombineMany` and read by `runCombineMany` (its `epoch`, `{ moved }`, tells whether an erasure ran in the flavor's store). A flavor passes its own `publish` (the facade's writes through `loadSegmentChunks`). With `request.dryRun`, each `publish` must judge its output's chunks and write nothing: the call still charges each output the object a write would hold, so it admits, defers and refuses for memory where a publish would, and counts no publish in its stats. `deps.metrics`, an `IMetricsSink`, receives a `storage.get` event per range request the call sends, and no `cache` event, since the call never looks the cache up |
-| `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
-
-### The standalone forms of the store's methods
-
-On **`@cloudbitmaps/core`** only, for a flavor or driver author: each is the function a store method runs over the
-store's own drivers, so an application calls the store method. Where one has a wired form it says which. The three
-that build bitmaps (`loadSegment`, `eraseIdFromSegment` and `runExport`'s `'roaring'` format) take a `codec` and throw
-`ValidationError` without one, because core has no default. The types they produce are on `@cloudbitmaps/roaring`,
-because the store methods return them; the `*Deps` types (`LoadDeps`, `GenerationListDeps`, `RetentionDeps`,
-`DropDeps`, `EraseIdDeps`) and `EraseIdResult` are on core too. Erasing is the store's `eraseSubject`, which runs
-`eraseIdFromSegment` over every registered segment.
-
-| Call | Does |
-|---|---|
-| `listGenerations(ref, { storage, registry, keystore? })` → `Promise<GenerationEntry[]>` | every generation still in the bucket, ascending, with the current one marked and each marked `known` (the row's `knownGens` names it), whether or not the segment has a registry row. One registry read and one listing; it does not open the objects. The current entry carries the row's `cardinality` and `metadata`, a sealed summary opened with `keystore`. `store.generations` is the wired form |
-| `segmentExists(ref, registry)` → `Promise<boolean>` | the unwired form of `store.exists` — one registry `get`; true only when a live, non-`destroyed` row has a `currentGen` |
-| `listSegments(registry, { namespace? })` → `AsyncIterable<SegmentInfo>` | the unwired form of `store.segments`; validates `namespace`, and excludes internal bookkeeping rows on an unscoped scan |
-| `rollbackSegment(ref, toGeneration, { storage, registry, keystore? }, { audit?, allowUnknown? })` → `Promise<RollbackResult>` | the unwired form of `store.rollback`, taking the drivers instead of a store. It moves only onto a generation the row's `knownGens` names, whose object's footer checksum is the one recorded there (read with no key): another target throws `ValidationError` before any request to storage, or `IntegrityError` for a known number holding another object, unless `allowUnknown: true`, which needs the key on an encrypted segment, outside the two cases the pointer alone decides (`KeyUnavailableError`, or `TransientError` when the key service did not answer in time: the keystore's own, or one whose `cause` is the timeout), and is audited with `unknown: true`. Two cases are decided by the pointer alone, with no flag and no key for a target below it, audited `unknown: true`: a row with no usable `knownGens`, and a target numbered below a full one's bound, the least recently current entry no lease entry names. A generation a publish with a smaller `keep` no longer names but that stays in the bucket (a lease spared it, or its delete failed) needs `allowUnknown` until a later listing collects it. `keystore` lets the rollback open an encrypted target to seal its count and metadata into the row. Without it, or when it cannot open the key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out as `AbortSignal.timeout()` and the AWS SDK report a timeout), a rollback onto a known generation still happens, opening nothing, and the row has no summary. Any other keystore failure is thrown. The target's footer is read again after the swap, and the pointer is put back if the object vanished or was replaced; a swap that gets no answer is settled by reading the row, and taken as landed only from the row the swap leaves ([how a rollback can fail half-way](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)) |
-| `loadSegment(ref, input, { storage, registry, entropy, codec?, keystore?, requireEncryption?, clock?, rng?, readRetry?, collectByListing? }, { allowEmpty?, guard?, keep?, metadata?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `input`, the same `LoadInput` (`{ serialized }` and `{ bitmap }` decoded by the `codec`, and written through its `encodeChunks?()`), as one immutable generation. It refuses a byte array passed as ids, as `store.load` does; a bare `RoaringBitmap32` passed as ids is ids here, since core names no codec's class. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. `entropy`, required, a function from a length to that many random bytes as a `Uint8Array` (`(n) => crypto.getRandomValues(new Uint8Array(n))` is one; `crypto.getRandomValues` itself is not, as it takes an array to fill), draws the generation's write identity, 12 bytes its footer carries when it is cleartext, once for each object the writer builds; a load given none (a JavaScript caller can leave it out) is refused with `ValidationError` before any read, keystore call or write, and a source that returns anything but a `Uint8Array` of 12 bytes is refused with `ValidationError` before the first byte of a cleartext object is uploaded (an encrypted generation's writer does not call it). `readRetry` (a `RetryDeps` plus an optional `policy`) retries the guard's read of the current generation; without it that read is made once. The registry write is not governed by `readRetry`: when it gets no answer, the publish reads the row back and, if it is unchanged, sends a fresh compare-and-swap, at most three times, each after a wait on `clock`, a random time under 500 ms, then 1 s, then 2 s that `rng` spreads (the bound itself when neither `rng` nor `readRetry` has a source; with no `clock` it throws the registry's `TransientError` at once). A write-once object is sent again after a throttle by the S3 and GCS drivers. `collectByListing: true` makes the load collect by listing whatever `keep` is, where it would otherwise delete by name the one generation its publish pushed out of the window with a `keep` of 0 or 1; the `*Into` verbs set it, since their `keep` clears every generation below the new one beyond it. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
-| `loadSegmentChunks(ref, chunks, deps, options?)` → `Promise<LoadResult>` | `loadSegment` for a result already held as chunks: `chunks` is an `AsyncIterable<{ chunkKey, bitmap }>` ascending by key, each `bitmap` the 16-bit remainders of one chunk, and each is written as it is, so no id is built for a value. What the `*Into` verbs call. `deps`, `options`, the result and the refusals are `loadSegment`'s. A chunk is refused with `ValidationError`, before anything is written, unless its bitmap is one the `codec` made (`CodecInterface.owns?(bitmap)`, so a codec without it refuses every chunk), its key is an integer in `[0, 65535]` above the one before, and its values are 16-bit; an empty bitmap is left out. **The load consumes the bitmaps it is given:** writing may re-encode one in place for size, never changing its members, so pass bitmaps made for this call. The public `load()` and `loadSegment()` take no chunk input |
-| `judgeLoad(ref, cardinality, deps, { allowEmpty?, guard? }?)` → `Promise<LoadJudgement>` | judge a write of `cardinality` ids into `ref` as a load would, and write nothing: `{ cardinalityBefore, wouldRefuse?, reads }`, the size it reads as a load reads it, the bound a load of that size would be refused for now (a `GuardRefusal`: a `LoadRefusal` other than `'superseded'`), and the requests it made. A `destroyed` segment throws the `ValidationError` a load's write would. What a `materializeMany` dry run runs for each output |
-| `eraseIdFromSegment(ref, id, { storage, registry, entropy, codec?, keystore?, requireEncryption?, clock?, rng?, maxBitmapBytes?, readRetry? }, { audit? })` → `Promise<EraseIdResult>` | remove **one id** from one segment by rewriting its current generation without it: `entropy`, required, draws the rewrite's write identity, as for `loadSegment`, and the call is refused with `ValidationError` before any read, delete or write without one, even for an id no generation holds; the step `store.eraseSubject` runs over every registered segment. `erased: true` means no generation holds the id; otherwise `reason` says why ([the result of erasing one segment](erasure.md#how-it-stays-correct)). When `erased` is true, `fromGeneration` is the newest generation it found holding the id; on another answer it can name the current generation the call read, which need not hold the id. `collected` lists the generations it deleted, and `reason: 'no-generation'` is a row that had no generation yet when the call first read it and whose bucket holds no object that holds the id. A row that loses its pointer, or is purged and created again, after the call found one is `reason: 'superseded'`, since the call found a holder there and stopped before deleting it: re-run it, and `eraseSubject` notes it. `readRetry`, shaped as `loadSegment`'s, retries the reads the rewrite makes; without it each is made once. The rewrite's registry write, and the write that renews the row's `pointerId` before it deletes an object a load may still publish (above the pointer, or any first load's object on a row with no pointer), are settled as a load's is, and `clock` and `rng` are what they wait on; the deletes are not retried. `maxBitmapBytes` (default 1 MiB per chunk) is the decode ceiling; the `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes on an encrypted object) when it opens the object, so a caller who raises `maxBitmapBytes` also sets `maxPayloadBytes` on the chunk source. |
-| `dropSegment(ref, { registry, storage }, { confirmSegment, dryRun?, audit? })` → `Promise<DropResult>` | **dispose of a segment** — tombstone, then delete every Storage generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
-| `runConsistencyCheck({ storage, registry, keystore? }, { namespace?, concurrency?, maxScanSegments?, summaries?, generations? })` → `Promise<ConsistencyReport>` | the free function behind `store.checkConsistency` — run it over your own drivers, or over a backend's `storage` and `registry`. `concurrency` defaults to 8. `maxScanSegments` (default 250,000) is how many registry rows one scan may hold resident; past it the call throws `BudgetExceededError` rather than report a partial scan. `generations` is as on the store |
-| `setSegmentRetention(ref, { registry }, { expiresAt })` → `Promise<SetRetentionResult>` | the free function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention(ref, { registry })` / `clearSegmentRetention(ref, { registry })` are its read/cancel siblings |
-| `retireExpired({ registry, storage }, { now, … })` → `Promise<RetireExpiredResult>` | the free function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
-| `runExport(reader, registry, sink, { format?, namespace?, ndjsonBatchBytes?, codec? })` → `Promise<ExportManifest>` | the free function behind `store.exportSegments`; `codec` is required for the `'roaring'` format, and the store binds it. `reader` is a `SegmentReader`: any object with `segment(name, { namespace? })` returning a handle with `pin()`, which resolves to `{ iterate(): AsyncIterable<number> }` (a `CloudRoaring` is one); a reader without that shape throws `ValidationError` before any file is opened. Each segment is pinned for its export, so one file is one generation: a cold store makes one registry read and one tail read per segment, a warm store one registry read |
 
 ### Driver kit — what you need to *implement* a driver
 
@@ -1135,63 +1081,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 names sit under that entry's heading, and a name listed under the wrong one fails it.
 
 `@cloudbitmaps/roaring` exports, by name, what an application uses: the store's verbs and their types, the errors,
-the backends' shared types, and the constants and helpers a user calls. `@cloudbitmaps/core`'s main entry exports
-all of that too, plus what only a flavor or driver author needs, so its section lists only the names the flavor
-does not re-export. A driver author told elsewhere on this page to import `Token`, `RegistryRecord` or
-`segmentKey` from core will find each one there.
-
-### `@cloudbitmaps/roaring` — values
-
-`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
-`destroySegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` ·
-`readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
-`excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
-`CrbmReader` · `BufferReader` ·
-`CountingMetricsSink` · `RecordingAuditSink` · `CloudRoaringError` ·
-`ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
-`CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
-`LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
-`isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
-· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError` · `isUnsupportedError`
-· `isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError`
-
-### `@cloudbitmaps/roaring` — types
-
-`CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
-`SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
-`MaterializeResult` · `MaterializeRefusal` · `Expr` · `MaterializeManyOptions` · `MaterializeManyDryRunOptions` · `MaterializeManyDryRun` · `MaterializeDryRunResult` · `MaterializeManyDryRunOutcome` · `MaterializeManyOutput` · `MaterializeManyFeed` · `MaterializeManyFeedRecord` · `MaterializeManyOutcome` · `MaterializeManyRun` · `MaterializeManyStats` · `MaterializeManyOperandStats` · `MaterializeManyOutputStats` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
-· `AndNotIntoOptions` · `IdIterator` · `IdRange` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
-· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
-· `CrbmStorageChunkSourceOptions` · `PinOptions` · `Lease` · `LeaseEntry` ·
-`MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
-`ExportedSegment` · `ExportFailure` · `ExportSkipped` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
-`StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
-· `TailRead` · `StorageDeleteOptions` · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
-· `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `KnownGeneration` · `GenerationMetadata`
-· `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
-`InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
-`SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
-`RetryPolicy` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` ·
-`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `Clock` ·
-`Rng` · `Entropy` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
-`CodecInterface` · `CodecBitmap` · `EncodedChunk` · `Token`
-
-### `@cloudbitmaps/core` — only on core
-
-What a flavor or driver author imports from `@cloudbitmaps/core` and an application does not get from
-`@cloudbitmaps/roaring`. The [flavor-author kit](#flavor-author-kit-cloudbitmapscore) and [the standalone forms of
-the store's methods](#the-standalone-forms-of-the-stores-methods) say what each is for. Every other name in
-`@cloudbitmaps/core`'s main entry is in the two `@cloudbitmaps/roaring` sections above.
-
-Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `splitId` ·
-`mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` · `collectWithinBudget` ·
-`DEFAULT_BUDGET` · `segmentKey` · `isStorageBackend` · `PinnedStorageChunkSource` · `withRetry` ·
-`RetryingStorageChunkSource` · `decodeSerialized` · `loadSegment` · `loadSegmentChunks` · `judgeLoad` · `compileCombineMany` · `rebindCombineMany` · `runCombineMany` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
-`listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` · `takeLease` · `releaseLease` ·
-`setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired`
-
-Types: `EngineDeps` · `EngineCombineOptions` · `SegmentReader` · `RetryDeps` · `RetryingOptions` · `LoadDeps` · `LoadJudgement` · `GuardRefusal` ·
-`CombineExpr` · `CombineManyDeps` · `CombineManyFeed` · `CombineManyFeedRecord` · `CombineManyOperand` · `CombineManyOperandStats` · `CombineManyOutcome` · `CombineManyOutput` · `CombineManyOutputStats` · `CombineManyRequest` · `CombineManyRun` · `CombineManyStats` · `CombineManyWrite` · `CompiledCombineMany` · `GenerationListDeps` · `GenerationSummary` · `PinLease` · `LeaseDeps` · `LeaseTake` · `TakenLease` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps`
+the backends' shared types, and the constants and helpers a user calls. The main entry of `@cloudbitmaps/core` is internal, outside the stability promise, and is not indexed here.
 
 ### `@cloudbitmaps/core/driver-kit`
 
@@ -1335,7 +1225,7 @@ Types: `CostReport` · `PricingProfile` · `RedisSizing` · `RedisNodeType` · `
   derives its entry list from every package's own `exports` map — so each package and each subpath it declares
   is covered, with no list to maintain — and asserts each exported name appears (backtick-wrapped) under **its own
   entry's heading** in the **"Complete export index"** section — so **adding an export without documenting it
-  breaks CI**. For core's main entry that is the names the flavor does not re-export. It runs in **both**
+  breaks CI**. Core's main entry is internal and is skipped. It runs in **both**
   directions: a name listed under an entry that does not export it, or that nothing exports any more, also fails,
   so a removed export cannot leave a stale entry behind. Two limits worth knowing rather than over-trusting:
   neither direction looks *above* that section, so the descriptive tables earlier on this page are guarded by

@@ -13,6 +13,11 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **The main entry of `@cloudbitmaps/core` is internal, outside the stability promise.** It is the engine that
+  `@cloudbitmaps/roaring` and the driver packages are built on, so from now on it can change in any minor release and a
+  change to it gets no entry here. Nothing in it was removed or changed. Depend on `@cloudbitmaps/roaring` and a driver
+  package; to write a driver, depend on `@cloudbitmaps/core/driver-kit`, which stays public. The signature snapshot no
+  longer holds the main entry (about 740 of its 1,604 entries), and `api-surface/internal.json` records it instead.
 - **A load or an erasure called directly on `@cloudbitmaps/core` with no `entropy` throws a `ValidationError`.**
   `loadSegment`, `loadSegmentChunks` and `eraseIdFromSegment` (through their `LoadDeps` and `EraseIdDeps`) need an
   `entropy` function, now required by both types, which draws each generation's write identity, and refuse without one
