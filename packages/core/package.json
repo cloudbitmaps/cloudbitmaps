@@ -1,7 +1,7 @@
 {
   "name": "@cloudbitmaps/core",
   "version": "0.21.0",
-  "description": "Internal engine of CloudBitmaps, used by @cloudbitmaps/roaring and the storage-driver packages. Its main entry is outside the stability promise; the public contract for writing a driver is @cloudbitmaps/core/driver-kit. No cloud SDK.",
+  "description": "Internal engine of CloudBitmaps, which the other @cloudbitmaps packages are built on. Its main entry is outside the stability promise; the public contract for writing a driver is @cloudbitmaps/core/driver-kit. No cloud SDK.",
   "keywords": [
     "roaring",
     "bitmap",
