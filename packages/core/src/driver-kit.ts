@@ -79,13 +79,13 @@ export type { IMetricsSink, MetricEvent } from './core/metrics';
 // by prototype identity. Prefer it in library code that cannot see how it will be bundled.
 export {
   errorKind,
-  type ErrorKind,
   IntegrityError,
   NotFoundError,
   TransientError,
   ValidationError,
   WriteConflictError,
 } from './core/errors';
+export type { ErrorKind } from './core/errors';
 
 // A row's `pointerId`: the fields a read resolves through, whether a patch renews it, the patch that renews it alone,
 // and the read of it that refuses a row without one. A registry that builds its own records applies the same rule:

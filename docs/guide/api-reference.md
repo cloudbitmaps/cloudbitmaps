@@ -692,7 +692,7 @@ nothing can compare one. Branding them is you taking that on.
 | `concatBytes` | `concatBytes(parts)`: the chunks, in order, copied into one new `Uint8Array` that owns its bytes, so a part's buffer can be reused once it returns |
 | `validateSegmentRef` | the name rules a driver applies to a ref (and that it is an object), and nothing more: it takes a namespace in the reserved `cbm.due.` prefix, where the library's own due-index rows live. The refusal of that prefix is in the calls that take an application's ref or `namespace`, not here |
 | `BlobSink` | the sink `putImmutable` hands the writer: the object's bytes arrive through its one method, `write`, and the driver commits them once the writer returns |
-| the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and a predicate for each: `isValidationError` · `isWriteConflictError` · `isNotFoundError` · `isIntegrityError` · `isTransientError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
+| the typed errors + `errorKind` | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and `errorKind(err)` with its `ErrorKind` type. Throw the classes; classify with `errorKind`, which holds across package copies where `instanceof` does not |
 
 **What a storage driver must do.** Callers rely on each of these, and the conformance suite holds every shipped
 driver to them (`IStorageDriver`'s doc comment states the same list):
@@ -975,7 +975,7 @@ is held to the same rule. A pointer refresh rides out only a `TransientError`, s
 plain `Error` for an outage makes the read that meets it fail. The store wraps the source it reads through, a
 `StorageChunkSource` you pass as `storage` included, so do not wrap one before handing it over: that multiplies each
 read's attempts. A call of your own is yours to retry: loop over it, and back off before the next attempt when
-`isTransientError(err)` is true.
+`errorKind(err) === 'TransientError'`.
 
 ### Resilience (the store wires this by default)
 
@@ -1030,7 +1030,7 @@ missing or invalid environment variable with a `ValidationError` naming the vari
 | `UnsupportedError` | (a) the bytes are well-formed but this build cannot read them — an unknown `.crbm` major version, or a registry row with a `schemaVersion` other than 5 (a row stamped 1 to 4 is refused, as one stamped above 5 is); or (b) this store's wiring cannot perform the operation, e.g. a lifecycle helper on a store built without a backend, or a registry of your own that returns rows without a `pointerId` | wire the store with what the operation needs, or upgrade the library; for a row of an earlier schema, move the bucket's segments to a new prefix as the [CHANGELOG](../../CHANGELOG.md) says | no |
 | `StaleOperandError` | an operand a `materializeMany` call relied on changed while it ran: an operand an output subtracts changed before the publishes: its row or its object is no longer the pinned one (another generation, the name deleted and created again, or the number taken again by other bytes), `reason: 'moved'`; or an erasure ran in the store after a call with a feed began, `reason: 'erased'`. Carries `code: 'stale-operand'`, `operand` (its name in the call) and `reason` | run the call again against the current operand, or, for `'erased'`, with a feed read after the erasure | no — deterministic; the outputs that excluded it, or that were fed, were not published |
 | `CapabilityError` | the storage you passed cannot meet a capability the store requires — a storage without range reads (one of your own; the five backends all serve them), or a keystore or `encryption.required: true` on a store built on a bare `IStorageDriver` instead of a backend, which has no registry. Raised **fail-fast at construction**, never mid-operation | pass a backend, or a storage that supports range reads | no |
-| `BudgetExceededError` | the operation would pass one of its per-call limits: the request budget (`budget`, the denial-of-wallet cap on backend requests for one call), `maxBufferedBytes`, the memory ceiling of `materializeMany`, or `maxScanSegments`, the registry rows a scan may hold resident. It is refused before fanning out, except where a call grows past a limit part way: an `iterate` or a combine that plans again after a segment moved throws it at that key, and a `materializeMany` that refuses a regrouped run, or a pass that buffers more than `maxBufferedBytes`, gives it as those outputs' results, after earlier groups published. `eraseSubject` throws it only from its scan: a segment that runs the budget out while its generations are opened is listed in the ledger with `erased: false` and an `error:` note, and the call carries on. Its message states the limit and, when the call knew it before fanning out, the projected count; a scan abandoned at the limit says only "more than" the limit. The error has no fields for either, and carries no data | narrow the operation; for a request count, raise `budget` or set `budget: false`, and for `maxBufferedBytes` or `maxScanSegments`, raise that option, which `budget: false` does not lift (`store.checkConsistency` takes none: run `runConsistencyCheck` with `maxScanSegments`). For an `eraseSubject` ledger entry with a budget note, run it again with a higher `budget`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
+| `BudgetExceededError` | the operation would pass one of its per-call limits: the request budget (`budget`, the denial-of-wallet cap on backend requests for one call), `maxBufferedBytes`, the memory ceiling of `materializeMany`, or `maxScanSegments`, the registry rows a scan may hold resident. It is refused before fanning out, except where a call grows past a limit part way: an `iterate` or a combine that plans again after a segment moved throws it at that key, and a `materializeMany` that refuses a regrouped run, or a pass that buffers more than `maxBufferedBytes`, gives it as those outputs' results, after earlier groups published. `eraseSubject` throws it only from its scan: a segment that runs the budget out while its generations are opened is listed in the ledger with `erased: false` and an `error:` note, and the call carries on. It carries three numbers and no data: `option`, the option to raise (`'budget.maxRequests'`, `'maxBufferedBytes'` or `'maxScanSegments'`); `limit`, the bound in force; and `spent`, what the call had reached, which is exact for a refusal made before the fan-out and `limit + 1`, a lower bound, for a scan abandoned at the limit. Its message states the same limit, and "more than" it for an abandoned scan | narrow the operation; for a request count, raise `budget` or set `budget: false`, and for `maxBufferedBytes` or `maxScanSegments`, raise that option, which `budget: false` does not lift (`store.checkConsistency` takes none: run `runConsistencyCheck` with `maxScanSegments`). For an `eraseSubject` ledger entry with a budget note, run it again with a higher `budget`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
 | `KeyUnavailableError` | an encrypted segment's DEK cannot be unwrapped: the keystore holds none of the KEKs its wrappings reference — never configured, rotated away without keeping the old key, or lost. A `rollback` above the pointer of an encrypted segment also throws it when it has no key to open its target (no keystore, or one that holds none of the key's KEKs or one that does not unwrap it: the message says which), and moves nothing; a key service that did not answer in time reaches you as `TransientError` instead, a timeout as its `cause` | restore the KEK. **Without it the data is unreadable**, which is what crypto-shred relies on. For the rollback, run it on a store whose keystore opens the segment's key | no |
 | `LeaseExpiredError` | a read of a leased pin came after its lease ended, by `leaseUntil` or by `release()`: at every read site of the handle, including a leased handle used as an operand or an `exclude` of a combine, or as the target of an `*Into`. It carries `until` and `reason` (`'expired'` or `'released'`), and is thrown whether or not the object is still stored: a leased handle never reads empty | take a new lease (a new `pin({ leaseUntil })`) for work that outlasts it | no |
 | `LeaseLimitError` | the segment already has 64 live leases, the most one row records; nothing was written | release a lease, wait for one to end, or take one lease per job and share its handle | no |
@@ -1044,12 +1044,17 @@ Two things worth knowing:
   ids, `$metadata`). The library's own `message` is identifier-only and safe to log; serializing the whole error
   *chain* includes that metadata.
 
-**Bundle-safe predicates**, one for every error class: `isCloudRoaringError` · `isValidationError` ·
-`isWriteConflictError` · `isIntegrityError` · `isNotFoundError` · `isTransientError` · `isUnsupportedError` ·
-`isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError` · `isLeaseExpiredError` · `isLeaseLimitError` ·
-`isStaleOperandError`. Each names the library's own class by its name, so an application's subclass of one (`class
-TenantRefused extends ValidationError`) is not matched by it; `isCloudRoaringError` and `isTransientError` match by brand,
-and do match such a subclass.
+**`errorKind(err)`** names which error class `err` is, or returns `undefined` when it is none of ours. It returns an
+`ErrorKind`, the class's name: `'CloudRoaringError'` · `'ValidationError'` · `'WriteConflictError'` ·
+`'IntegrityError'` · `'NotFoundError'` · `'TransientError'` · `'UnsupportedError'` · `'CapabilityError'` ·
+`'BudgetExceededError'` · `'KeyUnavailableError'` · `'LeaseExpiredError'` · `'LeaseLimitError'` ·
+`'StaleOperandError'`. Test for one with `errorKind(err) === 'ValidationError'`, and for any of ours with
+`errorKind(err) !== undefined`. An application's subclass of one (`class TenantRefused extends ValidationError`)
+returns `'CloudRoaringError'`, since the kind is the library's own class by its name; a subclass of `TransientError`
+returns `'TransientError'`, which is matched by brand. An error cloned out of a worker has lost its brand and returns
+`undefined`. What it gives up against `instanceof` is type narrowing: `errorKind` returns a name, not a type guard, so
+narrow with `instanceof` on an ordinary install, or with a cast after the check. It is exported from
+`@cloudbitmaps/roaring` and from `@cloudbitmaps/core/driver-kit`.
 
 **On an ordinary install, `instanceof` holds everywhere** — across `@cloudbitmaps/roaring`, the backend
 packages and `@cloudbitmaps/core` itself. Every package is published with `@cloudbitmaps/core` left
@@ -1057,21 +1062,21 @@ packages and `@cloudbitmaps/core` itself. Every package is published with `@clou
 `core.ValidationError` and the class `@cloudbitmaps/s3` throws are the same object. Catch them
 however you normally would.
 
-Reach for the predicates where that stops being true, which is not something the library can control:
+Reach for `errorKind` where that stops being true, which is not something the library can control:
 
 - a bundler that inlines `@cloudbitmaps/core` into two separate outputs;
 - two copies of core resolved side by side in one tree, which npm and pnpm will both do;
 - an error crossing a `vm` realm or an iframe.
 
-Each predicate matches a `Symbol.for` brand plus the runtime `name`, and a `Symbol.for` key is the same
-symbol in every copy and every realm, where a class object is not. So the predicates hold in all three cases,
+`errorKind` reads a `Symbol.for` brand plus the runtime `name`, and a `Symbol.for` key is the same
+symbol in every copy and every realm, where a class object is not. So it holds in all three cases,
 for copies of core that carry the same brand, as every package of one release does, and `instanceof` does not.
 An error posted from a `worker_threads` worker is cloned into a plain `Error` that keeps its message but neither
 its class nor its brand, so neither holds there: send the error's `name` with it if the receiver must tell errors
 apart. The failure is silent — a `catch` that stops matching just falls through — which
-is why library code that cannot see how it will be bundled should prefer them by default. `pnpm smoke`
-asserts both halves on every build: that the shared copy really is shared, and that the predicates classify
-an error thrown by one package and caught in another.
+is why library code that cannot see how it will be bundled should prefer it by default. `pnpm smoke`
+asserts both halves on every build: that the shared copy really is shared, and that `errorKind`, from the flavor and
+from driver-kit, classifies an error thrown by one package and caught in another.
 
 ---
 
@@ -1095,9 +1100,7 @@ names a driver author imports are under `@cloudbitmaps/core/driver-kit`.
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
-`isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
-· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError` · `isUnsupportedError`
-· `isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError`
+`errorKind`
 
 ### `@cloudbitmaps/roaring` — types
 
@@ -1117,7 +1120,7 @@ names a driver author imports are under `@cloudbitmaps/core/driver-kit`.
 `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
 `RetryPolicy` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` ·
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `Clock` ·
-`Rng` · `Entropy` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
+`Rng` · `Entropy` · `Budget` · `BudgetOption` · `ErrorKind` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
 `CodecInterface` · `CodecBitmap` · `EncodedChunk` · `Token`
 
 ### `@cloudbitmaps/core/driver-kit`
@@ -1143,8 +1146,7 @@ Driver helpers: `refuseUnknownOptions` · `requirePositiveInt` · `requireBool` 
 `concatBytes`
 
 Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationError` · `WriteConflictError` ·
-`NotFoundError` · `IntegrityError` · `TransientError` · `isValidationError` · `isWriteConflictError` ·
-`isNotFoundError` · `isIntegrityError` · `isTransientError`
+`NotFoundError` · `IntegrityError` · `TransientError` · `errorKind` · `ErrorKind`
 
 ### `@cloudbitmaps/s3`
 

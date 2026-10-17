@@ -478,6 +478,7 @@ try {
 } catch (e) {
   if (e instanceof BudgetExceededError) {
     // the operation would have fanned out past the ceiling; it was refused before doing the work
+    console.log(e.option, e.limit, e.spent); // 'budget.maxRequests', 50000, and the count it needed
   }
 }
 ```
@@ -492,6 +493,12 @@ for await (const _ of store.segment('huge').intersect([store.segment('other')], 
   // a trusted batch job: no ceiling for this call
 }
 ```
+
+The error says what to raise and by how much, without parsing its message: `option` is the option that lifts the
+refusal (`'budget.maxRequests'`, `'maxBufferedBytes'` for `materializeMany`'s memory, or `'maxScanSegments'` for a
+registry scan), `limit` is the bound that was in force and `spent` is what the call had reached. `spent` is exact when
+the call was refused before it fanned out. A scan abandoned at its bound stops counting there, so for it `spent` is
+`limit + 1`, a lower bound and not the size of the fleet. They are numbers only: no id, key or segment name.
 
 The ceiling is checked before the fan-out, against work whose size is already known, so it adds nothing to the
 hot path. An `iterate` or a combine that lists its keys again after a move

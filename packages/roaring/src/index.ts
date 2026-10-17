@@ -3999,7 +3999,6 @@ export {
   LeaseLimitError,
   StaleOperandError,
   errorKind,
-  type ErrorKind,
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,
@@ -4032,6 +4031,7 @@ export type {
   EncodedChunk,
   Entropy,
   EraseDeps,
+  ErrorKind,
   ExportFailure,
   ExportFormat,
   ExportManifest,

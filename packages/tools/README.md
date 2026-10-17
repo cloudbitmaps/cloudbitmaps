@@ -18,7 +18,7 @@ pnpm add @cloudbitmaps/tools
 
 It reads and writes no store, and runs with nothing else installed: plan a deployment before you have one. Its one
 dependency is `@cloudbitmaps/core`, for the `ValidationError` every refusal throws, so a caller classifies a refusal
-with `isValidationError` as it does the library's. No cloud SDK, no native addon.
+with `errorKind(err) === 'ValidationError'` as it does the library's. No cloud SDK, no native addon.
 
 ## Plan: `estimateCost`
 

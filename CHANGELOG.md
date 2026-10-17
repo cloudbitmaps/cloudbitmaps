@@ -36,8 +36,23 @@ so, and so do the module headers in the code.
   brand; they refuse it, as `materializeMany` did, with a `ValidationError` that says it comes from another installed
   copy. A store belongs to one copy, so another copy's segment always comes from another store. Install one copy of the
   package in a process.
+- **The 13 `isXError` predicates are gone from `@cloudbitmaps/roaring` and `@cloudbitmaps/core/driver-kit`.** Use
+  `errorKind(err) === 'ValidationError'` (and so on for each class), `errorKind(err) !== undefined` in place of
+  `isCloudRoaringError`, or `instanceof` on an ordinary install. `errorKind` classifies across copies of the package
+  the same way. It names the class and does not narrow the type. An untyped JavaScript caller that `require`s a removed
+  name gets `undefined`, and calling it inside a `catch` throws a `TypeError` that hides the original error.
+- **`BudgetExceededError`'s constructor takes `(message, { option, limit, spent })`.** Code that constructs one, such as
+  a test double, passes the three numbers; the messages are unchanged.
 
 ### Added
+
+- **`errorKind(err)` and the `ErrorKind` type, from `@cloudbitmaps/roaring` and `@cloudbitmaps/core/driver-kit`.** It
+  returns the name of the library's error class that `err` is, or `undefined`, and holds across copies of the package,
+  bundles and realms where `instanceof` can stop matching. An application's subclass of a class returns
+  `'CloudRoaringError'`, except a subclass of `TransientError`, which returns `'TransientError'`.
+- **`BudgetExceededError` carries `option`, `limit` and `spent`.** `option` names the option to raise
+  (`'budget.maxRequests'`, `'maxBufferedBytes'` or `'maxScanSegments'`), `limit` is the bound in force, and `spent` is
+  what the call had reached: exact before a fan-out, and `limit + 1`, a lower bound, for a scan abandoned at its bound.
 
 - **A format reference, [`docs/format.md`](docs/format.md).** Every byte of a `.crbm` object (the preamble, the chunk
   payloads, the extension block, the index, the 104-byte footer, the checksums and the sealing), the identity rules, and

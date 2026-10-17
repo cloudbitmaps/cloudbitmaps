@@ -163,7 +163,6 @@ export {
   // copy and every realm where a class object is not. The `instanceof` failure is silent — it simply stops
   // matching — which is why library code that cannot see how it will be bundled should reach for it.
   errorKind,
-  type ErrorKind,
 } from './core/errors';
 
 // Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM
@@ -231,6 +230,7 @@ export type {
 // Denial-of-wallet budget: per-op request ceiling → `BudgetExceededError`.
 export { DEFAULT_BUDGET } from './core/budget';
 export type { Budget, BudgetOption } from './core/budget';
+export type { ErrorKind } from './core/errors';
 
 // Cross-tier DR consistency check: `store.checkConsistency()` (or this function over your own storage +
 // registry drivers) detects a torn restore where `currentGen` points at a `.crbm` that isn't present.
