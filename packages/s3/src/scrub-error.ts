@@ -38,20 +38,20 @@ const TRANSPORT = new Set([
   'agent',
 ]);
 /** The headers, besides `Authorization`, whose value is a credential: the session tokens and an SSE-C key. */
-const SECRET_HEADER =
+const PRIVATE_HEADERS =
   'x-amz-security-token|x-amz-s3session-token|x-amz-(?:copy-source-)?server-side-encryption-customer-key';
 /**
  * Header and field names whose value is a credential: the credential headers, the SDK's SSE-C members, an AWS
  * credential's fields, and what S3 quotes of a request whose signature it refused.
  */
 const CREDENTIAL_NAME = new RegExp(
-  `^(?:(?:proxy-)?authorization|cookie|set-cookie|x-api-key|${SECRET_HEADER}|x-amz-credential|x-amz-signature|` +
+  `^(?:(?:proxy-)?authorization|cookie|set-cookie|x-api-key|${PRIVATE_HEADERS}|x-amz-credential|x-amz-signature|` +
     '(?:copysource)?ssecustomerkey|secretaccesskey|sessiontoken|signatureprovided|canonicalrequest(?:bytes)?)$',
   'i',
 );
 /** A credential header line inside raw request or response text. */
 const CREDENTIAL_LINES = new RegExp(
-  `^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|${SECRET_HEADER}):[^\\r\\n]*`,
+  `^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|${PRIVATE_HEADERS}):[^\\r\\n]*`,
   'gim',
 );
 /**
@@ -59,7 +59,7 @@ const CREDENTIAL_LINES = new RegExp(
  * percent-encoded) or JSON's `"name":"value"`.
  */
 const NAMED_SECRET = new RegExp(
-  `((?:${SECRET_HEADER})["']?\\s*(?::|=|%3D)\\s*["']?)[^\\s&"'<>\\\\,;]+`,
+  `((?:${PRIVATE_HEADERS})["']?\\s*(?::|=|%3D)\\s*["']?)[^\\s&"'<>\\\\,;]+`,
   'gi',
 );
 /** A SigV4 signature: an `Authorization` value's `Signature=`, a presigned URL's `X-Amz-Signature=`, also percent-encoded. */
