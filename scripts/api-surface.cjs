@@ -10,6 +10,13 @@
  * separately. The text comes from the printed declaration with comments dropped, so it carries no path and no
  * ordering noise beyond the declared order of overloads, which is part of a signature.
  *
+ * A class that declares no constructor is recorded with the one it inherits, under its own `Class.constructor` key and
+ * printed as the nearest base that declares one declares it, when that base is in the workspace, so a class that later
+ * declares one of another shape reads as a change, and a change to a base's constructor shows in every class that
+ * inherits it. A class whose chain declares none is recorded with `constructor();`, the one TypeScript gives it, and a
+ * private constructor is recorded as declared, so adding or removing either reads as a change. A constructor declared
+ * outside the workspace, or on a base that is not a class, is not recorded.
+ *
  * A type that a public signature names without any entry point exporting it is part of what a caller can reach, so
  * it is recorded too, with its members and, transitively, the types they name, under a `(referenced)` key. A type
  * from outside the workspace (a dependency, the platform) is recorded by name only: it appears in the signature text.
@@ -22,20 +29,31 @@
  *
  *   node scripts/api-surface.cjs --write            regenerate api-surface/surface.json and api-surface/internal.json
  *   node scripts/api-surface.cjs --check            fail if the built surface differs from either committed file
- *   node scripts/api-surface.cjs --against <ref>    fail if an entry in the snapshot committed at <ref> is removed or
- *                                                   changed in the committed snapshot, unless a row of
- *                                                   api-surface/allowed.json that the base does not already have lists it
- *                                                   with a reason. An entry that is internal on this branch but has
- *                                                   keys in the base snapshot needs the row `<specifier> (internal)`.
- *                                                   Additions pass, except a required member added to an interface the ref already has. Compares committed files, so it
- *                                                   needs neither a build nor the TypeScript package.
+ *   node scripts/api-surface.cjs --against <ref>    fail if the committed snapshot removes, changes or adds an entry
+ *                                                   against the one committed at <ref>, unless a row of
+ *                                                   api-surface/allowed.json that the base does not already have lists
+ *                                                   it with a reason. A new `(referenced)` key is an addition too: a
+ *                                                   public signature that starts naming a type no entry exports. A
+ *                                                   required member added to an interface the ref already has is
+ *                                                   reported as a required member added to an existing interface. An
+ *                                                   entry that is internal on this branch but has keys in the base
+ *                                                   snapshot needs the row `<specifier> (internal)`. Compares committed
+ *                                                   files, so it needs neither a build nor the TypeScript package.
  *   --root <dir>                                    run on another checkout (the tests' fixtures)
  *
- * Known limits: overloads are compared in declared order, so one appended after the last passes as an addition;
- * a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a move
- * reads as a removal;
- * a parameter rename is a change; only declarations are read, so a change in behaviour behind an unchanged signature
- * is for tests; a TypeScript upgrade that changes how declarations print needs one `--write`.
+ * Known limits (api-surface/README.md lists the same): only declarations are read, so a change in behaviour behind an
+ * unchanged signature is for tests; a type from outside the workspace is known by its name; private members are not
+ * recorded, except a private constructor; overloads are compared in declared order, so one appended after the last
+ * reads as an addition, not a change; a member added to a class, abstract or not, reads as a new entry, not a required
+ * one; a parameter rename is a change; a constructor declared outside the workspace or on a base that is not a class is
+ * not recorded, so declaring one reads as an addition; an inherited constructor prints as its base declares
+ * it, type parameters and all, so a class extending a generic base that declares the same constructor with them filled
+ * in reads as a change; a base that is an intersection with a second construct signature records only the class's
+ * constructor, and its own line carries the whole type; a class merged with an interface of the same name stops the
+ * gate with `two entries for <key>`, and one merged with a namespace stops it with `<key>.prototype has no declaration`; a type the snapshot tells apart by file is not followed between its exported and
+ * referenced keys, so such a move reads as a removal, a change or an addition; a type of a newly internal entry is
+ * followed by its name, so another type of that name another entry newly exports reads as a change of it; a TypeScript
+ * upgrade that changes how declarations print needs one `--write`.
  */
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
@@ -208,11 +226,47 @@ function buildSnapshot(entries, root) {
     ts.isIndexSignatureDeclaration(m) ||
     ((ts.isPropertySignature(m) || ts.isMethodSignature(m)) && !m.questionToken);
 
-  /** `forImplementers`: the nodes belong to an interface or an object type, whose required members bind implementers. */
+  /**
+   * How a class that declares no constructor is constructed. `nodes`: the constructor declarations of the nearest base
+   * that declares one, when that base is in the workspace, as it declares them, so they print and are keyed as declared
+   * ones are. `implicit`: no class in the chain declares one, so it has the constructor TypeScript gives it, which the
+   * declarations do not print. Neither when the constructor comes from outside the workspace (`extends Error`), whose
+   * base the header names, or from a base that is not a class (a value with a construct signature).
+   */
+  function inheritedConstructors(symbol, classes) {
+    if (classes.some((d) => d.members.some((m) => ts.isConstructorDeclaration(m)))) {
+      return { nodes: [], implicit: false };
+    }
+    const declarations = checker
+      .getSignaturesOfType(
+        checker.getTypeOfSymbolAtLocation(symbol, classes[0]),
+        ts.SignatureKind.Construct,
+      )
+      .map((s) => s.declaration);
+    if (declarations.length > 0 && declarations.every((d) => d === undefined)) {
+      return { nodes: [], implicit: true };
+    }
+    return {
+      nodes: declarations.filter(
+        (d) =>
+          d !== undefined &&
+          ts.isConstructorDeclaration(d) &&
+          inWorkspace(d.getSourceFile().fileName),
+      ),
+      implicit: false,
+    };
+  }
+
+  /**
+   * `forImplementers`: the nodes belong to an interface or an object type, whose required members bind implementers.
+   * A private constructor is kept, though private members are not public: it decides whether a caller can `new` the
+   * class.
+   */
   function members(key, nodes, forImplementers) {
     const groups = new Map();
     for (const m of nodes) {
-      if (ts.isSemicolonClassElement(m) || (ts.isClassElement(m) && isPrivate(m))) continue;
+      if (ts.isSemicolonClassElement(m)) continue;
+      if (ts.isClassElement(m) && isPrivate(m) && !ts.isConstructorDeclaration(m)) continue;
       const name = memberKey(m, m.getSourceFile());
       if (name === null) throw new Error(`api-surface: a member of ${key} has no name`);
       groups.set(name, [...(groups.get(name) ?? []), m]);
@@ -271,11 +325,17 @@ function buildSnapshot(entries, root) {
     for (const nodes of Object.values(merged)) {
       if (nodes.length === 0) continue;
       nodes.forEach((d, i) => add(numbered(key, i), header(d)));
+      const inherited =
+        nodes === merged.class
+          ? inheritedConstructors(symbol, nodes)
+          : { nodes: [], implicit: false };
       members(
         key,
-        nodes.flatMap((d) => [...d.members]),
+        [...nodes.flatMap((d) => [...d.members]), ...inherited.nodes],
         nodes.every((d) => ts.isInterfaceDeclaration(d)),
       );
+      // Printed as a declared one would be, so declaring the same constructor changes nothing.
+      if (inherited.implicit) add(`${key}.constructor`, 'constructor();');
     }
     for (const d of decls) collectRefs(d);
   }
@@ -406,8 +466,8 @@ function comparableBase(baseEntries, now, internal) {
 }
 
 /**
- * A row's `entry` names a key, or a prefix ending in `*` that holds at least a package and the start of a symbol's name
- * (after the `(referenced)` marker, for a referenced type).
+ * A row's `entry` names a key, or a prefix ending in `*` that holds at least a package and a symbol's name (after the
+ * `(referenced)` marker, for a referenced type). `excuses` matches the prefix only where a name ends.
  */
 const wildcardIsNarrow = (entry) =>
   !entry.endsWith('*') || /^\S+ (?:\(referenced\) )?[A-Za-z_$]/.test(entry.slice(0, -1));
@@ -421,7 +481,7 @@ function allowlistProblems(rows) {
       problems.push(`${ALLOWED_PATH} row ${i} has no entry`);
     } else if (!wildcardIsNarrow(r.entry)) {
       problems.push(
-        `${ALLOWED_PATH} row ${i} (${r.entry}) is too wide: a prefix must name a package and at least the start of a symbol`,
+        `${ALLOWED_PATH} row ${i} (${r.entry}) is too wide: a prefix must name a package and a symbol`,
       );
     }
     if (typeof r?.reason !== 'string' || r.reason.trim() === '') {
@@ -433,9 +493,17 @@ function allowlistProblems(rows) {
   return problems;
 }
 
-/** Whether a row excuses `key`: its entry is the key, or ends in `*` and is a prefix of it. */
-const excuses = (row, key) =>
-  row.entry.endsWith('*') ? key.startsWith(row.entry.slice(0, -1)) : row.entry === key;
+/**
+ * Whether a row excuses `key`: its entry is the key, or ends in `*` and is a prefix of it that stops where a name
+ * ends (the key ends there or goes on with a space or a dot), or that itself ends in a space or a dot.
+ */
+const excuses = (row, key) => {
+  if (!row.entry.endsWith('*')) return row.entry === key;
+  const prefix = row.entry.slice(0, -1);
+  if (!key.startsWith(prefix)) return false;
+  // Only where a name ends: `Foo*` covers `Foo`, `Foo.m`, `Foo #2`, `Foo (value)` and `Foo [path]`, never `FooOptions`.
+  return /[ .]$/.test(prefix) || key.length === prefix.length || /[ .]/.test(key[prefix.length]);
+};
 
 /** The rows of `rows` whose entry the base's rows do not already have: a row left over from an earlier change excuses nothing. */
 function newRows(rows, baseRows) {
@@ -447,9 +515,10 @@ function newRows(rows, baseRows) {
 }
 
 /**
- * The entries of `was` that `now` removes or changes without a usable row of `allowed` excusing them, and the problems
- * with the rows. An addition is a problem only when it is a required member of an interface the base already has
- * (`required` maps such a member's key to its parent's).
+ * The entries `now` removes from `was`, changes or adds without a usable row of `allowed` excusing them, and the
+ * problems with the rows. A `(referenced)` key is an entry like any other, so a public signature that starts naming a
+ * type no entry exports needs a row too. A required member added to an interface the base already has (`required` maps
+ * such a member's key to its parent's) has a message of its own, because it breaks every implementer.
  */
 function breakingChanges(was, now, allowed, required = {}) {
   const rowProblems = allowlistProblems(allowed);
@@ -467,13 +536,17 @@ function breakingChanges(was, now, allowed, required = {}) {
   const lines = [
     ...removed.map((k) => ({ k, text: `removed: ${k}\n    was: ${was[k]}` })),
     ...changed.map((k) => ({ k, text: `changed: ${k}\n    was: ${was[k]}\n    now: ${now[k]}` })),
-    // A member an implementer must provide, added to an interface the base already has, breaks every implementer.
-    ...added
-      .filter((k) => k in required && required[k] in was)
-      .map((k) => ({
-        k,
-        text: `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`,
-      })),
+    // Every addition is a new promise. A member an implementer must provide, added to an interface the base already
+    // has, also breaks every implementer, and says so; a new referenced key says which way out there is.
+    ...added.map((k) => ({
+      k,
+      text:
+        k in required && required[k] in was
+          ? `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`
+          : splitKey(k).referenced
+            ? `added: ${k}\n    a public signature names a type no entry exports: export it, or add a reason row\n    now: ${now[k]}`
+            : `added: ${k}\n    a new public entry; add a reason row\n    now: ${now[k]}`,
+    })),
   ]
     .filter(({ k }) => !usable.some((r) => excuses(r, k)))
     .map(({ text }) => text);
@@ -609,13 +682,15 @@ function main(argv, defaultRoot) {
     const rowProblems = allowlistProblems(rows).filter((p) => !problems.includes(p));
     problems.push(...rowProblems);
     if (problems.length === 0) {
-      console.log(`api-surface: no entry present at ${ref} is removed or changed`);
+      console.log(
+        `api-surface: no entry is removed, changed or added against ${ref} without a reason row`,
+      );
       return 0;
     }
     console.error(`api-surface: the public surface changed against ${ref}:`);
     for (const p of problems) console.error(`  ${p}`);
     console.error(
-      `A removed or changed entry is a public-contract change. If it is agreed, add a row {"entry", "reason"} to ${ALLOWED_PATH} in this change; a row the base already has excuses nothing.`,
+      `A removed, changed or added entry is a public-contract change. If it is agreed, add a row {"entry", "reason"} to ${ALLOWED_PATH} in this change; a row the base already has excuses nothing.`,
     );
     return 1;
   }

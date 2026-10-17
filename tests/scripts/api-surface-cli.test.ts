@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -175,16 +175,32 @@ describe('--write and --check', { timeout: 60_000 }, () => {
 });
 
 describe('--against', { timeout: 60_000 }, () => {
-  it('passes with no change and with an addition', () => {
-    expect(run(['--against', 'HEAD']).status).toBe(0);
-    withMain((s) => `${s}export declare function fresh(): void;\n`);
-    expect(run(['--write']).status).toBe(0);
+  const NEW_MSG = 'a new public entry; add a reason row';
+  const REFERENCED_MSG =
+    'a public signature names a type no entry exports: export it, or add a reason row';
+
+  it('passes with no change', () => {
     const r = run(['--against', 'HEAD']);
     expect(r.status).toBe(0);
-    expect(r.out).toContain('no entry present at HEAD is removed or changed');
+    expect(r.out).toContain(
+      'no entry is removed, changed or added against HEAD without a reason row',
+    );
   });
 
-  it('fails a removal and a change, and says nothing of an addition', () => {
+  it('fails an addition without a row, as a new public entry, and passes it with one', () => {
+    withMain((s) => `${s}export declare function fresh(): void;\n`);
+    expect(run(['--write']).status).toBe(0);
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(`added: @fx/a fresh\n    ${NEW_MSG}\n    now: function fresh(): void;`);
+    expect(r.err).toContain('A removed, changed or added entry is a public-contract change');
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a fresh', reason: 'agreed' }]));
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+    expect(r.out).toContain('without a reason row');
+  });
+
+  it('fails a removal, a change and an addition, each named as what it is', () => {
     withMain(
       (s) =>
         `${s.replace('export declare function drop(a: number): number;\n', '').replace('widen(a: string)', 'widen(a: number)')}export declare function fresh(): void;\n`,
@@ -196,7 +212,56 @@ describe('--against', { timeout: 60_000 }, () => {
     expect(r.err).toMatch(
       /changed: @fx\/a widen\n\s+was: function widen\(a: string\): void;\n\s+now: function widen\(a: number\): void;/,
     );
-    expect(r.err).not.toContain('fresh');
+    expect(r.err).toContain(`added: @fx/a fresh\n    ${NEW_MSG}`);
+  });
+
+  it('fails a new referenced key without a row: a public signature that starts naming a type no entry exports', () => {
+    put('packages/a/dist/hidden.d.ts', 'export interface Hidden { x: string }\n');
+    withMain(
+      (s) =>
+        `${s.replace('keep(a: string)', 'keep(a: string | Hidden)')}import type { Hidden } from './hidden';\n`,
+    );
+    run(['--write']);
+    expect(snapshot()['@fx/a (referenced) Hidden.x']).toBe('x: string;');
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a keep', reason: 'takes a Hidden too' }]),
+    );
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).not.toContain('changed: @fx/a keep');
+    expect(r.err).toContain(`added: @fx/a (referenced) Hidden\n    ${REFERENCED_MSG}`);
+    expect(r.err).toContain(`added: @fx/a (referenced) Hidden.x\n    ${REFERENCED_MSG}`);
+    expect(r.err).not.toContain(`(referenced) Hidden\n    ${NEW_MSG}`);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([
+        { entry: '@fx/a keep', reason: 'takes a Hidden too' },
+        {
+          entry: '@fx/a (referenced) Hidden*',
+          reason: 'callers name it as Parameters<typeof keep>[0]',
+        },
+      ]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+  });
+
+  it('takes a narrow prefix row for a new type and its members, and refuses one too wide', () => {
+    withMain((s) => `${s}export interface Fresh { r: string; m(): void }\n`);
+    run(['--write']);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a Fresh*', reason: 'new type' }]),
+    );
+    expect(run(['--against', 'HEAD']).status).toBe(0);
+    for (const entry of ['*', '@fx/a *', '@fx/a (*']) {
+      put('api-surface/allowed.json', JSON.stringify([{ entry, reason: 'wide' }]));
+      const r = run(['--against', 'HEAD']);
+      expect(r.status, entry).toBe(1);
+      expect(r.err, entry).toContain('too wide');
+      expect(r.err, entry).toContain(`added: @fx/a Fresh.r\n    ${NEW_MSG}`);
+    }
   });
 
   const breakIt = (): void => {
@@ -247,7 +312,7 @@ describe('--against', { timeout: 60_000 }, () => {
     expect(r.err).toContain('too wide');
   });
 
-  it('refuses a prefix that stops before a name, and takes one that starts a name', () => {
+  it('refuses a prefix that stops before a name, excuses nothing by one that stops inside a name, and takes the whole name', () => {
     breakIt();
     for (const entry of ['@fx/a (*', '@fx/a (referenced) *']) {
       put('api-surface/allowed.json', JSON.stringify([{ entry, reason: 'wide' }]));
@@ -255,8 +320,43 @@ describe('--against', { timeout: 60_000 }, () => {
       expect(r.status, entry).toBe(1);
       expect(r.err, entry).toContain('too wide');
     }
-    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a d*', reason: 'narrow' }]));
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a d*', reason: 'part of a name' }]),
+    );
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('removed: @fx/a drop');
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a drop*', reason: 'replaced' }]));
     expect(run(['--against', 'HEAD']).status).toBe(0);
+  });
+
+  it('lets a prefix row for one type excuse nothing of a longer name that starts with it', () => {
+    withMain((s) => `${s}export interface ShapeOptions { x: number }\n`);
+    run(['--write']);
+    commit();
+    withMain(
+      (s) =>
+        `${s.replace('  b: number;\n}', '  b: number;\n  c?: string;\n}')}export interface ShapeOptions { x: string }\n`,
+    );
+    run(['--write']);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a Shape*', reason: 'Shape gains c' }]),
+    );
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/a ShapeOptions.x');
+    expect(r.err).not.toContain('@fx/a Shape.c');
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([
+        { entry: '@fx/a Shape*', reason: 'Shape gains c' },
+        { entry: '@fx/a ShapeOptions*', reason: 'x takes a string' },
+      ]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
   });
 
   it('passes with a note when the ref has no snapshot, and fails on a ref that is not a commit', () => {
@@ -351,35 +451,69 @@ describe('a member added to an existing type', { timeout: 60_000 }, () => {
     expect(r.err).toContain(`added: ${key}`);
   });
 
-  it.each([
-    ['an optional property', 'c?: string;'],
-    ['an optional method', 'run?(x: number): void;'],
-  ])('passes %s', (_what, member) => {
-    const r = addToShape(member);
-    expect(r.status).toBe(0);
-  });
+  const NEW_MSG = 'a new public entry; add a reason row';
 
-  it('fails a required member of an existing object type alias, and passes an optional one', () => {
+  // An optional member breaks no implementer, and is still a new public entry: every addition is reviewed.
+  it.each([
+    ['an optional property', 'c?: string;', '@fx/a Shape.c'],
+    ['an optional method', 'run?(x: number): void;', '@fx/a Shape.run'],
+  ])(
+    'fails %s without a row, as a new public entry, and passes it with one',
+    (_what, member, key) => {
+      let r = addToShape(member);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain(`added: ${key}\n    ${NEW_MSG}`);
+      expect(r.err).not.toContain(REQUIRED_MSG);
+      put('api-surface/allowed.json', JSON.stringify([{ entry: key, reason: 'agreed' }]));
+      r = run(['--against', 'HEAD']);
+      expect(r.status, r.err).toBe(0);
+    },
+  );
+
+  it('fails a required member of an existing object type alias, and an optional one as a new entry', () => {
     withMain((s) => s.replace('{ a: string }', '{ a: string; b: number }'));
     run(['--write']);
     const bad = run(['--against', 'HEAD']);
     expect(bad.status).toBe(1);
-    expect(bad.err).toContain('added: @fx/a Opts.b');
+    expect(bad.err).toContain(`added: @fx/a Opts.b\n    ${REQUIRED_MSG} (@fx/a Opts)`);
     withMain((s) => s.replace('{ a: string }', '{ a: string; b?: number }'));
     run(['--write']);
-    expect(run(['--against', 'HEAD']).status).toBe(0);
+    const optional = run(['--against', 'HEAD']);
+    expect(optional.status).toBe(1);
+    expect(optional.err).toContain(`added: @fx/a Opts.b\n    ${NEW_MSG}`);
   });
 
-  it('passes a required member of an interface that is itself new, a new class method and a new export', () => {
+  it('fails a new interface, a new class method and a new export as new entries, with no required-member message', () => {
     withMain(
       (s) =>
         `${s.replace('  get size(): number;', '  get size(): number;\n  extra(): void;')}export interface Fresh { r: string; m(): void }\nexport declare function more(): void;\n`,
     );
     run(['--write']);
-    const r = run(['--against', 'HEAD']);
-    expect(r.status).toBe(0);
     expect(snapshot()['@fx/a Thing.extra']).toBe('extra(): void;');
     expect(snapshot()['@fx/a Fresh.r']).toBe('r: string;');
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    for (const key of [
+      '@fx/a Thing.extra',
+      '@fx/a Fresh',
+      '@fx/a Fresh.r',
+      '@fx/a Fresh.m',
+      '@fx/a more',
+    ]) {
+      expect(r.err).toContain(`added: ${key}\n    ${NEW_MSG}`);
+    }
+    // A required member of a type that is itself new binds no existing implementer.
+    expect(r.err).not.toContain(REQUIRED_MSG);
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([
+        { entry: '@fx/a Thing.extra', reason: 'agreed' },
+        { entry: '@fx/a Fresh*', reason: 'agreed' },
+        { entry: '@fx/a more', reason: 'agreed' },
+      ]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
   });
 
   it('fails a required member of an existing referenced interface', () => {
@@ -411,6 +545,178 @@ describe('a member added to an existing type', { timeout: 60_000 }, () => {
     const r = run(['--against', 'HEAD']);
     expect(r.status).toBe(1);
     expect(r.err).toContain('added: @fx/a Shape.d');
+  });
+});
+
+describe('the constructor a class inherits', { timeout: 60_000 }, () => {
+  const CLASSES = `export declare class Root {
+  constructor(message: string);
+}
+export declare class Err extends Root {
+  readonly code: number;
+}
+export declare class Own extends Root {
+  constructor(message: string, code: number);
+}
+export declare class Plain {}
+export declare class FromPlain extends Plain {}
+export declare class Oops extends Error {}
+export declare class Sink {
+  count(): number;
+}
+`;
+  /** Writes the classes, edited, after the main fixture, regenerates the snapshot and compares it with HEAD. */
+  const againstHead = (edit: (s: string) => string): Run => {
+    withMain((s) => s + edit(CLASSES));
+    expect(run(['--write']).status).toBe(0);
+    return run(['--against', 'HEAD']);
+  };
+  // Every test starts from a commit that has the classes as they are above.
+  beforeEach(() => {
+    withMain((s) => s + CLASSES);
+    expect(run(['--write']).status).toBe(0);
+    commit();
+  });
+  const DETAILS = 'constructor(message: string, details: { readonly limit: number });';
+
+  it('records it under the class own key as the base declares it, `constructor();` for a chain that declares none, and nothing from outside the workspace', () => {
+    const e = snapshot();
+    expect(e['@fx/a Err.constructor']).toBe('constructor(message: string);');
+    expect(e['@fx/a Own.constructor']).toBe('constructor(message: string, code: number);');
+    for (const name of ['Plain', 'FromPlain', 'Sink', 'Thing']) {
+      expect(e[`@fx/a ${name}.constructor`], name).toBe('constructor();');
+    }
+    expect(Object.keys(e).filter((k) => k.startsWith('@fx/a Oops.constructor'))).toEqual([]);
+  });
+
+  it('fails a private constructor added to a class whose chain declared none, and its removal, as changes', () => {
+    let r = againstHead((s) =>
+      s.replace('  count(): number;\n', '  private constructor();\n  count(): number;\n'),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Sink.constructor\n    was: constructor();\n    now: private constructor();',
+    );
+    commit();
+    withMain((s) => s + CLASSES);
+    expect(run(['--write']).status).toBe(0);
+    r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Sink.constructor\n    was: private constructor();\n    now: constructor();',
+    );
+  });
+
+  it('passes a `constructor();` declared where the chain declared none, and the snapshot does not change', () => {
+    const r = againstHead((s) =>
+      s.replace('  count(): number;\n', '  constructor();\n  count(): number;\n'),
+    );
+    expect(r.status, r.err).toBe(0);
+    expect(git('status', '--porcelain', '--', 'api-surface')).toBe('');
+  });
+
+  it('fails a declared constructor that differs from the inherited one, as a change, and passes it with a row', () => {
+    let r = againstHead((s) =>
+      s.replace('  readonly code: number;\n', `  readonly code: number;\n  ${DETAILS}\n`),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Err.constructor\n    was: constructor(message: string);\n    now: constructor(message: string, details: { readonly limit: number; });',
+    );
+    expect(r.err).not.toContain('added: @fx/a Err.constructor');
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a Err.constructor', reason: 'takes its details' }]),
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+  });
+
+  it('passes a declared constructor identical to the inherited one, and the snapshot does not change', () => {
+    const r = againstHead((s) =>
+      s.replace(
+        '  readonly code: number;\n',
+        '  readonly code: number;\n  constructor(message: string);\n',
+      ),
+    );
+    expect(r.status, r.err).toBe(0);
+    expect(git('status', '--porcelain', '--', 'api-surface')).toBe('');
+  });
+
+  it('fails a removed constructor that leaves the class one of another shape to inherit', () => {
+    const r = againstHead((s) => s.replace('  constructor(message: string, code: number);\n', ''));
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a Own.constructor\n    was: constructor(message: string, code: number);\n    now: constructor(message: string);',
+    );
+  });
+
+  it('sees a change to the base constructor in every class that inherits it', () => {
+    const r = againstHead((s) =>
+      s.replace(
+        'constructor(message: string);\n}\nexport declare class Err',
+        'constructor(message: string, cause?: unknown);\n}\nexport declare class Err',
+      ),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/a Root.constructor');
+    expect(r.err).toContain('changed: @fx/a Err.constructor');
+    expect(r.err).not.toContain('@fx/a Own.constructor');
+  });
+
+  it('reads a constructor declared where the chain declared none as a change, and where it came from outside the workspace as an addition', () => {
+    const r = againstHead((s) =>
+      s
+        .replace(
+          'class FromPlain extends Plain {}',
+          'class FromPlain extends Plain {\n  constructor(x: number);\n}',
+        )
+        .replace(
+          'class Oops extends Error {}',
+          'class Oops extends Error {\n  constructor(code: number);\n}',
+        ),
+    );
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(
+      'changed: @fx/a FromPlain.constructor\n    was: constructor();\n    now: constructor(x: number);',
+    );
+    expect(r.err).toContain('added: @fx/a Oops.constructor\n    a new public entry');
+  });
+});
+
+describe('a constructor inherited from another workspace package', { timeout: 60_000 }, () => {
+  const ROOT_CLASS = 'export declare class Root {\n  constructor(message: string);\n}\n';
+  // Package d's class extends package a's, reached the way a workspace dependency is: through d's node_modules.
+  beforeEach(() => {
+    withMain((s) => s + ROOT_CLASS);
+    put(
+      'packages/d/package.json',
+      JSON.stringify({
+        name: '@fx/d',
+        exports: { '.': { types: './dist/index.d.ts', default: './dist/index.js' } },
+      }),
+    );
+    put(
+      'packages/d/dist/index.d.ts',
+      "import { Root } from '@fx/a';\nexport declare class Sub extends Root {}\n",
+    );
+    mkdirSync(join(repo, 'packages/d/node_modules/@fx'), { recursive: true });
+    symlinkSync('../../../a', join(repo, 'packages/d/node_modules/@fx/a'));
+    expect(run(['--write']).status).toBe(0);
+    commit();
+  });
+
+  it('is recorded under the subclass own key, and a change to the base shows in both packages', () => {
+    expect(snapshot()['@fx/d Sub']).toBe('class Sub extends Root');
+    expect(snapshot()['@fx/d Sub.constructor']).toBe('constructor(message: string);');
+    withMain((s) => s + ROOT_CLASS.replace('message: string', 'message: string, code?: number'));
+    expect(run(['--write']).status).toBe(0);
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/a Root.constructor');
+    expect(r.err).toContain(
+      'changed: @fx/d Sub.constructor\n    was: constructor(message: string);\n    now: constructor(message: string, code?: number);',
+    );
   });
 });
 
@@ -536,6 +842,28 @@ export declare function other(): void;
     const r = run(['--against', 'HEAD']);
     expect(r.status, r.err).toBe(0);
     expect(internalFile()['@fx/b engine']).toBe('function engine(c: Ctx, a: number): void;');
+  });
+
+  it('needs no row for an addition to an internal entry, and wants one when a public signature names its new type', () => {
+    setB(true);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    commit();
+    const MORE = `${CORE}export interface Fresh { f: number }\nexport declare function fresh(x: Fresh): void;\n`;
+    setB(true, MORE);
+    expect(internalFile()['@fx/b fresh']).toBe('function fresh(x: Fresh): void;');
+    let r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+    setB(
+      true,
+      MORE,
+      `${KIT}import type { Fresh } from './index';\nexport declare function useFresh(f: Fresh): void;\n`,
+    );
+    r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('added: @fx/b/kit useFresh\n    a new public entry');
+    expect(r.err).toContain(
+      'added: @fx/b (referenced) Fresh.f\n    a public signature names a type no entry exports: export it, or add a reason row',
+    );
   });
 
   it('fails making an entry internal without the row, and passes with it', () => {

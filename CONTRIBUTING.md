@@ -56,25 +56,54 @@ Every change must pass these locally, and CI runs each of them on every pull req
   them, with the snapshot committed in [`api-surface/`](api-surface/README.md). A change you meant to make regenerates
   it with `pnpm api:surface` (it builds first), and the snapshot diff in your pull request is what a reviewer reads.
   On a pull request the `api-surface-base` workflow also runs `node scripts/api-surface.cjs --against origin/<base>`,
-  with no build: an entry the base branch lists that is **removed or changed** (a parameter rename included) fails unless
-  `api-surface/allowed.json` names it with a reason in a row this change adds; a row the base already has, with the same
-  reason, excuses nothing. That is a public-contract change: it needs the maintainer's agreement before you build it. A new export, a new
-  class member, an optional member of an interface or object type, and any member of a type that is itself new are
-  additions and pass. A **required** member (a property or method without `?`, or an index, call or construct signature)
-  added to an interface or object type the base already has is a change, because it breaks everyone who implements or
-  builds that type: it fails with "a required member added to an existing interface" unless a row excuses it. An empty
-  allowlist is the normal state. A package can list an entry in `cloudbitmaps.internalEntries` in its `package.json`:
+  with no build: an entry that is **removed, changed or added** against the base branch's snapshot (a parameter rename
+  included) fails unless `api-surface/allowed.json` names it with a reason in a row this change adds; a row the base
+  already has, with the same reason, excuses nothing. A removal or a change is a public-contract change and an addition
+  is a new promise: each needs the maintainer's agreement before you build it. An addition (a new export, a new member,
+  optional ones included, or a new type with its members, which one `Name*` row covers; the row stops where the name
+  ends, so it never covers `NameOptions`) fails with "a new public entry; add a reason row". A new `(referenced)` key,
+  a public signature that starts naming a type no entry exports, which a caller can reach but cannot import, fails with
+  "… export it, or add a reason row": export the type, or say in the row why it stays unexported. A **required**
+  member (a property or method without `?`, or an index, call or construct signature) added to an interface or object
+  type the base already has fails with "a required member added to an existing interface", because it breaks everyone
+  who implements or builds that type. A class that declares no constructor is recorded with the one it inherits, or
+  with `constructor();` when its chain declares none, and a private constructor is recorded as declared, so declaring
+  one of another shape, a private one included, reads as a change. An empty allowlist is the normal state. A package
+  can list an entry in `cloudbitmaps.internalEntries` in its `package.json`:
   that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry). It is not in `surface.json`,
   a type only it exported is recorded as `(referenced)` when a public signature names it, and its own lines are in
   `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
   internal is itself a change the gate asks for: a row `{"entry": "<specifier> (internal)", "reason": …}`. Because
   `workspace:^` lets `@cloudbitmaps/roaring` 0.22.0 be installed beside `@cloudbitmaps/core` 0.22.1, **core's main entry
   changes only additively within a minor**: a removal or a changed signature waits for the next minor, and the release
-  reviewer reads the `api-surface/internal.json` diff for it. What it does not see: a change in behaviour behind an
-  unchanged signature (that is for tests); an overload appended after the last one (it reads as an addition); a type
-  from outside the workspace, beyond its name in the signature; a member added to a class, abstract or not, which
-  binds a subclass; and, after a TypeScript upgrade that changes how
-  declarations print, it needs one `--write`.
+  reviewer reads the `api-surface/internal.json` diff for it. Its known limits, the ones the
+  [api-surface README](api-surface/README.md) lists:
+
+  - A change in behaviour behind an unchanged signature: that is for tests.
+  - A type from outside the workspace: it is known by its name in the signatures that use it.
+  - Private members: they are not public and are not recorded, except a private constructor.
+  - An overload appended after the last: overloads are compared in declared order, so it reads as an addition rather
+    than a change (it still needs a row).
+  - A member added to a class, abstract or not: it reads as a new entry, not as a required member, though an abstract
+    one binds a subclass (it still needs a row).
+  - A parameter rename: it reads as a change, and needs a row.
+  - A constructor declared outside the workspace (`extends Error`) or on a base that is not a class: it is not recorded,
+    so declaring one reads as an addition. A class whose chain reaches a dependency that declares none is recorded with
+    `constructor();`.
+  - A generic base: an inherited constructor prints as its base declares it, type parameters included, so a class
+    extending `Base<string>` that then declares the same constructor with the type filled in reads as a change.
+  - A base that is an intersection with a second construct signature (`typeof Root & (new (k: number) => Root)`): only
+    the class's constructor is recorded; the base's own line carries the whole type, so a change to it is still seen.
+  - A class merged with an interface of the same name: the gate stops with `two entries for <key>` rather than record
+    it; give the two different names.
+  - A class merged with a namespace of the same name: the gate stops with `<key>.prototype has no declaration`; give the
+    two different names.
+  - A type the snapshot tells apart by file (a name taken twice in one package, recorded with its path after the name):
+    it is not followed between its exported and `(referenced)` keys, so such a move reads as a removal, a change or an
+    addition, and needs a row.
+  - A type of a newly internal entry is followed by its name, so another type of the same name that another entry of the
+    package newly exports is compared with it, which reads as a change: rename the collision.
+  - A TypeScript upgrade that changes how declarations print: it needs one `pnpm api:surface`.
 
 CI runs more than these. Its `build & test` job also holds the site and the benchmark pages to their sources
 (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,
