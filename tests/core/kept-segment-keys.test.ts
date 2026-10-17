@@ -4,7 +4,8 @@ vi.mock('@/core/keys', async (original) => {
   return { ...keys, segmentKey: vi.fn(keys.segmentKey), segmentPrefix: vi.fn(keys.segmentPrefix) };
 });
 
-import { CrbmStorageChunkSource, MemoryStorage } from '@/index';
+import { MemoryStorage } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { SegmentRef } from '@/index';
 import { SegmentEngine } from '@/core/engine';
 import {

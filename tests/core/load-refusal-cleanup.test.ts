@@ -7,7 +7,8 @@ import { KeyUnavailableError, NotFoundError, ValidationError } from '@/core/erro
 import { rollbackSegment } from '@/core/rollback';
 import { roaringCodec } from '@/roaring-codec';
 import { RecordingAuditSink, TransientError } from '@/index';
-import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { gate } from '../helpers/retaken-number-race';
 import { testEntropy } from '../helpers/entropy';

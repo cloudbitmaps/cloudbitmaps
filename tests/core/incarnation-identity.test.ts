@@ -118,7 +118,7 @@ describe('a re-created name is a different segment, not the same one', () => {
   it('the version string separates incarnations at the same generation number', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
-    const { CrbmStorageChunkSource } = await import('@/index');
+    const { CrbmStorageChunkSource } = await import('@/core/crbm-storage-source');
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
     const source = new CrbmStorageChunkSource(storage, { registry });
@@ -133,7 +133,7 @@ describe('a re-created name is a different segment, not the same one', () => {
 
   it('a registry-less source has no row token, so its version is the generation and the object', async () => {
     const storage = new MemoryStorageDriver();
-    const { CrbmStorageChunkSource } = await import('@/index');
+    const { CrbmStorageChunkSource } = await import('@/core/crbm-storage-source');
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], {});
 
     const source = new CrbmStorageChunkSource(storage, {});
@@ -151,7 +151,7 @@ describe('a re-created name is a different segment, not the same one', () => {
   it('a segment with no generation has no version', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
-    const { CrbmStorageChunkSource } = await import('@/index');
+    const { CrbmStorageChunkSource } = await import('@/core/crbm-storage-source');
     expect(await new CrbmStorageChunkSource(storage, { registry }).currentVersion(REF)).toBeNull();
   });
 });

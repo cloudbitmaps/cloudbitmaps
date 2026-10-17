@@ -1,6 +1,7 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
 import { IntegrityError, ValidationError } from '@/core/errors';
-import type { IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 

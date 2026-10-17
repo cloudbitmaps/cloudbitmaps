@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource, InProcessKeystore, MemoryStorage } from '@/index';
+import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { Clock, IMetricsSink, SegmentRef } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { ChunkRead, GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';

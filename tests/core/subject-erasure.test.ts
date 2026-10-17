@@ -1,12 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import {
-  MemoryStorage,
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  RecordingAuditSink,
-  destroySegment,
-} from '@/index';
-import type { BlobSink, GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
+import { MemoryStorage, CloudRoaring, RecordingAuditSink, destroySegment } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { SegmentRef } from '@/index';
+import type { BlobSink, GenKey, IStorageDriver, IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   BudgetExceededError,

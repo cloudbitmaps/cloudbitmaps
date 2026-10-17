@@ -1,6 +1,7 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
 import { WriteConflictError } from '@/index';
-import type { GenKey, IStorageDriver, SegmentRef, StorageDeleteOptions } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver, StorageDeleteOptions } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 

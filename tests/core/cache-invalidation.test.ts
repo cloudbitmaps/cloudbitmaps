@@ -5,7 +5,8 @@ vi.mock('@/core/crbm/reader', async (original) =>
 
 import { destroySegment } from '@/core/erasure';
 import { setSegmentRetention } from '@/core/retention';
-import type { IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';

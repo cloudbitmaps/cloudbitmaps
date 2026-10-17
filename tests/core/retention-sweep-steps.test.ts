@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MIN_EXPIRES_AT_MS } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import {

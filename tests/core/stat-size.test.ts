@@ -19,7 +19,8 @@ import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { CloudRoaring, CrbmStorageChunkSource, LocalFsStorage, MemoryStorage } from '@/index';
+import { CloudRoaring, LocalFsStorage, MemoryStorage } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 

@@ -10,7 +10,13 @@ import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring } from '@/index';
-import type { ChunkRef, IRegistryDriver, IStorageDriver, IKeystore, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type {
+  ChunkRef,
+  IRegistryDriver,
+  IStorageDriver,
+  IKeystore,
+} from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

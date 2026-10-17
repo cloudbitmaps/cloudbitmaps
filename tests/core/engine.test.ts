@@ -1,4 +1,5 @@
-import { CloudRoaring, IntegrityError, type Clock, type StorageChunkSource } from '@/index';
+import { CloudRoaring, IntegrityError, type Clock } from '@/index';
+import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
 import { collect, loadedStore, seedSegment, seededStore } from '../helpers/loaded';
 
 /** A controllable clock, so the store's generation refresh (`cache.genTtlMs`) is driven by the test, not wall time. */

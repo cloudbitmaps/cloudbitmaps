@@ -1,16 +1,17 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
 import { publishGeneration } from '../helpers/publish';
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError } from '@/core/errors';
+import type { SegmentRef } from '@/index';
 import type {
   GovernanceMeta,
   IStorageDriver,
   IKeystore,
   IRegistryDriver,
-  SegmentRef,
-} from '@/index';
+} from '@cloudbitmaps/core/driver-kit';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { runConsistencyCheck } from '@cloudbitmaps/core';

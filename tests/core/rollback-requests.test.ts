@@ -6,7 +6,8 @@ import { nextGeneration } from '@/core/generation-gc';
 import type { GenKey, IStorageDriver, TailRead } from '@/core/ports';
 import { InProcessKeystore, NodeAead } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import type { IKeystore, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { writeCrbm } from '../helpers/crbm-extension';
 

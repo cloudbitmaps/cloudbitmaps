@@ -1,4 +1,5 @@
-import { BudgetExceededError, CloudRoaring, MemoryStorage, MIN_EXPIRES_AT_MS } from '@/index';
+import { BudgetExceededError, CloudRoaring, MemoryStorage } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import type { RegistryRecord } from '@/core/ports';
 import { runConsistencyCheck, retireExpired } from '@cloudbitmaps/core';

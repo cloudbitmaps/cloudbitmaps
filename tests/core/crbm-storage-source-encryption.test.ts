@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   CapabilityError,
@@ -10,7 +11,8 @@ import {
   KeyUnavailableError,
   ValidationError,
 } from '@/core/errors';
-import type { IStorageDriver, IKeystore, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IStorageDriver, IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';

@@ -5,9 +5,11 @@
  */
 import { randomBytes } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { CrbmStorageChunkSource, NotFoundError, TransientError, ValidationError } from '@/index';
+import { NotFoundError, TransientError, ValidationError } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';
-import type { Clock, GenKey, SegmentRef } from '@/index';
+import type { Clock, SegmentRef } from '@/index';
+import type { GenKey } from '@cloudbitmaps/core/driver-kit';
 import { InProcessKeystore } from '@/drivers/crypto';
 import type { Aead } from '@/core/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';

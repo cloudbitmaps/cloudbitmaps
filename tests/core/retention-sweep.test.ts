@@ -1,6 +1,8 @@
 import { nextGeneration } from '@/core/generation-gc';
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource, MIN_EXPIRES_AT_MS, destroySegment } from '@/index';
+import { CloudRoaring, destroySegment } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { DEFAULT_RETIRE_LIMIT } from '@/core/retention-sweep';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { BudgetExceededError, UnsupportedError, ValidationError } from '@/core/errors';
