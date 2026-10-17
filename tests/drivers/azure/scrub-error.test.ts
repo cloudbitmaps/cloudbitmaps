@@ -347,6 +347,19 @@ describe('scrubCredentials (Azure)', () => {
     });
   });
 
+  it('is idempotent: a copy scrubbed again is returned as it is', () => {
+    const err = Object.assign(restError(), {
+      details: {
+        authorization: SIGNED,
+        rawHeaders: ['authorization', SIGNED],
+        map: new Map([['cookie', 'c=1']]),
+      },
+    });
+    const once = scrubCredentials(err);
+    expect(once).not.toBe(err);
+    expect(scrubCredentials(once)).toBe(once);
+  });
+
   it('keeps a DOMException readable in a copy', () => {
     const abort = new DOMException('This operation was aborted', 'AbortError');
     const err = Object.assign(restError(), { cause: abort });

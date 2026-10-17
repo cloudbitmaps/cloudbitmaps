@@ -149,7 +149,7 @@ function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
     // A flat list of header names and values: the value right after a credential name is one.
     if (hidden && index === last + 1 && item != null) {
       list[index] = REDACTED;
-      ctx.changed = true;
+      if (item !== REDACTED) ctx.changed = true;
     } else {
       const kept = copyOf(item, ctx, depth + 1);
       if (kept !== OMIT) list[index] = kept;
@@ -170,7 +170,7 @@ function copyMap(value: Map<unknown, unknown>, ctx: Copying, depth: number): Map
     if (key === OMIT) continue;
     if (typeof k === 'string' && CREDENTIAL_NAME.test(k) && v != null) {
       map.set(key, REDACTED);
-      ctx.changed = true;
+      if (v !== REDACTED) ctx.changed = true;
       continue;
     }
     const kept = copyOf(v, ctx, depth + 1);
@@ -249,7 +249,7 @@ function copyField(
   let kept: unknown;
   if (typeof key === 'string' && CREDENTIAL_NAME.test(key) && descriptor.value != null) {
     kept = REDACTED;
-    ctx.changed = true;
+    if (descriptor.value !== REDACTED) ctx.changed = true;
   } else {
     kept = copyOf(descriptor.value, ctx, depth + 1);
     if (kept === OMIT) return;
