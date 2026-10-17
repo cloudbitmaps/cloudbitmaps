@@ -13,7 +13,8 @@
  * A class that declares no constructor is recorded with the one it inherits, under its own `Class.constructor` key and
  * printed as the nearest base in the workspace declares it, so a class that later declares one of another shape reads
  * as a change, and a change to a base's constructor shows in every class that inherits it. A class whose chain declares
- * none, or inherits one from outside the workspace, records none.
+ * none records none, and so does one whose constructor comes from outside the workspace or from a base that is not a
+ * class.
  *
  * A type that a public signature names without any entry point exporting it is part of what a caller can reach, so
  * it is recorded too, with its members and, transitively, the types they name, under a `(referenced)` key. A type
@@ -43,9 +44,9 @@
  * change; a type the snapshot tells apart by file is not followed between its exported and referenced keys, so such a
  * move reads as a removal and an addition; a parameter rename is a change; an inherited constructor prints as its base
  * declares it, type parameters and all, so a class extending a generic base that declares the same constructor with
- * them filled in reads as a change; a class whose chain declares no constructor, or inherits one from outside the
- * workspace, records none, so declaring one reads as an addition, and removing a `private constructor()` from a class
- * with no base is not seen; only declarations are read, so a change in behaviour behind an unchanged signature is for
+ * them filled in reads as a change; a class that records no constructor (its chain declares none, or it comes from
+ * outside the workspace or from a base that is not a class) reads a constructor it declares as an addition, and
+ * removing a `private constructor()` from a class with no base is not seen; only declarations are read, so a change in behaviour behind an unchanged signature is for
  * tests; a TypeScript upgrade that changes how declarations print needs one `--write`.
  */
 const { execFileSync } = require('node:child_process');
@@ -222,8 +223,9 @@ function buildSnapshot(entries, root) {
   /**
    * The constructor declarations a class that declares none inherits: the nearest base's in the workspace, as that
    * base declares them, so they print and are keyed as declared ones are. None when no class in the chain declares one
-   * (the declarations print none; it takes no arguments), or when it comes from outside the workspace (`extends
-   * Error`), whose base is known by its name in the header. A private one is left out with the other private members.
+   * (the declarations print none; it takes no arguments), when it comes from outside the workspace (`extends Error`),
+   * whose base is known by its name in the header, or when the base is not a class (a value with a construct
+   * signature). A private one is left out with the other private members.
    */
   function inheritedConstructors(symbol, classes) {
     if (classes.some((d) => d.members.some((m) => ts.isConstructorDeclaration(m)))) return [];

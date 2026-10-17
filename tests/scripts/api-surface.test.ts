@@ -146,8 +146,15 @@ describe('buildSurface', () => {
 
 describe('the constructor a class inherits', () => {
   // Its own file, so the FIXTURE above stays as it is; `surfaceOf` writes every file it is given before each read.
+  mkdirSync(join(dir, 'node_modules', 'dep'), { recursive: true });
   const surface = surfaceOf({
+    'node_modules/dep/package.json': JSON.stringify({ name: 'dep', types: 'index.d.ts' }),
+    'node_modules/dep/index.d.ts': 'export declare class DepBase { constructor(x: number); }\n',
     'index.d.ts': `
+      import { DepBase } from 'dep';
+      export declare class FromDep extends DepBase {}
+      declare const MixBase: { new (a: string): { m(): void } };
+      export declare class FromMix extends MixBase {}
       export declare class Root { constructor(message: string); }
       export declare class Child extends Root {}
       export declare class Grandchild extends Child { readonly code: number; }
@@ -180,10 +187,16 @@ describe('the constructor a class inherits', () => {
   });
 
   it('is not recorded when no class in the chain declares one, when it comes from outside the workspace, or is private', () => {
-    for (const name of ['Bare', 'FromBare', 'FromError', 'Closed']) {
+    for (const name of ['Bare', 'FromBare', 'FromError', 'FromDep', 'Closed']) {
       expect(constructorsOf(name), name).toEqual([]);
     }
     expect(surface['fx FromError']).toBe('class FromError extends Error');
+    expect(surface['fx FromDep']).toBe('class FromDep extends DepBase');
+  });
+
+  it('is not recorded from a base that is not a class, such as a value with a construct signature', () => {
+    expect(surface['fx FromMix']).toBe('class FromMix extends MixBase');
+    expect(Object.keys(surface).filter((k) => k.startsWith('fx FromMix.'))).toEqual([]);
   });
 });
 
