@@ -3,15 +3,35 @@
  *
  * The SDK keeps the HTTP response it got on the error (`$response`), and through its socket the request it sent, with
  * the signed `Authorization` header and `x-amz-security-token`, on properties `util.inspect` shows only with
- * `showHidden`. Those objects are live (a socket still closing reads them), so they are never changed: the error is
- * replaced by a copy that has none of them (an error with none is returned as it is). The copy keeps its prototype, name, message, stack, status, code, request
- * id and every other plain field, so classification by name, code or status works on it as on the original. A
- * credential header or header line left anywhere in the copy's plain data is redacted.
+ * `showHidden`; a body it could not parse it keeps as text (`$responseBodyText`). It also copies every field of the
+ * error body onto the error, where a logger prints it. A `SignatureDoesNotMatch` body from S3 quotes the request back:
+ * its signature (`SignatureProvided`) and the canonical request S3 computed (`CanonicalRequest`, in hex
+ * `CanonicalRequestBytes`), which lists every signed header with its value, the session token's included. A proxy's
+ * error page, parsed the same way, can quote the `Authorization` value or the token in any field. The live objects are
+ * never changed (a socket still closing reads them): an error that holds a transport, or whose data shows a credential,
+ * is replaced by a deep copy of its plain data. An error with neither is returned as it is.
+ *
+ * The copy is a native error with the original's prototype (so `instanceof S3ServiceException` holds), name, message,
+ * stack, `$metadata`, `$fault`, `$retryable`, `Code`, `RequestId` and every other plain field, which is what
+ * classification reads. It has no transport property, no function or accessor (a `toJSON` or `util.inspect` hook is a
+ * closure over the original) and no class instance other than an error. Errors are copied wherever they sit: the `cause`
+ * chain, an `AggregateError`'s `errors`, any array or field. A table of copies keeps a cycle a cycle, and anything
+ * nested deeper than `MAX_DEPTH` is dropped rather than kept raw. The value under a credential key is replaced by
+ * `[redacted]`: a credential header's, an SSE-C key's, an AWS credential's fields, the signature and canonical request
+ * S3 quotes, and the session token it quotes in `Token-0` when it refuses one (the access key id it names is kept: it
+ * names a key and signs nothing). So is the value beside a credential's name in a list (`['x-amz-security-token', v]`)
+ * or a record (a header table's `{ th, td }` row, `{ name, value }`, S3's `ArgumentName` and `ArgumentValue`). In the
+ * copy's text, a credential header line, a SigV4 signature (`Signature=` in an `Authorization` value, `X-Amz-Signature=`
+ * in a URL) and a session token or SSE-C key written after its header name are redacted. A credential in any other form
+ * is not recognised, and a text too large for these patterns is replaced whole.
  */
 
-/** Properties that hold the raw transport: the response, and the request and socket reachable from it. */
+import { types } from 'node:util';
+
+/** Properties that hold the raw transport: the response, its unparsed body, and the request and socket reachable from it. */
 const TRANSPORT = new Set([
   '$response',
+  '$responseBodyText',
   'socket',
   '_httpMessage',
   'req',
@@ -19,96 +39,305 @@ const TRANSPORT = new Set([
   'connection',
   'agent',
 ]);
-/** Header and field names whose value is a credential. */
-const CREDENTIAL_NAME =
-  /^(?:proxy-)?authorization$|^cookie$|^set-cookie$|^x-api-key$|^x-amz-security-token$|^x-amz-credential$|^x-amz-signature$/i;
-const CREDENTIAL_LINE = new RegExp(
-  '^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|x-amz-security-token):[^\\r\\n]*',
-  'im',
+/** The headers, besides `Authorization`, whose value is a credential: the session tokens and an SSE-C key. */
+const PRIVATE_HEADERS =
+  'x-amz-security-token|x-amz-s3session-token|x-amz-(?:copy-source-)?server-side-encryption-customer-key';
+/**
+ * Header and field names whose value is a credential: the credential headers, the SDK's SSE-C members, an AWS
+ * credential's fields, what S3 quotes of a request whose signature it refused, and the session token it quotes as
+ * `Token-0` when it refuses the token (`ExpiredToken`, `InvalidToken`). The whole name must match: `ContinuationToken`
+ * does not.
+ */
+const CREDENTIAL_NAME = new RegExp(
+  `^(?:(?:proxy-)?authorization|cookie|set-cookie|x-api-key|${PRIVATE_HEADERS}|x-amz-credential|x-amz-signature|` +
+    '(?:copysource)?ssecustomerkey|secretaccesskey|sessiontoken|signatureprovided|canonicalrequest(?:bytes)?|' +
+    'token(?:-\\d+)?)$',
+  'i',
 );
-const CREDENTIAL_LINES = new RegExp(CREDENTIAL_LINE.source, 'gim');
+/** Whether `text` is a credential's name, as a key, a list item or a table cell holds it: spaces and a colon aside. */
+const isCredentialName = (text: string): boolean =>
+  CREDENTIAL_NAME.test(text.trim().replace(/:$/, ''));
+/** A credential header line inside raw request or response text. */
+const CREDENTIAL_LINES = new RegExp(
+  `^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|${PRIVATE_HEADERS}):[^\\r\\n]*`,
+  'gim',
+);
+/**
+ * A session token or SSE-C key after its header or query name anywhere in a text: `name: value`, `name=value` (also
+ * percent-encoded) or JSON's `"name":"value"`.
+ */
+const NAMED_SECRET = new RegExp(
+  `((?:${PRIVATE_HEADERS})["']?\\s*(?::|=|%3D)\\s*["']?)[^\\s&"'<>\\\\,;]+`,
+  'gi',
+);
+/** A SigV4 signature: an `Authorization` value's `Signature=`, a presigned URL's `X-Amz-Signature=`, also percent-encoded. */
+const SIGNATURE = /(Signature(?:=|%3D))[0-9A-Fa-f]{16,}/gi;
 const REDACTED = '[redacted]';
-/** How far down a `cause` chain, and into plain data, to look. */
-const MAX_DEPTH = 6;
+/** How deep into errors and plain data the copy goes; anything below is dropped. */
+const MAX_DEPTH = 10;
 
 const isPlain = (value: object): boolean => {
   const proto: unknown = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null || Array.isArray(value);
+  return proto === Object.prototype || proto === null;
 };
 
-/** Redact credential values in plain data, in place. Class instances (live objects) are left alone. */
-function redact(node: object, seen: WeakSet<object>, depth: number): void {
-  if (seen.has(node) || depth > MAX_DEPTH) return;
-  seen.add(node);
-  if (Array.isArray(node)) {
-    // A flat list of header names and values.
-    for (let i = 0; i + 1 < node.length; i++) {
-      const item: unknown = node[i];
-      if (typeof item === 'string' && CREDENTIAL_NAME.test(item)) node[i + 1] = REDACTED;
-    }
-  }
-  for (const key of Reflect.ownKeys(node)) {
-    try {
-      const record = node as Record<string | symbol, unknown>;
-      const value = record[key];
-      if (typeof key === 'string' && CREDENTIAL_NAME.test(key) && value != null) {
-        record[key] = REDACTED;
-      } else if (typeof value === 'string' && CREDENTIAL_LINE.test(value)) {
-        record[key] = value.replace(CREDENTIAL_LINES, `$1: ${REDACTED}`);
-      } else if (typeof value === 'object' && value !== null && isPlain(value)) {
-        redact(value, seen, depth + 1);
-      }
-    } catch {
-      // a getter that throws, or a property that is read-only
-    }
+const isError = (value: object): boolean => value instanceof Error || types.isNativeError(value);
+
+/**
+ * `text` with every credential it shows replaced. A text the patterns cannot finish matching (one of several MiB that
+ * exhausts the regular expression engine's stack) is replaced whole, so a hostile body neither leaks nor changes the
+ * error the driver throws.
+ */
+function redactText(text: string): string {
+  try {
+    return text
+      .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
+      .replace(NAMED_SECRET, `$1${REDACTED}`)
+      .replace(SIGNATURE, `$1${REDACTED}`);
+  } catch {
+    return REDACTED;
   }
 }
 
-/** A copy of `err` without the transport properties, its `cause` chain copied the same way. */
-function copyOf(err: object, depth: number): object {
-  const copy = Object.create(Object.getPrototypeOf(err) as object | null) as Record<
-    string,
-    unknown
-  >;
-  for (const key of Reflect.ownKeys(err)) {
-    if (typeof key === 'string' && TRANSPORT.has(key)) continue;
-    const descriptor = Object.getOwnPropertyDescriptor(err, key);
-    if (descriptor === undefined) continue;
-    if (key === 'cause' && 'value' in descriptor) {
-      const cause: unknown = descriptor.value;
-      if (typeof cause === 'object' && cause !== null && depth < MAX_DEPTH) {
-        descriptor.value = copyOf(cause, depth + 1);
-      }
+/** The copies made so far, and whether any differs from its original. */
+interface Copying {
+  copies: WeakMap<object, unknown>;
+  changed: boolean;
+}
+
+/** Marker for a value the copy leaves out. */
+const OMIT = Symbol('omit');
+
+/** An array index as an own key spells it. */
+const INDEX = /^(?:0|[1-9]\d*)$/;
+
+/**
+ * Whether `value` has an own property its copy leaves out: any key but an index and `length` on an array, any key at
+ * all on a map or a set.
+ */
+function hasNamedKeys(value: object): boolean {
+  if (!Array.isArray(value)) return Reflect.ownKeys(value).length > 0;
+  return Reflect.ownKeys(value).some(
+    (key) =>
+      key !== 'length' &&
+      !(typeof key === 'string' && INDEX.test(key) && Number(key) < 2 ** 32 - 1),
+  );
+}
+
+/** Define `key` on `copy` as a plain data property. */
+function define(copy: object, key: string | symbol, value: unknown, enumerable: boolean): void {
+  Object.defineProperty(copy, key, { value, writable: true, configurable: true, enumerable });
+}
+
+/** A credential-free copy of `value`: plain data and errors only, `OMIT` for anything else. */
+function copyOf(value: unknown, ctx: Copying, depth: number): unknown {
+  if (typeof value === 'string') {
+    const clean = redactText(value);
+    if (clean !== value) ctx.changed = true;
+    return clean;
+  }
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    ctx.changed = true;
+    return OMIT;
+  }
+  if (typeof value !== 'object' || value === null) return value;
+  if (ctx.copies.has(value)) return ctx.copies.get(value);
+  if (depth > MAX_DEPTH) {
+    ctx.changed = true;
+    return OMIT;
+  }
+  if (Array.isArray(value)) return copyList(value as unknown[], ctx, depth);
+  if (value instanceof Map) return copyMap(value as Map<unknown, unknown>, ctx, depth);
+  if (value instanceof Set) return copySet(value as Set<unknown>, ctx, depth);
+  return copyRecord(value, ctx, depth);
+}
+
+/** A copy of an array. A hole or a named property is left out. */
+function copyList(value: unknown[], ctx: Copying, depth: number): unknown[] {
+  const list: unknown[] = [];
+  ctx.copies.set(value, list);
+  if (hasNamedKeys(value)) ctx.changed = true;
+  let hidden = false;
+  for (const item of value) {
+    // A flat list of header names and values: the value after a credential name is one.
+    if (hidden && item != null) {
+      list.push(REDACTED);
+      if (item !== REDACTED) ctx.changed = true;
+    } else {
+      const kept = copyOf(item, ctx, depth + 1);
+      list.push(kept === OMIT ? undefined : kept);
     }
-    if (key === 'stack') {
-      // Read through the original: the stack may be an accessor bound to the error itself.
-      Object.defineProperty(copy, key, {
-        value: (err as { stack?: unknown }).stack,
-        writable: true,
-        configurable: true,
-        enumerable: false,
-      });
+    hidden = typeof item === 'string' && isCredentialName(item);
+  }
+  return list;
+}
+
+/** A copy of a map: the value under a credential name is redacted. A named property is left out. */
+function copyMap(value: Map<unknown, unknown>, ctx: Copying, depth: number): Map<unknown, unknown> {
+  const map = new Map<unknown, unknown>();
+  ctx.copies.set(value, map);
+  if (hasNamedKeys(value)) ctx.changed = true;
+  for (const [k, v] of value) {
+    const key = copyOf(k, ctx, depth + 1);
+    if (key === OMIT) continue;
+    if (typeof k === 'string' && isCredentialName(k) && v != null) {
+      map.set(key, REDACTED);
+      if (v !== REDACTED) ctx.changed = true;
       continue;
     }
-    Object.defineProperty(copy, key, descriptor);
+    const kept = copyOf(v, ctx, depth + 1);
+    if (kept !== OMIT) map.set(key, kept);
   }
+  return map;
+}
+
+/** A copy of a set. A named property is left out. */
+function copySet(value: Set<unknown>, ctx: Copying, depth: number): Set<unknown> {
+  const set = new Set<unknown>();
+  ctx.copies.set(value, set);
+  if (hasNamedKeys(value)) ctx.changed = true;
+  for (const v of value) {
+    const kept = copyOf(v, ctx, depth + 1);
+    if (kept !== OMIT) set.add(kept);
+  }
+  return set;
+}
+
+/** A copy of an error or a plain object, `OMIT` for any other object (a class instance: a stream, a socket). */
+function copyRecord(value: object, ctx: Copying, depth: number): unknown {
+  const errorLike = isError(value);
+  if (!errorLike && !isPlain(value)) {
+    ctx.changed = true;
+    return OMIT;
+  }
+  const copy: object = errorLike
+    ? (Object.setPrototypeOf(new Error(), Object.getPrototypeOf(value) as object | null) as object)
+    : (Object.create(Object.getPrototypeOf(value) as object | null) as object);
+  ctx.copies.set(value, copy);
+  if (errorLike) delete (copy as { stack?: unknown }).stack;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key === 'string' && TRANSPORT.has(key)) {
+      ctx.changed = true;
+    } else if (errorLike && key === 'stack') {
+      copyStack(value, copy, ctx, depth);
+    } else {
+      copyField(value, copy, key, ctx, depth);
+    }
+  }
+  if (errorLike) keepSlotFields(value, copy, ctx, depth);
+  redactPairs(value, copy, errorLike, ctx);
   return copy;
 }
 
-/** Whether `err`, or an error in its `cause` chain, holds a raw transport object. */
-function holdsTransport(err: object, depth: number): boolean {
-  if (Object.getOwnPropertyNames(err).some((key) => TRANSPORT.has(key))) return true;
-  const cause: unknown = (err as { cause?: unknown }).cause;
-  return typeof cause === 'object' && cause !== null && depth < MAX_DEPTH
-    ? holdsTransport(cause, depth + 1)
-    : false;
+/**
+ * Redact the value a record holds beside a credential's name: a header table's `{ th, td }` row, a `{ name, value }`
+ * pair, S3's `ArgumentName` and `ArgumentValue`. On a plain record every field but the name is redacted. On an error,
+ * whose other fields are what classification reads, only the `...Value` field beside a `...Name` one is.
+ */
+function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Copying): void {
+  const names = Reflect.ownKeys(original).filter((key): key is string => {
+    if (typeof key !== 'string') return false;
+    const held = Object.getOwnPropertyDescriptor(original, key)?.value as unknown;
+    return typeof held === 'string' && isCredentialName(held);
+  });
+  if (names.length === 0) return;
+  const values = errorLike
+    ? names
+        .filter((key) => /name$/i.test(key))
+        .map((key) => `${key.slice(0, -4)}value`.toLowerCase())
+    : undefined;
+  for (const key of Reflect.ownKeys(copy)) {
+    if (typeof key !== 'string' || names.includes(key)) continue;
+    if (values !== undefined && !values.includes(key.toLowerCase())) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(copy, key);
+    if (descriptor?.value == null || descriptor.value === REDACTED) continue;
+    // A number or a boolean is never a credential, and it is what classification reads from a record such as
+    // `$metadata` (`httpStatusCode`), which a response can pair with a request id that spells a credential name.
+    if (typeof descriptor.value !== 'string' && typeof descriptor.value !== 'object') continue;
+    define(copy, key, REDACTED, descriptor.enumerable ?? false);
+    ctx.changed = true;
+  }
 }
 
-/** `err` as it is safe to throw: a credential-free copy of an error object, any other value as it is. */
+/** Carry an error's stack over, read through the original: it may be an accessor bound to the error itself. */
+function copyStack(original: object, copy: object, ctx: Copying, depth: number): void {
+  let stack: unknown;
+  try {
+    stack = (original as { stack?: unknown }).stack;
+  } catch {
+    return;
+  }
+  const kept = copyOf(stack, ctx, depth + 1);
+  if (kept !== OMIT) define(copy, 'stack', kept, false);
+}
+
+/** Carry one own property over, as a data property: redacted under a credential name, left out when it is not data. */
+function copyField(
+  original: object,
+  copy: object,
+  key: string | symbol,
+  ctx: Copying,
+  depth: number,
+): void {
+  const descriptor = Object.getOwnPropertyDescriptor(original, key);
+  if (descriptor === undefined) return;
+  // A function or accessor is a closure over the original (a `toJSON`, an inspect hook): it is not carried over.
+  if (!('value' in descriptor)) {
+    ctx.changed = true;
+    return;
+  }
+  // A key is text too: one that quotes a credential is carried redacted.
+  const name = typeof key === 'string' ? redactText(key) : key;
+  if (name !== key) ctx.changed = true;
+  let kept: unknown;
+  if (typeof key === 'string' && isCredentialName(key) && descriptor.value != null) {
+    kept = REDACTED;
+    if (descriptor.value !== REDACTED) ctx.changed = true;
+  } else {
+    kept = copyOf(descriptor.value, ctx, depth + 1);
+    if (kept === OMIT) return;
+  }
+  Object.defineProperty(copy, name, {
+    value: kept,
+    writable: descriptor.writable ?? true,
+    configurable: true,
+    enumerable: descriptor.enumerable ?? false,
+  });
+}
+
+/**
+ * Carry over a `name`, `message` or `code` the original reads through its prototype and the copy cannot: a
+ * `DOMException`'s are getters over the instance's internal state, which throw on any other object.
+ */
+function keepSlotFields(original: object, copy: object, ctx: Copying, depth: number): void {
+  for (const key of ['name', 'message', 'code'] as const) {
+    if (Object.prototype.hasOwnProperty.call(original, key)) continue;
+    let held: unknown;
+    try {
+      held = (original as Record<string, unknown>)[key];
+    } catch {
+      continue;
+    }
+    let read: unknown = OMIT;
+    try {
+      read = (copy as Record<string, unknown>)[key];
+    } catch {
+      // the copy cannot read it
+    }
+    if (read === held) continue;
+    const kept = copyOf(held, ctx, depth + 1);
+    if (kept !== OMIT) define(copy, key, kept, false);
+  }
+}
+
+/**
+ * `err` as it is safe to throw: a credential-free deep copy of an error or plain object when it holds a transport or
+ * shows a credential, the value itself when it holds neither, and any other value (a class instance that is not an
+ * error, a primitive) as it is. The live error is never changed.
+ */
 export function scrubCredentials<T>(err: T): T {
   if (typeof err !== 'object' || err === null) return err;
-  // An error with no transport on it is the caller's or ours, and keeps its identity.
-  const safe = holdsTransport(err, 0) ? copyOf(err, 0) : err;
-  redact(safe, new WeakSet(), 0);
-  return safe as T;
+  const ctx: Copying = { copies: new WeakMap(), changed: false };
+  const copy = copyOf(err, ctx, 0);
+  return (ctx.changed && copy !== OMIT ? copy : err) as T;
 }
