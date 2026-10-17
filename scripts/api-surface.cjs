@@ -362,8 +362,8 @@ const symbolOf = (rest) => /^[^ .]+/.exec(rest)[0];
  * or one another public entry of its package now exports. Its base keys are compared under that key, so making the
  * entry internal excuses no change to the type. The other way, a referenced type that a public entry of its package now
  * exports is compared under that entry's key: exporting it adds a way to name it and removes nothing. A key is never
- * moved onto one the base already has: an internal entry's line is then the same type, already compared there, and a
- * referenced one is another type of the same name, compared as itself. Nor is a name
+ * moved onto one the base already has: under another public entry's export that is the same type, compared there; under
+ * a referenced key it is another type of the same name, so the line is compared as itself. Nor is a name
  * the snapshot tells apart by file (`<package> (referenced) <name> [<path>]`) followed at all: its base keys are
  * compared as they are, so a move of such a type reads as a removal.
  */
@@ -389,16 +389,18 @@ function comparableBase(baseEntries, now, internal) {
       continue;
     }
     const to = exporter.get(symbol);
-    const target =
-      `${pkg}${REFERENCED}${symbolOf(rest)}` in now
-        ? `${pkg}${REFERENCED}${rest}`
-        : to !== undefined
-          ? `${to} ${rest}`
-          : undefined;
+    const viaTwin = `${pkg}${REFERENCED}${symbolOf(rest)}` in now;
+    const target = viaTwin
+      ? `${pkg}${REFERENCED}${rest}`
+      : to !== undefined
+        ? `${to} ${rest}`
+        : undefined;
     if (target !== undefined && (target === k || !(target in baseEntries))) was[target] = text;
-    // A referenced type with nowhere to go, or whose new key the base has for another type of that name, is compared
-    // as itself; an internal entry's own line is left out.
-    else if (referenced) was[k] = text;
+    // A referenced type with nowhere to go is compared as itself, and so is a line whose referenced key the base
+    // already has: one snapshot never holds a type as both exported and referenced, so that key is another type of
+    // the same name. An internal entry's line that another public entry exports in the base is that same type,
+    // compared there, and the entry's own lines are out of the promise: both are left out.
+    else if (referenced || viaTwin) was[k] = text;
   }
   return was;
 }

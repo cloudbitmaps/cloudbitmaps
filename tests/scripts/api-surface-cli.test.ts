@@ -688,6 +688,37 @@ export declare function other(): void;
       expect(r.err).toContain('removed: @fx/c (referenced) Foo.a');
     });
 
+    it('compares an internal line as itself when its referenced key in the base is another type of that name', () => {
+      // The main entry exports Foo (A); the kit names A and a hidden Foo (B). The branch makes the main entry internal,
+      // points the kit at A alone and changes A to B's shape: the line for B now matches, and A's change must not hide.
+      const HIDDEN_B = 'export interface Foo { x: string }\n';
+      const KIT = (second: string): string =>
+        `import type { Foo } from './index';\nimport type { Foo as HB } from './hidden';\n` +
+        `export declare function useA(f: Foo): void;\nexport declare function useB(f: ${second}): void;\n`;
+      put(
+        'api-surface/allowed.json',
+        JSON.stringify([{ entry: '@fx/c (internal)', reason: 'ours only' }]),
+      );
+      setC(false, {
+        'index.d.ts': 'export interface Foo { x: number }\n',
+        'hidden.d.ts': HIDDEN_B,
+        'kit.d.ts': KIT('HB'),
+      });
+      commit();
+      setC(true, {
+        'index.d.ts': 'export interface Foo { x: string }\n',
+        'hidden.d.ts': HIDDEN_B,
+        'kit.d.ts': KIT('Foo'),
+      });
+      put(
+        'api-surface/allowed.json',
+        JSON.stringify([{ entry: '@fx/c (internal)', reason: 'ours only' }]),
+      );
+      const r = run(['--against', 'HEAD']);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain('removed: @fx/c Foo.x');
+    });
+
     it('compares a name it tells apart by file as it is, so making its entry internal reads as a removal', () => {
       put(
         'api-surface/allowed.json',

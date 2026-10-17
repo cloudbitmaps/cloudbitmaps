@@ -17,4 +17,6 @@ known by its name in the signatures that use it. Private members are not public 
 class is an addition even when it is abstract, though it binds a subclass. A TypeScript upgrade that changes how declarations
 print needs one `pnpm api:surface`. A type the snapshot tells apart by file (a name taken twice in one package,
 recorded with its path after the name) is not followed between its exported and `(referenced)` keys: such a move
-reads as a removal or a change, and needs a row.
+reads as a removal or a change, and needs a row. A type of a newly internal entry is followed by its name, so another
+type of the same name that another entry of the package newly exports is compared with it, which reads as a change:
+rename the collision.
