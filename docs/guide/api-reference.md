@@ -981,7 +981,7 @@ read's attempts. A call of your own is yours to retry: loop over it, and back of
 
 | Symbol | What it does |
 |---|---|
-| `DEFAULT_RETRY_POLICY` · `RetryPolicy` | the defaults (4 attempts, 50 ms base, ×2, 2 s cap, full jitter) the store's `retry` option overrides a field at a time. The retry primitive, `withRetry`, and the read-source wrapper the store builds, `RetryingStorageChunkSource`, are on `@cloudbitmaps/core`: see the [flavor-author kit](#flavor-author-kit-cloudbitmapscore) |
+| `DEFAULT_RETRY_POLICY` · `RetryPolicy` | the defaults (4 attempts, 50 ms base, ×2, 2 s cap, full jitter) the store's `retry` option overrides a field at a time. The retry primitive, `withRetry`, and the read-source wrapper the store builds, `RetryingStorageChunkSource`, are internal to the engine |
 
 No write goes through the read retry. A conditional put or compare-and-swap that lands and then loses its response
 would, replayed blindly, find its own write already there and report it as a conflict, so a fault the drivers and the
@@ -1081,7 +1081,44 @@ Every export, by entry point. This section is the completeness anchor the sync t
 names sit under that entry's heading, and a name listed under the wrong one fails it.
 
 `@cloudbitmaps/roaring` exports, by name, what an application uses: the store's verbs and their types, the errors,
-the backends' shared types, and the constants and helpers a user calls. The main entry of `@cloudbitmaps/core` is internal, outside the stability promise, and is not indexed here.
+the backends' shared types, and the constants and helpers a user calls. The main entry of `@cloudbitmaps/core` is internal, outside the stability promise, and is not indexed here; the
+names a driver author imports are under `@cloudbitmaps/core/driver-kit`.
+
+### `@cloudbitmaps/roaring` — values
+
+`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
+`destroySegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` ·
+`readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
+`excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
+`CrbmReader` · `BufferReader` ·
+`CountingMetricsSink` · `RecordingAuditSink` · `CloudRoaringError` ·
+`ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
+`CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
+`LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
+`isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
+· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError` · `isUnsupportedError`
+· `isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError`
+
+### `@cloudbitmaps/roaring` — types
+
+`CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
+`SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
+`MaterializeResult` · `MaterializeRefusal` · `Expr` · `MaterializeManyOptions` · `MaterializeManyDryRunOptions` · `MaterializeManyDryRun` · `MaterializeDryRunResult` · `MaterializeManyDryRunOutcome` · `MaterializeManyOutput` · `MaterializeManyFeed` · `MaterializeManyFeedRecord` · `MaterializeManyOutcome` · `MaterializeManyRun` · `MaterializeManyStats` · `MaterializeManyOperandStats` · `MaterializeManyOutputStats` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
+· `AndNotIntoOptions` · `IdIterator` · `IdRange` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
+· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
+· `CrbmStorageChunkSourceOptions` · `PinOptions` · `Lease` · `LeaseEntry` ·
+`MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
+`ExportedSegment` · `ExportFailure` · `ExportSkipped` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
+`StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
+· `TailRead` · `StorageDeleteOptions` · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
+· `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `KnownGeneration` · `GenerationMetadata`
+· `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
+`InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
+`SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
+`RetryPolicy` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` ·
+`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `Clock` ·
+`Rng` · `Entropy` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
+`CodecInterface` · `CodecBitmap` · `EncodedChunk` · `Token`
 
 ### `@cloudbitmaps/core/driver-kit`
 
