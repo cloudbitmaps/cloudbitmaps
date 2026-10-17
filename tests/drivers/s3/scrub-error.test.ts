@@ -465,6 +465,9 @@ describe('S3 scrubCredentials', () => {
       'SignatureProvided',
       'CanonicalRequest',
       'CanonicalRequestBytes',
+      'Token-0',
+      'Token-1',
+      'Token',
     ])('redacts the value under %s', (name) => {
       const err = sdkError({ detail: { [name]: VALUE, keep: 'visible' } });
       const out = scrubCredentials(err);
@@ -477,6 +480,8 @@ describe('S3 scrubCredentials', () => {
       'StringToSign',
       'x-amz-date',
       'RequestId',
+      'ContinuationToken',
+      'NextContinuationToken',
     ])('keeps the value under %s', (name) => {
       const err = sdkError({ detail: { [name]: 'visible' } });
       expect(scrubCredentials(err)['detail']).toEqual({ [name]: 'visible' });
@@ -490,6 +495,19 @@ describe('S3 scrubCredentials', () => {
       expect(out['detail']).toEqual({
         rawHeaders: ['host', 'h', 'X-Amz-Security-Token', '[redacted]', 'accept', '*/*'],
       });
+    });
+
+    it('redacts the session token S3 quotes when it refuses one', () => {
+      for (const code of ['ExpiredToken', 'InvalidToken']) {
+        const err = sdkError({ Code: code, 'Token-0': TOKEN, RequestId: 'r1' });
+        const out = scrubCredentials(err);
+        expect(out['Token-0']).toBe('[redacted]');
+        expect(out['Code']).toBe(code);
+        expect(leaks(out)).toEqual([]);
+        const agg = scrubCredentials(new AggregateError([new Error('first'), err], 'many'));
+        expect(leaks(agg)).toEqual([]);
+        expect((agg.errors[1] as Sdk)['Token-0']).toBe('[redacted]');
+      }
     });
 
     it('redacts a credential header held under a symbol key', () => {

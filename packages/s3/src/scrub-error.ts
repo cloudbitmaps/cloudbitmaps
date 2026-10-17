@@ -17,11 +17,12 @@
  * closure over the original) and no class instance other than an error. Errors are copied wherever they sit: the `cause`
  * chain, an `AggregateError`'s `errors`, any array or field. A table of copies keeps a cycle a cycle, and anything
  * nested deeper than `MAX_DEPTH` is dropped rather than kept raw. The value under a credential key is replaced by
- * `[redacted]`: a credential header's, an SSE-C key's, an AWS credential's fields, and the signature and canonical
- * request S3 quotes (the access key id it names is kept: it names a key and signs nothing). In the copy's text, a
- * credential header line, a SigV4 signature (`Signature=` in an `Authorization` value, `X-Amz-Signature=` in a URL) and
- * a session token or SSE-C key written after its header name are redacted. A credential in any other form is not
- * recognised, and a text too large for these patterns is replaced whole.
+ * `[redacted]`: a credential header's, an SSE-C key's, an AWS credential's fields, the signature and canonical request
+ * S3 quotes, and the session token it quotes in `Token-0` when it refuses one (the access key id it names is kept: it
+ * names a key and signs nothing). In the copy's text, a credential header line, a SigV4 signature (`Signature=` in an
+ * `Authorization` value, `X-Amz-Signature=` in a URL) and a session token or SSE-C key written after its header name
+ * are redacted. A credential in any other form is not recognised, and a text too large for these patterns is replaced
+ * whole.
  */
 
 import { types } from 'node:util';
@@ -42,11 +43,14 @@ const PRIVATE_HEADERS =
   'x-amz-security-token|x-amz-s3session-token|x-amz-(?:copy-source-)?server-side-encryption-customer-key';
 /**
  * Header and field names whose value is a credential: the credential headers, the SDK's SSE-C members, an AWS
- * credential's fields, and what S3 quotes of a request whose signature it refused.
+ * credential's fields, what S3 quotes of a request whose signature it refused, and the session token it quotes as
+ * `Token-0` when it refuses the token (`ExpiredToken`, `InvalidToken`). The whole name must match: `ContinuationToken`
+ * does not.
  */
 const CREDENTIAL_NAME = new RegExp(
   `^(?:(?:proxy-)?authorization|cookie|set-cookie|x-api-key|${PRIVATE_HEADERS}|x-amz-credential|x-amz-signature|` +
-    '(?:copysource)?ssecustomerkey|secretaccesskey|sessiontoken|signatureprovided|canonicalrequest(?:bytes)?)$',
+    '(?:copysource)?ssecustomerkey|secretaccesskey|sessiontoken|signatureprovided|canonicalrequest(?:bytes)?|' +
+    'token(?:-\\d+)?)$',
   'i',
 );
 /** A credential header line inside raw request or response text. */

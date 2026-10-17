@@ -7,8 +7,9 @@ import {
   ValidationError,
   WriteConflictError,
 } from '@cloudbitmaps/core/driver-kit';
-import { S3Client, S3ServiceException } from '@aws-sdk/client-s3';
+import { GetObjectCommand, S3Client, S3ServiceException } from '@aws-sdk/client-s3';
 import { S3RegistryDriver, S3RegistryStore } from '@/s3/registry';
+import { scrubCredentials } from '@/s3/scrub-error';
 import { S3StorageDriver } from '@/s3/storage';
 
 /**
@@ -109,7 +110,9 @@ type Body =
   /** A proxy's HTML page that quotes the `Authorization` value and the token inside a line. */
   | 'proxy'
   /** A JSON body that quotes every request header: the SDK cannot parse it, and keeps it as text. */
-  | 'json';
+  | 'json'
+  /** S3's answer to a session token it refuses (`ExpiredToken`, `InvalidToken`), which quotes it in `Token-0`. */
+  | 'token';
 
 type Client = 'session' | 'static';
 interface Case {
@@ -168,6 +171,28 @@ const echo = { status: 403, code: 'SignatureDoesNotMatch', body: 'echo' as const
 const throttled = { status: 503, cause: true, expected: TransientError };
 const proxy = { status: 502, body: 'proxy' as const, cause: true, expected: TransientError };
 const unparsed = { status: 400, body: 'json' as const, expected: Error };
+
+/** Every call that sends a body-carrying request, for the answers each of them can get. */
+const calls: [string, (c: S3Client) => Promise<unknown>][] = [
+  ['storage read', read],
+  ['storage tail', tail],
+  ['storage write', put],
+  ['storage multipart write', putParts],
+  ['storage delete', del],
+  ['storage delete under a version', delIf],
+  ['storage list', list],
+  ['registry read', get],
+  ['registry create', create],
+  ['registry compare-and-swap write', cas],
+  ['registry delete', rowDelete],
+  ['registry listKeys', listKeys],
+];
+const quoting: Omit<Case, 'name' | 'run'>[] = [
+  { status: 400, code: 'ExpiredToken', body: 'token', expected: SDK },
+  { status: 400, code: 'InvalidToken', body: 'token', expected: SDK },
+];
+const answerName = (answer: Omit<Case, 'name' | 'run'>): string =>
+  `${String(answer.code)} quoting the token`;
 
 const cases: Case[] = [
   { name: 'storage read, 403', ...refused, run: read },
@@ -229,6 +254,9 @@ const cases: Case[] = [
   { name: 'registry delete, 412', status: 412, run: rowDelete, expected: WriteConflictError },
   { name: 'registry listKeys, 403 quoting the request', ...echo, run: listKeys },
   { name: 'registry listKeys, NoSuchBucket', ...missing, run: listKeys },
+  ...calls.flatMap(([call, run]) =>
+    quoting.map((answer) => ({ name: `${call}, ${answerName(answer)}`, ...answer, run })),
+  ),
 ];
 
 /** The canonical request S3 computes for `req`, as a `SignatureDoesNotMatch` body quotes it. */
@@ -263,6 +291,13 @@ function bodyOf(req: IncomingMessage, body: Body, code: string): string {
     );
   }
   if (body === 'json') return JSON.stringify({ message: 'bad request', headers: req.headers });
+  if (body === 'token') {
+    return (
+      `<Error><Code>${code}</Code><Message>The provided token is not valid.</Message>` +
+      (typeof token === 'string' ? `<Token-0>${token}</Token-0>` : '') +
+      '<RequestId>r</RequestId></Error>'
+    );
+  }
   return `<Error><Code>${code}</Code><Message>refused</Message><RequestId>r</RequestId></Error>`;
 }
 
@@ -339,6 +374,20 @@ describe('S3: no credential is reachable from an error the driver throws', LIMIT
         c.destroy();
       }
     });
+  });
+
+  it('redacts the token S3 quotes from an SDK error inside an AggregateError', async () => {
+    answer = { status: 400, head: 400, code: 'ExpiredToken', body: 'token' };
+    const c = client('session');
+    try {
+      const raw = await outcome(() => c.send(new GetObjectCommand({ Bucket: 'b', Key: 'k' })));
+      expect((raw as Record<string, unknown>)['Token-0']).toBe(TOKEN);
+      const out = scrubCredentials(new AggregateError([new Error('first'), raw], 'many'));
+      expect((out.errors[1] as Record<string, unknown>)['Token-0']).toBe('[redacted]');
+      for (const text of reachableStrings(out)) expect(secretsIn(text)).toEqual([]);
+    } finally {
+      c.destroy();
+    }
   });
 
   it('keeps what classification reads on the error the driver passes on', async () => {
