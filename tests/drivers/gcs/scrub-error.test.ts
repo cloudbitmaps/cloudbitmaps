@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { ApiError } from '@google-cloud/storage';
 import { TransientError, ValidationError, isTransientError } from '@cloudbitmaps/core/driver-kit';
 import { scrubCredentials } from '@/gcs/scrub-error';
+import { isMissingBucket, isTransient } from '@/gcs/gcs-errors';
 import { ReadTimedOut } from '@/gcs/read-timeout';
 
 // Every credential-looking value is built at run time, so the leak scan never reads one in this file.
@@ -488,6 +489,108 @@ describe('GCS scrubCredentials', () => {
     const err: Record<string, unknown> = { note: 'fine', code: 'X' };
     err['self'] = err;
     expect(scrubCredentials(err)).toBe(err);
+  });
+
+  describe('a credential name beside its value in a record', () => {
+    const ENC = ['x-goog', 'encryption', 'key'].join('-');
+    /** A page that lists the request headers as a table, as a parser would hand it on. */
+    const table = (rows: [string, unknown][]): Record<string, unknown> => ({
+      table: { tr: rows.map(([th, td]) => ({ th, td })) },
+    });
+
+    it('redacts the value cell of a header table row, and keeps the other rows', () => {
+      const err = apiError(502, {
+        body: table([
+          ['host', 'h'],
+          [AUTHORIZATION, BEARER],
+          [` ${ENC}: `, { '#text': KEY, class: 'v' }],
+        ]),
+      });
+      const out = scrubCredentials(err);
+      expect(out['body']).toEqual(
+        table([
+          ['host', 'h'],
+          [AUTHORIZATION, '[redacted]'],
+          [` ${ENC}: `, '[redacted]'],
+        ]),
+      );
+      expect(leaks(out)).toEqual([]);
+      expect(leaks(err)).not.toEqual([]);
+    });
+
+    it('redacts the value of a name and value pair', () => {
+      const err = apiError(503, {
+        headers: [
+          { name: 'Cookie', value: VALUE },
+          { name: ENC, value: KEY },
+          { name: 'x-goog-generation', value: '5' },
+        ],
+      });
+      expect(scrubCredentials(err)['headers']).toEqual([
+        { name: 'Cookie', value: '[redacted]' },
+        { name: ENC, value: '[redacted]' },
+        { name: 'x-goog-generation', value: '5' },
+      ]);
+    });
+
+    it('keeps a Google error item that names the header it refused, and what classification reads of it', () => {
+      const item = {
+        message: 'Invalid Credentials',
+        domain: 'global',
+        reason: 'authError',
+        locationType: 'header',
+        location: AUTHORIZATION,
+      };
+      const out = scrubCredentials(apiError(401, { errors: [item] }));
+      expect(out.errors).toEqual([item]);
+      const missing = {
+        message: 'The specified bucket does not exist.',
+        reason: 'notFound',
+        location: 'token',
+      };
+      const notFound = scrubCredentials(apiError(404, { message: 'x', errors: [missing] }));
+      expect(notFound.errors).toEqual([missing]);
+      expect(isMissingBucket(notFound)).toBe(true);
+    });
+
+    it('keeps the status of a response whose text spells a credential name', () => {
+      const err = Object.assign(new Error('x'), { response: { status: 503, statusText: 'token' } });
+      expect(isTransient(err)).toBe(true);
+      const out = scrubCredentials(Object.assign(err, { request: liveRequest() }));
+      expect(out.response).toEqual({ status: 503, statusText: 'token' });
+      expect(isTransient(out)).toBe(true);
+    });
+
+    it('keeps the code and message of an error whose code spells a credential name', () => {
+      const err = apiError(503, { code: 'token', message: 'cookie' });
+      const out = scrubCredentials(err);
+      expect(out.code).toBe('token');
+      expect(out.message).toBe('cookie');
+    });
+
+    it.each([ENC, AUTHORIZATION, 'refresh_token'])(
+      'redacts the ...Value beside a ...Name of %s on an error, and keeps what classification reads',
+      (name) => {
+        const err = apiError(400, { HeaderName: name, HeaderValue: VALUE, reason: 'invalid' });
+        const out = scrubCredentials(err);
+        expect(out['HeaderValue']).toBe('[redacted]');
+        expect(out['HeaderName']).toBe(name);
+        expect(out.code).toBe(400);
+        expect(out.message).toBe('backend');
+        expect(out['reason']).toBe('invalid');
+      },
+    );
+
+    it('keeps a value beside a name that is not a credential', () => {
+      const err = apiError(503, { HeaderName: 'x-goog-generation', HeaderValue: '5' });
+      expect(scrubCredentials(err)['HeaderValue']).toBe('5');
+    });
+
+    it('keeps the fields of a record that names no credential', () => {
+      const err = new Error('x') as Error & Record<string, unknown>;
+      Object.assign(err, { body: table([['host', 'h']]), meta: { name: 'request', value: 'v' } });
+      expect(scrubCredentials(err)).toBe(err);
+    });
   });
 
   describe('credential text', () => {

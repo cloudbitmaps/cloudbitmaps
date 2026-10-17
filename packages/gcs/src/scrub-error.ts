@@ -21,8 +21,10 @@
  * The value under a credential's name is replaced by `[redacted]`: a credential header's (`authorization`, the
  * encryption key's `x-goog-encryption-key`), a signed URL's signature and credential, what a service quotes of a request
  * whose signature it refused, an OAuth token or client secret, a service account's private key (its `client_email` and
- * key id are kept: they name the account and sign nothing); and so is the value after one in a flat list or under one
- * in a map. In the copy's text, these are redacted: a credential header line; an `Authorization` value, an encryption
+ * key id are kept: they name the account and sign nothing); and so is the value after one in a flat list, under one
+ * in a map, or beside one in a record (a `{ name, value }` pair, a `{ th, td }` row), except a number, a boolean and
+ * the fields a Google error item describes an error with (`message`, `reason`, `location`), which classification reads.
+ * In the copy's text, these are redacted: a credential header line; an `Authorization` value, an encryption
  * key, an API key, an OAuth token or client secret and a signed URL's signature or credential after its name; a bearer
  * token after its scheme; a Google access token (`ya29.`) or a JWT on its own; a V2 signed URL's `Signature=`; a PEM
  * private key's body; the text of an element named for a credential (`<CanonicalRequest>`); and the text of the cell
@@ -304,7 +306,53 @@ function copyRecord(value: object, ctx: Copying, depth: number): unknown {
     }
   }
   if (errorLike) keepSlotFields(value, copy, ctx, depth);
+  redactPairs(value, copy, errorLike, ctx);
   return copy;
+}
+
+/**
+ * The fields a Google error item describes an error with (`{ message, domain, reason, location, locationType }`). They
+ * are not a name and a value: a `401` names the header it refused in `location` (`Authorization`) beside the reason and
+ * message classification reads. They are never taken as a credential's name, and never redacted beside one; the text
+ * rules still apply to them.
+ */
+const DESCRIBING = new Set([
+  'message',
+  'domain',
+  'reason',
+  'location',
+  'locationType',
+  'extendedHelp',
+]);
+
+/**
+ * Redact the value a record holds beside a credential's name: a `{ name, value }` pair, a table row parsed to
+ * `{ th, td }`. On a plain record every field but the name is redacted. On an error, whose other fields are what
+ * classification reads, only the `...Value` field beside a `...Name` one is. A number or a boolean is never a
+ * credential, and is kept.
+ */
+function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Copying): void {
+  const names = Reflect.ownKeys(original).filter((key): key is string => {
+    if (typeof key !== 'string' || DESCRIBING.has(key)) return false;
+    const held = Object.getOwnPropertyDescriptor(original, key)?.value as unknown;
+    return typeof held === 'string' && isCredentialName(held);
+  });
+  if (names.length === 0) return;
+  const values = errorLike
+    ? names
+        .filter((key) => /name$/i.test(key))
+        .map((key) => `${key.slice(0, -4)}value`.toLowerCase())
+    : undefined;
+  for (const key of Reflect.ownKeys(copy)) {
+    if (typeof key !== 'string' || names.includes(key) || DESCRIBING.has(key)) continue;
+    if (values !== undefined && !values.includes(key.toLowerCase())) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(copy, key);
+    if (descriptor?.value == null || descriptor.value === REDACTED) continue;
+    // What classification reads of a record is a number or a boolean (a response's `status`), never a credential.
+    if (typeof descriptor.value !== 'string' && typeof descriptor.value !== 'object') continue;
+    define(copy, key, REDACTED, descriptor.enumerable ?? false);
+    ctx.changed = true;
+  }
 }
 
 /** Whether `value` is a response as a copy keeps it: a plain record of the response's numbers and text alone. */
