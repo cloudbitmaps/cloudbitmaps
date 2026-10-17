@@ -8,7 +8,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { BoundedLru, SegmentEngine, ValidationError } from '@cloudbitmaps/core';
-import type { CodecBitmap, SegmentRef, StorageChunkSource } from '@cloudbitmaps/core';
+import type { CodecBitmap, SegmentRef } from '@cloudbitmaps/core';
+import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { joinId } from '@/core/bit-route';
 import { REMEMBERED_INVALIDATIONS } from '@/core/invalidation-scope';

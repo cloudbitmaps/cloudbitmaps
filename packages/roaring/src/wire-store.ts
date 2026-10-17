@@ -20,18 +20,14 @@ import {
   ValidationError,
   isStorageBackend,
 } from '@cloudbitmaps/core';
+import type { Clock, IMetricsSink, RetryPolicy, RetryingOptions, Rng } from '@cloudbitmaps/core';
 import type {
-  Clock,
-  IMetricsSink,
   IKeystore,
   IRegistryDriver,
   IStorageDriver,
-  RetryPolicy,
-  RetryingOptions,
-  Rng,
   StorageBackend,
   StorageChunkSource,
-} from '@cloudbitmaps/core';
+} from '@cloudbitmaps/core/driver-kit';
 
 /** The slice of a store's options the wiring reads; `CloudRoaringOptions` satisfies it. */
 interface StoreWiring {
