@@ -55,6 +55,26 @@ const CREDENTIAL_LINES = new RegExp(
   'gim',
 );
 /**
+ * An `Authorization` value after its name anywhere in a text, its scheme with it: `proxy-authorization: Basic <value>`,
+ * `authorization=SharedKey%20<value>`, JSON's `"authorization":"Bearer <token>"` (also escaped once more).
+ */
+const AUTHORIZATION_VALUE =
+  /((?:proxy-)?authorization\\?["']?\s*(?::|=|%3D)\s*\\?["']?)(?:[A-Za-z][\w-]*(?:\s+|%20|\+))?[^\s&"'<>\\,;]+/gi;
+/**
+ * A cookie header's value after its name anywhere in a text, every cookie in it: `cookie: a=1; b=2`, JSON's
+ * `"cookie":"a=1; b=2"`. The name starts a word (`fortunecookie: 7` is not one), and the value runs to the end of the
+ * line, a quote or a tag, since a cookie's value may itself hold `)` or `.`.
+ */
+const COOKIE_VALUE = /(?<![\w-])((?:set-)?cookie\\?["']?\s*:\s*\\?["']?)[^\r\n"'<>\\]+/gi;
+/**
+ * A customer-provided key or an API key after its header name anywhere in a text: `name: value`, `name=value` (also
+ * percent-encoded) or JSON's `"name":"value"` (also escaped once more).
+ */
+const NAMED_SECRET = new RegExp(
+  `((?:${KEY_HEADERS}|x-api-key)\\\\?["']?\\s*(?::|=|%3D)\\s*\\\\?["']?)[^\\s&"'<>\\\\,;]+`,
+  'gi',
+);
+/**
  * A SAS signature in a URL, a query string or text that quotes one: after `?`, `&`, `;`, a space, a quote, at the start,
  * or percent-encoded (`%26`, `%3F`) or JSON-escaped (`\u0026`); its `=` may be `%3D` and its value quoted.
  */
@@ -84,6 +104,9 @@ function redactText(text: string): string {
   try {
     return text
       .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
+      .replace(AUTHORIZATION_VALUE, `$1${REDACTED}`)
+      .replace(COOKIE_VALUE, `$1${REDACTED}`)
+      .replace(NAMED_SECRET, `$1${REDACTED}`)
       .replace(SAS_SIGNATURE, `$1${REDACTED}`)
       .replace(AUTH_SCHEME, `$1$2${REDACTED}`)
       .replace(MAC_ECHO, `$1${REDACTED}`);

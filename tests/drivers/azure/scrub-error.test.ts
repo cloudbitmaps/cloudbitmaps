@@ -493,8 +493,51 @@ describe('scrubCredentials (Azure)', () => {
         CPK,
       ],
     ];
+    const named: [string, string, string][] = [
+      ['a cookie inside a line', 'refused; cookie: sid=COOKIEONE; pref=COOKIETWO (sent)', 'COOKIE'],
+      ['a cookie in JSON', '{"cookie":"sid=COOKIEONE; pref=COOKIETWO"}', 'COOKIE'],
+      [
+        'a cookie in JSON inside JSON',
+        JSON.stringify(JSON.stringify({ cookie: 'sid=COOKIEONE' })),
+        'COOKIE',
+      ],
+      [
+        'a customer-provided key inside a line',
+        `headers: x-ms-encryption-key: ${CPK} host: h`,
+        CPK,
+      ],
+      ['a customer-provided key in JSON', JSON.stringify({ 'x-ms-encryption-key': CPK }), CPK],
+      [
+        'a customer-provided key in JSON inside JSON',
+        JSON.stringify(JSON.stringify({ 'x-ms-source-encryption-key': CPK })),
+        CPK,
+      ],
+      [
+        'a customer-provided key after =',
+        `x-ms-encryption-key=${encodeURIComponent(CPK)}`,
+        'c3RhbmQt',
+      ],
+      ['a customer-provided key after an encoded =', `x-ms-encryption-key%3D${CPK}`, CPK],
+      ['an API key inside a line', 'got x-api-key: APIKEYVALUE0123 from you', 'APIKEYVALUE'],
+      [
+        'a Basic proxy credential inside a line',
+        'refused: proxy-authorization: Basic dXNlcjpwYXNzd29yZA== (bad)',
+        'dXNlcjpwYXNzd29yZA',
+      ],
+      [
+        'an Authorization value in JSON',
+        '{"authorization":"Basic dXNlcjpwYXNzd29yZA=="}',
+        'dXNlcjpw',
+      ],
+    ];
     const lookAlikes = [
       'Bearer token authentication is not permitted for non-TLS protected (non-https) URLs.',
+      'Server failed to authenticate the request. Make sure the value of Authorization header is formed correctly.',
+      'fortunecookie: 7',
+      'The cookie was rejected',
+      'Set-Cookie header is not allowed',
+      'x-ms-encryption-key-sha256: HASHVALUE',
+      'x-ms-encryption-scope: scope',
       'Signature did not match. String to sign used was r',
       'signature=abc design',
       'x_sig=keep',
@@ -514,6 +557,24 @@ describe('scrubCredentials (Azure)', () => {
       expect(out).toBeInstanceOf(RestError);
       expect(out.statusCode).toBe(503);
       expect(out.code).toBe('ServerBusy');
+    });
+
+    it.each(named)('redacts %s', (_name, text, secret) => {
+      const out = through(text);
+      expect(out).not.toContain(secret);
+      expect(out).toContain('[redacted]');
+    });
+
+    it('keeps the text around a cookie, a key and a proxy credential inside a line', () => {
+      expect(through('refused; cookie: sid=COOKIEONE; pref=COOKIETWO (sent)')).toBe(
+        'refused; cookie: [redacted]',
+      );
+      expect(through(`a x-ms-encryption-key: ${CPK} b`)).toBe(
+        'a x-ms-encryption-key: [redacted] b',
+      );
+      expect(through('a proxy-authorization: Basic dXNlcjpw b')).toBe(
+        'a proxy-authorization: [redacted] b',
+      );
     });
 
     it.each(forms)('redacts %s', (_name, text, secret) => {
