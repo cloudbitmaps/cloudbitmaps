@@ -4,7 +4,12 @@ import { rollbackSegment } from '@/core/rollback';
 import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring } from '@/index';
 import { brandAsBackend } from '@/core/ports';
-import type { GenKey, IRegistryDriver, IStorageDriver, StorageDeleteOptions } from '@/index';
+import type {
+  GenKey,
+  IRegistryDriver,
+  IStorageDriver,
+  StorageDeleteOptions,
+} from '@cloudbitmaps/core/driver-kit';
 import { openGenerationReader } from '@/core/crbm-open';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';

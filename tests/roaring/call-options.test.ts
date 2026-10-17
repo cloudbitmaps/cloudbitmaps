@@ -1,4 +1,5 @@
-import { CloudRoaring, MIN_EXPIRES_AT_MS, MemoryStorage, ValidationError } from '@/index';
+import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import type { ExportSink, Segment } from '@/index';
 
 /**

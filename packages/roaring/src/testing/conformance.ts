@@ -26,7 +26,7 @@ import type {
   RegistryRecord,
   RegistrySummary,
   SegmentRef,
-} from '@cloudbitmaps/core';
+} from '@cloudbitmaps/core/driver-kit';
 import {
   IntegrityError,
   NotFoundError,

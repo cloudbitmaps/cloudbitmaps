@@ -4,13 +4,9 @@ vi.mock('@/core/crbm/reader', async (original) =>
 );
 
 import { SafeBitmap } from '@/roaring-codec';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  ValidationError,
-  type Segment,
-  type StorageChunkSource,
-} from '@/index';
+import { CloudRoaring, ValidationError, type Segment } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
 import {
   AWS_US_EAST_1_ONDEMAND,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,

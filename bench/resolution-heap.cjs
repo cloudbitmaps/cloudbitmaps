@@ -44,7 +44,9 @@ async function settle() {
 }
 
 async function measure(lib, [shape, encrypted, metadata]) {
-  const { CloudRoaring, MemoryStorage, CrbmStorageChunkSource, InProcessKeystore } = lib;
+  const { CloudRoaring, MemoryStorage, InProcessKeystore } = lib;
+  // The `.crbm` source is on core's internal main entry, not on the flavor.
+  const { CrbmStorageChunkSource } = require('@cloudbitmaps/core');
   const keystore = encrypted
     ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
     : undefined;

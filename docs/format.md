@@ -538,8 +538,8 @@ object* carries the fingerprint, or the footer CRC that is half of it, beside th
   numbered below a full ledger's bound (a ledger of 128 entries or more; its bound is its least recently current entry
   that no lease names).
 - **A pin** records the generation, the driver's version of the object and the fingerprint. A pinned read checks the
-  object against the fingerprint with one footer-sized read ([`sameObject`](guide/api-reference.md)): another size is
-  another object, and at the same size the footer CRC decides.
+  object against the fingerprint with one footer-sized read of the object (its size and its footer's CRC): another size
+  is another object, and at the same size the footer CRC decides.
 - **`pointerId`** ([section 10](#10-the-registry-row-schema-5)) is the identity of the row's *resolution*: the token of
   the last write that changed what a read resolves through. A reader keys what it caches on a generation with it, so a
   lease or policy write leaves a warm cache standing while any write that changes the resolution never does.

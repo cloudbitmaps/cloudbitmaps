@@ -1,4 +1,5 @@
-import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource, UnsupportedError } from '@/index';
+import { MemoryStorage, CloudRoaring, UnsupportedError } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { runConsistencyCheck } from '@cloudbitmaps/core';

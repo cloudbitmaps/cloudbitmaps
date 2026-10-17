@@ -4,12 +4,8 @@ vi.mock('@/core/crbm/reader', async (original) =>
 );
 
 import { writeCrbmGeneration } from '../helpers/crbm-write';
-import {
-  CloudRoaring,
-  CountingMetricsSink,
-  CrbmStorageChunkSource,
-  type MetricsSnapshot,
-} from '@/index';
+import { CloudRoaring, CountingMetricsSink, type MetricsSnapshot } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import {
   AWS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,

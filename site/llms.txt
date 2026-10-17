@@ -31,7 +31,8 @@ and `count()` on a published segment does zero payload reads.
 
 Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3` (or `npm i` the
 same two; allow `roaring`'s install script first, as above). `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the storage interfaces) is a
-dependency of both and is never installed directly; it contains no cloud SDK at all. Four storage backends: S3
+dependency of both, installed directly only to name a driver port's type, such as IStorageDriver, which
+`@cloudbitmaps/core/driver-kit` exports (or derive it, as `CloudRoaringOptions['storage']`); it contains no cloud SDK at all. Four storage backends: S3
 (`@cloudbitmaps/s3`, which also serves an S3-compatible store such as R2 or MinIO, given its endpoint, if it
 honours S3's conditional writes and is strongly consistent, so that a read or a listing made after a write or a
 delete sees it; MinIO is the one the integration suite runs against), GCS (`@cloudbitmaps/gcs`)
@@ -56,9 +57,9 @@ moves the pointer to it by a compare-and-swap fenced on the registry row it read
 superseded, keeping one generation below the new pointer. It takes an array, a Set or an async cursor, or a bitmap you already hold (`{ bitmap }`, or `{ serialized }` for portable bytes). A backend
 (MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both the generations and the pointer and is what
 `storage` normally takes; a hand-written `{ storage, registry }` object is refused. `storage` also accepts a
-bare `IStorageDriver` (a storage driver, not a backend), which has no registry, so the store is read-only and cleartext; or an already-built
-StorageChunkSource for advanced reader wiring, which is read-only too and reads with whatever registry and
-keystore it was built with. A driver author who wants a storage and a registry of their own — an instrumented storage, a registry
+bare `IStorageDriver` (a storage driver, not a backend), which has no registry, so the store is read-only and cleartext; or a
+StorageChunkSource of your own, a read source, which is read-only too and reads as it was written to: the store
+adds no registry, no keystore and no timed refresh to it. Both ports are exported by `@cloudbitmaps/core/driver-kit`, not by `@cloudbitmaps/roaring`. A driver author who wants a storage and a registry of their own — an instrumented storage, a registry
 elsewhere — pairs them with `brandAsBackend({ storage, registry })` from `@cloudbitmaps/core/driver-kit`.
 Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write. There is
 no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol, publishing their result as a

@@ -150,7 +150,7 @@ function validateRetentionPolicy(policy: RetentionPolicy): void {
  * The three-way answer exists so a fleet sweep can *report* a malformed policy instead of choosing between two
  * bad options: treating it as "no policy" hides an operator error on a segment someone believes is expiring, and
  * throwing aborts a ledger over one bad row. Nothing writes an invalid policy through
- * {@link setSegmentRetention} — hand-edited rows, an older/newer writer, or a restore are how it happens.
+ * `store.setRetention` — hand-edited rows, an older/newer writer, or a restore are how it happens.
  */
 export function readRetentionPolicy(
   meta: GovernanceMeta | undefined,

@@ -1,5 +1,5 @@
-import { CrbmStorageChunkSource } from '@/index';
-import type { IStorageDriver } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { RETAINED_BYTES_PER_INDEX_ENTRY } from '@/core/crbm/reader';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';

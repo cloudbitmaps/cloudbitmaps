@@ -115,9 +115,10 @@ function rmTmp(dir) {
 
 // ── M1+M2+M4: one fleet size, measured in its own process ────────────────────────────────────────────
 async function measureFleet(n) {
-  const { CloudRoaring, CrbmStorageChunkSource, LocalFsStorage, excludingReservedRows } = library();
-  // Budget internals live on core: the flavor is what an application imports, and this is not one.
-  const { collectWithinBudget } = require('@cloudbitmaps/core');
+  const { CloudRoaring, LocalFsStorage, excludingReservedRows } = library();
+  // The budget internals and the `.crbm` source live on core's internal main entry: the flavor is what an application
+  // imports, and this is not one.
+  const { collectWithinBudget, CrbmStorageChunkSource } = require('@cloudbitmaps/core');
   const dir = mkTmp(`fleet${n}`);
   try {
     const backend = new LocalFsStorage(dir, { now: () => Date.now() });

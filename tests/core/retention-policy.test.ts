@@ -1,10 +1,6 @@
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MIN_EXPIRES_AT_MS,
-  destroySegment,
-  readRetentionPolicy,
-} from '@/index';
+import { CloudRoaring, destroySegment, readRetentionPolicy } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { UnsupportedError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { SegmentRef } from '@/index';

@@ -186,7 +186,7 @@ npm audit signatures</code></pre>
           <strong>Everything else the store takes is optional.</strong> <span class="m">cache</span> bounds
           memory and read staleness. <span class="m">encryption: { keystore }</span> encrypts a segment at rest from its first
           generation — <span class="m">InProcessKeystore</span> ships in the package, or bring your own
-          <span class="m">IKeystore</span> — and needs a backend, because the wrapped key lives in the pointer's
+          <span class="m">IKeystore</span>, the port <span class="m">@cloudbitmaps/core/driver-kit</span> exports — and needs a backend, because the wrapped key lives in the pointer's
           row. <span class="m">budget: { maxRequests }</span> caps the chunk fetches one count, iterate or
           combine may fan out into, and the segments one subject scan may reach — 1,000,000 by default — and
           refuses the call before it fans out; <span class="m">false</span> lifts it. <span class="m">retry</span> tunes how a read retries a

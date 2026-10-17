@@ -4,15 +4,14 @@ import { loadSegment } from '@/core/load';
 import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import type { IAuditSink, SegmentRef } from '@/index';
 import type {
   GenKey,
-  IAuditSink,
   KnownGeneration,
   IRegistryDriver,
   IStorageDriver,
   RegistryRecord,
-  SegmentRef,
-} from '@/index';
+} from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy, zeroEntropy } from '../helpers/entropy';

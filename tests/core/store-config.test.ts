@@ -1,9 +1,11 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
-import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CapabilityError, KeyUnavailableError, ValidationError } from '@/core/errors';
-import type { IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { seededStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { isStorageBackend } from '@cloudbitmaps/core';

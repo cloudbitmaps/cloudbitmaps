@@ -1,5 +1,5 @@
 import { CloudRoaring, errorKind } from '@/index';
-import type { StorageBackend } from '@cloudbitmaps/core';
+import type { StorageBackend } from '@cloudbitmaps/core/driver-kit';
 
 /**
  * What a backend whose bucket or container does not exist must do: fail each call with a `ValidationError` (a wiring

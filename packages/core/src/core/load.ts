@@ -194,7 +194,7 @@ export function checkedGuard(guard: LoadGuard | undefined, where: string): LoadG
 }
 
 /**
- * Options of `store.load` and {@link loadSegment}: what a load may publish (`allowEmpty`, `guard`), what it keeps
+ * Options of `store.load` and of core's `loadSegment`: what a load may publish (`allowEmpty`, `guard`), what it keeps
  * (`keep`) and what it records (`metadata`, `audit`).
  */
 export interface LoadOptions {

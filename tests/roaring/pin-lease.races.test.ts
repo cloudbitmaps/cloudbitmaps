@@ -1,6 +1,5 @@
 import {
   CloudRoaring,
-  LEASE_SKEW_MS,
   LeaseLimitError,
   MemoryStorage,
   NotFoundError,
@@ -9,6 +8,7 @@ import {
   type SegmentRef,
   errorKind,
 } from '@/index';
+import { LEASE_SKEW_MS } from '@/core/leases';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { takeLease } from '@/core/leases';
 import { rollbackSegment } from '@/core/rollback';

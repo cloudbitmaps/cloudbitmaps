@@ -169,11 +169,11 @@ This is the one place the bound is stated; other pages link here.
   tail early sends it whether or not the key opens, so a keystore that fails bills a tail GET for each such attempt
   (with the default read retry, up to four for a keystore that keeps throwing `TransientError`), and its answer is
   dropped. While a cold open
-  waits for the key it holds up to `tailBytes` (256 KiB by default) of the object's tail. A cleartext generation's tail
+  waits for the key it holds up to the reader's first tail read, a fixed 256 KiB, of the object's tail. A cleartext generation's tail
   read is sized from the row's summary, which records how many bytes of the object's end an open needs: a segment whose
   index is longer than 256 KiB (tens of thousands of chunks) comes in that one read, so its first `has()` is three requests
-  (the row, the tail and the chunk), not four. The size is never below the store's `tailBytes` option, and, beyond that option, never
-  more than the object holds or the store's `maxIndexBytes` (8 MiB by default) plus 4,212 bytes; a summary this store has found
+  (the row, the tail and the chunk), not four. The size is never below those 256 KiB, and, above them, never
+  more than the object holds or the reader's fixed 8 MiB cap on an index plus 4,212 bytes; a summary this store has found
   to disagree with its object is not used again. A row with no summary the store can use opens with the default tail read.
   An encrypted generation's open is not sized, because its summary is sealed under the key and sizing from it would send the
   tail read after the key: it keeps its default tail read (beside the key for an open that starts from the object; a cold `has()` waits for the key first, as before), and a wide one reads its index with one range read more.
@@ -405,7 +405,7 @@ snap.lease;            // { holder, until }
 await snap.release();  // optional: lets a load's collection take the generation as soon as you are done
 ```
 
-`leaseUntil` is an absolute instant in epoch **milliseconds**, after now and at most `MAX_LEASE_MS` (14 days) from it.
+`leaseUntil` is an absolute instant in epoch **milliseconds**, after now and at most 14 days (1,209,600,000 ms) from it.
 The lease is recorded in the segment's registry row, so every load that collects the segment, from any process, leaves the
 leased generation in the bucket until the lease has ended. It is a hold on one named generation and on nothing else:
 `keep` and the rest of collection are unchanged.
@@ -442,7 +442,7 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   trusted as the registry: whoever can write it can fill its 64 places for 14 days, as whoever can write it can delete
   the segment, and a job that crashes without releasing keeps its place until its lease ends.
 - **The margin is 60 seconds, and covers clocks that differ by that much either way.** The handle ends the lease at
-  `leaseUntil` by its own store's clock, and a collector holds it for `LEASE_SKEW_MS` (60 seconds) longer by its own. A
+  `leaseUntil` by its own store's clock, and a collector holds it for 60 seconds (60,000 ms) longer by its own. A
   reader whose clock is behind a collector's by more than that, or a collector whose clock is ahead of the reader's by
   more, can find the generation collected inside the lease: a `NotFoundError` on a chunk it has not cached, never a wrong
   answer and never empty.
@@ -509,8 +509,8 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
   fails at once, unless its reader kept the generation's chunks, which it serves until the reader is evicted. A
   combine on another store refuses the pin.
-- **It needs a `.crbm` reader**: a backend does, and so does a bare `IStorageDriver` or a pre-built
-  `CrbmStorageChunkSource`. Any other pre-built `StorageChunkSource` throws `UnsupportedError`.
+- **It needs a `.crbm` reader**: the store builds one over a backend, and over a bare `IStorageDriver`. A
+  `StorageChunkSource` of your own throws `UnsupportedError`.
 
 ## Read a chunk at a time: `batches()`
 

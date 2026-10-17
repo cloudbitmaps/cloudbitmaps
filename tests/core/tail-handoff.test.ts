@@ -6,13 +6,8 @@
  */
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  InProcessKeystore,
-  IntegrityError,
-  MemoryStorage,
-} from '@/index';
+import { CloudRoaring, InProcessKeystore, IntegrityError, MemoryStorage } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { Clock, SegmentRef } from '@/index';
 import { NotFoundError } from '@/index';
 import { BufferReader } from '@/core/blob';

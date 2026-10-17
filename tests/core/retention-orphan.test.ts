@@ -2,7 +2,8 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import { openGenerationReader } from '@/core/crbm-open';
 import { setSegmentRetention } from '@/core/retention';
 import { retireExpired } from '@/core/retention-sweep';
-import type { DropResult, IStorageDriver, RetireEntry, SegmentRef } from '@/index';
+import type { DropResult, RetireEntry, SegmentRef } from '@/index';
+import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 

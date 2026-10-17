@@ -1,4 +1,4 @@
-import { NodeAead } from '@/index';
+import { NodeAead } from '@/drivers/crypto';
 import { IntegrityError } from '@/core/errors';
 
 /**

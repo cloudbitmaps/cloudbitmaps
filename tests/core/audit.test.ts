@@ -1,12 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  RecordingAuditSink,
-  destroySegment,
-  eraseNamespace,
-} from '@/index';
-import type { AuditEvent, IKeystore, SegmentRef } from '@/index';
+import { CloudRoaring, RecordingAuditSink, destroySegment, eraseNamespace } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { AuditEvent, SegmentRef } from '@/index';
+import type { IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { NOOP_AUDIT, safeAudit } from '@/core/audit';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';

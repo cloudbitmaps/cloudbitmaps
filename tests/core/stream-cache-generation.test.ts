@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { BoundedLru, SegmentEngine } from '@cloudbitmaps/core';
-import type { CodecBitmap, StorageChunkSource } from '@cloudbitmaps/core';
+import type { CodecBitmap } from '@cloudbitmaps/core';
+import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { joinId } from '@/core/bit-route';
 import { chunkKeyUnder, segmentPrefix } from '@/core/keys';

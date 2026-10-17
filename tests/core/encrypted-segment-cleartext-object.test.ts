@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { rollbackSegment } from '@/core/rollback';
 import { BufferSink } from '@/core/blob';
 import { CrbmWriter } from '@/core/crbm/writer';
@@ -13,7 +14,8 @@ import { publishGeneration } from '../helpers/publish';
 import { roaringCodec } from '@/roaring-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { zeroEntropy } from '../helpers/entropy';
 import { testEntropy } from '../helpers/entropy';

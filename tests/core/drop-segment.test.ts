@@ -1,13 +1,8 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { publishGeneration } from '../helpers/publish';
 import { randomBytes } from 'node:crypto';
-import {
-  MemoryStorage,
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  destroySegment,
-  eraseNamespace,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, destroySegment, eraseNamespace } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   NotFoundError,
@@ -15,7 +10,8 @@ import {
   ValidationError,
   WriteConflictError,
 } from '@/core/errors';
-import type { IKeystore, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IKeystore, IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { dropSegment } from '@cloudbitmaps/core';

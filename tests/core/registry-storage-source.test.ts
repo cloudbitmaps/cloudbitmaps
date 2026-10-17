@@ -6,9 +6,11 @@ vi.mock('@/core/crbm/reader', async (original) =>
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { SafeBitmap } from '@/roaring-codec';
-import type { GenKey, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { GenKey } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver } from '@/drivers/memory';

@@ -1,8 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError } from '@/core/errors';
-import type { IKeystore, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 

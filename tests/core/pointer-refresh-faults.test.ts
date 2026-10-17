@@ -1,13 +1,13 @@
 import {
-  CrbmStorageChunkSource,
   IntegrityError,
   MemoryStorage,
   NotFoundError,
   TransientError,
   type Clock,
-  type IRegistryDriver,
   type SegmentRef,
 } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { IRegistryDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**

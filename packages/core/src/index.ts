@@ -34,8 +34,7 @@ export { mapWithConcurrency } from './core/concurrency';
 export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
 export { segmentExists, listSegments } from './core/discover';
 export type { SegmentInfo } from './core/discover';
-// The token shape a registry driver needs, and the key helper the conformance fakes use.
-export type { Token } from './core/ports';
+// The key helper the conformance fakes use.
 export { segmentKey } from './core/keys';
 
 // ---------------------------------------------------------------------------------------------------
@@ -112,35 +111,9 @@ export type { EraseIdDeps, EraseIdResult } from './core/erase-id';
 // The bitmap-codec seam — the engine is codec-agnostic behind these; roaring is the flagship.
 export type { CodecInterface, CodecBitmap, EncodedChunk } from './core/codec';
 export type { Clock, Entropy, Rng } from './core/determinism';
-export type {
-  StorageChunkSource,
-  IStorageDriver,
-  StorageCaps,
-  StorageDeleteOptions,
-  TailRead,
-  ChunkRef,
-  ChunkRead,
-  ReadChunksOptions,
-  SegmentRef,
-  GenKey,
-  IRegistryDriver,
-  StorageBackend,
-  RegistryRecord,
-  NewRegistryRecord,
-  RegistryPatch,
-  RegistryStatus,
-  RegistrySummary,
-  RegistryWriteOptions,
-  LeaseEntry,
-  KnownGeneration,
-  ClearRegistrySummary,
-  SealedRegistrySummary,
-  GenerationMetadata,
-  GenerationSummary,
-  RegCaps,
-  GovernanceMeta,
-  SegmentSize,
-} from './core/ports';
+// The driver ports and the registry's record types are exported from `@cloudbitmaps/core/driver-kit`, their one home;
+// these two are also what the flavor's own signatures name, so it re-exports them from here.
+export type { SegmentRef, GenerationMetadata } from './core/ports';
 export {
   CloudRoaringError,
   ValidationError,
@@ -165,10 +138,11 @@ export {
   errorKind,
 } from './core/errors';
 
-// Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM
-// implementation (`node:crypto`, outside core). KMS/Vault adapters are future optional packages against
-// `IKeystore`. See the encryption guide for key-management guidance.
-export type { Aead, AeadSealed, IKeystore, WrappedDek, CrbmCrypto } from './core/crypto';
+// Encryption-at-rest: the `.crbm` reader's crypto pair (`core/`, crypto-free) + the default in-process AES-256-GCM
+// implementation (`node:crypto`, outside core). The keystore port (`IKeystore`, `Aead`, `AeadSealed`, `WrappedDek`) is
+// exported from `@cloudbitmaps/core/driver-kit`; KMS/Vault adapters are future optional packages against it. See the
+// encryption guide for key-management guidance.
+export type { CrbmCrypto } from './core/crypto';
 // The AAD builder. NOT for an `Aead` implementor — they are handed the associated data. This is for the
 // other seam: `CrbmCrypto` requires an `aadFor` member, and `CrbmReader.open` takes one, so tooling that reads an
 // ENCRYPTED archive has to construct it. Without this the only way to do that is to re-derive an undocumented
@@ -273,7 +247,7 @@ export type { RetryingOptions } from './drivers/retry/retrying-chunk-source';
 export { CrbmReader } from './core/crbm/reader';
 export type { CrbmReaderOptions } from './core/crbm/reader';
 export { BufferReader } from './core/blob';
-export type { BlobReader, BlobSink } from './core/blob';
+export type { BlobReader } from './core/blob';
 
 // Observability: the injected metrics seam + a no-op default + a counting sink. Emit typed events
 // (storage/cache/retry/intersect/op) to your stack; see the observability guide.

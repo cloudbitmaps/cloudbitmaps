@@ -6,7 +6,12 @@ import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { RecordingAuditSink } from '@/index';
-import type { Clock, IRegistryDriver, IStorageDriver, RegistryRecord } from '@/index';
+import type { Clock } from '@/index';
+import type {
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+} from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { sameIncarnation } from '@/core/token';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';

@@ -1,13 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/index';
+import type { AuditEvent, SegmentRef } from '@/index';
 import type {
-  AuditEvent,
   IKeystore,
   IRegistryDriver,
   IStorageDriver,
   RegistryRecord,
-  SegmentRef,
-} from '@/index';
+} from '@cloudbitmaps/core/driver-kit';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { destroySegment, dropSegment, eraseNamespace } from '@/core/erasure';
 import { WriteConflictError } from '@/core/errors';

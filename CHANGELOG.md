@@ -13,6 +13,45 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **`@cloudbitmaps/roaring` no longer exports the driver contracts: import them from `@cloudbitmaps/core/driver-kit`,
+  their one home.** The 28 names are `IStorageDriver`, `IRegistryDriver`, `StorageBackend`, `StorageCaps`,
+  `StorageDeleteOptions`, `TailRead`, `GenKey`, `BlobSink`, `StorageChunkSource`, `ChunkRef`, `SegmentSize`, `Token`,
+  `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch`, `RegistryWriteOptions`, `RegistryStatus`,
+  `RegistrySummary`, `ClearRegistrySummary`, `SealedRegistrySummary`, `KnownGeneration`, `LeaseEntry`,
+  `GovernanceMeta`, `IKeystore`, `WrappedDek`, `Aead` and `AeadSealed`. Each is the same type it was, now exported by
+  driver-kit alone: write `import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit'`, with
+  `@cloudbitmaps/core` a direct dependency at the version of `@cloudbitmaps/roaring` you install. A second version is a
+  second copy of core: `instanceof` stops holding across it, and `errorKind` and the backend brand hold at run time only,
+  since at compile time a second copy's `StorageBackend` is another type, which the store's `storage` refuses. Keep one
+  version, or derive the type from the flavor's own, with no dependency to add: `CloudRoaringOptions['storage']` is
+  `StorageBackend | IStorageDriver | StorageChunkSource`, `MemoryStorage['storage']` is `IStorageDriver`,
+  `MemoryStorage['registry']` is `IRegistryDriver`, and `NonNullable<EncryptionOptions['keystore']>` is `IKeystore`. The
+  store's signatures still name these types, so a hover shows them. A declaration merged into one of them through
+  `declare module '@cloudbitmaps/roaring'` no longer applies: merge it into `@cloudbitmaps/core/driver-kit`.
+- **The `.crbm` reader and its crypto pair are no longer exported: `CrbmReader`, `CrbmReaderOptions`, `BufferReader`,
+  `BlobReader`, `CrbmCrypto`, `NodeAead` and `aadFor`.** Nothing in the store's API takes or returns them. Read a
+  segment through the store, or eject it with `exportSegments` as ids or portable Roaring bytes; a reader of your own
+  reads the bytes as [`docs/format.md`](docs/format.md) specifies them, the associated data an encrypted object is bound
+  to included. The classes are gone as values as well as types.
+- **`CrbmStorageChunkSource`, `CrbmStorageChunkSourceOptions` and `PinnedObject` are no longer exported: pass a backend
+  as `storage`, and set the source's bounds with the store's options.** The store builds this source itself, over a
+  backend or a bare `IStorageDriver`, and each of its options has a store option: `registry` is the backend's,
+  `keystore` is `encryption.keystore`, `requireEncryption` is `encryption.required`, `clock` is `seams.clock`,
+  `currentGenTtlMs` is `cache.genTtlMs`, `maxOpenSegments` is `cache.readerMax` and `maxOpenIndexBytes` is
+  `cache.readerMaxBytes`. Its `.crbm` reader settings (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto` and
+  `lineage`) have no replacement: the store reads with the defaults. A `StorageChunkSource` of your own is still
+  accepted as `storage`, read-only, and `pin()` on it throws `UnsupportedError`, as it did on any source but this one.
+  `PinnedObject` is what that source's pinned reads checked an object against: pin with `seg.pin()`, or
+  `seg.pinAt({ generation, fingerprint })`, whose handle's `pinnedAt` is a `PinnedAt`.
+- **`DEFAULT_RETRY_POLICY`, `MIN_EXPIRES_AT_MS`, `LEASE_SKEW_MS`, `MAX_LEASE_MS` and `MAX_LEASES_PER_SEGMENT` are no
+  longer exported: the guides state their values.** The retry defaults are 4 attempts, a 50 ms base delay, ×2, a 2 s
+  cap and full jitter, and the store's `retry` option keeps each one it does not set. The floor on `expiresAt` and on
+  the sweep's `now` is `1_000_000_000_000` epoch milliseconds (2001-09-09). A lease lasts at most 14 days
+  (1,209,600,000 ms), a segment holds at most 64 live leases, and a collector waits 60 seconds past a lease's end. An
+  untyped JavaScript caller that `require`s one of them gets `undefined`: a field read of it throws `TypeError`,
+  arithmetic with it gives `NaN`, and a comparison with it is false.
+- **The codec seam is no longer exported: `CodecInterface`, `CodecBitmap` and `EncodedChunk`.** The store binds the
+  roaring codec itself and no public signature names the seam; there is no supported way to add another codec.
 - **`IdRange`, `BaseCombineOptions`, `MaterializeOptions` and `AndNotIntoOptions` are now `CombineOptions`.** One
   interface of `@cloudbitmaps/roaring` declares all eleven fields, each optional, and every combine takes it; `iterate`
   and `everyNth` take its range, `Pick<CombineOptions, 'after' | 'through'>`, which `MaterializeManyOptions` extends.
@@ -57,7 +96,12 @@ so, and so do the module headers in the code.
   a test double, passes the option name and the two numbers; the messages are unchanged.
 - **The main entry of `@cloudbitmaps/core` is internal, outside the stability promise.** It is the engine that
   `@cloudbitmaps/roaring` and the driver packages are built on, so after this release it can change in any minor release and a
-  change to it gets no entry here. Nothing in it was removed or changed. Depend on `@cloudbitmaps/roaring` and a driver
+  change to it gets no entry here. In this release it loses what the entries above move or retire: the 31 driver
+  ports and record types (the storage and registry ports, the registry row types, the read-source and keystore ports,
+  `Token` and `BlobSink`), which `@cloudbitmaps/core/driver-kit` alone exports now, so a driver that imported `Token`,
+  `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` or `RegistryWriteOptions` from it imports them from
+  there; the 13 `isXError` predicates, which `errorKind` replaces; and core's `CombineExpr` and four `CombineMany*`
+  names, renamed as above. Depend on `@cloudbitmaps/roaring` and a driver
   package; to write a driver, depend on `@cloudbitmaps/core/driver-kit`, which stays public. The signature snapshot no
   longer holds the main entry (742 of its 1,604 entries), and `api-surface/internal.json` records it instead.
 - **A load or an erasure called directly on `@cloudbitmaps/core` with no `entropy` throws a `ValidationError`.**
@@ -80,6 +124,14 @@ so, and so do the module headers in the code.
   package in a process.
 ### Added
 
+- **`@cloudbitmaps/core/driver-kit` exports every type its own signatures and the store's ports name.** A registry that
+  does not extend `ObjectStoreRegistry`, a read source of your own and a keystore are written against it alone, where
+  they needed core's main entry: the registry row and its writes (`Token`, `RegCaps`, `RegistryRecord`,
+  `NewRegistryRecord`, `RegistryPatch`, `RegistryWriteOptions`, `RegistryStatus`, `RegistrySummary`,
+  `ClearRegistrySummary`, `SealedRegistrySummary`, `KnownGeneration`, `LeaseEntry`, `GovernanceMeta`,
+  `GenerationMetadata`), the read-source port (`StorageChunkSource`, `ChunkRef`, `ChunkRead`, `ReadChunksOptions`,
+  `SegmentSize`, `GenerationSummary`), the keystore port (`IKeystore`, `WrappedDek`, `Aead`, `AeadSealed`), and
+  `CloudRoaringError`, `Entropy` and `MetricOpName`.
 - **`errorKind(err)` and the `ErrorKind` type, from `@cloudbitmaps/roaring` and `@cloudbitmaps/core/driver-kit`.** It
   returns the name of the library's error class that `err` is, or `undefined`, and holds across copies of the package,
   bundles and realms where `instanceof` can stop matching. An application's subclass of a class returns

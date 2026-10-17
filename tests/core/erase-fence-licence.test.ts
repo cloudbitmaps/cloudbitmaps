@@ -13,7 +13,12 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MemoryStorage } from '@/index';
-import type { Entropy, IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/index';
+import type { Entropy, SegmentRef } from '@/index';
+import type {
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+} from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore } from '../helpers/counting';

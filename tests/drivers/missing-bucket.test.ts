@@ -6,7 +6,7 @@ import { ContainerClient, StorageSharedKeyCredential } from '@azure/storage-blob
 import { AzureBlobStorage } from '@/azure-blob/backend';
 import { GcsStorage } from '@/gcs/backend';
 import { S3Storage } from '@/s3/backend';
-import type { StorageBackend } from '@cloudbitmaps/core';
+import type { StorageBackend } from '@cloudbitmaps/core/driver-kit';
 import { storageDriverConformance } from '@/testing/conformance';
 import type { StorageDriverCase } from '@/testing/conformance';
 import {

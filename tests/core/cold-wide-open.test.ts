@@ -14,8 +14,10 @@ import { chunkGenKey } from '@/core/keys';
 import { roaringCodec } from '@/roaring-codec';
 import { joinId } from '@/core/bit-route';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
-import { CloudRoaring, CrbmStorageChunkSource, InProcessKeystore, MemoryStorage } from '@/index';
-import type { RegistryRecord, SegmentRef } from '@/index';
+import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { SegmentRef } from '@/index';
+import type { RegistryRecord } from '@cloudbitmaps/core/driver-kit';
 import { PREAMBLE_BYTES } from '@/core/crbm/format';
 import { sizedTailBytes } from '@/core/crbm-open';
 import { ValidationError } from '@/core/errors';
@@ -260,6 +262,12 @@ const spread = (chunks: number, perChunk: number): number[] =>
 
 const WIDE_IDS = randomIds(300_000);
 
+/**
+ * The time an encrypted test of the wide segment may take. Loading and sealing 300,000 random ids took 2 to 5 seconds
+ * on CI's runners (measured), against vitest's default of 5, so these two tests get more room than the default.
+ */
+const ENCRYPTED_WIDE_MS = 30_000;
+
 interface Seen {
   registry: number;
   tails: number;
@@ -374,18 +382,22 @@ describe('a cold open sizes its tail read from the row summary', () => {
     expect(w.seen.tailSizes).toEqual([tailBytes]);
   });
 
-  it('an encrypted segment is opened as before: the default tail beside the key, then the index range read', async () => {
-    const w = await wideWorld(WIDE_IDS, { encrypted: true });
-    expect(await w.store().segment('wide').has(WIDE_IDS[1234]!)).toBe(true);
-    // The same on main, measured: the encrypted open is not sized, so it keeps its overlap and its range read.
-    expect({
-      registry: w.seen.registry,
-      tails: w.seen.tails,
-      ranges: w.seen.ranges,
-      keystore: w.seen.keystore,
-    }).toEqual({ registry: 1, tails: 1, ranges: 2, keystore: 1 });
-    expect(w.seen.tailSizes).toEqual([DEFAULT_TAIL]);
-  });
+  it(
+    'an encrypted segment is opened as before: the default tail beside the key, then the index range read',
+    async () => {
+      const w = await wideWorld(WIDE_IDS, { encrypted: true });
+      expect(await w.store().segment('wide').has(WIDE_IDS[1234]!)).toBe(true);
+      // The same on main, measured: the encrypted open is not sized, so it keeps its overlap and its range read.
+      expect({
+        registry: w.seen.registry,
+        tails: w.seen.tails,
+        ranges: w.seen.ranges,
+        keystore: w.seen.keystore,
+      }).toEqual({ registry: 1, tails: 1, ranges: 2, keystore: 1 });
+      expect(w.seen.tailSizes).toEqual([DEFAULT_TAIL]);
+    },
+    ENCRYPTED_WIDE_MS,
+  );
 
   it('answers the same whatever the summary says', async () => {
     // One segment serves every hint: `hint` only rewrites what the row read answers, and each store starts cold.
@@ -550,13 +562,17 @@ describe('a cold open sizes its tail read from the row summary', () => {
     ]);
   });
 
-  it("an encrypted segment's consistency open waits for the key before its tail read, and is sized", async () => {
-    const w = await wideWorld(WIDE_IDS, { encrypted: true });
-    const { tailBytes } = await w.facts();
-    const report = await w.store().checkConsistency({ summaries: true });
-    expect(report.inconsistent).toEqual([]);
-    expect(w.seen.ranges).toBe(0);
-    expect(w.seen.keystore).toBe(1);
-    expect(w.seen.tailSizes.filter((n) => n > 0)).toEqual([tailBytes]);
-  });
+  it(
+    "an encrypted segment's consistency open waits for the key before its tail read, and is sized",
+    async () => {
+      const w = await wideWorld(WIDE_IDS, { encrypted: true });
+      const { tailBytes } = await w.facts();
+      const report = await w.store().checkConsistency({ summaries: true });
+      expect(report.inconsistent).toEqual([]);
+      expect(w.seen.ranges).toBe(0);
+      expect(w.seen.keystore).toBe(1);
+      expect(w.seen.tailSizes.filter((n) => n > 0)).toEqual([tailBytes]);
+    },
+    ENCRYPTED_WIDE_MS,
+  );
 });

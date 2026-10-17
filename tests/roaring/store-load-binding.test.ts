@@ -1,13 +1,9 @@
 import { vi } from 'vitest';
 import * as core from '@cloudbitmaps/core';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorage,
-  UnsupportedError,
-  ValidationError,
-} from '@/index';
-import type { Clock, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
+import { CloudRoaring, MemoryStorage, UnsupportedError, ValidationError } from '@/index';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import type { Clock, SegmentRef } from '@/index';
+import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { SystemClock } from '@/system-clock';
 import { joinId } from '@/core/bit-route';
 import { zeroEntropy } from '../helpers/entropy';

@@ -5,7 +5,8 @@ import { rollbackSegment } from '@/core/rollback';
 import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring } from '@/index';
 import { brandAsBackend } from '@/core/ports';
-import type { Clock, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
+import type { Clock, SegmentRef } from '@/index';
+import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { collect } from './loaded';
 import { testEntropy } from './entropy';
 

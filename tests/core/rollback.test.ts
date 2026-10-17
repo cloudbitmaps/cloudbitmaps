@@ -8,7 +8,12 @@ import { randomBytes } from 'node:crypto';
 import { MemoryStorage, CloudRoaring, RecordingAuditSink } from '@/index';
 import { WriteConflictError } from '@/core/errors';
 import { openGenerationReader } from '@/core/crbm-open';
-import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/index';
+import type { SegmentRef } from '@/index';
+import type {
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+} from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';
