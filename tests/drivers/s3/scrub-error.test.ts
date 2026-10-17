@@ -15,6 +15,9 @@ const AUTH = [
   `Signature=${SIG}`,
 ].join('');
 const AUTHORIZATION = ['author', 'ization'].join('');
+const PROXY_AUTHORIZATION = `proxy-${AUTHORIZATION}`;
+const BASIC = ['Ba', 'sic'].join('');
+const BEARER = ['Bear', 'er'].join('');
 const hex = (text: string): string =>
   [...Buffer.from(text)].map((b) => b.toString(16).padStart(2, '0')).join(' ');
 
@@ -597,6 +600,17 @@ describe('S3 scrubCredentials', () => {
     const forms: [string, string, string][] = [
       ['an Authorization header line', `Authorization: ${AUTH}\r\nhost: h`, SIG],
       ['a session token header line', `host: h\nx-amz-security-token: ${TOKEN}\n`, TOKEN],
+      [
+        'a proxy credential on a later line',
+        `GET /b/k HTTP/1.1\r\nhost: h\r\n${PROXY_AUTHORIZATION}: ${BASIC} ${VALUE}\r\n`,
+        VALUE,
+      ],
+      ['a cookie on a later line', `host: h\r\ncookie: s=${VALUE}\r\n`, VALUE],
+      [
+        'a bearer value on a later line',
+        `host: h\nx-amz-date: 20261016T120000Z\n${AUTHORIZATION}: ${BEARER} ${VALUE}`,
+        VALUE,
+      ],
       ['a directory bucket session header line', `x-amz-s3session-token: ${TOKEN}`, TOKEN],
       ['an SSE-C key header line', `x-amz-server-side-encryption-customer-key: ${TOKEN}`, TOKEN],
       ['an Authorization value inside a line', `<body> inline ${AUTH}</body>`, SIG],
