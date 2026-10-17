@@ -33,8 +33,7 @@ import {
   UnsupportedError,
   ValidationError,
   WriteConflictError,
-  isNotFoundError,
-  isTransientError,
+  errorKind,
 } from '@cloudbitmaps/core';
 
 // The fixtures deliberately carry a colon. A name may contain one, and the character is only safe because
@@ -227,9 +226,11 @@ async function failsAsMissingLocation(what: string, run: () => Promise<unknown>)
   }
   expect(failed, `${what} succeeded against a location that does not exist`).toBeDefined();
   const { error } = failed!;
-  expect(isNotFoundError(error), `${what} read a missing location as an absent object`).toBe(false);
-  expect(isTransientError(error), `${what} read a missing location as a fault worth retrying`).toBe(
-    false,
+  expect(errorKind(error), `${what} read a missing location as an absent object`).not.toBe(
+    'NotFoundError',
+  );
+  expect(errorKind(error), `${what} read a missing location as a fault worth retrying`).not.toBe(
+    'TransientError',
   );
 }
 

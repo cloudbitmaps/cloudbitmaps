@@ -74,11 +74,12 @@ export class ResidentLedger {
   }
 
   /**
-   * Charge `bytes`, asking `makeRoom` to free some while they do not fit. `makeRoom` releases what it frees (through
-   * {@link release}) and answers whether it freed anything; the charge is refused when it cannot.
+   * Charge `bytes`, asking `makeRoom` to free some while they do not fit. `makeRoom` is told how many bytes are wanted,
+   * releases what it frees (through {@link release}) and answers whether it freed anything; the charge is refused when
+   * it cannot.
    */
-  reserve(bytes: number, makeRoom: () => boolean): boolean {
-    while (!this.tryCharge(bytes)) if (!makeRoom()) return false;
+  reserve(bytes: number, makeRoom: (needed: number) => boolean): boolean {
+    while (!this.tryCharge(bytes)) if (!makeRoom(bytes)) return false;
     return true;
   }
 

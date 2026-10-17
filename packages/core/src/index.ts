@@ -155,26 +155,15 @@ export {
   LeaseExpiredError,
   LeaseLimitError,
   StaleOperandError,
-  // Copy-safe predicates. On an ordinary install `instanceof` holds everywhere — every package in the family
+  // Copy-safe classification. On an ordinary install `instanceof` holds everywhere — every package in the family
   // is published with `@cloudbitmaps/core` left external, so one copy of these classes is shared and you can
-  // catch them however you normally would. Prefer these where that stops being true and nothing here can
+  // catch them however you normally would. Prefer `errorKind` where that stops being true and nothing here can
   // control it: a consumer's bundler inlining core into two outputs, two majors resolved side by side, or an
-  // error crossing a worker or vm realm. Each matches a `Symbol.for` brand, which is the same symbol in every
+  // error crossing a worker or vm realm. It reads a `Symbol.for` brand, which is the same symbol in every
   // copy and every realm where a class object is not. The `instanceof` failure is silent — it simply stops
-  // matching — which is why library code that cannot see how it will be bundled should reach for these.
-  isCloudRoaringError,
-  isWriteConflictError,
-  isTransientError,
-  isNotFoundError,
-  isIntegrityError,
-  isValidationError,
-  isLeaseExpiredError,
-  isLeaseLimitError,
-  isStaleOperandError,
-  isUnsupportedError,
-  isCapabilityError,
-  isBudgetExceededError,
-  isKeyUnavailableError,
+  // matching — which is why library code that cannot see how it will be bundled should reach for it.
+  errorKind,
+  type ErrorKind,
 } from './core/errors';
 
 // Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM

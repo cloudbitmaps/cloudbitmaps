@@ -29,14 +29,12 @@
  * stored since is refused.
  */
 import {
+  errorKind,
   NotFoundError,
   TransientError,
   ValidationError,
   WriteConflictError,
   concatBytes,
-  isNotFoundError,
-  isValidationError,
-  isWriteConflictError,
   normalizeObjectPrefix,
   parseGenerationFromKey,
   requireBool,
@@ -82,6 +80,13 @@ const AZURE_MAX_BLOCKS = 50_000;
 const AZURE_MAX_BLOCK_BYTES = 4000 * 1024 * 1024;
 
 const OCTET_STREAM = { blobContentType: 'application/octet-stream' } as const;
+
+/** A refusal this driver already typed: it passes on unmapped, where a raw SDK error is mapped. */
+function isTypedPassThrough(err: unknown): boolean {
+  const kind = errorKind(err);
+  return kind === 'ValidationError' || kind === 'WriteConflictError' || kind === 'NotFoundError';
+}
+
 /** Write-once precondition shared by both upload paths: create only if the blob is absent. */
 const IF_ABSENT = { conditions: { ifNoneMatch: '*' }, blobHTTPHeaders: OCTET_STREAM } as const;
 
@@ -194,7 +199,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
           `generation already exists (write-once): ${key.segment}.${key.generation}`,
         );
       }
-      if (isValidationError(err) || isWriteConflictError(err) || isNotFoundError(err)) throw err;
+      if (isTypedPassThrough(err)) throw err;
       throw this.mapError(err);
     }
   }
@@ -362,7 +367,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   private mapReadError(err: unknown, key: GenKey): unknown {
-    if (isValidationError(err)) return err;
+    if (errorKind(err) === 'ValidationError') return err;
     if (isNotFound(err))
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
     // A fully out-of-range request (start past EOF) — the BlobReader contract treats range errors as

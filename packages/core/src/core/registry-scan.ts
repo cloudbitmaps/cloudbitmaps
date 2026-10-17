@@ -79,6 +79,8 @@ export async function drainRegistry(
       throw new BudgetExceededError(
         `${op} would enumerate more than ${maxScanSegments} segments — the scan was abandoned there rather than ` +
           `completed. ${advice}available (a record is a few hundred bytes resident).`,
+        // The scan stops at the first row past the bound, so `spent` is a lower bound on the true total.
+        { option: 'maxScanSegments', limit: maxScanSegments, spent: rows.length + 1 },
       );
     }
     rows.push(rec);

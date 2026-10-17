@@ -52,6 +52,23 @@ describe('consistency check bounds its registry scan', () => {
     expect(reg.yielded()).toBe(6); // five admitted, the sixth trips it — not 10,000
   });
 
+  it('carries the option, the limit and a lower bound of limit + 1 as what it reached', async () => {
+    const error = await runConsistencyCheck(depsWith(registryOf(10_000)), {
+      maxScanSegments: 5,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error).toMatchObject({ option: 'maxScanSegments', limit: 5, spent: 6 });
+  });
+
+  it('the retention sweep carries the same three fields', async () => {
+    const error = await retireExpired(depsWith(registryOf(3)), {
+      now: MIN_EXPIRES_AT_MS,
+      maxScanSegments: 2,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BudgetExceededError);
+    expect(error).toMatchObject({ option: 'maxScanSegments', limit: 2, spent: 3 });
+  });
+
   it('names the knob and suggests narrowing by namespace first', async () => {
     const reg = registryOf(100);
     const err = (await runConsistencyCheck(depsWith(reg), { maxScanSegments: 2 }).catch(

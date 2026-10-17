@@ -22,6 +22,7 @@ const PKG = '@cloudbitmaps/roaring';
 const CORE = '@cloudbitmaps/core';
 const S3 = '@cloudbitmaps/s3';
 const TOOLS = '@cloudbitmaps/tools';
+const DRIVER_KIT = '@cloudbitmaps/core/driver-kit';
 /**
  * The packages whose whole job is to name a cloud SDK. Everything else must not.
  *
@@ -348,7 +349,7 @@ async function exerciseCore(label, m) {
  * refusal is the `ValidationError` core exports: it takes core's public entry, external like every package's, so one
  * copy of core serves both.
  */
-function exerciseTools(label, tools, core, storageBytes) {
+function exerciseTools(label, tools, core, flavor, storageBytes) {
   for (const name of ['estimateCost', 'groundedReport', 'AWS_US_EAST_1_ONDEMAND']) {
     if (tools[name] == null) throw new Error(`${label}: ${TOOLS} is missing export ${name}`);
   }
@@ -361,7 +362,7 @@ function exerciseTools(label, tools, core, storageBytes) {
   } catch (e) {
     caught = e;
   }
-  if (!(caught instanceof core.ValidationError) || !core.isValidationError(caught))
+  if (!(caught instanceof core.ValidationError) || flavor.errorKind(caught) !== 'ValidationError')
     throw new Error(
       `${label}: ${TOOLS}'s refusal is not core's ValidationError, so it carries its own copy of core`,
     );
@@ -382,7 +383,7 @@ async function sizeThroughStat(m) {
  *
  * When two copies of the error classes are in play, a driver throws a *different* class object than the code
  * catching it would `instanceof`-check, and the check silently stops matching — defeating transient-retry
- * and publish-race handling with no error of its own. The brand-based predicates must classify the error
+ * and publish-race handling with no error of its own. The brand-based `errorKind` must classify the error
  * anyway. This asserts that against the BUILT packages, where the whole test suite — one source graph —
  * cannot see it. Trigger: the S3 backend validates its `prefix` synchronously in the constructor and
  * throws a ValidationError from its own copy.
@@ -392,21 +393,24 @@ async function sizeThroughStat(m) {
  * mismatch — replacing every `Symbol.for(…)` with `Symbol(…)` in the built chunk leaves a format check green.
  *
  * Nor the PACKAGE boundary: the build marks `@cloudbitmaps/*` external, and `assertPackagesShareOneCopy`
- * asserts one copy of core across the packages, so `instanceof` holds and the identity the predicates
- * defend is the one a normal install already has.
+ * asserts one copy of core across the packages, so `instanceof` holds and the identity `errorKind`
+ * defends is the one a normal install already has.
  *
- * So what these checks pin is that the predicates are WIRED UP across a real package boundary — that the
- * built `@cloudbitmaps/s3` throws something the built `@cloudbitmaps/core` classifies. They do NOT pin the
- * brand's registration: switching a `Symbol.for(…)` to a plain `Symbol(…)` does not turn them red. With one
- * shared copy of core the brand is a single module-level constant that the throwing class and the reading
- * predicate both close over, so symbol identity holds whether or not the symbol is registered, and every
+ * So what these checks pin is that `errorKind` is WIRED UP across a real package boundary — that the
+ * built `@cloudbitmaps/s3` throws something `errorKind` classifies, from the flavor and from driver-kit. They do NOT pin
+ * the brand's registration: switching a `Symbol.for(…)` to a plain `Symbol(…)` does not turn them red. With one
+ * shared copy of core the brand is a single module-level constant that the throwing class and `errorKind`
+ * both close over, so symbol identity holds whether or not the symbol is registered, and every
  * assertion below stays green. That property is asserted directly, against the global registry, in
- * `tests/core/error-predicates.test.ts` — which is where a claim a build cannot reproduce belongs.
+ * `tests/core/error-kind.test.ts` — which is where a claim a build cannot reproduce belongs.
  *
  * Keep both legs running anyway: a future build change that stops sharing the ESM chunk is then covered
  * without anyone remembering to add it.
  */
-function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod) {
+function exerciseCrossBundleErrors(
+  label,
+  { core: coreMod, driver: driverMod, flavor: storeMod, driverKit },
+) {
   let caught;
   try {
     new driverMod.S3Storage({ bucket: 'b', region: 'us-east-1', prefix: '..' });
@@ -415,12 +419,18 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod
   }
   if (caught === undefined)
     throw new Error(`${label}: expected a ValidationError from the /s3 bundle`);
-  if (!coreMod.isValidationError(caught) || !coreMod.isCloudRoaringError(caught)) {
-    throw new Error(
-      `${label}: core predicates failed to classify a driver-bundle error — cross-bundle brand broken`,
-    );
+  // `errorKind` as the flavor exports it and as the driver kit does, the two a consumer and a driver author call.
+  for (const [from, errorKind] of [
+    ['the flavor', storeMod.errorKind],
+    ['driver-kit', driverKit.errorKind],
+  ]) {
+    if (errorKind(caught) !== 'ValidationError') {
+      throw new Error(
+        `${label}: errorKind from ${from} failed to classify a driver-bundle error — cross-bundle brand broken`,
+      );
+    }
   }
-  console.log(`  cross-bundle error predicates OK: ${label}`);
+  console.log(`  cross-bundle errorKind OK: ${label}`);
 
   // Same boundary, second brand. A backend built in the driver bundle must be recognised by the store —
   // the whole reason the brand is a registered `Symbol.for` and not a class check or a module-local symbol.
@@ -453,7 +463,7 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod
  * published `.d.ts` asserts an `extends` that is false at runtime. Nothing else notices —
  * lint, typecheck and the whole suite compile one source graph and cannot see it.
  *
- * The `Symbol.for` predicates stay the documented way to classify an error even so, because a consumer can
+ * `errorKind`, which reads the `Symbol.for` brands, stays the documented way to classify an error even so, because a consumer can
  * still end up with two copies through version skew between our packages, and there `instanceof` fails.
  */
 function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
@@ -683,13 +693,30 @@ async function main() {
     'esm',
     await import(TOOLS),
     await import(CORE),
+    await import(PKG),
     await sizeThroughStat(await import(PKG)),
   );
-  exerciseTools('cjs', require(TOOLS), require(CORE), await sizeThroughStat(require(PKG)));
+  exerciseTools(
+    'cjs',
+    require(TOOLS),
+    require(CORE),
+    require(PKG),
+    await sizeThroughStat(require(PKG)),
+  );
 
   // Same-package legs: cheap consistency, and cover for a future build that stops sharing the ESM chunk.
-  exerciseCrossBundleErrors('esm', await import(CORE), await import(S3), await import(PKG));
-  exerciseCrossBundleErrors('cjs', require(CORE), require(S3), require(PKG));
+  exerciseCrossBundleErrors('esm', {
+    core: await import(CORE),
+    driver: await import(S3),
+    flavor: await import(PKG),
+    driverKit: await import(DRIVER_KIT),
+  });
+  exerciseCrossBundleErrors('cjs', {
+    core: require(CORE),
+    driver: require(S3),
+    flavor: require(PKG),
+    driverKit: require(DRIVER_KIT),
+  });
   // The leg that can actually fail: two separately bundled packages, each with its own class copy.
   assertPackagesShareOneCopy(require(CORE), require(PKG), require(S3));
   for (const pkgDir of packageDirs()) {

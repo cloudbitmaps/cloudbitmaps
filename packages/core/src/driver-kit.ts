@@ -70,20 +70,17 @@ export { brandAsBackend, STORAGE_BACKEND } from './core/ports';
 // The metrics sink a store hands a backend that implements `StorageBackend.attachMetrics`, and the event union it emits to.
 export type { IMetricsSink, MetricEvent } from './core/metrics';
 
-// The typed errors a driver must throw, and the predicates that classify one.
+// The typed errors a driver must throw, and `errorKind`, which classifies one.
 //
 // In an ordinary install `instanceof` holds: every package here leaves `@cloudbitmaps/core` external, so one
-// copy of these classes is shared. Throw and catch them normally. The predicates matter where that stops
+// copy of these classes is shared. Throw and catch them normally. `errorKind` matters where that stops
 // being true — a bundler that inlines core into two outputs, two major versions side by side in one tree, a
-// worker or vm realm — because each is `Symbol.for`-branded and so identifies the error by brand rather than
-// by prototype identity. Prefer them in library code that cannot see how it will be bundled.
+// worker or vm realm — because each error is `Symbol.for`-branded and so is identified by brand rather than
+// by prototype identity. Prefer it in library code that cannot see how it will be bundled.
 export {
+  errorKind,
+  type ErrorKind,
   IntegrityError,
-  isIntegrityError,
-  isNotFoundError,
-  isTransientError,
-  isValidationError,
-  isWriteConflictError,
   NotFoundError,
   TransientError,
   ValidationError,

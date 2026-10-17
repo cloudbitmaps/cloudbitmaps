@@ -3,12 +3,7 @@
  * the same operands stored would publish; a bad feed refuses every fed output; an erasure in the store refuses a fed call.
  */
 import { describe, expect, it, vi } from 'vitest';
-import {
-  BudgetExceededError,
-  StaleOperandError,
-  ValidationError,
-  isStaleOperandError,
-} from '@/index';
+import { BudgetExceededError, StaleOperandError, ValidationError, errorKind } from '@/index';
 import type { MaterializeManyFeed, MaterializeResult } from '@/index';
 import type { RoaringBitmap32 } from 'roaring';
 import { batchWorld, bitmapOf, range } from '../helpers/batch-world';
@@ -231,7 +226,7 @@ describe('materializeMany with a feed', () => {
 describe('an erasure in the store while a fed call runs', () => {
   const erased = (o: unknown): StaleOperandError => {
     const e = failure(o);
-    expect(isStaleOperandError(e)).toBe(true);
+    expect(errorKind(e)).toBe('StaleOperandError');
     expect((e as StaleOperandError).reason).toBe('erased');
     return e as StaleOperandError;
   };

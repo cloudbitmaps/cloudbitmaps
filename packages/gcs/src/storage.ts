@@ -28,14 +28,12 @@
  * finds nothing, and one that meets an object stored since is refused.
  */
 import {
+  errorKind,
   NotFoundError,
   TransientError,
   ValidationError,
   WriteConflictError,
   concatBytes,
-  isNotFoundError,
-  isValidationError,
-  isWriteConflictError,
   normalizeObjectPrefix,
   parseGenerationFromKey,
   requireBool,
@@ -99,6 +97,12 @@ const REAL_TIME: Sleeper = {
 };
 /** Where the backoff's jitter comes from when none is injected. */
 const REAL_RNG: Rng = { next: () => Math.random() };
+
+/** A refusal this driver already typed: it passes on unmapped, where a raw SDK error is mapped. */
+function isTypedPassThrough(err: unknown): boolean {
+  const kind = errorKind(err);
+  return kind === 'ValidationError' || kind === 'WriteConflictError' || kind === 'NotFoundError';
+}
 
 /**
  * Objects at/under this size are uploaded in a **single simple (non-resumable) request**; larger ones switch to
@@ -232,7 +236,7 @@ export class GcsStorageDriver implements IStorageDriver {
           `generation already exists (write-once): ${key.segment}.${key.generation}`,
         );
       }
-      if (isValidationError(err) || isWriteConflictError(err) || isNotFoundError(err)) throw err;
+      if (isTypedPassThrough(err)) throw err;
       // An upload's 404 can be the bucket's: settle it before it is passed on.
       if (isNotFound(err)) await this.presence.confirm();
       throw this.mapError(err);
@@ -492,7 +496,7 @@ export class GcsStorageDriver implements IStorageDriver {
   /** Map GCS read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
     err = scrubCredentials(err);
-    if (isValidationError(err)) return err;
+    if (errorKind(err) === 'ValidationError') return err;
     if (isNotFound(err))
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
     // A fully out-of-range request (start past EOF) — the BlobReader contract treats range errors as

@@ -424,7 +424,10 @@ describe('the memory ledger', () => {
     const r = await run(source, ['a', 'small'], [{ expr: 'a' }, { expr: 'small' }], {
       maxBufferedBytes: 40_000,
     });
-    expect((r.outputs[0] as { error: Error }).error).toBeInstanceOf(BudgetExceededError);
+    const refused = (r.outputs[0] as { error: BudgetExceededError }).error;
+    expect(refused).toBeInstanceOf(BudgetExceededError);
+    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 40_000 });
+    expect(refused.spent).toBeGreaterThan(40_000);
     expect(ok(r.outputs[1]!).ids).toEqual([1, 2, 3]);
     expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(40_000);
   });
@@ -432,9 +435,12 @@ describe('the memory ledger', () => {
   it('refuses at the plan an output whose own bound exceeds the budget, naming the minimum', async () => {
     const source = new TableSource({ a: Object.fromEntries([0, 1, 2].map((k) => [k, big()])) });
     const r = await run(source, ['a'], [{ expr: 'a' }], { maxBufferedBytes: 10_000 });
-    expect((r.outputs[0] as { error: Error }).error.message).toMatch(
-      /raise maxBufferedBytes to at least \d+/,
-    );
+    const error = (r.outputs[0] as { error: BudgetExceededError }).error;
+    expect(error.message).toMatch(/raise maxBufferedBytes to at least \d+/);
+    // The refusal's `spent` is the very figure the message names as the least that would let the output through.
+    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 10_000 });
+    expect(error.message).toContain(`to at least ${error.spent}`);
+    expect(error.spent).toBeGreaterThan(10_000);
     expect(source.opens).toEqual([]);
   });
 
@@ -695,6 +701,22 @@ describe('budgets and absent operands', () => {
     expect(setup.source.opened).toEqual([]);
   });
 
+  it('names the request budget, its limit and the chunk reads the plan needs', async () => {
+    const setup = seed({ a: ids([1, 2, 3]) });
+    const error = await runCombineMany(
+      compileCombineMany(
+        request(setup, [collecting({ expr: 'a' })], { budget: { maxRequests: 2 } }),
+      ),
+      { source: setup.source, codec: roaringCodec, clock },
+    ).catch((e: unknown) => e);
+    // `spent` is the count the plan needs, which the message states too.
+    expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 2 });
+    expect((error as BudgetExceededError).spent).toBeGreaterThan(2);
+    expect((error as Error).message).toContain(
+      `would read ${(error as BudgetExceededError).spent} chunks`,
+    );
+  });
+
   it('lifts the limit with budget null', async () => {
     const setup = seed({ a: ids([1, 2, 3]) });
     const r = await runCombineMany(
@@ -832,6 +854,12 @@ describe('the plan is charged to the budget', () => {
         clock,
       }),
     ).rejects.toThrow(/the plan alone .* passes maxBufferedBytes \(100000\)/);
+    const refused = await runCombineMany(
+      compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })),
+      { source, codec: roaringCodec, clock },
+    ).catch((e: unknown) => e);
+    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 100_000 });
+    expect((refused as BudgetExceededError).spent).toBeGreaterThan(100_000);
     expect(source.opened).toEqual([]);
     await expect(
       runCombineMany(compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })), {

@@ -1,4 +1,4 @@
-import { CloudRoaring, isNotFoundError, isTransientError, isValidationError } from '@/index';
+import { CloudRoaring, errorKind } from '@/index';
 import type { StorageBackend } from '@cloudbitmaps/core';
 
 /**
@@ -21,9 +21,9 @@ async function failure(run: () => Promise<unknown>): Promise<unknown> {
 
 function notAbsent(err: unknown, name: string): void {
   expect(err).toBeInstanceOf(Error);
-  expect(isNotFoundError(err)).toBe(false);
-  expect(isTransientError(err)).toBe(false);
-  expect(isValidationError(err)).toBe(true);
+  expect(errorKind(err)).not.toBe('NotFoundError');
+  expect(errorKind(err)).not.toBe('TransientError');
+  expect(errorKind(err)).toBe('ValidationError');
   const { message, cause } = err as Error;
   expect(message).toContain(`does not exist: ${name}; check `);
   expect(message).not.toContain('stand-in'); // the stubs' credentials
@@ -69,7 +69,7 @@ export async function expectMissingLocationFails(
 export async function expectMissingObjectIsAbsent(backend: () => StorageBackend): Promise<void> {
   const direct = backend();
   expect(await direct.registry.get({ segment: 's' })).toBeNull();
-  expect(isNotFoundError(await failure(() => direct.storage.getRange(GEN, 0, 8)))).toBe(true);
+  expect(errorKind(await failure(() => direct.storage.getRange(GEN, 0, 8)))).toBe('NotFoundError');
   await expect(direct.storage.delete(GEN)).resolves.toBeUndefined();
   const store = new CloudRoaring({ storage: backend(), retry: false });
   expect(await store.segment('s').has(5)).toBe(false);

@@ -33,8 +33,8 @@
  *   (`NoncurrentVersionExpiration` is safe). See {@link ObjectStoreRegistry}.
  */
 import {
+  errorKind,
   IntegrityError,
-  isIntegrityError,
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   ValidationError,
@@ -192,7 +192,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
         // on it; destroying the body closes the socket. On a body that already failed it changes nothing.
         destroyBody(res.Body);
         // A body cut off part-way is a dropped connection, and transient; a refused row is not.
-        throw isIntegrityError(err) ? err : mapError(err, this.bucket);
+        throw errorKind(err) === 'IntegrityError' ? err : mapError(err, this.bucket);
       }
     });
   }

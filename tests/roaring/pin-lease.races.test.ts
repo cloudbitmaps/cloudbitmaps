@@ -5,9 +5,9 @@ import {
   MemoryStorage,
   NotFoundError,
   WriteConflictError,
-  isLeaseExpiredError,
   destroySegment,
   type SegmentRef,
+  errorKind,
 } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { takeLease } from '@/core/leases';
@@ -389,7 +389,7 @@ describe('clock skew, in both directions', () => {
     expect(await generationsIn(x.memory.storage)).not.toContain(0);
     const err = await collect(x.snap.iterate()).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NotFoundError);
-    expect(isLeaseExpiredError(err)).toBe(false);
+    expect(errorKind(err)).not.toBe('LeaseExpiredError');
   });
 
   it('a collector ahead by 30 s still holds the generation when the reader (correct) reaches `until`', async () => {
