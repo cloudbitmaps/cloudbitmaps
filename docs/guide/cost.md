@@ -196,7 +196,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   generation's index, a tail read, in place of the check that its object is there. A publish
   that loses a race to another writer reads the pointer again, and a load whose check finds the number taken (a
   crashed load's object, or the generations a rollback left above the pointer) lists the segment to number past it
-  and lists again to collect, two PUT-class requests and two more pointer reads. So does every load with a `keep`
+  and lists again to collect, two PUT-class requests and two more pointer reads, and one check fewer. So does every load with a `keep`
   above 64, whose window is wider than the 64 generations a load deletes by name from and which therefore lists to collect: one more PUT-class request and two more
   pointer reads than a load that deletes by name, and one check fewer, which the model does not price: it counts a load at a `keep` from 1 to 64. The first load over a row with a pointer and no ledger (a registry restored without one) lists twice when its number was free (once to seed the ledger, once to collect) and writes the window a count by `keep` keeps in the same write as the pointer, with no separate write, after one 104-byte footer read for each generation it keeps and each live-leased one beside them, run eight at a time, and, when it has a clock, one more read of the row just before, for the leases. A load after a rollback lists twice when the generations the rollback left above the pointer hold its number (once to number past them, once to collect), and otherwise lists only to collect where its `keep` calls for a listing.
   These are a cleartext segment's counts: an encrypted segment's load reads its row once more, after its ids and
