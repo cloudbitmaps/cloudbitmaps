@@ -35,7 +35,9 @@ dependencies and no cloud SDK**. The cloud backends are their own packages, buil
 
 Its main entry is the internal engine (the read engine, the standalone forms of the store's methods, and the retry and
 budget internals) that `@cloudbitmaps/roaring` and the driver packages import; it is not a public API. What an
-application uses is re-exported, by name, from `@cloudbitmaps/roaring`.
+application uses is re-exported, by name, from `@cloudbitmaps/roaring`. The driver contracts (the storage and registry
+ports, the registry's record types, the read-source and keystore ports) are exported by `@cloudbitmaps/core/driver-kit`
+alone, which is complete: every type its signatures name is exported there too.
 
 ## How the storage path is laid out
 

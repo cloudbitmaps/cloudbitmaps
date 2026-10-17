@@ -279,7 +279,8 @@ Two things worth knowing before you pick:
   `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. Each reads a
   pointer in one GET, whose version fence comes back with the bytes, so a pointer read costs the same on all three. A
   segment's tail read is one request on S3 and GCS, and two on Azure Blob, which takes no suffix range. To keep
-  the pointer off the object store entirely, implement `IRegistryDriver` against a database you already run.
+  the pointer off the object store entirely, implement `IRegistryDriver` against a database you already run (the port
+  and its record types are in `@cloudbitmaps/core/driver-kit`).
 - **A registry is optional only for a cleartext, read-only store**, which list-scans the bucket for the latest
   generation. Encrypted segments, the `*Into` verbs and every lifecycle helper need one.
 
@@ -355,11 +356,13 @@ between here and there:
    supports and not what it merely happens to reach: the due-index scheduler, `.crbm` construction internals,
    object-key layout and defaults stated in prose are not importable. `1.0` freezes the format; a small surface is
    the other half of that promise, and a name is far cheaper to *add* later than to take away. A symbol stays when
-   a public type or field needs it to be produced, parsed or consumed, which is why `aadFor` and
-   `readRetentionPolicy` are exported, and that is the test worth applying to any surface reduction. The API
-   reference guard runs in both directions. `@cloudbitmaps/core`'s main entry has since become internal, outside the
-   stability promise and out of the signature snapshot; the public surface is `@cloudbitmaps/roaring`, the drivers,
-   the tools and `@cloudbitmaps/core/driver-kit`.
+   a public type or field needs it to be produced, parsed or consumed, which is why `readRetentionPolicy` is
+   exported (a registry row's `retention` field is public, and this is its supported parse), and that is the test
+   worth applying to any surface reduction. The API reference guard runs in both directions. `@cloudbitmaps/core`'s
+   main entry has since become internal, outside the stability promise and out of the signature snapshot; the public
+   surface is `@cloudbitmaps/roaring`, the drivers, the tools and `@cloudbitmaps/core/driver-kit`. `@cloudbitmaps/roaring`
+   exports the names an application uses and nothing else, and driver-kit is the one home of the driver
+   contracts: every type a driver, a registry, a read source or a keystore of your own names is exported there.
 6. **A public docs + site pass leading with the loaded store's strengths — ✅ Shipped.** The README, the guide,
    the API reference and the site lead with what this is: one bucket, immutable generations, cheap
    chunk-skipping reads from anywhere. A gate derives the site's driver counts from the driver classes in the

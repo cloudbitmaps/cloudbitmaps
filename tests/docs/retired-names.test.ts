@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import * as core from '@cloudbitmaps/core';
 import * as driverKit from '@cloudbitmaps/core/driver-kit';
 import * as roaring from '@/index';
@@ -214,6 +215,240 @@ const MOVED_TO_TOOLS = [
   'ONE_REDIS_HA_CLUSTER',
 ];
 
+/** What a reader who wanted a driver contract from the flavor uses instead. */
+const DRIVER_KIT_INSTEAD =
+  '`@cloudbitmaps/core/driver-kit`, the one home of the driver contracts (a dependency of yours at the version of ' +
+  "`@cloudbitmaps/roaring` you install), or the type derived from the flavor's own: `CloudRoaringOptions['storage']`, " +
+  "`MemoryStorage['registry']`, `EncryptionOptions['keystore']`";
+
+/** What a reader who wanted the `.crbm` reader or its crypto pair uses instead. */
+const READER_INSTEAD =
+  'nothing: the `.crbm` reader is internal; read a segment through the store or `exportSegments`, or read the ' +
+  'bytes as `docs/format.md` specifies them';
+
+/** What a reader who wanted to build the store's read source by hand uses instead. */
+const SOURCE_INSTEAD =
+  "a backend as `storage`, with the store's `cache`, `encryption` and `seams` options for the source's settings";
+
+/** What a reader who wanted a predicate uses instead. */
+const predicate = (kind: string): { name: string; instead: string; anyPage: true } => ({
+  name: `is${kind}`,
+  instead: `\`errorKind(err) === '${kind}'\`, or \`instanceof\` on an ordinary install`,
+  anyPage: true,
+});
+
+/**
+ * Every name `@cloudbitmaps/roaring` stopped exporting in this release, with what a reader uses instead: the 13
+ * predicates `errorKind` replaced; the option types `CombineOptions` merged, and core's names for the five types the
+ * flavor now declares under its own; and every name outside its keep list: the driver contracts, which
+ * `@cloudbitmaps/core/driver-kit` alone exports now, and the engine's internals and constants that no public
+ * signature needs.
+ *
+ * The flavor's barrel declares none of them, and no page imports one from it. `anyPage` marks a name with no public
+ * home and no page that describes it, which no page may name at all. The rest are named by pages legitimately: a
+ * driver contract where a page documents driver-kit, an internal of core's where a page describes the engine
+ * (`BlobReader` and `CodecInterface` in the contributor guides, `CrbmReader` in the fuzz guide,
+ * `CrbmStorageChunkSource` in core's README), and `isTransientError`, which is also the AWS SDK's classifier, in the
+ * bench guide. `code` marks a name that no code names either, comments included.
+ */
+const LEFT_THE_FLAVOR: ReadonlyArray<{
+  name: string;
+  instead: string;
+  anyPage?: true;
+  code?: true;
+}> = [
+  { name: 'isCloudRoaringError', instead: '`errorKind(err) !== undefined`', anyPage: true },
+  ...[
+    'ValidationError',
+    'WriteConflictError',
+    'IntegrityError',
+    'NotFoundError',
+    'UnsupportedError',
+    'CapabilityError',
+    'KeyUnavailableError',
+    'BudgetExceededError',
+    'LeaseExpiredError',
+    'LeaseLimitError',
+    'StaleOperandError',
+  ].map(predicate),
+  { name: 'isTransientError', instead: "`errorKind(err) === 'TransientError'`" },
+  { name: 'IdRange', instead: "`Pick<CombineOptions, 'after' | 'through'>`", anyPage: true },
+  ...['BaseCombineOptions', 'MaterializeOptions', 'AndNotIntoOptions'].map((name) => ({
+    name,
+    instead: '`CombineOptions`',
+    anyPage: true as const,
+    code: true as const,
+  })),
+  ...[
+    ['CombineExpr', 'Expr'],
+    ['CombineManyStats', 'MaterializeManyStats'],
+    ['CombineManyOperandStats', 'MaterializeManyOperandStats'],
+    ['CombineManyOutputStats', 'MaterializeManyOutputStats'],
+    ['CombineManyFeedRecord', 'MaterializeManyFeedRecord'],
+  ].map(([name, now]) => ({
+    name: name ?? '',
+    instead: `\`${now ?? ''}\``,
+    anyPage: true as const,
+    code: true as const,
+  })),
+  ...[
+    'Aead',
+    'AeadSealed',
+    'BlobSink',
+    'ChunkRef',
+    'ClearRegistrySummary',
+    'GenKey',
+    'GovernanceMeta',
+    'IKeystore',
+    'IRegistryDriver',
+    'IStorageDriver',
+    'KnownGeneration',
+    'LeaseEntry',
+    'NewRegistryRecord',
+    'RegCaps',
+    'RegistryPatch',
+    'RegistryRecord',
+    'RegistryStatus',
+    'RegistrySummary',
+    'RegistryWriteOptions',
+    'SealedRegistrySummary',
+    'SegmentSize',
+    'StorageBackend',
+    'StorageCaps',
+    'StorageChunkSource',
+    'StorageDeleteOptions',
+    'TailRead',
+    'Token',
+    'WrappedDek',
+  ].map((name) => ({ name, instead: DRIVER_KIT_INSTEAD })),
+  { name: 'CrbmReader', instead: READER_INSTEAD },
+  { name: 'BlobReader', instead: READER_INSTEAD },
+  ...['BufferReader', 'CrbmReaderOptions', 'CrbmCrypto', 'NodeAead', 'aadFor'].map((name) => ({
+    name,
+    instead: READER_INSTEAD,
+    anyPage: true as const,
+  })),
+  { name: 'CrbmStorageChunkSource', instead: SOURCE_INSTEAD },
+  { name: 'CrbmStorageChunkSourceOptions', instead: SOURCE_INSTEAD, anyPage: true },
+  { name: 'PinnedObject', instead: SOURCE_INSTEAD, anyPage: true },
+  { name: 'CodecInterface', instead: 'nothing: the flavor binds its codec for you' },
+  ...['CodecBitmap', 'EncodedChunk'].map((name) => ({
+    name,
+    instead: 'nothing: the flavor binds its codec for you',
+    anyPage: true as const,
+  })),
+  {
+    name: 'DEFAULT_RETRY_POLICY',
+    instead:
+      "the store's `retry` option, which keeps each default it does not set: 4 attempts, a 50 ms base delay, ×2, a " +
+      '2 s cap and full jitter',
+    anyPage: true,
+  },
+  {
+    name: 'MIN_EXPIRES_AT_MS',
+    instead:
+      'the literal `1_000_000_000_000` (epoch milliseconds, 2001-09-09), the floor the retention guide states',
+    anyPage: true,
+  },
+  {
+    name: 'LEASE_SKEW_MS',
+    instead: 'the value, 60 seconds, which the reading guide states',
+    anyPage: true,
+  },
+  {
+    name: 'MAX_LEASE_MS',
+    instead:
+      'the value, 14 days (1,209,600,000 ms), which the reading guide states; `pin` refuses a longer lease',
+    anyPage: true,
+  },
+  {
+    name: 'MAX_LEASES_PER_SEGMENT',
+    instead:
+      'the value, 64, which the reading guide states; the 65th lease throws `LeaseLimitError`',
+    anyPage: true,
+  },
+];
+
+/** The names a barrel declares as exports, read with the compiler's parser, so a type counts as a value does. */
+function barrelExports(rel: string): Set<string> {
+  const sf = ts.createSourceFile(
+    rel,
+    readFileSync(join(ROOT, rel), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const names = new Set<string>();
+  for (const st of sf.statements) {
+    if (ts.isExportDeclaration(st)) {
+      if (st.exportClause !== undefined && ts.isNamedExports(st.exportClause))
+        for (const el of st.exportClause.elements) names.add(el.name.text);
+      continue;
+    }
+    const exported =
+      ts.canHaveModifiers(st) &&
+      (ts.getModifiers(st) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+    if (!exported) continue;
+    if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations)
+        if (ts.isIdentifier(d.name)) names.add(d.name.text);
+    } else if (
+      (ts.isInterfaceDeclaration(st) ||
+        ts.isClassDeclaration(st) ||
+        ts.isTypeAliasDeclaration(st) ||
+        ts.isFunctionDeclaration(st) ||
+        ts.isEnumDeclaration(st)) &&
+      st.name !== undefined
+    ) {
+      names.add(st.name.text);
+    }
+  }
+  return names;
+}
+
+/** An HTML page's text as a reader sees it: without its tags, and with its quotes and brackets decoded. */
+export function stripMarkup(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, '')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** A page's text, through `stripMarkup` when it is HTML. */
+function readerText(path: string): string {
+  const raw = readFileSync(join(ROOT, path), 'utf8');
+  return path.endsWith('.html') ? stripMarkup(raw) : raw;
+}
+
+/**
+ * Every name `text` imports from `@cloudbitmaps/roaring`, with the line its statement starts on: `import { … }` and
+ * `import type { … }`, on one line or many, and a destructured `require(…)` or `await import(…)`.
+ */
+export function flavorImports(text: string): Array<{ line: number; name: string }> {
+  const forms = [
+    /\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['"]@cloudbitmaps\/roaring['"]/g,
+    /\{([^}]*)\}\s*=\s*(?:require|await\s+import)\(\s*['"]@cloudbitmaps\/roaring['"]\s*\)/g,
+  ];
+  const found: Array<{ line: number; name: string }> = [];
+  for (const form of forms) {
+    for (const m of text.matchAll(form)) {
+      const line = text.slice(0, m.index).split('\n').length;
+      for (const part of (m[1] ?? '').split(',')) {
+        const name = part
+          .replace(/\/\/.*$/gm, '')
+          .trim()
+          .replace(/^type\s+/, '')
+          .split(/\s+as\s+|\s*:\s*/)[0]
+          ?.trim();
+        if (name) found.push({ line, name });
+      }
+    }
+  }
+  return found;
+}
+
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
 /** A page is anything a reader opens: markdown, HTML, and the plain-text pages the site serves. */
 const PAGE_EXTS = ['.md', '.html', '.txt'];
@@ -251,12 +486,15 @@ export function retiredNames(
   return found;
 }
 
-/** `file:line names X; use Y` for every name from `names` that `paths` contain. */
-function offenders(paths: readonly string[], names: ReadonlyArray<{ name: string }>): string[] {
+/** `file:line names X; use Y` for every name from `names` that `paths` contain, with that name's `instead`. */
+function offenders(
+  paths: readonly string[],
+  names: ReadonlyArray<{ name: string; instead: string }>,
+): string[] {
   const out: string[] = [];
   for (const path of paths) {
     for (const { line, name } of retiredNames(readFileSync(join(ROOT, path), 'utf8'), names)) {
-      const instead = RETIRED.find((r) => r.name === name)?.instead ?? '';
+      const instead = names.find((r) => r.name === name)?.instead ?? '';
       out.push(`${path}:${line} names ${name}; use ${instead}`);
     }
   }
@@ -408,5 +646,123 @@ describe('a removed export is named nowhere a reader looks', () => {
     expect(retiredNames('nextGenerationNumber and MyDEFAULT_PRICING_TABLE')).toEqual([]);
     expect(retiredNames('const r = await seg.costReport({ workload });')).toHaveLength(1);
     expect(retiredNames('a costReportCard or myCostReport')).toEqual([]);
+  });
+});
+
+describe('a name the flavor stopped exporting stays off it', () => {
+  const FLAVOR = join('packages', 'roaring', 'src', 'index.ts');
+  const KIT = join('packages', 'core', 'src', 'driver-kit.ts');
+
+  it('reads the flavor barrel, so the checks below cannot pass vacuously', () => {
+    const names = barrelExports(FLAVOR);
+    // A class, a declared interface, a re-exported type, a re-exported value and a local re-export.
+    for (const kept of [
+      'CloudRoaring',
+      'CombineOptions',
+      'SegmentRef',
+      'errorKind',
+      'deserializePortable',
+    ]) {
+      expect(names.has(kept), kept).toBe(true);
+    }
+    expect(new Set(LEFT_THE_FLAVOR.map((r) => r.name)).size).toBe(LEFT_THE_FLAVOR.length);
+  });
+
+  it('the flavor neither declares one nor exports one at runtime', () => {
+    const names = barrelExports(FLAVOR);
+    expect(
+      LEFT_THE_FLAVOR.filter((r) => names.has(r.name)).map((r) => `${r.name}; use ${r.instead}`),
+    ).toEqual([]);
+    for (const { name } of LEFT_THE_FLAVOR) {
+      expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
+    }
+  });
+
+  it('driver-kit exports every driver contract the flavor sends a reader to it for', () => {
+    const kit = barrelExports(KIT);
+    const contracts = LEFT_THE_FLAVOR.filter((r) => r.instead === DRIVER_KIT_INSTEAD);
+    expect(contracts).toHaveLength(28);
+    expect(contracts.filter((r) => !kit.has(r.name)).map((r) => r.name)).toEqual([]);
+  });
+
+  it('no page imports one from the flavor', () => {
+    const out: string[] = [];
+    for (const page of pages()) {
+      for (const { line, name } of flavorImports(readerText(page))) {
+        const row = LEFT_THE_FLAVOR.find((r) => r.name === name);
+        if (row !== undefined)
+          out.push(
+            `${page}:${line} imports ${name} from @cloudbitmaps/roaring; use ${row.instead}`,
+          );
+      }
+    }
+    expect(out).toEqual([]);
+  });
+
+  it("reads the pages' imports, an HTML page's through its markup, so the check above cannot pass vacuously", () => {
+    const names = (page: string): string[] => flavorImports(readerText(page)).map((i) => i.name);
+    expect(names('README.md')).toContain('CloudRoaring');
+    expect(names(join('docs', 'guide', 'getting-started.md'))).toContain('MemoryStorage');
+    expect(names(join('site', 'usage.html'))).toContain('CloudRoaring');
+  });
+
+  it('no page names one that has no public home', () => {
+    expect(
+      offenders(
+        pages(),
+        LEFT_THE_FLAVOR.filter((r) => r.anyPage === true),
+      ),
+    ).toEqual([]);
+  });
+
+  it('no code names one that has no use left in code, comments included', () => {
+    expect(
+      offenders(
+        codeFiles(),
+        LEFT_THE_FLAVOR.filter((r) => r.code === true),
+      ),
+    ).toEqual([]);
+  });
+
+  it('finds an import of one in every form, and passes the same name from driver-kit, in prose, or a longer specifier', () => {
+    const names = (text: string): string[] => flavorImports(text).map((i) => i.name);
+    expect(names("import { CloudRoaring, IStorageDriver } from '@cloudbitmaps/roaring';")).toEqual([
+      'CloudRoaring',
+      'IStorageDriver',
+    ]);
+    expect(
+      names(
+        'import type {\n  CloudRoaringOptions,\n  RegistryRecord,\n} from "@cloudbitmaps/roaring";',
+      ),
+    ).toEqual(['CloudRoaringOptions', 'RegistryRecord']);
+    expect(names("import { type Token as T } from '@cloudbitmaps/roaring';")).toEqual(['Token']);
+    expect(names("const { MIN_EXPIRES_AT_MS: floor } = require('@cloudbitmaps/roaring');")).toEqual(
+      ['MIN_EXPIRES_AT_MS'],
+    );
+    expect(names("const { CrbmReader } = await import('@cloudbitmaps/roaring');")).toEqual([
+      'CrbmReader',
+    ]);
+    expect(
+      names(
+        stripMarkup(
+          '<span class="k">import</span> { NodeAead } <span class="k">from</span> <span class="s">&#39;@cloudbitmaps/roaring&#39;</span>;',
+        ),
+      ),
+    ).toEqual(['NodeAead']);
+    expect(flavorImports("a\n\nimport { Token } from '@cloudbitmaps/roaring';")).toEqual([
+      { line: 3, name: 'Token' },
+    ]);
+    expect(names("import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';")).toEqual(
+      [],
+    );
+    expect(names('`IStorageDriver` is no longer imported from `@cloudbitmaps/roaring`')).toEqual(
+      [],
+    );
+    expect(names("import { CloudRoaring } from '@cloudbitmaps/roaring-extra';")).toEqual([]);
+    expect(
+      names(
+        "import { CloudRoaring } from '@cloudbitmaps/core';\nimport { MemoryStorage } from '@cloudbitmaps/roaring';",
+      ),
+    ).toEqual(['MemoryStorage']);
   });
 });

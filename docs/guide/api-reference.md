@@ -40,7 +40,7 @@ reads nothing of a store and needs none to run:
 @cloudbitmaps/azure-blob      AzureBlobStorage                                    (dep: @azure/storage-blob)
 @cloudbitmaps/tools           estimateCost, groundedReport, the price lists       (offline; dep: @cloudbitmaps/core)
 @cloudbitmaps/core            the internal engine; its main entry is outside the stability promise
-@cloudbitmaps/core/driver-kit the declared contract for writing a driver package   (driver authors only)
+@cloudbitmaps/core/driver-kit the driver contracts: the ports, their record types, a driver's helpers
 CLI (binary):                 export-segments
 ```
 
@@ -48,10 +48,13 @@ Each cloud SDK is a **real dependency** of its backend package, not an optional 
 `@cloudbitmaps/s3` installs `@aws-sdk/client-s3`, and no install carries an SDK for a service you do not use.
 
 **Where the code actually lives.** The flavor package is the roaring codec (internal, not exported),
-the `CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports, by name, the store's
-types, the errors, the backends' shared types and the constants and helpers an application calls, which is why an
-application never needs to name core. What it leaves on core is the engine, whose main entry is internal: the
-packages here import it, and it is not part of the public API. The storage packages are codec-agnostic — they move
+the `CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports, by name, the types the
+store's signatures name, the backends, the errors and the helpers an application calls. What it leaves on core is
+the engine, whose main entry is internal: the packages here import it, and it is not part of the public API. The
+driver contracts the store's signatures stop at (`IStorageDriver`, `IRegistryDriver`, `StorageBackend`,
+`StorageChunkSource`, `IKeystore` and the registry's record types) have one home, `@cloudbitmaps/core/driver-kit`,
+and the flavor does not re-export them: an application that has to name one imports it from there, or derives it
+([the storage interfaces](#the-storage-interfaces-used-to-type-storage--registry)). The storage packages are codec-agnostic — they move
 opaque payload bytes — so one package per storage **service** serves every codec, which is what makes adding
 a codec cost nothing on the storage axis. A driver author builds against
 [`@cloudbitmaps/core/driver-kit`](#cloudbitmapscoredriver-kit), and a flavor never re-exports a driver
@@ -174,10 +177,11 @@ key it does not take, by name, as the store does.
 The **keystore** (optional encryption) is separate from the backend: `InProcessKeystore` (BYOK), passed as
 `encryption.keystore`.
 
-Pass a **raw** `IStorageDriver` as `storage` and the store builds the `.crbm` reader (`CrbmStorageChunkSource`) over it with
-**no registry** — generations then resolve by list-scan, so the store is **cleartext and read-only**; or pass a pre-built `StorageChunkSource` (a
-`CrbmStorageChunkSource` you configured yourself, or one of your own) and it is used as-is — an `encryption.keystore` or
-`encryption.required: true` beside it is then rejected as a wiring mistake (configure them on the source). A store
+Pass a **raw** `IStorageDriver` as `storage` and the store builds its `.crbm` reader over it with
+**no registry** — generations then resolve by list-scan, so the store is **cleartext and read-only**; or pass a
+`StorageChunkSource` of your own, a read source, and it is used as-is — an `encryption.keystore` or
+`encryption.required: true` beside it is then rejected as a wiring mistake (configure them on the source). Both ports
+are exported by `@cloudbitmaps/core/driver-kit`. A store
 built on a pre-built source is **read-only**: the `*Into` verbs and the lifecycle helpers need a backend and
 throw `UnsupportedError`, and so do the calls that enumerate or read the registry (`exists`, `segments`,
 `subjectReport`, `exportSegments`), since the store holds no registry of its own, even when the source you built
@@ -295,7 +299,7 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 | `seg.iterate({ after?, through? }?)` → `IdStream` | stream all ids, ascending, reading ahead as ranges of the object (the window opens 1, 2, 4 and on up to 32 range requests wide). With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
 | `seg.everyNth(n, { after?, through? }?)` → `IdIterator` | **pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`, ascending; a last partial window yields nothing. Reads the chunks that hold a boundary, each once, through `iterate`'s stream, window and budget; a range that cuts its first (or last) chunk reads that chunk too ([details](reading.md#every-nth-id-of-a-pin-everynth)). A live handle throws `UnsupportedError`, a bad `n` or bound `ValidationError`, and a chunk that is read and whose size disagrees with the index `IntegrityError`, each when first read. Chunks not read are trusted to their index counts, as `count()` trusts them. On a leased handle (`pin({ leaseUntil })`, `pinAt(at, { leaseUntil })`) it throws `LeaseExpiredError` past the lease: before its first pull, even when no rank falls in its range, and at each chunk ([leases](reading.md#hold-a-generation-for-a-job-a-lease)) |
 | `IdStream` (what `iterate`, `intersect`, `union` and `andNot` return) | an `IdIterator` (an `AsyncIterableIterator<number>` with `return(value?)` and `throw(err)` typed): `for await` it for one id at a time, or drive it by hand with `next()`, `return()` and `throw()`, as a generator is driven. A handle that holds a lease returns the same shape. `.batches()` → `AsyncIterable<Uint32Array>` yields the same ids one chunk at a time, ascending, an array per non-empty chunk (at most 65,536 ids, 256 KiB) that is yours to keep ([batches](reading.md#read-a-chunk-at-a-time-batches)). The per-id stream is single-use; `batches()` starts its own read when called ([details](reading.md#read-a-chunk-at-a-time-batches)) |
-| `seg.pin(options?)` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, which a lease makes a bounded one: pass `{ leaseUntil }` (epoch milliseconds, at most 14 days out) to keep the generation out of a load's collection until then ([leases](reading.md#hold-a-generation-for-a-job-a-lease)); without one, size `keep` past your longest pinned job. Needs a `.crbm` reader: any backend, a bare `IStorageDriver` or a pre-built `CrbmStorageChunkSource` |
+| `seg.pin(options?)` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, which a lease makes a bounded one: pass `{ leaseUntil }` (epoch milliseconds, at most 14 days out) to keep the generation out of a load's collection until then ([leases](reading.md#hold-a-generation-for-a-job-a-lease)); without one, size `keep` past your longest pinned job. Needs a `.crbm` reader, which the store builds over any backend or a bare `IStorageDriver`; a `StorageChunkSource` of your own throws `UnsupportedError` |
 | `seg.pinAt({ generation, fingerprint }, options?)` → `Promise<Segment>` | **reopen a generation an earlier pin named**, as a pinned handle like the one `pin()` returns (identify it by `generation` and `fingerprint`; its `pinnedAt.version` can differ): pass `{ generation, fingerprint }` from that pin's `pinnedAt`. The fingerprint is required, since a generation number is taken again after a purge and re-create: a bare number, a malformed fingerprint or an unknown key throws `ValidationError`. A generation that is gone (collected, purged or crypto-shredded), above the row's pointer (a rollback deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be reopened while its object is stored), or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. One row read and one tail read with a registry, plus one conditional write to the row when leased, and the tail read alone without one. It holds nothing unless you lease it: pass `{ leaseUntil }` as `options` (the same as `pin()`'s: epoch milliseconds, at most 14 days out; an unknown key in `options`, as in the first argument, throws `ValidationError`) and the lease is written before the object is verified and released if the verify fails. For a generation below the pointer, a collector that read the row before the lease landed can still delete it inside its own round trip, and the handle then fails with `NotFoundError`. Without a lease a later collection can delete the generation, so size `keep` on every writer ([pins](reading.md#reopen-a-pinned-generation-pinat), [leases](reading.md#hold-a-generation-for-a-job-a-lease)). Encrypted segments work as with `pin()` |
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | chunk-skipping intersection, streamed. Each operand's chunks are read as coalesced ranges: chunks within 256 KiB of each other come in one request, up to 1 MiB. `concurrency` is the range requests held ahead per operand (32 by default; the window opens 4 wide and widens as ranges are taken); on a source that reads chunk by chunk it is the chunk keys in flight (opening 8 wide). `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
 | `seg.union([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read, or every chunk inside the range when one is given |
@@ -402,7 +406,7 @@ The fields of each result type are described with its call: `DropResult` in
 | `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
 | `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024; with a timed refresh, 8 × as many segments' resolutions are kept apart from them) · `readerMaxBytes?` (their parsed indices, any metadata they hold, a fixed 3.75 KiB each for the objects around the index, and the chunk bytes a reader keeps of a small generation, default 64 MiB; a sixteenth of it bounds the resolutions) |
 | `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
-| `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy`: `maxAttempts`, `baseDelayMs`, `maxDelayMs`, `backoffFactor` and `jitter`. Anything omitted keeps its `DEFAULT_RETRY_POLICY` value, except `maxDelayMs`, which is 2000 ms, or `baseDelayMs` when that is larger. The store checks the policy when it is built and throws `ValidationError` unless `maxAttempts` is a whole number of at least 1, `baseDelayMs` a finite number of at least 0, `maxDelayMs` a finite number of at least `baseDelayMs` (50 ms unless you set it), `backoffFactor` a finite number of at least 1, and `jitter` `'full'` or `'none'`. Plus `onRetry?`, for the transient retry of every read that answers a query, and of the reads a load's guard and an erasure make along the way; `false` turns it off. It does not govern writes: a write is retried only where that is safe, and not by this option ([Resilience](#resilience-the-store-wires-this-by-default)) |
+| `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy`: `maxAttempts`, `baseDelayMs`, `maxDelayMs`, `backoffFactor` and `jitter`. Anything omitted keeps its default (`maxAttempts` 4, `baseDelayMs` 50, `backoffFactor` 2, `jitter` `'full'`), except `maxDelayMs`, which is 2000 ms, or `baseDelayMs` when that is larger. The store checks the policy when it is built and throws `ValidationError` unless `maxAttempts` is a whole number of at least 1, `baseDelayMs` a finite number of at least 0, `maxDelayMs` a finite number of at least `baseDelayMs` (50 ms unless you set it), `backoffFactor` a finite number of at least 1, and `jitter` `'full'` or `'none'`. Plus `onRetry?`, for the transient retry of every read that answers a query, and of the reads a load's guard and an erasure make along the way; `false` turns it off. It does not govern writes: a write is retried only where that is safe, and not by this option ([Resilience](#resilience-the-store-wires-this-by-default)) |
 | `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |
 | `budget?` | `BudgetOption` | `{ maxRequests }`, a whole number of at least 1 (default 1,000,000), or `false` |
 | `seams?` | `SeamOptions` | `clock?` · `rng?` · `entropy?` — determinism, for tests and replayable jobs; `entropy` draws each written cleartext generation's write identity (Web Crypto by default; an encrypted generation draws none) |
@@ -422,13 +426,16 @@ Batch combine types: `Expr` is an expression over a call's operands; `Materializ
 
 ### Generation bookkeeping & erasure
 
-`PinnedAt` (`{ generation, version, fingerprint }` — what a pin holds for one segment; `version` is opaque, the generation with the row's `pointerId` it was resolved under; `fingerprint` names the object it pinned, so a replaced one is refused, and is required: it is `null` only when `generation` is `null`, `seg.pin()` always records it, and a pin of a generation built by hand without a string `version` and `fingerprint` throws `ValidationError`; `generation: null` means the segment had none to pin and the handle reads empty, **not** that pinning is unsupported) · `PinnedObject` (`{ version, fingerprint }` — what a pinned read of `CrbmStorageChunkSource` checks the generation's object against; a read given one without both as strings throws `ValidationError`) · `EraseDeps` · `DestroyResult` · `DropResult`
+`PinnedAt` (`{ generation, version, fingerprint }` — what a pin holds for one segment; `version` is opaque, the generation with the row's `pointerId` it was resolved under; `fingerprint` names the object it pinned, so a replaced one is refused, and is required: it is `null` only when `generation` is `null`, `seg.pin()` always records it, and a pin of a generation built by hand without a string `version` and `fingerprint` throws `ValidationError`; `generation: null` means the segment had none to pin and the handle reads empty, **not** that pinning is unsupported) · `EraseDeps` · `DestroyResult` · `DropResult`
 
 ### Retention
 
 `RetentionPolicy` · `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` ·
-`RetireEntry` · `MIN_EXPIRES_AT_MS` (the floor, 1,000,000,000,000 — 2001-09-09, on `expiresAt` **and** on the sweep's
-`now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired)
+`RetireEntry`
+
+`expiresAt` and the sweep's `now` have a floor, `1_000_000_000_000` epoch milliseconds (2001-09-09): anything smaller is
+almost certainly epoch *seconds*, which reads as already-expired, so `setRetention` and `retireExpired` throw
+`ValidationError` for it.
 
 ### Export / eject
 
@@ -447,9 +454,24 @@ decodes it with `new TextDecoder().decode(bytes)`.
 
 ### The storage interfaces (used to type `storage` / `registry`)
 
-`IStorageDriver` · `IRegistryDriver` · `StorageChunkSource` · `SegmentRef` · `IKeystore` · `RetryPolicy` · `Clock` · `Rng` ·
-`TailRead` (what `getTail` answers: `{ bytes, size, version? }`) · `StorageDeleteOptions` (`{ ifVersion? }`, what `delete`
-takes)
+From `@cloudbitmaps/roaring`: `SegmentRef` · `RetryPolicy` · `Clock` · `Rng`.
+
+From `@cloudbitmaps/core/driver-kit`, the one home of the driver contracts: `StorageBackend` · `IStorageDriver` ·
+`IRegistryDriver` · `StorageChunkSource` · `IKeystore` · `TailRead` (what `getTail` answers:
+`{ bytes, size, version? }`) · `StorageDeleteOptions` (`{ ifVersion? }`, what `delete` takes), and the registry's record
+types ([below](#low-level-ports--capabilities-driver-author-typing)). The flavor's signatures name them and it does not
+re-export them. Importing one makes `@cloudbitmaps/core` a direct dependency of yours: install it at the version of
+`@cloudbitmaps/roaring` you install, so one copy serves both. Or derive the type from what the flavor exports, with no
+dependency to add:
+
+```ts
+import type { CloudRoaringOptions, EncryptionOptions, MemoryStorage } from '@cloudbitmaps/roaring';
+
+type Storage = CloudRoaringOptions['storage']; // StorageBackend | IStorageDriver | StorageChunkSource
+type StorageDriver = MemoryStorage['storage']; // IStorageDriver
+type RegistryDriver = MemoryStorage['registry']; // IRegistryDriver
+type Keystore = NonNullable<EncryptionOptions['keystore']>; // IKeystore
+```
 
 ### Read and combine options (used to type `iterate`, `everyNth`, `intersect` / `union` / `andNot` and the `*Into` verbs)
 
@@ -514,11 +536,12 @@ prices the pointer refresh at the store's default, 2 s, otherwise.
 ## Advanced / driver-author surface
 
 You **do not** import these to _use_ CloudBitmaps — only to **write a driver**, or to build tooling
-against the on-disk format. Each section says where its names import from. Most come from the
-`@cloudbitmaps/roaring` barrel. The exceptions are the
-[driver kit](#driver-kit--what-you-need-to-implement-a-driver), which is its own subpath,
-`@cloudbitmaps/core/driver-kit`, and the cloud drivers' option types, which come from `@cloudbitmaps/s3`, `/gcs`
-and `/azure-blob`. The main entry of `@cloudbitmaps/core` is internal: it is outside the stability promise and is not documented here.
+against the on-disk format. Each section says where its names import from. The driver contracts come from the
+[driver kit](#driver-kit--what-you-need-to-implement-a-driver), `@cloudbitmaps/core/driver-kit`, their one home;
+the cloud drivers' option types come from `@cloudbitmaps/s3`, `/gcs` and `/azure-blob`; and the few the store's own
+signatures name (`RetryPolicy`, `EraseDeps`) come from `@cloudbitmaps/roaring`. The main entry of `@cloudbitmaps/core`
+is internal: it is outside the stability promise and is not documented here, and neither are the `.crbm` reader, its
+crypto pair and the codec seam it exports.
 
 ### `.crbm` on-disk format
 
@@ -554,8 +577,8 @@ leaves the flag clear.
   in places (Python writes `1e-07`; Go and Rust sort keys by code point), so
   [`tests/golden/metadata-canonical.json`](../../tests/golden/metadata-canonical.json) holds vectors to check a port
   against.
-- **Encrypted.** The section is sealed like the index (AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, under
-  `aadFor(ref, generation, 'metadata')`), so its content cannot be read or altered without the key; its length, like
+- **Encrypted.** The section is sealed like the index (AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, under the
+  associated data of the metadata scope, [section 8 of the format reference](../format.md#8-encryption-at-rest)), so its content cannot be read or altered without the key; its length, like
   the index's, stays visible. That the block is there at all is not authenticated: the flag, the trailer and the
   section types are covered by CRCs, which take no key, so whoever can write the object can remove the block, and the
   object then reads as one with no metadata.
@@ -576,24 +599,15 @@ leaves the flag clear.
   object that is not encrypted when it is opened with a key. It reads the block with the index, from the tail or in
   the same range read, and makes one more read only when the tail ends inside the block.
 
-| Symbol | What it does |
-|---|---|
-| `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, how many bytes the first tail read asks for, a whole number, default 256 KiB: any value of at least an object's `reader.tailBytes` opens it in one read, and where an open keeps a small object's chunks (a `CrbmStorageChunkSource`'s does), it keeps them only when that read covers the whole object, so a value below the default can leave them to reads of their own; `maxPayloadBytes` (the longest index entry it opens; default the decode cap, 1 MiB, plus 28 bytes on an encrypted object, so set it too if you raise `maxBitmapBytes`), `maxIndexBytes`, `crypto`, and `lineage`, an opaque marker of the incarnation of the name the object belongs to, which the reader carries and never interprets, so a caller can tell one generation of a segment from the same generation number of a segment deleted and re-created); `reader.tailBytes` is the bytes of the object after its chunk payloads (its extension block when it has metadata, its index and its footer), the length of a tail read that reaches all of them; `reader.fingerprint` names the object by its size and footer checksum, and `CrbmReader.sameObject(blob, fingerprint)` says whether the object behind `blob` is that one, from one footer's worth with no key: another size is another object, and a footer that fails its own checks throws. A fingerprint is opaque: compare two for equality, and do not parse one. `reader.metadata` is the generation's metadata (`GenerationMetadata`, frozen), checked and, on an encrypted object, decrypted at open; `undefined` on a generation with none, every 1.0 object included. |
-| `CrbmStorageChunkSource` / `CrbmStorageChunkSourceOptions` | the `.crbm` storage reader over an `IStorageDriver` (the store builds this from a raw driver for you); options add `registry`, `keystore`, `requireEncryption`, `clock`, `currentGenTtlMs`, `maxOpenSegments`, `maxOpenIndexBytes` |
-| `BufferReader` · `BlobSink` · `BlobReader` | the in-memory `BlobReader` you hand to `CrbmReader.open`, plus the two interfaces themselves: `BlobSink` takes bytes (one method, `write`), `BlobReader` serves them (`getRange`, `getTail`) |
+**Reading an object yourself.** The reader the store uses is internal, so a tool of your own reads a `.crbm` from
+[the format reference](../format.md), which specifies every byte, or reads a segment through the store or
+`exportSegments`, which hand you ids or portable Roaring bytes.
 
 ### Bitmap-codec seam
 
-The engine is **codec-agnostic** behind these; roaring is the one codec that ships, and there is no supported way to
-add another from outside. They are listed because the store's signatures name them; the `CloudRoaring` facade
-injects the roaring codec for you.
-
-| Symbol | What it does |
-|---|---|
-| `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`). `safeDeserialize(bytes, maxBytes, { whole? })`: with `whole: true`, which a load passes for a caller's bytes, bytes after the bitmap's end are refused too; a stored chunk is read without it. A codec must honour `whole`: core cannot read the format and relies on the codec for that refusal, so a codec that ignores it loads two concatenated bitmaps as the first |
-| `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped. Optional `optimize?()` re-encodes for storage, and must be canonical: afterwards `serialize()` depends on membership alone. Optional `toUint32Array?()` is the chunk's values as one ascending `Uint32Array` for batch reads; it must return a new array the caller owns on every call, since the engine rewrites it in place; a codec without it is read through its iterator. Optional `encodeChunks?()` is the set as `EncodedChunk`s, ascending, each exactly the bytes `fromValues` of that chunk's low 16 bits, `optimize()` and `serialize()` give, which is how a bitmap load writes without touching an id. A codec without it loads a bitmap through its ids |
-| `CodecInterface.owns?(bitmap)` | whether a bitmap is one this codec made; a load from chunks, which is how an `*Into` publishes, refuses any chunk whose bitmap it does not vouch for, and a codec without it has every chunk refused. The roaring codec vouches for the bitmaps its own type made. The answer is the whole check: an `owns` that answers `true` for anything lets any object through |
-| `EncodedChunk` | `{ chunkKey, payload, cardinality }`: one chunk as a `.crbm` generation stores it, what `encodeChunks?()` yields |
+The engine is **codec-agnostic** behind an internal seam; roaring is the one codec that ships, and there is no
+supported way to add another from outside. The `CloudRoaring` facade binds the roaring codec for you, and no public
+signature names the seam.
 
 ### Driver kit — what you need to *implement* a driver
 
@@ -682,12 +696,16 @@ nothing can compare one. Branding them is you taking that on.
 
 | Symbol | What it does |
 |---|---|
-| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry until they move to `driver-kit`. A registry may set `reportsWriteTokens` and call the `onToken` of `RegistryWriteOptions` before each write it sends, so a publish can tell its own write from another writer's (above). |
+| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; `driver-kit` exports them, with every type a row's fields name, so a driver imports nothing from `@cloudbitmaps/core`'s main entry. A registry may set `reportsWriteTokens` and call the `onToken` of `RegistryWriteOptions` before each write it sends, so a publish can tell its own write from another writer's (above). |
 | `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes. A backend may also carry an optional `attachMetrics(sink)`: a store given a `metrics` sink calls it once, as it is built, so the backend can send that sink an `advisory` event about its own setup (the S3 backend's socket pool does). A backend without it is never told. It must not throw: an exception propagates from the store's constructor |
 | `TailRead` · `StorageDeleteOptions` | what `getTail` answers (`{ bytes, size, version? }`, `version` being the object's as the backend names it: an ETag, a GCS object generation) and what `delete` takes (`{ ifVersion? }`); see `StorageCaps.conditionalDelete` below |
-| `IMetricsSink` · `MetricEvent` | the sink `attachMetrics` receives and the event union it emits to, re-exported so a driver does not import core's main entry for them |
+| `IMetricsSink` · `MetricEvent` · `MetricOpName` | the sink `attachMetrics` receives, the event union it emits to, and the operation names an event carries |
+| `Entropy` | `(length) => Uint8Array`, the randomness `ObjectStoreRegistry` draws its tokens from when one is injected (below) |
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend, and the symbol a backend class declares it with. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another. It checks that `storage` has a `putImmutable` and `registry` a `compareAndSwap`, throwing `ValidationError` otherwise, or when the object is frozen or non-extensible, and returns the object it was given. It takes a class (`brandAsBackend(this)` in the constructor) or a plain `{ storage, registry }` object, which is how halves of your own are paired — see below |
-| `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write with overwhelming probability, since it carries random parts; compared by equality only; ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package imports core's main entry for these until they move to `driver-kit` |
+| `Token` | the opaque compare-and-swap token (unique per write with overwhelming probability, since it carries random parts; compared by equality only; ABA-safe across delete→recreate) |
+| `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegCaps` | the row a registry stores and returns, the row `create` takes, the patch `compareAndSwap` applies, the options both writes take (`held`, `onToken`, above), and what `capabilities()` reports; their fields' types (`RegistryStatus`, `RegistrySummary`, `KnownGeneration`, `LeaseEntry`, `GovernanceMeta`, `GenerationMetadata`, `WrappedDek`) are listed under [low-level ports](#low-level-ports--capabilities-driver-author-typing) |
+| `StorageChunkSource` | the read-source port: a store takes one of your own as its `storage`, read-only. Its methods name `ChunkRef`, `ChunkRead`, `ReadChunksOptions`, `SegmentSize` and `GenerationSummary`, all exported here |
+| `IKeystore` | the keystore port, what `encryption.keystore` takes: `createDek()` and `openDek(wrapped)`, naming `WrappedDek`, `Aead` and `AeadSealed`, all exported here |
 | `RESOLVED_FIELDS` · `renewsPointer` · `renewPointer` · `pointerIdOf` | a row's `pointerId`, the token of the last write that named a field a read resolves through, at any value. `RESOLVED_FIELDS` are the five a read resolves through (`currentGen`, `status`, `wrappedDeks`, `keyId`, `summary`); `renewsPointer(patch)` says whether a compare-and-swap of that patch sets `pointerId` to the token it returns (it names one of them, by presence, at any value); `renewPointer(row)` is the patch that renews it and changes nothing a read resolves (`{ currentGen: row.currentGen }`); `pointerIdOf(row)` reads it and throws `UnsupportedError` for a row with none. A registry that builds its own records sets `pointerId` to the token of every create, and of every compare-and-swap for which `renewsPointer` is true, and keeps it on every other write. `ObjectStoreRegistry` already does |
 | `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
 | `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists: `read`, a conditional `write` and `listKeys`, and optionally `delete(key, { version })`, a delete the backend applies only while the object is at exactly that version, with `conditionalDelete: true` to say the backend can be relied on to. With both, `ObjectStoreRegistry` removes a row rather than tombstoning it, and reports `conditionalDelete: true` in its `capabilities()`. |
@@ -702,7 +720,7 @@ nothing can compare one. Branding them is you taking that on.
 | `concatBytes` | `concatBytes(parts)`: the chunks, in order, copied into one new `Uint8Array` that owns its bytes, so a part's buffer can be reused once it returns |
 | `validateSegmentRef` | the name rules a driver applies to a ref (and that it is an object), and nothing more: it takes a namespace in the reserved `cbm.due.` prefix, where the library's own due-index rows live. The refusal of that prefix is in the calls that take an application's ref or `namespace`, not here |
 | `BlobSink` | the sink `putImmutable` hands the writer: the object's bytes arrive through its one method, `write`, and the driver commits them once the writer returns |
-| the typed errors + `errorKind` | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and `errorKind(err)` with its `ErrorKind` type. Throw the classes; classify with `errorKind`, which holds across package copies where `instanceof` does not |
+| the typed errors + `errorKind` | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, the class they extend, `CloudRoaringError`, and `errorKind(err)` with its `ErrorKind` type. Throw the classes; classify with `errorKind`, which holds across package copies where `instanceof` does not |
 
 **What a storage driver must do.** Callers rely on each of these, and the conformance suite holds every shipped
 driver to them (`IStorageDriver`'s doc comment states the same list):
@@ -912,7 +930,7 @@ this.
 
 **`leases` is the holds on a segment's generations**, each `{ holder, generation, until }`: 16 lowercase hex digits naming
 the holder, the generation held, and an epoch-millisecond instant. A load's collection spares the generation of an entry
-that has not ended, and an entry has ended `LEASE_SKEW_MS` (60 seconds) after `until`. Unlike `knownGens` it does not follow
+that has not ended, and an entry has ended 60 seconds after `until`. Unlike `knownGens` it does not follow
 the pointer: a patch that moves `currentGen` leaves it, and only a patch that names it, or the row going away, changes it.
 A writer writes at most 64 entries and a reader accepts 256; an empty list is stored as none; an entry carries no field
 beyond those three, and a stored row that carries one, a holder that is not 16 lowercase hex digits, a duplicate holder or
@@ -991,7 +1009,7 @@ read's attempts. A call of your own is yours to retry: loop over it, and back of
 
 | Symbol | What it does |
 |---|---|
-| `DEFAULT_RETRY_POLICY` · `RetryPolicy` | the defaults (4 attempts, 50 ms base, ×2, 2 s cap, full jitter) the store's `retry` option overrides a field at a time. The retry primitive, `withRetry`, and the read-source wrapper the store builds, `RetryingStorageChunkSource`, are internal to the engine |
+| `RetryPolicy` | from `@cloudbitmaps/roaring`: the five fields the store's `retry` option overrides a field at a time. The defaults are 4 attempts, a 50 ms base delay, ×2, a 2 s cap and full jitter. The retry primitive, `withRetry`, the default policy and the read-source wrapper the store builds, `RetryingStorageChunkSource`, are internal to the engine |
 
 No write goes through the read retry. A conditional put or compare-and-swap that lands and then loses its response
 would, replayed blindly, find its own write already there and report it as a conflict, so a fault the drivers and the
@@ -1008,12 +1026,12 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 
 | Symbol | What it does |
 |---|---|
-| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` takes, so tooling reading an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk, the index and the metadata section (scope `'metadata'`) to `(segment, generation)` |
-| `EraseDeps` | `{ registry }` — deps for the free-function crypto-shred (`destroySegment` / `eraseNamespace`) |
+| `Aead` · `AeadSealed` · `WrappedDek` | from `@cloudbitmaps/core/driver-kit`: the cipher a keystore hands back for a segment's key, what it seals, and the wrapped key a registry row stores. An **`Aead` implementation is handed** the associated data and never builds it; the AES-256-GCM implementation the store uses and the associated-data layout are internal, and [the format reference](../format.md#8-encryption-at-rest) specifies the layout for a reader of your own |
+| `EraseDeps` | from `@cloudbitmaps/roaring`: `{ registry }` — deps for the free-function crypto-shred (`destroySegment` / `eraseNamespace`) |
 
 ### Low-level ports & capabilities (driver-author typing)
 
-`StorageCaps` (`conditionalDelete?` included, see the [driver kit](#driver-kit--what-you-need-to-implement-a-driver)) ·
+From `@cloudbitmaps/core/driver-kit`: `StorageCaps` (`conditionalDelete?` included, see the [driver kit](#driver-kit--what-you-need-to-implement-a-driver)) ·
 `TailRead` · `StorageDeleteOptions` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` (every row carries `token` and `pointerId`; see the
 [driver kit](#driver-kit--what-you-need-to-implement-a-driver)) · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` ·
 `RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize` · `RegistrySummary`
@@ -1095,9 +1113,9 @@ from driver-kit, classifies an error thrown by one package and caught in another
 Every export, by entry point. This section is the completeness anchor the sync test checks against: each entry's
 names sit under that entry's heading, and a name listed under the wrong one fails it.
 
-`@cloudbitmaps/roaring` exports, by name, what an application uses: the store's verbs and their types, the errors,
-the backends' shared types, and the constants and helpers a user calls. The main entry of `@cloudbitmaps/core` is internal, outside the stability promise, and is not indexed here; the
-names a driver author imports are under `@cloudbitmaps/core/driver-kit`.
+`@cloudbitmaps/roaring` exports, by name, what an application uses: the store, its backends, the types its signatures
+name, the errors and the helpers a user calls, and nothing else. The main entry of `@cloudbitmaps/core` is internal, outside the stability promise, and is not indexed here; the
+driver contracts, the ports the store's signatures stop at among them, are under `@cloudbitmaps/core/driver-kit`, their one home.
 
 ### `@cloudbitmaps/roaring` — values
 

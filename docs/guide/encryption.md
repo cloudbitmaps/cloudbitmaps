@@ -71,7 +71,8 @@ cleartext object is deleted. With `encryption: { required: true }`, any cleartex
 segments keep decrypting. Use a **recovery KEK**, kept offline, so that losing the active one is not fatal.
 
 **KMS and Vault.** The default is dependency-free, in-process, bring-your-own-key. `IKeystore` is the interface a KMS
-or Vault adapter would implement; none ships, and encryption never forces a cloud dependency on you.
+or Vault adapter would implement; none ships, and encryption never forces a cloud dependency on you. It is exported by
+`@cloudbitmaps/core/driver-kit`, with `WrappedDek`, `Aead` and `AeadSealed`, the types its methods name.
 
 ## Erase a segment or a namespace (crypto-shred)
 
