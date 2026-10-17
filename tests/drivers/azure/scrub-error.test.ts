@@ -71,6 +71,29 @@ describe('scrubCredentials (Azure)', () => {
     expect((out['details'] as { raw: string }).raw).toContain('host: h');
   });
 
+  it.each([
+    'request',
+    'response',
+    '_response',
+    'socket',
+    '_httpMessage',
+    'req',
+    'res',
+    'connection',
+    'agent',
+  ])('drops %s, whatever it holds', (key) => {
+    const err = new Error('x');
+    // A value no text rule recognises: only dropping the property keeps it out.
+    Object.defineProperty(err, key, {
+      value: { note: 'UNRECOGNISEDVALUE0123' },
+      enumerable: false,
+    });
+    const out = scrubCredentials(err);
+    expect(out).not.toBe(err);
+    expect(Object.getOwnPropertyNames(out)).not.toContain(key);
+    expect(strings(out).filter((text) => text.includes('UNRECOGNISEDVALUE'))).toEqual([]);
+  });
+
   it('redacts a SAS signature and an Authorization value from message, stack and details', () => {
     const out = scrubCredentials(restError());
     const text = [out.message, out.stack, JSON.stringify(out.details)].join('\n');
@@ -493,6 +516,11 @@ describe('scrubCredentials (Azure)', () => {
         { th: ['host', 'x-api-key', 'accept'], td: ['h', 'K', '*/*'] },
         // The list of names reads as a flat header list too, so the name after a credential's is redacted as well.
         { th: ['host', 'x-api-key', '[redacted]'], td: ['h', '[redacted]', '*/*'] },
+      ],
+      [
+        'parallel lists whose value cell is an element (<td><code>K</code></td>)',
+        { th: ['host', 'x-api-key'], td: ['h', { code: 'K' }] },
+        { th: ['host', 'x-api-key'], td: ['h', '[redacted]'] },
       ],
       [
         'a pair whose value is a number or a boolean',
