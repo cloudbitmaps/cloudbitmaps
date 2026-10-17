@@ -13,6 +13,21 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **`IdRange`, `BaseCombineOptions`, `MaterializeOptions` and `AndNotIntoOptions` are now `CombineOptions`.** One
+  interface of `@cloudbitmaps/roaring` declares all eleven fields, each optional, and every combine takes it; `iterate`
+  and `everyNth` take its range, `Pick<CombineOptions, 'after' | 'through'>`, which `MaterializeManyOptions` extends.
+  Rename an annotation to `CombineOptions`, or to that `Pick` for a range. A misplaced option, such as `audit` on
+  `intersect` or `exclude` on `andNot` or `andNotInto`, type-checks and still throws `ValidationError` before any
+  request, so the compiler does not catch it. `interface X extends MaterializeOptions` stops compiling: extend
+  `CombineOptions`. A declaration merged into one of the four names (`declare module '@cloudbitmaps/roaring'`) no longer
+  applies.
+- **`Expr` and the four `MaterializeMany*` stats and feed types are declared types.** `Expr`, `MaterializeManyStats`,
+  `MaterializeManyOperandStats`, `MaterializeManyOutputStats` and `MaterializeManyFeedRecord` are declared under these
+  names, where they were aliases of names in `@cloudbitmaps/core`, so an editor's hover and a compiler error print the
+  name you import; what each describes is unchanged. Code that named core's `CombineExpr`, `CombineManyStats`,
+  `CombineManyOperandStats`, `CombineManyOutputStats` or `CombineManyFeedRecord` renames it to the name here.
+- **`exportSegments` no longer takes `codec`.** The `'roaring'` format's bitmaps are built by the store's own roaring
+  codec, which was the default; a `codec` passed to it throws `ValidationError` before any request. Drop the option.
 - **The main entry of `@cloudbitmaps/core` is internal, outside the stability promise.** It is the engine that
   `@cloudbitmaps/roaring` and the driver packages are built on, so from now on it can change in any minor release and a
   change to it gets no entry here. Nothing in it was removed or changed. Depend on `@cloudbitmaps/roaring` and a driver
