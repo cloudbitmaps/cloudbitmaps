@@ -494,11 +494,22 @@ for await (const _ of store.segment('huge').intersect([store.segment('other')], 
 }
 ```
 
-The error says what to raise and by how much, without parsing its message: `option` is the option that lifts the
-refusal (`'budget.maxRequests'`, `'maxBufferedBytes'` for `materializeMany`'s memory, or `'maxScanSegments'` for a
-registry scan), `limit` is the bound that was in force and `spent` is what the call had reached. `spent` is exact when
-the call was refused before it fanned out. A scan abandoned at its bound stops counting there, so for it `spent` is
-`limit + 1`, a lower bound and not the size of the fleet. They are numbers only: no id, key or segment name.
+The error says which option to raise without parsing its message: `option` is the option that lifts the refusal
+(`'budget.maxRequests'`, `'maxBufferedBytes'` for `materializeMany`'s memory, or `'maxScanSegments'` for a registry
+scan), `limit` is the bound that was in force and `spent` is what the call had reached. What `spent` tells you depends
+on the option:
+
+- `'budget.maxRequests'`: the requests the call needs. Raising the budget to it lets the call through (an enumeration
+  stopped at the bound reports `limit + 1`, a lower bound).
+- `'maxBufferedBytes'`: a **lower bound** on the memory the call needs, namely what it held plus what it asked for at the
+  moment it was refused. Raising the limit to `spent` can be refused again further on, because the call had not finished
+  growing. The one figure that lets an output through is the per-output refusal's, whose message says "raise
+  maxBufferedBytes to at least N". For any other `maxBufferedBytes` refusal, raise the limit with room to spare, or split
+  the outputs across calls, rather than loop on `spent`.
+- `'maxScanSegments'`: `limit + 1`, a lower bound and not the size of the fleet: the scan stops at the first row past the
+  bound. Narrow it with `namespace`, or raise the limit.
+
+`option` is a string and the other two are numbers: the error carries no id, key or segment name.
 
 The ceiling is checked before the fan-out, against work whose size is already known, so it adds nothing to the
 hot path. An `iterate` or a combine that lists its keys again after a move
