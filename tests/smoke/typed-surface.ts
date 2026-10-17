@@ -4,9 +4,9 @@
  *
  * It names every type `@cloudbitmaps/roaring` exports, so a type the flavor stops exporting fails the build's smoke
  * run, and the run fails as well when the flavor exports a type this list does not name. It reads the typed fields of
- * a refusal, `BudgetExceededError`'s `option`, `limit` and `spent`, so a field that changes type fails it. And it
- * holds the derived forms the API reference gives for the driver ports to the ports `@cloudbitmaps/core/driver-kit`
- * exports, so the two spellings cannot drift apart.
+ * a refusal, `BudgetExceededError`'s `option`, `limit` and `spent`, so a field that changes type fails it. And it holds
+ * the derived forms of the driver ports to the ports `@cloudbitmaps/core/driver-kit` exports. The API reference's own
+ * block of those forms is compiled by the same run, beside this file, and held to the ports the same way.
  *
  * `pnpm typecheck` compiles it too, against the sources, because it sits under `tests/`. Nothing runs it.
  */

@@ -323,7 +323,7 @@ of the procedure) rather than wait: a restored row's later writes are given toke
 `pointerId` they set, so no cache is misled, but each store answers from the generation it resolved before the restore
 until it re-reads the row. Some
 stores need more than waiting after a roll too. One with no registry (built on a bare
-`IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
+`IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a `StorageChunkSource` of your own, has no timed refresh, so nothing bounds how
 long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
 in each, as part of the procedure. One on a bare `IStorageDriver`, with **no registry**, reads no pointer: it lists
 the bucket and serves the newest generation there, whatever the restored pointer says, so while generations above

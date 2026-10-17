@@ -398,7 +398,7 @@ export interface CloudRoaringOptions {
    * `count`/`iterate`/`intersect`/`union`/`andNot`/`subjectReport`/`eraseSubject` may fan out into before it's
    * refused with {@link BudgetExceededError} (`eraseSubject` reports an over-budget segment in its ledger instead,
    * see {@link CloudRoaring.eraseSubject}) — so one runaway op can't drive unbounded GET cost on a shared
-   * backend. **On by default, generous** ({@link DEFAULT_BUDGET}: 1,000,000 requests — a normal op never hits it).
+   * backend. **On by default, generous** (1,000,000 requests — a normal op never hits it).
    * Tune with `{ maxRequests }`, override per op (on the combines / `subjectReport` / `eraseSubject`), or set
    * `false` to disable. The check is O(1) (before fan-out), so the hot path is untouched; per-request bytes are
    * separately size-capped, so bounding requests transitively bounds bytes.
@@ -2357,7 +2357,7 @@ export class CloudRoaring {
    * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry
    * cannot be read because of a transient fault, until a retry 500 ms apart reaches it again. A reader that never
    * touched it sees empty at once. **That bound needs a registry and `cache.genTtlMs > 0`.** A store with no registry
-   * (a bare `IStorageDriver`), with `cache.genTtlMs: 0`, or on a storage source built with no clock, has no timed
+   * (a bare `IStorageDriver`), with `cache.genTtlMs: 0`, or on a `StorageChunkSource` of your own, has no timed
    * refresh. It notices the drop only when a read has to fetch
    * from a deleted generation or its reader cache evicts the segment, and until then a chunk it has cached
    * answers without reaching storage, so it can keep answering `true` for a dropped segment indefinitely. Tell
@@ -2545,7 +2545,7 @@ export class CloudRoaring {
    *   A pin answers with no timed bound, until it is told or both caches let it go.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
    *   staleness by `cache.genTtlMs`, and a store with no registry (a bare `IStorageDriver`), with
-   *   `cache.genTtlMs: 0`, or on a storage source built with no clock has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
+   *   `cache.genTtlMs: 0`, or on a `StorageChunkSource` of your own has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
    *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
    * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
@@ -2580,8 +2580,8 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
-          'that cannot resolve a generation has nothing to pin)',
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (the store ' +
+          'cannot pin a StorageChunkSource of your own)',
       );
     }
     // A lease is taken between the pin's row read and its open (see `pinGeneration`). The holder is drawn once, here,
@@ -2676,8 +2676,8 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
-          'that cannot resolve a generation has nothing to pin)',
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (the store ' +
+          'cannot pin a StorageChunkSource of your own)',
       );
     }
     const pinned = new PinnedStorageChunkSource(crbm, pins);
@@ -3400,7 +3400,7 @@ export class Segment {
    * or misfiled one.
    *
    * Needs a store built on the `.crbm` storage source (the default when you pass a backend or a raw driver). Throws
-   * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
+   * {@link UnsupportedError} on a store wired with a `StorageChunkSource` of your own, which it cannot pin.
    */
   async pin(options?: PinOptions): Promise<Segment> {
     // A leased handle pins nothing once its lease is over. The pin it makes is an ordinary one: it takes the generation
@@ -4026,8 +4026,9 @@ export class Segment {
 // contracts the store's signatures stop at (`IStorageDriver`, `IRegistryDriver`, `StorageBackend`,
 // `StorageChunkSource`, `IKeystore` and the registry's record types) are exported by `@cloudbitmaps/core/driver-kit`,
 // their one home, and not here: an application that has to name one imports it from there, or derives it
-// (`CloudRoaringOptions['storage']`, `EncryptionOptions['keystore']`). A name added here is a public name of this
-// package, so add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
+// (`CloudRoaringOptions['storage']`, `NonNullable<EncryptionOptions['keystore']>`). A name added here is a public name
+// of this package, so add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists
+// it.
 // ---------------------------------------------------------------------------------------------------
 // Decode portable bytes you hold, through the check a `{ serialized }` load makes.
 export { deserializePortable };

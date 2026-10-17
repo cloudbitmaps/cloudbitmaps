@@ -167,6 +167,47 @@ describe.each(VERBS)('%s refuses a field it does not take, before any request', 
   });
 });
 
+/** What a call came to, compared across two fresh stores: a batch's per-output results, else the call's own result. */
+const resultOf = (verb: Verb, value: unknown): unknown =>
+  verb === 'materializeMany' ? (value as { outputs: unknown }).outputs : value;
+
+// `intersectInto` and `unionInto` take every field, so they have none to hold as undefined.
+const WITH_MISPLACED = VERBS.filter((v) =>
+  ALL.some((k) => !(TAKES[v] as readonly Key[]).includes(k)),
+);
+
+describe.each(WITH_MISPLACED)(
+  '%s reads a field it does not take, held as undefined, as absent',
+  (verb) => {
+    // A spread of options sets a field to `undefined` to leave it out, so `{ ...opts, exclude: undefined }` must
+    // still work on `andNot`: the field is absent whether the object holds it as its own, inherits it or returns it
+    // from a getter. `materializeMany` refuses any own key it does not list, an undefined one included, so it is
+    // tried with the other two forms only.
+    const misplaced = ALL.filter((k) => !(TAKES[verb] as readonly Key[]).includes(k));
+    const forms = verb === 'materializeMany' ? FORMS.filter((f) => f !== 'own') : FORMS;
+    const cases = misplaced.flatMap((key) => forms.map((form) => [key, form] as const));
+    it.each(cases)('%s, %s', async (key, form) => {
+      const expected = resultOf(verb, await CALLS[verb](await world(), {}));
+      const w = await world();
+      const got = resultOf(
+        verb,
+        await CALLS[verb](w, shaped(form, key, undefined) as CombineOptions),
+      );
+      expect(got).toEqual(expected);
+    });
+  },
+);
+
+describe('materializeMany refuses an own key it does not list, whatever its value', () => {
+  it('an own exclude set to undefined is refused, as an own unknown key always is', async () => {
+    const w = await world();
+    const err = await refusal('materializeMany', w, { exclude: undefined });
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toContain('materializeMany: unknown option "exclude"');
+    expect(w.calls()).toEqual(NO_CALLS);
+  });
+});
+
 describe('the table above is the whole of CombineOptions', () => {
   it('names each field once, and every field', () => {
     expect(new Set(ALL).size).toBe(ALL.length);

@@ -44,10 +44,11 @@ Every change must pass these locally, and CI runs each of them on every pull req
   halves are the class of bug the source-graph tests structurally cannot see. It cannot see whether the brands are
   registered `Symbol.for`s, since with one shared copy of core a plain `Symbol` passes too; that is
   [`tests/core/error-kind.test.ts`](tests/core/error-kind.test.ts)'s to prove. It also compiles, against the built
-  packages under NodeNext, Bundler and Node10 resolution, every `import { … } from '@cloudbitmaps/…'` line of the
-  README, the guides and the package READMEs, so a sample cannot import a name its package does not export, and the
-  typed fixture [`tests/smoke/typed-surface.ts`](tests/smoke/typed-surface.ts), which names every type the flavor
-  exports.
+  packages under NodeNext, Bundler and Node10 resolution, every import from a workspace package on the README, the
+  guides, the package READMEs and the site, so a sample cannot import a name its package does not export, and fails
+  on a line that starts such an import and does not parse; the API reference's block of derived port types, each
+  alias held to the port it names; and the typed fixture
+  [`tests/smoke/typed-surface.ts`](tests/smoke/typed-surface.ts), which names every type the flavor exports.
 
 - `pnpm api:surface:check` (after `pnpm build`) guards **signatures**, which the API reference's name check does not.
   `scripts/api-surface.cjs` reads the declarations the build emitted for every public entry point and compares one line
@@ -115,14 +116,15 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 |---|---|---|
 | `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers, the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
-| `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit` and nothing else of ours — never a flavor, never a sibling |
+| `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit`, and from core's main entry the S3 and GCS drivers take only the types `Clock` and `Rng`, type-only imports the build erases — never a flavor, never a sibling |
 | `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | the benchmarks ([`bench/README.md`](bench/README.md)), fuzz targets ([`fuzz/README.md`](fuzz/README.md)), the build, release and gate scripts ([`scripts/README.md`](scripts/README.md)), the static site ([`site/README.md`](site/README.md)), and the docs trees below |
 
 A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
-(`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both and is never installed
-directly. `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
+(`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both, and is
+installed directly only to name a driver port's type from `@cloudbitmaps/core/driver-kit`
+([the storage interfaces](docs/guide/api-reference.md#the-storage-interfaces-used-to-type-storage--registry)). `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
 core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
 entry outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
 core's but its main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a

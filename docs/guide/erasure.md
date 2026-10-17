@@ -220,7 +220,7 @@ no bus, and no connection between two stores that happen to point at the same bu
 | a `materializeMany` call with a feed, and an erasure by any path but this store's `eraseSubject` | **no bound**: the call is refused only by this store's `eraseSubject` |
 | a pinned handle (`seg.pin()`) in another store | **no bound**: until that store's reader cache evicts the pin's reader (in a store with a timed pointer refresh, a small generation's reader holds all of its chunks, decoded or not) and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
 | a leased pinned handle (`seg.pin({ leaseUntil })`) in another store | until its lease ends, at most 14 days after it was taken: its reads then throw `LeaseExpiredError`, whether or not its reader still holds the chunks. Until then, as for any pinned handle in the row above |
-| another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a pre-built `StorageChunkSource` built with **no clock** | **no bound**: only when its caches happen to let the segment go, or something tells it |
+| another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a `StorageChunkSource` of your own, which the store times no refresh on | **no bound**: only when its caches happen to let the segment go, or something tells it |
 
 A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not keep
 serving: the read that meets it throws, and the reader is dropped with the key it unwrapped.

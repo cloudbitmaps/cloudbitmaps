@@ -142,7 +142,7 @@ export type MetricEvent =
 
 /**
  * The sink you plug in. One method, synchronous, fire-and-forget. It must never throw back into the
- * caller — `CloudRoaring` wraps a user sink with {@link safeMetrics} so a buggy sink can't break I/O.
+ * caller — `CloudRoaring` wraps a user sink so that a buggy sink can't break I/O.
  */
 export interface IMetricsSink {
   onEvent(event: MetricEvent): void;

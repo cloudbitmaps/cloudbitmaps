@@ -103,7 +103,7 @@ export interface InProcessKeystoreOptions {
 
 /**
  * Dependency-free BYOK keystore: envelope-wraps a fresh random per-segment DEK under the active (and optional
- * recovery) KEK using `node:crypto`. No external service. The raw DEK never leaves a returned {@link NodeAead}.
+ * recovery) KEK using `node:crypto`. No external service. The raw DEK never leaves the `Aead` it returns.
  */
 export class InProcessKeystore implements IKeystore {
   private readonly keys: Map<string, Uint8Array>;

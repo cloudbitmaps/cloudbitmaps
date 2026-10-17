@@ -109,7 +109,7 @@ export async function destroySegment(
  * Returns a per-segment result (skips cleartext segments unless `allowCleartext`).
  *
  * **Bounded.** It lists the whole namespace before it destroys anything, and holds the listing resident, so the
- * listing is capped at `maxScanSegments` (default {@link DEFAULT_MAX_SCAN_SEGMENTS}, 250,000), the ceiling every
+ * listing is capped at `maxScanSegments` (default 250,000), the ceiling every
  * other fleet scan keeps. A namespace over it throws `BudgetExceededError` **before any segment is destroyed**,
  * never part-way through; raise `maxScanSegments` when the namespace really is that large and the memory is there.
  * A `maxScanSegments` that is not a safe whole number of at least 1 throws `ValidationError`, again before anything is destroyed.
