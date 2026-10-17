@@ -16,12 +16,18 @@
  *
  * Run `pnpm build` first: the declarations are the built ones, the files a consumer's compiler reads.
  *
- *   node scripts/api-surface.cjs --write            regenerate api-surface/surface.json
- *   node scripts/api-surface.cjs --check            fail if the built surface differs from the committed snapshot
+ * An entry a package lists in its manifest's `cloudbitmaps.internalEntries` is outside the stability promise: it is
+ * not in `surface.json`, and a type only it exported is recorded as `(referenced)` when a public signature names it.
+ * Its own lines go to `api-surface/internal.json`, so a change to it is still visible in a diff.
+ *
+ *   node scripts/api-surface.cjs --write            regenerate api-surface/surface.json and api-surface/internal.json
+ *   node scripts/api-surface.cjs --check            fail if the built surface differs from either committed file
  *   node scripts/api-surface.cjs --against <ref>    fail if an entry in the snapshot committed at <ref> is removed or
  *                                                   changed in the committed snapshot, unless a row of
  *                                                   api-surface/allowed.json that the base does not already have lists it
- *                                                   with a reason. Additions pass, except a required member added to an interface the ref already has. Compares committed files, so it
+ *                                                   with a reason. An entry that is internal on this branch but has
+ *                                                   keys in the base snapshot needs the row `<specifier> (internal)`.
+ *                                                   Additions pass, except a required member added to an interface the ref already has. Compares committed files, so it
  *                                                   needs neither a build nor the TypeScript package.
  *   --root <dir>                                    run on another checkout (the tests' fixtures)
  *
@@ -34,6 +40,7 @@ const { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } = r
 const { dirname, join, resolve, sep } = require('node:path');
 
 const SNAPSHOT_PATH = 'api-surface/surface.json';
+const INTERNAL_PATH = 'api-surface/internal.json';
 const ALLOWED_PATH = 'api-surface/allowed.json';
 
 const collapse = (s) => s.replace(/\s+/g, ' ').trim();
@@ -53,7 +60,8 @@ function typesOf(target) {
 }
 
 /**
- * The public entry points: `{ specifier, dts }` for every `exports` key of every package. A key whose target names no
+ * The entry points: `{ specifier, dts, internal }` for every `exports` key of every package; `internal` is true for a
+ * key the package lists in `cloudbitmaps.internalEntries`. A key whose target names no
  * declaration file is an error, not a skip, so a new entry cannot go unguarded; a `.json` file is not an entry.
  */
 function entryPoints(root) {
@@ -75,11 +83,18 @@ function entryPoints(root) {
       out.push({
         specifier: manifest.name + (key === '.' ? '' : key.slice(1)),
         dts: join(root, 'packages', dir, types),
+        internal: (manifest.cloudbitmaps?.internalEntries ?? []).includes(key),
       });
     }
   }
   return out;
 }
+
+/** The specifiers of the entry points the manifests list as internal, from the committed manifests alone. */
+const internalSpecifiers = (root) =>
+  entryPoints(root)
+    .filter((e) => e.internal)
+    .map((e) => e.specifier);
 
 /** The name of the package that holds `file`: the nearest `package.json` above it. */
 function packageNameOf(file) {
@@ -90,7 +105,10 @@ function packageNameOf(file) {
   return 'unknown';
 }
 
-/** The surface of `entries` (`{ specifier, dts }`) as a sorted `{ key: text }` object. `root` bounds the workspace. */
+/**
+ * The surface of `entries` (`{ specifier, dts, internal }`): the public `entries`, the `required` marks, and the
+ * `internal` lines of the entries marked internal, each a sorted `{ key: text }` object. `root` bounds the workspace.
+ */
 function buildSnapshot(entries, root) {
   const ts = require('typescript');
   for (const e of entries) {
@@ -111,15 +129,18 @@ function buildSnapshot(entries, root) {
   const checker = program.getTypeChecker();
   const printer = ts.createPrinter({ removeComments: true });
   const out = new Map();
+  const internalOut = new Map();
   const required = new Map(); // member key -> its parent's key, for a member an implementer must provide
+  let describingInternal = false; // the lines go to `internalOut`, and name no type for `(referenced)`
   const referenced = new Map(); // symbol -> true once queued
   const queue = [];
 
   const print = (node) =>
     collapse(printer.printNode(ts.EmitHint.Unspecified, node, node.getSourceFile()));
   const add = (key, text) => {
-    if (out.has(key)) throw new Error(`api-surface: two entries for ${key}`);
-    out.set(key, collapse(text));
+    const target = describingInternal ? internalOut : out;
+    if (target.has(key)) throw new Error(`api-surface: two entries for ${key}`);
+    target.set(key, collapse(text));
   };
   /** `key` for a symbol's first declaration, `key #n` for the nth (overloads, get/set pairs): dropping the last leaves the rest's keys alone. */
   const numbered = (key, i) => (i === 0 ? key : `${key} #${i + 1}`);
@@ -135,7 +156,8 @@ function buildSnapshot(entries, root) {
     file.startsWith(workspace) && !file.includes(`${sep}node_modules${sep}`);
 
   const exported = new Set();
-  for (const { dts } of entries) {
+  for (const { dts, internal } of entries) {
+    if (internal) continue;
     const moduleSymbol = checker.getSymbolAtLocation(program.getSourceFile(realpathSync(dts)));
     if (moduleSymbol)
       for (const s of checker.getExportsOfModule(moduleSymbol)) exported.add(resolveAlias(s));
@@ -143,7 +165,7 @@ function buildSnapshot(entries, root) {
 
   /** Queue the workspace types a declaration names and no entry exports. Private members are not public. */
   function collectRefs(node) {
-    if (ts.isClassElement(node) && isPrivate(node)) return;
+    if (describingInternal || (ts.isClassElement(node) && isPrivate(node))) return;
     let name;
     if (ts.isTypeReferenceNode(node)) name = node.typeName;
     else if (ts.isExpressionWithTypeArguments(node)) name = node.expression;
@@ -197,7 +219,7 @@ function buildSnapshot(entries, root) {
       group.forEach((m, i) => {
         const memberKeyed = numbered(`${key}.${name}`, i);
         add(memberKeyed, print(m));
-        if (forImplementers && isRequired(m)) required.set(memberKeyed, key);
+        if (forImplementers && !describingInternal && isRequired(m)) required.set(memberKeyed, key);
       });
     }
   }
@@ -256,13 +278,18 @@ function buildSnapshot(entries, root) {
     for (const d of decls) collectRefs(d);
   }
 
-  for (const { specifier, dts } of entries) {
-    const moduleSymbol = checker.getSymbolAtLocation(program.getSourceFile(realpathSync(dts)));
-    if (!moduleSymbol) throw new Error(`${specifier}: ${dts} is not a module`);
-    for (const s of checker.getExportsOfModule(moduleSymbol)) {
-      describe(`${specifier} ${s.name}`, resolveAlias(s));
+  for (const internal of [false, true]) {
+    describingInternal = internal;
+    for (const entry of entries.filter((e) => Boolean(e.internal) === internal)) {
+      const { specifier, dts } = entry;
+      const moduleSymbol = checker.getSymbolAtLocation(program.getSourceFile(realpathSync(dts)));
+      if (!moduleSymbol) throw new Error(`${specifier}: ${dts} is not a module`);
+      for (const s of checker.getExportsOfModule(moduleSymbol)) {
+        describe(`${specifier} ${s.name}`, resolveAlias(s));
+      }
     }
   }
+  describingInternal = false;
 
   // The referenced types, with the types they name in turn. A name taken twice in one package is told apart by file.
   const used = new Set(out.keys());
@@ -277,7 +304,7 @@ function buildSnapshot(entries, root) {
     used.add(key);
   }
   const sorted = (map) => Object.fromEntries([...map].sort(([a], [b]) => byKey(a, b)));
-  return { entries: sorted(out), required: sorted(required) };
+  return { entries: sorted(out), required: sorted(required), internal: sorted(internalOut) };
 }
 
 /** The surface of `entries` as a sorted `{ key: text }` object. */
@@ -285,6 +312,9 @@ const buildSurface = (entries, root) => buildSnapshot(entries, root).entries;
 
 const serialize = ({ entries, required }) =>
   JSON.stringify({ version: 1, entries, required }, null, 2) + '\n';
+
+const serializeInternal = ({ internal }) =>
+  JSON.stringify({ version: 1, entries: internal }, null, 2) + '\n';
 
 function parseSnapshot(text, where) {
   const parsed = JSON.parse(text);
@@ -400,6 +430,12 @@ function main(argv, defaultRoot) {
     console.log(
       `api-surface: wrote ${Object.keys(snapshot.entries).length} entries to ${SNAPSHOT_PATH}`,
     );
+    if (internalSpecifiers(root).length > 0 || existsSync(join(root, INTERNAL_PATH))) {
+      writeFileSync(join(root, INTERNAL_PATH), serializeInternal(snapshot));
+      console.log(
+        `api-surface: wrote ${Object.keys(snapshot.internal).length} internal entries to ${INTERNAL_PATH}`,
+      );
+    }
     return 0;
   }
   if (mode === '--check') {
@@ -409,16 +445,32 @@ function main(argv, defaultRoot) {
     const was = committed.entries;
     const { removed, added, changed } = diffSurfaces(was, now);
     const marks = diffSurfaces(committed.required, builtSnapshot.required);
+    const internalNow = builtSnapshot.internal;
+    const internalWas = existsSync(join(root, INTERNAL_PATH))
+      ? parseSnapshot(read(INTERNAL_PATH), INTERNAL_PATH).entries
+      : {};
+    const inner = diffSurfaces(internalWas, internalNow);
     if (
       removed.length + added.length + changed.length === 0 &&
-      marks.removed.length + marks.added.length + marks.changed.length === 0
+      marks.removed.length + marks.added.length + marks.changed.length === 0 &&
+      inner.removed.length + inner.added.length + inner.changed.length === 0
     ) {
       console.log(
-        `api-surface: the built surface is the committed snapshot (${Object.keys(now).length} entries)`,
+        `api-surface: the built surface is the committed snapshot (${Object.keys(now).length} entries, ${Object.keys(internalNow).length} internal)`,
       );
       return 0;
     }
-    console.error(`api-surface: the built surface differs from ${SNAPSHOT_PATH}`);
+    console.error(
+      `api-surface: the built surface differs from ${SNAPSHOT_PATH} or ${INTERNAL_PATH}`,
+    );
+    for (const k of inner.added)
+      console.error(`  internal added:   ${k}\n    now: ${internalNow[k]}`);
+    for (const k of inner.removed)
+      console.error(`  internal removed: ${k}\n    was: ${internalWas[k]}`);
+    for (const k of inner.changed)
+      console.error(
+        `  internal changed: ${k}\n    was: ${internalWas[k]}\n    now: ${internalNow[k]}`,
+      );
     for (const k of added) console.error(`  added:   ${k}\n    now: ${now[k]}`);
     for (const k of removed) console.error(`  removed: ${k}\n    was: ${was[k]}`);
     for (const k of changed)
@@ -452,16 +504,36 @@ function main(argv, defaultRoot) {
       return 0;
     }
     const baseAllowed = atRef(ALLOWED_PATH);
-    const was = parseSnapshot(wasText, `${ref}:${SNAPSHOT_PATH}`).entries;
+    const baseEntries = parseSnapshot(wasText, `${ref}:${SNAPSHOT_PATH}`).entries;
+    // An internal entry is outside the promise: its keys are not compared. `spec + ' '` never matches
+    // `spec + ' (referenced) '`, and a referenced key is keyed by package name, so it stays tracked.
+    const internal = internalSpecifiers(root);
+    const underInternal = (k, spec) =>
+      k.startsWith(`${spec} `) && !k.startsWith(`${spec} (referenced) `);
+    const was = Object.fromEntries(
+      Object.entries(baseEntries).filter(([k]) => !internal.some((spec) => underInternal(k, spec))),
+    );
     const current = parseSnapshot(read(SNAPSHOT_PATH), SNAPSHOT_PATH);
     const now = current.entries;
     const rows = JSON.parse(read(ALLOWED_PATH));
-    const { problems } = breakingChanges(
-      was,
-      now,
-      newRows(rows, baseAllowed === null ? [] : JSON.parse(baseAllowed)),
-      current.required,
-    );
+    const fresh = newRows(rows, baseAllowed === null ? [] : JSON.parse(baseAllowed));
+    const { problems } = breakingChanges(was, now, fresh, current.required);
+    for (const spec of internal) {
+      const had = Object.keys(baseEntries).filter((k) => underInternal(k, spec)).length;
+      const agreed =
+        Array.isArray(fresh) &&
+        fresh.some(
+          (r) =>
+            r?.entry === `${spec} (internal)` &&
+            typeof r?.reason === 'string' &&
+            r.reason.trim() !== '',
+        );
+      if (had > 0 && !agreed) {
+        problems.push(
+          `internal: ${spec}\n    is internal here and has ${had} keys in the snapshot at ${ref}; making it internal takes it out of the promise, so add a row {"entry": "${spec} (internal)", "reason": …}`,
+        );
+      }
+    }
     const rowProblems = allowlistProblems(rows).filter((p) => !problems.includes(p));
     problems.push(...rowProblems);
     if (problems.length === 0) {
@@ -490,6 +562,8 @@ module.exports = {
   allowlistProblems,
   newRows,
   serialize,
+  serializeInternal,
+  internalSpecifiers,
 };
 
 if (require.main === module) {

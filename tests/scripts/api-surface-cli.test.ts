@@ -461,3 +461,127 @@ export {};
     expect(r.err).toContain('changed: @fx/a (referenced) Hidden.a');
   });
 });
+
+describe('internal entries', () => {
+  const CORE = `export interface Ctx { n: number }
+export declare function engine(c: Ctx, a: string): void;
+export declare function other(): void;
+`;
+  const KIT = `import type { Ctx } from './index';\nexport declare function useCtx(c: Ctx): void;\n`;
+  const internalRow = { entry: '@fx/b (internal)', reason: 'only our own packages use it' };
+  const manifestB = (internal: boolean): string =>
+    JSON.stringify({
+      name: '@fx/b',
+      ...(internal ? { cloudbitmaps: { internalEntries: ['.'] } } : {}),
+      exports: {
+        '.': { types: './dist/index.d.ts', default: './dist/index.js' },
+        './kit': { types: './dist/kit.d.ts', default: './dist/kit.js' },
+      },
+    });
+  const setB = (internal: boolean, core = CORE): void => {
+    put('packages/b/package.json', manifestB(internal));
+    put('packages/b/dist/index.d.ts', core);
+    put('packages/b/dist/kit.d.ts', KIT);
+    expect(run(['--write']).status).toBe(0);
+  };
+  const internalFile = (): Record<string, string> =>
+    (
+      JSON.parse(readFileSync(join(repo, 'api-surface/internal.json'), 'utf8')) as {
+        entries: Record<string, string>;
+      }
+    ).entries;
+
+  it('leaves an internal entry out of the snapshot, writes it to internal.json, and keeps a type it names referenced', () => {
+    setB(true);
+    const e = snapshot();
+    expect(
+      Object.keys(e).filter((k) => k.startsWith('@fx/b engine') || k === '@fx/b other'),
+    ).toEqual([]);
+    expect(e['@fx/b/kit useCtx']).toBe('function useCtx(c: Ctx): void;');
+    expect(e['@fx/b (referenced) Ctx.n']).toBe('n: number;');
+    expect(Object.keys(e).some((k) => k.startsWith('@fx/b Ctx'))).toBe(false);
+    const inner = internalFile();
+    expect(inner['@fx/b engine']).toBe('function engine(c: Ctx, a: string): void;');
+    expect(inner['@fx/b Ctx.n']).toBe('n: number;');
+    expect(run(['--check']).status).toBe(0);
+  });
+
+  it('fails --check when internal.json is out of date, and when it is missing its entries', () => {
+    setB(true);
+    put('packages/b/dist/index.d.ts', `${CORE}export declare function fresh(): void;\n`);
+    let r = run(['--check']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('internal added:   @fx/b fresh');
+    put('packages/b/dist/index.d.ts', CORE.replace('a: string', 'a: number'));
+    r = run(['--check']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('internal changed: @fx/b engine');
+    put('packages/b/dist/index.d.ts', CORE);
+    rmSync(join(repo, 'api-surface/internal.json'));
+    r = run(['--check']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('internal added:   @fx/b engine');
+  });
+
+  it('does not fail --against for a change or a removal in an internal entry', () => {
+    setB(true);
+    commit();
+    setB(
+      true,
+      CORE.replace('a: string', 'a: number').replace(
+        'export declare function other(): void;\n',
+        '',
+      ),
+    );
+    const r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+    expect(internalFile()['@fx/b engine']).toBe('function engine(c: Ctx, a: number): void;');
+  });
+
+  it('fails making an entry internal without the row, and passes with it', () => {
+    setB(false);
+    commit();
+    setB(true);
+    let r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('internal: @fx/b');
+    expect(r.err).toContain('@fx/b (internal)');
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/b (internal)', reason: ' ' }]));
+    expect(run(['--against', 'HEAD']).status).toBe(1);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    r = run(['--against', 'HEAD']);
+    expect(r.status, r.err).toBe(0);
+  });
+
+  it('wants no row once the base is already internal, and a row the base has excuses nothing', () => {
+    setB(true);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    commit();
+    expect(run(['--against', 'HEAD']).status).toBe(0);
+    put('api-surface/allowed.json', '[]\n');
+    expect(run(['--against', 'HEAD']).status).toBe(0);
+  });
+
+  it('still tracks a referenced type of the internal entry', () => {
+    setB(false);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    setB(true);
+    commit();
+    put('api-surface/allowed.json', '[]\n');
+    setB(true, CORE.replace('n: number', 'n: string'));
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/b (referenced) Ctx.n');
+  });
+
+  it('does not let the internal row excuse a referenced key', () => {
+    setB(true);
+    put('api-surface/allowed.json', JSON.stringify([internalRow]));
+    commit();
+    setB(true, CORE.replace('n: number', 'n: string'));
+    put('api-surface/allowed.json', JSON.stringify([{ ...internalRow, reason: 'again' }]));
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('changed: @fx/b (referenced) Ctx.n');
+  });
+});

@@ -7,19 +7,19 @@
  * {@link CodecInterface} seam, so a *flavor* package (`@cloudbitmaps/roaring` today) supplies the codec and a
  * facade on top.
  *
- * **You normally install a flavor, not this package** — `pnpm add @cloudbitmaps/roaring` pulls this in
- * transitively and re-exports, by name, what an application uses, so `@cloudbitmaps/roaring` is the one name to
- * know. The engine, the standalone forms of the store's methods and the retry and budget internals stay here:
- * depend on `core` directly only when authoring a new flavor or a driver.
+ * **This entry is internal.** It is the engine `@cloudbitmaps/roaring` and the storage-driver packages import, and it is
+ * outside the stability promise: it can change in any minor release, and a change to it gets no CHANGELOG Breaking
+ * entry. Install `@cloudbitmaps/roaring` and a driver; `@cloudbitmaps/roaring` re-exports, by name, what an application
+ * uses. The public entry of this package is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
+ * Within a minor, this entry changes only additively: a removal or a changed signature waits for the next minor.
  *
  * Nothing in here may import a flavor package — the dependency arrow is one-way (flavor → core), so core stays
  * publishable on its own and every codec reuses one driver set with zero duplication.
  */
 
 // ---------------------------------------------------------------------------------------------------
-// The flavor-author kit: the pieces a facade (codec + store wrapper) composes. These are *not* what an
-// application calls — an app uses the flavor's `CloudRoaring` facade — but a flavor/driver author needs them,
-// which is precisely core's audience.
+// The engine pieces a facade (codec + store wrapper) composes. These are *not* what an application calls: an app
+// uses the flavor's `CloudRoaring` facade.
 // ---------------------------------------------------------------------------------------------------
 export { SegmentEngine } from './core/engine';
 export type { EngineDeps, CombineOptions as EngineCombineOptions, IdRange } from './core/engine';
