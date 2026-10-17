@@ -24,8 +24,9 @@ so, and so do the module headers in the code.
 - **`Expr` and the four `MaterializeMany*` stats and feed types are declared types.** `Expr`, `MaterializeManyStats`,
   `MaterializeManyOperandStats`, `MaterializeManyOutputStats` and `MaterializeManyFeedRecord` are declared under these
   names, where they were aliases of names in `@cloudbitmaps/core`, so an editor's hover and a compiler error print the
-  name you import; what each describes is unchanged. Code that named core's `CombineExpr`, `CombineManyStats`,
-  `CombineManyOperandStats`, `CombineManyOutputStats` or `CombineManyFeedRecord` renames it to the name here.
+  name you import; what each describes is unchanged. Code that named core's types renames them: `CombineExpr` →
+  `Expr`, `CombineManyStats` → `MaterializeManyStats`, `CombineManyOperandStats` → `MaterializeManyOperandStats`,
+  `CombineManyOutputStats` → `MaterializeManyOutputStats` and `CombineManyFeedRecord` → `MaterializeManyFeedRecord`.
 - **`exportSegments` no longer takes `codec`.** The `'roaring'` format's bitmaps are built by the store's own roaring
   codec, which was the default; a `codec` passed to it throws `ValidationError` before any request. Drop the option.
 - **The 13 `isXError` predicates are gone from `@cloudbitmaps/roaring`, and the 5 of them `@cloudbitmaps/core/driver-kit`
