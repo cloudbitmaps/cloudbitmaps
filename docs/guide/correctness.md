@@ -80,7 +80,11 @@ the outputs of a `materializeMany` call, count it with a dry run ([in the loadin
 
 **What throws instead.** A refusal is an outcome. A throw is a fault:
 
-- invalid options or ids, or a crypto-shredded segment: `ValidationError`;
+- invalid options or ids, or a crypto-shredded segment: `ValidationError`, an id lower than the one before it under
+  `sorted: true` included;
+- an error your id source throws, as it threw it, this library's own `WriteConflictError` included: under
+  `sorted: true` too, where the ids are read during the upload, and the storage driver never sees it; and, under
+  `sorted: true`, `IntegrityError` when a storage driver runs its write a second time;
 - a key the keystore cannot provide: `KeyUnavailableError`;
 - a current generation that will not open when the load has to read its size for a guard, which it does only when the
   segment's row has no usable summary of it (see [the guard's size](loading.md#where-the-guard-reads-the-size-of-the-current-generation)): `IntegrityError`;
@@ -195,6 +199,17 @@ What changes is the order in which a failure surfaces, never whether anything is
 of the second row read (a crypto-shredded segment), can be raised instead of it; either way nothing is written or
 published. A load that fails or is refused after its first row read may already have made its one keystore call for an
 existing encrypted segment, which a load that failed earlier did not.
+
+**A sorted load reads its ids last.** With `sorted: true` the ids are read while the object is written, so everything
+else comes before the first of them: the row is read again (on a first load or an encrypted segment, as above) and
+judged, the existence check is joined, and the key is unwrapped or minted. A destroyed segment, an encrypted one with no
+keystore, and `requireEncryption` on a cleartext one are refused with no id read. The key is then in use while the ids
+stream, and a shred that lands meanwhile is caught by the publish's fence on the row's token: the publish loses, the
+load reports `superseded`, and its object is deleted under the `destroyed` row, one of the deletes by number invariant 2
+allows. An error the ids raise mid-stream fails the upload, so no object is committed and nothing is published or
+deleted; the caller gets that error as the very object raised, and the storage driver never sees it, only a sentinel of
+the load's own. The ids are read once: a driver that runs its write again gets `IntegrityError`, not a shorter
+object.
 
 **Publish is forward-only, so a rerun is safe.** The object is written first. Only once it is durable does the load
 advance the registry pointer, with a compare-and-swap that never moves backwards. Run the same job twice and the second

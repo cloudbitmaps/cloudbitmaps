@@ -74,6 +74,47 @@ res; // { generation, published, cardinality, collected, ... }: what was written
 
 Pass the cursor itself. The one way to make a load expensive is to build the whole id list in memory first.
 
+**Ids that already ascend: `sorted: true`.** A load of ids holds the whole generation in memory before it writes it
+([memory](#memory-and-where-a-load-runs), below). When your source yields its ids in ascending order, as a query with an
+`ORDER BY` on the id, a sorted file or a merge of sorted runs does, pass `sorted: true`: the load cuts the ids into one
+chunk at a time and writes each chunk while the object uploads, so it holds one chunk and the writer's index of the
+chunks written, up to about 14 MiB whatever the segment's size.
+
+```ts
+// Your function: yields the ids in ascending order, as `ORDER BY user_id` returns them.
+declare function idsInOrder(): AsyncIterable<number>;
+
+await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
+```
+
+- **It writes the same object.** The generation is the one an unsorted load of the same ids writes, byte for byte
+  under the same write identity, and everything else holds unchanged: the guard and the empty refusal, `keep`, the
+  fenced publish, encryption and the result.
+- **Ascending, with repeats.** An id equal to the one before it is skipped. An id lower than the one before it throws
+  `ValidationError` naming its position and never the id (`ids[41]: lower than the id before it; …`): sort at the
+  source, or leave `sorted` off. A bad id is refused as it is without the option, at its position.
+- **For ids only.** With `{ serialized }`, `{ bitmap }` or a `RoaringBitmap32` of the `roaring` this package uses,
+  `sorted: true` throws `ValidationError` before any request: those are held whole already and written from their own
+  containers. A bitmap from another copy of `roaring` loads as the ids it iterates, which ascend, so it takes `sorted`.
+  A `sorted` that is not a boolean throws too. The `*Into` verbs do not take it.
+- **The segment is judged before an id is read.** The row and its refusals (a destroyed segment, an encrypted one the
+  load has no keystore for, `requireEncryption` on a cleartext one), the generation number and the key are all settled
+  first, so a load refused there reads none of your ids.
+- **Your ids are read during the upload.** An error your source throws, or an id that is refused, therefore fails the
+  upload part way. No object is committed, on any backend, and the error reaches you as the very object your source
+  threw: a database error that happens to carry a 409 or an `ECONNRESET` is not reported as a lost race or a storage
+  fault. The parts uploaded before it may already be billed, though: S3 aborts its multipart upload, a GCS resumable
+  session never becomes an object, and Azure Blob has no call to discard staged blocks, so they are billed until Azure
+  collects them, a week after the last one was staged ([before production](production.md#bucket-lifecycle)). Without
+  `sorted`, a bad id is refused before anything is uploaded.
+- **Read once.** A storage driver may run its write again after a failed attempt, which a source read once cannot
+  serve, so a sorted load whose ids are asked for a second time throws `IntegrityError` rather than writing a shorter
+  object. The drivers this project ships run it once.
+- **A long stream is a long load.** The row is read before the stream and fenced at the publish after it, as for an
+  unsorted load, so a write to the row while your ids stream (another load, a `setRetention`) makes the load
+  `superseded`. A segment crypto-shredded while they stream is caught the same way, and the object the load wrote is
+  deleted under the `destroyed` row ([how a load stays correct](correctness.md#how-a-load-stays-correct)).
+
 **A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
 rather than its ids. `{ bitmap }` takes anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`;
 `{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
@@ -244,16 +285,31 @@ allows, or larger than `guard.maxGrowth` allows, is refused. A guard that has to
 no usable summary, meets an object it cannot read and judges against nothing. Leave `minRetained` and `maxGrowth` out to
 repair a segment whose row remembers a size: `allowEmpty: true` lifts neither refusal. See [disaster recovery](disaster-recovery.md).
 
-**Memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per non-empty chunk, so a
-billion duplicate-heavy ids stream through holding only the distinct result. The buffer between the input and the
-bitmaps holds at most 1,048,576 ids, about 28 MB measured, whatever the key distribution. On S3 the writer also buffers
-up to one upload part (8 MiB by default); an object that fits in one part goes up as a single PUT. A load still holds
-the whole generation in memory, which suits a batch job and not a request handler.
+## Memory, and where a load runs
+
+**Without `sorted`, memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per
+non-empty chunk, so a billion duplicate-heavy ids stream through holding only the distinct result. The buffer between
+the input and the bitmaps holds at most 1,048,576 ids, about 28 MB measured, whatever the key distribution. Such a load
+holds the whole generation in memory, which suits a batch job and not a request handler.
+
+**With `sorted: true`, memory does not grow with the ids.** The load holds one chunk's ids (a fixed buffer of 65,536 of
+them, 256 KiB) and that chunk's bitmap, and the writer's index of the chunks written so far, which it needs for the
+object's footer. The index grows with the chunks a segment has, never with its ids: while the footer is written it
+takes about 200 bytes a chunk, the index and the array its encoding builds, so **up to about 14 MiB** at the 65,536
+chunks a segment can have (derived from the writer's code). The measured figures, how they were taken, and what an
+unsorted load of the same ids holds are in [the benchmarks](../benchmarks.md#what-a-sorted-load-holds-in-memory).
+
+**Either way, the backend buffers some of the object** (derived from the drivers' code, not measured). On S3 and Azure
+Blob the writer buffers up to one upload part or block (8 MiB by default) and copies it into one body to send it, so it
+holds up to about twice that at a flush, 16 MiB at the default; an object smaller than one part goes up as a single
+request. On GCS it buffers up to the simple-upload threshold (8 MiB by default), about twice that when it switches to a
+resumable upload, and then the stream's own buffer. `LocalFsStorage` writes to a file as it goes and holds next to
+nothing. `MemoryStorage` holds the whole object, as it holds every object.
 
 **A load is a batch job, not a request handler.** It streams the object to the bucket and is CPU-heavy in short bursts
 (serializing about 65,000 chunks for a segment spread across the id space). It yields the event loop periodically, so
-it is a well-behaved neighbour, but it still burns a core for a fraction of a second and holds a whole generation in
-RAM. Run it from a job runner, a queue consumer, a scheduled task or a short-lived container, and keep the request
+it is a well-behaved neighbour, but it still burns a core for a fraction of a second and, unless its ids are sorted,
+holds a whole generation in RAM. Run it from a job runner, a queue consumer, a scheduled task or a short-lived container, and keep the request
 path for `has`, `count` and `intersect`. See [where to run it](production.md#what-blocks-the-event-loop-and-where-to-run-it).
 
 **Do not load an empty segment "to create it".** A never-loaded segment already answers `count() → 0`,

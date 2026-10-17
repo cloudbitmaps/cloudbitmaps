@@ -58,6 +58,94 @@ export class ChunkLoadInput {
   constructor(readonly chunks: AsyncIterable<CombinedChunk>) {}
 }
 
+/** Errors a load's input raised as it was read, which a load hands on as they are, never as its own lost race. */
+const sourceErrors = new WeakSet<object>();
+
+/**
+ * Mark `err` as raised by a load's input (its ids, a bitmap's encoding, a combine's chunks) rather than by the write,
+ * and return it. A write-once conflict is a lost race only when the write raised it: a source that reads another
+ * segment (through a pin, say) can throw this library's own `WriteConflictError`, which is the source's to report.
+ */
+export function raisedBySource<T>(err: T): T {
+  if (typeof err === 'object' && err !== null) sourceErrors.add(err);
+  return err;
+}
+
+/** Whether a load's input raised `err` ({@link raisedBySource}). */
+export function isSourceError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && sourceErrors.has(err);
+}
+
+/**
+ * Ids the caller says ascend (`sorted: true`), written chunk by chunk while they are read, during the object's upload,
+ * so a load holds one chunk and the writer's index rather than the whole generation. Made only by
+ * {@link sortedLoadInput}, from ids.
+ *
+ * The first error the ids raise, or their check raises (an id out of range, or lower than the one before it), or the
+ * chunker raises building a chunk, is kept here, and the load throws that same error. The driver's upload never sees
+ * it: the chunker throws a sentinel of its own into the writer instead, so no driver maps, redacts or probes the
+ * caller's error on its way out.
+ */
+export class SortedLoadInput {
+  private failure: { readonly error: unknown } | undefined;
+
+  constructor(readonly ids: Iterable<number> | AsyncIterable<number>) {}
+
+  /** Keep `error` as what the ids raised, unless an earlier one is kept. */
+  fail(error: unknown): void {
+    this.failure ??= { error };
+  }
+
+  /** What the load throws for a write that failed with `err`: the error the ids raised, when they raised one. */
+  thrown(err: unknown): unknown {
+    return this.failure === undefined ? err : raisedBySource(this.failure.error);
+  }
+}
+
+/** How a value given as `sorted` is named in a refusal: by its kind, never by its content. */
+function kindOfOption(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const kind = typeof value;
+  return kind === 'object' || kind === 'undefined' ? `an ${kind}` : `a ${kind}`;
+}
+
+/**
+ * Whether a load was asked for `sorted: true`. `undefined` and `false` mean no; anything else that is not a boolean is
+ * refused before any request, since `sorted: 'yes'` read as absent would hold the whole generation in memory instead.
+ *
+ * @throws {ValidationError} for a value that is not a boolean.
+ */
+export function wantsSorted(sorted: unknown): boolean {
+  if (sorted === undefined || sorted === false) return false;
+  if (sorted !== true) {
+    throw new ValidationError(`sorted must be a boolean; got ${kindOfOption(sorted)}`);
+  }
+  return true;
+}
+
+/**
+ * The input a load reads under its `sorted` option: ids as {@link SortedLoadInput} when it is `true`, anything else
+ * unchanged.
+ *
+ * @throws {ValidationError} for a `sorted` that is not a boolean, and for `sorted: true` with `{ serialized }`,
+ * `{ bitmap }` or a bitmap of the flavor's own: those are written from their own chunks already, so the option would
+ * do nothing, and an option that does nothing is refused rather than ignored.
+ */
+export function sortedLoadInput(
+  prepared: ReturnType<typeof prepareLoadInput>,
+  sorted: unknown,
+): ReturnType<typeof prepareLoadInput> | SortedLoadInput {
+  if (!wantsSorted(sorted)) return prepared;
+  if (prepared instanceof DecodedLoadInput) {
+    throw new ValidationError(
+      'sorted: true applies to ids, and this load was given a bitmap ({ serialized }, { bitmap } or a bitmap ' +
+        'itself), which is already held whole and is written from its own chunks: leave sorted off',
+    );
+  }
+  return new SortedLoadInput(prepared);
+}
+
 /** `Object.prototype.toString`'s tag, which names a typed array's kind across realms and for `Buffer` too. */
 function tagOf(value: object): string {
   return Object.prototype.toString.call(value).slice(8, -1);

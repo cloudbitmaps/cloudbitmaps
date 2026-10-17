@@ -39,6 +39,11 @@ function badId(id: unknown): ValidationError {
   return err;
 }
 
+/** The refusal {@link splitId} throws for a value that is not a u32 id, for a caller that checks the range itself. */
+export function refusalOfId(id: unknown): ValidationError {
+  return badId(id);
+}
+
 /** Split a u32 id into `{ chunkKey, remainder }`. Throws `ValidationError` for non-u32 input. */
 export function splitId(id: number): BitRoute {
   if (!Number.isInteger(id) || id < 0 || id > U32_MAX) {

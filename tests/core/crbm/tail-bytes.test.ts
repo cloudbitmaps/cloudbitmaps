@@ -122,7 +122,7 @@ describe('the write results carry tailBytes', () => {
       const written = await writeEncodedChunks(
         storage,
         key,
-        [
+        () => [
           { chunkKey: 0, payload: Uint8Array.of(1, 2, 3), cardinality: 2 },
           { chunkKey: 9, payload: Uint8Array.of(4), cardinality: 1 },
         ],
@@ -159,7 +159,7 @@ describe('tailBytes of an empty generation', () => {
       const key: GenKey = { ...SEG, generation: 5 };
       const written =
         path === 'encoded'
-          ? await writeEncodedChunks(storage, key, [], {})
+          ? await writeEncodedChunks(storage, key, () => [], {})
           : path === 'whole'
             ? await writeCrbmGeneration(storage, key, [])
             : await writeCrbmGenerationStream(

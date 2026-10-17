@@ -204,7 +204,7 @@ A `Segment` has no public constructor: `store.segment(name)` and `seg.pin()` are
 handle is wired to the store's engine, caches and write path. The class is exported for `instanceof` and to annotate
 a variable, and `new Segment(…)` throws `ValidationError`.
 
-### Load a generation — `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit? })`
+### Load a generation — `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit?, sorted? })`
 
 The whole write path in one call: take the next generation number, stream `input` into one immutable `.crbm`
 object, check it is plausible, move the pointer, and collect what the move superseded, keeping `keep` generations
@@ -280,6 +280,17 @@ write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `Val
 (the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
 Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
+**`sorted: true` writes ascending ids one chunk at a time.** For ids that already ascend, the load writes each chunk
+while the object uploads instead of holding the generation in memory first, so it holds one chunk and the writer's
+index (up to about 14 MiB at the 65,536 chunks a segment can have), whatever the segment's size, and writes the same
+object an unsorted load of the same ids writes. A repeat is skipped; an id lower than the one before throws
+`ValidationError` naming its position. The row, the number and the key are settled before the first id is read. An
+error the ids raise reaches the caller as the very object raised, never seen by the storage driver, and a storage
+driver that runs its write again gets `IntegrityError`. With `{ serialized }`, `{ bitmap }` or a `RoaringBitmap32` of
+this package's `roaring` (one from another copy loads as its ids, and takes `sorted`), and as a value that is not a
+boolean, it throws `ValidationError` before any request; the `*Into` verbs do not take it
+([ids that already ascend](loading.md#what-a-load-accepts)).
+
 ### Decode portable bytes — `deserializePortable(bytes)`
 
 `deserializePortable(bytes: Uint8Array): RoaringBitmap32` decodes portable Roaring bytes you hold (a Node `Buffer`
@@ -335,7 +346,7 @@ segment mid-call and how the timed refresh behaves.
 |---|---|
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `Promise<SubjectReport>` | GDPR Art. 15 — which registered segments is this id in? Needs an explicit `namespace` or an `allNamespaces: true` ack, and throws `ValidationError` with neither. `concurrency` (default 8) is how many segments are scanned at once. Needs a backend |
 | `store.eraseSubject(id, { namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `Promise<EraseSubjectResult>` | GDPR Art. 17: for every registered segment the id is in, **rewrite the current generation without it** and delete every generation that held the bit, so it is gone from the bucket on return. Returns the erasure ledger, one entry per segment ([erasure](erasure.md)). `concurrency` (default 8) is how many segments are erased at once. Needs a `namespace` or `allNamespaces: true`, and a backend |
-| `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit? })` → `Promise<LoadResult>` | **replace this segment's contents** with `input` (ids, `{ serialized }` or `{ bitmap }`) as one new immutable generation: next number, write, check, move the pointer, collect. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](correctness.md#when-a-load-is-refused)). Needs a backend |
+| `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit?, sorted? })` → `Promise<LoadResult>` | **replace this segment's contents** with `input` (ids, `{ serialized }` or `{ bitmap }`) as one new immutable generation: next number, write, check, move the pointer, collect; `sorted: true` writes ascending ids one chunk at a time. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](correctness.md#when-a-load-is-refused)). Needs a backend |
 | `store.materializeMany({ operands, outputs, keep, feed?, mayBeEmpty?, after?, through?, pin?, maxBufferedBytes?, budget?, publishConcurrency?, concurrency?, allowAbsentOperands?, dryRun? })` → `Promise<MaterializeManyRun>`, or `Promise<MaterializeManyDryRun>` with `dryRun: true` | **many `*Into` outputs from one chunk-ordered pass**: `operands` names stored segments, each of `outputs` is `{ dest, expr, exclude?, guard?, allowEmpty?, metadata?, audit?, keep? }` with `expr` an `Expr` (`string \| { and: Expr[] } \| { or: Expr[] } \| { andNot: Expr[] }`), and `keep` is required. `pin` defaults to `true`, `concurrency` (the range requests held ahead per operand) to 1 and `publishConcurrency` to 8. `run.outputs[i]` is what output `i`'s `*Into` would have returned (`MaterializeResult`) or `{ published: false, error }`, index-aligned; `run.stats` has the groups, requests (`rangeReads`, `chunkReads`, `registryReads`, `opens`, `publishes` and `attributed: { get, put }`, a lower bound), the budget used, memory, `maxRangesInFlight` (the most range requests in flight at once), `feed` (`{ records, keys, ids }`: what a feed delivered, when the call had one) and every operand's pinned, start and end generation and whether it moved. **`dryRun: true`** computes and judges every output as its publish would and writes nothing: each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore, wouldRefuse? }` or `{ published: false, error }`, reading what the publishing call reads, without the writes ([a dry run](loading.md#look-before-you-publish-a-dry-run)). `dryRun: true` is typed as a dry run and `false` or absent as a publish; a `dryRun` held in a variable, a `boolean` or an optional one, is typed as either, and the flag says which. Every stored operand is pinned for the call by default (one generation per operand, not one instant), every pinned operand an output subtracts (its `exclude`, or after the first entry of an `andNot`) is re-checked, and one that was replaced gets its outputs `StaleOperandError`, and `maxBufferedBytes` (default 256 MiB) counts resident bytes, plan included, regrouping (and reading the operands again) when outputs do not fit; process memory is more than the count ([how much](loading.md#many-outputs-from-one-pass-materializemany)). `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order (`records` is an `AsyncIterable<{ key, operands: Record<string, Uint32Array> }>`, `counts` required): every record is checked before the pass sees it, a bad feed refuses every fed output and publishes none, a fed call runs as one group and **requires `maxBufferedBytes`**, `mayBeEmpty` lists the fed names allowed to be empty, and an erasure in this store refuses a fed call with `StaleOperandError` (`reason: 'erased'`); the call waits as long as the producer takes, so an iterator or `counts` that never settles hangs it, stored-only outputs too, and an iterator's slow `return()` delays it, and a feed no output names is never read ([the feed](loading.md#operands-that-arrive-as-records-a-feed)). A set you hold is fed ([a set you hold](loading.md#a-set-you-hold-feed-it)). Throws `ValidationError` for bad input before any request ([details](loading.md#many-outputs-from-one-pass-materializemany)). Needs a backend |
 | `store.exists(ref)` → `Promise<boolean>` | whether a read of this segment would find anything, as **one registry point read**. Not the same as `count() > 0` ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.segments({ namespace? })` → `AsyncIterable<SegmentInfo>` | every segment the registry holds, **streamed**, optionally scoped to one namespace. An admin call, not a request-path one ([details](loading.md#does-this-segment-exist)). Needs a backend |
@@ -772,6 +783,14 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   service is refusing requests too fast (a throttle), and only if it carries such an id: a throttle is not a promise
   that the request was not applied. A lost response or a timeout is never grounds to send it again.
 - Raise a transient fault as `TransientError`.
+
+**A driver that runs `write` again.** `putImmutable` calls `write` once, and the shipped drivers send a throttled part,
+block or object again rather than run it twice. A driver that does run it again after a failed attempt, which the port
+allows, commits only the last run's bytes. A load of ids, of a bitmap or of a combine's chunks holds its chunks in
+memory, so each run writes the whole object again (under a write identity of its own), and the load records the run
+that was committed. A write that streams its chunks, a load with `sorted: true` and an erasure's rewrite, reads them
+once: its second run throws `IntegrityError` before it writes a byte, the driver commits nothing, and the call throws
+that error, with the first run's error as its `cause`.
 
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
 `WriteConflictError` and change nothing when they lose; a token is not reused, `delete` then `create` included, but for a collision of probability 2^-128 per pair of incarnations;

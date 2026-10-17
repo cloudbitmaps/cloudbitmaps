@@ -54,6 +54,14 @@ export interface Yielder {
 export const YIELD_EVERY = 1024;
 
 /**
+ * Ids between a load's ingest-loop yields, sorted or not. 16x coarser than the per-chunk cadence because the per-id
+ * work is ~40 ns (a `splitId` and an array push) against ~1.3 µs per chunk — matching cadences would put the yield cost
+ * on the wrong side of the work it interrupts. Sized against the *slowest* ingest, an in-memory async generator at
+ * ~220 ns/id, so the resulting stretch stays a few ms there and well under 1 ms on a plain array.
+ */
+export const YIELD_EVERY_IDS = 1 << 14;
+
+/**
  * Build a periodic yield.
  *
  * Call the returned function **once per unit of work**. It returns `null` on the vast majority of calls — nothing

@@ -1,8 +1,10 @@
 /**
- * Which test files run a second time with their id loads handed to core's load as `{ serialized }`.
+ * Which test files run a second time with their id loads handed to core's load as `{ serialized }`, and a third time
+ * with the same ids sorted and `sorted: true`.
  *
- * `vitest.config.ts` builds its `serialized` project from {@link ROUTED}, and `tests/arch/load-input-coverage.test.ts`
- * holds both lists to the tree: every test file matching {@link LOAD_CALL} is on exactly one of them.
+ * `vitest.config.ts` builds its `serialized` project from {@link ROUTED} and its `sorted` project from {@link SORTED},
+ * and `tests/arch/load-input-coverage.test.ts` holds the lists to the tree: every test file matching {@link LOAD_CALL}
+ * is on exactly one of {@link ROUTED} and {@link IDS_ONLY}, and every file {@link SORTED_EXCLUDED} names is routed.
  */
 
 /** What makes a test file a load test: it calls a store's or a fixture's load, core's load, or an `*Into` verb. */
@@ -13,6 +15,12 @@ export const ROUTED_PROJECT = 'serialized';
 
 /** The setup file that does the routing. */
 export const ROUTING_SETUP = 'tests/setup-load-via-serialized.ts';
+
+/** The vitest project that sorts the ids of each load and passes `sorted: true`. */
+export const SORTED_PROJECT = 'sorted';
+
+/** The setup file that does the sorting. */
+export const SORTED_SETUP = 'tests/setup-load-via-sorted.ts';
 
 /** Run under ids and again under `{ serialized }`. */
 export const ROUTED: readonly string[] = [
@@ -147,6 +155,24 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/core/load-sorted.test.ts':
+    'tests the sorted input itself (its refusals, when it reads the ids, that it reads them once); a serialized rerouting ' +
+    'would make each load a bitmap load, which refuses sorted: true',
+  'tests/core/load-sorted.property.test.ts':
+    'compares a sorted load with an unsorted load of the same ids byte for byte; a serialized rerouting would make both ' +
+    'bitmap loads and compare the bitmap path with itself',
+  'tests/core/load-sorted-heap.test.ts':
+    'measures the memory a sorted load holds against an unsorted one while it reads the ids; a serialized rerouting would ' +
+    'read every id before the load starts and measure the conversion instead',
+  'tests/core/load-rerun-write.test.ts':
+    'runs each kind of load under a driver that runs its write twice, its inputs written out case by case, the sorted ' +
+    "one included; a serialized rerouting would turn the ids' cases into the bitmap case it already has",
+  'tests/drivers/gcs/abort-resumable.test.ts':
+    'fails a sorted load past the GCS upload threshold to show the resumable request ends; a serialized rerouting would ' +
+    'refuse sorted: true on the bitmap it makes',
+  'tests/drivers/sorted-load-source-errors.test.ts':
+    'throws from inside the id stream to show the error reaches the caller through each driver; a serialized rerouting ' +
+    'would drain the ids, and raise the error, before the load starts',
   'tests/core/write-identity-deletes.test.ts':
     "it races loads of one fixed set of ids to show what a delete does with another write's object; the input form is " +
     'not what it tests',
@@ -269,3 +295,40 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     "test is the export's pin, so a second run under the serialized input would repeat it and exercise no part of the " +
     'load path',
 };
+
+/**
+ * Routed files the `sorted` project does not run, each with the reason. None depends on the order the caller gave the
+ * ids in. These are the seven heaviest routed files, whose loads only build what another behaviour is tested over:
+ * measured locally at `--maxWorkers=2`, they took about three quarters of the project's summed file time, and leaving
+ * them out cut its wall time from 61 s to 22 s, about 8% of the suite's. What a sorted load changes, its write and the
+ * order it reads the row in, is held by `tests/core/load-sorted.test.ts` and the property test of its bytes, and every
+ * other routed file still runs.
+ */
+export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {
+  'tests/drivers/azure/read-timeout.test.ts':
+    'times out reads against a stalled stub of the Blob service; its loads only seed the segment it reads, and its run ' +
+    'time is the timeouts it waits out, so a third run would wait them out again and exercise no part of the load path',
+  'tests/drivers/s3/read-timeout.test.ts':
+    'times out reads against a stalled stub S3 endpoint; its one load only seeds the segment it reads, and its run time is ' +
+    'the timeouts it waits out, so a third run would wait them out again and exercise no part of the load path',
+  'tests/core/known-generations.property.test.ts':
+    "a model of the row's ledger over publishes, collections, rollbacks and erasures, code a sorted load shares; the races " +
+    'it steps through are run for sorted loads by the routed files that stay (load, publish-reconcile and ' +
+    'registry-write-token race the number and the publish), so a third run would repeat its property cases',
+  'tests/core/known-generations-cap.property.test.ts':
+    "holds the row's ledger to its cap over three hundred publishes per case, publish code a sorted load shares; its " +
+    'loads only drive those publishes, which the routed files that stay run for sorted loads, so a third run would ' +
+    'repeat its property cases',
+  'tests/bench/calibrate-guards.test.ts':
+    "its time is the calibration harness's child processes, which no setup file reaches, and its own loads only seed the " +
+    'figures those children are compared with, so a third run would exercise no part of the load path',
+  'tests/core/exclude-batching.test.ts':
+    "counts the storage requests of an intersect's exclude over segments of a thousand chunks its loads only build; a " +
+    'third run would repeat those counts and exercise no part of the load path',
+  'tests/core/consistency-generations.test.ts':
+    "checks the generations a row's ledger names against their footers in the bucket, over segments its loads only " +
+    'build; a third run would repeat the check and exercise no part of the load path',
+};
+
+/** Run under ids, under `{ serialized }`, and with the ids sorted and `sorted: true`. */
+export const SORTED: readonly string[] = ROUTED.filter((f) => !(f in SORTED_EXCLUDED));

@@ -199,8 +199,9 @@ proposed in an issue on this repo before it is built.
   manage.
 - **Reader memory is set by what it reads, not by the store's size.** A reader holds the index budget and chunk cache
   you give it, and the chunks an intersect has in flight, however large the store; one segment whose index alone
-  is past the budget is still held, alone. A load still holds a
-  segment's distinct ids in memory, and ids are 32-bit; 64-bit ids and an external-merge load are
+  is past the budget is still held, alone. A load of unsorted ids still holds a
+  segment's distinct ids in memory (a load of ids that already ascend, `sorted: true`, holds one chunk and the
+  writer's index), and ids are 32-bit; 64-bit ids and an external-merge load are
   [planned](../ROADMAP.md#planned--exploring).
 - **A portable format, and a one-command exit.** Each chunk is standard portable Roaring, which every maintained
   Roaring library reads, and `store.exportSegments(sink)` writes every segment out ([export your data](export.md)). A

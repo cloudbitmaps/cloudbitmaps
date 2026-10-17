@@ -255,7 +255,7 @@ const CALL_KEYS = {
     'metadata',
     'keep',
   ]),
-  load: keysOf<LoadOptions>()(['allowEmpty', 'guard', 'keep', 'metadata', 'audit']),
+  load: keysOf<LoadOptions>()(['allowEmpty', 'guard', 'keep', 'metadata', 'audit', 'sorted']),
   segments: keysOf<NonNullable<Parameters<CloudRoaring['segments']>[0]>>()(['namespace']),
   subjectReport: keysOf<NonNullable<Parameters<CloudRoaring['subjectReport']>[1]>>()([
     'namespace',
@@ -2227,6 +2227,11 @@ export class CloudRoaring {
    * `RoaringBitmap32` passed as ids loads as `{ bitmap }`. A `Uint8Array` or `Buffer` passed as ids is refused with
    * `ValidationError`, since each byte would load as an id: pass bytes as `{ serialized }`.
    *
+   * Ids are held whole in memory before the object is written: the generation's bitmaps and a buffer of up to about
+   * 28 MB. Ids that already ascend can be loaded with `sorted: true` instead, which writes them one chunk at a time
+   * while the object uploads, so the load holds one chunk and the writer's index (up to about 14 MiB), whatever the
+   * segment's size, and writes the same object ({@link LoadOptions.sorted}).
+   *
    * The whole write path in one call: take the next generation number, write the object, check the result is
    * plausible, move the pointer, collect what the move superseded. Composed by hand those are four functions and
    * the one that gets left out is the last, so segments quietly accumulate superseded generations nobody pays
@@ -2308,7 +2313,7 @@ export class CloudRoaring {
    */
   async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateRef(ref);
-    checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty']);
+    checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty', 'sorted']);
     options ??= {};
     const deps = this.lifecycleDeps('load');
     try {

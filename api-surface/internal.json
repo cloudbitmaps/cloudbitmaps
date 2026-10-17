@@ -364,6 +364,7 @@
     "@cloudbitmaps/core LoadOptions.guard": "readonly guard?: LoadGuard;",
     "@cloudbitmaps/core LoadOptions.keep": "readonly keep?: number;",
     "@cloudbitmaps/core LoadOptions.metadata": "readonly metadata?: GenerationMetadata;",
+    "@cloudbitmaps/core LoadOptions.sorted": "readonly sorted?: boolean;",
     "@cloudbitmaps/core LoadRefusal": "type LoadRefusal = 'empty' | 'min-cardinality' | 'min-retained' | 'max-growth' | 'superseded';",
     "@cloudbitmaps/core LoadResult": "interface LoadResult",
     "@cloudbitmaps/core LoadResult.cardinality": "readonly cardinality: number;",

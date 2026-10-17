@@ -1,10 +1,10 @@
 /**
- * The loader `load()` is built on: ids, a decoded bitmap or a combine's chunks in, one generation written, and published
- * when a registry is wired and the caller does not defer it, as `load()` does to publish after its guard.
+ * The loader `load()` is built on: ids, sorted ids, a decoded bitmap or a combine's chunks in, one generation written,
+ * and published when a registry is wired and the caller does not defer it, as `load()` does to publish after its guard.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { KeyUnavailableError, ValidationError } from './errors';
-import { yieldEvery } from './cooperative';
+import { YIELD_EVERY_IDS, yieldEvery } from './cooperative';
 import type { Clock, Entropy } from './determinism';
 import { incarnationField } from './token';
 import { MAX_REMAINDER, isBadIdError, splitId } from './bit-route';
@@ -21,9 +21,16 @@ import type {
 } from './ports';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
-import { ChunkLoadInput, DecodedLoadInput } from './load-input';
+import { ChunkLoadInput, DecodedLoadInput, SortedLoadInput, raisedBySource } from './load-input';
+import { sortedChunks } from './sorted-chunks';
 import { ownSummary } from './summary';
-import { encodeEach, requireEntropy, writeEncodedChunks } from './crbm-write';
+import {
+  type WriteOptions,
+  encodeEach,
+  requireEntropy,
+  writeCrbmGenerationStream,
+  writeEncodedChunks,
+} from './crbm-write';
 import { provesOwnObject } from './crbm-open';
 import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept } from './publish';
@@ -36,36 +43,33 @@ import { publishGenerationKept } from './publish';
 const BULK_FLUSH_IDS = 1 << 20;
 
 /**
- * Ids between ingest-loop yields. 16x coarser than the per-chunk cadence because the per-id work is ~40 ns
- * (a `splitId` and an array push) against ~1.3 µs per chunk — matching cadences would put the yield cost on the
- * wrong side of the work it interrupts. Sized against the *slowest* ingest, an in-memory async generator at
- * ~220 ns/id, so the resulting stretch stays a few ms there and well under 1 ms on a plain array.
- */
-const YIELD_EVERY_IDS = 1 << 14;
-
-/**
- * The chunks a load of ids, or of a decoded bitmap, writes: ascending by key, each non-empty and run-optimized. A decoded
- * bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot encode its own
- * chunks, are bucketed per chunk instead; both give the same bytes.
+ * The chunks a load of ids, or of a decoded bitmap, writes: ascending by key, each non-empty and run-optimized, as a
+ * source that gives them again from the start for each run of the driver's write. A decoded bitmap writes its own
+ * chunks, which never touches an id. Ids, and the bitmap of a codec that cannot encode its own chunks, are bucketed per
+ * chunk instead; both give the same bytes.
  */
 async function encodedChunksOfInput(
   ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
   codec: CodecInterface,
   clock: Clock | undefined,
-): Promise<Iterable<EncodedChunk>> {
-  if (ids instanceof DecodedLoadInput && ids.bitmap.encodeChunks !== undefined) {
+): Promise<() => Iterable<EncodedChunk>> {
+  const { bitmap } = ids instanceof DecodedLoadInput ? ids : { bitmap: undefined };
+  if (bitmap?.encodeChunks !== undefined) {
     // The whole-bitmap steps each get a slice of their own: the decode the load made before its first request, the
     // re-encode and serialize `encodeChunks` makes when called, and then the cut, which is lazy, so the writer's
-    // periodic yield interrupts it.
+    // periodic yield interrupts it. A run after the first encodes again, which changes no byte.
     const pause = yieldEvery(clock, 1);
     await pause();
-    const chunks = ids.bitmap.encodeChunks();
+    let first: Iterable<EncodedChunk> | undefined = bitmap.encodeChunks();
     await pause();
-    return chunks;
+    return () => {
+      const chunks = first ?? bitmap.encodeChunks!();
+      first = undefined;
+      return chunks;
+    };
   }
-  return encodeEach(
-    await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, clock),
-  );
+  const bucketed = await bucketIds(bitmap ?? (ids as Iterable<number>), codec, clock);
+  return () => encodeEach(bucketed);
 }
 
 /** Route each id into its chunk's bitmap, consuming the source lazily. Returns the chunks, ascending by key. */
@@ -228,7 +232,9 @@ export interface BulkLoadResult {
  * non-empty chunk) — not by the input length: you can stream a billion duplicate-heavy ids and hold only the
  * distinct result. Note this is `O(distinct set)`, **not** window-bounded like {@link SegmentEngine.intersect}:
  * bulk-load holds the whole generation in RAM, which suits batch seed/rebuild jobs but not an
- * unbounded-cardinality stream (a segment larger than RAM needs external-merge / pre-sorted input — later phase).
+ * unbounded-cardinality stream. Ids the caller has sorted ({@link SortedLoadInput}) are the exception: they are cut
+ * into one chunk at a time while the object uploads, so the load holds one chunk and the writer's index, whatever the
+ * segment's size.
  *
  * Each id must be an integer in `[0, 2³²)` ({@link splitId} throws {@link ValidationError} otherwise) — the
  * source is consumed lazily, so a bad id aborts mid-stream without writing a partial object (the driver
@@ -243,7 +249,8 @@ export interface BulkLoadResult {
 export function bulkLoadCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
-  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput | ChunkLoadInput,
+  ids:
+    Iterable<number> | AsyncIterable<number> | DecodedLoadInput | ChunkLoadInput | SortedLoadInput,
   options: {
     registry?: IRegistryDriver;
     keystore?: IKeystore;
@@ -295,12 +302,22 @@ export function bulkLoadCrbmGeneration(
      * absent, or one carrying key material, is read again after the ids, as with no row passed: a first load must
      * see a row another writer created meanwhile, and an encrypted segment's key is unwrapped only from a row read
      * after the ids, so a segment shredded while they streamed is refused before its key is used.
+     *
+     * Sorted ids ({@link SortedLoadInput}) are read during the write, so their row is read again before the first of
+     * them instead. A segment shredded while they stream is then caught by the caller's fenced publish, which the
+     * shred's change of the row's token makes lose; `load()` then deletes the object under the `destroyed` row.
      */
     row?: RegistryRecord | null;
   } = {},
 ): Promise<BulkLoadResult> {
   return bulkLoadAhead(driver, key, { generation: Promise.resolve(key.generation) }, ids, options);
 }
+
+/** What {@link bulkLoadCrbmGeneration} and {@link bulkLoadAhead} write from. */
+type BulkLoadInput = Parameters<typeof bulkLoadCrbmGeneration>[2];
+
+/** The options of {@link bulkLoadCrbmGeneration} and {@link bulkLoadAhead}. */
+type BulkLoadOptions = NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]>;
 
 /**
  * What a load has already started when it calls {@link bulkLoadAhead}: its number, and the segment's data key, each
@@ -312,7 +329,8 @@ interface LoadAhead {
   readonly generation: PromiseLike<number>;
   /**
    * The key a caller already asked the keystore to unwrap, with the wrappings it asked about. Used only when the
-   * row the write reads after the ids carries exactly these wrappings; otherwise the write unwraps for itself.
+   * row the write reads again (after the ids, or before sorted ones) carries exactly these wrappings; otherwise the
+   * write unwraps for itself.
    */
   readonly unwrapped?: {
     readonly wrapped: readonly WrappedDek[];
@@ -356,33 +374,122 @@ function refuseCleartextWhenEncryptionRequired(
 /**
  * {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched: the same
  * options, with the same meaning, and the same writes. The number is joined only where the object is written.
+ *
+ * Ids, a decoded bitmap and a combine's chunks are encoded before the row is read, so a bad id or a failed read
+ * writes nothing and asks the registry nothing. Sorted ids ({@link SortedLoadInput}) are read while the object is
+ * written instead, so everything else comes first: the row and its checks, the number and the key, and a refusal
+ * among them leaves the ids unread.
  */
 export async function bulkLoadAhead(
   driver: IStorageDriver,
   ref: SegmentRef,
   ahead: LoadAhead,
-  ids: Parameters<typeof bulkLoadCrbmGeneration>[2],
-  options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
+  ids: BulkLoadInput,
+  options: BulkLoadOptions = {},
 ): Promise<BulkLoadResult> {
   requireKeystoreWhenEncryptionRequired(options);
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   const entropy = requireEntropy(options.entropy, 'a load');
-  // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
-  // encode its own chunks, are bucketed per chunk instead; both give the same bytes.
-  let chunks: Iterable<EncodedChunk>;
-  if (ids instanceof ChunkLoadInput) {
-    // A combine's chunks are held whole before the first write, as the bucketed ids are, so the reads they cost come
-    // where the ids' do: before the row is read, and a read that fails writes nothing.
-    chunks = encodeEach(rangeCheckedAtWrite(await collectChunks(ids, codec, options.clock)));
+  // Sorted ids are read during the write; any other input is encoded now, before the row is read.
+  let write: (key: GenKey, writeOptions: WriteOptions) => ReturnType<typeof writeEncodedChunks>;
+  if (ids instanceof SortedLoadInput) {
+    write = (key, writeOptions) => writeSorted(driver, key, ids, codec, writeOptions);
   } else {
-    chunks = await encodedChunksOfInput(ids, codec, options.clock);
+    const chunks = await encodedBeforeTheRow(ids, codec, options.clock);
+    write = (key, writeOptions) => writeEncodedChunks(driver, key, chunks, writeOptions);
   }
+  const existing = await rowForWrite(ref, options);
 
+  // The number is joined only here, after the ids are bucketed (a sorted load reads its ids later, in the write) and
+  // the row is read and judged: its existence check ran meanwhile, and a check that failed fails the load now, before
+  // anything is written.
+  const generation = await ahead.generation;
+  const key: GenKey = { namespace: ref.namespace, segment: ref.segment, generation };
+  const { crypto, newWrapped } = await keyForWrite(existing, key, ahead, options);
+
+  const { size, sha256, chunkCount, cardinality, fingerprint, tailBytes } = await write(key, {
+    crypto,
+    clock: options.clock,
+    metadata: options.metadata,
+    entropy,
+  });
+  const summary = ownSummary(
+    key,
+    key.generation,
+    { cardinality, metadata: options.metadata, fingerprint, tailBytes },
+    crypto?.aead,
+  );
+  const result = {
+    size,
+    sha256,
+    chunkCount,
+    cardinality,
+    summary,
+    wrappedDeks: newWrapped,
+    encrypted: crypto !== undefined,
+    fingerprint,
+  };
+  // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
+  // never point at a generation that isn't fully written. A freshly minted DEK is stored on this publish.
+  if (options.registry === undefined || options.publish === false) return result;
+  const published = await publishGenerationKept(options.registry, key, {
+    wrappedDeks: newWrapped,
+    summary,
+    footerCrc: footerCrcOf(fingerprint),
+    cleartext: crypto === undefined,
+    holdsOwnObject: () => provesOwnObject(driver, key, fingerprint),
+    clock: options.clock,
+  });
+  const becameCurrent = published.published;
+  // Audit the publish only when this generation actually *became* the current one — not when a
+  // forward-only publish no-oped because a newer generation was already current (the event's contract is
+  // "became the segment's current generation"). Needs a registry to have a "current generation" at all.
+  if (becameCurrent) {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+      kind: 'segment.publish',
+      namespace: key.namespace,
+      segment: key.segment,
+      ...incarnationField(published.token),
+      generation: key.generation,
+    });
+  }
+  return { ...result, becameCurrent };
+}
+
+/**
+ * The encoded chunks of an input that is read before the row: a combine's chunks, held whole as the bucketed ids are,
+ * so the reads they cost come where the ids' do and a read that fails writes nothing; ids, bucketed; a decoded bitmap,
+ * cut from its own containers. Both of the last give the same bytes. Each is a source a run of the driver's write reads
+ * from the start. An error reading the input raises is marked as the source's ({@link raisedBySource}), so a load
+ * never reads this library's own `WriteConflictError` from a source as its lost race.
+ */
+async function encodedBeforeTheRow(
+  ids: Exclude<BulkLoadInput, SortedLoadInput>,
+  codec: CodecInterface,
+  clock: Clock | undefined,
+): Promise<() => Iterable<EncodedChunk>> {
+  try {
+    if (ids instanceof ChunkLoadInput) {
+      const chunks = await collectChunks(ids, codec, clock);
+      return () => encodeEach(rangeCheckedAtWrite(chunks));
+    }
+    return await encodedChunksOfInput(ids, codec, clock);
+  } catch (err) {
+    throw raisedBySource(err);
+  }
+}
+
+/**
+ * The segment's row as the write judges it (when a registry is wired), with the refusals it makes on it: a
+ * crypto-shredded segment, whose write would create bytes no reader can reach, and an encrypted one with no keystore.
+ * A present cleartext row the caller already read is used as read (see `row`).
+ */
+async function rowForWrite(
+  ref: SegmentRef,
+  options: BulkLoadOptions,
+): Promise<RegistryRecord | null> {
   if (options.keystore !== undefined && options.registry === undefined)
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
-  // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment (which
-  // would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted. A present cleartext row the
-  // caller already read is used as read (see `row`).
   const passed = options.row;
   const existing =
     passed !== undefined &&
@@ -414,105 +521,75 @@ export async function bulkLoadAhead(
         `generation onto an encrypted segment. Pass the keystore holding its DEK.`,
     );
   }
+  return existing;
+}
 
-  // The number is joined only here, after the ids are bucketed and the row is read and judged: its existence check
-  // ran while they did, and a check that failed fails the load now, before anything is written.
-  const generation = await ahead.generation;
-  const key: GenKey = { namespace: ref.namespace, segment: ref.segment, generation };
-
-  // Encryption (opt-in): reuse the segment's existing DEK, or mint a fresh one on its FIRST generation.
-  //
-  // The segment's own posture decides, not the presence of a keystore. A keystore is wired on the store, so it is
-  // in scope for every segment that store touches — including ones deliberately left cleartext — and minting on
-  // that basis alone is what made "load it again with a keystore wired" destroy the data: the minted wrapping has
-  // nowhere to live on a row whose pointer is already set (see `publishGeneration`'s advance branch), so the
-  // generation ends up encrypted under a key that exists in no persistent store. `requireEncryption` is the way
-  // to *demand* encryption, and on an already-cleartext lineage it fails fast rather than silently downgrading.
-  let crypto: CrbmCrypto | undefined;
-  let newWrapped: readonly WrappedDek[] | undefined;
-  if (options.keystore !== undefined) {
-    if (existing?.wrappedDeks !== undefined && existing.wrappedDeks.length > 0) {
-      // Reuse the segment's DEK: the one the caller already asked for when the row still carries its wrappings,
-      // otherwise a fresh unwrap of what the row carries now.
-      const early = ahead.unwrapped;
-      const aead =
-        early !== undefined && sameKeys(early.wrapped, existing.wrappedDeks)
-          ? await early.aead
-          : await options.keystore.openDek(existing.wrappedDeks);
-      crypto = { aead, aadFor: (scope) => aadFor(key, key.generation, scope) };
-    } else if (existing !== null && existing.currentGen !== null) {
-      // An existing lineage with no key material on the row: the segment is cleartext, and one segment cannot be
-      // half-encrypted — a pin of a superseded generation, once its reader is reopened, would find bytes its key
-      // cannot open, and a later `destroySegment` would attest that shredding one DEK made every copy unreadable
-      // while the older cleartext objects stay readable from any of them.
-      refuseCleartextWhenEncryptionRequired(options, ref, existing.currentGen);
-      // Otherwise the segment stays what it is: cleartext.
-    } else {
-      const minted = await options.keystore.createDek();
-      newWrapped = minted.wrapped;
-      crypto = { aead: minted.aead, aadFor: (scope) => aadFor(key, key.generation, scope) };
-    }
+/**
+ * The key the write encrypts under (opt-in): the segment's existing DEK, or a fresh one on its FIRST generation.
+ *
+ * The segment's own posture decides, not the presence of a keystore. A keystore is wired on the store, so it is
+ * in scope for every segment that store touches — including ones deliberately left cleartext — and minting on
+ * that basis alone is what made "load it again with a keystore wired" destroy the data: the minted wrapping has
+ * nowhere to live on a row whose pointer is already set (see `publishGeneration`'s advance branch), so the
+ * generation ends up encrypted under a key that exists in no persistent store. `requireEncryption` is the way
+ * to *demand* encryption, and on an already-cleartext lineage it fails fast rather than silently downgrading.
+ */
+async function keyForWrite(
+  existing: RegistryRecord | null,
+  key: GenKey,
+  ahead: LoadAhead,
+  options: BulkLoadOptions,
+): Promise<{ crypto?: CrbmCrypto; newWrapped?: readonly WrappedDek[] }> {
+  if (options.keystore === undefined) return {};
+  if (existing?.wrappedDeks !== undefined && existing.wrappedDeks.length > 0) {
+    // Reuse the segment's DEK: the one the caller already asked for when the row still carries its wrappings,
+    // otherwise a fresh unwrap of what the row carries now.
+    const early = ahead.unwrapped;
+    const aead =
+      early !== undefined && sameKeys(early.wrapped, existing.wrappedDeks)
+        ? await early.aead
+        : await options.keystore.openDek(existing.wrappedDeks);
+    return { crypto: { aead, aadFor: (scope) => aadFor(key, key.generation, scope) } };
   }
-
-  const { size, sha256, chunkCount, cardinality, fingerprint, tailBytes } =
-    await writeEncodedChunks(driver, key, chunks, {
-      crypto,
-      clock: options.clock,
-      metadata: options.metadata,
-      entropy,
-    });
-  const summary = ownSummary(
-    key,
-    key.generation,
-    { cardinality, metadata: options.metadata, fingerprint, tailBytes },
-    crypto?.aead,
-  );
-  // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
-  // never point at a generation that isn't fully written. A freshly minted DEK is stored on this publish.
-  if (options.registry !== undefined && options.publish !== false) {
-    const published = await publishGenerationKept(options.registry, key, {
-      wrappedDeks: newWrapped,
-      summary,
-      footerCrc: footerCrcOf(fingerprint),
-      cleartext: crypto === undefined,
-      holdsOwnObject: () => provesOwnObject(driver, key, fingerprint),
-      clock: options.clock,
-    });
-    const becameCurrent = published.published;
-    // Audit the publish only when this generation actually *became* the current one — not when a
-    // forward-only publish no-oped because a newer generation was already current (the event's contract is
-    // "became the segment's current generation"). Needs a registry to have a "current generation" at all.
-    if (becameCurrent) {
-      safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
-        kind: 'segment.publish',
-        namespace: key.namespace,
-        segment: key.segment,
-        ...incarnationField(published.token),
-        generation: key.generation,
-      });
-    }
-    return {
-      size,
-      sha256,
-      chunkCount,
-      cardinality,
-      summary,
-      becameCurrent,
-      wrappedDeks: newWrapped,
-      encrypted: crypto !== undefined,
-      fingerprint,
-    };
+  if (existing !== null && existing.currentGen !== null) {
+    // An existing lineage with no key material on the row: the segment is cleartext, and one segment cannot be
+    // half-encrypted — a pin of a superseded generation, once its reader is reopened, would find bytes its key
+    // cannot open, and a later `destroySegment` would attest that shredding one DEK made every copy unreadable
+    // while the older cleartext objects stay readable from any of them.
+    refuseCleartextWhenEncryptionRequired(options, key, existing.currentGen);
+    // Otherwise the segment stays what it is: cleartext.
+    return {};
   }
+  const minted = await options.keystore.createDek();
   return {
-    size,
-    sha256,
-    chunkCount,
-    cardinality,
-    summary,
-    wrappedDeks: newWrapped,
-    encrypted: crypto !== undefined,
-    fingerprint,
+    crypto: { aead: minted.aead, aadFor: (scope) => aadFor(key, key.generation, scope) },
+    newWrapped: minted.wrapped,
   };
+}
+
+/**
+ * Write sorted ids as they are read, through the streaming writer, with the tally {@link writeEncodedChunks} gives. A
+ * write that fails after the ids raised an error throws that error, the very object, marked as the source's: the driver
+ * saw only the chunker's sentinel, and the caller's own error is the answer.
+ */
+async function writeSorted(
+  driver: IStorageDriver,
+  key: GenKey,
+  input: SortedLoadInput,
+  codec: CodecInterface,
+  options: WriteOptions,
+): ReturnType<typeof writeEncodedChunks> {
+  try {
+    const { chunkKeys, ...written } = await writeCrbmGenerationStream(
+      driver,
+      key,
+      sortedChunks(input, codec, options.clock),
+      options,
+    );
+    return { ...written, chunkCount: chunkKeys.length };
+  } catch (err) {
+    throw input.thrown(err);
+  }
 }
 
 /**

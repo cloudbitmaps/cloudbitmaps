@@ -107,8 +107,11 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   length), writes it as one write-once object, judges it against the guard, and publishes it with a
   compare-and-swap on the registry row. A load that finds a row fences on the row's token, and one that finds none
   on that absence, guarded or not; a default load also fences on the pointer it judged; and a duplicate publish is an
-  idempotent no-op. A segment larger than
-  RAM wants the external-merge bulk load listed under [Planned](#planned--exploring). A load also takes a whole
+  idempotent no-op. Ids that already ascend load with `sorted: true`, which writes them one chunk at a time while the
+  object uploads, so the load holds one chunk and the writer's index (up to about 14 MiB) whatever the
+  segment's size, and writes the same object, byte for byte under the same write identity; an error the ids raise
+  reaches the caller as the very object raised. Unsorted ids for a segment larger than RAM want the external-merge bulk
+  load listed under [Planned](#planned--exploring). A load also takes a whole
   bitmap, `{ bitmap }` (anything with `serialize('portable')`) or `{ serialized }` portable Roaring bytes: checked
   structurally and safely deserialized before anything is written, then written from the bitmap's own containers,
   never id by id, into chunks holding what the same ids write. A byte array passed as ids is refused rather than loaded byte
@@ -293,7 +296,7 @@ envelope**:
 | | Inside the envelope | Outside it (use with your own testing) |
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
-| **Scale** | up to ~100K segments; reads and combines of operands up to 10,000,000 ids on S3 (run `2026-10-07-88cd3`), the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments, which a load holds in RAM as their distinct ids (an external-merge bulk load is planned), and ids past 2³²−1, which want the reserved 64-bit format |
+| **Scale** | up to ~100K segments; reads and combines of operands up to 10,000,000 ids on S3 (run `2026-10-07-88cd3`), the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments: an unsorted load holds them in RAM as their distinct ids (an external-merge bulk load is planned), and a sorted one (`sorted: true`) holds one chunk and the writer's index, measured in a unit test up to 10,000,000 ids and not yet run on a cloud; and ids past 2³²−1, which want the reserved 64-bit format |
 | **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has a published in-region run, for cost and latency: the 2026-10-13 calibration run kept its pointer in the same bucket as the data |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
 | **Cost figures** | the **in-region run `2026-10-13-b329d`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) and the **large run `2026-10-07-88cd3`** (combines and the `*Into` verbs on the large suite's operands, their requests and latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; `materializeMany` on S3; other combine shapes; and GCS and Azure on a real account |
@@ -451,7 +454,7 @@ move it up.
   process it needs nothing: `RoaringBitmap32.orMany` over the parts, then one load, as the
   [loading guide](guide/loading.md#what-a-load-accepts) shows.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
-  bulk load that never buffers the distinct set.
+  bulk load that never buffers the distinct set of unsorted ids (ids that already ascend need none: `sorted: true`).
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the
   format freeze; a port before then would be a compatibility trap. One concrete requirement a port must meet:
   storage generations contain **run containers**. Runs are part of the standard portable Roaring format, but a

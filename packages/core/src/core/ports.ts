@@ -352,6 +352,12 @@ export interface IStorageDriver {
    * already exists (write-once). Call `write` once: the object committed is the bytes that one call wrote, because
    * the caller records the write identity of that call's object (its footer) for every later proof; a driver that
    * runs `write` again after a failed attempt must commit only the last run's bytes.
+   *
+   * What a second run of `write` does depends on what is written. A load of ids, of a bitmap or of a combine's chunks
+   * holds its chunks in memory, so each run writes the whole object again, under a write identity of its own, and the
+   * load records the run that was committed. A write that streams its chunks, a load with `sorted: true` and an
+   * erasure's rewrite, reads them once, so its second run throws {@link IntegrityError} before writing a byte: commit
+   * nothing then, and the call throws that error, with the first run's error as its `cause`.
    */
   putImmutable(
     key: GenKey,

@@ -431,6 +431,7 @@
     "@cloudbitmaps/roaring LoadOptions.guard": "readonly guard?: LoadGuard;",
     "@cloudbitmaps/roaring LoadOptions.keep": "readonly keep?: number;",
     "@cloudbitmaps/roaring LoadOptions.metadata": "readonly metadata?: GenerationMetadata;",
+    "@cloudbitmaps/roaring LoadOptions.sorted": "readonly sorted?: boolean;",
     "@cloudbitmaps/roaring LoadRefusal": "type LoadRefusal = 'empty' | 'min-cardinality' | 'min-retained' | 'max-growth' | 'superseded';",
     "@cloudbitmaps/roaring LoadResult": "interface LoadResult",
     "@cloudbitmaps/roaring LoadResult.cardinality": "readonly cardinality: number;",

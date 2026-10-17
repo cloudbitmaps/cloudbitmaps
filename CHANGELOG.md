@@ -11,6 +11,41 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`store.load(ref, ids, { sorted: true })` loads ids that already ascend one chunk at a time, while the object
+  uploads.** A load of ids holds the whole generation in memory before it writes; a sorted load holds one chunk's ids
+  and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 14 MiB at the
+  65,536 chunks a segment can have (derived; the measured figures are in
+  [the benchmarks](docs/benchmarks.md#what-a-sorted-load-holds-in-memory)). The backend's upload buffer comes on top,
+  as for any load. It writes the same object, byte
+  for byte under the same write identity, as an unsorted load of the same ids. A repeat is skipped; an id lower than the
+  one before throws `ValidationError` naming its position and never the id. The row, the number and the key are settled
+  before the first id is read, so a destroyed or keyless segment is refused with no id read. The ids are read during
+  the upload, so an error your source throws fails it with no object committed, and reaches you as the very object
+  thrown, which the storage driver never sees; the parts uploaded before it may already be billed (S3 aborts them;
+  Azure Blob bills staged blocks until it collects them, a week on). A storage driver that runs its write a second time
+  gets `IntegrityError`. `sorted` with `{ serialized }`, `{ bitmap }` or a `RoaringBitmap32` of the package's own
+  `roaring` (one from another copy loads as its ids), and a `sorted` that is not a boolean, throw `ValidationError`
+  before any request. See
+  [ids that already ascend](docs/guide/loading.md#what-a-load-accepts).
+
+### Fixed
+
+- **A storage driver that runs `write` again after a failed attempt, as the storage port allows, gets the whole object
+  from a load.** Under such a driver a load of ids, of a bitmap or of a combine's chunks published a generation whose
+  object and count disagreed (an empty object, for ids): its chunks were read once and its tally kept counting. Each run now encodes the
+  chunks again and counts afresh. An erasure's rewrite, which streams its chunks, could publish an empty generation the
+  same way; its second run now throws `IntegrityError` before writing a byte, with the first run's error as its
+  `cause`, and nothing is published. No shipped driver runs `write` twice.
+- **A load whose source throws this library's own `WriteConflictError` throws it,** rather than reporting
+  `published: false, reason: 'superseded'` and a `segment.load-refused` event for a race it did not run. A source that
+  reads another segment through a pin can raise one. Only a conflict the load's own write raises is a lost race.
+- **`@cloudbitmaps/gcs`: a write abandoned past the simple-upload threshold ends its resumable upload's request at
+  once.** Destroying the SDK's write stream left the request open, holding a socket and keeping the process alive until
+  the service dropped the connection. No object was ever committed. The driver now ends the upload with an error, which
+  aborts the request, and an upload abandoned before its request starts sends none.
+
 ## [0.22.0] — 2026-10-17
 
 ### Breaking

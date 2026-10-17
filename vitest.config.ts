@@ -1,6 +1,13 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
-import { ROUTED, ROUTED_PROJECT, ROUTING_SETUP } from './tests/helpers/load-input-routes';
+import {
+  ROUTED,
+  ROUTED_PROJECT,
+  ROUTING_SETUP,
+  SORTED,
+  SORTED_PROJECT,
+  SORTED_SETUP,
+} from './tests/helpers/load-input-routes';
 
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
@@ -17,10 +24,12 @@ export default defineConfig({
     setupFiles: ['tests/setup-fast-check.ts'],
     exclude: ['tests/integration/**', 'node_modules/**'],
     passWithNoTests: false,
-    // Two runs. `ids` is every test as written. `serialized` re-runs each load test with core's load handed
+    // Three runs. `ids` is every test as written. `serialized` re-runs each load test with core's load handed
     // `{ serialized }` in place of the ids it was given, which is how a load from portable Roaring bytes is held to
-    // every guarantee an id load has without a copy of any test. Which files, and why the rest are ids-only, is in
-    // `tests/helpers/load-input-routes.ts`; `tests/arch/load-input-coverage.test.ts` holds that list to the tree.
+    // every guarantee an id load has without a copy of any test. `sorted` re-runs them with the same ids sorted and
+    // `sorted: true`, which holds the sorted load to the same guarantees. Which files, and why the rest are ids-only or
+    // not sorted, is in `tests/helpers/load-input-routes.ts`; `tests/arch/load-input-coverage.test.ts` holds those
+    // lists to the tree.
     projects: [
       {
         extends: true,
@@ -33,6 +42,15 @@ export default defineConfig({
           include: [...ROUTED],
           setupFiles: [ROUTING_SETUP],
           provide: { loadInput: ROUTED_PROJECT },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: SORTED_PROJECT,
+          include: [...SORTED],
+          setupFiles: [SORTED_SETUP],
+          provide: { loadInput: SORTED_PROJECT },
         },
       },
     ],
