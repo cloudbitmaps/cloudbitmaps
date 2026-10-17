@@ -52,7 +52,14 @@ import {
   pointerOnDeletedError,
   watchDeletes,
 } from './generation-gc';
-import { ChunkLoadInput, type LoadInput, prepareLoadInput } from './load-input';
+import {
+  ChunkLoadInput,
+  type LoadInput,
+  SortedLoadInput,
+  prepareLoadInput,
+  sortedLoadInput,
+  wantsSorted,
+} from './load-input';
 import { copiedMetadata } from './metadata';
 import { type ReadRetry, retryRead } from './retry';
 import { assertRegistryCanWrite } from './ports';
@@ -250,6 +257,23 @@ export interface LoadOptions {
   readonly metadata?: GenerationMetadata;
   /** Audit sink for this load: it receives `segment.publish`, or `segment.load-refused` when the load is refused. */
   readonly audit?: IAuditSink;
+  /**
+   * The ids ascend: write them as they are read, one chunk at a time, while the object uploads, so the load holds about
+   * one chunk rather than the whole generation, whatever the segment's size. Repeats are fine (an id equal to the one
+   * before is skipped); an id lower than the one before throws `ValidationError`, naming its position and never the id.
+   * The object is the same, byte for byte, as an unsorted load of the same ids writes under the same write identity.
+   *
+   * For ids only (an iterable or an async iterable): with `{ serialized }`, `{ bitmap }` or a bitmap, and on core's
+   * `loadSegmentChunks`, it throws `ValidationError`, as does a value that is not a boolean, before any request.
+   *
+   * The ids are read after the segment's row is read and judged, and after its number and key are settled, so a load
+   * that refuses a destroyed or keyless segment reads none of them. They are read while the object uploads: an error
+   * they raise, or a refused id, fails the upload, and no object is committed, but the parts uploaded before it may
+   * already have been billed (see the production guide). That error reaches the caller as the very object raised,
+   * whatever the storage driver would have made of it. The ids can be read once: a storage driver that runs its write
+   * again gets `IntegrityError`, and nothing is written.
+   */
+  readonly sorted?: boolean;
 }
 
 /** The bounds a guard can refuse a generation for: every {@link LoadRefusal} but a lost race. */
@@ -438,6 +462,14 @@ export interface LoadResult {
   readonly collected: readonly number[];
 }
 
+/**
+ * Whether a write that threw `err` lost its number to another load: a write-once conflict, unless it is the error the
+ * caller's sorted ids raised, which is handed on as it is.
+ */
+function lostNumberRace(err: unknown, ids: unknown): boolean {
+  return isWriteConflictError(err) && !(ids instanceof SortedLoadInput && ids.raised(err));
+}
+
 /** `promise`, marked as observed: a caller that abandons it (a load that failed elsewhere) leaves no unhandled rejection. */
 function settled<T>(promise: Promise<T>): Promise<T> {
   promise.catch(() => undefined);
@@ -532,7 +564,12 @@ export function loadSegment(
   deps: LoadDeps,
   options: LoadOptions = {},
 ): Promise<LoadResult> {
-  return runLoad(ref, (codec) => prepareLoadInput(input, codec), deps, options);
+  return runLoad(
+    ref,
+    (codec) => sortedLoadInput(prepareLoadInput(input, codec), options.sorted),
+    deps,
+    options,
+  );
 }
 
 /**
@@ -582,6 +619,11 @@ export function loadSegmentChunks(
           'loadSegmentChunks takes an async iterable of { chunkKey, bitmap }',
         );
       }
+      if (wantsSorted(options.sorted)) {
+        throw new ValidationError(
+          'loadSegmentChunks takes no sorted: true: its chunks ascend by key already, and are written as they are',
+        );
+      }
       return new ChunkLoadInput(chunks);
     },
     deps,
@@ -589,9 +631,12 @@ export function loadSegmentChunks(
   );
 }
 
+/** What a load writes from, as its input was checked before the first request. */
+type PreparedLoadInput = ReturnType<typeof sortedLoadInput> | ChunkLoadInput;
+
 async function runLoad(
   ref: SegmentRef,
-  prepare: (codec: CodecInterface) => ReturnType<typeof prepareLoadInput> | ChunkLoadInput,
+  prepare: (codec: CodecInterface) => PreparedLoadInput,
   deps: LoadDeps,
   options: LoadOptions,
 ): Promise<LoadResult> {
@@ -676,7 +721,7 @@ async function runLoad(
     // make a caller who branches on `published` (as the doc-comment tells them to) miss the one outcome they were
     // told to expect. Nothing was written, so there is nothing to clean up; the refusal is still audited, as every
     // other one is, since a downstream reconciliation needs to know the replacement it asked for did not happen.
-    if (!isWriteConflictError(err)) throw err;
+    if (!lostNumberRace(err, ids)) throw err;
     const { generation } = await numbering;
     audit.onEvent({
       kind: 'segment.load-refused',

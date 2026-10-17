@@ -93,6 +93,25 @@ describe('an error message never carries an id', () => {
     );
   });
 
+  it('a sorted load names the position of an id out of order or refused, never its value', async () => {
+    const w = await batchWorld({ s: [1, 2, 3] });
+    const sorted = { sorted: true } as const;
+    // Ids of ten digits, which the message must not repeat: 1,270,648,346 and on.
+    const high = [SENTINEL - 1_000, SENTINEL - 10, SENTINEL - 20].map((v) => v % 2 ** 32);
+    const lower = await messageOf(() => w.store.load({ segment: 's' }, high, sorted));
+    expect(lower).toMatch(/^ids\[2\]: lower than the id before it/);
+    const messages = [lower];
+    for (const bad of BAD_VALUES) {
+      messages.push(
+        await messageOf(() => w.store.load({ segment: 't' }, [1, bad as number], sorted)),
+      );
+    }
+    for (const message of messages) {
+      expectNoId(message);
+      for (const id of high) expect(message).not.toContain(String(id));
+    }
+  });
+
   it('a refused feed says what is wrong without an id', async () => {
     const w = await batchWorld({ a: [1, 2, 3] });
     const seg = w.store.segment('a');

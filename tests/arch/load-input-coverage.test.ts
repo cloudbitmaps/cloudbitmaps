@@ -8,6 +8,10 @@ import {
   ROUTED,
   ROUTED_PROJECT,
   ROUTING_SETUP,
+  SORTED,
+  SORTED_EXCLUDED,
+  SORTED_PROJECT,
+  SORTED_SETUP,
 } from '../helpers/load-input-routes';
 
 /**
@@ -22,6 +26,10 @@ import {
  *   FORWARD   every test file that calls a load entry point is listed, either as routed or as ids-only with the
  *             reason it cannot be routed;
  *   BACKWARD  every listed file exists, calls a load entry point, and is listed once.
+ *
+ * The `sorted` project re-runs the routed files a third time, with each id load's ids sorted and `sorted: true`, less
+ * the routed files its exclusion list names with a reason. That list is held here too: each file it names is routed,
+ * and the project runs exactly the routed files it does not name.
  *
  * "Calls a load entry point" is a textual match, which is the point: it is cheap, it is written down, and a file
  * whose loads all go through the fixture loader (which does not go through core's load) matches too and is simply
@@ -77,5 +85,22 @@ describe('every load test runs under the serialized input as well as ids', () =>
     // And the default project still runs everything, so a routed file runs twice rather than once.
     const ids = projects.find((p) => p.test?.name === 'ids');
     expect(ids?.test?.include ?? config.test?.include).toEqual(['tests/**/*.test.ts']);
+  });
+
+  it('the sorted project runs every routed file its exclusion list does not name, through the sorting setup', () => {
+    const routed = new Set(ROUTED);
+    expect(Object.keys(SORTED_EXCLUDED).filter((f) => !routed.has(f))).toEqual([]);
+    const vague = Object.entries(SORTED_EXCLUDED).filter(([, why]) => why.trim().length < 40);
+    expect(vague).toEqual([]);
+    expect([...SORTED].sort()).toEqual(ROUTED.filter((f) => !(f in SORTED_EXCLUDED)).sort());
+    const projects = (config.test?.projects ?? []) as Array<{
+      test?: { name?: string; include?: string[]; setupFiles?: string[] };
+    }>;
+    const sorted = projects.find((p) => p.test?.name === SORTED_PROJECT);
+    expect(sorted).toBeDefined();
+    expect([...(sorted?.test?.include ?? [])].sort()).toEqual([...SORTED].sort());
+    expect(sorted?.test?.setupFiles).toContain(SORTED_SETUP);
+    // A control that must hit: the file that checks what each project hands the write path is in it.
+    expect(SORTED).toContain('tests/core/load-routing.test.ts');
   });
 });

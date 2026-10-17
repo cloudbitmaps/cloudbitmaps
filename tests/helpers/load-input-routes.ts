@@ -1,8 +1,10 @@
 /**
- * Which test files run a second time with their id loads handed to core's load as `{ serialized }`.
+ * Which test files run a second time with their id loads handed to core's load as `{ serialized }`, and a third time
+ * with the same ids sorted and `sorted: true`.
  *
- * `vitest.config.ts` builds its `serialized` project from {@link ROUTED}, and `tests/arch/load-input-coverage.test.ts`
- * holds both lists to the tree: every test file matching {@link LOAD_CALL} is on exactly one of them.
+ * `vitest.config.ts` builds its `serialized` project from {@link ROUTED} and its `sorted` project from {@link SORTED},
+ * and `tests/arch/load-input-coverage.test.ts` holds the lists to the tree: every test file matching {@link LOAD_CALL}
+ * is on exactly one of {@link ROUTED} and {@link IDS_ONLY}, and every file {@link SORTED_EXCLUDED} names is routed.
  */
 
 /** What makes a test file a load test: it calls a store's or a fixture's load, core's load, or an `*Into` verb. */
@@ -13,6 +15,12 @@ export const ROUTED_PROJECT = 'serialized';
 
 /** The setup file that does the routing. */
 export const ROUTING_SETUP = 'tests/setup-load-via-serialized.ts';
+
+/** The vitest project that sorts the ids of each load and passes `sorted: true`. */
+export const SORTED_PROJECT = 'sorted';
+
+/** The setup file that does the sorting. */
+export const SORTED_SETUP = 'tests/setup-load-via-sorted.ts';
 
 /** Run under ids and again under `{ serialized }`. */
 export const ROUTED: readonly string[] = [
@@ -147,6 +155,18 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/core/load-sorted.test.ts':
+    'tests the sorted input itself (its refusals, when it reads the ids, that it reads them once); a serialized rerouting ' +
+    'would make each load a bitmap load, which refuses sorted: true',
+  'tests/core/load-sorted.property.test.ts':
+    'compares a sorted load with an unsorted load of the same ids byte for byte; a serialized rerouting would make both ' +
+    'bitmap loads and compare the bitmap path with itself',
+  'tests/core/load-sorted-heap.test.ts':
+    'measures the memory a sorted load holds against an unsorted one while it reads the ids; a serialized rerouting would ' +
+    'read every id before the load starts and measure the conversion instead',
+  'tests/drivers/sorted-load-source-errors.test.ts':
+    'throws from inside the id stream to show the error reaches the caller through each driver; a serialized rerouting ' +
+    'would drain the ids, and raise the error, before the load starts',
   'tests/core/write-identity-deletes.test.ts':
     "it races loads of one fixed set of ids to show what a delete does with another write's object; the input form is " +
     'not what it tests',
@@ -269,3 +289,12 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     "test is the export's pin, so a second run under the serialized input would repeat it and exercise no part of the " +
     'load path',
 };
+
+/**
+ * Routed files the `sorted` project does not run, each with the reason: what the file tests depends on the order the
+ * caller gave the ids in, or on reading them the way an unsorted load does.
+ */
+export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {};
+
+/** Run under ids, under `{ serialized }`, and with the ids sorted and `sorted: true`. */
+export const SORTED: readonly string[] = ROUTED.filter((f) => !(f in SORTED_EXCLUDED));
