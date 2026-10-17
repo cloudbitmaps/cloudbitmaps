@@ -1,7 +1,6 @@
 {
   "limit": 100,
   "functions": {
-    "packages/azure-blob/src/scrub-error.ts::copyOf": 111,
     "packages/core/src/core/combine-many.ts::class Run > pass": 222,
     "packages/core/src/core/combine-many.ts::class Run > publishWave": 119,
     "packages/core/src/core/crbm/reader.ts::class CrbmReader > open": 196,
