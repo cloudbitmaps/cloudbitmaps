@@ -16,9 +16,10 @@
  * a workspace specifier and does not parse as one of those forms: a sample with a missing brace is a sample nobody
  * compiles, and must not pass as one.
  *
- * WHAT IT DOES NOT READ, so nobody over-trusts it: a `require(…)`, a dynamic `import(…)`, a malformed import that does
- * not start its line, and every page outside those places (the changelog, the other docs, the contributor guides). A
- * sample that uses a name it does not import is not compiled either: the check compiles the import alone.
+ * WHAT IT DOES NOT READ, so nobody over-trusts it: a `require(…)`, a dynamic `import(…)` or `import.meta`, a
+ * placeholder written with an ellipsis (`import { … } from '@cloudbitmaps/…'`), a malformed import that does not start
+ * its line, and every page outside those places (the changelog, the other docs, the contributor guides). A sample that
+ * uses a name it does not import is not compiled either: the check compiles the import alone.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -60,13 +61,16 @@ function docImportPages(root) {
 }
 
 /**
- * An HTML page's text as a reader sees it: without its tags, and with its quotes and brackets decoded. A tag that
- * spans lines (a comment, an attribute list) leaves its line breaks, so a line number still points into the page.
+ * An HTML page's text as a reader sees it: without its tags, and with its quotes, its brackets and every numeric
+ * character reference (`&#39;`, `&#x27;`) decoded. A tag that spans lines (a comment, an attribute list) leaves its line
+ * breaks, so a line number still points into the page. `&amp;` is decoded last, so `&amp;#39;` reads as `&#39;`.
  */
 function stripMarkup(html) {
   return html
     .replace(/<[^>]*>/g, (tag) => tag.replace(/[^\n]/g, ''))
-    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&apos;/g, "'")
     .replace(/&quot;/g, '"')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -90,10 +94,16 @@ function lf(text) {
 /**
  * An import from a workspace package: named bindings, a namespace import, or a default import with or without named
  * bindings. Named bindings may span lines, but not a blank line, a `;`, a backtick or another brace, so an import with a
- * brace missing cannot run on to the next import's closing brace and swallow the page between them. The specifier stops
- * at a quote, a line break or an ellipsis, so a placeholder such as `@cloudbitmaps/…` in prose is not one.
+ * brace missing cannot run on to the next import's closing brace and swallow the page between them; a comment inside
+ * them (`// …` to its line's end, `/* … *\/`) is taken whole, so a `;` or a backtick in one is the comment's. Neither
+ * the bindings nor the specifier may hold an ellipsis, which stops the specifier too, so a placeholder such as
+ * `import { … } from '@cloudbitmaps/…'` in prose is not an import.
  */
-const BINDINGS = /\{(?:[^{};\x60\n]|\n(?![ \t>]*\n))*\}/.source;
+// Each character between the braces is matched one way only, so a match that fails backtracks in linear time: a `/`
+// starts a line comment (run to its line's end), a block comment (ended by its first `*/`) or is a `/` alone.
+const BINDINGS =
+  /\{(?:\/\/[^\n]*(?=\n|$)|\/\*(?:[^*]|\*(?!\/))*\*\/|\/(?![/*])|[^{};\x60\n…/]|\n(?![ \t>]*\n))*\}/
+    .source;
 const IMPORT = new RegExp(
   String.raw`\bimport\s+(?:type\s+)?(?:${BINDINGS}|\*\s+as\s+[A-Za-z_$][\w$]*|[A-Za-z_$][\w$]*(?:\s*,\s*${BINDINGS})?)` +
     String.raw`\s*from\s*(['"])(@cloudbitmaps\/[^'"\n…]+)\1\s*;?`,
@@ -118,14 +128,19 @@ function docImports(raw) {
   return out;
 }
 
-/** A line that starts an import, after any indentation or block-quote marker. */
-const STARTS_AN_IMPORT = /^[ \t>]*import\b/;
+/**
+ * A line that starts an import declaration, after any indentation or block-quote marker: not a dynamic `import(…)` or
+ * `import.meta`, which are expressions.
+ */
+const STARTS_AN_IMPORT = /^[ \t>]*import\b(?!\s*[(.])/;
 
 /**
  * Every line of `text` that starts an import of a workspace package which `docImports` does not read, as
- * `{ line, text }`. The import's statement is its line and the lines after it, up to the first that ends in `;`, a
- * blank line or a code fence; it is one of a workspace package when it quotes a specifier that starts
- * `@cloudbitmaps/`. A line on which `docImports` found an import is never reported.
+ * `{ line, text }`. The import's statement is its line and the lines after it, up to the first that ends in `;`, a code
+ * fence, or a blank line outside its braces (a blank line inside them is part of the statement, so an import broken
+ * by one is reported rather than lost); it is one of a workspace package when it quotes a specifier that starts
+ * `@cloudbitmaps/`. A line on which `docImports` found an import is never reported, and nor is a statement with an
+ * ellipsis in it, which is a placeholder.
  */
 function unparsedImports(raw) {
   const text = lf(raw);
@@ -135,12 +150,14 @@ function unparsedImports(raw) {
   lines.forEach((l, i) => {
     if (!STARTS_AN_IMPORT.test(l) || read.has(i + 1)) return;
     let statement = l;
+    const open = (t) => (t.match(/\{/g) ?? []).length > (t.match(/\}/g) ?? []).length;
     for (let j = i + 1; !/;\s*$/.test(statement) && j < lines.length; j++) {
       const next = lines[j] ?? '';
-      if (next.trim() === '' || /^[ \t>]*```/.test(next)) break;
+      if (/^[ \t>]*```/.test(next) || (next.trim() === '' && !open(statement))) break;
       statement += `\n${next}`;
     }
-    if (/['"]@cloudbitmaps\//.test(statement)) out.push({ line: i + 1, text: l.trim() });
+    if (/['"]@cloudbitmaps\//.test(statement) && !statement.includes('…'))
+      out.push({ line: i + 1, text: l.trim() });
   });
   return out;
 }

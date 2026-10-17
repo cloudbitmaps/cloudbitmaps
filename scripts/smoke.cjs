@@ -374,7 +374,8 @@ function assertDocImportsCompile() {
   const FLOOR = 50;
   if (imports.length < FLOOR) {
     throw new Error(
-      `smoke: found ${imports.length} imports in the docs, fewer than ${FLOOR}; the scan in scripts/doc-imports.cjs has stopped matching`,
+      `smoke: found ${imports.length} imports in the docs, fewer than ${FLOOR}: the scan in scripts/doc-imports.cjs ` +
+        'stopped matching, or samples were removed; if they were removed on purpose, lower FLOOR in scripts/smoke.cjs',
     );
   }
   const problems = pages.flatMap(({ page, text }) =>
