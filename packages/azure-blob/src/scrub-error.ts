@@ -21,13 +21,14 @@
  *
  * The value under a credential's name is replaced by `[redacted]`, as is the value after one in a flat list, under one
  * in a map and beside one in a record: the `...Value` beside a `...Name` (Azure's `HeaderName` and `HeaderValue`), and
- * on plain data a table row's other cell or the same index of a parallel list. A key that quotes a credential is
- * redacted as text. Beside a name, a number, a boolean, `code` and `errorCode` (what classification reads) and
- * `message` are kept. In the copy's text these are redacted: a credential header line (the string to sign Azure quotes
- * lists the `x-ms-` headers one to a line), an `Authorization` value, a cookie, a customer-provided key or an API key
- * after its name anywhere, a `SharedKey` or `Bearer` value, a `sig=` value in any of its encoded forms, the SharedKey
- * signature Azure echoes in a 403 body, and the text of the cell after one that names a credential. A credential in any
- * other form is not recognised, and a text too large for these patterns is replaced whole.
+ * on a record that describes no error (no `code`, `errorCode` or `message`) a table row's other cell or the same index
+ * of a parallel list. A key that quotes a credential is redacted as text. Beside a name, a number, a boolean, `code`
+ * and `errorCode` (what classification reads) and `message` are kept. In the copy's text these are redacted: a
+ * credential header line (the string to sign Azure quotes lists the `x-ms-` headers one to a line), an `Authorization`
+ * value, a cookie, a customer-provided key or an API key after its name anywhere, a `SharedKey` or `Bearer` value, a
+ * `sig=` value in any of its encoded forms, the SharedKey signature Azure echoes in a 403 body, and the text of the
+ * cell after one that names a credential. A credential in any other form is not recognised, and a text too large for
+ * these patterns is replaced whole.
  */
 
 import { types } from 'node:util';
@@ -331,20 +332,26 @@ function nameIndexes(list: unknown[]): number[] {
 /**
  * Redact the value a record holds beside a credential's name. The `...Value` field beside a `...Name` one that names a
  * credential is redacted on any record: Azure's `HeaderName` and `HeaderValue`, a `{ name, value }` pair, an XML
- * header's `Name` and `Value`. On a plain record, a name in any other field (a header table's `{ th, td }` row, a
- * `{ key, value }` pair) redacts every other field, and a name at an index of a list redacts that index of every other
- * list (a row of several pairs, parsed to parallel lists). A number or a boolean is never a credential, and is kept.
+ * header's `Name` and `Value`. On a plain record that describes no error (it holds none of {@link DESCRIBING}), a name
+ * in any other field (a header table's `{ th, td }` row, a `{ key, value }` pair) redacts every other field, and a name
+ * at an index of a list redacts that index of every other list (a row of several pairs, parsed to parallel lists). An
+ * error, and a record that describes one (a `details` with its `errorCode`), are read field by field: a response
+ * header whose value spells a credential's name (`vary: Cookie`) costs them nothing. A number or a boolean is never a
+ * credential, and is kept.
  */
 function redactPairs(original: object, copy: object, errorLike: boolean, ctx: Copying): void {
+  const fieldwise =
+    errorLike ||
+    Reflect.ownKeys(original).some((key) => typeof key === 'string' && DESCRIBING.has(key));
   const names = keysHolding(original, namesCredential);
-  const lists = errorLike
+  const lists = fieldwise
     ? []
     : keysHolding(original, (held) => Array.isArray(held) && nameIndexes(held).length > 0);
   if (names.length === 0 && lists.length === 0) return;
   const paired = names
     .filter((key) => /name$/i.test(key))
     .map((key) => `${key.slice(0, -4)}value`.toLowerCase());
-  const every = !errorLike && names.some((key) => !/name$/i.test(key));
+  const every = !fieldwise && names.some((key) => !/name$/i.test(key));
   const indexes = lists.flatMap((key) =>
     nameIndexes(Object.getOwnPropertyDescriptor(original, key)?.value as unknown[]),
   );

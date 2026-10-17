@@ -533,6 +533,23 @@ describe('scrubCredentials (Azure)', () => {
       expect((scrubCredentials(headed).details as { errorCode: string }).errorCode).toBe('cookie');
     });
 
+    it('reads a record that describes an error field by field, so a response header cannot cost it the rest', () => {
+      const details = {
+        errorCode: 'ServerBusy',
+        requestId: 'r-1',
+        date: 'd',
+        vary: 'Cookie',
+        th: 'cookie',
+        list: ['x-api-key', 'v'],
+        other: ['kept', 'too'],
+      };
+      const err = Object.assign(restError(), { details });
+      expect(scrubCredentials(err).details).toEqual({
+        ...details,
+        list: ['x-api-key', '[redacted]'],
+      });
+    });
+
     it('on an error itself, redacts only the Value beside a Name', () => {
       const err = Object.assign(new Error('refused'), {
         code: 'InvalidHeaderValue',
