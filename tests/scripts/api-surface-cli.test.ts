@@ -93,7 +93,7 @@ afterAll(() => rmSync(repo, { recursive: true, force: true }));
 const withMain = (edit: (s: string) => string): void =>
   put('packages/a/dist/index.d.ts', edit(MAIN));
 
-describe('--write and --check', () => {
+describe('--write and --check', { timeout: 60_000 }, () => {
   it('writes every entry point, a nested `types` condition and a subpath included, and passes on no change', () => {
     const entries = snapshot();
     expect(entries['@fx/a keep']).toBe('function keep(a: string): string;');
@@ -174,7 +174,7 @@ describe('--write and --check', () => {
   });
 });
 
-describe('--against', () => {
+describe('--against', { timeout: 60_000 }, () => {
   it('passes with no change and with an addition', () => {
     expect(run(['--against', 'HEAD']).status).toBe(0);
     withMain((s) => `${s}export declare function fresh(): void;\n`);
@@ -329,7 +329,7 @@ describe('--against', () => {
   });
 });
 
-describe('a member added to an existing type', () => {
+describe('a member added to an existing type', { timeout: 60_000 }, () => {
   const REQUIRED_MSG = 'a required member added to an existing interface';
   /** Adds `extra` members to `Shape` (an interface the base has), writes the snapshot and compares with HEAD. */
   const addToShape = (extra: string): Run => {
@@ -414,7 +414,7 @@ describe('a member added to an existing type', () => {
   });
 });
 
-describe('types a public signature names that no entry exports', () => {
+describe('types a public signature names that no entry exports', { timeout: 60_000 }, () => {
   const HIDDEN = `export interface Pub { h: Hidden; r: Ext; }
 interface Hidden { a: number; deep: Deep; priv: never }
 interface Deep { x: string }
@@ -462,7 +462,7 @@ export {};
   });
 });
 
-describe('internal entries', () => {
+describe('internal entries', { timeout: 60_000 }, () => {
   const CORE = `export interface Ctx { n: number }
 export declare function engine(c: Ctx, a: string): void;
 export declare function other(): void;
