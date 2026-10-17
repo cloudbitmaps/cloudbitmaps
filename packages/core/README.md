@@ -16,7 +16,9 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the store, and the storage y
 
 [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-Depend on `@cloudbitmaps/core` directly only to write a flavor or a driver.
+Depend on `@cloudbitmaps/core` directly only to write a driver, through `@cloudbitmaps/core/driver-kit`.
+
+> **The main entry of this package is internal.** It is the engine `@cloudbitmaps/roaring` and the driver packages are built on, and it is outside the stability promise: it can change in any minor release, and a change to it gets no CHANGELOG Breaking entry. Install `@cloudbitmaps/roaring` and a driver. The public entry here is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
 
 > **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
 > [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
@@ -31,9 +33,9 @@ and crypto-shred, erasure by rewrite, retention, and the in-memory and local-fil
 dependencies and no cloud SDK**. The cloud backends are their own packages, built against
 `@cloudbitmaps/core/driver-kit`, the declared contract a driver depends on. A third-party driver can use it too.
 
-Its main entry is the flavor-author kit: the read engine, the standalone forms of the store's methods (`loadSegment`,
-`dropSegment`, `retireExpired` and the rest), and the retry and budget internals. `@cloudbitmaps/roaring` re-exports,
-by name, what an application uses.
+Its main entry is the internal engine (the read engine, the standalone forms of the store's methods, and the retry and
+budget internals) that `@cloudbitmaps/roaring` and the driver packages import; it is not a public API. What an
+application uses is re-exported, by name, from `@cloudbitmaps/roaring`.
 
 ## How the storage path is laid out
 

@@ -58,7 +58,14 @@ Every change must pass these locally, and CI runs each of them on every pull req
   additions and pass. A **required** member (a property or method without `?`, or an index, call or construct signature)
   added to an interface or object type the base already has is a change, because it breaks everyone who implements or
   builds that type: it fails with "a required member added to an existing interface" unless a row excuses it. An empty
-  allowlist is the normal state. What it does not see: a change in behaviour behind an
+  allowlist is the normal state. A package can list an entry in `cloudbitmaps.internalEntries` in its `package.json`:
+  that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry). It is not in `surface.json`,
+  a type only it exported is recorded as `(referenced)` when a public signature names it, and its own lines are in
+  `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
+  internal is itself a change the gate asks for: a row `{"entry": "<specifier> (internal)", "reason": …}`. Because
+  `workspace:^` lets `@cloudbitmaps/roaring` 0.22.0 be installed beside `@cloudbitmaps/core` 0.22.1, **core's main entry
+  changes only additively within a minor**: a removal or a changed signature waits for the next minor, and the release
+  reviewer reads the `api-surface/internal.json` diff for it. What it does not see: a change in behaviour behind an
   unchanged signature (that is for tests); an overload appended after the last one (it reads as an addition); a type
   from outside the workspace, beyond its name in the signature; a member added to a class, abstract or not, which
   binds a subclass; and, after a TypeScript upgrade that changes how
@@ -101,7 +108,7 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 | `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers, the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit` and nothing else of ours — never a flavor, never a sibling |
-| `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s public main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
+| `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | the benchmarks ([`bench/README.md`](bench/README.md)), fuzz targets ([`fuzz/README.md`](fuzz/README.md)), the build, release and gate scripts ([`scripts/README.md`](scripts/README.md)), the static site ([`site/README.md`](site/README.md)), and the docs trees below |
 
@@ -110,7 +117,7 @@ A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the 
 directly. `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
 core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
 entry outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
-core's but its public main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a
+core's but its main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a
 cloud SDK or a node builtin. `pnpm lint:arch` proves each of those lint rules fires.
 
 `core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core` (a dynamic `import()` is refused there

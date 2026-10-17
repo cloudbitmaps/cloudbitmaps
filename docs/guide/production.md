@@ -551,8 +551,7 @@ The harness, the per-run samples, the Node version and the load averages are in
 figures are not the ones in that file.
 
 Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
-which the store passes to its loads and its erasures. If you call
-`@cloudbitmaps/core` directly, pass one (`clock`) or the work runs uninterrupted.
+which the store passes to its loads and its erasures.
 
 **The rule:** anything that touches a whole generation belongs out of the request path. Yielding makes a load a
 well-behaved neighbour, not a cheap one — it still burns a core for a fraction of a second, holds the whole

@@ -1,7 +1,7 @@
 {
   "name": "@cloudbitmaps/core",
   "version": "0.21.0",
-  "description": "Codec-agnostic engine for CloudBitmaps: the .crbm format, the write-once load/publish path, generation GC, encryption-at-rest, and the driver ports. No cloud SDK.",
+  "description": "Internal engine of CloudBitmaps, which the other @cloudbitmaps packages are built on. Its main entry is outside the stability promise; the public contract for writing a driver is @cloudbitmaps/core/driver-kit. No cloud SDK.",
   "keywords": [
     "roaring",
     "bitmap",
@@ -38,6 +38,11 @@
     "node": ">=22.12"
   },
   "sideEffects": false,
+  "cloudbitmaps": {
+    "internalEntries": [
+      "."
+    ]
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

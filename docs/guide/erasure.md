@@ -495,8 +495,7 @@ repaired. These limits hold on every driver:
   listing names under a `destroyed` row. Every writer refuses that row, so a number there is taken again only once the
   row is purged and the name re-created.
 
-**The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (on `@cloudbitmaps/core`, for flavor and
-driver authors) over every registered segment, and each ledger entry is that function's result.
+**The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (an internal function of the engine) over every registered segment, and each ledger entry is that function's result.
 
 - `erased: true` means no generation of the segment holds the id, checked by listing the bucket and reading what is
   left. Otherwise `reason` is `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no generation in the bucket
