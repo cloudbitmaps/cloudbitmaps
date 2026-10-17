@@ -441,10 +441,9 @@ The library's own error messages name the segment and namespace; some messages a
 of the ids in that chunk), id counts, metadata keys, key ids, the bucket or container name, or the account host, and an
 object's key (the store's `prefix`, the namespace and the encoded segment name); an error the cloud SDK raised reaches
 you as the SDK wrote it, except that the S3, GCS and Azure Blob drivers first remove the credentials they recognise in
-it (the request and response it kept, and, for S3 and Azure Blob, a credential the service quotes back or its text
-quotes; for GCS, a credential header line its text quotes), and a credential in another form reaches you as the SDK
-wrote it; and `eraseSubject` copies each message into its
-ledger's `note`. Treat an error message, and the ledger, as carrying those names wherever you report or keep them.
+it (the request and response it kept, and a credential the service quotes back or its text quotes), and a credential
+in another form reaches you as the SDK wrote it; and `eraseSubject` copies each message into its ledger's `note`.
+Treat an error message, and the ledger, as carrying those names wherever you report or keep them.
 
 
 ## Shared-responsibility matrix
