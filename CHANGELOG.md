@@ -24,8 +24,9 @@ so, and so do the module headers in the code.
 - **`Expr` and the four `MaterializeMany*` stats and feed types are declared types.** `Expr`, `MaterializeManyStats`,
   `MaterializeManyOperandStats`, `MaterializeManyOutputStats` and `MaterializeManyFeedRecord` are declared under these
   names, where they were aliases of names in `@cloudbitmaps/core`, so an editor's hover and a compiler error print the
-  name you import; what each describes is unchanged. Code that named core's `CombineExpr`, `CombineManyStats`,
-  `CombineManyOperandStats`, `CombineManyOutputStats` or `CombineManyFeedRecord` renames it to the name here.
+  name you import; what each describes is unchanged. Code that named core's types renames them: `CombineExpr` →
+  `Expr`, `CombineManyStats` → `MaterializeManyStats`, `CombineManyOperandStats` → `MaterializeManyOperandStats`,
+  `CombineManyOutputStats` → `MaterializeManyOutputStats` and `CombineManyFeedRecord` → `MaterializeManyFeedRecord`.
 - **`exportSegments` no longer takes `codec`.** The `'roaring'` format's bitmaps are built by the store's own roaring
   codec, which was the default; a `codec` passed to it throws `ValidationError` before any request. Drop the option.
 - **The 13 `isXError` predicates are gone from `@cloudbitmaps/roaring`, and the 5 of them `@cloudbitmaps/core/driver-kit`
@@ -50,6 +51,8 @@ so, and so do the module headers in the code.
   `errorKind` classifies across copies of the package the same way. It names the class and does not narrow the type. An
   untyped JavaScript caller that `require`s a removed name gets `undefined`, and calling it inside a `catch` throws a
   `TypeError` that hides the original error.
+- **`maxScanSegments: null` is a `ValidationError` on `store.retireExpired` and `eraseNamespace`**, as a malformed value always was;
+  it was read as the default of 250,000. Leave the option out for the default.
 - **`BudgetExceededError`'s constructor takes `(message, { option, limit, spent })`.** Code that constructs one, such as
   a test double, passes the option name and the two numbers; the messages are unchanged.
 - **The main entry of `@cloudbitmaps/core` is internal, outside the stability promise.** It is the engine that
@@ -83,14 +86,14 @@ so, and so do the module headers in the code.
   `'CloudRoaringError'`, except a subclass of `TransientError`, which returns `'TransientError'`.
 - **`BudgetExceededError` carries `option`, `limit` and `spent`.** `option` names the option to raise
   (`'budget.maxRequests'`, `'maxBufferedBytes'` or `'maxScanSegments'`), `limit` is the bound in force, and `spent` is
-  what the call had reached, which means a different thing for each option: for `'budget.maxRequests'` the requests the
-  call needs (raise the budget to it); for `'maxBufferedBytes'` a lower bound, what the call held plus what it asked for
+  what the call had reached, which means a different thing for each option: for `'budget.maxRequests'` the requests a
+  plan needs (raise the budget to it; an enumeration stopped at its bound, as in `subjectReport` and `eraseSubject`'s scan,
+  reports `limit + 1`, a lower bound); for `'maxBufferedBytes'` a lower bound, what the call held plus what it asked for
   when refused, so raising the limit to it can be refused again (only the per-output refusal, "raise maxBufferedBytes to
   at least N", names a figure that lets that output through); for `'maxScanSegments'` `limit + 1`, a lower bound.
 - **`store.checkConsistency` takes `maxScanSegments`**, as `retireExpired` does: the most registry rows the scan holds
   resident (default 250,000, validated before any request). Past it the call throws `BudgetExceededError` with
-  `option: 'maxScanSegments'`, where it had no ceiling of its own and the limit could only be raised on
-  `runConsistencyCheck`.
+  `option: 'maxScanSegments'`, where its ceiling could only be raised on `runConsistencyCheck`.
 - **A format reference, [`docs/format.md`](docs/format.md).** Every byte of a `.crbm` object (the preamble, the chunk
   payloads, the extension block, the index, the 104-byte footer, the checksums and the sealing), the identity rules, and
   the registry row at schema 5, with how each cloud registry stores it, what a reader refuses and with which error, what
@@ -150,6 +153,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A read or combine refuses a field it does not take when the options object inherits it or holds it in a getter.**
+  `iterate`, `everyNth`, `intersect`, `union`, `andNot`, `andNotInto` and `materializeMany` refused such a field only as
+  an own key, and read past one on a prototype or behind a getter, as `Object.create(defaults)` or a class with a getter
+  gives: an `exclude` so held on `andNot` was skipped, and the stream held the ids it should have subtracted. Each is a
+  `ValidationError` naming the field, before any request, as an own key is, and so is a `codec` held that way on
+  `exportSegments`.
 - **A delete decided from one read of an object's footer no longer removes another writer's object of the same cleartext
   ids.** Two loads of the same ids at the same number wrote the same bytes, so a footer match proved content and not the
   writer. A refused load whose reclaim read no row, after the name was swept, purged and re-created and a load of the same

@@ -135,11 +135,22 @@ describe('consistency check bounds its registry scan', () => {
 
   it('store.checkConsistency refuses a bad maxScanSegments before any request', async () => {
     const { store, reg } = storeOver(100);
-    for (const bad of [0, -1, 1.5, Number.NaN]) {
+    for (const bad of [0, -1, 1.5, Number.NaN, null as unknown as number]) {
       await expect(store.checkConsistency({ maxScanSegments: bad })).rejects.toThrow(
         /maxScanSegments/,
       );
     }
+    expect(reg.yielded()).toBe(0);
+  });
+
+  it('the retention sweep refuses a null maxScanSegments, as it does any malformed one', async () => {
+    const reg = registryOf(3);
+    await expect(
+      retireExpired(depsWith(reg), {
+        now: MIN_EXPIRES_AT_MS,
+        maxScanSegments: null as unknown as number,
+      }),
+    ).rejects.toThrow(/maxScanSegments/);
     expect(reg.yielded()).toBe(0);
   });
 

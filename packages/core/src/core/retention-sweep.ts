@@ -559,7 +559,9 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
   const purgeTombstones = options.purgeTombstones ?? true;
   const grace = options.tombstoneGraceMs ?? DEFAULT_TOMBSTONE_GRACE_MS;
   requireFiniteNumber(grace, { min: 0, what: 'retireExpired: `tombstoneGraceMs`' });
-  const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
+  // Only an absent value means the default: a `null` or a malformed one is refused, as a malformed `budget` is.
+  const maxScanSegments =
+    options.maxScanSegments === undefined ? DEFAULT_MAX_SCAN_SEGMENTS : options.maxScanSegments;
   requirePositiveInteger(maxScanSegments, 'retireExpired: `maxScanSegments`');
   return {
     audit: options.audit,

@@ -145,7 +145,7 @@
   },
   {
     "entry": "@cloudbitmaps/roaring CombineOptions",
-    "reason": "CombineOptions is the one options type for every read and combine on a segment: it declares all eleven fields itself, each optional, rather than extending the types it replaces, and a verb refuses at run time, with a ValidationError before any request, a field it does not take"
+    "reason": "CombineOptions is the one options type for every read and combine on a segment: it declares all eleven fields itself, each optional, rather than extending the types it replaces, and a verb refuses at run time, with a ValidationError before any request, a field it does not take; so a write option (audit, allowEmpty, guard, metadata, keep) on intersect or union, which take this type by name, type-checks and still throws a ValidationError before any request"
   },
   {
     "entry": "@cloudbitmaps/roaring IdRange*",
