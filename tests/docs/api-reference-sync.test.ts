@@ -16,6 +16,10 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 // `./driver-kit` is included deliberately. It is the contract a storage-driver package builds against, so it
 // is public API with the same documentation obligation as anything else — and being a surface nobody imports
 // by accident, it is exactly the kind that rots undocumented.
+//
+// An entry a package lists in its manifest's `cloudbitmaps.internalEntries` (core's main entry) is outside the
+// stability promise and is not documented in the index, so it is skipped: the same field `scripts/api-surface.cjs`
+// reads, so there is one list.
 const BARRELS: readonly string[] = (() => {
   const root = new URL('../../', import.meta.url);
   const workspace = readdirSync(new URL('packages/', root), { withFileTypes: true })
@@ -28,8 +32,11 @@ const BARRELS: readonly string[] = (() => {
       readFileSync(new URL(`packages/${pkg}/package.json`, root), 'utf8'),
     ) as {
       exports?: Record<string, unknown>;
+      cloudbitmaps?: { internalEntries?: string[] };
     };
+    const internal = manifest.cloudbitmaps?.internalEntries ?? [];
     for (const key of Object.keys(manifest.exports ?? { '.': null })) {
+      if (internal.includes(key)) continue;
       const name = key === '.' ? 'index' : key.replace(/^\.\//, '');
       for (const candidate of [`${name}/index.ts`, `${name}.ts`]) {
         const rel = `../../packages/${pkg}/src/${candidate}`;
@@ -113,18 +120,8 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
     return chunks.join('\n');
   };
 
-  /**
-   * What each entry's section must list. The flavor lists everything it exports; core's main entry lists only
-   * what the flavor does not re-export, so a name sits under the one heading an application would look under.
-   */
-  const exportedBy = (() => {
-    const byEntry = new Map(BARRELS.map((b) => [entryOf(b), new Set(exportedNames(read(b)))]));
-    const flavor = byEntry.get('@cloudbitmaps/roaring');
-    const coreMain = byEntry.get('@cloudbitmaps/core');
-    if (flavor === undefined || coreMain === undefined) throw new Error('missing a barrel');
-    byEntry.set('@cloudbitmaps/core', new Set([...coreMain].filter((n) => !flavor.has(n))));
-    return byEntry;
-  })();
+  /** What each entry's section must list: every name it exports. */
+  const exportedBy = new Map(BARRELS.map((b) => [entryOf(b), new Set(exportedNames(read(b)))]));
 
   for (const barrel of BARRELS) {
     const label = barrel.replace('../../', '');
@@ -168,7 +165,7 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
       const stale = [...new Set(cited)].filter((name) => !names.has(name));
       expect(
         stale,
-        `the \`${entry}\` section of the "Complete export index" lists name(s) that entry does not export (or, for core, that the flavor re-exports too) — prune them: ${stale.join(', ')}`,
+        `the \`${entry}\` section of the "Complete export index" lists name(s) that entry does not export — prune them: ${stale.join(', ')}`,
       ).toEqual([]);
     }
   });

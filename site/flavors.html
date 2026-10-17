@@ -196,8 +196,9 @@
             </table>
           </div>
           <p class="tpanel-foot">
-            Adding a flavor is <strong>one row here and one figure on its own page</strong>. Nothing else on
-            the site changes, because nothing else depends on the codec.
+            The flavors are the ones this project ships, and a new one is <strong>one row here and one figure on
+            its own page</strong>. The codec seam is internal to the engine, so there is no supported way to
+            add a flavor from outside.
           </p>
         </div>
       </section>
@@ -255,7 +256,8 @@
               way whichever you pick — <span class="m">store.load</span>, one immutable object
               then a compare-and-swap of the pointer. A flavor is a <span class="m">CodecInterface</span>: the
               engine hands it each chunk's bytes, above the same four drivers and two tiers, and every call on
-              this card is the engine's, so no flavor changes its signature.
+              this card is the engine's, so no flavor changes its signature. The engine's main entry is internal, so
+              the codec seam is not a public extension point.
             </p>
           </div>
         </div>
