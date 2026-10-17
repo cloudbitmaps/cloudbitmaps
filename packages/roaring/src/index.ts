@@ -2845,7 +2845,8 @@ export class CloudRoaring {
  * whether a combine's operands exist. On a combine the range applies to every operand and every `exclude`, and a read
  * with a range fetches only the chunks it overlaps. The per-op budget is charged before the first fetch, for every chunk
  * in the range, so with `after` alone it is charged to the end of the segment however early the caller stops; pass
- * `through` to bound it.
+ * `through` to bound it. A read that lists its keys again after a move is charged again, with the chunks it has already
+ * taken.
  */
 export interface CombineOptions {
   /** Exclusive lower bound: the read yields only ids greater than this. */
