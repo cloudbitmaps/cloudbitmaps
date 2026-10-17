@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -219,7 +220,7 @@ const MOVED_TO_TOOLS = [
 const DRIVER_KIT_INSTEAD =
   '`@cloudbitmaps/core/driver-kit`, the one home of the driver contracts (a dependency of yours at the version of ' +
   "`@cloudbitmaps/roaring` you install), or the type derived from the flavor's own: `CloudRoaringOptions['storage']`, " +
-  "`MemoryStorage['registry']`, `EncryptionOptions['keystore']`";
+  "`MemoryStorage['registry']`, `NonNullable<EncryptionOptions['keystore']>`";
 
 /** What a reader who wanted the `.crbm` reader or its crypto pair uses instead. */
 const READER_INSTEAD =
@@ -244,17 +245,20 @@ const predicate = (kind: string): { name: string; instead: string; anyPage: true
  * `@cloudbitmaps/core/driver-kit` alone exports now, and the engine's internals and constants that no public
  * signature needs.
  *
- * The flavor's barrel declares none of them, and no page imports one from it. `anyPage` marks a name with no public
- * home and no page that describes it, which no page may name at all. The rest are named by pages legitimately: a
- * driver contract where a page documents driver-kit, an internal of core's where a page describes the engine
- * (`BlobReader` and `CodecInterface` in the contributor guides, `CrbmReader` in the fuzz guide,
+ * The flavor's barrel declares none of them, re-exports nothing with a star, and no page imports one from it.
+ * `anyPage` marks a name with no public home and no page that describes it, which no page may name at all. `onlyOn`
+ * lists the pages that name one legitimately, and no other page may: an internal of core's where a page describes the
+ * engine (`BlobReader` and `CodecInterface` in the contributor guides, `CrbmReader` in the fuzz guide,
  * `CrbmStorageChunkSource` in core's README), and `isTransientError`, which is also the AWS SDK's classifier, in the
- * bench guide. `code` marks a name that no code names either, comments included.
+ * bench guide. A driver contract has neither: driver-kit's pages name it. `code` marks a name that no code names
+ * either, comments included. `tests/docs/left-the-flavor.json` lists the same names for `scripts/smoke.cjs`, which says
+ * a name is one of them when it meets it.
  */
 const LEFT_THE_FLAVOR: ReadonlyArray<{
   name: string;
   instead: string;
   anyPage?: true;
+  onlyOn?: readonly string[];
   code?: true;
 }> = [
   { name: 'isCloudRoaringError', instead: '`errorKind(err) !== undefined`', anyPage: true },
@@ -271,7 +275,11 @@ const LEFT_THE_FLAVOR: ReadonlyArray<{
     'LeaseLimitError',
     'StaleOperandError',
   ].map(predicate),
-  { name: 'isTransientError', instead: "`errorKind(err) === 'TransientError'`" },
+  {
+    name: 'isTransientError',
+    instead: "`errorKind(err) === 'TransientError'`",
+    onlyOn: [join('bench', 'README.md')],
+  },
   { name: 'IdRange', instead: "`Pick<CombineOptions, 'after' | 'through'>`", anyPage: true },
   ...['BaseCombineOptions', 'MaterializeOptions', 'AndNotIntoOptions'].map((name) => ({
     name,
@@ -321,17 +329,34 @@ const LEFT_THE_FLAVOR: ReadonlyArray<{
     'Token',
     'WrappedDek',
   ].map((name) => ({ name, instead: DRIVER_KIT_INSTEAD })),
-  { name: 'CrbmReader', instead: READER_INSTEAD },
-  { name: 'BlobReader', instead: READER_INSTEAD },
+  { name: 'CrbmReader', instead: READER_INSTEAD, onlyOn: [join('fuzz', 'README.md')] },
+  {
+    name: 'BlobReader',
+    instead: READER_INSTEAD,
+    onlyOn: ['AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md'],
+  },
   ...['BufferReader', 'CrbmReaderOptions', 'CrbmCrypto', 'NodeAead', 'aadFor'].map((name) => ({
     name,
     instead: READER_INSTEAD,
     anyPage: true as const,
   })),
-  { name: 'CrbmStorageChunkSource', instead: SOURCE_INSTEAD },
+  {
+    name: 'CrbmStorageChunkSource',
+    instead: SOURCE_INSTEAD,
+    onlyOn: [join('packages', 'core', 'README.md')],
+  },
   { name: 'CrbmStorageChunkSourceOptions', instead: SOURCE_INSTEAD, anyPage: true },
-  { name: 'PinnedObject', instead: SOURCE_INSTEAD, anyPage: true },
-  { name: 'CodecInterface', instead: 'nothing: the flavor binds its codec for you' },
+  {
+    name: 'PinnedObject',
+    instead:
+      '`seg.pin()` or `seg.pinAt({ generation, fingerprint })`, whose handle records it as `PinnedAt`',
+    anyPage: true,
+  },
+  {
+    name: 'CodecInterface',
+    instead: 'nothing: the flavor binds its codec for you',
+    onlyOn: ['CONTRIBUTING.md'],
+  },
   ...['CodecBitmap', 'EncodedChunk'].map((name) => ({
     name,
     instead: 'nothing: the flavor binds its codec for you',
@@ -369,6 +394,21 @@ const LEFT_THE_FLAVOR: ReadonlyArray<{
   },
 ];
 
+/** Each export declaration in `text` that names no bindings (`export *`, `export type *`, `export * as ns`), as written. */
+export function starExportsIn(text: string): string[] {
+  const sf = ts.createSourceFile('barrel.ts', text, ts.ScriptTarget.Latest, true);
+  return sf.statements
+    .filter(
+      (st) =>
+        ts.isExportDeclaration(st) &&
+        (st.exportClause === undefined || !ts.isNamedExports(st.exportClause)),
+    )
+    .map((st) => st.getText(sf));
+}
+
+/** The star exports of a barrel, by its path from the root. */
+const starExports = (rel: string): string[] => starExportsIn(readFileSync(join(ROOT, rel), 'utf8'));
+
 /** The names a barrel declares as exports, read with the compiler's parser, so a type counts as a value does. */
 function barrelExports(rel: string): Set<string> {
   const sf = ts.createSourceFile(
@@ -405,19 +445,10 @@ function barrelExports(rel: string): Set<string> {
   return names;
 }
 
-/**
- * An HTML page's text as a reader sees it: without its tags, and with its quotes and brackets decoded. A tag that
- * spans lines (a comment, an attribute list) leaves its line breaks, so a line number still points into the page.
- */
-export function stripMarkup(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, (tag) => tag.replace(/[^\n]/g, ''))
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-}
+/** An HTML page's text as a reader sees it, read by the same function the smoke test's scanner uses. */
+export const { stripMarkup } = createRequire(import.meta.url)('../../scripts/doc-imports.cjs') as {
+  stripMarkup: (html: string) => string;
+};
 
 /** A page's text, through `stripMarkup` when it is HTML. */
 function readerText(path: string): string {
@@ -778,6 +809,26 @@ describe('a name the flavor stopped exporting stays off it', () => {
     }
   });
 
+  it('neither the flavor nor driver-kit re-exports with a star, which a list of names cannot see', () => {
+    expect(starExports(FLAVOR)).toEqual([]);
+    expect(starExports(KIT)).toEqual([]);
+  });
+
+  it('finds a star export in each spelling, and passes a named one', () => {
+    expect(
+      starExportsIn(
+        "export * from 'a';\nexport type * from 'b';\nexport * as ns from 'c';\nexport type { X } from 'd';\nexport { y };",
+      ),
+    ).toEqual(["export * from 'a';", "export type * from 'b';", "export * as ns from 'c';"]);
+  });
+
+  it('lists the same names as the file the smoke test reads', () => {
+    const shared = JSON.parse(
+      readFileSync(join(ROOT, 'tests', 'docs', 'left-the-flavor.json'), 'utf8'),
+    ) as string[];
+    expect([...shared].sort()).toEqual(LEFT_THE_FLAVOR.map((r) => r.name).sort());
+  });
+
   it('driver-kit exports every driver contract the flavor sends a reader to it for', () => {
     const kit = barrelExports(KIT);
     const contracts = LEFT_THE_FLAVOR.filter((r) => r.instead === DRIVER_KIT_INSTEAD);
@@ -804,6 +855,36 @@ describe('a name the flavor stopped exporting stays off it', () => {
     expect(names('README.md')).toContain('CloudRoaring');
     expect(names(join('docs', 'guide', 'getting-started.md'))).toContain('MemoryStorage');
     expect(names(join('site', 'usage.html'))).toContain('CloudRoaring');
+  });
+
+  it('a name some pages may name is on no other page, and on each page its row lists', () => {
+    const scoped = LEFT_THE_FLAVOR.filter((r) => r.onlyOn !== undefined);
+    expect(scoped.map((r) => r.name).sort()).toEqual(
+      [
+        'BlobReader',
+        'CodecInterface',
+        'CrbmReader',
+        'CrbmStorageChunkSource',
+        'isTransientError',
+      ].sort(),
+    );
+    const all = pages();
+    for (const row of scoped) {
+      const allowed = row.onlyOn ?? [];
+      expect(
+        offenders(
+          all.filter((p) => !allowed.includes(p)),
+          [row],
+        ),
+      ).toEqual([]);
+      for (const page of allowed) {
+        expect(all, page).toContain(page);
+        expect(
+          retiredNames(readFileSync(join(ROOT, page), 'utf8'), [row]).length,
+          `${page} names ${row.name}`,
+        ).toBeGreaterThan(0);
+      }
+    }
   });
 
   it('no page names one that has no public home', () => {

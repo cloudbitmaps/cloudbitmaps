@@ -133,7 +133,7 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
       // and to the index, on purpose.
       // Scan COMMENT-STRIPPED source (as `exportedNames` does) so prose mentioning `export *` isn't a hit.
       const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-      const stars = codeOnly.match(/export\s+\*[^\n]*/g) ?? [];
+      const stars = codeOnly.match(/export\s+(?:type\s+)?\*[^\n]*/g) ?? [];
       expect(
         stars,
         `${label}: use explicit named exports (no \`export *\`) so the sync guard sees every name`,

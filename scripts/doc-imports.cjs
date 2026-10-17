@@ -8,20 +8,36 @@
  * fails it. It cannot see a sample in a guide that imports a name its package does not export: that sample
  * fails on the first line a reader copies, and nothing else in the repository compiles it.
  *
- * WHAT IT READS. The pages a reader copies samples from: the root README, every page of `docs/guide/` and every
- * package's README. In each, a line that starts an import of named bindings from a workspace package
- * (`import { … } from '@cloudbitmaps/…'`, or `import type { … }`), its bindings on that line or on the lines that
- * follow, indented or inside a block quote, since a sample in a list item or a quote is copied too.
+ * WHAT IT READS. The pages a reader copies samples from: the root README, every page of `docs/guide/`, every
+ * package's README, and the site (every `.html` page under `site/`, read through its markup, and `site/llms.txt`).
+ * In each, every import from a workspace package: named bindings (`import { … }` or `import type { … }`, on one line
+ * or across lines, indented, in a block quote or after a comment's `//`), a namespace import (`import * as x`) and a
+ * default import. And it reports, for the check to fail on, every line that starts an import whose statement quotes
+ * a workspace specifier and does not parse as one of those forms: a sample with a missing brace is a sample nobody
+ * compiles, and must not pass as one.
  *
- * WHAT IT DOES NOT READ, so nobody over-trusts it: a default or namespace import, a `require(…)`, an import that
- * does not start its line (one quoted mid-sentence in prose), and every page outside those three places (the
- * site, the changelog, the other docs). A sample that uses a name it does not import is not compiled either: the
- * check compiles the import alone.
+ * WHAT IT DOES NOT READ, so nobody over-trusts it: a `require(…)`, a dynamic `import(…)`, a malformed import that does
+ * not start its line, and every page outside those places (the changelog, the other docs, the contributor guides). A
+ * sample that uses a name it does not import is not compiled either: the check compiles the import alone.
  */
 const fs = require('node:fs');
 const path = require('node:path');
 
-/** The pages, relative to `root`: the README, then the guide's pages, then each package's README, each sorted. */
+/** Every `.html` file under `dir` (relative to `root`), sorted, subdirectories included. */
+function htmlPages(root, dir) {
+  const out = [];
+  for (const e of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+    const rel = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...htmlPages(root, rel));
+    else if (e.name.endsWith('.html')) out.push(rel);
+  }
+  return out.sort();
+}
+
+/**
+ * The pages, relative to `root`: the README, then the guide's pages, then each package's README, then the site's HTML
+ * pages and its `llms.txt`, each group sorted.
+ */
 function docImportPages(root) {
   const guide = path.join('docs', 'guide');
   const guides = fs
@@ -34,15 +50,42 @@ function docImportPages(root) {
     .filter((d) => fs.existsSync(path.join(root, 'packages', d, 'README.md')))
     .sort()
     .map((d) => path.join('packages', d, 'README.md'));
-  return ['README.md', ...guides, ...packages];
+  return [
+    'README.md',
+    ...guides,
+    ...packages,
+    ...htmlPages(root, 'site'),
+    path.join('site', 'llms.txt'),
+  ];
 }
 
 /**
- * A line that starts an import of named bindings from a workspace package. The bindings may span lines (`[^}]`
- * crosses them); the leading `[ \t>]*` takes the indentation of a list item and the marker of a block quote.
+ * An HTML page's text as a reader sees it: without its tags, and with its quotes and brackets decoded. A tag that
+ * spans lines (a comment, an attribute list) leaves its line breaks, so a line number still points into the page.
+ */
+function stripMarkup(html) {
+  return html
+    .replace(/<[^>]*>/g, (tag) => tag.replace(/[^\n]/g, ''))
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** A page's text as `docImports` reads it: an HTML page through `stripMarkup`, any other as it is. */
+function pageText(root, rel) {
+  const raw = fs.readFileSync(path.join(root, rel), 'utf8');
+  return rel.endsWith('.html') ? stripMarkup(raw) : raw;
+}
+
+/**
+ * An import from a workspace package: named bindings (which may span lines: `[^}]` crosses them), a namespace import,
+ * or a default import with or without named bindings. The specifier stops at a quote, a line break or an ellipsis, so
+ * a placeholder such as `@cloudbitmaps/…` in prose is not one.
  */
 const IMPORT =
-  /^[ \t>]*(import\s+(?:type\s+)?\{[^}]*\}\s*from\s*(['"])(@cloudbitmaps\/[^'"\n]+)\2\s*;?)/gm;
+  /\bimport\s+(?:type\s+)?(?:\{[^}]*\}|\*\s+as\s+[A-Za-z_$][\w$]*|[A-Za-z_$][\w$]*(?:\s*,\s*\{[^}]*\})?)\s*from\s*(['"])(@cloudbitmaps\/[^'"\n…]+)\1\s*;?/g;
 
 /**
  * Every such import in `text`, as `{ line, specifier, statement }`: the line it starts on, the package specifier,
@@ -52,13 +95,39 @@ function docImports(text) {
   const out = [];
   for (const m of text.matchAll(IMPORT)) {
     const line = text.slice(0, m.index).split('\n').length;
-    const statement = (m[1] ?? '')
+    const statement = m[0]
       .split('\n')
-      .map((l) => l.replace(/^[ \t>]*/, ''))
+      .map((l, i) => (i === 0 ? l : l.replace(/^[ \t>]*/, '')))
       .join('\n');
-    out.push({ line, specifier: m[3], statement });
+    out.push({ line, specifier: m[2], statement });
   }
   return out;
 }
 
-module.exports = { docImportPages, docImports };
+/** A line that starts an import, after any indentation or block-quote marker. */
+const STARTS_AN_IMPORT = /^[ \t>]*import\b/;
+
+/**
+ * Every line of `text` that starts an import of a workspace package which `docImports` does not read, as
+ * `{ line, text }`. The import's statement is its line and the lines after it, up to the first that ends in `;`, a
+ * blank line or a code fence; it is one of a workspace package when it quotes a specifier that starts
+ * `@cloudbitmaps/`. A line on which `docImports` found an import is never reported.
+ */
+function unparsedImports(text) {
+  const lines = text.split('\n');
+  const read = new Set(docImports(text).map((i) => i.line));
+  const out = [];
+  lines.forEach((l, i) => {
+    if (!STARTS_AN_IMPORT.test(l) || read.has(i + 1)) return;
+    let statement = l;
+    for (let j = i + 1; !/;\s*$/.test(statement) && j < lines.length; j++) {
+      const next = lines[j] ?? '';
+      if (next.trim() === '' || /^[ \t>]*```/.test(next)) break;
+      statement += `\n${next}`;
+    }
+    if (/['"]@cloudbitmaps\//.test(statement)) out.push({ line: i + 1, text: l.trim() });
+  });
+  return out;
+}
+
+module.exports = { docImportPages, docImports, pageText, stripMarkup, unparsedImports };

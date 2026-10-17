@@ -4026,8 +4026,9 @@ export class Segment {
 // contracts the store's signatures stop at (`IStorageDriver`, `IRegistryDriver`, `StorageBackend`,
 // `StorageChunkSource`, `IKeystore` and the registry's record types) are exported by `@cloudbitmaps/core/driver-kit`,
 // their one home, and not here: an application that has to name one imports it from there, or derives it
-// (`CloudRoaringOptions['storage']`, `EncryptionOptions['keystore']`). A name added here is a public name of this
-// package, so add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
+// (`CloudRoaringOptions['storage']`, `NonNullable<EncryptionOptions['keystore']>`). A name added here is a public name
+// of this package, so add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists
+// it.
 // ---------------------------------------------------------------------------------------------------
 // Decode portable bytes you hold, through the check a `{ serialized }` load makes.
 export { deserializePortable };

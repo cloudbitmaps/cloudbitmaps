@@ -44,10 +44,11 @@ Every change must pass these locally, and CI runs each of them on every pull req
   halves are the class of bug the source-graph tests structurally cannot see. It cannot see whether the brands are
   registered `Symbol.for`s, since with one shared copy of core a plain `Symbol` passes too; that is
   [`tests/core/error-kind.test.ts`](tests/core/error-kind.test.ts)'s to prove. It also compiles, against the built
-  packages under NodeNext, Bundler and Node10 resolution, every `import { … } from '@cloudbitmaps/…'` line of the
-  README, the guides and the package READMEs, so a sample cannot import a name its package does not export, and the
-  typed fixture [`tests/smoke/typed-surface.ts`](tests/smoke/typed-surface.ts), which names every type the flavor
-  exports.
+  packages under NodeNext, Bundler and Node10 resolution, every import from a workspace package on the README, the
+  guides, the package READMEs and the site, so a sample cannot import a name its package does not export, and fails
+  on a line that starts such an import and does not parse; the API reference's block of derived port types, each
+  alias held to the port it names; and the typed fixture
+  [`tests/smoke/typed-surface.ts`](tests/smoke/typed-surface.ts), which names every type the flavor exports.
 
 - `pnpm api:surface:check` (after `pnpm build`) guards **signatures**, which the API reference's name check does not.
   `scripts/api-surface.cjs` reads the declarations the build emitted for every public entry point and compares one line
