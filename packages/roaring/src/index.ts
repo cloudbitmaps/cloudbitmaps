@@ -2797,8 +2797,8 @@ export class CloudRoaring {
  * `audit`, `allowEmpty`, `guard`, `metadata` and `keep` decide what an `*Into` verb publishes, and a read publishes
  * nothing. A field a verb does not take is refused with a {@link ValidationError} that names it, before any request: a
  * streaming read fails when it is first read, and an `*Into` verb rejects. The compiler catches one only in an object
- * literal passed to `iterate` or `everyNth`, whose parameter is the range alone (`Pick<CombineOptions, 'after' |
- * 'through'>`), as {@link MaterializeManyOptions} takes the range by extending it.
+ * literal given to `iterate` or `everyNth`, which take the range alone: `Pick<CombineOptions, 'after' | 'through'>`,
+ * the part {@link MaterializeManyOptions} extends.
  *
  * **The range**, `after` and `through`, is the ids greater than `after` and no greater than `through`, `(after,
  * through]`, built for keyset paging: `after` is the last id the caller already has, `through` the end of its window.
