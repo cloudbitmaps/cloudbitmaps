@@ -457,7 +457,7 @@ takes)
 
 | verb | takes |
 |---|---|
-| `iterate`, `everyNth` | `after`, `through`: their parameter is `Pick<CombineOptions, 'after' \| 'through'>`, as `MaterializeManyOptions` extends it |
+| `iterate`, `everyNth` | `after`, `through`: their parameter is `Pick<CombineOptions, 'after' \| 'through'>`, which `MaterializeManyOptions` extends too |
 | `intersect`, `union` | the range (the ids in `(after, through]`), `concurrency`, `budget`, `allowAbsentOperands`, `exclude` |
 | `andNot` | the same but `exclude`: its `[sup, …]` is the subtraction |
 | `intersectInto`, `unionInto` | every field |
