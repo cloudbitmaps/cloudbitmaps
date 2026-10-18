@@ -21,11 +21,11 @@
  * leaves generations above the pointer that were once current and can be made current again, so a holder can sit
  * above the pointer as well as below it, and there can be several. Before it reports `erased: true` the call
  * therefore lists the bucket once more and reads every generation it has not already seen to be clean; any that
- * still holds the id makes it report or throw instead. A generation it saw clean is not read again only while the
- * row, read after that listing, names it with the footer checksum of the object the call saw: a number can be taken
- * again once its object is deleted, by another erasure and a load, or by a drop, a purge and a first load of the name,
- * and the object listed under it is then another one. In the ordinary case that list returns one generation, the
- * current one, which the row names: one `list` and one read of the row.
+ * still holds the id makes it report or throw instead. It skips a generation it saw clean only while the row, read
+ * after that listing, names it with the footer checksum of the object the call saw: a number can be taken again once
+ * its object is deleted, by another erasure and a load, or by a drop, a purge and a first load of the name, and the
+ * object listed under it is then another one. In the ordinary case that list returns one generation, the current one,
+ * which the row names: one `list` and one read of the row.
  *
  * What it does NOT reach: backups, replicas and noncurrent object versions hold the old object until their own
  * lifecycle removes it. For an at-rest guarantee that survives those, use encryption plus crypto-shred
