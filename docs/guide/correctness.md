@@ -598,7 +598,7 @@ because deleting the row is what makes the name writable again:
    collection is held to the tombstone the sweep is working: it refuses another incarnation of the name at each read
    of the row it makes (if another sweep or a delete purged the tombstone and the name was loaded again meanwhile, it
    refuses the new row and deletes nothing of it), and counts that as a lost race. A name purged and created again
-   inside the one round trip between the collection's last read of the row and a delete is the window that remains,
+   inside the one round trip between the read of the row before a delete and that delete is the window that remains,
    as for the ordinary collection below: that delete goes by number, and no read of the row follows the last one.
 
 **What the purge removes.** On a backend whose registry can delete a row only while it is unchanged, the purge removes
@@ -950,7 +950,8 @@ repaired. These limits hold on every driver:
   row the call searched: if the name was purged and loaded again before the collection read the row, the row it
   finds is another segment's, and the collection throws `WriteConflictError` and deletes nothing, so the new row's
   generations stay and no `segment.collect` event names them. A re-creation inside the one round trip before a
-  delete is the window that remains (see the limits below). Otherwise the result is
+  delete is the window that remains (see the limits below): inside it the call can still answer `erased: true`, with
+  its `segment.collect` event naming the new row's generation. Otherwise the result is
   `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
 - An object no read of the segment can open (on an encrypted segment, one sealed under a key the row does not hold; on
   a cleartext one with a generation, an encrypted one) is deleted as a holder whatever the id, wherever the call meets

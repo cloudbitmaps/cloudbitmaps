@@ -379,6 +379,11 @@ export async function collectBelowPointer(
  * The row a pass is asked to collect: its incarnation and its kind. The kind is compared too, because a registry whose
  * tokens carry no incarnation id is told apart only by a creation stamp that two rows can share, while a tombstone never
  * becomes an active row again: every writer refuses it and nothing un-destroys it.
+ *
+ * A limit remains on such a registry: when a row is purged and created again and the new row is itself destroyed, a pass
+ * asked for a tombstone accepts it, because two tombstones that share a stamp are one row to the pass. What it then
+ * deletes is a destroyed row's leftovers, which the collection rule allows, but an erasure's audit event names the
+ * other incarnation's leftovers, and the event carries no incarnation to tell them apart.
  */
 type AskedRow = Incarnation & { readonly status: RegistryRecord['status'] };
 
@@ -417,7 +422,7 @@ function quietOf(options: ListingOptions): boolean {
 /** The refusal a pass makes when the row it reads is not the one its caller worked from. It reaches users in a ledger note. */
 function refusedOtherRow(ref: SegmentRef): WriteConflictError {
   return new WriteConflictError(
-    `segment ${ref.segment} was purged and created again since the row this collection works from was read`,
+    `segment ${ref.segment} is not the row this collection works from: the row was purged and created again, or is no longer of the same kind (a tombstone or an active row), since it was read`,
   );
 }
 
@@ -490,6 +495,10 @@ interface ListingOptions {
  * it did, where any other pass throws {@link WriteConflictError}, because a load that took effect must not fail on a
  * race it won. A row that names a generation the pass deleted is no race won, quiet or not: the pass stops and reports
  * it in `missing`.
+ *
+ * Exported for its test only, which gives it the combinations no caller reaches. Callers collect through
+ * {@link gcOrphanGenerations}, {@link collectBelowPointer} or the load's own collection, which pass it what each
+ * pass may use.
  */
 export async function listingPass(
   ref: SegmentRef,
@@ -590,8 +599,10 @@ export async function listingPass(
       protect === undefined ||
       record.status === 'destroyed' ||
       (now !== undefined && !now.includes(generation));
-    if (!ok || !unnamed || !isAskedRow(options.incarnation, still)) {
+    const asked = isAskedRow(options.incarnation, still);
+    if (!ok || !unnamed || !asked) {
       if (quiet) return 'stop';
+      if (!asked) throw refusedOtherRow(ref);
       throw new WriteConflictError(
         `segment ${ref.segment} changed incarnation while its generations were being collected`,
       );
