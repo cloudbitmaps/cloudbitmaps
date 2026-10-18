@@ -1,15 +1,19 @@
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
 import { openGenerationReader } from '@/core/crbm-open';
+import { loadSegment } from '@/core/load';
+import { rollbackSegment } from '@/core/rollback';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * `eraseSubject` charges one budget unit per registered segment, and one more for each generation it opens beyond
  * the one the row names: a segment whose current generation lacks the id is searched generation by generation, and
  * with the keep-everything default of the `*Into` verbs that is one open per generation the segment ever had.
  * A segment that runs the call out of budget is reported with an `error:` note, before anything of it is deleted;
- * it is never reported as erased.
+ * it is never reported as erased. A generation is charged once, however often the call opens it.
  */
 const NS = 'ns';
 const ID = 7;
@@ -168,4 +172,67 @@ describe('eraseSubject charges the generations it opens', () => {
     expect(ledger.erasedFrom.every((e) => !e.erased && e.note?.startsWith('error: '))).toBe(true);
     for (let i = 0; i < 6; i++) expect(await present(backend, `seg-${i}`)).toEqual([0, 1, 2, 3]);
   });
+
+  /**
+   * Generation 0 is current and clean, 1 is clean and 2 holds the id above the pointer after a rollback, with the row's
+   * ledger or without it; or, on a row with no pointer, a first load's object 0 holds the id and 1 is clean.
+   */
+  async function holderBesideClean(
+    shape: 'ledger' | 'no-ledger' | 'no-pointer',
+  ): Promise<MemoryStorage> {
+    const backend = new MemoryStorage();
+    const deps = { ...backend, codec: roaringCodec, entropy: testEntropy };
+    if (shape === 'no-pointer') {
+      await backend.registry.create(ref('audience'), { currentGen: null });
+      for (const [generation, ids] of [
+        [1, ID],
+        [1, 2],
+      ].entries()) {
+        await bulkLoadCrbmGeneration(backend.storage, { ...ref('audience'), generation }, ids, {
+          registry: new MemoryRegistryDriver(),
+          publish: false,
+        });
+      }
+      return backend;
+    }
+    for (const ids of [[1], [1, 2], [1, ID]]) {
+      await loadSegment(ref('audience'), ids, deps, { keep: 5 });
+    }
+    await rollbackSegment(ref('audience'), 0, deps);
+    if (shape === 'no-ledger') {
+      const row = (await backend.registry.get(ref('audience')))!;
+      await backend.registry.compareAndSwap(ref('audience'), row.token, { knownGens: undefined });
+    }
+    return backend;
+  }
+
+  it.each(['ledger', 'no-ledger', 'no-pointer'] as const)(
+    'the last look for a holder opens again, for no unit more, a generation the search paid for (%s): 3 units erase, 2 refuse before deleting',
+    async (shape) => {
+      // One unit for the segment and one for each of the two generations the search opens beyond the current one (on a
+      // row with no pointer, both). The receipt opens the clean one again.
+      const short = await holderBesideClean(shape);
+      const before = await present(short, 'audience');
+      const refused = await new CloudRoaring({ storage: short }).eraseSubject(ID, {
+        namespace: NS,
+        budget: { maxRequests: 2 },
+      });
+      expect(refused.erasedFrom[0]).toMatchObject({ erased: false });
+      expect(refused.erasedFrom[0]!.note).toMatch(/^error: eraseSubject would fan out/);
+      expect(await present(short, 'audience')).toEqual(before);
+
+      const backend = await holderBesideClean(shape);
+      const kinds: string[] = [];
+      const ledger = await new CloudRoaring({ storage: backend }).eraseSubject(ID, {
+        namespace: NS,
+        budget: { maxRequests: 3 },
+        audit: { onEvent: (e) => void kinds.push(e.kind) },
+      });
+      expect(ledger.erasedFrom).toEqual([
+        expect.objectContaining({ segment: 'audience', erased: true }),
+      ]);
+      expect(kinds).toEqual(['segment.collect']);
+      expect(await present(backend, 'audience')).toEqual(shape === 'no-pointer' ? [1] : [0, 1]);
+    },
+  );
 });

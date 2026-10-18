@@ -103,6 +103,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/segment-discovery.test.ts',
   'tests/core/storage-source-heal-open.test.ts',
   'tests/core/subject-erasure.test.ts',
+  'tests/core/erase-subject-budget.test.ts',
   'tests/core/summary-lifecycle.test.ts',
   'tests/core/summary-localfs.test.ts',
   'tests/core/lease-churn.test.ts',

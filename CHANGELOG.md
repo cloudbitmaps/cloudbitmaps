@@ -57,6 +57,27 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An erasure no longer answers `erased: true` while an object under a number it found clean holds the id.** Before
+  it answers, an erasure lists the bucket and reads every generation it has not already found clean, and it skipped
+  one it had found clean by its number alone. A number can be taken again once its object is deleted, so a load of the
+  id during the erasure could put the id under such a number and the erasure still answered `erased: true`: after a
+  drop, a purge and a first load of the name, which numbers from 0 again; within one row, after another erasure
+  deleted a generation this one found clean and a load took its number; after a lifecycle rule deleted one; and on a
+  row with no usable ledger, after a load that rebuilt the ledger from the bucket recorded an object another erasure
+  then deleted. The erasure now opens again every generation it found clean but two, the one it found current and its
+  own rewrite, and skips each of those only while the row, read after that listing, names it in its ledger of known
+  generations with the footer checksum of the object the call read or wrote. One that holds the id makes the call
+  answer `'superseded'` or throw `WriteConflictError`. Each route needs a load of the id while it is erased, which
+  [the erasure guide](docs/guide/erasure.md#three-rules-while-you-erase) asks you not to run. A failed read of the row
+  there skips nothing, so the answer and its audit event stand. It costs one registry read more, once per call,
+  whenever that listing names the generation the call found current or its rewrite, which every erasure that rewrites
+  or deletes on a segment with a generation does: a rewrite is 10 reads and 1 write, and an id held only by an older
+  generation 8 and 1, 7 and none, or 8 and none, where 0.22.0 made 9, 7, 6 and 7. Every other generation found clean is
+  opened again: one open more for each clean generation above the pointer after a rollback, for each object found
+  clean on a segment with no generation yet (with no registry read added, so its `4 + n` is unchanged), and for the
+  current generation on a row with no usable ledger. `eraseSubject`'s per-op budget now charges a generation once,
+  however often the call opens it, so those opens cost no unit and a budget that sufficed before still does. An
+  erasure that finds nothing to delete is unchanged. See [reading the ledger](docs/guide/erasure.md#reading-the-ledger).
 - **A storage driver that runs `write` again after a failed attempt, as the storage port allows, gets the whole object
   from a load.** Under such a driver a load of ids, of a bitmap or of a combine's chunks published a generation whose
   object and count disagreed (an empty object, for ids): its chunks were read once and its tally kept counting. Each run now encodes the
