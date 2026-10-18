@@ -57,7 +57,12 @@ function deepFreeze<T>(value: T): Readonly<T> {
 
 /** Pluggable rate card. Rates differ by cloud/region/term and drift over time; the formulas don't. */
 export interface PricingProfile {
+  /** The rate card's name, which a report quotes as `assumptions.pricingName`. */
   readonly name: string;
+  /**
+   * The object-storage rates: GET and PUT requests per million, storage per GiB-month, and how many requests a pointer
+   * read and a sized read take.
+   */
   readonly storage: {
     /** Object GET (per **million** requests). A ranged GET bills as a full GET. */
     readonly getPerMillion: number;
@@ -93,6 +98,10 @@ export interface PricingProfile {
 
 /** One node type a Redis cluster can be built from, as its cloud prices it. */
 export interface RedisNodeType {
+  /**
+   * The node type's name as its cloud gives it, such as `cache.r6g.large`, which a report quotes in
+   * `redisBaseline.cluster.nodeType`.
+   */
   readonly name: string;
   /** Memory, in GiB, as the cloud publishes it for the node type. */
   readonly memoryGiB: number;
@@ -120,6 +129,7 @@ export interface RedisNodeType {
 export interface RedisSizing {
   /** Where the prices come from, and when; the report's notes quote it. */
   readonly source: string;
+  /** The node types the cheapest cluster is chosen from. */
   readonly nodeTypes: readonly RedisNodeType[];
   /** Replicas per shard. AWS's best practice is 2; Multi-AZ needs at least 1. */
   readonly replicasPerShard: number;
@@ -192,6 +202,7 @@ export interface Workload {
    * read.
    */
   readonly readsPerSec?: number;
+  /** Intersections per second, sustained. Default 0. */
   readonly intersectsPerSec?: number;
   /** Cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
   readonly cacheHitRate?: number;
@@ -306,7 +317,14 @@ export interface Workload {
 
 /** One (group of) segment(s) for planning. `count` = how many like this (default 1). */
 export interface SegmentSizing {
+  /**
+   * The segment's stored size in bytes. When both are given it wins over `cardinality`; when neither is, the segment
+   * counts as 0 bytes.
+   */
   readonly sizeBytes?: number;
+  /**
+   * The number of ids, used only when `sizeBytes` is absent, at 2 bytes an id, which is more than a dense bitmap needs.
+   */
   readonly cardinality?: number;
   /** Number of segments with these characteristics. Default 1. */
   readonly count?: number;
@@ -314,13 +332,17 @@ export interface SegmentSizing {
 
 /** What {@link estimateCost} takes: the segments to price, and optionally the workload and the rate card. */
 export interface EstimateInput {
+  /** The segments to price, each a group of like segments. */
   readonly segments: readonly SegmentSizing[];
+  /** The sustained access pattern. Absent, every rate is 0 and only storage is priced. */
   readonly workload?: Workload;
+  /** The rate card. Defaults to `AWS_US_EAST_1_ONDEMAND`. */
   readonly pricing?: PricingProfile;
 }
 
 /** A store's monthly cost on object storage beside an always-on Redis, with the assumptions and the verdict. */
 export interface CostReport {
+  /** The pay-per-use cost per month in USD: the part of it each operation costs, and the total. */
   readonly monthlyUSD: {
     readonly byOp: {
       readonly reads: number;
@@ -374,8 +396,17 @@ export interface CostReport {
    * `cacheHitRate: 0` with no refresh modeled.
    */
   readonly redisCrossover: { readonly readsPerSec: number };
+  /**
+   * `'win-big'` when the total is at most a tenth of the Redis baseline, `'win'` when it is under it, and `'lose-zone'`
+   * when it is not.
+   */
   readonly verdict: 'win-big' | 'win' | 'lose-zone';
+  /** The verdict in a sentence: the total, the Redis it was compared with, and what dominates the cost. */
   readonly rationale: string;
+  /**
+   * What the figures rest on: the cache hit rate used, the rate card's name, whether the size was measured, and notes
+   * in words.
+   */
   readonly assumptions: {
     readonly cacheHitRate: number;
     readonly pricingName: string;

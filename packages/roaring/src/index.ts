@@ -531,17 +531,21 @@ export interface SeamOptions {
  * passed here is refused with {@link ValidationError}.
  */
 export interface SegmentOptions {
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
 }
 
 /** A segment reference in a subject report / erasure ledger. */
 export interface SubjectSegmentRef {
+  /** The segment's name. */
   readonly segment: string;
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
 }
 
 /** Result of {@link CloudRoaring.subjectReport} — the segments an id is a member of (over registered segments). */
 export interface SubjectReport {
+  /** The id the report is about. */
   readonly id: number;
   /** The registered segments the id is currently a member of. */
   readonly segments: SubjectSegmentRef[];
@@ -551,7 +555,9 @@ export interface SubjectReport {
 
 /** One segment's entry in an erasure ledger (see {@link EraseSubjectResult}). */
 export interface SubjectErasureEntry {
+  /** The segment's name. */
   readonly segment: string;
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /**
    * True iff the id **was** in the segment and **no generation of it holds the id now** — not the current one, not
@@ -597,6 +603,7 @@ export interface SubjectErasureEntry {
  * return value only (no library-side persistence): persist it / route it to your audit sink as you see fit.
  */
 export interface EraseSubjectResult {
+  /** The id that was erased. */
   readonly id: number;
   /** Per-segment records for the segments the id was found in (absent segments are not listed). */
   readonly erasedFrom: SubjectErasureEntry[];
@@ -724,6 +731,10 @@ export type MaterializeManyOutcome =
 export interface MaterializeManyRun {
   /** One per output, in the order given: one output's refusal or error never stops another. */
   readonly outputs: MaterializeManyOutcome[];
+  /**
+   * What the call did: the groups it ran, its requests by class, its budget and memory, and the figures of each operand
+   * and output.
+   */
   readonly stats: MaterializeManyStats;
 }
 
@@ -732,6 +743,7 @@ export interface MaterializeManyRun {
  * judged against its `dest` as its publish would be, and nothing is written. See {@link CloudRoaring.materializeMany}.
  */
 export interface MaterializeManyDryRunOptions extends MaterializeManyOptions {
+  /** `true` makes the call a dry run: every output is computed and judged, and nothing is written. */
   readonly dryRun: true;
 }
 
@@ -741,7 +753,9 @@ export interface MaterializeManyDryRunOptions extends MaterializeManyOptions {
  * run for a publish.
  */
 export interface MaterializeDryRunResult {
+  /** Always `true`: the output was computed and judged, not published. */
   readonly dryRun: true;
+  /** Always `false`: nothing was written. */
   readonly published: false;
   /** Distinct ids the output would hold. */
   readonly cardinality: number;
@@ -762,6 +776,10 @@ export type MaterializeManyDryRunOutcome =
 export interface MaterializeManyDryRun {
   /** One per output, in the order given. */
   readonly outputs: MaterializeManyDryRunOutcome[];
+  /**
+   * What the dry run did: the groups it ran, its requests by class, its budget and memory, and the figures of each
+   * operand and output.
+   */
   readonly stats: MaterializeManyStats;
 }
 
@@ -1064,6 +1082,11 @@ export class CloudRoaring {
     }
   }
 
+  /**
+   * Builds a store. Only `storage` is required: pass a backend such as `S3Storage` or `MemoryStorage`. `cache`,
+   * `encryption`, `retry`, `metrics`, `budget` and `seams` tune it. An option it does not take, or a seam missing a
+   * method the store calls, throws `ValidationError`.
+   */
   constructor(options: CloudRoaringOptions) {
     CloudRoaring.rejectUnknownOptions(options);
     CloudRoaring.rejectHollowSeams(options);
@@ -3271,6 +3294,7 @@ export interface PinAt {
 export interface SegmentStat {
   /** The generation read, or `null` when the segment has none. */
   readonly generation: number | null;
+  /** The number of ids in the generation read, or `0` when the segment has none. */
   readonly cardinality: number;
   /** The metadata the generation was loaded with; absent when it has none. */
   readonly metadata?: GenerationMetadata;

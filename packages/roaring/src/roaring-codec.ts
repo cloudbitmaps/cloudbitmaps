@@ -23,7 +23,9 @@ import type {
 import { IntegrityError, decodeSerialized } from '@cloudbitmaps/core';
 import { checkPortableLayout, containerPayloads } from './portable/layout';
 
+/** The `roaring` package's 32-bit bitmap class and its serialization formats. */
 const { RoaringBitmap32, SerializationFormat, DeserializationFormat } = roaring;
+/** An instance of the `roaring` package's 32-bit bitmap. */
 type RoaringBitmap32 = InstanceType<typeof RoaringBitmap32>;
 
 export class SafeBitmap implements CodecBitmap {
