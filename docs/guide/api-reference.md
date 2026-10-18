@@ -1168,7 +1168,8 @@ The contract a storage-driver package builds against — see
 not import these.
 
 Ports and the backend brand: `IStorageDriver` · `IRegistryDriver` · `StorageBackend` · `StorageCaps` ·
-`TailRead` · `StorageDeleteOptions` · `SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
+`TailRead` · `StorageDeleteOptions` · `SegmentRef` · `GenKey` · `LifecycleVerdict` · `brandAsBackend` ·
+`STORAGE_BACKEND`
 
 The registry row and its writes: `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` ·
 `RegCaps` · `Token` · `RegistryStatus` · `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` ·

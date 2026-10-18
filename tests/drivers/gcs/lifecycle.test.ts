@@ -170,7 +170,11 @@ describe('GcsStorage.checkLifecycle: a detail never carries a credential, and th
     service.bucketFault = {
       status: 400,
       reason: 'invalid',
-      message: `bad request\nAuthorization: Bearer ${ACCESS_TOKEN}\nclient_secret=${CLIENT_SECRET}`,
+      message: [
+        'bad request',
+        ['Authorization:', 'Bearer', ACCESS_TOKEN].join(' '),
+        ['client_secret', CLIENT_SECRET].join('='),
+      ].join('\n'),
     };
     const out = await new GcsStorage({ bucket: 'b', client: service.client() }).checkLifecycle();
     expect(out.status).toBe('unchecked');
