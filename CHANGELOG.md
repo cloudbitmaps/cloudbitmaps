@@ -46,8 +46,10 @@ so, and so do the module headers in the code.
   leftover objects, and the retention sweep's collection of a tombstone it was purging, read the row afresh before
   deleting. If the tombstone had been purged and the name loaded again in between, they treated the new row's
   generations as the tombstone's leftovers and could delete them, and the erasure's `segment.collect` event named
-  them. Each now refuses another row than the one it worked from with `WriteConflictError` (the sweep counts it as a
-  lost race, not a refusal) and deletes nothing. No request is added.
+  them. Each now refuses a row other than the one it worked from with `WriteConflictError` at each read of the row it
+  makes (the sweep counts it as a lost race, not a refusal), and so deletes nothing of a row created before that
+  read. A name purged and created again inside the one round trip before a delete remains a window, as for the
+  ordinary collection. No request is added.
 - **An erasure no longer answers `erased: true` while an object under a number it found clean holds the id.** Before
   it answers, an erasure lists the bucket and reads every generation it has not already found clean, and it skipped
   one it had found clean by its number alone. A number can be taken again once its object is deleted, so a load of the
