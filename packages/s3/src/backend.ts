@@ -204,6 +204,11 @@ export class S3Storage implements StorageBackend {
   private readonly keyPrefix: string;
   private readonly readTimeoutMs: number;
 
+  /**
+   * Builds the S3 backend over one bucket, which `bucket` names. Pass `client`, or `region`, `endpoint`, `pathStyle`,
+   * `credentials` and `maxSockets` to have one built, not both. `prefix` puts every object under a key prefix. An
+   * unknown option, or no bucket, throws `ValidationError`.
+   */
   constructor(options: S3StorageOptions) {
     refuseUnknownOptions(
       'S3Storage',

@@ -93,6 +93,11 @@ export class AzureBlobStorage implements StorageBackend {
   /** The blob-name prefix every object sits under: `''`, or `trimmed/`. */
   private readonly keyPrefix: string;
 
+  /**
+   * Builds the Azure Blob backend over one container: pass `containerClient`, or `connectionString` with `container`,
+   * not both. `prefix` puts every object under a blob-name prefix. An unknown option, or no container, throws
+   * `ValidationError`.
+   */
   constructor(options: AzureBlobStorageOptions) {
     refuseUnknownOptions(
       'AzureBlobStorage',
