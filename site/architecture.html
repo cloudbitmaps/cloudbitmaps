@@ -621,7 +621,7 @@
               <span class="m">transient</span>: the store retries a read's transient faults, and retries a write only where
               a replay can be told from a second write. A write-once object is sent again after a throttle on S3 and
               on GCS, under a write id the object carries, and on Azure Blob, and on GCS above its simple-upload
-              threshold, the client's own retry can replay it and the driver settles that by reading the write id back.
+              threshold, the client's own retry can replay it and the driver tells that from another writer's object by reading the write id back.
               A registry row is sent once and reconciled by its effect: a publish that gets no answer, or loses its
               compare-and-swap, re-reads the row and advances only if its fences still hold, and otherwise says so to
               its caller. Eight kinds of

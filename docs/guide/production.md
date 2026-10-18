@@ -775,7 +775,10 @@ moves the pointer forward, and every byte is checksum-verified before use. A clo
 answer for a conditional write, since a write that lands and loses its response meets itself when it is sent again. So
 the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone, except a GCS resumable
 upload, which the SDK retries within its session, and the GCS registry's delete. A write that can meet itself carries a
-random id that settles it: every Azure Blob write, a GCS resumable upload, and an S3 or GCS object sent again after a
-throttle. A registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to
-send twice because of its precondition. Each package's conditional writes, and how a tagged write is settled, are in
+random id in its metadata: every Azure Blob write, a GCS resumable upload, and an S3 or GCS object sent again after a
+throttle. When such a write reports a conflict, the backend reads the stored object back, and one that carries the
+write's own id is a success. For a generation's object that answer is definitive, since nothing overwrites it. A
+registry row is overwritten by compare-and-swap, so a writer that swaps in first makes a write that did land report a
+conflict, and the publish then reads the row again to find it. A registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to
+send twice because of its precondition. Each package's conditional writes, and what a tagged write does on a conflict, are in
 [How retries stay correct](correctness.md#how-retries-stay-correct).
