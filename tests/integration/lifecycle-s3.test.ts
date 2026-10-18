@@ -83,8 +83,8 @@ describe('S3Storage.checkLifecycle against MinIO', () => {
         AbortIncompleteMultipartUpload: { DaysAfterInitiation: 3 },
       },
     ]);
-    const out = await store('cr').checkLifecycle();
-    expect(out.status).toBe('ok');
-    expect(out.detail).not.toContain('AbortIncompleteMultipartUpload');
+    // MinIO does not return the abort setting it was given, so whether the advice shows is not asserted here: the
+    // unit tests cover that against the SDK's own parsing.
+    expect((await store('cr').checkLifecycle()).status).toBe('ok');
   });
 });
