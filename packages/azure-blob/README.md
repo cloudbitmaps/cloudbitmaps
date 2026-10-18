@@ -76,12 +76,13 @@ Any other key is refused by name.
   call, or check `store.generations(ref)`. Every write is tagged with a random id and, on a conflict, the stored blob is
   read back: one that carries the write's own id is a success, and any other is a `WriteConflictError`. A registry row's
   read-back is not definitive, since a writer that swaps in over a write that landed, before the read-back, makes it
-  report a conflict, so the registry throws every conflict of a row write as `unsettledConflict`, and a load refused
-  after one carries `unanswered: true` on its `segment.load-refused` event, as after a write with no answer. A load's publish then reads the row again, and finds its write only while the pointer still names
-  its generation and the row's `pointerId` is its own write's; overtaken by a newer load, it reports `superseded`. A
-  rollback reads the row again too, and goes on only when the pointer is at its target over a token it sent. The tag is
-  there because the client's own retry has no per-request switch. That retry sends a write again after a
-  `503 ServerBusy` or a `500 OperationTimedOut`. A load whose row write gets no answer reads the row and sends a fresh
+  report a conflict, so the registry throws every conflict of a row write as `unsettledConflict`. A load's publish then
+  reads the row again, and finds its write only while the pointer still names its generation and the row's `pointerId`
+  is its own write's; overtaken by a newer load, it reports `superseded`, and its `segment.load-refused` event carries
+  `unanswered: true`, as after a write with no answer. So does the refusal of a load that lost an ordinary race at the
+  registry, since the driver cannot see its client's retry. A rollback reads the row again too, and goes on only when
+  the pointer is at its target over a token it sent. The tag is there because the client's own retry has no
+  per-request switch. That retry sends a write again after a `503 ServerBusy` or a `500 OperationTimedOut`. A load whose row write gets no answer reads the row and sends a fresh
   compare-and-swap from it, at most three times, and that policy runs under each: a registry that never answers costs up
   to four times the policy's tries before the load throws `TransientError` and keeps its object: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
 - **Set `readTimeoutMs` to bound a read that stalls.** No client setting does: the SDK's per-try timer stops once the

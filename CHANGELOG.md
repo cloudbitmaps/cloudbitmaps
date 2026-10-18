@@ -14,12 +14,12 @@ so, and so do the module headers in the code.
 ### Added
 
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`, exported
-  from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` carrying a registered `Symbol.for` mark, so
-  `errorKind` still names it `'WriteConflictError'`, `instanceof` and every handler of a conflict still hold, and a
-  publish built from another copy of the package reads the mark. A load's publish reads the row again after any
-  conflict; after a marked one that does not show the write there, the load's `segment.load-refused` event carries
-  `unanswered: true`, as after a write that got no answer, and a registry without tokens proves its own object before it
-  takes a pointer at its number. The Azure Blob registry raises every conflict of a row write this way, the read-back's
+  from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` carrying a registered `Symbol.for` mark, so it
+  is still a conflict in every other way (`errorKind` names it `'WriteConflictError'`, `instanceof` and every handler of
+  a conflict hold) and a publish built from another copy of the package reads the mark. A load's publish reads the row
+  again after any conflict; after a marked one that does not show the write there, a load refused for it carries
+  `unanswered: true` on its `segment.load-refused` event, as after a write that got no answer, and a registry without
+  tokens proves its own object before it takes a pointer at its number. The Azure Blob registry raises every conflict of a row write this way, the read-back's
   and the 404 of a compare-and-swap whose row was deleted: its client's retry may have sent the write twice, and the
   read-back of the write id cannot tell a landed write from one a later writer swapped in over. So on Azure Blob a load
   that lost an ordinary race at the registry carries `unanswered: true` too. The S3 and GCS registries send each row
@@ -114,8 +114,8 @@ so, and so do the module headers in the code.
   see it. For a generation's write-once object that answer is definitive. For a registry row it is not: a writer that
   swaps in over a write that landed, before the read-back, makes it report `WriteConflictError`. The publish then reads
   the row again and finds its write only while the pointer still names its generation and the row's `pointerId` is its
-  own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`. The production and correctness guides, the Azure Blob README and the architecture page now say so. The
-  erasure guide and the `eraseSubject` doc comment also say that a generation costs its budget unit at its first open
+  own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`. The production and
+  correctness guides, the Azure Blob README and the architecture page now say so. The erasure guide and the `eraseSubject` doc comment also say that a generation costs its budget unit at its first open
   only, so a retry of a failed read costs nothing more. No behaviour changed.
 - **A collection under a tombstone only collects the row it was asked to.** An erasure that found a tombstone's
   leftover objects, and the retention sweep's collection of a tombstone it was purging, read the row afresh before

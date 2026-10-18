@@ -196,7 +196,8 @@ that matters, and emitted only on the sink passed to that `rollback` call),
 `segment.load-refused` (a load that did not publish, with its `reason` and the refused generation's
 `cardinality`: its guard refused the generation it wrote, the segment's row changed while it was writing, or
 another load took its generation number first, in which case it wrote nothing and `cardinality` is 0;
-`unanswered: true` marks a refusal after a registry write that may have landed: one that got no answer, or, on Azure Blob, one that met a conflict.
+`unanswered: true` marks a refusal after a registry write that may have landed: one that got no answer, or, on
+Azure Blob, one that met a conflict. The refused generation may have been current for a while, or may be current still.
 Without this event the absence of a `segment.publish` is not otherwise distinguishable from a job that never ran),
 `segment.rewrite` (a
 generation derived from the segment itself replaced it — `fromGeneration` → `generation`; today the one

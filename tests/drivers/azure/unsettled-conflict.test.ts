@@ -1,7 +1,7 @@
-import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
+import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/registry';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { RecordingAuditSink } from '@/core/audit';
-import { WriteConflictError, isUnsettledConflict } from '@/core/errors';
+import { TransientError, WriteConflictError, isUnsettledConflict } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { roaringCodec } from '@/roaring-codec';
 import { StubBlobService, xmlError } from '../../helpers/azure-blob-stub';
@@ -177,5 +177,61 @@ describe('the Azure registry driver raises a conflict of a row write as unsettle
     const err = await d.registry.delete(SEG, stale).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WriteConflictError);
     expect(isUnsettledConflict(err)).toBe(false);
+  });
+});
+
+describe('the Azure registry store, called directly, marks only what a row write may have landed under', () => {
+  const store = () => new AzureBlobRegistryStore(stub.client(QUICK), 0, true);
+  const body = new TextEncoder().encode('{}');
+  const caught = (f: () => Promise<unknown>) =>
+    f().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+  const isConflict = (e: unknown) => e instanceof WriteConflictError;
+
+  it('a delete that meets another version (412) or a row already gone (404) is a plain conflict', async () => {
+    const d = await twoGenerations();
+    const stale = await caught(() => store().delete(ROW, { version: '"not-the-etag"' }));
+    expect(isConflict(stale)).toBe(true);
+    expect(isUnsettledConflict(stale)).toBe(false);
+    await d.registry.delete(SEG, (await d.registry.get(SEG))!.token);
+    const gone = await caught(() => store().delete(ROW, { version: '"whatever"' }));
+    expect(isConflict(gone)).toBe(true);
+    expect(isUnsettledConflict(gone)).toBe(false);
+  });
+
+  it('a create answered 404 is not a conflict at all', async () => {
+    answerNextRowWrite(xmlError(404, 'BlobNotFound'));
+    const err = await caught(() => store().write(ROW, body, 'absent'));
+    expect(err).toBeDefined();
+    expect(isConflict(err)).toBe(false);
+  });
+
+  it('a write to a container that is missing is not a conflict, create or compare-and-swap', async () => {
+    for (const expect_ of ['absent', { version: '"v"' }] as const) {
+      answerNextRowWrite(xmlError(404, 'ContainerNotFound'));
+      const err = await caught(() => store().write(ROW, body, expect_));
+      expect(err).toBeDefined();
+      expect(isConflict(err)).toBe(false);
+    }
+  });
+
+  it('a conflict whose read-back fails is the read-back fault, not a marked conflict', async () => {
+    await twoGenerations();
+    stub.plan = (req) => {
+      if (req.method === 'HEAD' && req.name === ROW)
+        return { respond: xmlError(503, 'ServerBusy') };
+      return undefined;
+    };
+    const err = await caught(() => store().write(ROW, body, 'absent'));
+    expect(err).toBeInstanceOf(TransientError);
+    expect(isConflict(err)).toBe(false);
+  });
+
+  it('a conflict whose read-back shows this write is its own: no error', async () => {
+    // Applied, then answered 503; the SDK sends it again, meets its own blob, and the id read back is its own.
+    answerNextRowWrite(xmlError(503, 'ServerBusy'), { apply: true });
+    await expect(store().write(ROW, body, 'absent')).resolves.toBeUndefined();
   });
 });

@@ -176,7 +176,7 @@ export interface ObjectRegistryStore {
    *
    * A store whose client may have sent the write more than once throws every conflict it cannot prove the write did
    * not land before as `unsettledConflict` (from the driver kit), not a plain {@link WriteConflictError}: the read-back
-   * can find another writer's write over a row this write landed on. The registry passes the mark through, and a load
+   * can find another writer's write over a row this write landed on, or the row gone after it landed. The registry passes the mark through, and a load
    * refused after it reports `unanswered: true`. A store that sends the write once throws the plain conflict.
    */
   write(key: string, body: Uint8Array, expect: 'absent' | { version: string }): Promise<void>;

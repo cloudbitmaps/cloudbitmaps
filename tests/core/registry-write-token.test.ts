@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RecordingAuditSink } from '@/core/audit';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { TransientError, WriteConflictError, unsettledConflict } from '@/core/errors';
+import {
+  TransientError,
+  WriteConflictError,
+  isUnsettledConflict,
+  unsettledConflict,
+} from '@/core/errors';
 import { loadSegment, type LoadResult } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
@@ -197,6 +202,47 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
 
   it('declares that it reports write tokens', () => {
     expect(registry.reportsWriteTokens).toBe(true);
+  });
+
+  describe("the registry's own conflicts are answers: none is marked as one that may follow a landing", () => {
+    const thrown = async (f: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await f();
+      } catch (err) {
+        return err;
+      }
+      return undefined;
+    };
+
+    it('a create over a row, and a compare-and-swap on a stale token, are plain conflicts', async () => {
+      const { token } = await registry.create(REF, { currentGen: 0 });
+      const second = await thrown(() => registry.create(REF, { currentGen: 0 }));
+      expect(second).toBeInstanceOf(WriteConflictError);
+      expect(isUnsettledConflict(second)).toBe(false);
+      await registry.compareAndSwap(REF, token, { currentGen: 1 });
+      const stale = await thrown(() => registry.compareAndSwap(REF, token, { currentGen: 2 }));
+      expect(stale).toBeInstanceOf(WriteConflictError);
+      expect(isUnsettledConflict(stale)).toBe(false);
+    });
+
+    it('a load that loses an ordinary race at the registry is superseded, and its refusal carries no unanswered', async () => {
+      await loadSegment(REF, [9], deps, { allowEmpty: true });
+      const g = gate();
+      const audit = new RecordingAuditSink();
+      const b = loadSegment(
+        REF,
+        [4, 8],
+        { ...deps, registry: holdWrite(registry, 1, g, 'send') },
+        { allowEmpty: true, keep: 1, audit },
+      );
+      await g.reached;
+      await loadSegment(REF, [9, 10], deps, { allowEmpty: true, keep: 1 });
+      g.open();
+      expect(outcome(await b)).toEqual({ published: false, reason: 'superseded' });
+      const refusals = audit.snapshot().filter((e) => e.kind === 'segment.load-refused');
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).not.toHaveProperty('unanswered');
+    });
   });
 
   /** After B's refusal: the generations C's row names are all still in the bucket, and the pointer is on an object. */

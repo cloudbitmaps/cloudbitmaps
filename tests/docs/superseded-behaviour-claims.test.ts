@@ -369,11 +369,20 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   {
     claim: new RegExp(
       g(
-        String.raw`(?:event does not carry|(?:refusal )?event carries no|refusal carries no) \`?unanswered: true\`?(?: on this path|,? although)`,
+        String.raw`(?:event does not carry|(?:refusal )?event carries no|refusal carries no|does not set) \`?unanswered: true\`?`,
       ),
       'i',
     ),
     why: 'on Azure Blob a refusal after a conflict of a row write carries `unanswered: true`',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\`?unanswered: true\`? marks a refusal that follows a registry write that got no answer`,
+      ),
+      'i',
+    ),
+    why: 'a refusal after a conflict its registry marks carries `unanswered: true` too, not only one after a write with no answer',
   },
   // No page (the guide, the privacy notes, a shipped doc-comment, a test) may call a store with no timed refresh a
   // pin ("pin forever", "pins the generation for its lifetime"), because such a store still moves on: its reader

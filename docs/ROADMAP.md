@@ -434,11 +434,15 @@ between here and there:
      asked-for row's, since the event carries no incarnation to tell the two apart;
    - on Azure Blob a load that loses an ordinary race at the registry carries `unanswered: true` on its
      `segment.load-refused` event too, since the driver cannot see its client's retry and so marks every conflict of a
-     row write as one that may follow the write's own landing. A narrower mark would read the SDK's request counter,
-     which costs no extra request;
-   - on Azure Blob, a create-only registry write that its client sends again after the landed row was destroyed and
-     purged inside the retry window may land again and re-create the row, with no conflict. Not reproduced: to
-     investigate;
+     row write as one that may follow the write's own landing. A narrower mark would read the counter in the row's token
+     (tokens are `incarnation.counter.write`): after a conflict, a row at counter n+1 under another token in the same
+     incarnation proves this write did not land, from a read the publish already makes. The SDK exposes no request
+     counter to read instead;
+   - on Azure Blob a create's only condition is `ifNoneMatch: '*'`, its client's retry sends it again, and a success has
+     no read-back. Inside the retry window after a `setRetention`, a retirement and its purge, the replay finds the row
+     absent and creates it again with the token it was first written with and, on a first load that minted a key, the
+     wrapped key a shred removed, and the load reports itself published. Rare, since only the retention sweep deletes a
+     segment row. To fix;
    - the erasure's own collections on an active row, which are not held to the row they worked from (one round trip,
      and the collection spares what the row names): they should decline quietly when the row changed;
    - the erasure's two passes over a tombstone: an erasure that finds the row tombstoned mid-call (the first pass

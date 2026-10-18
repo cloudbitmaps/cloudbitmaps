@@ -46,9 +46,12 @@
  *    `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to
  *    `false`. One that does neither reads every write of its own that landed after an error or a lost answer as not its
  *    own (`superseded`), and deletes nothing.
- *    A conflict that may follow the write's own landing (the client sent it more than once and the read-back finds
- *    another writer's write over the row) is raised with `unsettledConflict`, so a load refused after it reports
- *    `unanswered: true`; any other conflict is a plain `WriteConflictError`.
+ *    A client that may have sent a write more than once raises every conflict it cannot prove the write did not land
+ *    before (another writer's write found on the read-back, a compare-and-swap that finds the row gone, a read-back that
+ *    finds nothing) with `unsettledConflict`, so a load refused after it reports `unanswered: true`; a conflict that
+ *    proves it (a write sent once, a check made before sending) is a plain `WriteConflictError`. A registry that wraps
+ *    another rethrows the conflict it was given, unchanged: the check that reads the mark is internal. The registry
+ *    conformance suite does not test this mark.
  *  - Either: never replay a conditional write without telling the replay apart (send it once, or recognise your
  *    own write on the read-back), and raise a transient fault as `TransientError`.
  *

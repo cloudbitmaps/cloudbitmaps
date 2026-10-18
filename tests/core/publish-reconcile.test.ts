@@ -1,6 +1,7 @@
 import { windowOf } from '@/core/known-generations';
 import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
+import { publishGenerationKept } from '@/core/publish';
 import { openGenerationReader } from '@/core/crbm-open';
 import { publishGeneration } from '../helpers/publish';
 import { eraseIdFromSegment } from '@/core/erase-id';
@@ -930,6 +931,115 @@ describe('a conflict the registry marks as one that may follow the write itself 
     expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
     expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
     expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
+  });
+  it.each<[string, Fault['kind']]>([
+    ['a marked conflict', 'unsettled-unapplied'],
+    ['a transient fault', 'transient-unapplied'],
+  ])(
+    'that came first, and was followed by answered conflicts to the last attempt (%s): the flag is kept, and the object is proved',
+    async (_name, first) => {
+      const w = world(
+        () => 1_000,
+        (clock) => withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+      );
+      await threeLoads(w);
+      w.arm({ kind: first });
+      w.arm({ kind: 'conflict-unapplied' }, 3);
+      w.arm({
+        kind: 'conflict-unapplied',
+        meanwhile: async () => {
+          await w.storage.delete({ ...SEG, generation: 3 });
+          await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [42, 43], {
+            registry: w.base,
+          });
+        },
+      });
+      const seen: AuditEvent[] = [];
+      const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+        keep: 9,
+        audit: { onEvent: (e) => seen.push(e) },
+      });
+      expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+      expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
+      expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
+    },
+  );
+  it.each<[string, Fault['kind'], number]>([
+    ['a marked conflict', 'unsettled-unapplied', 1],
+    ['a transient fault', 'transient-unapplied', 1],
+    ['a plain conflict', 'conflict-unapplied', 0],
+  ])(
+    'reports %s to onUnanswered once per write that did not settle',
+    async (_name, kind, calls) => {
+      const w = world();
+      await w.base.create(SEG, { currentGen: 0 });
+      w.arm({ kind });
+      let reported = 0;
+      const r = await publishGenerationKept(
+        w.registry,
+        { ...SEG, generation: 1 },
+        {
+          row: (await w.base.get(SEG))!,
+          footerCrc: 1,
+          clock: w.clock,
+          onUnanswered: () => void (reported += 1),
+        },
+      );
+      expect(r.published).toBe(true);
+      expect(reported).toBe(calls);
+    },
+  );
+});
+
+describe("a read fault on the lease churn's re-read is a read fault, not a write with no answer", () => {
+  it('a write answered with a plain conflict, then a fault on the re-read: no onUnanswered', async () => {
+    const ref = { namespace: 'ns', segment: 's' };
+    const inner = new MemoryRegistryDriver({ now: () => 1_000 });
+    let gets = 0;
+    const registry = new Proxy(inner, {
+      get(t, p, rx) {
+        if (p !== 'get') return Reflect.get(t, p, rx) as unknown;
+        return async (r: SegmentRef) => {
+          gets += 1;
+          // Read 1 is the second attempt's; read 2 is the churn's re-read; read 3 would be a write-fault's.
+          if (gets === 2) throw new TransientError('throttled read');
+          if (gets === 3) {
+            const cur = await inner.get(r);
+            await inner.compareAndSwap(r, cur!.token, { currentGen: 5 });
+          }
+          return inner.get(r);
+        };
+      },
+    }) as IRegistryDriver;
+    const { token } = await inner.create(ref, { currentGen: 0 });
+    const row = (await inner.get(ref))!;
+    // A reader's lease write lands before the publish: only the leases differ, so the first write meets a conflict.
+    await inner.compareAndSwap(ref, token, {
+      leases: [{ holder: '0123456789abcdef', generation: 0, until: 99_999 }],
+    });
+    let unanswered = 0;
+    const clock = { now: () => 1_000, sleep: async (): Promise<void> => {} };
+    let outcome: unknown;
+    try {
+      outcome = await publishGenerationKept(
+        registry,
+        { ...ref, generation: 1 },
+        {
+          row,
+          expectToken: row.token,
+          expectRow: row,
+          footerCrc: 1,
+          clock,
+          onUnanswered: () => void (unanswered += 1),
+        },
+      );
+    } catch (err) {
+      outcome = err;
+    }
+    expect(unanswered).toBe(0);
+    // The fault is the read's own, thrown as it is: the load neither re-sends nor settles a write it never sent.
+    expect(outcome).toBeInstanceOf(TransientError);
+    expect(gets).toBe(2);
   });
 });
 

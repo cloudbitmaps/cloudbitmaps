@@ -1,5 +1,6 @@
 import {
   CloudRoaringError,
+  TransientError,
   ValidationError,
   WriteConflictError,
   errorKind,
@@ -33,6 +34,13 @@ describe('unsettledConflict', () => {
     expect(Object.keys(err)).not.toContain('cause');
     expect(Object.getOwnPropertySymbols(err)).toContain(MARK);
     expect(Object.prototype.propertyIsEnumerable.call(err, MARK)).toBe(false);
+    // The brand cannot be removed or changed afterwards.
+    expect(Object.getOwnPropertyDescriptor(err, MARK)).toEqual({
+      value: true,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
     expect('cause' in err).toBe(false);
   });
 
@@ -48,6 +56,7 @@ describe('isUnsettledConflict', () => {
     expect(isUnsettledConflict(new WriteConflictError('x'))).toBe(false);
     expect(isUnsettledConflict(new ValidationError('x'))).toBe(false);
     expect(isUnsettledConflict(new CloudRoaringError('x'))).toBe(false);
+    expect(isUnsettledConflict(new TransientError('x'))).toBe(false);
     for (const v of [null, undefined, 'x', 1, {}, new Error('x')]) {
       expect(isUnsettledConflict(v)).toBe(false);
     }

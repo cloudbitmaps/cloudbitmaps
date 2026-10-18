@@ -883,7 +883,7 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  * probability (ABA-safe across delete→recreate).
  *
  * **What a driver must do** — callers rely on each of these, and the registry conformance suite holds every
- * shipped driver to them:
+ * shipped driver to them, except the rule on `unsettledConflict`, which the suite does not test:
  *
  * - **`create` and `compareAndSwap` are atomic conditional writes.** A `create` over a live row, and a
  *   `compareAndSwap` whose token is not the stored one, throw {@link WriteConflictError} and change nothing.
@@ -914,10 +914,14 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   write when the precondition fails by reading an id you stored with it back. The shipped registries do
  *   one or the other.
  * - **Raise a conflict that may follow your own write's landing with `unsettledConflict`** (from the driver kit). A
- *   client that sent the write more than once, and a read-back that finds another writer's write over the row, cannot
- *   say that this write did not land first, since a row is overwritten: raise that conflict as `unsettledConflict`, so
- *   a load refused after it reports `unanswered: true`. Any other conflict (a write sent once, a check made before
- *   sending) is a plain {@link WriteConflictError}.
+ *   client that may have sent the write more than once cannot say, after a conflict, that this write did not land
+ *   first: a row is overwritten, so another writer's write found on the read-back may have gone over this one, and a
+ *   row that is gone may have been removed after it landed. Raise every conflict it cannot rule that out for (another
+ *   writer's write on the read-back, a compare-and-swap that finds the row gone, a read-back that finds nothing) as
+ *   `unsettledConflict`, so a load refused after it reports `unanswered: true`. A conflict that proves the write did
+ *   not land (a write sent once, a check made before sending anything) is a plain {@link WriteConflictError}. A
+ *   registry that wraps another rethrows the conflict it was given, unchanged: the check that reads the mark is
+ *   internal, so a conflict built anew loses it.
  * - **Raise a transient fault as {@link TransientError}.**
  */
 export interface IRegistryDriver {

@@ -409,7 +409,7 @@ export async function publishGenerationKept(
           const settled =
             record === waited
               ? undefined
-              : await churn.settle(held, record, () => registry.get(key), options.expectRowIgnores);
+              : await churn.settle(held, record, readOf(registry, key), options.expectRowIgnores);
           if (settled !== undefined) {
             waited = settled.row;
             fresh = settled.row;
@@ -550,8 +550,9 @@ export async function publishGenerationKept(
         if (throughChurn) attempt -= 1; // a lease write won it; the bound on those is the churn's
         continue;
       }
-      // Only the write itself raises a transient fault in here, and it is the one outcome that is not an answer.
-      if (!isTransientError(err)) throw err;
+      // Only the write itself raises a transient fault in here that is not a read's, and it is the one outcome that is
+      // not an answer: the lease churn's re-read is a read, whose fault is thrown as it is.
+      if (!isTransientError(err) || readFaults.has(err as object)) throw err;
       sawUnanswered = noteUnsettled(options);
       let now: RegistryRecord | null;
       try {
@@ -608,6 +609,21 @@ export async function publishGenerationKept(
   throw new WriteConflictError(
     `publishGeneration: contention setting currentGen for ${key.segment}${CONTENTION_NEXT_STEP}`,
   );
+}
+
+/** The faults of reads made inside the write's `try`, which that `try`'s catch must not take for a write's. */
+const readFaults = new WeakSet<object>();
+
+/** A read of the row for a step inside the write's `try`: a fault it throws is marked as a read's. */
+function readOf(registry: IRegistryDriver, key: GenKey): () => Promise<RegistryRecord | null> {
+  return async () => {
+    try {
+      return await registry.get(key);
+    } catch (err) {
+      if (typeof err === 'object' && err !== null) readFaults.add(err);
+      throw err;
+    }
+  };
 }
 
 /**

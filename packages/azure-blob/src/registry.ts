@@ -12,8 +12,8 @@
  * `ifMatch: <etag>` is compare-and-swap — the same pair S3 spells `If-None-Match: *` / `If-Match: <etag>`,
  * and the same pair the storage driver already uses for write-once generations. A lost race returns `409`
  * (`BlobAlreadyExists`) or `412` → {@link WriteConflictError}, which a row write marks with `unsettledConflict` (the
- * client's retry may have sent it twice, and the read-back cannot rule out that it landed). Reads are strongly consistent, satisfying the
- * registry's `strongRead` contract. The `ContainerClient` is **injected**, exactly like
+ * client's retry may have sent it twice, and the read-back cannot rule out that it landed). Reads are strongly
+ * consistent, satisfying the registry's `strongRead` contract. The `ContainerClient` is **injected**, exactly like
  * {@link AzureBlobStorageDriver} — it is already container-scoped, so there is no separate container option.
  *
  * **A read is one GET of the whole blob**, whose `ETag` (the version fence) and length come from the response that
