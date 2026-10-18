@@ -104,6 +104,9 @@ const store = new CloudRoaring({
 ```
 
 It builds its own client from your usual AWS credentials. The bucket must honor conditional writes, as AWS S3 does.
+On a first run, `await store.preflight()` writes, reads, lists and deletes one probe object and answers `{ ok, checks }`, so a
+missing permission or a bucket that overwrites shows before the first load; the [production checklist](docs/guide/production.md#check-the-setup-with-storepreflight)
+says what it does not check.
 
 ### Which backend
 

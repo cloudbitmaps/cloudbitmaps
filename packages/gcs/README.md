@@ -56,6 +56,9 @@ It builds its own client from Application Default Credentials. Any other key is 
 
 - **This backend is outside the validated envelope.** It passes the same conformance suites as S3, but the proven
   scale and the calibration were done on S3. You are an early user.
+- **Run `await store.preflight()` once before the first load.** It writes, rewrites, reads, lists and deletes one probe
+  object, and reads the registry and the bucket's lifecycle rules (`storage.buckets.get` for the last), and answers
+  `{ ok, checks }`. It does not check a read after a delete or versioning.
 - **Grant the bucket's object permissions.** The library creates, reads, lists and deletes objects:
   `roles/storage.objectAdmin` covers all four.
 - **The write-once guarantee rides GCS preconditions** (`ifGenerationMatch`), so nothing else needs enabling.

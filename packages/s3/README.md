@@ -55,6 +55,10 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 
 ## Before production
 
+- **Run `await store.preflight()` once before the first load.** It reads the registry, writes one probe object, writes the
+  same key again (which must be refused), reads it back, lists it, deletes it and checks the lifecycle rules, with
+  `s3:ListBucket`, `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject`, and `s3:GetLifecycleConfiguration` for the last. It does
+  not check `s3:AbortMultipartUpload`, the registry's `If-Match`, or a read after a delete.
 - **The bucket must honor conditional writes**: `If-None-Match: *` for a write-once generation and `If-Match` for the
   pointer. AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service that ignores the headers
   turns write-once into overwrite, so check yours before you depend on it. It must also be strongly consistent: a read

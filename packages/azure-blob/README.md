@@ -60,6 +60,9 @@ Any other key is refused by name.
 
 - **This backend is outside the validated envelope.** It passes the same conformance suites as S3, but the proven
   scale and the calibration were done on S3. You are an early user.
+- **Run `await store.preflight()` once before the first load.** It writes, rewrites, reads, lists and deletes one probe
+  blob and reads the registry, and answers `{ ok, checks }`. Its lifecycle check is always `unchecked` here (see below). It
+  does not check a read after a delete or versioning.
 - **Grant the container's data permissions.** The library writes blocks, commits block lists, reads blobs and their
   properties, lists and deletes. `Storage Blob Data Contributor` on the container covers all of them. A connection
   string carries the account key, which grants far more: prefer a `containerClient` built from a managed identity.

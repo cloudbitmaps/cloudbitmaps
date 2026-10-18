@@ -765,7 +765,7 @@ export interface StorageBackend {
    * `<prefix>registry/` rows. It is meant for a check run by hand or at deploy time, not for the read or write path, and
    * costs one request, plus the SDK's own retries. It never rejects: a check that could not be made resolves to `unchecked` with the
    * reason in `detail`. A backend without it, a third-party one or a {@link brandAsBackend} wrapper that does not
-   * forward it, offers no lifecycle check.
+   * forward it, offers no lifecycle check, and `store.preflight()` reads that as `unchecked`.
    *
    * The cloud rules stay in the driver. A `detail` is for a person, carries no credential, and never changes what a
    * caller does: act on `status`.

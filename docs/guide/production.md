@@ -5,19 +5,81 @@ checklist: work down the table, and follow each link for the detail.
 
 | Check | Why it matters | Where |
 |---|---|---|
-| Permissions are granted for the actions the library issues | A missing action fails a load or, on S3, turns a missing pointer into a `403` | [Permissions](#permissions) |
+| `await store.preflight()` is `ok` on a first run | It finds a missing permission, a storage that overwrites, a lagging listing and a lifecycle rule before the first load | [Check the setup](#check-the-setup-with-storepreflight) |
+| Permissions are granted for the actions the library issues | A missing action fails a load or, on S3, turns a missing pointer into a `403`. Checked by `store.preflight()`, except `s3:AbortMultipartUpload` | [Permissions](#permissions) |
 | An abort rule for incomplete uploads is on the bucket | A killed process leaves multipart parts that are billed but invisible | [Bucket lifecycle](#bucket-lifecycle) |
-| Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable | [Bucket lifecycle](#bucket-lifecycle) |
+| Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable. Checked by `store.preflight()` where the backend can read the rules | [Bucket lifecycle](#bucket-lifecycle) |
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
-| The bucket honors conditional writes and is strongly consistent, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten, and a check that a delete landed can be wrong | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing, and times the [lifecycle check](#check-the-lifecycle-rules-from-code)'s one read only when `readTimeoutMs` is set: at the default of `0` that read is untimed | [Reliability](#reliability-retries-backoff--timeouts) |
+| The bucket honors conditional writes and is strongly consistent, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten, and a check that a delete landed can be wrong. `store.preflight()` checks that a second write is refused and that a read and a listing see a write, not the registry's `If-Match` or a read after a delete | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
+| Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing, and times the [lifecycle check](#check-the-lifecycle-rules-from-code)'s one read only when `readTimeoutMs` is set: at the default of `0` that read is untimed, and `store.preflight()` gives up on it after 30 seconds | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | A write is retried for you only where that is safe: a throttled S3 or GCS object, and a registry write that went unanswered. Any other transient fault reaches you as `TransientError` | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
 | Metrics and audit sinks are wired to your stack | Both are off by default | [Observability](observability.md) |
 | Loads and the retention sweep are scheduled | Nothing in the library runs on a timer | [Schedule the work](#schedule-the-work) |
 | Loads run off the request path, on a runtime with the native addon | A load uses a core and, unless its ids come sorted (`sorted: true`), holds a whole segment in memory | [Where to run it](#what-blocks-the-event-loop-and-where-to-run-it) |
+
+## Check the setup with `store.preflight()`
+
+Run it once on a first run or at deploy time, before the first load, under the identity the store will run with:
+
+```ts
+const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'cr' }) });
+const report = await store.preflight();
+for (const c of report.checks) if (c.status !== 'ok') console.log(`${c.name}: ${c.status}: ${c.detail}`);
+if (!report.ok) process.exit(1);
+```
+
+```
+ registry ─► write ─► write-once ─► read ─► list ─► delete ─► lifecycle
+   get the    new      same key      read    list   remove     the backend's
+   probe row  object   again must    back    names  its own    checkLifecycle()
+   (absent)   A        be refused    A       it     object     (30 s bound)
+```
+
+The answer is `{ ok, checks }`. `checks` always holds all seven, in the order above, each as `{ name, status, detail }`,
+and `ok` is true when no check is a `problem`. `status` is `ok`, `problem` or `unchecked`; read an `unchecked` check
+yourself, since `ok` does not vouch for it. `detail` is a sentence for a person: what was found and what to do, and for
+a failed step the error's name and message.
+
+| Check | What it does | It is a `problem` when |
+|---|---|---|
+| `registry` | One read of the probe's registry row, and a look at whether the registry can write | The read fails (no permission, a missing bucket, an S3 SDK older than the floor); a row exists at the probe's address; the registry reads but cannot write in this runtime |
+| `write` | Writes a small new object, the probe | The write fails |
+| `write-once` | Writes the same key again | The second write succeeds, so the storage can overwrite a generation; or it fails for a reason other than the key existing |
+| `read` | Reads the object back | It is missing right after the write, or its bytes or size differ |
+| `list` | Lists the probe's segment | The listing does not name the probe, so a listing lags a write |
+| `delete` | Deletes the run's own object, with the version the read gave where the driver applies one | The delete fails: the detail names the object, which is left behind |
+| `lifecycle` | Calls the backend's [`checkLifecycle()`](#check-the-lifecycle-rules-from-code) | A rule would delete or archive the store's objects. A backend without the check, such as a third-party one or a `brandAsBackend` wrapper that does not forward it, gives `unchecked`; so does Azure Blob always, and so does a check that does not answer within 30 seconds (the fixed bound, counted on the store's clock), with the advice to run it again |
+
+**It never throws over a finding.** A step that fails, a transient fault included, is a `problem`, and for a transient
+fault the detail says to run `preflight()` again. A step whose answer another needs makes that one `unchecked`: if the
+write fails, `write-once`, `read`, `list` and `delete` are `unchecked`. The one throw is a store with no backend (a
+store built on a bare driver or a source of your own), which has nothing to check: `UnsupportedError`. `preflight()`
+takes no options.
+
+**The probe** is one object of about 30 bytes, at `cbm.due.preflight/segments/probe.<number>.crbm` under the store's
+prefix, where `<number>` is 48 random bits. That namespace is inside the reserved `cbm.due.` prefix, which no
+application ref can name, so the probe can never be one of your segments, and no registry row is written. No scan,
+sweep, erasure, export or collection reads a probe object or row as a segment. A run deletes only the object it wrote,
+by version where the driver applies one. A probe that another run left (cut off, or still running) is named in the
+`list` detail and never deleted, since it could be a run in progress; delete it by hand if no run is. On `LocalFsStorage`
+the probe really is a file, and a run leaves two empty directories behind.
+
+**What it costs.** About seven requests: the registry read, two writes, a tail read, a listing, a delete and the
+lifecycle request (S3 and GCS; Azure Blob spends none on the lifecycle and one more on each of the second write and the
+tail read, so eight). GCS adds one listing the first time a driver sees a missing row. About $0.000016 a run on S3 (derived from the cost model's prices: three PUT-class and three GET-class requests).
+`MemoryStorage` and `LocalFsStorage` make no network request.
+
+**What it does not check**, so check it another way: a read after a delete (the listing proves a write, not a delete);
+the registry's `If-Match` on compare-and-swap; the multipart abort permission (`s3:AbortMultipartUpload`); versioning
+and backups; the keystore, which a first load fails early and typed on. [Permissions](#permissions), [Conditional writes
+and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and backups](#versioning-and-backups) cover the rest.
+
+**Timing.** The lifecycle step is the only one with a bound of its own, because the drivers' `readTimeoutMs` defaults to
+none: after 30 seconds of the store's clock it stops waiting and the check is `unchecked`. The other steps are the store's
+ordinary calls and keep their timing, so one that hangs hangs the call; set `readTimeoutMs` where that matters.
 
 ## Permissions
 
@@ -159,7 +221,8 @@ It never rejects, sends one request (plus the SDK's own retries), and keeps no s
 person and carries no credential. On S3 and GCS the request honours `readTimeoutMs`; a read that gets no answer in time is
 `unchecked`, and the answer is to run the check again. On S3 the timeout cancels the request; on GCS the check stops
 waiting but the request is not cancelled, and runs on until the server answers or closes it. A backend without the method (a third-party one, or a
-`brandAsBackend` wrapper that does not forward it) offers no lifecycle check.
+`brandAsBackend` wrapper that does not forward it) offers no lifecycle check, and
+[`store.preflight()`](#check-the-setup-with-storepreflight) reads that as `unchecked`.
 
 | Status | Meaning |
 |---|---|

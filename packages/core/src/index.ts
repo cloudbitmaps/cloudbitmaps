@@ -181,6 +181,9 @@ export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/
 // Storage ordering is load-bearing and lives there). A call, never a daemon — the operator owns the heartbeat that
 // runs it.
 export { retireExpired } from './core/retention-sweep';
+// The first-run check behind `store.preflight()`, and the types of its answer.
+export { runPreflight } from './core/preflight';
+export type { PreflightCheck, PreflightDeps, PreflightResult } from './core/preflight';
 
 // `excludingReservedRows` is the filter a fleet-wide pass must apply — the due index stores its state AS
 // registry rows, so an unscoped `registry.list()` returns bookkeeping rows alongside real segments and a
