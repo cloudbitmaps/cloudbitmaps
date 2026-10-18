@@ -11,6 +11,18 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`deserializePortable(bytes)` returns `ReadonlyBitmap`, a type of this library's own, in place of `roaring`'s
+  `RoaringBitmap32`, and no public signature names a type of the `roaring` package.** A `ReadonlyBitmap` is a
+  `PortableBitmap` and an `Iterable<number>` with `size`, `has(id)`, ascending iteration and `serialize('portable')`.
+  It is not a `RoaringBitmap32` at run time. The reason is that the codec behind it can then change without another
+  change to a signature. For the rest of a Roaring library's API, decode the bitmap's portable bytes with that library
+  (see [the parts recipe](docs/guide/loading.md#parts-of-one-segment-built-separately)). A `RoaringBitmap32` you build
+  loads as before. To migrate: an annotation `RoaringBitmap32` becomes `ReadonlyBitmap`; set algebra moves onto
+  `RoaringBitmap32.deserialize(bitmap.serialize('portable'), 'portable')`; `.toArray()` becomes `[...bitmap]`; an
+  `instanceof RoaringBitmap32` check goes.
+
 ### Added
 
 - **`store.preflight()` checks a new store's storage and registry before its first load.** It resolves to `{ ok, checks }`

@@ -10,7 +10,13 @@
  *
  * `pnpm typecheck` compiles it too, against the sources, because it sits under `tests/`. Nothing runs it.
  */
-import { BudgetExceededError, CloudRoaring, MemoryStorage, errorKind } from '@cloudbitmaps/roaring';
+import {
+  BudgetExceededError,
+  CloudRoaring,
+  MemoryStorage,
+  deserializePortable,
+  errorKind,
+} from '@cloudbitmaps/roaring';
 import type {
   AuditEvent,
   Budget,
@@ -77,6 +83,7 @@ import type {
   PortableBitmap,
   PreflightCheck,
   PreflightResult,
+  ReadonlyBitmap,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -170,6 +177,7 @@ export type Named = [
   PortableBitmap,
   PreflightCheck,
   PreflightResult,
+  ReadonlyBitmap,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -202,7 +210,8 @@ export const derived: {
   readonly storageDriver: Same<MemoryStorage['storage'], IStorageDriver>;
   readonly registryDriver: Same<MemoryStorage['registry'], IRegistryDriver>;
   readonly keystore: Same<NonNullable<EncryptionOptions['keystore']>, IKeystore>;
-} = { storage: true, storageDriver: true, registryDriver: true, keystore: true };
+  readonly decodedType: Same<ReturnType<typeof deserializePortable>, ReadonlyBitmap>;
+} = { storage: true, storageDriver: true, registryDriver: true, keystore: true, decodedType: true };
 
 /** What a refusal carries, typed: the option to raise, the bound in force and what the call reached. */
 export interface Refusal {
@@ -223,4 +232,11 @@ export function refusal(err: unknown): Refusal | undefined {
 export async function loadOne(ref: SegmentRef, ids: readonly number[]): Promise<LoadResult> {
   const options: CloudRoaringOptions = { storage: new MemoryStorage(), retry: { maxAttempts: 2 } };
   return new CloudRoaring(options).load(ref, ids);
+}
+
+/** A decoded bitmap read through its members, and loaded as `{ bitmap }`. */
+export async function loadDecoded(ref: SegmentRef, bytes: Uint8Array): Promise<number> {
+  const decoded: ReadonlyBitmap = deserializePortable(bytes);
+  await new CloudRoaring({ storage: new MemoryStorage() }).load(ref, { bitmap: decoded });
+  return decoded.size;
 }

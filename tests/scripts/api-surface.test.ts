@@ -459,4 +459,23 @@ describe('the committed files', () => {
       expect(keys.some((k) => k.startsWith(`@cloudbitmaps/${pkg} `))).toBe(true);
     }
   });
+
+  it("no public signature names the roaring package's class or namespace", () => {
+    const snap = JSON.parse(readFileSync(join(ROOT, 'api-surface/surface.json'), 'utf8')) as {
+      entries: Record<string, string>;
+    };
+    const NAMES_ROARING = /\bRoaringBitmap32\b|\broaring\.\w/;
+    // A control that must hit: the pattern matches the two forms the snapshot held before the change.
+    expect(NAMES_ROARING.test('type RoaringBitmap32 = InstanceType<typeof RoaringBitmap32>;')).toBe(
+      true,
+    );
+    expect(NAMES_ROARING.test('const RoaringBitmap32: typeof roaring.RoaringBitmap32')).toBe(true);
+    expect(
+      NAMES_ROARING.test('function deserializePortable(bytes: Uint8Array): ReadonlyBitmap;'),
+    ).toBe(false);
+    const hits = Object.entries(snap.entries)
+      .filter(([key, signature]) => NAMES_ROARING.test(key) || NAMES_ROARING.test(signature))
+      .map(([key]) => key);
+    expect(hits).toEqual([]);
+  });
 });

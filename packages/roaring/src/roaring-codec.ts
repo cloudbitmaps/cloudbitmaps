@@ -76,11 +76,6 @@ export class SafeBitmap implements CodecBitmap {
     }
   }
 
-  /** The `roaring` bitmap this wraps, for a caller that was handed it once and keeps no wrapper. */
-  unwrap(): RoaringBitmap32 {
-    return this.bitmap;
-  }
-
   serialize(): Uint8Array {
     return this.bitmap.serialize(SerializationFormat.portable);
   }
@@ -203,12 +198,15 @@ export class SafeBitmap implements CodecBitmap {
 }
 
 /**
- * A bare `RoaringBitmap32` of this package's own `roaring`, passed where ids go, loads as `{ bitmap }`: from its
- * containers, through the same check as any bytes, never id by id. Any other input passes through unchanged, and a
- * bitmap from another copy of `roaring` is loaded as the ids it iterates, which is correct and slower.
+ * A bare `RoaringBitmap32` of this package's own `roaring`, or a bitmap {@link deserializePortable} returned, passed
+ * where ids go, loads as `{ bitmap }`: from its containers, through the same check as any bytes, never id by id. Any
+ * other input passes through unchanged, and a bitmap from another copy of `roaring` is loaded as the ids it
+ * iterates, which is correct and slower.
  */
 export function bitmapAsLoadInput(input: LoadInput): LoadInput {
-  return input instanceof RoaringBitmap32 ? { bitmap: input as PortableBitmap } : input;
+  return input instanceof RoaringBitmap32 || input instanceof SafeBitmap
+    ? { bitmap: input as PortableBitmap }
+    : input;
 }
 
 /**
@@ -225,12 +223,25 @@ export const roaringCodec: CodecInterface = {
 };
 
 /**
- * Decode portable Roaring bytes you hold into a `RoaringBitmap32`, through the check a `{ serialized }` load makes
- * first: a size cap, a structural check, one whole bitmap, and only then the native decoder.
+ * A decoded bitmap that can only be read: what {@link deserializePortable} returns. Its ids come out ascending when
+ * it is iterated, which is a promise. It is a `PortableBitmap`, so a load takes it as `{ bitmap }`, and the library
+ * keeps no reference to it. Its class is not part of the contract: do not cast it and do not test it with
+ * `instanceof`. For the rest of a Roaring library's API, decode its portable bytes with that library.
+ */
+export interface ReadonlyBitmap extends PortableBitmap, Iterable<number> {
+  /** How many ids it holds. */
+  readonly size: number;
+  /** Whether it holds `id`. */
+  has(id: number): boolean;
+}
+
+/**
+ * Decode portable Roaring bytes you hold into a {@link ReadonlyBitmap}, through the check a `{ serialized }` load
+ * makes first: a size cap, a structural check, one whole bitmap, and only then the native decoder.
  *
  * @param bytes a `Uint8Array`, which a Node `Buffer` is.
  * @throws {ValidationError} for bytes that are not exactly one well-formed portable bitmap, as a load refuses them.
  */
-export function deserializePortable(bytes: Uint8Array): RoaringBitmap32 {
-  return (decodeSerialized(bytes, roaringCodec) as SafeBitmap).unwrap();
+export function deserializePortable(bytes: Uint8Array): ReadonlyBitmap {
+  return decodeSerialized(bytes, roaringCodec) as SafeBitmap;
 }

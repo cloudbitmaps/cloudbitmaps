@@ -1,10 +1,12 @@
 import roaring from 'roaring';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage, ValidationError, deserializePortable } from '@/index';
+import type { LoadInput, PortableBitmap, ReadonlyBitmap } from '@/index';
 import { MAX_SERIALIZED_LOAD_BYTES, decodeSerialized } from '@/core/load-input';
 import type { CodecInterface } from '@/core/codec';
 import { roaringCodec } from '@/roaring-codec';
 import { craftPortable } from '../helpers/portable-bytes';
+import { zeroEntropy } from '../helpers/entropy';
 
 /**
  * `deserializePortable` decodes bytes a caller holds through the check a `{ serialized }` load makes first, so the
@@ -35,17 +37,58 @@ async function loadRefuses(bytes: unknown): Promise<boolean> {
 }
 
 describe('deserializePortable: bytes that are one well-formed bitmap', () => {
-  it('give the bitmap RoaringBitmap32.deserialize gives, as written and run-optimized', () => {
+  it('give the ids RoaringBitmap32.deserialize gives, as written and run-optimized', () => {
     const optimized = sample();
     optimized.runOptimize();
     for (const b of [sample(), optimized, new RoaringBitmap32()]) {
       const bytes = b.serialize('portable');
       const decoded = deserializePortable(bytes);
-      expect(decoded).toBeInstanceOf(RoaringBitmap32);
-      expect(decoded.toArray()).toEqual(RoaringBitmap32.deserialize(bytes, 'portable').toArray());
+      expect([...decoded]).toEqual(RoaringBitmap32.deserialize(bytes, 'portable').toArray());
       expect(decoded.size).toBe(b.size);
       expect(decoded.serialize('portable')).toEqual(bytes);
     }
+  });
+
+  it('is not a RoaringBitmap32 at run time', () => {
+    expect(deserializePortable(sample().serialize('portable'))).not.toBeInstanceOf(RoaringBitmap32);
+  });
+
+  it('answers has for members, non-members, 2^32 - 1, and at the edges of a bitset and a run chunk', () => {
+    const optimized = sample();
+    optimized.runOptimize();
+    for (const b of [sample(), optimized]) {
+      const decoded = deserializePortable(b.serialize('portable'));
+      const members = [
+        1,
+        5,
+        70_000,
+        2 ** 32 - 1,
+        3 * CHUNK + 10,
+        3 * CHUNK + 8_999,
+        5 * CHUNK,
+        5 * CHUNK + 39_999,
+      ];
+      const others = [
+        0,
+        2,
+        69_999,
+        70_001,
+        2 ** 32 - 2,
+        3 * CHUNK + 9,
+        3 * CHUNK + 9_000,
+        5 * CHUNK - 1,
+        5 * CHUNK + 40_000,
+      ];
+      for (const id of members) expect(decoded.has(id)).toBe(true);
+      for (const id of others) expect(decoded.has(id)).toBe(false);
+      for (const id of [...members, ...others]) expect(decoded.has(id)).toBe(b.has(id));
+    }
+  });
+
+  it('iterates ascending', () => {
+    const ids = [...deserializePortable(sample().serialize('portable'))];
+    expect(ids.length).toBeGreaterThan(40_000);
+    expect(ids).toEqual([...ids].sort((x, y) => x - y));
   });
 
   it('are read from a Buffer and from a view at an offset into a larger buffer', () => {
@@ -169,5 +212,91 @@ describe('decodeSerialized: the size cap, at its boundary, in front of the codec
     expect(() => decodeSerialized('x', codec, '{ serialized }')).toThrow(
       /^\{ serialized \} must be/,
     );
+  });
+});
+
+describe('ReadonlyBitmap: the type', () => {
+  type SameKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+  it('is what deserializePortable returns, and a PortableBitmap a load takes', () => {
+    expectTypeOf(deserializePortable).returns.toEqualTypeOf<ReadonlyBitmap>();
+    expectTypeOf<ReadonlyBitmap>().toExtend<PortableBitmap>();
+    expectTypeOf<ReadonlyBitmap>().toExtend<LoadInput>();
+    expectTypeOf<{ bitmap: ReadonlyBitmap }>().toExtend<LoadInput>();
+    expectTypeOf<ReadonlyBitmap>().toExtend<Iterable<number>>();
+  });
+
+  it("is satisfied by roaring's RoaringBitmap32, which it does not extend", () => {
+    expectTypeOf<Bitmap>().toExtend<ReadonlyBitmap>();
+    expectTypeOf<ReadonlyBitmap>().not.toExtend<Bitmap>();
+  });
+
+  it('has exactly its members, and no mutator or set operation', () => {
+    const members: SameKeys<
+      keyof ReadonlyBitmap,
+      'size' | 'has' | 'serialize' | 'getSerializationSizeInBytes' | typeof Symbol.iterator
+    > = true;
+    expect(members).toBe(true);
+    const decoded = deserializePortable(new Uint8Array(0));
+    // @ts-expect-error a ReadonlyBitmap has no orInPlace
+    void decoded.orInPlace;
+    // @ts-expect-error a ReadonlyBitmap has no toArray
+    void decoded.toArray;
+  });
+});
+
+describe('a decoded bitmap, loaded', () => {
+  const SEG = { segment: 'decoded' };
+  type Load = (decoded: ReadonlyBitmap) => LoadInput;
+  const loads: Array<[string, Load]> = [
+    ['{ bitmap: decoded }', (decoded) => ({ bitmap: decoded })],
+    ['bare decoded, where ids go', (decoded) => decoded],
+  ];
+
+  async function written(input: LoadInput): Promise<Uint8Array> {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend, seams: { entropy: zeroEntropy } });
+    const result = await store.load(SEG, input);
+    const tail = await backend.storage.getTail({ ...SEG, generation: result.generation }, 1 << 30);
+    return tail.bytes;
+  }
+
+  it.each(loads)('%s writes the object { serialized } writes', async (_name, make) => {
+    const bytes = sample().serialize('portable');
+    const expected = await written({ serialized: bytes });
+    expect(Buffer.from(await written(make(deserializePortable(bytes))))).toEqual(
+      Buffer.from(expected),
+    );
+  });
+
+  it.each(loads)('%s is serialized once and never iterated', async (_name, make) => {
+    const decoded = deserializePortable(sample().serialize('portable'));
+    const serialize = vi.spyOn(decoded, 'serialize');
+    const iterate = vi.spyOn(decoded, Symbol.iterator);
+    await written(make(decoded));
+    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(iterate).not.toHaveBeenCalled();
+  });
+
+  it('bare, with sorted: true, is refused as a bitmap is', async () => {
+    const decoded = deserializePortable(sample().serialize('portable'));
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await expect(store.load(SEG, decoded, { sorted: true })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+  });
+});
+
+describe('the parts recipe: a check, then a native decode of the checked bytes', () => {
+  it('gives the bitmap a native decode of the same bytes gives', () => {
+    const optimized = sample();
+    optimized.runOptimize();
+    for (const b of [sample(), optimized]) {
+      const bytes = b.serialize('portable');
+      const checked = deserializePortable(bytes);
+      const native = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
+      expect(native.toArray()).toEqual(RoaringBitmap32.deserialize(bytes, 'portable').toArray());
+      expect(native.serialize('portable')).toEqual(bytes);
+    }
   });
 });
