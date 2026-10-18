@@ -671,4 +671,18 @@ describe('runPreflight: the lifecycle step', () => {
     expect(waits.length).toBeLessThanOrEqual(1);
     expect(Math.max(0, ...waits)).toBeLessThanOrEqual(LIFECYCLE_TICK_MS);
   });
+
+  it('stops counting the bound once the check has answered', async () => {
+    let slept = 0;
+    const clock = {
+      now: () => 0,
+      sleep: () => {
+        slept += 1;
+        return new Promise<void>((resolve) => setImmediate(resolve));
+      },
+    };
+    await runPreflight(rig({ clock }).deps);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(slept).toBeLessThanOrEqual(1);
+  });
 });
