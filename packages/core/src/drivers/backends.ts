@@ -10,7 +10,12 @@
  */
 import { join } from 'node:path';
 import { brandAsBackend, STORAGE_BACKEND } from '@/core/ports';
-import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/ports';
+import type {
+  IRegistryDriver,
+  IStorageDriver,
+  LifecycleVerdict,
+  StorageBackend,
+} from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from './memory';
 import { LocalFsStorageDriver } from './localfs/storage';
 import { LocalFsRegistryDriver } from './localfs/registry';
@@ -43,6 +48,14 @@ export class MemoryStorage implements StorageBackend {
     this.storage = new MemoryStorageDriver();
     this.registry = new MemoryRegistryDriver(options.now === undefined ? {} : { now: options.now });
     brandAsBackend(this);
+  }
+
+  /** Nothing to check: process memory has no lifecycle rules. */
+  checkLifecycle(): Promise<LifecycleVerdict> {
+    return Promise.resolve({
+      status: 'ok',
+      detail: 'MemoryStorage keeps its objects in process memory, which has no lifecycle rules',
+    });
   }
 }
 
@@ -87,5 +100,13 @@ export class LocalFsStorage implements StorageBackend {
       options.now === undefined ? { privateRoot: root } : { now: options.now, privateRoot: root },
     );
     brandAsBackend(this);
+  }
+
+  /** Nothing to check: a local directory has no lifecycle rules. */
+  checkLifecycle(): Promise<LifecycleVerdict> {
+    return Promise.resolve({
+      status: 'ok',
+      detail: 'LocalFsStorage keeps its objects in a local directory, which has no lifecycle rules',
+    });
   }
 }

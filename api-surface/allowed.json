@@ -450,5 +450,33 @@
   {
     "entry": "@cloudbitmaps/roaring LoadOptions.sorted",
     "reason": "a new, optional load option, agreed with the maintainer: sorted: true writes ids that already ascend one chunk at a time while the object uploads, so a load holds one chunk and the writer's index whatever the segment's size; an id lower than the one before is a ValidationError, and the option is refused with a bitmap input"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit StorageBackend.checkLifecycle",
+    "reason": "a new optional method on a backend, agreed with the maintainer: it reports whether the bucket's lifecycle rules would delete or archive the objects the store keeps, in one request at most and without ever rejecting; a backend without it is read as unchecked, so no implementer or caller has to change"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit LifecycleVerdict*",
+    "reason": "the answer of StorageBackend.checkLifecycle, a status (ok, problem or unchecked) and a sentence for a person; a new type that only the new method returns"
+  },
+  {
+    "entry": "@cloudbitmaps/s3 S3Storage.checkLifecycle",
+    "reason": "S3 implements the optional lifecycle check: one GetBucketLifecycleConfiguration request, a problem for an enabled, untagged rule over the store's prefix that expires current objects or moves them to GLACIER or DEEP_ARCHIVE, and unchecked, naming s3:GetLifecycleConfiguration, when access is denied"
+  },
+  {
+    "entry": "@cloudbitmaps/gcs GcsStorage.checkLifecycle",
+    "reason": "GCS implements the optional lifecycle check: one bucket metadata request, a problem for a Delete rule that applies to live objects and can match the store's names, and unchecked, naming storage.buckets.get, when access is denied"
+  },
+  {
+    "entry": "@cloudbitmaps/azure-blob AzureBlobStorage.checkLifecycle",
+    "reason": "Azure Blob implements the optional lifecycle check as always unchecked, with the command that reads the policy by hand: lifecycle policies are on the management plane, out of a blob client's reach, and no management dependency is added"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MemoryStorage.checkLifecycle",
+    "reason": "MemoryStorage implements the optional lifecycle check as ok: process memory has no lifecycle rules"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring LocalFsStorage.checkLifecycle",
+    "reason": "LocalFsStorage implements the optional lifecycle check as ok: a local directory has no lifecycle rules"
   }
 ]

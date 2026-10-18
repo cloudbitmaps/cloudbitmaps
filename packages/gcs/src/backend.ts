@@ -2,15 +2,19 @@ import {
   STORAGE_BACKEND,
   ValidationError,
   brandAsBackend,
+  normalizeObjectPrefix,
+  prefixPart,
   refuseUnknownOptions,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
+  LifecycleVerdict,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { Storage as GcsClient } from '@google-cloud/storage';
 import { defined } from './defined';
+import { checkGcsLifecycle } from './lifecycle';
 import { GcsStorageDriver } from './storage';
 import { GcsRegistryDriver } from './registry';
 import { downloadClient } from './read-client';
@@ -118,6 +122,9 @@ export class GcsStorage implements StorageBackend {
   readonly registry: IRegistryDriver;
   /** The client both halves share — built here unless one was supplied. */
   readonly client: GcsClient;
+  private readonly bucket: string;
+  /** The name prefix every object sits under: `''`, or `trimmed/`. */
+  private readonly keyPrefix: string;
 
   constructor(options: GcsStorageOptions) {
     let readClient: GcsClient;
@@ -158,6 +165,8 @@ export class GcsStorage implements StorageBackend {
       // object, so one token fetch and one hourly refresh serve both.
       readClient = downloadClient(this.client, false);
     }
+    this.bucket = options.bucket;
+    this.keyPrefix = prefixPart(normalizeObjectPrefix(options.prefix));
     const shared = {
       storage: this.client,
       readStorage: readClient,
@@ -177,5 +186,16 @@ export class GcsStorage implements StorageBackend {
       ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
+  }
+
+  /**
+   * Reads the bucket's metadata (one request) and reports a lifecycle rule with a `Delete` action that applies to live
+   * objects whose names can be this store's: generations and registry rows alike. Needs `storage.buckets.get`, which
+   * the store itself never uses and `roles/storage.objectAdmin` does not include: without it the answer is
+   * `unchecked`, naming the permission. Never rejects; a `detail` carries no credential. Rule reading: see the
+   * production guide.
+   */
+  checkLifecycle(): Promise<LifecycleVerdict> {
+    return checkGcsLifecycle(this.client, this.bucket, this.keyPrefix);
   }
 }

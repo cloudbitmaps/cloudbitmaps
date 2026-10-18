@@ -81,12 +81,16 @@ function uploadParts(
   };
 }
 
-type Operation = 'upload' | 'metadata' | 'media' | 'delete' | 'list';
+type Operation = 'upload' | 'metadata' | 'media' | 'delete' | 'list' | 'bucket';
 
 export class StubGcsService {
   readonly objects = new Map<string, StoredGcsObject>();
   /** Every request, in order: its operation and the object it named (`''` for a listing). */
   readonly sent: Array<{ op: Operation; name: string }> = [];
+  /** What a read of the bucket's own metadata answers, `lifecycle` among it. */
+  bucketMetadata: Record<string, unknown> = {};
+  /** When set, a read of the bucket's metadata is answered with this error, as GCS answers a refused or failed one. */
+  bucketFault: { status: number; reason: string; message?: string } | undefined;
   private faults: UploadFault[] = [];
   private held: Array<() => void> = [];
   private seq = 1_000;
@@ -134,6 +138,26 @@ export class StubGcsService {
   private async serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://stub');
     const body = await bodyOf(req);
+    if (req.method === 'GET' && url.pathname === `/storage/v1/b/${STUB_GCS_BUCKET}`) {
+      this.sent.push({ op: 'bucket', name: '' });
+      const f = this.bucketFault;
+      return this.send(
+        res,
+        f === undefined
+          ? this.json(200, {
+              kind: 'storage#bucket',
+              name: STUB_GCS_BUCKET,
+              ...this.bucketMetadata,
+            })
+          : this.json(f.status, {
+              error: {
+                code: f.status,
+                message: f.message ?? f.reason,
+                errors: [{ reason: f.reason, message: f.message ?? f.reason }],
+              },
+            }),
+      );
+    }
     const listPath = `/storage/v1/b/${STUB_GCS_BUCKET}/o`;
     const upload = url.pathname === `/upload${listPath}`;
     const list = req.method === 'GET' && url.pathname === listPath;
@@ -228,6 +252,8 @@ export class StubGcsService {
         this.objects.set(name, stored);
         return this.json(200, this.resource(name, stored));
       }
+      case 'bucket':
+        return this.error(500, 'the bucket is served before apply');
       case 'metadata':
         return current === undefined
           ? this.error(404, 'notFound')

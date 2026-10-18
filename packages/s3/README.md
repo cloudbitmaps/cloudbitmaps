@@ -74,6 +74,12 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   `registry/` prefix. An expired registry row takes the segment's pointer with it, and the token every publish is fenced
   on, so its generations look unreferenced; an expired generation makes a live segment unreadable
   ([bucket lifecycle](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#bucket-lifecycle)).
+- **Check the bucket's lifecycle rules with `await backend.checkLifecycle()`.** It reads the configuration with one
+  request and answers `ok`, `problem` (an enabled, untagged rule over your prefix that expires current objects or moves
+  them to `GLACIER` or `DEEP_ARCHIVE`) or `unchecked`. It needs `s3:GetLifecycleConfiguration`, which the store itself
+  never uses: without it the answer is `unchecked`, naming the permission. A missing abort-incomplete-upload rule is
+  advice in `detail`, never a `problem`
+  ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed
   is not reported as a conflict. The driver sends each registry write once; a load that gets no answer reads the row and

@@ -45,6 +45,13 @@ four; a custom role needs `storage.objects.create`, `storage.objects.get`, `stor
 `Storage Blob Data Contributor` role on the container covers all of them. A connection string carries the account
 key, which grants far more: prefer a `containerClient` built from a managed identity.
 
+**Two optional permissions, for the identity that checks the lifecycle rules.** A store never needs them, and the identity
+it runs with should not have them. The one that calls [`checkLifecycle()`](#check-the-lifecycle-rules-from-code), by hand
+or in a deploy check, needs one more: on S3, `s3:GetLifecycleConfiguration` on the bucket; on GCS, `storage.buckets.get`
+on the bucket, which `roles/storage.objectAdmin` does not include. Without it the check answers `unchecked` and names the
+permission. Azure Blob has no such permission to grant: its lifecycle policy is read through Azure Resource Manager, not
+by a blob client (see below).
+
 **A bucket or container that does not exist** fails every call with a `ValidationError`, never reads as an empty store: a
 misspelt or deleted bucket cannot answer `has` with `false` and `count` with `0`. On S3 a zero-length tail
 (`getTail(key, 0)`) reads as a missing object, because S3 sends no error code on a HEAD; on GCS, see the two cases this
@@ -131,6 +138,46 @@ under the `registry/` prefix. A rule cannot tell a live row from a tombstone or 
 expired live row is a pointer lost: every generation it named looks unreferenced. Where the registry removes a row
 itself, it removes only the version it judged, by a conditional delete. A rule on noncurrent versions only is safe, and is the optional recipe in
 [the disaster-recovery guide](disaster-recovery.md#optional-make-a-shred-durable-with-a-registry-expiry-rule).
+
+### Check the lifecycle rules from code
+
+A backend built by this library can read the bucket's lifecycle rules and say whether one would delete or archive what
+the store keeps. `checkLifecycle` is optional on a `StorageBackend`, so call it with `?.`:
+
+```ts
+const backend = new S3Storage({ bucket: 'bitmaps', prefix: 'cr' });
+const verdict = await backend.checkLifecycle();
+// { status: 'ok' | 'problem' | 'unchecked', detail: 'a sentence for a person' }
+```
+
+It never rejects, sends one request at most, and keeps no state. Act on `status`; `detail` is for a person and carries no
+credential. A backend without the method (a third-party one, or a `brandAsBackend` wrapper that does not forward it) has
+not checked: read its absence as `unchecked`.
+
+| Status | Meaning |
+|---|---|
+| `ok` | No rule would delete or archive the store's current objects. `detail` may still carry advice, such as the abort rule below. |
+| `problem` | A rule would. `detail` names it and says how to narrow it. |
+| `unchecked` | The check could not be made: no permission, an error, or a backend whose rules are out of reach. `detail` says what to grant, or how to check by hand. |
+
+What each backend does:
+
+| Backend | What it reads | A `problem` is |
+|---|---|---|
+| S3 | `GetBucketLifecycleConfiguration` (one `GET`-class request), with `s3:GetLifecycleConfiguration` | An enabled rule with no tag filter whose prefix and the store's are one a prefix of the other, and that expires current objects (`Days` or `Date`) or moves them to `GLACIER` or `DEEP_ARCHIVE`. Rules that only expire noncurrent versions, remove expired delete markers or abort incomplete uploads are safe, and so are a disabled rule and a tag-filtered one (the store tags nothing). No configuration at all is `ok`. |
+| GCS | The bucket's metadata (`lifecycle.rule`), with `storage.buckets.get` | A `Delete` rule that applies to live objects (not `isLive: false`, and not `numNewerVersions`, `daysSinceNoncurrentTime` or `noncurrentTimeBefore`, which only a noncurrent version meets) and whose `matchesPrefix` and `matchesSuffix`, if it has them, can match a name of the store's: a prefix and the store's are one a prefix of the other, and a suffix and `.crbm` or `.reg` are one a suffix of the other. `SetStorageClass` is safe, even to `ARCHIVE`, which stays readable. |
+| Azure Blob | Nothing: always `unchecked`, with no request | Never. Lifecycle management policies belong to the storage account, on the management plane. `detail` gives the `az storage account management-policy show` command and what to look for: an enabled rule with a `baseBlob` `delete` or `tierToArchive` action whose `prefixMatch` overlaps `<container>/<prefix>`. |
+| `MemoryStorage`, `LocalFsStorage` | Nothing | Never: always `ok`, there is no lifecycle. |
+
+The store's prefix is the `prefix` you gave the backend. With none, the store may use any key in the bucket, so a rule on
+any prefix counts. **When a rule is unclear the check says `problem`:** a condition it does not interpret (an S3 object
+size filter, a GCS storage class or name pattern, an age) is judged as if it matched, so it can report a rule that would
+not act on the store's objects; it does not hide one that would. Fix such a rule by narrowing it, or confirm by hand that
+it cannot match and leave it.
+
+**A missing abort rule is advice, never a `problem`.** On S3, when no rule over the store's prefix sets
+`AbortIncompleteMultipartUpload`, `detail` says so, whatever the status. GCS and Azure Blob clean up an abandoned upload
+on their own, about a week on (see [the backup checklist](disaster-recovery.md#backup-checklist)), so they give no such advice.
 
 ## Versioning and backups
 

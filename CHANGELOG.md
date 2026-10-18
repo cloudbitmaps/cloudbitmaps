@@ -13,6 +13,17 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A storage backend can check the bucket's lifecycle rules: the optional `StorageBackend.checkLifecycle()`, exported
+  from `@cloudbitmaps/core/driver-kit` with its `LifecycleVerdict`.** It resolves to `{ status: 'ok' | 'problem' |
+  'unchecked', detail }` and never rejects. `S3Storage` reads the bucket's lifecycle configuration (one request, needing
+  `s3:GetLifecycleConfiguration`) and reports an enabled, untagged rule over the store's prefix that expires current
+  objects or moves them to `GLACIER` or `DEEP_ARCHIVE`; `GcsStorage` reads the bucket's metadata (one request, needing
+  `storage.buckets.get`) and reports a `Delete` rule that applies to live objects and can match the store's names. A
+  refused read is `unchecked` and names the permission. `AzureBlobStorage` is always `unchecked`, with the command that
+  reads the account's policy by hand, because that policy is on the management plane; `MemoryStorage` and
+  `LocalFsStorage` are `ok`. A rule with a condition the check does not interpret is reported as a `problem`; a missing
+  abort-incomplete-upload rule is advice in `detail`, never a `problem`. A backend without the method is read as
+  `unchecked`. See [check the lifecycle rules from code](docs/guide/production.md#check-the-lifecycle-rules-from-code).
 - **`store.load(ref, ids, { sorted: true })` loads ids that already ascend one chunk at a time, while the object
   uploads.** A load of ids holds the whole generation in memory before it writes; a sorted load holds one chunk's ids
   and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 7 MiB at the
