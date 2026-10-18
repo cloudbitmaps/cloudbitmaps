@@ -382,70 +382,15 @@ export async function rollbackSegment(
   // A write of the row's leases alone, which readers make, is not another writer's: the swap goes on against the row
   // it finds, after a jittered wait, up to a bound. Any other change throws the conflict, as ever.
   const churn = leaseChurn(deps);
-  let against = record.token;
   // What the swap wrote: the token it was given, which the row's pointerId then carries, and the token of the row the
   // undo below is fenced on, which a lease write after the swap moves.
-  let swapped: { readonly pointerId: Token; readonly token: Token };
-  // The tokens of every swap this call sent, as a registry that reports them says before it sends each one (a resend
-  // reports a new one); absent for a registry that does not, whose swap that got no answer is then settled by the row it
-  // leaves, and whose conflict is never settled as landed.
-  const sent: Set<Token> | undefined =
-    deps.registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
-  const writeOptions: RegistryWriteOptions | undefined =
-    sent === undefined ? undefined : { onToken: (token) => void sent.add(token) };
-  for (;;) {
-    try {
-      const { token } = await deps.registry.compareAndSwap(
-        ref,
-        against,
-        {
-          currentGen: toGeneration,
-          summary,
-          ...(knownAfter === undefined ? {} : { knownGens: knownAfter }),
-        },
-        writeOptions,
-      );
-      swapped = { pointerId: token, token };
-      break;
-    } catch (err) {
-      if (isTransientError(err)) {
-        // A swap that got no answer may have landed, and the check below has to run on one that did, or the pointer can
-        // be left on a target collected meanwhile. The row says which.
-        const landed = await swapLanded(
-          ref,
-          record,
-          { toGeneration, summary, known: knownAfter },
-          deps.registry,
-          err,
-          sent,
-        );
-        swapped = { pointerId: landed.pointerId, token: landed.token };
-        break;
-      }
-      if (!isWriteConflictError(err)) throw err;
-      const seen = await deps.registry.get(ref);
-      // A swap that landed and came back as a conflict (a client's replay that met another writer's write, or a replay
-      // after a delete) is settled by the row, before any wait: the pointer is over this call's write, whatever else
-      // has been written to the row since. The undo below is fenced on the row read back.
-      if (seen !== null && sent !== undefined && pointerSetBy(seen, record, toGeneration, sent)) {
-        swapped = { pointerId: seen.pointerId, token: seen.token };
-        break;
-      }
-      const settled = await churn.settle(record, seen, () => deps.registry.get(ref));
-      const now = settled?.row ?? null;
-      // The row after the wait is the one the swap goes on against, if it is still the one read with only leases changed.
-      if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) {
-        // The driver's error stays as the cause; the message says what the caller can do about it.
-        const lost = new WriteConflictError(
-          "rollback: the segment's row changed while the rollback ran, and its pointer is not over this rollback's " +
-            'write; check store.generations(ref) and run it again',
-        );
-        lost.cause = err;
-        throw lost;
-      }
-      against = now.token;
-    }
-  }
+  const swapped = await swapPointer(
+    ref,
+    record,
+    { toGeneration, summary, known: knownAfter },
+    deps.registry,
+    churn,
+  );
 
   // THE check, and it has to be here rather than above. A target below the old pointer is precisely generation
   // collection's range, and a collector that is not fenced on the row (one a ledger does not hold off: an override, or a
@@ -677,6 +622,78 @@ function keyNotHeld(err: unknown): boolean {
  */
 function keyServiceUnanswered(err: unknown): boolean {
   return isTransientError(err) || (err instanceof Error && err.name === 'TimeoutError');
+}
+
+/**
+ * The compare-and-swap that moves the pointer, settled whatever it answers: the token it was given and the token of the
+ * row the undo is fenced on, of a swap that answered, or of the row that shows one that did not answer, or that
+ * conflicted, landed ({@link swapLanded}, {@link pointerSetBy}). Any other outcome is thrown: a conflict, once the row
+ * is not the one read with only its leases changed, as the `WriteConflictError` that says the pointer is not over this
+ * rollback's write.
+ */
+async function swapPointer(
+  ref: SegmentRef,
+  record: RegistryRecord,
+  swap: {
+    readonly toGeneration: number;
+    readonly summary: RegistrySummary | undefined;
+    readonly known: readonly KnownGeneration[] | undefined;
+  },
+  registry: IRegistryDriver,
+  churn: ReturnType<typeof leaseChurn>,
+): Promise<{ readonly pointerId: Token; readonly token: Token }> {
+  let against = record.token;
+  // The tokens of every swap this call sent, as a registry that reports them says before it sends each one (a resend
+  // reports a new one); absent for a registry that does not, whose swap that got no answer is then settled by the row it
+  // leaves, and whose conflict is never settled as landed.
+  const sent: Set<Token> | undefined =
+    registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
+  const writeOptions: RegistryWriteOptions | undefined =
+    sent === undefined ? undefined : { onToken: (token) => void sent.add(token) };
+  for (;;) {
+    try {
+      const { token } = await registry.compareAndSwap(
+        ref,
+        against,
+        {
+          currentGen: swap.toGeneration,
+          summary: swap.summary,
+          ...(swap.known === undefined ? {} : { knownGens: swap.known }),
+        },
+        writeOptions,
+      );
+      return { pointerId: token, token };
+    } catch (err) {
+      // A swap that got no answer may have landed, and the check after it has to run on one that did, or the pointer can
+      // be left on a target collected meanwhile. The row says which.
+      if (isTransientError(err)) return swapLanded(ref, record, swap, registry, err, sent);
+      if (!isWriteConflictError(err)) throw err;
+      const seen = await registry.get(ref);
+      // A swap that landed and came back as a conflict (a client's replay that met another writer's write, or a replay
+      // after a delete) is settled by the row, before any wait: the pointer is over this call's write, whatever else
+      // has been written to the row since. The undo is fenced on the row read back.
+      if (
+        seen !== null &&
+        sent !== undefined &&
+        pointerSetBy(seen, record, swap.toGeneration, sent)
+      ) {
+        return seen;
+      }
+      const settled = await churn.settle(record, seen, () => registry.get(ref));
+      const now = settled?.row ?? null;
+      // The row after the wait is the one the swap goes on against, if it is still the one read with only leases changed.
+      if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) {
+        // The driver's error stays as the cause; the message says what the caller can do about it.
+        const lost = new WriteConflictError(
+          "rollback: the segment's row changed while the rollback ran, and its pointer is not over this rollback's " +
+            'write; check store.generations(ref) and run it again',
+        );
+        lost.cause = err;
+        throw lost;
+      }
+      against = now.token;
+    }
+  }
 }
 
 /**
