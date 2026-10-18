@@ -14,7 +14,13 @@
  * randomness of its own.
  */
 import { requireInteger } from './check';
-import { IntegrityError, NotFoundError, WriteConflictError, isNotFoundError } from './errors';
+import {
+  IntegrityError,
+  NotFoundError,
+  ValidationError,
+  WriteConflictError,
+  isNotFoundError,
+} from './errors';
 import { generationsOf } from './generation-list';
 import { KNOWN_SPAN, keptWindow, windowOf, usableKnownGens } from './known-generations';
 import { heldGenerations } from './leases';
@@ -27,7 +33,7 @@ import type {
   SegmentRef,
   Token,
 } from './ports';
-import { sameIncarnation } from './token';
+import { type Incarnation, sameIncarnation } from './token';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
 interface GenerationDeps {
@@ -319,6 +325,15 @@ export const LIST_COLLECTION_CADENCE = 16;
  * and reports whatever it could not reclaim in `generationsRemaining`, but a drop that was never re-run leaves a
  * residual, and this is what eventually collects it from the retention sweep.
  *
+ * **`options.incarnation`** is the row (its token, creation time and status) the caller read before it called. A pass
+ * that reads another incarnation of it, or a row of the other kind, at its first read, after the listing or before a
+ * delete, throws {@link WriteConflictError} and deletes nothing more: the name was purged and loaded again, and what the
+ * new row holds is not what the caller searched. A delete it had already made stays made, and one round trip remains
+ * between the last read before a delete and the delete itself, which goes by number: a row purged and created again
+ * inside it can lose the generation under that number. It matters most under a tombstone, whose pass deletes every
+ * object it lists, and the erasure's collection there and the retention sweep's pass both pass it. Without it the pass
+ * collects whichever row it reads.
+ *
  * `keep: 0` is how a subject-erasure rewrite makes a bit **physically** gone on return: the generation that held
  * it is collected the moment the rewrite is current. A live read still fetching from it heals forward to the
  * rewrite, and a pin of it (`seg.pin()`) fails with `NotFoundError` for any chunk it has yet to read.
@@ -326,7 +341,7 @@ export const LIST_COLLECTION_CADENCE = 16;
 export async function gcOrphanGenerations(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { keep?: number } = {},
+  options: Pick<ListingOptions, 'keep' | 'incarnation'> = {},
 ): Promise<number[]> {
   const { deleted, missing } = await collectBelowPointer(ref, deps, options);
   if (missing !== undefined) {
@@ -344,19 +359,78 @@ export async function gcOrphanGenerations(
 export async function collectBelowPointer(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { keep?: number; skipKnown?: boolean } = {},
+  options: Pick<ListingOptions, 'keep' | 'skipKnown' | 'incarnation'> = {},
 ): Promise<{
   readonly deleted: number[];
   readonly missing?: number;
   readonly knownSpared?: number[];
 }> {
-  // Only the window and the known-name rule are passed on, whatever the caller's object carries: this pass never reads
-  // a lease.
+  // Only the window, the known-name rule and the incarnation are passed on, whatever the caller's object carries: this
+  // pass never reads a lease.
   const { deleted, missing, knownSpared } = await listingPass(ref, deps, {
     keep: options.keep,
     skipKnown: options.skipKnown,
+    incarnation: options.incarnation,
   });
   return missing === undefined ? { deleted, knownSpared } : { deleted, missing, knownSpared };
+}
+
+/**
+ * The row a pass is asked to collect: its incarnation and its kind. The kind is compared too, because a registry whose
+ * tokens carry no incarnation id is told apart only by a creation stamp that two rows can share, while a tombstone never
+ * becomes an active row again: every writer refuses it and nothing un-destroys it.
+ *
+ * A limit remains on such a registry: when a row is purged and created again and the new row is itself destroyed, a pass
+ * asked for a tombstone accepts it, because two tombstones that share a stamp are one row to the pass. What it then
+ * deletes is a destroyed row's leftovers, which the collection rule allows, but an erasure's audit event names the
+ * other incarnation's leftovers, and the event carries no incarnation to tell them apart.
+ */
+type AskedRow = Incarnation & { readonly status: RegistryRecord['status'] };
+
+/** Whether `row` is the row `asked` for: the same incarnation, and a tombstone if and only if `asked` is one. Any row, when none was asked for. */
+function isAskedRow(asked: AskedRow | undefined, row: RegistryRecord): boolean {
+  return (
+    asked === undefined ||
+    (sameIncarnation(asked, row) && (asked.status === 'destroyed') === (row.status === 'destroyed'))
+  );
+}
+
+/**
+ * Reads the row, and throws {@link WriteConflictError} when it is not the row the pass was asked to collect ({@link
+ * isAskedRow}). A row that is gone is returned as `null`, for the pass to treat as it treats any gone row (an empty
+ * answer at its first read, a refusal at its re-read); with no row asked for, nothing is refused. Used for the pass's
+ * first read, before the listing, and for its re-read, after it.
+ */
+async function readHeldRow(
+  deps: GenerationDeps,
+  ref: SegmentRef,
+  asked: AskedRow | undefined,
+): Promise<RegistryRecord | null> {
+  const row = await deps.registry.get(ref);
+  if (row === null || isAskedRow(asked, row)) return row;
+  throw refusedOtherRow(ref);
+}
+
+/** Whether the pass is quiet. A quiet pass stops where a held pass throws, so the two are not given together. */
+function quietOf(options: ListingOptions): boolean {
+  if (options.quiet === true && options.incarnation !== undefined) {
+    throw new ValidationError('a quiet collection pass cannot be held to a row incarnation');
+  }
+  return options.quiet === true;
+}
+
+/** The refusal a pass makes when the pointer or the row's names moved under a delete it had queued. */
+function changedWhileCollecting(ref: SegmentRef): WriteConflictError {
+  return new WriteConflictError(
+    `segment ${ref.segment} changed incarnation while its generations were being collected`,
+  );
+}
+
+/** The refusal a pass makes when the row it reads is not the one its caller worked from. It reaches users in a ledger note. */
+function refusedOtherRow(ref: SegmentRef): WriteConflictError {
+  return new WriteConflictError(
+    `segment ${ref.segment} is not the row this collection works from: the row was purged and created again, or is no longer of the same kind (a tombstone or an active row), since it was read`,
+  );
 }
 
 /**
@@ -388,6 +462,29 @@ interface ListingResult {
   readonly knownSpared?: number[];
 }
 
+/** What a listing pass is asked to do. */
+interface ListingOptions {
+  keep?: number;
+  protect?: readonly number[];
+  quiet?: boolean;
+  leases?: LeaseGuard;
+  /** What the load's publish superseded, which its window keeps first when the row has no usable ledger. */
+  superseded?: Superseded;
+  /**
+   * Spare every generation the row names when it is read again before a delete. For a pass that keeps by a count on
+   * an active row: a publish or a rollback that landed since the pass chose what to delete can have made a name known.
+   */
+  skipKnown?: boolean;
+  /**
+   * The row the caller worked from. A pass that reads another incarnation of it, or a row of the other kind (a
+   * tombstone for an active row, an active row for a tombstone), at its first read, at its re-read after the listing
+   * or at its re-proof before a delete, throws {@link WriteConflictError} and deletes nothing more: the name was purged
+   * and created again, and the generations it now holds are not the ones the caller searched. For a pass that is not
+   * a load's: a quiet pass is never given one, and is refused with a `ValidationError` if it is.
+   */
+  incarnation?: AskedRow;
+}
+
 /**
  * {@link gcOrphanGenerations}, and what it left. With `protect` it deletes by the row's record instead of by a window:
  * every generation below the pointer that is not in `protect`, so an object no publish named (an orphan of a crashed
@@ -405,30 +502,22 @@ interface ListingResult {
  * it did, where any other pass throws {@link WriteConflictError}, because a load that took effect must not fail on a
  * race it won. A row that names a generation the pass deleted is no race won, quiet or not: the pass stops and reports
  * it in `missing`.
+ *
+ * Exported for its test only, which gives it the combinations no caller reaches. Callers collect through
+ * {@link gcOrphanGenerations}, {@link collectBelowPointer} or the load's own collection, which pass it what each
+ * pass may use.
  */
-async function listingPass(
+export async function listingPass(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: {
-    keep?: number;
-    protect?: readonly number[];
-    quiet?: boolean;
-    leases?: LeaseGuard;
-    /** What the load's publish superseded, which its window keeps first when the row has no usable ledger. */
-    superseded?: Superseded;
-    /**
-     * Spare every generation the row names when it is read again before a delete. For a pass that keeps by a count on
-     * an active row: a publish or a rollback that landed since the pass chose what to delete can have made a name known.
-     */
-    skipKnown?: boolean;
-  },
+  options: ListingOptions,
 ): Promise<ListingResult> {
   const keep = options.keep ?? 1;
-  const quiet = options.quiet === true;
+  const quiet = quietOf(options);
   // Refused, not clamped: `NaN` slices nothing off the end and would collect the whole grace window, and a
   // negative count that clamps to 0 collects it too, for a caller who wrote a typo.
   requireInteger(keep, { min: 0, what: 'keep' });
-  const record = await deps.registry.get(ref);
+  const record = await readHeldRow(deps, ref, options.incarnation);
   if (record === null) return { deleted: [] }; // no authoritative pointer → don't delete anything
   const current = record.currentGen;
   // Each number once: a duplicate would silently consume a slot of the `keep` window and evict a live generation.
@@ -440,7 +529,7 @@ async function listingPass(
   // A purged row refuses outright, on either branch: purged-and-idle is indistinguishable from
   // purged-and-being-recreated, and the top of this function already declines to act without an authoritative
   // pointer.
-  const after = await deps.registry.get(ref);
+  const after = await readHeldRow(deps, ref, options.incarnation);
   if (after === null) {
     if (quiet) return { deleted: [] };
     throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
@@ -517,11 +606,10 @@ async function listingPass(
       protect === undefined ||
       record.status === 'destroyed' ||
       (now !== undefined && !now.includes(generation));
-    if (!ok || !unnamed) {
+    const asked = isAskedRow(options.incarnation, still);
+    if (!ok || !unnamed || !asked) {
       if (quiet) return 'stop';
-      throw new WriteConflictError(
-        `segment ${ref.segment} changed incarnation while its generations were being collected`,
-      );
+      throw asked ? changedWhileCollecting(ref) : refusedOtherRow(ref);
     }
     // A lease that landed since the row was first read: this name is spared, and the pass goes on to the next.
     if (guard !== undefined && heldGenerations(still, guard.now()).has(generation)) return 'skip';

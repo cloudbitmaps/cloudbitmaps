@@ -253,11 +253,17 @@ no read of the segment can open) renews the segment's registry row before it del
 each such delete, and once more after the last: on a segment with no generation yet, `4 + n` registry reads and 1
 write for `n` objects, where an erasure that deletes nothing reads the row once (counted at the registry the S3, GCS
 and Azure Blob drivers share). The collection an erasure runs below the pointer reads the row once more after its last
-delete too. An erasure that finds the id only in generations below the pointer, on a row whose ledger of known
-generations names what it deletes, writes the row once before its first delete, to take those names out of the ledger:
-7 registry reads and 1 write, 6 reads and no write when the ledger names nothing it deletes, and 7 reads and no write on
-a row with no usable ledger (counted at the registry the S3, GCS and Azure Blob drivers share, over an in-memory
-store, for a segment with one older generation that holds the id). Each of these is paid once per affected segment,
+delete too, and the erasure reads it once more, one read per call, after its last listing of the bucket when that
+listing names the generation the erasure found current or its own rewrite, which it skips while the row's ledger names
+it with the checksum of the object it read or wrote. It opens again every other generation it found clean, one open
+each, which `eraseSubject`'s per-op budget does not charge again (on a segment with no generation yet, that is every
+object it found clean, with no registry read added). An erasure that finds the id only
+in generations below the pointer, on a row whose ledger of known generations names what it deletes, writes the row once
+before its first delete, to take those names out of the ledger: 8 registry reads and 1 write, 7 reads and no write when
+the ledger names nothing it deletes, and 8 reads and no write on a row with no usable ledger, which also opens the
+current generation again; a rewrite of the current generation is 10 reads and 1 write (counted at the registry the S3,
+GCS and Azure Blob drivers share, over an in-memory store, for a segment with one older generation that holds the
+id). Each of these is paid once per affected segment,
 since the next run finds nothing to delete. The ledger write moves the row's token, so a load running on that segment
 at that moment is refused (`superseded`). A renewal that gets no answer
 waits up to 3.5 s in all before it gives up, within one segment, and `eraseSubject` erases 8 segments at once by
