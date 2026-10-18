@@ -19,7 +19,12 @@ import { ValidationError, isIntegrityError } from './errors';
  * (`getSerializationSizeInBytes`) is asked first, so one over the cap is refused before it is serialized.
  */
 export interface PortableBitmap {
+  /** The bitmap in the portable Roaring format. */
   serialize(format: 'portable'): Uint8Array;
+  /**
+   * The size in bytes of `serialize('portable')`, when the bitmap can say without serializing. A load asks it first, so
+   * an input over the size cap is refused before it is serialized.
+   */
   getSerializationSizeInBytes?(format: 'portable'): number;
 }
 

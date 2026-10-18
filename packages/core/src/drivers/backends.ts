@@ -42,6 +42,10 @@ export class MemoryStorage implements StorageBackend {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
 
+  /**
+   * Builds an empty in-process backend. `options.now` is the clock for the registry's timestamps, `Date.now` by
+   * default; any other option throws `ValidationError`.
+   */
   constructor(options: MemoryStorageOptions = {}) {
     refuseUnknownOptions('MemoryStorage', options, CLOCK_OPTION_KEYS);
     checkNow('MemoryStorage', options.now);
@@ -83,7 +87,12 @@ export class LocalFsStorage implements StorageBackend {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
 
+  /**
+   * Builds a backend rooted at `root`, a non-empty directory path. `options.now` is the clock for the registry's
+   * timestamps, `Date.now` by default; any other option throws `ValidationError`.
+   */
   constructor(
+    /** The directory the backend is rooted at. */
     readonly root: string,
     options: LocalFsStorageOptions = {},
   ) {

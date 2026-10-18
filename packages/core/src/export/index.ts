@@ -52,9 +52,11 @@ export interface ExportWriter {
 
 /** A destination the export writes each segment to. `ext` is `.roaring` or `.ndjson`. */
 export interface ExportSink {
+  /** Opens the writer for one segment. `ext` is `.roaring` or `.ndjson`, by the export's format. */
   open(ref: SegmentRef, ext: string): Promise<ExportWriter> | ExportWriter;
 }
 
+/** Options of an export: the format, the namespace to scope it to, and the ndjson batch size. */
 export interface ExportOptions {
   /** Output format; defaults to `'roaring'`. */
   readonly format?: ExportFormat;
@@ -66,7 +68,9 @@ export interface ExportOptions {
 
 /** Per-segment result recorded in the {@link ExportManifest}. */
 export interface ExportedSegment {
+  /** The segment's name. */
   readonly segment: string;
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /** Ids written (the segment's effective cardinality at export time). */
   readonly count: number;
@@ -79,7 +83,9 @@ export interface ExportedSegment {
  * single corrupt/undecryptable segment never blocks the rest of the dump.
  */
 export interface ExportFailure {
+  /** The name of the segment that could not be exported. */
   readonly segment: string;
+  /** That segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /** Why it failed (an error message) — e.g. a corrupt storage object, or an encrypted segment with no keystore. */
   readonly error: string;
@@ -90,8 +96,11 @@ export interface ExportFailure {
  * or dropped, so it resolves no generation and has nothing to export.
  */
 export interface ExportSkipped {
+  /** The name of the segment that was skipped. */
   readonly segment: string;
+  /** That segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
+  /** Why it was skipped: `'destroyed'`, a tombstone. */
   readonly reason: 'destroyed';
 }
 
@@ -99,9 +108,13 @@ export interface ExportSkipped {
 export interface ExportManifest {
   /** Schema version of this manifest shape (currently `1`) — insurance for evolving the format post-1.0. */
   readonly version: number;
+  /** The format the segments were written in. */
   readonly format: ExportFormat;
+  /** How many segments were exported. */
   readonly totalSegments: number;
+  /** How many ids were written, over all segments. */
   readonly totalIds: number;
+  /** One entry for each segment exported. */
   readonly segments: readonly ExportedSegment[];
   /**
    * Segments that could not be read (empty when everything succeeded). Its presence in the manifest is the point:

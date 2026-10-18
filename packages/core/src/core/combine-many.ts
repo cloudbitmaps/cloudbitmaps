@@ -230,6 +230,10 @@ export interface MaterializeManyOutputStats {
   readonly group: number | null;
   /** Clock time the group's pass began and the output's publish settled (or it failed), when it ran. */
   readonly startedAt: number | null;
+  /**
+   * Clock time (ms) when its publish settled or failed, or `null` when the output never ran. Read from the same clock
+   * as `startedAt`.
+   */
   readonly endedAt: number | null;
   /** Chunks the output holds. */
   readonly chunks: number;
@@ -246,6 +250,7 @@ export interface MaterializeManyOutputStats {
 export interface MaterializeManyStats {
   /** Groups run, the re-runs of outputs a lying index made too big included. */
   readonly groups: number;
+  /** The requests the call made, by class. */
   readonly requests: {
     /** Range requests sent for operand chunks (retries of one request count once). */
     readonly rangeReads: number;
@@ -274,6 +279,7 @@ export interface MaterializeManyStats {
      */
     readonly attributed: { readonly get: number; readonly put: number };
   };
+  /** The chunk-read budget: the limit in force, the reads the plan needed and the reads made. */
   readonly budget: {
     /** The limit used: `null` when lifted. */
     readonly maxRequests: number | null;
@@ -282,6 +288,9 @@ export interface MaterializeManyStats {
     /** Chunk reads made. */
     readonly used: number;
   };
+  /**
+   * The memory the call held: its limit, the most the ledger held at once and what the plan holds for the whole call.
+   */
   readonly memory: {
     readonly maxBufferedBytes: number;
     /** The most the ledger held at once. */
@@ -289,6 +298,7 @@ export interface MaterializeManyStats {
     /** What the plan holds for the whole call, charged to the ledger: operand indexes, and each output's keys and expression. */
     readonly planBytes: number;
   };
+  /** How many chunk keys the call skipped reading. */
   readonly chunks: {
     /** Index keys not read because no output needed them there, summed over groups. */
     readonly pruned: number;
@@ -299,6 +309,7 @@ export interface MaterializeManyStats {
   readonly feed?: { readonly records: number; readonly keys: number; readonly ids: number };
   /** By operand name, an object with no prototype, so any name is a key. */
   readonly operands: Readonly<Record<string, MaterializeManyOperandStats>>;
+  /** One entry per output of the call, in the order the call gave them. */
   readonly outputs: readonly MaterializeManyOutputStats[];
 }
 

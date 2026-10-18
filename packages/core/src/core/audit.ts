@@ -190,6 +190,10 @@ export type AuditEvent =
 
 /** Sink for {@link AuditEvent}s. Injected via the lifecycle options; omit it and nothing is recorded. */
 export interface IAuditSink {
+  /**
+   * Receives one audit event, called synchronously by the operation that caused it. What it throws, or rejects with, is
+   * swallowed and never breaks that operation.
+   */
   onEvent(event: AuditEvent): void;
 }
 
@@ -246,6 +250,7 @@ export function ignoreRejection(returned: unknown): void {
 export class RecordingAuditSink implements IAuditSink {
   private readonly recorded: AuditEvent[] = [];
 
+  /** Records the event, in emission order. */
   onEvent(event: AuditEvent): void {
     this.recorded.push(event);
   }
@@ -257,6 +262,7 @@ export class RecordingAuditSink implements IAuditSink {
     );
   }
 
+  /** Forgets every recorded event. */
   reset(): void {
     this.recorded.length = 0;
   }

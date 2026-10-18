@@ -145,6 +145,10 @@ export type MetricEvent =
  * caller — `CloudRoaring` wraps a user sink so that a buggy sink can't break I/O.
  */
 export interface IMetricsSink {
+  /**
+   * Receives one event, synchronously. What it throws, or an async one's rejection, is swallowed and never breaks the
+   * call it observes.
+   */
   onEvent(event: MetricEvent): void;
 }
 
@@ -180,14 +184,25 @@ export function safeMetrics(sink: IMetricsSink): IMetricsSink {
 
 /** Accumulated totals — the shape returned by {@link CountingMetricsSink.snapshot}. */
 export interface MetricsSnapshot {
+  /**
+   * Chunk requests to storage: how many, the bytes they returned, and the time they took in ms, transient-retry backoff
+   * included.
+   */
   readonly storage: { readonly gets: number; readonly bytes: number; readonly totalMs: number };
+  /** Decoded-chunk cache lookups, counted only when a cache is configured. */
   readonly cache: { readonly hits: number; readonly misses: number };
+  /** Retries taken after a transient fault. */
   readonly retries: { readonly transient: number };
+  /**
+   * Chunk-aligned combines of every operator (intersect, union and andNot): how many ran, the chunk keys they fetched
+   * and the keys they skipped without a fetch.
+   */
   readonly intersect: {
     readonly calls: number;
     readonly fetchedChunks: number;
     readonly skippedChunks: number;
   };
+  /** By operation name, how many calls were timed and their total time in ms. */
   readonly ops: Readonly<
     Record<MetricOpName, { readonly count: number; readonly totalMs: number }>
   >;
@@ -222,6 +237,7 @@ export class CountingMetricsSink implements IMetricsSink {
     return ops;
   }
 
+  /** Adds the event to the totals. An `advisory` event is a note, not a quantity, and adds nothing. */
   onEvent(event: MetricEvent): void {
     switch (event.kind) {
       case 'storage.get':
@@ -259,6 +275,7 @@ export class CountingMetricsSink implements IMetricsSink {
     }
   }
 
+  /** A copy of the totals so far, which later events do not change. */
   snapshot(): MetricsSnapshot {
     const ops = Object.create(null) as Record<MetricOpName, { count: number; totalMs: number }>;
     for (const name of OP_NAMES) ops[name] = { ...this.ops[name] };
@@ -271,6 +288,7 @@ export class CountingMetricsSink implements IMetricsSink {
     };
   }
 
+  /** Sets every total back to zero. */
   reset(): void {
     this.storage = { gets: 0, bytes: 0, totalMs: 0 };
     this.cache = { hits: 0, misses: 0 };

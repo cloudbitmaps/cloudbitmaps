@@ -19,6 +19,10 @@
 import { requirePositiveInteger } from './check';
 import { BudgetExceededError, ValidationError } from './errors';
 
+/**
+ * The cap on one operation's fan-out: its `maxRequests` units, counted in storage chunk fetches for a read and in
+ * segments scanned for an admin scan.
+ */
 export interface Budget {
   /** Max units of fan-out (Storage chunk fetches, or segments scanned) one op may issue before it is refused. */
   readonly maxRequests: number;

@@ -33,6 +33,7 @@ const NAMES = new WeakMap<abstract new (...args: never[]) => unknown, string>();
 export class CloudRoaringError extends Error {
   /** Cross-bundle brand — see {@link errorKind}. Non-enumerable-ish (symbol key ⇒ not in JSON). */
   readonly [ERROR_BRAND] = true as const;
+  /** Builds the error from `message`, and sets `name` to the class's name as written. */
   constructor(message: string) {
     super(message);
     // Also the discriminator `errorKind` matches on: a runtime string, so it survives a second copy of the package
@@ -76,6 +77,7 @@ export class LeaseExpiredError extends CloudRoaringError {
   readonly until: number;
   /** `'expired'` when the clock reached `until`, `'released'` after `release()`. */
   readonly reason: 'expired' | 'released';
+  /** Builds the error from its `message`, the epoch-ms the lease ran until, and why it ended. */
   constructor(message: string, until: number, reason: 'expired' | 'released') {
     super(message);
     this.until = until;
@@ -97,11 +99,13 @@ export class LeaseLimitError extends CloudRoaringError {}
  * `'stale-operand'`. Deterministic: run the call again against the current operand.
  */
 export class StaleOperandError extends CloudRoaringError {
+  /** The stable code `'stale-operand'`, to match on. */
   readonly code = 'stale-operand' as const;
   /** The operand's name in the call that found it stale. */
   readonly operand: string;
   /** Why it is stale. */
   readonly reason: 'moved' | 'erased';
+  /** Builds the error from its `message`, the operand's name and why it is stale. */
   constructor(message: string, operand: string, reason: 'moved' | 'erased') {
     super(message);
     this.operand = operand;
@@ -161,6 +165,7 @@ export class BudgetExceededError extends CloudRoaringError {
    * lower bound on the resident bytes it needs (`'maxBufferedBytes'`), or `limit + 1` (`'maxScanSegments'`).
    */
   readonly spent: number;
+  /** Builds the error from its `message` and the `option`, `limit` and `spent` it reports. */
   constructor(
     message: string,
     details: {
@@ -202,6 +207,7 @@ export class KeyUnavailableError extends CloudRoaringError {}
 export class TransientError extends CloudRoaringError {
   /** A second brand so a transient fault is classifiable cross-bundle. */
   readonly [TRANSIENT_BRAND] = true as const;
+  /** Builds the error from `message`; `options.cause`, when given, is kept as `cause`. */
   constructor(message: string, options?: { cause?: unknown }) {
     super(message);
     if (options && 'cause' in options) this.cause = options.cause;

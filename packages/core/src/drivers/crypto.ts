@@ -96,8 +96,14 @@ function unwrapKey(wrapped: string, kek: Uint8Array, keyId: string): Uint8Array 
  * re-encryption: add the new KEK, point `activeKeyId` at it, keep the old one to unwrap existing segments.
  */
 export interface InProcessKeystoreOptions {
+  /** Each key-encryption key (KEK) by its id: 32 bytes each, at least one. */
   readonly keys: Readonly<Record<string, Uint8Array>>;
+  /** The id of the KEK new data keys are wrapped under. It must be in `keys`. */
   readonly activeKeyId: string;
+  /**
+   * The id of a second KEK each new data key is also wrapped under, such as an offline one. Absent for none; it must be
+   * in `keys` when given.
+   */
   readonly recoveryKeyId?: string;
 }
 
@@ -110,6 +116,10 @@ export class InProcessKeystore implements IKeystore {
   private readonly activeKeyId: string;
   private readonly recoveryKeyId: string | undefined;
 
+  /**
+   * Builds a keystore from `options`; throws `ValidationError` for no keys, a key that is not 32 bytes, or an
+   * `activeKeyId` or `recoveryKeyId` that is not in `keys`.
+   */
   constructor(options: InProcessKeystoreOptions) {
     const entries = Object.entries(options.keys);
     if (entries.length === 0) throw new ValidationError('keystore needs at least one KEK');

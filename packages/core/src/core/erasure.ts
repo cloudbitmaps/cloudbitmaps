@@ -24,12 +24,23 @@ import { validateUserNamespace, validateUserRef } from './validate';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import { withoutSweepMark } from './retention';
 
+/**
+ * What the erasure calls need: the registry whose rows they tombstone, and, optionally, the clock and rng they wait out
+ * lease churn with.
+ */
 export interface EraseDeps extends ChurnDeps {
+  /** The registry holding the segments' rows. */
   readonly registry: IRegistryDriver;
 }
 
+/**
+ * What a crypto-shred did to one segment: the result of `destroySegment`, and one entry of what `eraseNamespace`
+ * returns.
+ */
 export interface DestroyResult {
+  /** The segment's name. */
   readonly segment: string;
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /** True iff the segment is now a `destroyed` tombstone (incl. the idempotent already-destroyed case). */
   readonly destroyed: boolean;
@@ -212,8 +223,11 @@ export interface DropDeps extends EraseDeps {
   readonly storage: IStorageDriver;
 }
 
+/** What `dropSegment` did to one segment, or, on a dry run, would do. */
 export interface DropResult {
+  /** The segment's name. */
   readonly segment: string;
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /**
    * **True iff this segment is now empty as a result of this call — or already was.** This is the field a

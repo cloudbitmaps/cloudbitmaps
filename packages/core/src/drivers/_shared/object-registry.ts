@@ -123,6 +123,7 @@ const LIST_READ_CONCURRENCY = 48;
  * `GetObject`, GCS bytes and `generation` from one GET, and Azure Blob bytes and `ETag` from one GET.
  */
 export class ObjectVersionRaced extends Error {
+  /** Builds the error naming the object whose pinned version vanished. */
   constructor(objectKey: string) {
     super(`registry object was overwritten mid-read: ${objectKey}`);
     this.name = 'ObjectVersionRaced';
@@ -138,6 +139,7 @@ const isVersionRaced = (err: unknown): boolean =>
 
 /** One object as read, with the opaque version that fences a later conditional write. */
 export interface ObjectRow {
+  /** The object's bytes. */
   readonly bytes: Uint8Array;
   /** The store's version fence — an S3/Azure ETag, a GCS generation. Opaque to this class. */
   readonly version: string;
@@ -205,6 +207,10 @@ interface ObservedRow extends ObjectRow {
   readonly key: string;
 }
 
+/**
+ * A registry driver over any object store with conditional writes: one small JSON object per segment, fenced by the
+ * store's own preconditions, so a deployment can run on one bucket.
+ */
 export class ObjectStoreRegistry implements IRegistryDriver {
   /**
    * `entropy` draws the random parts of every token: a new row's incarnation id, and each write's own part. It
@@ -218,6 +224,10 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     private readonly entropy: Entropy = webCryptoEntropy,
   ) {}
 
+  /**
+   * Strong reads, always. `canWrite` is `false` when the runtime has no source of random bytes for tokens, and
+   * `conditionalDelete` is `true` when the store deletes a row only while it is still the version read.
+   */
   capabilities(): RegCaps {
     const conditionalDelete = this.removesRows();
     return entropyIsAvailable(this.entropy)

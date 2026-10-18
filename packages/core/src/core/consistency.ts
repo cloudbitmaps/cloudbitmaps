@@ -63,8 +63,11 @@ export { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
 /** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
 const DEFAULT_CHECK_CONCURRENCY = 8;
 
+/** One problem the consistency check found with one segment; `issue` says which. */
 export interface ConsistencyIssue {
+  /** The segment's name. */
   readonly segment: string;
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /**
    * The registry's `currentGen` for the segment. For `missing-storage-generation` it is the generation whose `.crbm` is
@@ -99,12 +102,18 @@ export interface ConsistencyIssue {
 
 /** A segment that could not be checked this pass (Storage/registry read fault) — not proof of a torn restore. */
 export interface ConsistencyErrorEntry {
+  /** The name of the segment that could not be checked. */
   readonly segment: string;
+  /** That segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /** The read error's message (never the raw error, so the report stays serializable/loggable). */
   readonly error: string;
 }
 
+/**
+ * What a consistency check found: how many segments it scanned, the issues, the segments it could not read, and, when
+ * asked for, the checks it could not make.
+ */
 export interface ConsistencyReport {
   /** Registered segments scanned (a `destroyed` segment counts as scanned but is never an issue). */
   readonly checked: number;

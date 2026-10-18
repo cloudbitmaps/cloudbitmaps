@@ -73,6 +73,7 @@ export interface GenerationListDeps extends ChurnDeps {
 
 /** One generation present in the bucket. */
 export interface GenerationEntry {
+  /** The generation's number. */
   readonly generation: number;
   /** Whether the registry pointer currently names this generation. */
   readonly current: boolean;
