@@ -380,7 +380,7 @@ export async function collectBelowPointer(
  * tokens carry no incarnation id is told apart only by a creation stamp that two rows can share, while a tombstone never
  * becomes an active row again: every writer refuses it and nothing un-destroys it.
  */
-export type AskedRow = Incarnation & { readonly status: RegistryRecord['status'] };
+type AskedRow = Incarnation & { readonly status: RegistryRecord['status'] };
 
 /** Whether `row` is the row `asked` for: the same incarnation, and a tombstone if and only if `asked` is one. Any row, when none was asked for. */
 function isAskedRow(asked: AskedRow | undefined, row: RegistryRecord): boolean {
@@ -440,7 +440,7 @@ interface Superseded {
 }
 
 /** What a listing pass did: the generations it deleted, and whether it stopped on a rollback onto one of them. */
-export interface ListingResult {
+interface ListingResult {
   readonly deleted: number[];
   /**
    * A generation the pass deleted that the row named when the pass read it afterwards ({@link watchDeletes}),
@@ -451,7 +451,7 @@ export interface ListingResult {
 }
 
 /** What a listing pass is asked to do. */
-export interface ListingOptions {
+interface ListingOptions {
   keep?: number;
   protect?: readonly number[];
   quiet?: boolean;
