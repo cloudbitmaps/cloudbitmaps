@@ -914,9 +914,9 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   write when the precondition fails by reading an id you stored with it back. The shipped registries do
  *   one or the other.
  * - **Raise a conflict that may follow your own write's landing with `unsettledConflict`** (from the driver kit). A
- *   client that may have sent the write more than once cannot say, after a conflict, that this write did not land
- *   first: a row is overwritten, so another writer's write found on the read-back may have gone over this one, and a
- *   row that is gone may have been removed after it landed. Raise every conflict it cannot rule that out for (another
+ *   driver whose client may have sent the write more than once cannot say, after a conflict, that this write did not
+ *   land first: a row is overwritten, so another writer's write found on the read-back may have gone over this one, and
+ *   a row that is gone may have been removed after it landed. Raise every conflict it cannot rule that out for (another
  *   writer's write on the read-back, a compare-and-swap that finds the row gone, a read-back that finds nothing) as
  *   `unsettledConflict`, so a load refused after it reports `unanswered: true`. A conflict that proves the write did
  *   not land (a write sent once, a check made before sending anything) is a plain {@link WriteConflictError}. A

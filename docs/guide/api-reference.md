@@ -735,7 +735,7 @@ nothing can compare one. Branding them is you taking that on.
 | `validateSegmentRef` | the name rules a driver applies to a ref (and that it is an object), and nothing more: it takes a namespace in the reserved `cbm.due.` prefix, where the library's own due-index rows live. The refusal of that prefix is in the calls that take an application's ref or `namespace`, not here |
 | `BlobSink` | the sink `putImmutable` hands the writer: the object's bytes arrive through its one method, `write`, and the driver commits them once the writer returns |
 | the typed errors + `errorKind` | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, the class they extend, `CloudRoaringError`, and `errorKind(err)` with its `ErrorKind` type. Throw the classes; classify with `errorKind`, which holds across package copies where `instanceof` does not |
-| `unsettledConflict(message)` | a `WriteConflictError` for a registry `create` or `compareAndSwap` that may have landed before it met the conflict: throw it for every conflict of a write your backend's client may have sent more than once and that you cannot prove did not land: the read-back finds another writer's write over the row (a row is overwritten, so that writer may have swapped in over this write after it landed), or finds the row gone. A plain `WriteConflictError` is for a conflict that proves the write was refused: a write sent once, or a check your driver made before sending anything. A registry that wraps another rethrows the conflict it was given, since a new one loses the mark. It is a `WriteConflictError` in every other way (`errorKind` names it `'WriteConflictError'`, `instanceof` holds on one copy of the package); a load's publish reads the row again as after any conflict, and a load refused after one that does not show its write carries `unanswered: true` on its `segment.load-refused` event. The mark is a registered `Symbol.for` brand, and is lost when the error is cloned or copied into a new one |
+| `unsettledConflict(message)` | a `WriteConflictError` for a registry `create` or `compareAndSwap` that may have landed before it met the conflict: throw it for every conflict of a write your backend's client may have sent more than once and that you cannot prove did not land: the read-back finds another writer's write over the row (a row is overwritten, so that writer may have swapped in over this write after it landed), or finds the row gone, or the compare-and-swap itself is answered that the row is gone. A plain `WriteConflictError` is for a conflict that proves the write was refused: a write sent once, or a check your driver made before sending anything. A registry that wraps another rethrows the conflict it was given, since a new one loses the mark. It is a `WriteConflictError` in every other way (`errorKind` names it `'WriteConflictError'`, `instanceof` holds on one copy of the package); a load's publish reads the row again as after any conflict, and a load refused after one that does not show its write carries `unanswered: true` on its `segment.load-refused` event. The mark is a registered `Symbol.for` brand, and is lost when the error is cloned or copied into a new one |
 
 **What a storage driver must do.** Callers rely on each of these, and the conformance suite holds every shipped
 driver to them (`IStorageDriver`'s doc comment states the same list):
@@ -797,21 +797,22 @@ once: its second run throws `IntegrityError` before it writes a byte, the driver
 that error, with the first run's error as its `cause`.
 
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
-`WriteConflictError` and change nothing when they lose; a token is not reused, `delete` then `create` included, but for a collision of probability 2^-128 per pair of incarnations;
-reads are strongly consistent; a row is keyed by its namespace and segment together, so one segment name in two
-namespaces is two rows; `list` yields every existing row, `destroyed` tombstones included, with every field, however many
-pages the service splits the listing into; a bucket or container that does not exist fails a read, a listing and a
-write with an error that is neither `NotFoundError` nor `TransientError`, never a `null` read (the cloud drivers this
-library ships raise a `ValidationError` naming the bucket or container, with the service's error as its `cause`);
-the replay rule above applies to `create` and `compareAndSwap`, which a driver never sends again on a throttle. The
-store's publish reads the row after one that ended without an answer and recognises its own landed write by its
-effect; when the row is unchanged it sends a **fresh** compare-and-swap from the version it read (at most three, after a
-wait on the injected clock), so both writes must fence on that version, for real, and at most one of the two lands; a
-transient fault is a `TransientError`; a client that may have sent a write more than once raises every conflict
-it cannot prove the write did not land before (another writer's write on the read-back, a row that is gone) with
-`unsettledConflict`, so a load refused after it reports `unanswered: true`, while a conflict that proves it (a write sent
-once, a check made before sending) is a plain `WriteConflictError`, a registry that wraps another rethrowing the conflict
-it was given, and the conformance suite not testing the mark; and `delete` is idempotent, with one addition.
+`WriteConflictError` and change nothing when they lose; a token is not reused, `delete` then `create` included, but for
+a collision of probability 2^-128 per pair of incarnations; reads are strongly consistent; a row is keyed by its
+namespace and segment together, so one segment name in two namespaces is two rows; `list` yields every existing row,
+`destroyed` tombstones included, with every field, however many pages the service splits the listing into; a bucket or
+container that does not exist fails a read, a listing and a write with an error that is neither `NotFoundError` nor
+`TransientError`, never a `null` read (the cloud drivers this library ships raise a `ValidationError` naming the bucket
+or container, with the service's error as its `cause`); the replay rule above applies to `create` and `compareAndSwap`,
+which a driver never sends again on a throttle. The store's publish reads the row after one that ended without an answer
+and recognises its own landed write by its effect; when the row is unchanged it sends a **fresh** compare-and-swap from
+the version it read (at most three, after a wait on the injected clock), so both writes must fence on that version, for
+real, and at most one of the two lands; a transient fault is a `TransientError`; a driver whose client may have sent a
+write more than once raises every conflict it cannot prove the write did not land before (another writer's write on the
+read-back, a compare-and-swap that finds the row gone, a read-back that finds nothing) with `unsettledConflict`, so a
+load refused after it reports `unanswered: true`; a conflict that proves it (a write sent once, a check made before
+sending) is a plain `WriteConflictError`. A registry that wraps another rethrows the conflict it was given, unchanged.
+The conformance suite does not test the mark. `delete` is idempotent, with one addition.
 
 **`create` and `compareAndSwap` take an optional third or fourth argument, `options?: RegistryWriteOptions`.**
 `{ held?: RegistryRecord | null }` is the row the caller read and is writing against: the record this registry's `get`
@@ -1204,7 +1205,8 @@ Driver helpers: `refuseUnknownOptions` · `requirePositiveInt` · `requireBool` 
 `concatBytes`
 
 Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `CloudRoaringError` · `ValidationError` ·
-`WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError` · `unsettledConflict` · `errorKind` · `ErrorKind`
+`WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError` · `unsettledConflict` · `errorKind` ·
+`ErrorKind`
 
 ### `@cloudbitmaps/s3`
 

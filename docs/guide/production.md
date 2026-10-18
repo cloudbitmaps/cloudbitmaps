@@ -798,5 +798,5 @@ pointer still names its generation and the row's `pointerId` is its own write's;
 `published: false, reason: 'superseded'`, and its `segment.load-refused` event carries `unanswered: true`, as does the
 refusal of a load that lost an ordinary race at the registry on Azure Blob, which marks every conflict of a row write as
 one that may follow the write's own landing. A registry delete under a precondition that goes through the SDK's retry,
-on GCS and Azure Blob, is safe to send twice because of its precondition. Each package's conditional writes, and what a tagged write does on a conflict, are in
-[How retries stay correct](correctness.md#how-retries-stay-correct).
+on GCS and Azure Blob, is safe to send twice because of its precondition. Each package's conditional writes, and what a
+tagged write does on a conflict, are in [How retries stay correct](correctness.md#how-retries-stay-correct).

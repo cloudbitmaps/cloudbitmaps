@@ -13,19 +13,20 @@ so, and so do the module headers in the code.
 
 ### Added
 
-- **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`, exported
-  from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` carrying a registered `Symbol.for` mark, so it
-  is still a conflict in every other way (`errorKind` names it `'WriteConflictError'`, `instanceof` and every handler of
-  a conflict hold) and a publish built from another copy of the package reads the mark. A load's publish reads the row
-  again after any conflict; after a marked one that does not show the write there, a load refused for it carries
-  `unanswered: true` on its `segment.load-refused` event, as after a write that got no answer, and a registry without
-  tokens proves its own object before it takes a pointer at its number. The Azure Blob registry raises every conflict of a row write this way, the read-back's
-  and the 404 of a compare-and-swap whose row was deleted: its client's retry may have sent the write twice, and the
-  read-back of the write id cannot tell a landed write from one a later writer swapped in over. So on Azure Blob a load
-  that lost an ordinary race at the registry carries `unanswered: true` too. The S3 and GCS registries send each row
-  write once and raise a plain conflict, as do the memory and local-file registries. A conflict the registry itself
-  raises before it sends anything, and a registry delete's, stay plain. The predicate that reads the mark is internal.
-  The `segment.load-refused` event's `unanswered` doc comment, the driver-kit and port docs, the guides and the Azure Blob
+- **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
+  exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
+  `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it
+  `'WriteConflictError'`, `instanceof` and every handler of a conflict hold) and a publish built from another copy of
+  the package reads the mark. A load's publish reads the row again after any conflict; after a marked one that does not
+  show the write there, a load refused for it carries `unanswered: true` on its `segment.load-refused` event, as after a
+  write that got no answer, and a registry without tokens proves its own object before it takes a pointer at its number.
+  The Azure Blob registry raises every conflict of a row write this way, the read-back's and the 404 of a
+  compare-and-swap whose row was deleted: its client's retry may have sent the write twice, and the read-back of the
+  write id cannot tell a landed write from one a later writer swapped in over. So on Azure Blob a load that lost an
+  ordinary race at the registry carries `unanswered: true` too. The S3 and GCS registries send each row write once and
+  raise a plain conflict, as do the memory and local-file registries. A conflict the registry itself raises before it
+  sends anything, and a registry delete's, stay plain. The predicate that reads the mark is internal. The
+  `segment.load-refused` event's `unanswered` doc comment, the driver-kit and port docs, the guides and the Azure Blob
   README say so.
 - **`store.preflight()` checks a new store's storage and registry before its first load.** It resolves to `{ ok, checks }`
   and always lists seven checks, in this order: `registry` (one read of a probe row that must be absent, and a registry
@@ -91,6 +92,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A fault on a read inside a load's, an erasure's or a bulk load's registry write no longer reads as a write with no
+  answer.** A throttled or failed read of the row, made while the publish waited out a lease write or inside the
+  registry before it sent anything, used to count as a registry write that got no answer. A load refused after it then
+  carried `unanswered: true` on its `segment.load-refused` event although every write it sent had been answered, and the
+  publish read the row back and could send its write again. That read's own `TransientError` is now thrown at once for
+  a load, an erasure and a bulk load, and the object they wrote is kept. After a lease write the publish also passes the
+  row it just re-read to the registry with its write, so the object-store registries (S3, GCS and Azure Blob) send it
+  without reading the row a second time: one request fewer.
 - **A rollback settles a swap that met a conflict or got no answer by its write token, as a load's publish does.** On a
   registry that reports its writes' tokens (the in-memory, local-file, S3, GCS and Azure Blob registries), a rollback's
   swap that landed and then met a conflict, or got no answer, is its own when the row's pointer is at the target over a
@@ -115,8 +124,9 @@ so, and so do the module headers in the code.
   swaps in over a write that landed, before the read-back, makes it report `WriteConflictError`. The publish then reads
   the row again and finds its write only while the pointer still names its generation and the row's `pointerId` is its
   own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`. The production and
-  correctness guides, the Azure Blob README and the architecture page now say so. The erasure guide and the `eraseSubject` doc comment also say that a generation costs its budget unit at its first open
-  only, so a retry of a failed read costs nothing more. No behaviour changed.
+  correctness guides, the Azure Blob README and the architecture page now say so. The erasure guide and the
+  `eraseSubject` doc comment also say that a generation costs its budget unit at its first open only, so a retry of a
+  failed read costs nothing more. No behaviour changed.
 - **A collection under a tombstone only collects the row it was asked to.** An erasure that found a tombstone's
   leftover objects, and the retention sweep's collection of a tombstone it was purging, read the row afresh before
   deleting. If the tombstone had been purged and the name loaded again in between, they treated the new row's

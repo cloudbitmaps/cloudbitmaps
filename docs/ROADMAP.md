@@ -435,9 +435,10 @@ between here and there:
    - on Azure Blob a load that loses an ordinary race at the registry carries `unanswered: true` on its
      `segment.load-refused` event too, since the driver cannot see its client's retry and so marks every conflict of a
      row write as one that may follow the write's own landing. A narrower mark would read the counter in the row's token
-     (tokens are `incarnation.counter.write`): after a conflict, a row at counter n+1 under another token in the same
-     incarnation proves this write did not land, from a read the publish already makes. The SDK exposes no request
-     counter to read instead;
+     (tokens are `incarnation.counter.write`): after a compare-and-swap's conflict, a row at counter n+1 under another
+     token in the same incarnation proves this write did not land, from a read the publish already makes. That holds for
+     a compare-and-swap only: a create starts a new incarnation, so it has no counter to compare. The SDK exposes no
+     request counter to read instead;
    - on Azure Blob a create's only condition is `ifNoneMatch: '*'`, its client's retry sends it again, and a success has
      no read-back. Inside the retry window after a `setRetention`, a retirement and its purge, the replay finds the row
      absent and creates it again with the token it was first written with and, on a first load that minted a key, the

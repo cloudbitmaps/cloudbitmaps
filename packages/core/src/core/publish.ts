@@ -331,6 +331,11 @@ export async function publishGenerationKept(
   // Whether any write of this call ended without an answer: what the pointer then says about this number is not
   // taken for the caller's own write without the proof.
   let sawUnanswered = false;
+  // The fault of the lease churn's re-read, the one transient fault in a write's `try` that is a read's.
+  let readFault: unknown;
+  const readAgain = readOf(registry, key, (e) => (readFault = e));
+  // Whether the attempt's write has reported its token, which a registry does before it sends the write.
+  let tokenReported: boolean;
   // The row the last attempt acted on, which its write was made against: where the incarnation is read from when the
   // attempts run out.
   let lastRecord: RegistryRecord | null | undefined;
@@ -339,22 +344,21 @@ export async function publishGenerationKept(
   const sent: Set<Token> | undefined =
     registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
   const report: ((token: Token) => void) | undefined =
-    sent === undefined ? undefined : (token) => void sent.add(token);
+    sent === undefined ? undefined : (token) => void (sent.add(token), (tokenReported = true));
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
     // The row a write is made against is passed to the registry as `held`, so that it need not read the row again for
-    // the version its write is fenced on: the caller's own row on the first attempt, or the one this attempt read.
-    // Never a row read to settle a write that got no answer: that one is read again by the write that follows it.
-    const holdsRow = fresh === undefined;
+    // the version its write is fenced on: the caller's own row on the first attempt, the one this attempt read, or the
+    // one the wait on lease churn read, which is as fresh as a read of the write's own would be. Never a row read to
+    // settle a write that got no answer: the registry reads that one again, so that the version its write is fenced on
+    // is not from before the write that may still land.
+    const holdsRow = fresh === undefined || fresh === waited;
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
-    const write: RegistryWriteOptions | undefined =
-      holdsRow || report !== undefined
-        ? {
-            ...(holdsRow ? { held: record } : {}),
-            ...(report !== undefined ? { onToken: report } : {}),
-          }
-        : undefined;
+    const write = writeOptions(holdsRow ? { held: record } : {}, report);
+    // Whether an earlier write of this call got no answer, and whether this attempt's write has reported a token yet.
+    const afterUnanswered = sawUnanswered;
+    tokenReported = false;
     fresh = undefined;
     unanswered = undefined;
     lastRecord = record;
@@ -409,7 +413,7 @@ export async function publishGenerationKept(
           const settled =
             record === waited
               ? undefined
-              : await churn.settle(held, record, readOf(registry, key), options.expectRowIgnores);
+              : await churn.settle(held, record, readAgain, options.expectRowIgnores);
           if (settled !== undefined) {
             waited = settled.row;
             fresh = settled.row;
@@ -552,7 +556,10 @@ export async function publishGenerationKept(
       }
       // Only the write itself raises a transient fault in here that is not a read's, and it is the one outcome that is
       // not an answer: the lease churn's re-read is a read, whose fault is thrown as it is.
-      if (!isTransientError(err) || readFaults.has(err as object)) throw err;
+      if (!isTransientError(err) || err === readFault) throw err;
+      // A write that faulted before it reported its token, after one that got no answer, was never sent: the registry's
+      // own read of the row faulted, and the earlier write's missing answer is already on record.
+      if (afterUnanswered && sent !== undefined && !tokenReported) throw err;
       sawUnanswered = noteUnsettled(options);
       let now: RegistryRecord | null;
       try {
@@ -611,16 +618,27 @@ export async function publishGenerationKept(
   );
 }
 
-/** The faults of reads made inside the write's `try`, which that `try`'s catch must not take for a write's. */
-const readFaults = new WeakSet<object>();
+/** What a registry write is given: the row it is made against, when held, and the report of its token, when asked for. */
+function writeOptions(
+  held: Pick<RegistryWriteOptions, 'held'>,
+  onToken: ((token: Token) => void) | undefined,
+): RegistryWriteOptions | undefined {
+  return held.held === undefined && onToken === undefined
+    ? undefined
+    : { ...held, ...(onToken === undefined ? {} : { onToken }) };
+}
 
-/** A read of the row for a step inside the write's `try`: a fault it throws is marked as a read's. */
-function readOf(registry: IRegistryDriver, key: GenKey): () => Promise<RegistryRecord | null> {
+/** A read of the row for a step inside the write's `try`: a fault it throws is handed to `onFault`, then thrown. */
+function readOf(
+  registry: IRegistryDriver,
+  key: GenKey,
+  onFault: (err: unknown) => void,
+): () => Promise<RegistryRecord | null> {
   return async () => {
     try {
       return await registry.get(key);
     } catch (err) {
-      if (typeof err === 'object' && err !== null) readFaults.add(err);
+      onFault(err);
       throw err;
     }
   };
