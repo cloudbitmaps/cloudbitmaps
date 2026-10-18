@@ -713,7 +713,7 @@ describe('the holder', () => {
   });
 });
 
-/** The consumer's acceptance: a refresh job loads, the tasks of a send pin, and nothing but the lease holds the generation. */
+/** Loads go on while readers hold a pin, and nothing but the lease holds the pinned generation. */
 describe('a leased generation survives later loads, collection resumes, and a read after it throws', () => {
   it.each([
     ['keep 1', 1],
