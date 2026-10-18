@@ -407,7 +407,27 @@ between here and there:
      keys, so it can still move onto an object sealed under a key no row holds, which then fails every read and which
      `checkConsistency` does not flag. Every other target is held to the row's recorded footer checksum, or needs
      `allowUnknown` and the key;
-   - the parts stretch, under [Planned](#planned--exploring).
+   - the parts stretch, under [Planned](#planned--exploring);
+   - the lifecycle check's gaps. An abort-incomplete-upload rule on one namespace's keys silences that advice for every
+     namespace of the store. On GCS a `403` that is a billing or network-perimeter refusal gets the permission advice,
+     which would not fix it. With no `prefix` it judges every rule it can read as if it covered the store, with no match
+     against the key layout. S3's separate Intelligent-Tiering archive configuration is not read;
+   - `preflight()`'s accepted limits. Its cleanup delete after a failed write is unconditional, and a conflict whose
+     error cannot be read counts as a failure rather than another run's object, so a probe left at the same 48-bit
+     number by another run can be removed. A
+     listing pages through every leftover probe and names the first few. A `LocalFsStorage` host path can appear in an
+     `EACCES` detail. The steps that follow a failed write read `no object was written`, which an SDK retry under the
+     write could contradict;
+   - the one round trip between a tombstone collection's last re-proof of the row and its delete by number: a name
+     purged and created again inside it can lose a generation under that number, and the pass does not see it, since
+     no read of the row follows its last delete. Closing it takes a conditional delete from the listing's object
+     versions, or a read of the row after the last delete, held to the row's incarnation, which would turn it into a
+     lost race the sweep does not charge as a purge fault. On a registry whose tokens carry no incarnation id (none
+     that this library ships), two incarnations are told apart by the row's creation stamp alone;
+   - the erasure's own collections on an active row, which are not held to the row they worked from (one round trip,
+     and the collection spares what the row names): they should decline quietly when the row changed;
+   - the erasure's two passes over a tombstone, which are merged without checking that both saw one incarnation of
+     the name: a purge and re-creation between them mixes `collected` and `fromGeneration` from two.
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
 10. **The cost model in a package of its own — ✅ Shipped.** `estimateCost`,

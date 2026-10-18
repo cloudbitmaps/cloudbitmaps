@@ -66,7 +66,9 @@ which has nothing to check: `UnsupportedError`. `preflight()` takes no options.
 prefix, where `<number>` is 48 random bits. That namespace is inside the reserved `cbm.due.` prefix, which no
 application ref can name, so the probe can never be one of your segments, and no registry row is written. No scan,
 sweep, erasure, export or collection reads a probe object or row as a segment. A run deletes only the object it wrote,
-by version where the driver applies one. The probe sits at `<prefix>cbm.due.preflight/`, outside the namespaces your application uses. The documented grant over everything under the prefix covers it, but a grant scoped per namespace, narrower than that, does not: it shows as a `write` problem for a store that loads fine, and as a `registry` problem too when the registry grant is scoped per namespace (the probe row's read at `<prefix>registry/cbm.due.preflight/probe.reg` is refused). A probe that another run left (cut off, or still running) is named in the
+by version where the driver applies one. The probe sits at `<prefix>cbm.due.preflight/`, outside the namespaces your application uses. The documented grant over everything under the prefix covers it, but a grant scoped per namespace, narrower than that, does not: it shows as a `write` problem for a store that loads fine, and as a `registry` problem too when the registry grant is scoped per namespace (the probe row's read at `<prefix>registry/cbm.due.preflight/probe.reg` is refused). A step's `detail` carries the error's name and message, cut to a length, as the driver raised it, so on `LocalFsStorage` an
+`EACCES` names the path of the probe file. A step that reads `no object was written` ran after a failed write, which is
+not proof that none landed: an SDK retry under it could have stored one, and a later run's `list` names it. A probe that another run left (cut off, or still running) is named in the
 `list` detail and never deleted, since it could be a run in progress; delete it by hand if no run is. On `LocalFsStorage`
 the probe really is a file, and a run leaves two empty directories behind.
 
@@ -261,6 +263,9 @@ does not hide one that would. The same goes for a value it does not know: an S3 
 a storage class it does not know, a GCS action it does not know. Fix such a rule by narrowing it, or confirm by hand that
 it cannot match and leave it.
 
+On GCS, any `403` on the bucket-metadata read gets the advice to grant `storage.buckets.get`, including a refusal that is
+a billing or network-perimeter one, which that grant would not fix.
+
 A `detail` is short whatever the bucket holds: it names at most 3 problem rules and then says "and N more", and cuts each
 rule id, prefix and error name to 64 characters and an error message to 200.
 
@@ -269,6 +274,8 @@ rule id, prefix and error name to 64 characters and an error message to 200.
 - On S3, when no rule over the store's generation keys (`<prefix>…/segments/`, not only `<prefix>registry/`) sets
   `AbortIncompleteMultipartUpload`, it says to add one. GCS and Azure Blob clean up an abandoned upload on their own,
   about a week on (see [the backup checklist](disaster-recovery.md#backup-checklist)), so they give no such advice.
+  One rule on one namespace's keys counts, so the advice is left out for every namespace of the store: it does not say
+  which namespace lacks a rule.
 - On S3, a transition to `INTELLIGENT_TIERING` is safe by itself, but if the bucket turns on its archive access tiers
   (a separate configuration this check does not read), an object in one needs a restore before it can be read: leave
   them off for the store's prefix.
