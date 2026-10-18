@@ -875,9 +875,9 @@ describe('what an erasure costs at the store an object-store registry is over', 
   }
 
   // Each count includes one read of the row after the call's last listing of the bucket, made because that listing names
-  // a generation the call found clean (the current one, here), which it skips only while the row names it with the
-  // footer checksum of the object it read. The storage counts pin that the skip happens: a generation the row vouches
-  // for is listed, not opened again.
+  // the generation the call found current or its own rewrite, which it skips only while the row names it with the
+  // footer checksum of the object it read or wrote. The storage counts pin that the skip happens: that generation is
+  // listed, not opened again, while every other generation the call found clean is opened again.
   it('an id held only by an older generation the ledger names: 8 reads and 1 write', async () => {
     expect(await requests('older')).toEqual({
       registry: [8, 1],
@@ -904,10 +904,12 @@ describe('what an erasure costs at the store an object-store registry is over', 
       storage: { list: 3, getTail: 2, getRange: 1, putImmutable: 1, delete: 2 },
     });
   });
-  it('an id held only above the pointer, beside a generation there it found clean: that generation is not opened again', async () => {
+  it('an id held only above the pointer, beside a generation there it found clean: that one is opened again, the current one is not', async () => {
+    // The search opens 0, 1 and 2 (one tail read and one chunk read each); the receipt opens 1 again, since a ledger
+    // entry for a generation the call did not find current can outlive the object it read, and skips 0.
     expect(await requests('above')).toEqual({
       registry: [8, 1],
-      storage: { list: 3, getTail: 3, getRange: 3, delete: 1 },
+      storage: { list: 3, getTail: 4, getRange: 4, delete: 1 },
     });
   });
 });

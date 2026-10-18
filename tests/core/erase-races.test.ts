@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { openGenerationReader } from '@/core/crbm-open';
 import { type EraseIdResult, eraseIdFromSegment } from '@/core/erase-id';
 import { dropSegment } from '@/core/erasure';
 import { NotFoundError, TransientError, WriteConflictError } from '@/core/errors';
@@ -18,6 +19,7 @@ import type {
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy, zeroEntropy } from '../helpers/entropy';
+import { gate } from '../helpers/retaken-number-race';
 
 /**
  * Interleavings of an erasure with another writer that no other test pins. Each case holds the erasure at one exact
@@ -548,6 +550,69 @@ async function recreatedHolding(
   });
 }
 
+/** Whether the object under `generation` holds `X`. */
+async function holdsX(storage: IStorageDriver, generation: number): Promise<boolean> {
+  const reader = await openGenerationReader(storage, { ...SEG, generation }, undefined);
+  const bytes = await reader.getChunk(0);
+  return bytes !== null && roaringCodec.safeDeserialize(bytes, 1 << 20).has(X);
+}
+
+/** A registry for one load, whose first write of the row (its publish, once its object is written) waits at `at`. */
+function heldAtPublish(registry: IRegistryDriver, at: ReturnType<typeof gate>): IRegistryDriver {
+  let held = false;
+  return overRegistry(registry, {
+    compareAndSwap: async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
+      if (!held) {
+        held = true;
+        at.reach();
+        await at.opened;
+      }
+      return registry.compareAndSwap(...args);
+    },
+  });
+}
+
+/**
+ * A storage that notes the generations whose tail it reads from the first listing after a delete on, which is the
+ * receipt's: what the receipt opens. `listed` says whether that listing has been made.
+ */
+function openedByReceipt(storage: IStorageDriver): {
+  storage: IStorageDriver;
+  opened: number[];
+  listed: () => boolean;
+} {
+  let deleted = false;
+  let listed = false;
+  const opened: number[] = [];
+  return {
+    opened,
+    listed: () => listed,
+    storage: overStorage(storage, {
+      delete: async (key, options) => {
+        await storage.delete(key, options);
+        deleted = true;
+      },
+      list: (ref: SegmentRef) => {
+        listed ||= deleted;
+        return storage.list(ref);
+      },
+      getTail: (key, maxBytes) => {
+        if (listed) opened.push(key.generation);
+        return storage.getTail(key, maxBytes);
+      },
+    }),
+  };
+}
+
+/** Loads with `keep: 5` make 0 `[1, 2, 3]`, 1 `[1, 2, 3, Y]` and 2 `[1, 2, 3, X]`, then a rollback onto 0. */
+async function cleanAndHolderAbove(deps: Deps): Promise<void> {
+  const keep = { keep: 5 };
+  await loadSegment(SEG, [1, 2, 3], deps, keep);
+  await loadSegment(SEG, [1, 2, 3, Y], deps, keep);
+  await loadSegment(SEG, [1, 2, 3, X], deps, keep);
+  await rollbackSegment(SEG, 0, deps);
+}
+
 describe('a generation the erasure found clean, whose number another object takes', () => {
   it.each(['published', 'unpublished'] as const)(
     'reads it again when the name is dropped, purged and created again and a first load of the id takes that number (%s)',
@@ -653,5 +718,141 @@ describe('a generation the erasure found clean, whose number another object take
     expect(loaded).toBe(true);
     expect(err).toBeInstanceOf(WriteConflictError);
     expect((err as Error).message).toMatch(/generation 1, which still holds the id and/);
+  });
+
+  it('reads it again when a load that seeds the ledger from the bucket names the object another erasure then deletes, and a load takes its number', async () => {
+    const w = world();
+    await cleanAndHolderAbove(w.deps);
+    // A hand-made write that drops the row's ledger: the next publish seeds one from the bucket.
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
+    // The erasure of Y: just before its delete of 1, a load starts, numbers 2, seeds its ledger from the bucket (reading
+    // the footer of 1, which holds Y) and waits at its publish.
+    const seeding = gate();
+    let seeded: ReturnType<typeof loadSegment> | undefined;
+    const forY = overStorage(w.storage, {
+      delete: async (key, options) => {
+        if (key.generation === 1 && seeded === undefined) {
+          seeded = loadSegment(
+            SEG,
+            [1, 2, 3],
+            { ...w.deps, registry: heldAtPublish(w.registry, seeding) },
+            {
+              keep: 5,
+            },
+          );
+          await seeding.reached;
+        }
+        return w.storage.delete(key, options);
+      },
+    });
+    // The erasure of X finds 0 and 1 clean and 2 holding it. Right after its delete of 2, the erasure of Y deletes 1; a
+    // load of X reads that row, numbers 1, which is free and one above the pointer, and waits at its publish; the seeding
+    // load publishes a ledger that names 1 with the checksum of the object deleted; and the load of X is refused, which
+    // leaves its object, since the row changed.
+    let other: EraseIdResult | undefined;
+    let ofX: Awaited<ReturnType<typeof loadSegment>> | undefined;
+    const storage = overStorage(w.storage, {
+      delete: async (key, options) => {
+        await w.storage.delete(key, options);
+        if (key.generation === 2 && other === undefined) {
+          other = await eraseIdFromSegment(SEG, Y, { ...w.deps, storage: forY });
+          const held = gate();
+          const loading = loadSegment(SEG, [1, 2, 3, X], {
+            ...w.deps,
+            registry: heldAtPublish(w.registry, held),
+          });
+          await held.reached;
+          seeding.open();
+          await seeded;
+          held.open();
+          ofX = await loading;
+        }
+      },
+    });
+    await expect(eraseIdFromSegment(SEG, X, { ...w.deps, storage })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(other).toMatchObject({ erased: true, collected: [1] });
+    expect(ofX).toMatchObject({ published: false });
+    // The row names 1, and the object under it holds X.
+    expect((await w.registry.get(SEG))!.knownGens!.map((e) => e.generation)).toContain(1);
+    expect(await holdsX(w.storage, 1)).toBe(true);
+  });
+
+  it('reads it again when a lifecycle rule deletes it and a load of the id takes its number before the receipt', async () => {
+    const w = world();
+    await cleanAndHolderAbove(w.deps);
+    // Right after the erasure's delete of 2, an object delete from outside the library (a lifecycle rule) removes 1,
+    // which the row still names, and a load of X reads the row, numbers 1, writes it and waits at its publish.
+    const held = gate();
+    let loading: ReturnType<typeof loadSegment> | undefined;
+    const storage = overStorage(w.storage, {
+      delete: async (key, options) => {
+        await w.storage.delete(key, options);
+        if (key.generation === 2 && loading === undefined) {
+          await w.storage.delete({ ...SEG, generation: 1 });
+          loading = loadSegment(SEG, [1, 2, 3, X], {
+            ...w.deps,
+            registry: heldAtPublish(w.registry, held),
+          });
+          await held.reached;
+        }
+      },
+    });
+    await expect(eraseIdFromSegment(SEG, X, { ...w.deps, storage })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    held.open();
+    expect(await loading).toMatchObject({ published: true, generation: 1 });
+  });
+
+  it.each(['collect', 'rewrite'] as const)(
+    'keeps its answer and its event when its read of the row after the last listing fails (%s): it opens every generation listed',
+    async (shape) => {
+      const w = world();
+      const first = shape === 'collect' ? [1, X] : [1];
+      await loadSegment(SEG, first, w.deps, { keep: 1 });
+      await loadSegment(SEG, shape === 'collect' ? [1] : [1, X], w.deps, { keep: 1 });
+      // The first listing after a delete is the receipt's, and the first read of the row after it fails.
+      const { storage, opened, listed } = openedByReceipt(w.storage);
+      let failed = false;
+      const registry = overRegistry(w.registry, {
+        get: async (ref: SegmentRef) => {
+          if (listed() && !failed) {
+            failed = true;
+            throw new TransientError('the registry is throttled');
+          }
+          return w.registry.get(ref);
+        },
+      });
+      const { audit, kinds } = recordingAudit();
+      const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage, registry }, { audit });
+      expect(failed).toBe(true);
+      expect(res).toMatchObject({ erased: true });
+      expect(kinds).toEqual([shape === 'collect' ? 'segment.collect' : 'segment.rewrite']);
+      // Nothing vouched for: the one generation left, the current one, is opened again.
+      expect(opened).toEqual(await generationsOf(w.storage));
+      expect(opened).toHaveLength(1);
+    },
+  );
+
+  it('opens again the generation it found current when the row names it with its checksum in a ledger that does not end with it', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, X], w.deps, { keep: 1 }); // 0 holds
+    await loadSegment(SEG, [1], w.deps, { keep: 1 }); // 1, current and clean
+    // A registry of your own that keeps the entries in another order: a ledger whose last entry is not the pointer is
+    // read and not used, though it names 1 with its object's checksum.
+    const registry = overRegistry(w.registry, {
+      get: async (ref: SegmentRef) => {
+        const got = await w.registry.get(ref);
+        if (got?.knownGens === undefined) return got;
+        return { ...got, knownGens: [...got.knownGens].reverse() };
+      },
+    });
+    const { storage, opened } = openedByReceipt(w.storage);
+    const res = await eraseIdFromSegment(SEG, X, { ...w.deps, storage, registry });
+    expect(res).toMatchObject({ erased: true, collected: [0] });
+    expect(opened).toEqual([1]);
   });
 });
