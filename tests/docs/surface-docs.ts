@@ -14,25 +14,30 @@ import ts from 'typescript';
 //   - a member (a method, property, accessor or interface field) with ONE declaration passes when that declaration
 //     carries its own doc block, or inherits one from the member it implements or overrides. A member with several
 //     declarations never inherits;
-//   - a parameter property (`constructor(readonly root: string)`) needs its own block on the parameter: the emitted
-//     `.d.ts` keeps a constructor's `@param` text on the constructor only, so it never reaches the property;
+//   - a parameter property (`constructor(readonly root: string)`) needs its own block on the parameter, or, when no
+//     `@param` tag of the constructor names it, inherits one from the member it implements: the emitted `.d.ts` keeps a
+//     constructor's `@param` text on the constructor only, so it never reaches the property;
 //   - a constructor passes when it carries its own doc block; a class with no declared constructor passes when the
 //     class itself is documented;
 //   - a statement's doc block counts for the first name that statement declares (`export const a = 1, b = 2;` and
-//     `const { A, B } = x;` document `a` and `A`), as the emitted `.d.ts` shows it;
+//     `const { A, B } = x;` document `a` and `A`), and for a later name only when no earlier name of the statement is
+//     exported by the entry (`const { A, B } = x; export { B };`): the emitted `.d.ts` declares the exported names and
+//     puts the statement's block on the first of them;
 //   - a `(value)` key needs a variable declaration of that name; a key whose specifier is not an entry point of a
 //     package (read from the packages' `exports` maps) FAILS;
-//   - a `(referenced)` key names a type no entry exports, so it is found by name in its package's source: it FAILS
-//     when more than one file of the package declares that name (the gate cannot tell which one is meant), and
-//     is judged on the one declaration otherwise;
-//   - every other key that cannot be resolved to a declaration FAILS, named: a gate that skips what it cannot find says
+//   - a `(referenced)` key names a type no entry exports, so it is found by name in the source files the program reaches
+//     from the entry points: it FAILS when more than one of those files declares that name (the gate cannot tell which
+//     one is meant), and is judged on the one declaration otherwise;
+//   - any other key resolves only through the exports of its entry point: a name the entry does not export FAILS, named,
+//     and so does every key that cannot be resolved to a declaration: a gate that skips what it cannot find says
 //     nothing about it.
 //
 // Known limits: a doc block counts when it has text or a tag, so a comment that says nothing true passes, and a
 // deliberately empty-looking one (`/** x */`) passes; a `@param` or `@returns` tag is not required; a getter and
 // setter pair is two forms of one member, so the setter needs its own block though the hover shows the getter's (no
 // such pair is public today); a name found by name inside one file is taken to be the file's top-level declaration, not
-// a nested one of the same name.
+// a nested one of the same name; a call, construct or index signature of a type (`X.[call]`, `X.[new]`, `X.[index:…]`)
+// is not resolved, so its key FAILS even with a doc block (none is public today).
 
 /** One published entry point: the package directory and the source module its `exports` entry builds from. */
 export interface EntryPoint {
@@ -81,22 +86,27 @@ type Named =
   | ts.VariableDeclaration
   | ts.BindingElement;
 
-/** The first identifier a binding name declares, in source order. */
-function firstName(name: ts.BindingName): ts.Identifier | undefined {
-  if (ts.isIdentifier(name)) return name;
-  for (const el of name.elements) {
-    if (ts.isOmittedExpression(el)) continue;
-    const first = firstName(el.name);
-    if (first !== undefined) return first;
-  }
-  return undefined;
+/** Every name a declaration list declares, in source order. */
+function namesOf(list: ts.VariableDeclarationList): ts.Identifier[] {
+  const out: ts.Identifier[] = [];
+  const visit = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) out.push(name);
+    else {
+      for (const el of name.elements) if (!ts.isOmittedExpression(el)) visit(el.name);
+    }
+  };
+  for (const d of list.declarations) visit(d.name);
+  return out;
 }
 
 /**
  * Whether a node's own doc block has text or a tag. A variable's block sits on its statement and counts for the first
- * name the statement declares only.
+ * name the statement declares, and for a later name only when `isPublic` says no earlier name of the statement is.
  */
-function hasOwnDoc(decl: ts.Node): boolean {
+function hasOwnDoc(
+  decl: ts.Node,
+  isPublic: (name: ts.Identifier) => boolean = () => false,
+): boolean {
   let node = decl;
   if (ts.isBindingElement(node) || ts.isVariableDeclaration(node)) {
     let up: ts.Node | undefined = node;
@@ -113,9 +123,11 @@ function hasOwnDoc(decl: ts.Node): boolean {
       return false;
     }
     const own = ts.isBindingElement(node) ? node.name : (node as ts.VariableDeclaration).name;
-    const firstDecl = list.declarations[0];
-    const first = firstDecl === undefined ? undefined : firstName(firstDecl.name);
-    if (!ts.isIdentifier(own) || own !== first) return false;
+    if (!ts.isIdentifier(own)) return false;
+    for (const earlier of namesOf(list)) {
+      if (earlier === own) break;
+      if (isPublic(earlier)) return false;
+    }
     node = statement;
   }
   const docs = (node as { jsDoc?: readonly ts.JSDoc[] }).jsDoc ?? [];
@@ -185,9 +197,13 @@ export function openSurface(root: string): Surface {
       }
       return ts.resolveModuleName(name, containing, options, host).resolvedModule;
     });
-  const files = Object.values(entries)
-    .map((e) => e.file)
-    .filter((f) => existsSync(f));
+  const files = Object.values(entries).map((e) => e.file);
+  const missing = files.filter((f) => !existsSync(f));
+  if (missing.length > 0) {
+    throw new Error(
+      `an entry point has no source file: ${missing.map((f) => relative(root, f)).join(', ')}`,
+    );
+  }
   const program = ts.createProgram(files, options, host);
   const checker = program.getTypeChecker();
 
@@ -273,6 +289,9 @@ export function undocumentedSurfaceEntries(
     if (exported !== undefined) {
       sym = unalias(exported);
       decls = sym.declarations ?? [];
+    } else if (!referenced) {
+      fail(`${name} is not exported by ${spec}`);
+      continue;
     } else {
       decls = findNamed(spec, name);
       const files = [...new Set(decls.map((d) => relative(root, d.getSourceFile().fileName)))];
@@ -291,6 +310,11 @@ export function undocumentedSurfaceEntries(
       fail('no declaration found for the export');
       continue;
     }
+    // A name of a statement is public when the entry exports it, itself or under an alias.
+    const isPublic = (id: ts.Identifier): boolean => {
+      const target = checker.getSymbolAtLocation(id);
+      return [...(exportsOf.get(spec)?.values() ?? [])].some((e) => unalias(e) === target);
+    };
     const isValueDecl = (d: ts.Node): boolean =>
       ts.isVariableDeclaration(d) || ts.isBindingElement(d);
     const valueHalf = decls.find(isValueDecl);
@@ -308,7 +332,7 @@ export function undocumentedSurfaceEntries(
       const forms = formsOf(decls.filter((d) => kindOf(d) === kindOf(top)));
       const decl = forms[overload];
       if (decl === undefined) fail(noForm(forms.length));
-      else if (!hasOwnDoc(decl)) fail('the declaration has no doc block');
+      else if (!hasOwnDoc(decl, isPublic)) fail('the declaration has no doc block');
       continue;
     }
 
@@ -365,12 +389,18 @@ export function undocumentedSurfaceEntries(
       fail(noForm(forms.length));
       continue;
     }
-    if (hasOwnDoc(decl)) continue;
-    // The checker's text for a parameter property is the constructor's `@param` tag, which the emitted `.d.ts` keeps
-    // on the constructor, so a parameter is never judged on it.
+    if (hasOwnDoc(decl, isPublic)) continue;
+    // The checker's text for a parameter property is the constructor's `@param` tag when one names it, which the
+    // emitted `.d.ts` keeps on the constructor, so a named parameter is not judged on it. Otherwise the text can only
+    // be the one inherited from the member the class implements.
     if (ts.isParameter(decl)) {
-      fail('the parameter property has no doc block of its own');
-      continue;
+      const named = ts
+        .getJSDocParameterTags(decl)
+        .some((t) => ts.isIdentifier(t.name) && t.name.text === decl.name.getText());
+      if (named) {
+        fail('the parameter property has no doc block of its own');
+        continue;
+      }
     }
     // Only a member with one declaration inherits: with several, the symbol's text is the forms' and the
     // implementation's together, and none of it is the hover of this form.

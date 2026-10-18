@@ -481,3 +481,93 @@ describe('the surface gate takes its entry points from the packages', () => {
     for (const e of Object.values(entries)) expect(existsSync(e.file)).toBe(true);
   });
 });
+
+describe('the surface gate resolves a key that is not referenced through its entry only', () => {
+  const inner = { 'inner.ts': '/** Hidden. */\nexport interface Hidden {}\n' };
+
+  it('fails a name its entry does not export, though a file of the package documents it', () => {
+    const got = findings(
+      {
+        'index.ts': "import type { Hidden } from './inner';\nexport type Alias = Hidden;\n",
+        ...inner,
+      },
+      [`${K} Hidden`],
+    );
+    expect(got).toHaveLength(1);
+    expect(got[0]).toContain(`${K} Hidden`);
+    expect(got[0]).toContain('not exported');
+  });
+
+  it('passes the same name once the entry exports it', () => {
+    expect(
+      findings({ 'index.ts': "export * from './inner';\n", ...inner }, [`${K} Hidden`]),
+    ).toEqual([]);
+  });
+});
+
+describe('the surface gate refuses an entry whose source file is missing', () => {
+  it('throws, naming the file', () => {
+    const run = (): unknown =>
+      withTree({ 'index.ts': '/** X. */\nexport const X = 1;\n' }, (root) => openSurface(root), {
+        './gone': { types: './dist/gone.d.ts', default: './dist/gone.js' },
+      });
+    expect(run).toThrow(/gone\.ts/);
+  });
+});
+
+describe('the surface gate lets a parameter property inherit when no tag names it', () => {
+  const cls = (ctorDoc: string): Record<string, string> => ({
+    'index.ts': `/** A port. */
+export interface Port {
+  /** Where it lives. */
+  readonly root: string;
+}
+/** A box. */
+export class Box implements Port {
+  ${ctorDoc}
+  constructor(readonly root: string) {}
+}
+/** A plain box. */
+export class Plain {
+  /** Builds it. */
+  constructor(readonly home: string) {}
+}
+`,
+  });
+
+  it('passes a property that implements a documented member and is named by no @param tag', () => {
+    expect(findings(cls('/** Builds it. */'), [`${K} Box.root`])).toEqual([]);
+  });
+
+  it('fails the property when a @param tag names it', () => {
+    const got = findings(cls('/** Builds it.\n * @param root The directory. */'), [
+      `${K} Box.root`,
+    ]);
+    expect(got).toHaveLength(1);
+  });
+
+  it('fails a property that implements nothing and has no block of its own', () => {
+    expect(findings(cls('/** Builds it. */'), [`${K} Plain.home`])).toHaveLength(1);
+  });
+});
+
+describe('the surface gate credits a later name of a statement when it alone is public', () => {
+  const files = (exportLine: string): Record<string, string> => ({
+    'index.ts': `declare const src: { A: number; B: number };
+/** Both parts. */
+const { A, B } = src;
+/** Both counters. */
+const a = 1, b = 2;
+${exportLine}
+`,
+  });
+
+  it('passes the later name when the earlier one is not exported', () => {
+    expect(findings(files('export { B, b };'), [`${K} B`, `${K} b`])).toEqual([]);
+  });
+
+  it('fails the later name when the earlier one is exported too', () => {
+    const got = findings(files('export { A, B, a, b };'), [`${K} A`, `${K} B`, `${K} a`, `${K} b`]);
+    expect(got.map((g) => g.split(' (')[0])).toEqual([`${K} B`, `${K} b`]);
+  });
+});
