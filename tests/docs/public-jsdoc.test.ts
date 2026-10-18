@@ -1,8 +1,23 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
-import { surfaceKeys, undocumentedSurfaceEntries } from './surface-docs';
+import {
+  entryPoints,
+  openSurface,
+  surfaceKeys,
+  type Surface,
+  undocumentedSurfaceEntries,
+} from './surface-docs';
 
 // Every public method on the facade must carry its own JSDoc — and this gate exists because the way it gets
 // lost is invisible.
@@ -165,8 +180,11 @@ describe('no doc block is left above another', () => {
 // it implements or overrides, and a key the gate cannot resolve fails, named. The rule and its limits are in
 // `surface-docs.ts`.
 describe('every public entry carries hover text', () => {
+  // One program serves both tests.
+  let program: Surface | undefined;
+  const surface = (): Surface => (program ??= openSurface(ROOT));
   it('has a doc block on each entry of api-surface/surface.json, its own or inherited', () => {
-    const missing = undocumentedSurfaceEntries(ROOT, surfaceKeys(ROOT)).map(
+    const missing = undocumentedSurfaceEntries(ROOT, surfaceKeys(ROOT), surface()).map(
       (f) => `${f.key}  (${f.reason})`,
     );
     expect(
@@ -178,8 +196,288 @@ describe('every public entry carries hover text', () => {
   it('is not vacuous: it resolves a large surface and reports a key it cannot resolve', () => {
     const keys = surfaceKeys(ROOT);
     expect(keys.length).toBeGreaterThan(500);
-    const found = undocumentedSurfaceEntries(ROOT, ['@cloudbitmaps/roaring NoSuchExport']);
+    const found = undocumentedSurfaceEntries(
+      ROOT,
+      ['@cloudbitmaps/roaring NoSuchExport'],
+      surface(),
+    );
     expect(found).toHaveLength(1);
     expect(found[0]?.key).toBe('@cloudbitmaps/roaring NoSuchExport');
   }, 120_000);
+});
+
+// The gate's own rules, held on small source trees written for each case: every rule fails on the shape it exists for
+// and passes on the look-alike it must leave alone.
+
+/** Writes `files` (paths under `packages/core/src`) as the `@cloudbitmaps/core` package of a throwaway tree. */
+function withTree<T>(
+  files: Record<string, string>,
+  run: (root: string) => T,
+  extraPackages: Record<string, unknown> = {},
+): T {
+  const root = mkdtempSync(join(tmpdir(), 'surface-docs-'));
+  try {
+    const put = (rel: string, text: string): void => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    };
+    put(
+      'packages/core/package.json',
+      JSON.stringify({
+        name: '@cloudbitmaps/core',
+        exports: {
+          '.': { types: './dist/index.d.ts', default: './dist/index.js' },
+          ...extraPackages,
+        },
+      }),
+    );
+    for (const [rel, text] of Object.entries(files)) put(`packages/core/src/${rel}`, text);
+    return run(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** The findings of `keys` over a one-package tree, as `key (reason)` lines. */
+function findings(files: Record<string, string>, keys: string[]): string[] {
+  return withTree(files, (root) =>
+    undocumentedSurfaceEntries(root, keys).map((f) => `${f.key} (${f.reason})`),
+  );
+}
+
+const K = '@cloudbitmaps/core';
+
+describe('the surface gate judges each overload on its own block', () => {
+  const source = (first: string, second: string, impl: string): Record<string, string> => ({
+    'index.ts': `export class Box {
+  ${first}
+  put(a: string): string;
+  ${second}
+  put(a: number): number;
+  ${impl}
+  put(a: string | number): string | number {
+    return a;
+  }
+}
+`,
+  });
+  const keys = [`${K} Box`, `${K} Box.put`, `${K} Box.put #2`];
+  const doc = '/** Documented. */';
+
+  it('fails the overload the unnumbered key names when it has no block, though a later one and the implementation do', () => {
+    const got = findings(source('', doc, doc), keys);
+    expect(got.map((g) => g.split(' (')[0])).toEqual([`${K} Box`, `${K} Box.put`]);
+  });
+
+  it('fails the second form with no block, named', () => {
+    const got = findings(source(doc, '', doc), keys.slice(1));
+    expect(got.map((g) => g.split(' (')[0])).toEqual([`${K} Box.put #2`]);
+  });
+
+  it('passes when each form carries its own block, and the implementation needs none', () => {
+    expect(findings(source(doc, doc, ''), keys.slice(1))).toEqual([]);
+  });
+
+  it('still lets a member with one declaration inherit the block of the member it implements', () => {
+    const got = findings(
+      {
+        'index.ts': `/** Port. */
+export interface Port {
+  /** Sends. */
+  send(): void;
+}
+/** Adapter. */
+export class Adapter implements Port {
+  send(): void {}
+}
+`,
+      },
+      [`${K} Adapter.send`],
+    );
+    expect(got).toEqual([]);
+  });
+});
+
+describe('the surface gate needs a parameter property to carry its own block', () => {
+  const keys = [`${K} Box.root`];
+  const cls = (ctorDoc: string, paramDoc: string): Record<string, string> => ({
+    'index.ts': `/** A box. */
+export class Box {
+  ${ctorDoc}
+  constructor(${paramDoc} readonly root: string) {}
+}
+`,
+  });
+
+  it('fails a property documented only by the constructor @param tag', () => {
+    const got = findings(cls('/** Builds it.\n * @param root Where it lives. */', ''), keys);
+    expect(got).toHaveLength(1);
+    expect(got[0]).toContain(`${K} Box.root`);
+  });
+
+  it('passes a property whose parameter has its own block', () => {
+    expect(findings(cls('/** Builds it. */', '/** Where it lives. */'), keys)).toEqual([]);
+  });
+});
+
+describe('the surface gate fails a form it cannot find', () => {
+  const files = {
+    'index.ts': `/** A box. */
+export class Box {
+  /** Builds from a name. */
+  constructor(name: string);
+  /** Builds from a number. */
+  constructor(n: number);
+  /** Implementation. */
+  constructor(x: string | number) {}
+  /** First. */
+  put(a: string): string;
+  /** Second. */
+  put(a: number): number;
+  /** Implementation. */
+  put(a: string | number): string | number {
+    return a;
+  }
+}
+/** First. */
+export function estimate(a: string): string;
+/** Second. */
+export function estimate(a: number): number;
+/** Implementation. */
+export function estimate(a: string | number): string | number {
+  return a;
+}
+/** Options. */
+export interface SegmentOptions {
+  /** A name. */
+  readonly name?: string;
+}
+/** A class with no constructor of its own. */
+export class Plain {}
+`,
+  };
+
+  it.each([
+    ['a method form past the last one', `${K} Box.put #9`],
+    ['the source-only implementation of a method', `${K} Box.put #3`],
+    ['a constructor form past the last one', `${K} Box.constructor #5`],
+    ['the implementation signature of a constructor', `${K} Box.constructor #3`],
+    ['a function form past the last one', `${K} estimate #7`],
+    ['the implementation of a function', `${K} estimate #3`],
+    ['a value half that does not exist', `${K} SegmentOptions (value)`],
+    ['a constructor form on a class that has none', `${K} Plain.constructor #2`],
+  ])('fails %s', (_what, key) => {
+    const got = findings(files, [key]);
+    expect(got).toHaveLength(1);
+    expect(got[0]).toContain(key);
+  });
+
+  it('passes the forms that exist', () => {
+    expect(
+      findings(files, [
+        `${K} Box.put`,
+        `${K} Box.put #2`,
+        `${K} Box.constructor`,
+        `${K} Box.constructor #2`,
+        `${K} estimate`,
+        `${K} estimate #2`,
+        `${K} Plain.constructor`,
+      ]),
+    ).toEqual([]);
+  });
+});
+
+describe('the surface gate fails a name declared in more than one file', () => {
+  const entry = `import type { ChurnDeps } from './leases';
+/** Runs it. */
+export function churn(deps: ChurnDeps): void {}
+`;
+  const key = `${K} (referenced) ChurnDeps`;
+
+  it('fails a referenced name that two files declare, naming both files', () => {
+    const got = findings(
+      {
+        'index.ts': `import './errors';\n${entry}`,
+        'leases.ts': 'export interface ChurnDeps {}\n',
+        'errors.ts': '/** An unrelated one. */\ninterface ChurnDeps {}\n',
+      },
+      [key],
+    );
+    expect(got).toHaveLength(1);
+    expect(got[0]).toContain('leases.ts');
+    expect(got[0]).toContain('errors.ts');
+  });
+
+  it('judges a referenced name that one file declares on that declaration', () => {
+    const files = {
+      'index.ts': entry,
+      'leases.ts': '/** Deps. */\nexport interface ChurnDeps {}\n',
+    };
+    expect(findings(files, [key])).toEqual([]);
+    const bare = { 'index.ts': entry, 'leases.ts': 'export interface ChurnDeps {}\n' };
+    expect(findings(bare, [key])).toHaveLength(1);
+  });
+
+  it('does not count a name two files declare when the entry exports one of them', () => {
+    const got = findings(
+      {
+        'index.ts': "export { Held } from './a';\n",
+        'a.ts': '/** The exported one. */\nexport interface Held {}\n',
+        'b.ts': 'interface Held {}\n',
+      },
+      [`${K} Held`],
+    );
+    expect(got).toEqual([]);
+  });
+});
+
+describe('the surface gate credits a statement block to the first name it declares', () => {
+  const files = {
+    'index.ts': `/** Both counters. */
+export const a = 1, b = 2;
+declare const src: { A: number; B: number };
+/** Both parts. */
+export const { A, B } = src;
+`,
+  };
+
+  it('passes the first name of a statement and fails the others', () => {
+    const got = findings(files, [`${K} a`, `${K} b`, `${K} A`, `${K} B`]);
+    expect(got.map((g) => g.split(' (')[0])).toEqual([`${K} b`, `${K} B`]);
+  });
+});
+
+describe('the surface gate takes its entry points from the packages', () => {
+  it('fails a key for a specifier that is no entry point, named', () => {
+    const got = findings({ 'index.ts': '/** X. */\nexport const X = 1;\n' }, [
+      '@cloudbitmaps/core/newentry X',
+    ]);
+    expect(got).toHaveLength(1);
+    expect(got[0]).toContain('@cloudbitmaps/core/newentry X');
+    expect(got[0]).toContain('entry point');
+  });
+
+  it('resolves a subpath that a package lists in its exports', () => {
+    const got = withTree(
+      { 'index.ts': '/** X. */\nexport const X = 1;\n', 'extra.ts': 'export const Y = 2;\n' },
+      (root) => undocumentedSurfaceEntries(root, ['@cloudbitmaps/core/extra Y', `${K} X`]),
+      { './extra': { types: './dist/extra.d.ts', default: './dist/extra.js' } },
+    );
+    expect(got.map((f) => f.key)).toEqual(['@cloudbitmaps/core/extra Y']);
+    expect(got[0]?.reason).toContain('doc');
+  });
+
+  it('lists every entry point of the real packages, and each file exists', () => {
+    const entries = entryPoints(ROOT);
+    expect(Object.keys(entries).sort()).toEqual([
+      '@cloudbitmaps/azure-blob',
+      '@cloudbitmaps/core',
+      '@cloudbitmaps/core/driver-kit',
+      '@cloudbitmaps/gcs',
+      '@cloudbitmaps/roaring',
+      '@cloudbitmaps/s3',
+      '@cloudbitmaps/tools',
+    ]);
+    for (const e of Object.values(entries)) expect(existsSync(e.file)).toBe(true);
+  });
 });
