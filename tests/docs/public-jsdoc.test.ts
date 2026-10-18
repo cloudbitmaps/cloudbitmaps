@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { surfaceKeys, undocumentedSurfaceEntries } from './surface-docs';
 
 // Every public method on the facade must carry its own JSDoc — and this gate exists because the way it gets
 // lost is invisible.
@@ -157,4 +158,28 @@ describe('no doc block is left above another', () => {
   it('is not vacuous — it reads the documented declarations of every package', () => {
     expect(doubleDocumented().documented).toBeGreaterThan(1000);
   });
+});
+
+// Every entry of the published surface, not only the facade's methods: `api-surface/surface.json` lists what a user can
+// reach, so each of its keys must show hover text. A key passes with its own doc block or one inherited from the member
+// it implements or overrides, and a key the gate cannot resolve fails, named. The rule and its limits are in
+// `surface-docs.ts`.
+describe('every public entry carries hover text', () => {
+  it('has a doc block on each entry of api-surface/surface.json, its own or inherited', () => {
+    const missing = undocumentedSurfaceEntries(ROOT, surfaceKeys(ROOT)).map(
+      (f) => `${f.key}  (${f.reason})`,
+    );
+    expect(
+      missing,
+      'public entries with no hover text: add a doc block to each declaration listed (an overload needs its own)',
+    ).toEqual([]);
+  }, 120_000);
+
+  it('is not vacuous: it resolves a large surface and reports a key it cannot resolve', () => {
+    const keys = surfaceKeys(ROOT);
+    expect(keys.length).toBeGreaterThan(500);
+    const found = undocumentedSurfaceEntries(ROOT, ['@cloudbitmaps/roaring NoSuchExport']);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.key).toBe('@cloudbitmaps/roaring NoSuchExport');
+  }, 120_000);
 });
