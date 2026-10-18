@@ -19,8 +19,8 @@ import { collect } from '../helpers/loaded';
 
 /**
  * A pinned handle with a lease: it holds its generation out of a load's collection until the lease ends, and a read of
- * it after that throws at every site, never empty. Two stores share one backend, as a refresh job and the tasks of a
- * send do, so a load never invalidates the pin and it is the lease that holds the generation.
+ * it after that throws at every site, never empty. Two stores share one backend, one that loads and one that pins and
+ * reads, so a load never invalidates the pin and it is the lease that holds the generation.
  */
 
 const HOUR = 3_600_000;
@@ -780,7 +780,7 @@ describe('a leased generation survives later loads, collection resumes, and a re
     expect(await generationsOf(h)).not.toContain(0);
   });
 
-  it('two senders hold two generations; releasing one frees only its own', async () => {
+  it('two leases hold two generations; releasing one frees only its own', async () => {
     const h = await seeded();
     const a = await lease(h);
     await churn(h, 1);

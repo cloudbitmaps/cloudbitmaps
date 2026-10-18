@@ -63,7 +63,7 @@ function rng(seed) {
 const U32_MAX = 4294967295;
 
 /**
- * The shapes. Each is a real workload silhouette rather than a number chosen to flatter us — and two of the four
+ * The shapes. Each is a common shape of data rather than a number chosen to flatter us — and two of the four
  * are cases where a fixed representation BEATS roaring, which is the point: the claim is adaptivity, not that
  * roaring is smallest everywhere. A benchmark that only showed wins would be advertising.
  */
