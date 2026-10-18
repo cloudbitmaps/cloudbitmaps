@@ -253,10 +253,11 @@ no read of the segment can open) renews the segment's registry row before it del
 each such delete, and once more after the last: on a segment with no generation yet, `4 + n` registry reads and 1
 write for `n` objects, where an erasure that deletes nothing reads the row once (counted at the registry the S3, GCS
 and Azure Blob drivers share). The collection an erasure runs below the pointer reads the row once more after its last
-delete too, and the erasure reads it once more after its last listing of the bucket when that listing names a
-generation the erasure found clean, which it opens again unless the row's ledger names it with the checksum of the
-object it read (on a segment with no generation yet there is no such ledger: one read more, and that object opened
-again). An erasure that finds the id only
+delete too, and the erasure reads it once more, one read per call, after its last listing of the bucket when that
+listing names the generation the erasure found current or its own rewrite, which it skips while the row's ledger names
+it with the checksum of the object it read or wrote. It opens again every other generation it found clean, one open
+each, which `eraseSubject`'s per-op budget does not charge again (on a segment with no generation yet, that is every
+object it found clean, with no registry read added). An erasure that finds the id only
 in generations below the pointer, on a row whose ledger of known generations names what it deletes, writes the row once
 before its first delete, to take those names out of the ledger: 8 registry reads and 1 write, 7 reads and no write when
 the ledger names nothing it deletes, and 8 reads and no write on a row with no usable ledger, which also opens the

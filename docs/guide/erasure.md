@@ -40,20 +40,19 @@ driver (`IStorageDriver`) or a pre-built `StorageChunkSource` instead of a backe
 
 **What it costs.** `subjectReport` costs one pass over the registered segments. `eraseSubject` costs more: a segment
 whose current generation lacks the id is searched generation by generation, so a fleet that keeps long histories
-pays for every one. The per-op budget is charged for them. The scan runs at a bounded `concurrency` (default 8; pass
-`{ concurrency }`), so it is quick over a large fleet without stampeding your backend. A fault on one segment never
-aborts the ledger.
+pays for every one. The per-op budget is charged for them, once for each generation however often the call opens
+it. The scan runs at a bounded `concurrency` (default 8; pass `{ concurrency }`), so it is quick over a large fleet
+without stampeding your backend. A fault on one segment never aborts the ledger.
 
 An erasure that deletes an object a load may still publish (one above the pointer, a first load's object on a segment
 with no generation yet, or one no read of the segment can open) writes the segment's registry row first, to renew its
 `pointerId`, and reads the row again before each such delete and once after the last. On a segment with no generation
 yet, with `n` objects to delete, that is `4 + n` registry reads and 1 write where an erasure that deletes nothing reads
 the row once (counted
-at the registry the S3, GCS and Azure Blob drivers share, which reads a row's version before it writes it). An object
-there that the erasure searched and found clean costs one read more, of the row after the erasure's last listing of the
-bucket, and is opened again: a row with no generation names no object that would let the erasure skip it
-([reading the ledger](#reading-the-ledger)). The cost
-is paid once per affected segment: the objects are gone, so the next run reads the row once and writes nothing. A
+at the registry the S3, GCS and Azure Blob drivers share, which reads a row's version before it writes it). Objects
+there that the erasure searched and found clean add no registry read: after its last listing of the bucket the erasure
+opens each of them again (a tail read, and a chunk read where its index lists the id's chunk), which costs no budget
+unit more ([reading the ledger](#reading-the-ledger)). The cost is paid once per affected segment: the objects are gone, so the next run reads the row once and writes nothing. A
 segment whose objects no read can open is affected whatever id is erased, so the first `eraseSubject` over a fleet
 pays one renewal and the deletes for each such segment, and the next pays nothing for them. A renewal that gets no
 answer waits before each fresh write, under 500 ms, then 1 s, then 2 s, so up to 3.5 s in all, one wait after another
@@ -68,13 +67,14 @@ of its collection and writes it once when the row's ledger of known generations 
 delete: the write takes those names out of the ledger before anything is deleted
 ([how an erasure stays correct](correctness.md#how-an-erasure-stays-correct)). On a row with no usable ledger it also reads the row once more after the
 collection, in case a load started a ledger meanwhile. Every erasure that finds something to delete then lists the
-bucket for its receipt, and reads the row once more when that listing names a generation it found clean (here the
-current generation, or its own rewrite), which it skips only while the row's ledger names it with the checksum of the
-object it read ([reading the ledger](#reading-the-ledger)). Counted at an object-store registry on the in-memory backend, for a segment
-with one older generation that holds the id: 8 requests that read and 1 that writes when the ledger names it, 7 and none
-when a usable ledger does not, and 8 and none on a row with no usable ledger, where the erasure also opens the current
-generation again, since no ledger vouches for it. An erasure that rewrites the current generation costs 10 reads and 1
-write. The write moves the row's token, so a load running on that segment at that
+bucket for its receipt. When that listing names the generation it found current, or its own rewrite, it reads the row
+once more, a single read whatever else is listed, and skips that generation only while the row's ledger names it with
+the checksum of the object it read or wrote; every other generation it found clean it opens again, as the search
+opened it ([reading the ledger](#reading-the-ledger)). Counted at an object-store registry on the in-memory
+backend, for a segment with one older generation that holds the id: 8 requests that read and 1 that writes when the
+ledger names it, 7 and none when a usable ledger does not, and 8 and none on a row with no usable ledger, where the
+erasure also opens the current generation again, since no ledger vouches for it. An erasure that rewrites the current
+generation costs 10 reads and 1 write. The write moves the row's token, so a load running on that segment at that
 moment is refused, as any load is by a write that landed while it ran (`superseded`: load again). It also leaves a timing
 signal in the registry, which [the privacy note](../../PRIVACY.md) describes.
 
@@ -84,14 +84,18 @@ signal in the registry, which [the privacy note](../../PRIVACY.md) describes.
 holds the id**, above the pointer or below it. When the current generation did not hold the id, nothing was
 rewritten, so that entry has no `generation`, and the audit event is `segment.collect` rather than `segment.rewrite`.
 
-A generation the call had already found clean (one it searched, the current generation it read, or its own rewrite) is
-skipped in that last read only while the segment's row, read after the listing, names it in its ledger of known
-generations with the checksum of the object the call read or wrote. A generation number can be taken again once its object is deleted:
-another erasure can delete a generation this call found clean and a load take its number, and a drop, a purge and a
-first load of the name start numbering at 0 again. The object under that number is then another one, which the row
-does not name with that checksum, so the call reads it, and when it holds the id the entry is `'superseded'` or an
-`error:` note with a `WriteConflictError`, never `erased: true`. Both need a load of the id while it is being erased,
-which the [first rule](#three-rules-while-you-erase) asks you not to run.
+That last read opens again every generation the call had already found clean, but for two: the current generation it
+read and its own rewrite. Each of those is skipped only while the segment's row, read after the listing, names it in
+its ledger of known generations with the checksum of the object the call read or wrote. A generation number can be
+taken again once its object is deleted: another erasure can delete a generation this call found clean and a load take
+its number, a lifecycle rule can delete one outside the library, and a drop, a purge and a first load of the name start
+numbering at 0 again. The object under that number is then another one, and the call reads it, so when it holds the id
+the entry is `'superseded'` or an `error:` note with a `WriteConflictError`, never `erased: true`. Only the current
+generation and the rewrite are taken on the row's word, because no writer of the library leaves the row naming one of
+them with an object that is gone; a ledger entry for any other generation can outlive its object (a load that rebuilds
+a ledger from the bucket records what it read there, and a lifecycle rule leaves the row as it was). Each of these
+needs a load of the id while it is being erased, which the [first rule](#three-rules-while-you-erase) asks you not to
+run. If the read of the row fails, the call skips nothing and opens every generation listed, so the answer stands.
 
 `erased: false` means this run did not erase the id from that segment. That is not the same as "the id is still
 there", and `note` says why:
