@@ -65,11 +65,13 @@ which has nothing to check: `UnsupportedError`. `preflight()` takes no options.
 **The probe** is one object of about 30 bytes, at `cbm.due.preflight/segments/probe.<number>.crbm` under the store's
 prefix, where `<number>` is 48 random bits. That namespace is inside the reserved `cbm.due.` prefix, which no
 application ref can name, so the probe can never be one of your segments, and no registry row is written. No scan,
-sweep, erasure, export or collection reads a probe object or row as a segment. A run deletes only the object it wrote,
+sweep, erasure, export or collection reads a probe object or row as a segment. A run's cleanup deletes only its own key,
 by version where the driver applies one. The probe sits at `<prefix>cbm.due.preflight/`, outside the namespaces your application uses. The documented grant over everything under the prefix covers it, but a grant scoped per namespace, narrower than that, does not: it shows as a `write` problem for a store that loads fine, and as a `registry` problem too when the registry grant is scoped per namespace (the probe row's read at `<prefix>registry/cbm.due.preflight/probe.reg` is refused). A step's `detail` carries the error's name and message, cut to a length, as the driver raised it, so on `LocalFsStorage` an
 `EACCES` names a host path under the store's root. A step that reads `no object was written` ran after a failed write,
-which is not proof that none landed: a write that lost its response may have stored an object. The run deletes its key
-after a failed write, so a later run's `list` names the object only when that delete failed or the write landed after it. A probe that another run left (cut off, or still running) is named in the
+which is not proof that none landed: a write that lost its response may have stored an object. After a failed write the
+run deletes its key in case the write landed, except after a conflict, where the object under the key is another
+run's and is left alone; so a later run's `list` names the object only when that delete failed or the write landed
+after it. A probe that another run left (cut off, or still running) is named in the
 `list` detail and not deleted, since it could be a run in progress (the one exception is a probe left at the same 48-bit
 number, which another run's cleanup can remove); delete it by hand if no run is. On `LocalFsStorage`
 the probe really is a file, and a run leaves two empty directories behind.

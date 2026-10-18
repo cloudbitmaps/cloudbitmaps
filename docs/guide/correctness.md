@@ -913,9 +913,9 @@ repaired. These limits hold on every driver:
   it lists, is refused and loses nothing, and so is one re-created before a delete, at the read before it. One
   re-created inside the round trip between that read and the delete can lose the generation under that number, which is
   the rollback case above; and no read of the row follows the last delete, so the pass does not see it. On a registry whose tokens carry no incarnation id (none this library ships), a name
-  purged, created again and itself destroyed within one creation stamp is accepted as the tombstone the pass was asked
-  for: its leftovers are deleted, which the collection rule allows, but an erasure's event attributes them to the other
-  incarnation. `dropSegment`'s
+  purged, created again and itself destroyed, sharing one creation stamp, is accepted as the tombstone the pass was asked
+  for: its leftovers are deleted, which the collection rule allows, but an erasure's event names them as the asked-for
+  row's, since the event carries no incarnation to tell the two apart. `dropSegment`'s
   sweep never re-reads the row.
 
 **The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (an internal function of the engine) over every registered segment, and each ledger entry is that function's result.

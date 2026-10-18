@@ -426,10 +426,10 @@ between here and there:
      race; after the last it is unseen, and if the re-created name still has objects the sweep counts a purge fault
      (the tombstone's objects were still there after its collection), while with none left its row delete loses its
      fence and is a lost race. On a registry whose tokens carry no incarnation id (none that this library ships), a
-     name purged, created again and itself destroyed within one creation stamp is accepted as the tombstone a pass was
-     asked for: its leftovers are deleted, which the collection rule allows, but the erasure's event attributes them to
-     the other incarnation;
-   - a publish overtaken by a newer write after its registry write landed but reported a conflict (Azure Blob's row
+     name purged, created again and itself destroyed, sharing one creation stamp, is accepted as the tombstone a pass was
+     asked for: its leftovers are deleted, which the collection rule allows, but the erasure's event names them as the
+     asked-for row's, since the event carries no incarnation to tell the two apart;
+   - a publish overtaken by a write that moved the pointer after its registry write landed but reported a conflict (Azure Blob's row
      read-back is not definitive) answers `superseded`, and its `segment.load-refused` event does not carry
      `unanswered: true`, although its generation was current for a moment;
    - the erasure's own collections on an active row, which are not held to the row they worked from (one round trip,
