@@ -101,8 +101,8 @@ export interface InProcessKeystoreOptions {
   /** The id of the KEK new data keys are wrapped under. It must be in `keys`. */
   readonly activeKeyId: string;
   /**
-   * The id of a second KEK each new data key is also wrapped under, such as an offline one. Absent for none; it must be
-   * in `keys` when given.
+   * The id of a second KEK each new data key is also wrapped under, such as an offline one. Absent for none, and the
+   * same id as `activeKeyId` means none too; it must be in `keys` when given.
    */
   readonly recoveryKeyId?: string;
 }
@@ -117,8 +117,9 @@ export class InProcessKeystore implements IKeystore {
   private readonly recoveryKeyId: string | undefined;
 
   /**
-   * Builds a keystore from `options`; throws `ValidationError` for no keys, a key that is not 32 bytes, or an
-   * `activeKeyId` or `recoveryKeyId` that is not in `keys`.
+   * Builds a keystore from `options`; throws `ValidationError` for no keys, a key given as text rather than a
+   * `Uint8Array`, a key that is not 32 bytes, or an `activeKeyId` or `recoveryKeyId` that is not in `keys`. A
+   * `recoveryKeyId` equal to `activeKeyId` means no recovery key.
    */
   constructor(options: InProcessKeystoreOptions) {
     const entries = Object.entries(options.keys);

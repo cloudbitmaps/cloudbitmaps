@@ -89,7 +89,9 @@ const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
 const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
 
 /**
- * Options of a retention sweep: which segments it considers, how many it retires in one call, and how it finds them.
+ * Options of a retention sweep: the instant to judge policies at (`now`), which segments it considers, how many it
+ * retires in one call, how it finds them, whether it only reports (`dryRun`), where retirements are audited (`audit`),
+ * and whether and when it purges the tombstones of earlier retirements.
  */
 export interface RetireExpiredOptions {
   /** Scope the sweep to one namespace. Omit to sweep every namespace the registry knows. */

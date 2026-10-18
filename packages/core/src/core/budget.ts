@@ -21,7 +21,8 @@ import { BudgetExceededError, ValidationError } from './errors';
 
 /**
  * The cap on one operation's fan-out: its `maxRequests` units, counted in storage chunk fetches for a read and in
- * segments scanned for an admin scan.
+ * segments scanned for an admin scan. `eraseSubject` also charges one unit for each generation beyond the current one
+ * that it opens, in a segment it has to search generation by generation.
  */
 export interface Budget {
   /** Max units of fan-out (Storage chunk fetches, or segments scanned) one op may issue before it is refused. */

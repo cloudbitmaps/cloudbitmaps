@@ -34,8 +34,8 @@ export interface EraseDeps extends ChurnDeps {
 }
 
 /**
- * What a crypto-shred did to one segment: the result of `destroySegment`, and one entry of what `eraseNamespace`
- * returns.
+ * What destroying one segment did: a crypto-shred, a cleartext tombstone (the bytes stay readable), or nothing for a
+ * segment already destroyed or absent. The result of `destroySegment`, and one entry of what `eraseNamespace` returns.
  */
 export interface DestroyResult {
   /** The segment's name. */

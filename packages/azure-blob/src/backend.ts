@@ -95,8 +95,9 @@ export class AzureBlobStorage implements StorageBackend {
 
   /**
    * Builds the Azure Blob backend over one container: pass `containerClient`, or `connectionString` with `container`,
-   * not both. `prefix` puts every object under a blob-name prefix. An unknown option, or no container, throws
-   * `ValidationError`.
+   * not both. `prefix` puts every object under a blob-name prefix. Throws `ValidationError` for an unknown option, a `now`
+   * that is not a function, `containerClient` beside `connectionString` or `container`, neither `containerClient` nor
+   * both `connectionString` and `container`, or an invalid `prefix` or `readTimeoutMs`.
    */
   constructor(options: AzureBlobStorageOptions) {
     refuseUnknownOptions(

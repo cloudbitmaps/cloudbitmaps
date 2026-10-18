@@ -355,7 +355,7 @@ export interface StorageDeleteOptions {
  *   retry can ride it out and a write's caller can tell it from a deterministic failure.
  */
 export interface IStorageDriver {
-  /** What this driver can do. Range reads are required; the other capabilities are optional. */
+  /** What this driver can do. Range reads and `maxObjectBytes` are required; the other capabilities are optional. */
   capabilities(): StorageCaps;
   /**
    * Stream a new immutable generation. The driver opens a destination, hands `write` a {@link BlobSink},

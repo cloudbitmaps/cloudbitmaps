@@ -189,7 +189,10 @@ export interface MetricsSnapshot {
    * included.
    */
   readonly storage: { readonly gets: number; readonly bytes: number; readonly totalMs: number };
-  /** Decoded-chunk cache lookups, counted only when a cache is configured. */
+  /**
+   * Decoded-chunk cache hits and misses. A chunk counted without a lookup is a miss; `materializeMany` reads no cache, so
+   * it counts none.
+   */
   readonly cache: { readonly hits: number; readonly misses: number };
   /** Retries taken after a transient fault. */
   readonly retries: { readonly transient: number };
