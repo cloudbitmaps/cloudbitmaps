@@ -275,6 +275,50 @@ describe('a rollback whose swap landed and came back as a conflict', () => {
   });
 });
 
+describe('a rollback whose registry resent its swap', () => {
+  it('recognises the first attempt that landed after the registry reported a token for a resend', async () => {
+    // A registry that sends a write again reports each attempt's token before it sends: the attempt that lands may be
+    // the first, so every token reported is kept, not only the last.
+    const w = world();
+    await loads(w, 3);
+    const out = Object.create(w.registry) as IRegistryDriver;
+    out.compareAndSwap = async (ref, expected, patch, options) => {
+      const resend = (token: string): void => {
+        options?.onToken?.(token);
+        options?.onToken?.('token-of-a-resend-that-never-landed');
+      };
+      await w.registry.compareAndSwap(ref, expected, patch, { onToken: resend });
+      await retain(w);
+      throw conflict();
+    };
+    const audit = new RecordingAuditSink();
+    const r = await rollbackSegment(SEG, 0, { ...w.deps, registry: out }, { audit });
+    expect(r).toEqual({ fromGeneration: 2, generation: 0 });
+    expect(audit.snapshot()).toHaveLength(1);
+  });
+
+  it('recognises it after no answer too', async () => {
+    const w = world();
+    await loads(w, 3);
+    const out = Object.create(w.registry) as IRegistryDriver;
+    out.compareAndSwap = async (ref, expected, patch, options) => {
+      await w.registry.compareAndSwap(ref, expected, patch, {
+        onToken: (token) => {
+          options?.onToken?.(token);
+          options?.onToken?.('token-of-a-resend-that-never-landed');
+        },
+      });
+      await retain(w);
+      throw noAnswer();
+    };
+    const audit = new RecordingAuditSink();
+    await expect(rollbackSegment(SEG, 0, { ...w.deps, registry: out }, { audit })).resolves.toEqual(
+      { fromGeneration: 2, generation: 0 },
+    );
+    expect(audit.snapshot()).toHaveLength(1);
+  });
+});
+
 describe('a rollback whose swap got no answer, settled by the token', () => {
   it('is not settled when a renewal followed the landing: it reads as that of another writer, and nothing is audited', async () => {
     const w = world();
@@ -325,6 +369,15 @@ describe('a rollback over a registry that reports no write tokens', () => {
     await loads(w, 3);
     const r = await rolled(w, noAnswer(), retain);
     expect((r as { error: Error }).error).toBeInstanceOf(TransientError);
+    expect(r.audit.snapshot()).toEqual([]);
+  });
+
+  it('throws the new conflict message after a conflict when only a lease followed the landed swap: a conflict is never settled as landed', async () => {
+    const w = tokenless();
+    await loads(w, 3);
+    const r = await rolled(w, conflict(), leaseWrite);
+    expect((r as { error: Error }).error).toBeInstanceOf(WriteConflictError);
+    expect((r as { error: Error }).error.message).toBe(CONFLICT_MESSAGE);
     expect(r.audit.snapshot()).toEqual([]);
   });
 
