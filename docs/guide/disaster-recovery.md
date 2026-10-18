@@ -652,7 +652,8 @@ The current generation is always known on a row whose list is usable, so `genera
 Otherwise: a generation the row does not know throws `ValidationError`, before any request to storage; a known
 generation whose object is another one than the row recorded throws `IntegrityError`; a generation not in the bucket
 throws `NotFoundError` and **names what is available**; a `destroyed` row (a crypto-shred's or a drop's tombstone)
-throws `ValidationError`; and a row that changed after `rollback` read it throws `WriteConflictError` and records no move.
+throws `ValidationError`; and a row that another writer changed before the rollback's swap landed throws `WriteConflictError` and records no
+move.
 A generation above the pointer that a rollback left is known, so undoing a rollback needs no flag; `store.rollback`
 invalidates its own store. It deletes nothing, so the rollback is itself reversible. It records the move as
 `segment.rollback` on the `audit` sink passed to the call, with `unknown: true` when the row did not vouch for the

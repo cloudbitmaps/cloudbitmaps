@@ -221,9 +221,9 @@ export interface RollbackResult {
  * writes' tokens, one the row shows landed, its pointer at the target over the token of a swap this call sent, is
  * checked as any swap is, the move audited and reported, whatever else was written to the row since (a lease, a
  * retention or residency write, or a write of the ledger alone). Otherwise the call throws, and nothing is audited or
- * deleted: the `WriteConflictError` after a conflict, and the `TransientError` after no answer, since it may have landed
- * or may still land and a re-run finds the pointer where it is. Another writer's write of the same pointer is not taken
- * for it, another rollback's identical move included, and neither is a write that renewed the row's `pointerId` over
+ * deleted: the `WriteConflictError` after a conflict, and the `TransientError` after no answer, since it may have
+ * landed or may still land and a re-run finds the pointer where it is. Another writer's write of the same pointer is not
+ * taken for it, another rollback's identical move included, and neither is a write that renewed the row's `pointerId` over
  * this swap, which cannot be told from it. A registry that reports no tokens settles a swap that got no answer by the
  * row it would leave, and never settles a conflict as landed. Over such a registry a write by another writer is not
  * taken for the swap unless it leaves the very row this swap would. On a cleartext segment two writes can: another
@@ -401,8 +401,8 @@ export async function rollbackSegment(
   // Once the swap lands, the target is safe from collection: it only ever takes what is strictly below `currentGen`, and
   // the target now IS `currentGen`. So the ordering is: move first, then verify, and put the pointer back if the object
   // went or is another. One footer read, whatever the target. Re-pointing can itself be raced, which is why it is fenced
-  // on the token the swap returned (or that of the row that showed a swap with no answer landed) and why failing to undo is
-  // reported rather than swallowed.
+  // on the token the swap returned (or that of the row that showed a swap landed after a conflict or with no answer) and
+  // why failing to undo is reported rather than swallowed.
   const emitMove = (): void => {
     safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
       kind: 'segment.rollback',
@@ -628,8 +628,8 @@ function keyServiceUnanswered(err: unknown): boolean {
  * The compare-and-swap that moves the pointer, settled whatever it answers: the token it was given and the token of the
  * row the undo is fenced on, of a swap that answered, or of the row that shows one that did not answer, or that
  * conflicted, landed ({@link swapLanded}, {@link pointerSetBy}). Any other outcome is thrown: a conflict, once the row
- * is not the one read with only its leases changed, as the `WriteConflictError` that says the pointer is not over this
- * rollback's write.
+ * is not the one read with only its leases changed, as the `WriteConflictError` that says this rollback could not confirm
+ * that its swap is the one the row shows.
  */
 async function swapPointer(
   ref: SegmentRef,
@@ -644,8 +644,8 @@ async function swapPointer(
 ): Promise<{ readonly pointerId: Token; readonly token: Token }> {
   let against = record.token;
   // The tokens of every swap this call sent, as a registry that reports them says before it sends each one (a resend
-  // reports a new one); absent for a registry that does not, whose swap that got no answer is then settled by the row it
-  // leaves, and whose conflict is never settled as landed.
+  // reports a new one); absent for a registry that does not, whose swap that got no answer is then settled by the row
+  // it leaves, and whose conflict is never settled as landed.
   const sent: Set<Token> | undefined =
     registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
   const writeOptions: RegistryWriteOptions | undefined =
@@ -664,8 +664,8 @@ async function swapPointer(
       );
       return { pointerId: token, token };
     } catch (err) {
-      // A swap that got no answer may have landed, and the check after it has to run on one that did, or the pointer can
-      // be left on a target collected meanwhile. The row says which.
+      // A swap that got no answer may have landed, and the check after it has to run on one that did, or the pointer
+      // can be left on a target collected meanwhile. The row says which.
       if (isTransientError(err)) return swapLanded(ref, record, swap, registry, err, sent);
       if (!isWriteConflictError(err)) throw err;
       const seen = await registry.get(ref);
@@ -681,12 +681,13 @@ async function swapPointer(
       }
       const settled = await churn.settle(record, seen, () => registry.get(ref));
       const now = settled?.row ?? null;
-      // The row after the wait is the one the swap goes on against, if it is still the one read with only leases changed.
+      // The row after the wait is the one the swap goes on against, if it is still the one read with only leases
+      // changed.
       if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) {
         // The driver's error stays as the cause; the message says what the caller can do about it.
         const lost = new WriteConflictError(
-          "rollback: the segment's row changed while the rollback ran, and its pointer is not over this rollback's " +
-            'write; check store.generations(ref) and run it again',
+          "rollback: the segment's row changed while the rollback ran, and this rollback could not confirm that its " +
+            'swap is the one the row shows; check store.generations(ref) and run it again',
         );
         lost.cause = err;
         throw lost;
@@ -713,9 +714,10 @@ async function swapPointer(
  * after the swap holds either way, but this call audits a move another writer made.
  *
  * The undo after a row taken this way is fenced on that row, so a write after the read back is another writer's, as
- * after a swap that got its answer. A write that renewed the pointerId between the swap and the read back cannot be
- * told from the swap: the undo, when the target went, then lands over it, and the renewing writer meets the moved
- * pointer at its next read of the row.
+ * after a swap that got its answer. Without `sent`, a write that renewed the pointerId between the swap and the read
+ * back cannot be told from the swap: the undo, when the target went, then lands over it, and the renewing writer meets
+ * the moved pointer at its next read of the row. With `sent` it is not taken for the swap at all: its pointerId is not a
+ * token the call sent, and the call throws the unanswered error.
  *
  * Otherwise the swap's own error is thrown. On an unchanged row the write may still land; on a row that moved elsewhere
  * it never will; a row that cannot be read says neither. A re-run of the rollback finds the pointer where it is, and a

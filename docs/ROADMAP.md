@@ -402,7 +402,8 @@ between here and there:
      swap the row shows landed, but does not send again one the row shows did not land: it throws the
      `TransientError`;
    - settling a rollback's undo by the write token: the undo is fenced on the row read back, and its failure message
-     says the pointer "may" still name the target;
+     says the pointer "may" still name the target. The undo also restores the ledger the row had before the swap, so a
+     ledger-only write made in between (a prune) is undone with it;
    - a `rollback` with no key at hand (no keystore, or one that cannot open the key) below the pointer of an encrypted
      segment whose row has no usable `knownGens`, or onto a number below a full list's oldest entry, which opens nothing:
      it checks that the object is in the bucket and, from its footer, that it is encrypted exactly when the row has

@@ -629,8 +629,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   own, and every one is kept). Whatever else was written to the row since (a lease, a retention or residency write, a
   ledger-only write) does not matter: the target is checked as after any swap, the pointer put back if the target went
   meanwhile, the move audited and reported. Otherwise the rollback throws: the `TransientError` after no answer, and
-  after a conflict a `WriteConflictError` that says the pointer is not over this rollback's write, and the pointer may
-  still move after no answer, since the write may yet land: run the rollback again, which finds the pointer where it
+  after a conflict a `WriteConflictError` that says the rollback could not confirm its swap is the one the row shows,
+  and the pointer may still move after no answer, since the write may yet land: run the rollback again, which finds the pointer where it
   is. A load or another writer that moved the pointer meanwhile is left standing. Another rollback's identical move is
   not taken for this one's, though it leaves the very row the swap would: its `pointerId` is its own token. A write that
   renews the `pointerId` over the rollback's landed swap (an erasure's renewal, or a write of the pointer back onto the

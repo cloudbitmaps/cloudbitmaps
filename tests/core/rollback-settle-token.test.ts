@@ -25,8 +25,8 @@ import { withoutTokenReports } from '../helpers/no-token-reports';
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 const CONFLICT_MESSAGE =
-  "rollback: the segment's row changed while the rollback ran, and its pointer is not over this rollback's write; " +
-  'check store.generations(ref) and run it again';
+  "rollback: the segment's row changed while the rollback ran, and this rollback could not confirm that its swap is " +
+  'the one the row shows; check store.generations(ref) and run it again';
 const RETENTION = { expiresAt: MIN_EXPIRES_AT_MS * 4 };
 
 function world(registry: IRegistryDriver = new MemoryRegistryDriver()) {
@@ -385,6 +385,38 @@ describe('a rollback over a registry that reports no write tokens', () => {
     const w = tokenless();
     await loads(w, 3);
     const r = await rolled(w, conflict(), retain);
+    expect((r as { error: Error }).error).toBeInstanceOf(WriteConflictError);
+    expect((r as { error: Error }).error.message).toBe(CONFLICT_MESSAGE);
+    expect(r.audit.snapshot()).toEqual([]);
+  });
+});
+
+describe('a rollback over a registry that leaves reportsWriteTokens unset', () => {
+  /** A registry of someone else's that omits the flag and ignores the options of a write: it reports no tokens. */
+  function unset(base: IRegistryDriver): IRegistryDriver {
+    const out = Object.create(base) as IRegistryDriver;
+    Object.defineProperty(out, 'reportsWriteTokens', { value: undefined });
+    out.compareAndSwap = (ref, expected, patch) => base.compareAndSwap(ref, expected, patch);
+    return out;
+  }
+  const flagless = () => world(unset(new MemoryRegistryDriver()));
+
+  it('does not report write tokens', () => {
+    expect(flagless().registry.reportsWriteTokens).toBeUndefined();
+  });
+
+  it('settles a landed swap that got no answer by the row shape, a lease having followed it', async () => {
+    const w = flagless();
+    await loads(w, 3);
+    const r = await rolled(w, noAnswer(), leaseWrite);
+    expect(r).toMatchObject({ value: { fromGeneration: 2, generation: 0 } });
+    expect(r.audit.snapshot()).toHaveLength(1);
+  });
+
+  it('throws the new conflict message after a conflict, a lease having followed the landed swap', async () => {
+    const w = flagless();
+    await loads(w, 3);
+    const r = await rolled(w, conflict(), leaseWrite);
     expect((r as { error: Error }).error).toBeInstanceOf(WriteConflictError);
     expect((r as { error: Error }).error.message).toBe(CONFLICT_MESSAGE);
     expect(r.audit.snapshot()).toEqual([]);

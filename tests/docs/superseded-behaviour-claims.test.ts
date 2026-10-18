@@ -641,7 +641,7 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   },
   {
     claim: new RegExp(g('and the pointer was not moved'), 'i'),
-    why: "a rollback's swap that met a conflict may have landed, and the conflict says the pointer is not over this rollback's write, not that it was not moved",
+    why: "a rollback's swap that met a conflict may have landed, and the conflict says this rollback could not confirm its swap is the one the row shows, not that it was not moved",
   },
   {
     claim: new RegExp(
