@@ -10,10 +10,13 @@
  *
  * Two opens are never charged, because the segment's unit already pays for them: the generation the row named when
  * the scan listed it, which every erasure must read to decide membership, and an object this call wrote itself,
- * which it reads back to verify. A refusal here comes from a read. Most of an erasure's reads that can be refused come
- * before its deletes; two kinds come after one: the look for a holder left once the call has deleted, and the zero-byte
- * read of a generation the call deleted that the row then names. A refusal of either is thrown in place of the call's
- * answer, so the call reports the budget, not what it deleted.
+ * which it reads back to verify. Every other generation is charged once, at its first open: a later open of the same
+ * number in the same call is paid for by that unit. The look for a holder left once the call has deleted opens again
+ * each generation it found clean, and an object whose open failed has its footer read on its own; neither costs a unit
+ * more. A refusal here comes from a read. Most of an erasure's reads that can be refused come before its deletes; two
+ * kinds come after one: the look for a holder left, when it opens a generation the call never opened before, and the
+ * zero-byte read of a generation the call deleted that the row then names. A refusal of either is thrown in place of
+ * the call's answer, so the call reports the budget, not what it deleted.
  */
 import type {
   GenKey,
@@ -23,6 +26,7 @@ import type {
 } from '@cloudbitmaps/core/driver-kit';
 
 export class OpenChargingStorage implements IStorageDriver {
+  /** Generations an open of costs nothing more: the scan's current one, this call's writes, and each one charged. */
   private readonly free = new Set<number>();
 
   /**
@@ -55,9 +59,15 @@ export class OpenChargingStorage implements IStorageDriver {
     return this.inner.getRange(key, offset, length);
   }
 
-  /** One `getTail` is one open: a reader takes the footer and the index from it, and reads chunks with `getRange`. */
+  /**
+   * One `getTail` is one open: a reader takes the footer and the index from it, and reads chunks with `getRange`. A
+   * generation is charged at its first open only.
+   */
   async getTail(key: GenKey, maxBytes: number): ReturnType<IStorageDriver['getTail']> {
-    if (!this.free.has(key.generation)) this.charge();
+    if (!this.free.has(key.generation)) {
+      this.charge();
+      this.free.add(key.generation);
+    }
     return this.inner.getTail(key, maxBytes);
   }
 

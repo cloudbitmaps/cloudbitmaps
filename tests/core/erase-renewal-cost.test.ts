@@ -6,7 +6,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
-import { CountingObjectStore } from '../helpers/counting';
+import { CountingObjectStore, counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
 /**
@@ -14,7 +14,9 @@ import { testEntropy } from '../helpers/entropy';
  * billed: the registry requests it makes, counted at an object-store registry. With no object to delete it reads the
  * row once and writes nothing. With objects to delete it adds the read its renewal is made against, the renewal's
  * conditional write and the read the registry makes for that write's version, one read of the row before each delete,
- * and one after the last. A second run, with nothing left, is back to the one read.
+ * and one after the last. A second run, with nothing left, is back to the one read. Objects it found clean beside them
+ * cost no registry read: each is opened again after its last listing of the bucket, since on a row with no pointer
+ * there is neither a generation it found current nor a rewrite of its own, the only two it can skip.
  */
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
 const X = 9;
@@ -68,4 +70,26 @@ describe("an erasure's registry requests on a segment with no generation yet", (
       });
     },
   );
+
+  it('with an object it found clean beside one to delete: no registry read more, and that object opened again', async () => {
+    const w = world();
+    await w.registry.create(REF, { currentGen: null });
+    await w.crashed(0);
+    // A first load's cleartext object without the id, which the call searches and finds clean.
+    await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, [1, 2], {
+      registry: new MemoryRegistryDriver(),
+      publish: false,
+    });
+    const calls: Record<string, number> = {};
+    const deps = { ...w.deps, storage: counting(w.storage, calls) };
+    // The renewal, a read before the one delete and one after it: the receipt reads no row, since nothing it could skip
+    // is listed.
+    expect(await w.counted(() => eraseIdFromSegment(REF, X, deps))).toEqual({
+      reads: 4 + 1,
+      writes: 1,
+    });
+    // The search reads the sealed object's tail twice (its open, then its footer alone) and the clean one's once; the
+    // receipt reads the clean one's again.
+    expect(calls.getTail).toBe(4);
+  });
 });

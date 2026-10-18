@@ -910,6 +910,30 @@ repaired. These limits hold on every driver:
 - `erased: true` means no generation of the segment holds the id, checked by listing the bucket and reading what is
   left. Otherwise `reason` is `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no generation in the bucket
   holds it) or `'superseded'`.
+- That last read opens again every generation the call already found clean, but for two: the generation it found
+  current and its own rewrite. Each of those is skipped only while the row, read after the listing, names it in
+  `knownGens` with the footer checksum of the object the call read or wrote (to the 32 bits of the checksum, as above):
+  a number with that checksum, as invariant 2 identifies a generation, never the number alone. A number can be taken
+  again once its object is deleted. Within one row, another erasure can delete a generation this call found clean and a
+  load take its number; across rows, a drop, a purge and a first load of the name number from 0 again. The object
+  listed is then another one, so the call reads it, and one that holds the id makes it answer `'superseded'` or throw
+  `WriteConflictError`, never `erased: true`. The row vouches only for those two because they are generations the
+  pointer named while the call held them, and no writer of the library leaves an entry for one naming another object:
+  no collection takes a generation the pointer names, a number below the pointer is taken again only after the pointer
+  moves down or the name is created again, and a load that rebuilds a ledger from the bucket read the object while the
+  pointer named it. Any other entry can outlive its object. On a row with no usable `knownGens`, a load that rebuilds
+  one from the bucket records each object as it read it, and another erasure can delete one above the pointer before
+  that load publishes; a load of the id can then take the number, and the row names it with the deleted object's
+  checksum. A lifecycle rule, or any delete from outside the library, removes an object and leaves its entry. The
+  row's incarnation would not be enough either: the load within one row takes the number under the same incarnation.
+  The row is read after the listing, not before, since a drop, a purge and a load that land between the two would
+  leave the earlier row vouching for an object no longer there; it is read only when the listing names one of the two,
+  and a row with no usable `knownGens` (a row with no pointer has none) vouches for nothing. A failed read vouches for
+  nothing too: the call opens every generation listed, and its answer stands. A route this leaves open: a delete from
+  outside the library of the generation the call found current, or of its rewrite, then a rollback below it (which
+  the third rule asks you not to run during an erasure) and a load of the id that takes its number before the call's
+  last read. Every route needs a load of the id while it is erased, which
+  [the first rule](erasure.md#three-rules-while-you-erase) asks you not to run.
 - A tombstoned row has its bucket searched too. A crypto-shred leaves objects no key opens, but a cleartext destroy, a
   drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
   id, every object under the tombstone is deleted and the entry reads `erased: true`. Otherwise the result is

@@ -21,8 +21,11 @@
  * leaves generations above the pointer that were once current and can be made current again, so a holder can sit
  * above the pointer as well as below it, and there can be several. Before it reports `erased: true` the call
  * therefore lists the bucket once more and reads every generation it has not already seen to be clean; any that
- * still holds the id makes it report or throw instead. In the ordinary case that list returns one generation, the
- * current one, and costs one `list`.
+ * still holds the id makes it report or throw instead. A number can be taken again once its object is deleted, so a
+ * generation it saw clean is read again too, but for two: the one it found current and its own rewrite, each skipped
+ * only while the row, read after that listing, names it with the footer checksum of the object the call read or wrote.
+ * In the ordinary case that list returns one generation, the current one, which the row names: one `list` and one
+ * read of the row.
  *
  * What it does NOT reach: backups, replicas and noncurrent object versions hold the old object until their own
  * lifecycle removes it. For an at-rest guarantee that survives those, use encryption plus crypto-shred
@@ -430,6 +433,11 @@ interface EraseCall {
    */
   readonly versions: Map<number, string | undefined>;
   /**
+   * The fingerprint of the object this call opened under `from`, once it has: {@link holderLeft} skips `from`, when
+   * this call found it clean, only while the row names it with that object's footer checksum.
+   */
+  fromFingerprint: string | undefined;
+  /**
    * The row this call holds its premise against: `record`, until the call writes the row itself ({@link
    * fence}), after which it is the row it wrote, so its own write is not read as another writer's.
    */
@@ -539,6 +547,7 @@ async function eraseOnce(
     read,
     sealed: new Set(),
     versions: new Map(),
+    fromFingerprint: undefined,
     premise: record,
     premiseToken: fromToken,
     fenceLost: 0,
@@ -686,6 +695,8 @@ async function holds(c: EraseCall, generation: number): Promise<boolean | null> 
       reader = await read(() => openGenerationReader(deps.storage, key, undefined));
     }
     versions.set(generation, objectVersionOf(reader));
+    // An object that opens is searched, whatever was under the number when it was last looked at.
+    sealed.delete(generation);
     let bytes: Uint8Array | null;
     try {
       bytes = await read(() => reader.getChunk(chunkKey));
@@ -754,6 +765,26 @@ async function holdsEach(
  * holds the id, or `undefined` when none does. `clean` names the generations this call has already read or
  * written without the id; every other generation present is read now.
  *
+ * A number in `clean` names the object this call read or wrote only while that object is there, and a number can be
+ * taken again once its object is deleted (invariant 2). Another erasure can delete a generation this call found
+ * clean and a load take its number, within one row; and a drop, a purge and a first load of the name number from 0
+ * again, under a new row. Either way the object listed is another one, which can hold the id. So every generation in
+ * `clean` is read again, but for two, which are skipped only while the row's ledger (`knownGens`) names them with the
+ * footer checksum of the object this call opened or wrote there: `from`, the generation it found current, and its own
+ * rewrite. The checksum covers the object's write identity, so it names that object (to its 32 bits) and not merely
+ * the same ids. Those two are generations the pointer named while this call held them, and no writer of the library
+ * leaves an entry for one naming another object: no collection takes a generation the pointer names (invariant 4), a
+ * number below the pointer is taken again only after the pointer moves down or the name is created again, and a load
+ * that seeds a ledger from the bucket read the object while the pointer named it. Any other entry can outlive its
+ * object: such a seed names each object as it read it, and another erasure can delete one above the pointer before
+ * that load publishes; a lifecycle rule deletes an object without touching the row. The row's incarnation vouches for
+ * nothing either: within one row a load takes a number this call found clean as readily as under a new one.
+ *
+ * The row is read after the listing, since one read before it can still vouch for an object deleted before the
+ * listing, and only when the listing names one of those two. A row with no usable ledger (a row with no pointer has
+ * none) vouches for nothing. The read only spares opens, so when it fails the receipt vouches for nothing and reads
+ * every listed generation, rather than lose its answer after the deletes.
+ *
  * It verifies the **claim** — no generation of the segment holds the id — rather than what this call deleted,
  * in both directions. A holder missing from `collected` does not mean it survived: a concurrent collector
  * (the generation collection with `keep: 0`, which this call and a retirement run) may simply have
@@ -766,16 +797,51 @@ async function holdsEach(
  * holder while the collection runs, and the collection then takes the lower pointer as its bound and leaves
  * that holder current; and a concurrent writer that derived its object from the generation this call replaced
  * can leave one above the pointer. So the list is of everything, and in the ordinary case it returns only the
- * current generation, which is in `clean`: one `list`, and no read.
+ * current generation, which is in `clean` and which the row names: one `list`, one read of the row, and no read of an
+ * object.
  */
 async function holderLeft(c: EraseCall, clean: ReadonlySet<number>): Promise<number | undefined> {
   const { ref, deps } = c;
-  const toRead = (await generationsOf(deps.storage, ref))
-    .reverse()
-    .filter((generation) => !clean.has(generation));
+  const listed = (await generationsOf(deps.storage, ref)).reverse();
+  const own = (generation: number): string | undefined =>
+    clean.has(generation) ? ownFingerprint(c, generation) : undefined;
+  // Read after the listing: a row read before it can name an object the listing no longer finds under that number.
+  const known = listed.some((generation) => own(generation) !== undefined)
+    ? await ledgerAfterListing(c)
+    : undefined;
+  const vouched = (generation: number): boolean => {
+    const fingerprint = own(generation);
+    if (fingerprint === undefined || known === undefined) return false;
+    const footerCrc = footerCrcOf(fingerprint);
+    return known.some((e) => e.generation === generation && e.footerCrc === footerCrc);
+  };
+  const toRead = listed.filter((generation) => !vouched(generation));
   return (await holdsEach(c, toRead, { stopAtHolder: true })).find(
     (outcome) => outcome.held === true,
   )?.generation;
+}
+
+/**
+ * The fingerprint of the object this call opened as `from` or wrote as its rewrite, when `generation` is one of those:
+ * the two generations {@link holderLeft} can skip.
+ */
+function ownFingerprint(c: EraseCall, generation: number): string | undefined {
+  if (generation === c.from) return c.fromFingerprint;
+  if (generation === c.rewrote?.generation) return c.rewrote.fingerprint;
+  return undefined;
+}
+
+/**
+ * The row's usable ledger, read after the receipt's listing, or `undefined`, which vouches for nothing. The read only
+ * spares opens, so any fault on it gives `undefined`: the receipt then reads every listed generation, as it would with
+ * no ledger, and its answer is not lost after the deletes.
+ */
+async function ledgerAfterListing(c: EraseCall): Promise<ReturnType<typeof usableKnownGens>> {
+  try {
+    return usableKnownGens(await c.deps.registry.get(c.ref));
+  } catch {
+    return undefined;
+  }
 }
 
 /** The error for a generation that still holds the id (or cannot be searched) after the call tried to remove it. */
@@ -1441,6 +1507,7 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
     const reader = await read(() =>
       openGenerationReader(deps.storage, fromKey, cryptoAt(c, from), {}, described?.fingerprint),
     );
+    c.fromFingerprint = reader.fingerprint;
     const bytes = await read(() => reader.getChunk(chunkKey));
     // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
     // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
