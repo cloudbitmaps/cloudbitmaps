@@ -1273,7 +1273,7 @@ async function underTombstone(c: EraseCall): Promise<EraseIdResult> {
     (h) => h.held === true,
   );
   if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
-  const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+  const collected = await gcOrphanGenerations(ref, deps, { keep: 0, incarnation: c.record });
   const left = await holderLeft(c, new Set());
   if (left !== undefined) throw cannotRemove(c, left);
   return collectedAll(c, holder.generation, collected);
