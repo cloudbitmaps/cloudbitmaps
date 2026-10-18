@@ -12,13 +12,17 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 describe('checkLifecycle on the backends without a cloud', () => {
   it('MemoryStorage is ok', async () => {
     const out = await new MemoryStorage().checkLifecycle();
-    expect(out.status).toBe('ok');
-    expect(out.detail).toMatch(/memory/);
+    expect(out).toEqual({
+      status: 'ok',
+      detail: 'MemoryStorage keeps its objects in process memory, which has no lifecycle rules',
+    });
   });
 
-  it('LocalFsStorage is ok, and names no path', async () => {
+  it('LocalFsStorage is ok, and its whole answer is fixed text with no path in it', async () => {
     const out = await new LocalFsStorage(root).checkLifecycle();
-    expect(out.status).toBe('ok');
-    expect(out.detail).not.toContain(root);
+    expect(out).toEqual({
+      status: 'ok',
+      detail: 'LocalFsStorage keeps its objects in a local directory, which has no lifecycle rules',
+    });
   });
 });

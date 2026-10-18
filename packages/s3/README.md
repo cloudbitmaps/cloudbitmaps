@@ -75,8 +75,8 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   on, so its generations look unreferenced; an expired generation makes a live segment unreadable
   ([bucket lifecycle](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#bucket-lifecycle)).
 - **Check the bucket's lifecycle rules with `await backend.checkLifecycle()`.** It reads the configuration with one
-  request and answers `ok`, `problem` (an enabled, untagged rule over your prefix that expires current objects or moves
-  them to `GLACIER` or `DEEP_ARCHIVE`) or `unchecked`. It needs `s3:GetLifecycleConfiguration`, which the store itself
+  request (bounded by `readTimeoutMs`, when set) and answers `ok`, `problem` (an enabled, untagged rule over your prefix that expires current objects or moves
+  them to `GLACIER`, `DEEP_ARCHIVE` or a class it does not know) or `unchecked`. It needs `s3:GetLifecycleConfiguration`, which the store itself
   never uses: without it the answer is `unchecked`, naming the permission. A missing abort-incomplete-upload rule is
   advice in `detail`, never a `problem`
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).

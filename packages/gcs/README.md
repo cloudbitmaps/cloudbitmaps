@@ -61,7 +61,7 @@ It builds its own client from Application Default Credentials. Any other key is 
 - **The write-once guarantee rides GCS preconditions** (`ifGenerationMatch`), so nothing else needs enabling.
 - **Never add a lifecycle rule that expires current objects or the `registry/` prefix.**
 - **Check the bucket's lifecycle rules with `await backend.checkLifecycle()`.** It reads the bucket's metadata with one
-  request and answers `problem` for a `Delete` rule that applies to live objects and can match your prefix, `ok`, or
+  request (bounded by `readTimeoutMs`, when set) and answers `problem` for a `Delete` rule that applies to live objects and can match your prefix, `ok`, or
   `unchecked`. It needs `storage.buckets.get`, which the store itself never uses and `roles/storage.objectAdmin` does
   not include: without it the answer is `unchecked`, naming the permission
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).

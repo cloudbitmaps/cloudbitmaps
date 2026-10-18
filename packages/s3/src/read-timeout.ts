@@ -53,7 +53,7 @@ export type ReadSendOptions = { readonly abortSignal: AbortSignal } | undefined;
  * before it returns, so the timer covers both. The timer is cleared when the read settles.
  */
 export async function timedRead<T>(
-  operation: 'GetObject' | 'HeadObject',
+  operation: 'GetObject' | 'HeadObject' | 'GetBucketLifecycleConfiguration',
   timeoutMs: number,
   read: (options: ReadSendOptions) => Promise<T>,
 ): Promise<T> {

@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes and is strongly consistent, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten, and a check that a delete landed can be wrong | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing, and times the [lifecycle check](#check-the-lifecycle-rules-from-code)'s one read only when `readTimeoutMs` is set: at the default of `0` that read is untimed | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | A write is retried for you only where that is safe: a throttled S3 or GCS object, and a registry write that went unanswered. Any other transient fault reaches you as `TransientError` | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -45,11 +45,11 @@ four; a custom role needs `storage.objects.create`, `storage.objects.get`, `stor
 `Storage Blob Data Contributor` role on the container covers all of them. A connection string carries the account
 key, which grants far more: prefer a `containerClient` built from a managed identity.
 
-**Two optional permissions, for the identity that checks the lifecycle rules.** A store never needs them, and the identity
-it runs with should not have them. The one that calls [`checkLifecycle()`](#check-the-lifecycle-rules-from-code), by hand
-or in a deploy check, needs one more: on S3, `s3:GetLifecycleConfiguration` on the bucket; on GCS, `storage.buckets.get`
-on the bucket, which `roles/storage.objectAdmin` does not include. Without it the check answers `unchecked` and names the
-permission. Azure Blob has no such permission to grant: its lifecycle policy is read through Azure Resource Manager, not
+**Two optional permissions, for the identity that checks the lifecycle rules.** A store never needs them. They are
+read-only reads of the bucket's configuration, and the identity that runs [`checkLifecycle()`](#check-the-lifecycle-rules-from-code),
+normally the store's own, needs one more: on S3, `s3:GetLifecycleConfiguration` on the bucket; on GCS,
+`storage.buckets.get` on the bucket, which `roles/storage.objectAdmin` does not include. Without it the check answers
+`unchecked` and names the permission. Azure Blob has no such permission to grant: its lifecycle policy is read through Azure Resource Manager, not
 by a blob client (see below).
 
 **A bucket or container that does not exist** fails every call with a `ValidationError`, never reads as an empty store: a
@@ -142,7 +142,8 @@ itself, it removes only the version it judged, by a conditional delete. A rule o
 ### Check the lifecycle rules from code
 
 A backend built by this library can read the bucket's lifecycle rules and say whether one would delete or archive what
-the store keeps. `checkLifecycle` is optional on a `StorageBackend`, so call it with `?.`:
+the store keeps. `checkLifecycle` is optional on a `StorageBackend`, so on a value typed `StorageBackend` call it with
+`?.`; on `S3Storage`, `GcsStorage` and `AzureBlobStorage` it is always there:
 
 ```ts
 const backend = new S3Storage({ bucket: 'bitmaps', prefix: 'cr' });
@@ -150,9 +151,13 @@ const verdict = await backend.checkLifecycle();
 // { status: 'ok' | 'problem' | 'unchecked', detail: 'a sentence for a person' }
 ```
 
-It never rejects, sends one request at most, and keeps no state. Act on `status`; `detail` is for a person and carries no
-credential. A backend without the method (a third-party one, or a `brandAsBackend` wrapper that does not forward it) has
-not checked: read its absence as `unchecked`.
+Application code needs no import for the result's type: it is inferred from the call, and `LifecycleVerdict` stays in
+`@cloudbitmaps/core/driver-kit`, which application code does not import.
+
+It never rejects, sends one request (plus the SDK's own retries), and keeps no state. Act on `status`; `detail` is for a
+person and carries no credential. On S3 and GCS the request honours `readTimeoutMs`; a read that gets no answer in time is
+`unchecked`, and the answer is to run the check again. A backend without the method (a third-party one, or a
+`brandAsBackend` wrapper that does not forward it) offers no lifecycle check.
 
 | Status | Meaning |
 |---|---|
@@ -164,20 +169,32 @@ What each backend does:
 
 | Backend | What it reads | A `problem` is |
 |---|---|---|
-| S3 | `GetBucketLifecycleConfiguration` (one `GET`-class request), with `s3:GetLifecycleConfiguration` | An enabled rule with no tag filter whose prefix and the store's are one a prefix of the other, and that expires current objects (`Days` or `Date`) or moves them to `GLACIER` or `DEEP_ARCHIVE`. Rules that only expire noncurrent versions, remove expired delete markers or abort incomplete uploads are safe, and so are a disabled rule and a tag-filtered one (the store tags nothing). No configuration at all is `ok`. |
-| GCS | The bucket's metadata (`lifecycle.rule`), with `storage.buckets.get` | A `Delete` rule that applies to live objects (not `isLive: false`, and not `numNewerVersions`, `daysSinceNoncurrentTime` or `noncurrentTimeBefore`, which only a noncurrent version meets) and whose `matchesPrefix` and `matchesSuffix`, if it has them, can match a name of the store's: a prefix and the store's are one a prefix of the other, and a suffix and `.crbm` or `.reg` are one a suffix of the other. `SetStorageClass` is safe, even to `ARCHIVE`, which stays readable. |
-| Azure Blob | Nothing: always `unchecked`, with no request | Never. Lifecycle management policies belong to the storage account, on the management plane. `detail` gives the `az storage account management-policy show` command and what to look for: an enabled rule with a `baseBlob` `delete` or `tierToArchive` action whose `prefixMatch` overlaps `<container>/<prefix>`. |
+| S3 | `GetBucketLifecycleConfiguration` (one `GET`-class request), with `s3:GetLifecycleConfiguration` | An enabled rule (one with no `Status` counts as enabled) with no tag filter whose prefix and the store's are one a prefix of the other, and that expires current objects (`Days` or `Date`), moves them to `GLACIER` or `DEEP_ARCHIVE` (in any of its transitions, at `Days: 0` too), or moves them to a storage class the check does not know (it names the class). Rules that only expire noncurrent versions, remove expired delete markers or abort incomplete uploads are safe, and so are a disabled rule and a tag-filtered one (the store tags nothing). No configuration at all is `ok`. |
+| GCS | The bucket's metadata (`lifecycle.rule`), with `storage.buckets.get` | A `Delete` rule, or one with an action the check does not know (it names the action), that applies to live objects (not `isLive: false`, and not `numNewerVersions` of 1 or more, which a live object never meets, nor `daysSinceNoncurrentTime` or `noncurrentTimeBefore` at any value, which only a noncurrent version meets; a `numNewerVersions` of 0 matches every object) and whose `matchesPrefix` and `matchesSuffix`, if it has them, can match a name of the store's: a prefix and the store's are one a prefix of the other, and a suffix and `.crbm` or `.reg` are one a suffix of the other. `SetStorageClass` is safe, even to `ARCHIVE`, which stays readable. |
+| Azure Blob | Nothing: always `unchecked`, with no request | Never. Lifecycle management policies belong to the storage account, on the management plane. `detail` gives the `az storage account management-policy show` command and what to look for: an enabled rule with a `baseBlob` `delete` or `tierToArchive` action that has no `prefixMatch` (it then applies to every blob in the account) or one that overlaps `<container>/<prefix>`, and no `blobIndexMatch`. |
 | `MemoryStorage`, `LocalFsStorage` | Nothing | Never: always `ok`, there is no lifecycle. |
 
 The store's prefix is the `prefix` you gave the backend. With none, the store may use any key in the bucket, so a rule on
-any prefix counts. **When a rule is unclear the check says `problem`:** a condition it does not interpret (an S3 object
-size filter, a GCS storage class or name pattern, an age) is judged as if it matched, so it can report a rule that would
-not act on the store's objects; it does not hide one that would. Fix such a rule by narrowing it, or confirm by hand that
+any prefix counts, and the advice is to give the store a prefix or scope the rule away from its paths. **When a rule is
+unclear the check says `problem`:** a condition it does not interpret (an S3 object size filter, a GCS storage class or
+name pattern, an age) is judged as if it matched, so it can report a rule that would not act on the store's objects; it
+does not hide one that would. The same goes for a value it does not know: an S3 rule with no `Status`, a transition to
+a storage class it does not know, a GCS action it does not know. Fix such a rule by narrowing it, or confirm by hand that
 it cannot match and leave it.
 
-**A missing abort rule is advice, never a `problem`.** On S3, when no rule over the store's prefix sets
-`AbortIncompleteMultipartUpload`, `detail` says so, whatever the status. GCS and Azure Blob clean up an abandoned upload
-on their own, about a week on (see [the backup checklist](disaster-recovery.md#backup-checklist)), so they give no such advice.
+A `detail` is short whatever the bucket holds: it names at most 3 problem rules and then says "and N more", and cuts each
+rule id, prefix and error name to 64 characters and an error message to 200.
+
+**Advice is never a `problem`.** `detail` carries it whatever the status:
+
+- On S3, when no rule over the store's generation keys (`<prefix>…/segments/`, not only `<prefix>registry/`) sets
+  `AbortIncompleteMultipartUpload`, it says to add one. GCS and Azure Blob clean up an abandoned upload on their own,
+  about a week on (see [the backup checklist](disaster-recovery.md#backup-checklist)), so they give no such advice.
+- On S3, a transition to `INTELLIGENT_TIERING` is safe by itself, but if the bucket turns on its archive access tiers
+  (a separate configuration this check does not read), an object in one needs a restore before it can be read: leave
+  them off for the store's prefix.
+- On S3, a transition to `STANDARD_IA`, `ONEZONE_IA` or `GLACIER_IR` keeps objects readable, but each class has a minimum
+  storage duration and a per-GB retrieval fee that the store's reads will pay.
 
 ## Versioning and backups
 
@@ -283,7 +300,9 @@ further attempt starts, and the store's read retry, above, runs it again. With `
 retry policy, a read whose requests stall on every attempt fails after 4 × 2,000 ms of timeouts plus up to 350 ms of
 backoff, about 8.35 s; measured against a local server that never answers, a `has()` failed after 8.1 to 8.2 s.
 Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly take longer than a read,
-and a write cut off may still land.
+and a write cut off may still land. The one read of the [lifecycle check](#check-the-lifecycle-rules-from-code) on S3 and
+GCS takes the same `readTimeoutMs`; with the default of `0` it is untimed, and one that gets no answer in time is
+`unchecked`.
 
 **What a timed-out read leaves open.** The SDK cannot cancel a request whose response has not begun, so when the
 deadline passes before the server has answered, that request keeps its connection open until the server answers or

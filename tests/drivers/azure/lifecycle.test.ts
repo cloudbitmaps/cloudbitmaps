@@ -49,6 +49,15 @@ describe('AzureBlobStorage.checkLifecycle', () => {
     expect(out.detail).toContain('"box/cr/"');
   });
 
+  it('says a rule with no prefixMatch counts, and names the filters and actions that matter', async () => {
+    const { detail } = await store('cr').checkLifecycle();
+    expect(detail).toContain('no prefixMatch');
+    expect(detail).toContain('applies to every blob in the account');
+    expect(detail).toContain('tierToArchive');
+    expect(detail).toContain('delete');
+    expect(detail).toContain('blobIndexMatch');
+  });
+
   it('names the whole container when the store has no prefix', async () => {
     expect((await store().checkLifecycle()).detail).toContain('"box/"');
   });

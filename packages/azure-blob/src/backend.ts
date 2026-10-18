@@ -159,8 +159,8 @@ export class AzureBlobStorage implements StorageBackend {
       detail:
         'Azure lifecycle management policies are set on the storage account, outside what a blob client can read. ' +
         'Check by hand: `az storage account management-policy show --account-name <account> --resource-group <group>`, ' +
-        `and confirm that no enabled rule with a baseBlob delete or tierToArchive action has a prefixMatch that overlaps ${JSON.stringify(scope)} ` +
-        '(a prefixMatch that is a prefix of it, or that it is a prefix of) and no blobIndexMatch filter.',
+        `and confirm that no enabled rule with a baseBlob delete or tierToArchive action has no prefixMatch (it then applies to every blob in the account) or a prefixMatch that overlaps ${JSON.stringify(scope)} ` +
+        '(one that is a prefix of it, or that it is a prefix of), unless the rule has a blobIndexMatch filter.',
     });
   }
 }

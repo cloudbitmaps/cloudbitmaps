@@ -453,7 +453,7 @@
   },
   {
     "entry": "@cloudbitmaps/core/driver-kit StorageBackend.checkLifecycle",
-    "reason": "a new optional method on a backend, agreed with the maintainer: it reports whether the bucket's lifecycle rules would delete or archive the objects the store keeps, in one request at most and without ever rejecting; a backend without it is read as unchecked, so no implementer or caller has to change"
+    "reason": "a new optional method on a backend, agreed with the maintainer: it reports whether the bucket's lifecycle rules would delete or archive the objects the store keeps, in one request (plus the SDK's own retries) and without ever rejecting; a backend without it offers no lifecycle check, so no implementer or caller has to change"
   },
   {
     "entry": "@cloudbitmaps/core/driver-kit LifecycleVerdict*",
@@ -461,11 +461,11 @@
   },
   {
     "entry": "@cloudbitmaps/s3 S3Storage.checkLifecycle",
-    "reason": "S3 implements the optional lifecycle check: one GetBucketLifecycleConfiguration request, a problem for an enabled, untagged rule over the store's prefix that expires current objects or moves them to GLACIER or DEEP_ARCHIVE, and unchecked, naming s3:GetLifecycleConfiguration, when access is denied"
+    "reason": "S3 implements the optional lifecycle check: one GetBucketLifecycleConfiguration request bounded by readTimeoutMs, a problem for an enabled, untagged rule over the store's prefix that expires current objects or moves them to GLACIER, DEEP_ARCHIVE or a class it does not know, and unchecked, naming s3:GetLifecycleConfiguration, when access is denied"
   },
   {
     "entry": "@cloudbitmaps/gcs GcsStorage.checkLifecycle",
-    "reason": "GCS implements the optional lifecycle check: one bucket metadata request, a problem for a Delete rule that applies to live objects and can match the store's names, and unchecked, naming storage.buckets.get, when access is denied"
+    "reason": "GCS implements the optional lifecycle check: one bucket metadata request bounded by readTimeoutMs, a problem for a Delete rule (or one with an action it does not know) that applies to live objects and can match the store's names, and unchecked, naming storage.buckets.get, when access is denied"
   },
   {
     "entry": "@cloudbitmaps/azure-blob AzureBlobStorage.checkLifecycle",

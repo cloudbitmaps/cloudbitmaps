@@ -15,15 +15,19 @@ so, and so do the module headers in the code.
 
 - **A storage backend can check the bucket's lifecycle rules: the optional `StorageBackend.checkLifecycle()`, exported
   from `@cloudbitmaps/core/driver-kit` with its `LifecycleVerdict`.** It resolves to `{ status: 'ok' | 'problem' |
-  'unchecked', detail }` and never rejects. `S3Storage` reads the bucket's lifecycle configuration (one request, needing
+  'unchecked', detail }` and never rejects. `S3Storage` reads the bucket's lifecycle configuration (one request, plus the SDK's own retries, needing
   `s3:GetLifecycleConfiguration`) and reports an enabled, untagged rule over the store's prefix that expires current
-  objects or moves them to `GLACIER` or `DEEP_ARCHIVE`; `GcsStorage` reads the bucket's metadata (one request, needing
-  `storage.buckets.get`) and reports a `Delete` rule that applies to live objects and can match the store's names. A
+  objects, moves them to `GLACIER` or `DEEP_ARCHIVE`, or moves them to a class it does not know; `GcsStorage` reads the bucket's metadata (one request, plus the SDK's own retries, needing
+  `storage.buckets.get`) and reports a `Delete` rule (or an action it does not know) that applies to live objects and can match the store's names. A
   refused read is `unchecked` and names the permission. `AzureBlobStorage` is always `unchecked`, with the command that
   reads the account's policy by hand, because that policy is on the management plane; `MemoryStorage` and
-  `LocalFsStorage` are `ok`. A rule with a condition the check does not interpret is reported as a `problem`; a missing
-  abort-incomplete-upload rule is advice in `detail`, never a `problem`. A backend without the method is read as
-  `unchecked`. See [check the lifecycle rules from code](docs/guide/production.md#check-the-lifecycle-rules-from-code).
+  `LocalFsStorage` are `ok`. A rule with a condition or a value the check does not interpret (an S3 rule with no `Status`,
+  a transition to a storage class it does not know, a GCS action it does not know) is reported as a `problem`; advice
+  is in `detail`, never a `problem`: a missing abort-incomplete-upload rule over the generation keys, a transition to
+  `INTELLIGENT_TIERING` (its archive access tiers need a restore before a read), a transition to an infrequent-access
+  class or `GLACIER_IR` (a minimum storage duration and a per-GB retrieval fee). The S3 and GCS requests honour
+  `readTimeoutMs`; one that gets no answer in time is `unchecked`. A backend without the method offers no lifecycle
+  check. See [check the lifecycle rules from code](docs/guide/production.md#check-the-lifecycle-rules-from-code).
 - **`store.load(ref, ids, { sorted: true })` loads ids that already ascend one chunk at a time, while the object
   uploads.** A load of ids holds the whole generation in memory before it writes; a sorted load holds one chunk's ids
   and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 7 MiB at the

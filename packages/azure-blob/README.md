@@ -67,7 +67,7 @@ Any other key is refused by name.
 - **Never add a lifecycle rule that expires current blobs or the `registry/` prefix.**
 - **`await backend.checkLifecycle()` is always `unchecked` here.** A lifecycle management policy belongs to the storage
   account, on the management plane, which a blob client cannot read, and this package takes no management dependency.
-  Its `detail` gives the `az storage account management-policy show` command and what to look for
+  Its `detail` gives the `az storage account management-policy show` command and what to look for, including a rule with no `prefixMatch`
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. Every write is tagged with a random id and a conflict is settled by reading

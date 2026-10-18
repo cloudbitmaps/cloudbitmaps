@@ -763,9 +763,9 @@ export interface StorageBackend {
    * Optional. Reads the setup the backend cannot change but can be broken by, and says whether it will delete or
    * archive what the store keeps: today, the bucket's lifecycle rules over the generation objects and the
    * `<prefix>registry/` rows. It is meant for a check run by hand or at deploy time, not for the read or write path, and
-   * costs one request at most. It never rejects: a check that could not be made resolves to `unchecked` with the
+   * costs one request, plus the SDK's own retries. It never rejects: a check that could not be made resolves to `unchecked` with the
    * reason in `detail`. A backend without it, a third-party one or a {@link brandAsBackend} wrapper that does not
-   * forward it, has not checked: a caller reads its absence as `unchecked`.
+   * forward it, offers no lifecycle check.
    *
    * The cloud rules stay in the driver. A `detail` is for a person, carries no credential, and never changes what a
    * caller does: act on `status`.

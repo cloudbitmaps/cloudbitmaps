@@ -96,9 +96,10 @@ give the method and what the numbers do not establish. To price your own store, 
 
 ## Before production
 
-- Grant the permissions the library issues and add a lifecycle rule to abort incomplete uploads. A cloud backend's
-  `checkLifecycle()` reads the bucket's rules and says whether one would delete or archive what the store keeps;
-  `MemoryStorage` and `LocalFsStorage` have no rules and answer `ok`.
+- Grant the permissions the library issues and add a lifecycle rule to abort incomplete uploads. The S3 and GCS
+  backends' `checkLifecycle()` read the bucket's rules and say whether one would delete or archive what the store
+  keeps; Azure Blob's answers `unchecked` and says how to check by hand; `MemoryStorage` and `LocalFsStorage` have no
+  rules and answer `ok`.
 - Use a bucket that honors conditional writes and is strongly consistent (a read or a listing made after a write or a
   delete sees it), and `@aws-sdk/client-s3` 3.700.0 or later if you pass your own S3 client.
 - Set a request timeout on your storage client. Reads retry by themselves, and a read can be timed on every backend (`readTimeoutMs`); a write that fails transiently is yours to re-run.
