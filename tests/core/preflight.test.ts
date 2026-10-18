@@ -10,7 +10,7 @@ import {
   runPreflight,
 } from '@/core/preflight';
 import type { PreflightDeps, PreflightResult } from '@/core/preflight';
-import { NotFoundError, TransientError } from '@/core/errors';
+import { NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import { brandAsBackend } from '@/core/ports';
 import type {
   GenKey,
@@ -395,6 +395,16 @@ describe('runPreflight: a fault at each step is a finding, never a throw', () =>
     }
   });
 
+  it('read: bytes of the right size that are not the marker are a problem', async () => {
+    const r = rig({
+      storage: { getTail: () => Promise.resolve({ bytes: new Uint8Array(30), size: 30 }) },
+    });
+    const out = await runPreflight(r.deps);
+    expect(statuses(out).read).toBe('problem');
+    expect(statuses(out)['write-once']).toBe('ok');
+    expect(detail(out, 'read')).not.toContain('write-once');
+  });
+
   it('read: the right bytes under the wrong size are a problem', async () => {
     const r = rig();
     const real = r.memory.storage;
@@ -505,7 +515,7 @@ describe('runPreflight: a fault at each step is a finding, never a throw', () =>
     expect(await r.present()).toEqual([1]);
   });
 
-  it('a step whose error has a hostile getter still does not escape', async () => {
+  it('an error whose name getter throws is still a problem, and a plain string is its text', async () => {
     const hostile = {
       get name(): string {
         throw new Error('boom');
@@ -518,11 +528,39 @@ describe('runPreflight: a fault at each step is a finding, never a throw', () =>
     expect(detail(await runPreflight(plain.deps), 'write')).toContain('just text');
   });
 
-  it('an error message is cut at 300 characters', async () => {
+  it('an error message is cut at 300 characters, and the cut says so with "..."', async () => {
     const r = rig({ storage: { putImmutable: () => Promise.reject(new Error('x'.repeat(5000))) } });
     const text = detail(await runPreflight(r.deps), 'write');
-    expect(text).toContain('x'.repeat(300));
+    expect(text).toContain(`${'x'.repeat(300)}...`);
     expect(text).not.toContain('x'.repeat(301));
+    const exact = rig({
+      storage: { putImmutable: () => Promise.reject(new Error('x'.repeat(300))) },
+    });
+    expect(detail(await runPreflight(exact.deps), 'write')).not.toContain('...');
+  });
+
+  it('the probe namespace is the literal cbm.due.preflight', () => {
+    expect(PREFLIGHT_NAMESPACE).toBe('cbm.due.preflight');
+  });
+
+  it('the two payloads written to the key differ', async () => {
+    const r = rig();
+    const written: Uint8Array[] = [];
+    const real = r.memory.storage;
+    const storage = over(real, {
+      putImmutable: (key, write) =>
+        real.putImmutable(key, async (sink) =>
+          write({
+            write: (bytes) => {
+              written.push(bytes.slice());
+              return sink.write(bytes);
+            },
+          }),
+        ),
+    });
+    await runPreflight({ ...r.deps, storage });
+    expect(written).toHaveLength(2);
+    expect(Buffer.from(written[0] ?? []).equals(Buffer.from(written[1] ?? []))).toBe(false);
   });
 
   it('the probe number is 48 bits drawn from the entropy source', async () => {
@@ -540,9 +578,54 @@ describe('runPreflight: a fault at each step is a finding, never a throw', () =>
       entropy: () => new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
     });
     expect(gens[0]).toBe(2 ** 48 - 1);
-    await expect(
-      runPreflight({ ...r.deps, entropy: () => new Uint8Array(2) }),
-    ).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it('M1: an entropy source that throws is a write problem; registry and lifecycle still run', async () => {
+    const r = rig();
+    const rest = r.deps;
+    for (const entropy of [
+      () => {
+        throw new UnsupportedError('this runtime has no Web Crypto');
+      },
+      () => new Uint8Array(2),
+    ]) {
+      const out = await runPreflight({ ...rest, entropy });
+      expect(statuses(out)).toEqual({
+        registry: 'ok',
+        write: 'problem',
+        'write-once': 'unchecked',
+        read: 'unchecked',
+        list: 'unchecked',
+        delete: 'unchecked',
+        lifecycle: 'ok',
+      });
+      expect(detail(out, 'write')).toContain('No number could be drawn');
+      expect(out.ok).toBe(false);
+    }
+    const named = await runPreflight({
+      ...rest,
+      entropy: () => {
+        throw new UnsupportedError('this runtime has no Web Crypto');
+      },
+    });
+    expect(detail(named, 'write')).toContain('UnsupportedError: this runtime has no Web Crypto');
+    expect(r.deletes).toEqual([]);
+    expect(await r.present()).toEqual([]);
+  });
+
+  it('M1: a store whose runtime has no Web Crypto reports it instead of throwing', async () => {
+    const memory = new MemoryStorage();
+    const store = new CloudRoaring({
+      storage: memory,
+      seams: {
+        entropy: () => {
+          throw new UnsupportedError('this runtime has no Web Crypto');
+        },
+      },
+    });
+    const out = await store.preflight();
+    expect(statuses(out).write).toBe('problem');
+    expect(statuses(out).lifecycle).toBe('ok');
   });
 });
 
@@ -593,8 +676,15 @@ describe('runPreflight: the lifecycle step', () => {
       checkLifecycle: () => Promise.resolve({ status: 'ok', detail: 'y'.repeat(5000) }),
     });
     const text = detail(await runPreflight(r.deps), 'lifecycle');
-    expect(text).toContain('y'.repeat(1000));
+    expect(text).toContain(`${'y'.repeat(1000)}...`);
     expect(text).not.toContain('y'.repeat(1001));
+  });
+
+  it('reads a detail that is not a string as an empty one', async () => {
+    const r = rig({ checkLifecycle: () => Promise.resolve({ status: 'ok', detail: 42 } as never) });
+    const out = await runPreflight(r.deps);
+    expect(statuses(out).lifecycle).toBe('ok');
+    expect(detail(out, 'lifecycle')).toBe('');
   });
 
   it('gives up on a check that never answers after 30 seconds of the clock, and says to run again', async () => {
@@ -602,7 +692,7 @@ describe('runPreflight: the lifecycle step', () => {
     const clock = {
       now: () => 0,
       sleep: (ms: number) => {
-        expect(ms).toBe(LIFECYCLE_TICK_MS);
+        expect(ms).toBe(250);
         slept += ms;
         return Promise.resolve();
       },
@@ -610,6 +700,7 @@ describe('runPreflight: the lifecycle step', () => {
     const r = rig({ clock, checkLifecycle: () => new Promise<LifecycleVerdict>(() => {}) });
     const out = await runPreflight(r.deps);
     expect(LIFECYCLE_TIMEOUT_MS).toBe(30_000);
+    expect(LIFECYCLE_TICK_MS).toBe(250);
     expect(slept).toBe(30_000);
     expect(statuses(out).lifecycle).toBe('unchecked');
     expect(detail(out, 'lifecycle')).toContain('30 seconds');
@@ -669,7 +760,7 @@ describe('runPreflight: the lifecycle step', () => {
     await runPreflight(r.deps);
     expect(Date.now() - started).toBeLessThan(LIFECYCLE_TICK_MS * 4);
     expect(waits.length).toBeLessThanOrEqual(1);
-    expect(Math.max(0, ...waits)).toBeLessThanOrEqual(LIFECYCLE_TICK_MS);
+    expect(Math.max(0, ...waits)).toBeLessThanOrEqual(250);
   });
 
   it('stops counting the bound once the check has answered', async () => {
@@ -684,5 +775,202 @@ describe('runPreflight: the lifecycle step', () => {
     await runPreflight(rig({ clock }).deps);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(slept).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('runPreflight: nothing a step meets escapes', () => {
+  const revoked = (): unknown => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    return proxy;
+  };
+  const trapped = (): unknown =>
+    new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('trap');
+        },
+      },
+    );
+
+  it('an error whose getters throw, on the first write, is a write problem and the cleanup still runs', async () => {
+    const r = rig({ storage: { putImmutable: () => Promise.reject(trapped()) } });
+    const out = await runPreflight(r.deps);
+    expect(statuses(out).write).toBe('problem');
+    expect(r.deletes).toHaveLength(1);
+  });
+
+  it('a revoked Proxy as the second write error is a write-once problem, and the object is removed', async () => {
+    let n = 0;
+    const r = rig();
+    const storage = over(r.memory.storage, {
+      putImmutable: (key, write) => {
+        n += 1;
+        return n === 1 ? r.memory.storage.putImmutable(key, write) : Promise.reject(revoked());
+      },
+    });
+    const out = await runPreflight({ ...r.deps, storage });
+    expect(statuses(out)['write-once']).toBe('problem');
+    expect(statuses(out).delete).toBe('ok');
+    expect(await r.present()).toEqual([]);
+  });
+
+  it('a verdict whose getters throw is unchecked', async () => {
+    const verdict = {
+      get status(): string {
+        throw new Error('getter');
+      },
+    };
+    const r = rig({ checkLifecycle: () => Promise.resolve(verdict as never) });
+    const out = await runPreflight(r.deps);
+    expect(statuses(out).lifecycle).toBe('unchecked');
+    expect(detail(out, 'lifecycle')).toContain('could not read');
+    expect(out.ok).toBe(true);
+  });
+
+  it('a clock whose sleep rejects makes the lifecycle step unchecked, and the other six keep their answers', async () => {
+    const clock = { now: () => 0, sleep: () => Promise.reject(new Error('sleep failed')) };
+    const r = rig({ clock, checkLifecycle: () => new Promise<LifecycleVerdict>(() => {}) });
+    const out = await runPreflight(r.deps);
+    expect(statuses(out).lifecycle).toBe('unchecked');
+    expect(detail(out, 'lifecycle')).toContain('sleep failed');
+    expect(out.checks.filter((c) => c.status === 'ok')).toHaveLength(6);
+  });
+
+  it('a clock whose sleep throws synchronously is unchecked too', async () => {
+    const clock = {
+      now: () => 0,
+      sleep: (): Promise<void> => {
+        throw new Error('sync sleep');
+      },
+    };
+    const r = rig({ clock, checkLifecycle: () => new Promise<LifecycleVerdict>(() => {}) });
+    expect(statuses(await runPreflight(r.deps)).lifecycle).toBe('unchecked');
+  });
+
+  it('a registry whose get throws synchronously is a problem, not a throw', async () => {
+    const r = rig({
+      registry: {
+        get: () => {
+          throw trapped();
+        },
+      },
+    });
+    expect(statuses(await runPreflight(r.deps)).registry).toBe('problem');
+  });
+
+  it('a backend whose checkLifecycle is not a function, or whose getter throws, is unchecked', async () => {
+    const memory = new MemoryStorage();
+    const notFunction = {
+      storage: memory.storage,
+      registry: memory.registry,
+      checkLifecycle: true,
+    };
+    const throwing = { storage: memory.storage, registry: memory.registry };
+    Object.defineProperty(throwing, 'checkLifecycle', {
+      get(): never {
+        throw new Error('getter');
+      },
+    });
+    for (const backend of [notFunction, throwing]) {
+      const wrapped = brandAsBackend(backend as never);
+      const out = await new CloudRoaring({ storage: wrapped }).preflight();
+      expect(statuses(out).lifecycle).toBe('unchecked');
+      expect(detail(out, 'lifecycle')).toContain('does not offer the lifecycle check');
+      expect(out.ok).toBe(true);
+    }
+  });
+});
+
+describe('runPreflight: what the cleanup did after a first write that failed', () => {
+  it('a write that failed unknown says the delete was made in case it landed', async () => {
+    const r = rig({ storage: { putImmutable: () => Promise.reject(new Error('socket hang up')) } });
+    const out = await runPreflight(r.deps);
+    const text = detail(out, 'delete');
+    expect(statuses(out).delete).toBe('unchecked');
+    expect(text).toContain('deleted its key in case the write had landed');
+    expect(text).toContain('succeeded');
+    expect(text).not.toContain('no object was written');
+  });
+
+  it('a delete that fails after an unknown write says the object may have been left behind', async () => {
+    const r = rig({
+      storage: {
+        putImmutable: () => Promise.reject(new Error('socket hang up')),
+        delete: () => Promise.reject(new Error('also down')),
+      },
+    });
+    const out = await runPreflight(r.deps);
+    expect(detail(out, 'write')).toContain('may have been left behind');
+    expect(detail(out, 'delete')).toContain('also down');
+    expect(detail(out, 'delete')).not.toContain('no object was written');
+  });
+
+  it('a write an access refusal proves was refused does not say it may have been left behind', async () => {
+    const denied = Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+    const forbidden = Object.assign(new Error('nope'), { $metadata: { httpStatusCode: 403 } });
+    const nested = Object.assign(new Error('wrapped'), { cause: forbidden });
+    for (const refusal of [denied, forbidden, nested, new ValidationError('no such bucket')]) {
+      const r = rig({
+        storage: {
+          putImmutable: () => Promise.reject(refusal),
+          delete: () => Promise.reject(new Error('also denied')),
+        },
+      });
+      const out = await runPreflight(r.deps);
+      expect(detail(out, 'write')).not.toContain('left behind');
+      expect(detail(out, 'delete')).toContain('also denied');
+      expect(detail(out, 'delete')).toContain('no object was left behind');
+    }
+  });
+});
+
+describe('runPreflight: the bound against the last tick, and the read detail in two corners', () => {
+  it('keeps the answer of a check released 0 or 1 microtask hops after the last sleep', async () => {
+    for (const hops of [0, 1]) {
+      let slept = 0;
+      let release: (() => void) | undefined;
+      const clock = {
+        now: () => 0,
+        sleep: () => {
+          slept += 1;
+          if (slept === LIFECYCLE_TIMEOUT_MS / LIFECYCLE_TICK_MS) {
+            let p: Promise<void> = Promise.resolve();
+            for (let i = 0; i < hops; i += 1) p = p.then(() => undefined);
+            if (hops === 0) release?.();
+            else void p.then(() => release?.());
+          }
+          return Promise.resolve();
+        },
+      };
+      const r = rig({
+        clock,
+        checkLifecycle: () =>
+          new Promise<LifecycleVerdict>((resolve) => {
+            release = () => resolve({ status: 'problem', detail: 'at the last tick' });
+          }),
+      });
+      const out = await runPreflight(r.deps);
+      expect(slept).toBe(120);
+      expect(detail(out, 'lifecycle')).toBe('at the last tick');
+    }
+  });
+
+  it('a second write that succeeds but leaves the first object makes the read detail point at write-once', async () => {
+    const r = rig();
+    const real = r.memory.storage;
+    let n = 0;
+    const storage = over(real, {
+      putImmutable: (key, write) => {
+        n += 1;
+        return n === 1 ? real.putImmutable(key, write) : Promise.resolve({ size: 30, sha256: 'x' });
+      },
+    });
+    const out = await runPreflight({ ...r.deps, storage });
+    expect(statuses(out)['write-once']).toBe('problem');
+    expect(statuses(out).read).toBe('problem');
+    expect(detail(out, 'read')).toContain('compared against the bytes the storage accepted last');
+    expect(detail(out, 'read')).toContain('write-once');
   });
 });

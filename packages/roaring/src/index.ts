@@ -2827,27 +2827,40 @@ export class CloudRoaring {
    * was cut off is named in the `list` detail and never deleted, since it could be a run in progress.
    *
    * It **never throws over a finding**. A failed step, a transient fault included, is a `problem` whose `detail`
-   * says to run again when the fault was transient, and the checks that cannot run without it are `unchecked`.
-   * `ok` is true when no check is a `problem`: read an `unchecked` check yourself, as `ok` does not vouch for it. The
-   * `lifecycle` check is `unchecked` for a backend that has none (Azure Blob always, a third-party backend, a
-   * `brandAsBackend` wrapper that does not forward it), and when the check takes longer than 30 seconds of the
-   * store's clock. The other steps are the store's ordinary calls and keep their timing.
+   * says to run again when the fault was transient, and the checks that cannot run without it are `unchecked`. The
+   * exception is the `lifecycle` step, whose failures, its timeout included, are `unchecked`. `ok` is true when no
+   * check is a `problem`: read an `unchecked` check yourself, as `ok` does not vouch for it. The `lifecycle` check is
+   * `unchecked` for a backend whose check says so (Azure Blob always), for a backend that has no such method (a
+   * third-party backend, a `brandAsBackend` wrapper that does not forward it), when the identity lacks the optional
+   * permission to read the lifecycle rules (`s3:GetLifecycleConfiguration`, `storage.buckets.get`), and when the check
+   * takes longer than 30 seconds of the store's clock. The other steps are the store's ordinary calls and keep their
+   * timing.
    *
    * **Not checked:** read-after-delete, the registry's `If-Match` on compare-and-swap, multipart abort permission,
-   * versioning and backups. It makes no request that a load does not, and costs about seven (eight on Azure Blob),
-   * three of them writes.
+   * versioning, backups and the keystore's backup. Apart from the lifecycle read, which needs its own optional
+   * permission, it makes no request a load does not, and costs about seven requests (a first run on GCS makes eight,
+   * and Azure Blob always eight): two writes and a delete, the rest reads and one listing.
    *
-   * Throws {@link UnsupportedError} only for a store with no backend, since there is nothing to check.
+   * Throws {@link UnsupportedError}, and only that, for a store with no backend, since there is nothing to check.
    */
   async preflight(): Promise<PreflightResult> {
     const deps = this.lifecycleDeps('preflight');
     const backend = this.backend;
+    let checkLifecycle: NonNullable<StorageBackend['checkLifecycle']> | undefined;
+    try {
+      // A wrapper may carry anything under the name; only a function is a check.
+      const method: unknown = backend?.checkLifecycle;
+      if (typeof method === 'function')
+        checkLifecycle = method.bind(backend) as typeof checkLifecycle;
+    } catch {
+      // a getter that throws offers no check
+    }
     return runPreflight({
       storage: deps.storage,
       registry: deps.registry,
       clock: this.clock,
       entropy: this.entropy,
-      checkLifecycle: backend?.checkLifecycle?.bind(backend),
+      checkLifecycle,
     });
   }
 

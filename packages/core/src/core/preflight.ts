@@ -17,8 +17,10 @@
  * reaches. Storage is only ever listed one segment at a time, from rows or from refs the application gave.
  *
  * A finding never throws. A step that fails (a transient fault included) is a `problem` whose detail says so, and the
- * checks that cannot run without it are `unchecked`. The only throws are a store with nothing to check (the facade
- * refuses it before it gets here) and a deps object with no entropy.
+ * checks that cannot run without it are `unchecked`; the lifecycle step is the exception, whose failures, its timeout
+ * included, are `unchecked`. Every step runs through one guard, so nothing a step meets (an error whose getters throw,
+ * a verdict whose getters throw, a clock whose sleep rejects, an entropy source that throws) escapes. The only throw
+ * is a store with nothing to check, which the facade refuses before it gets here.
  *
  * Not checked: read-after-delete, the registry's `If-Match` on compare-and-swap, multipart abort permission,
  * versioning and backups.
@@ -28,7 +30,7 @@
  * holding a short-lived process open.
  */
 import type { Clock, Entropy } from './determinism';
-import { isTransientError, isWriteConflictError } from './errors';
+import { isTransientError, isValidationError, isWriteConflictError } from './errors';
 import type { GenKey, IRegistryDriver, IStorageDriver, LifecycleVerdict } from './ports';
 import { RESERVED_NAMESPACE_PREFIX } from './validate';
 
@@ -36,10 +38,12 @@ import { RESERVED_NAMESPACE_PREFIX } from './validate';
  * What one check found.
  *
  * - `ok`: the check ran and found nothing wrong.
- * - `problem`: the check ran and found something wrong, or a step it needs failed (a transient fault included: `detail`
- *   says to run again then).
- * - `unchecked`: the check could not be made, because a step it depends on failed, or the backend offers no such check,
- *   or it did not answer in time. `ok` on the result does not vouch for it.
+ * - `problem`: the check ran and found something wrong, or the request it makes failed (a transient fault included:
+ *   `detail` says to run again then). The lifecycle check is the exception: its failures, its timeout included, are
+ *   `unchecked`.
+ * - `unchecked`: the check could not be made, because a step it depends on failed (`write-once`, `read`, `list` and
+ *   `delete` after a failed `write`), or the backend offers no such check, or the lifecycle check did not answer in
+ *   time. `ok` on the result does not vouch for it.
  */
 export interface PreflightCheck {
   /** Which check this is. A run lists all seven, in this order. */
@@ -140,6 +144,51 @@ function failed(doing: string, err: unknown): string {
   return `${doing} failed with ${describeError(err)}.${transient ? ' This is a transient fault: run preflight() again.' : ''}`;
 }
 
+/** `isWriteConflictError`, for an error whose getters may throw: one that cannot be read is not a conflict. */
+function isConflict(err: unknown): boolean {
+  try {
+    return isWriteConflictError(err);
+  } catch {
+    return false;
+  }
+}
+
+const REFUSAL_NAMES: ReadonlySet<string> = new Set([
+  'AccessDenied',
+  'Forbidden',
+  'AuthorizationFailure',
+  'AuthorizationPermissionMismatch',
+]);
+
+/**
+ * Whether the error proves the store refused the request, so nothing it asked for was stored: an access refusal (401
+ * or 403, on the error or its cause) or a wiring fault the library names a `ValidationError`. Anything else (a reset
+ * connection, a 5xx, a timeout) leaves it unknown whether the write landed.
+ */
+function provesRefused(err: unknown): boolean {
+  try {
+    for (let e = err, depth = 0; typeof e === 'object' && e !== null && depth < 2; depth += 1) {
+      if (isValidationError(e)) return true;
+      const shape = e as {
+        name?: unknown;
+        code?: unknown;
+        status?: unknown;
+        statusCode?: unknown;
+        $metadata?: { httpStatusCode?: unknown };
+        cause?: unknown;
+      };
+      if (typeof shape.name === 'string' && REFUSAL_NAMES.has(shape.name)) return true;
+      const status =
+        shape.$metadata?.httpStatusCode ?? shape.statusCode ?? shape.status ?? shape.code;
+      if (status === 401 || status === 403) return true;
+      e = shape.cause;
+    }
+  } catch {
+    // an unreadable error proves nothing
+  }
+  return false;
+}
+
 type PreflightCheckName = PreflightCheck['name'];
 type Slot = Omit<PreflightCheck, 'name'>;
 
@@ -197,45 +246,59 @@ async function lifecycleStep(deps: PreflightDeps): Promise<Slot> {
       detail: `${failed('The lifecycle check', outcome.error)} Look at the bucket lifecycle rules by hand.`,
     };
   }
-  const verdict = outcome.verdict as Partial<LifecycleVerdict> | null | undefined;
-  const status = verdict?.status;
-  if (status !== 'ok' && status !== 'problem' && status !== 'unchecked') {
-    return {
-      status: 'unchecked',
-      detail:
-        'The lifecycle check gave an answer preflight could not read. Look at the bucket lifecycle rules by hand.',
-    };
-  }
-  const detail = typeof verdict?.detail === 'string' ? verdict.detail : '';
-  return {
-    status,
+  return readVerdict(outcome.verdict);
+}
+
+/** The verdict as a slot; `unchecked` when it cannot be read, a getter that throws included. */
+function readVerdict(answer: unknown): Slot {
+  const unreadable: Slot = {
+    status: 'unchecked',
     detail:
-      detail.length > MAX_LIFECYCLE_DETAIL_CHARS
-        ? `${detail.slice(0, MAX_LIFECYCLE_DETAIL_CHARS)}...`
-        : detail,
+      'The lifecycle check gave an answer preflight could not read. Look at the bucket lifecycle rules by hand.',
   };
+  try {
+    const verdict = answer as Partial<LifecycleVerdict> | null | undefined;
+    const status = verdict?.status;
+    if (status !== 'ok' && status !== 'problem' && status !== 'unchecked') return unreadable;
+    const text = verdict?.detail;
+    const detail = typeof text === 'string' ? text : '';
+    return {
+      status,
+      detail:
+        detail.length > MAX_LIFECYCLE_DETAIL_CHARS
+          ? `${detail.slice(0, MAX_LIFECYCLE_DETAIL_CHARS)}...`
+          : detail,
+    };
+  } catch {
+    return unreadable;
+  }
 }
 
 /** Step 1, read-only: the probe's row must be absent, and the registry must be able to write. */
 async function registryStep(registry: IRegistryDriver): Promise<Slot> {
+  const row = await registry.get({ namespace: PREFLIGHT_NAMESPACE, segment: PREFLIGHT_SEGMENT });
+  if (row !== null) {
+    return {
+      status: 'problem',
+      detail: `A registry row exists at ${PREFLIGHT_NAMESPACE}/${PREFLIGHT_SEGMENT}, an address only the library uses and never writes a row at. The registry is not the one this store expects, or something else writes there.`,
+    };
+  }
+  if (registry.capabilities().canWrite === false) {
+    return {
+      status: 'problem',
+      detail:
+        'The registry reads but cannot write in this runtime (no Web Crypto to draw its tokens from), so a load would be refused.',
+    };
+  }
+  return { status: 'ok', detail: 'The registry answered a read, and can write.' };
+}
+
+/** Runs one step; whatever it throws becomes the slot `onThrow` makes of it, so nothing a step meets can escape. */
+async function guarded(run: () => Promise<Slot>, onThrow: (err: unknown) => Slot): Promise<Slot> {
   try {
-    const row = await registry.get({ namespace: PREFLIGHT_NAMESPACE, segment: PREFLIGHT_SEGMENT });
-    if (row !== null) {
-      return {
-        status: 'problem',
-        detail: `A registry row exists at ${PREFLIGHT_NAMESPACE}/${PREFLIGHT_SEGMENT}, an address only the library uses and never writes a row at. The registry is not the one this store expects, or something else writes there.`,
-      };
-    }
-    if (registry.capabilities().canWrite === false) {
-      return {
-        status: 'problem',
-        detail:
-          'The registry reads but cannot write in this runtime (no Web Crypto to draw its tokens from), so a load would be refused.',
-      };
-    }
-    return { status: 'ok', detail: 'The registry answered a read, and can write.' };
+    return await run();
   } catch (err) {
-    return { status: 'problem', detail: failed('Reading the registry', err) };
+    return onThrow(err);
   }
 }
 
@@ -250,6 +313,8 @@ interface Probe {
   accepted: Uint8Array;
   /** The version the tail read gave. */
   version?: string;
+  /** Whether the first write's error proved the store refused it, so nothing was stored. */
+  refused: boolean;
 }
 
 const skipped = (because: string): Slot => ({
@@ -265,7 +330,8 @@ async function writeStep(probe: Probe): Promise<{ wrote: boolean; notOurs: boole
     return { wrote: true, notOurs: false };
   } catch (err) {
     // A refused first write means the key held an object already, which is not this run's to delete.
-    const notOurs = isWriteConflictError(err);
+    const notOurs = isConflict(err);
+    probe.refused = !notOurs && provesRefused(err);
     probe.found.set('write', {
       status: 'problem',
       detail: notOurs
@@ -289,7 +355,7 @@ async function writeOnceStep(probe: Probe): Promise<void> {
   } catch (err) {
     probe.found.set(
       'write-once',
-      isWriteConflictError(err)
+      isConflict(err)
         ? { status: 'ok', detail: 'A second write to the same key was refused.' }
         : {
             status: 'problem',
@@ -311,8 +377,11 @@ async function readStep(probe: Probe): Promise<void> {
         ? { status: 'ok', detail: 'The object just written read back as written.' }
         : {
             status: 'problem',
-            detail:
-              'The object just written did not read back as written: the bytes or the size differ.',
+            detail: `The object just written did not read back as written: the bytes or the size differ.${
+              probe.found.get('write-once')?.status === 'problem'
+                ? ' It was compared against the bytes the storage accepted last, so look at the write-once check first.'
+                : ''
+            }`,
           },
     );
   } catch (err) {
@@ -380,7 +449,11 @@ async function deleteStep(probe: Probe, wrote: boolean): Promise<void> {
       'delete',
       wrote
         ? { status: 'ok', detail: 'The object was deleted.' }
-        : skipped('no object was written to delete'),
+        : {
+            status: 'unchecked',
+            detail:
+              'The write failed, so this check was not made. The run deleted its key in case the write had landed; that delete succeeded, which it also does when no object was there.',
+          },
     );
   } catch (err) {
     if (wrote) {
@@ -390,12 +463,22 @@ async function deleteStep(probe: Probe, wrote: boolean): Promise<void> {
       });
       return;
     }
-    probe.found.set('delete', skipped('no object was written to delete'));
     const write = probe.found.get('write');
+    if (probe.refused) {
+      probe.found.set('delete', {
+        status: 'unchecked',
+        detail: `The write failed, so this check was not made. The run tried to delete its key in case the write had landed, and that failed with ${describeError(err)}. The write was refused, so no object was left behind.`,
+      });
+      return;
+    }
+    probe.found.set('delete', {
+      status: 'unchecked',
+      detail: `The write failed, so this check was not made. The run tried to delete its key in case the write had landed, and that failed with ${describeError(err)}.`,
+    });
     if (write !== undefined) {
       probe.found.set('write', {
         status: write.status,
-        detail: `${write.detail} A delete of ${probe.object} also failed, so it may have been left behind.`,
+        detail: `${write.detail} The write may have landed, and the delete of ${probe.object} failed, so it may have been left behind.`,
       });
     }
   }
@@ -425,28 +508,80 @@ async function objectSteps(probe: Probe): Promise<void> {
   }
 }
 
-/**
- * Run the seven checks. Never rejects over a finding; see the module comment for what it does reject.
- */
-export async function runPreflight(deps: PreflightDeps): Promise<PreflightResult> {
-  const key: GenKey = {
-    namespace: PREFLIGHT_NAMESPACE,
-    segment: PREFLIGHT_SEGMENT,
-    generation: probeNumber(deps.entropy),
-  };
+/** A 48-bit probe key, or the error the entropy source threw (or a short answer it gave). */
+function drawKey(entropy: Entropy): GenKey | { readonly error: unknown } {
+  try {
+    return {
+      namespace: PREFLIGHT_NAMESPACE,
+      segment: PREFLIGHT_SEGMENT,
+      generation: probeNumber(entropy),
+    };
+  } catch (error) {
+    return { error };
+  }
+}
+
+/** The object steps' findings when the probe has no number to be written under. */
+function noNumber(error: unknown): Map<PreflightCheckName, Slot> {
+  const found = new Map<PreflightCheckName, Slot>();
+  found.set('write', {
+    status: 'problem',
+    detail: `No number could be drawn for the probe's name, so nothing was written: ${describeError(error)}. Give the store an entropy source (the runtime's Web Crypto, or the \`entropy\` seam).`,
+  });
+  const why = skipped('no object was written');
+  for (const name of ['write-once', 'read', 'list', 'delete'] as const) found.set(name, why);
+  return found;
+}
+
+/** The object steps, with anything that escapes them (past their own guards) made a finding on the checks left open. */
+async function objectFindings(
+  deps: PreflightDeps,
+  key: GenKey,
+): Promise<Map<PreflightCheckName, Slot>> {
   const probe: Probe = {
     storage: deps.storage,
     key,
     object: `${PREFLIGHT_NAMESPACE}/segments/${PREFLIGHT_SEGMENT}.${key.generation}.crbm (under the store's prefix)`,
     found: new Map(),
     accepted: MARKER_A,
+    refused: false,
   };
-  probe.found.set('registry', await registryStep(deps.registry));
-  await objectSteps(probe);
-  probe.found.set('lifecycle', await lifecycleStep(deps));
+  try {
+    await objectSteps(probe);
+  } catch (err) {
+    for (const name of ['write', 'write-once', 'read', 'list', 'delete'] as const) {
+      if (!probe.found.has(name)) {
+        probe.found.set(name, { status: 'problem', detail: failed('The check', err) });
+      }
+    }
+  }
+  return probe.found;
+}
+
+/**
+ * Run the seven checks. Never rejects: see the module comment.
+ */
+export async function runPreflight(deps: PreflightDeps): Promise<PreflightResult> {
+  const registry = await guarded(
+    () => registryStep(deps.registry),
+    (err) => ({ status: 'problem', detail: failed('Reading the registry', err) }),
+  );
+  const key = drawKey(deps.entropy);
+  const found = 'error' in key ? noNumber(key.error) : await objectFindings(deps, key);
+  found.set('registry', registry);
+  found.set(
+    'lifecycle',
+    await guarded(
+      () => lifecycleStep(deps),
+      (err) => ({
+        status: 'unchecked',
+        detail: `${failed('The lifecycle check', err)} Look at the bucket lifecycle rules by hand.`,
+      }),
+    ),
+  );
   const checks: PreflightCheck[] = ORDER.map((name) => ({
     name,
-    ...(probe.found.get(name) ?? skipped('the check did not run')),
+    ...(found.get(name) ?? skipped('the check did not run')),
   }));
   return { ok: !checks.some((c) => c.status === 'problem'), checks };
 }
