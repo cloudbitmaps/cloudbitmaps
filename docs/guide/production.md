@@ -58,34 +58,22 @@ a failed step the error's name and message.
 fault the detail says to run `preflight()` again. The exception is the lifecycle step, whose failures, its timeout
 included, are `unchecked`. A step whose answer another needs makes that one `unchecked`: if the write fails,
 `write-once`, `read`, `list` and `delete` are `unchecked`. Nothing a step meets escapes: an error or a verdict that
-cannot be read, a clock that fails, an entropy source that throws (that is a `write` problem naming it, with the other
-steps still run). The one throw is a store with no backend (a store built on a bare driver or a source of your own),
+cannot be read, a clock that fails, an entropy source that throws (that is a `write` problem naming it: only `registry` and `lifecycle` still run, and
+the other four are `unchecked`). The one throw is a store with no backend (a store built on a bare driver or a source of your own),
 which has nothing to check: `UnsupportedError`. `preflight()` takes no options.
 
 **The probe** is one object of about 30 bytes, at `cbm.due.preflight/segments/probe.<number>.crbm` under the store's
 prefix, where `<number>` is 48 random bits. That namespace is inside the reserved `cbm.due.` prefix, which no
 application ref can name, so the probe can never be one of your segments, and no registry row is written. No scan,
 sweep, erasure, export or collection reads a probe object or row as a segment. A run deletes only the object it wrote,
-by version where the driver applies one. The probe sits at `<prefix>cbm.due.preflight/`, outside the namespaces your application uses. The documented grant over everything under the prefix covers it, but a grant scoped per namespace, narrower than that, does not: it shows as a `write` problem for a store that loads fine. A probe that another run left (cut off, or still running) is named in the
+by version where the driver applies one. The probe sits at `<prefix>cbm.due.preflight/`, outside the namespaces your application uses. The documented grant over everything under the prefix covers it, but a grant scoped per namespace, narrower than that, does not: it shows as a `write` problem for a store that loads fine, and as a `registry` problem too when the registry grant is scoped per namespace (the probe row's read at `<prefix>registry/cbm.due.preflight/probe.reg` is refused). A probe that another run left (cut off, or still running) is named in the
 `list` detail and never deleted, since it could be a run in progress; delete it by hand if no run is. On `LocalFsStorage`
 the probe really is a file, and a run leaves two empty directories behind.
 
 **What it costs.** About seven requests: the registry read, two writes, a tail read, a listing, a delete and the
 lifecycle request (S3 and GCS; Azure Blob spends none on the lifecycle and one more on each of the second write and the
-tail read, so eight). GCS adds one listing the first time a driver sees a missing row, which the probe's row always is on a first run, so a first run on GCS is eight. About $0.000016 a run on S3 (derived from the cost model's prices: three PUT-class and three GET-class requests; the seventh, the DELETE, is free).
+tail read, so eight). GCS adds one listing the first time a driver sees a missing row, which the probe's row always is on a first run, so a first run on GCS is eight, the eighth being a second listing (the check that the bucket exists). About $0.000016 a run on S3 (derived from the cost model's prices: three PUT-class and three GET-class requests; the seventh, the DELETE, is free).
 `MemoryStorage` and `LocalFsStorage` make no network request.
-
-### What preflight does not check
-
-So check it another way: a read after a delete (the listing proves a write, not a delete); the registry's `If-Match` on
-compare-and-swap; the multipart abort permission (`s3:AbortMultipartUpload`); versioning and backups; the keystore and
-its backup, which a first load fails early and typed on; and an S3 SDK from 3.641.0 to 3.699.0. An SDK of 3.640.0 or
-older drops `If-None-Match`, which shows as a `write-once` problem. One from 3.641.0 to 3.699.0 drops `If-Match` on
-`PutObject` only, which the registry's compare-and-swap needs; preflight cannot see that, because its registry check
-only reads and only a registry write refuses such an SDK. An SDK below 3.698.0 also drops `If-Match` on `DeleteObject`,
-which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check.
-[Permissions](#permissions), [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and
-backups](#versioning-and-backups) cover the rest.
 
 **Timing.** The lifecycle step is the only one with a bound of its own, because the drivers' `readTimeoutMs` defaults to
 none: after 30 seconds of the store's clock it stops waiting and the check is `unchecked`. The other steps are the store's
@@ -94,6 +82,18 @@ tail read; the two writes, the listing and the delete are untimed by the library
 your client. The request the lifecycle step gave up on is not cancelled: at the default `readTimeoutMs` of `0` it runs on
 untimed and can hold a process open, so a deploy script exits explicitly once it has read the result, as the example does,
 on both branches.
+
+### What preflight does not check
+
+So check it another way: a read after a delete (the listing proves a write, not a delete); the registry's `If-Match` on
+compare-and-swap; the multipart abort permission (`s3:AbortMultipartUpload`); versioning and backups; the keystore and
+its backup, which a first load fails early and typed on; and an S3 SDK from 3.641.0 to 3.699.0. An SDK of 3.640.0 or
+older drops `If-None-Match`, which shows as a `write-once` problem. One from 3.641.0 to 3.699.0 keeps `If-None-Match` but drops `If-Match` on
+`PutObject`, which the registry's compare-and-swap needs; preflight cannot see that, because its registry check
+only reads and only a registry write refuses such an SDK. An SDK from 3.641.0 to 3.697.0 also drops `If-Match` on `DeleteObject`,
+which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check.
+[Permissions](#permissions), [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and
+backups](#versioning-and-backups) cover the rest.
 
 ## Permissions
 

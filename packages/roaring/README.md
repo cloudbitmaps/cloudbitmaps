@@ -105,7 +105,7 @@ give the method and what the numbers do not establish. To price your own store, 
   rules and answer `ok`.
 - Use a bucket that honors conditional writes and is strongly consistent (a read or a listing made after a write or a
   delete sees it), and `@aws-sdk/client-s3` 3.700.0 or later if you pass your own S3 client. Preflight reports a second write that succeeds (which is how an SDK of 3.640.0 or older shows) and a read or listing
-  that lags a write, but not an SDK from 3.641.0 to 3.699.0, which drops `If-Match` on `PutObject` only: the SDK floor stays yours to check.
+  that lags a write, but not an SDK from 3.641.0 to 3.699.0, which keeps `If-None-Match` but drops `If-Match`: the SDK floor stays yours to check.
 - Set a request timeout on your storage client. Reads retry by themselves, and a read can be timed on every backend (`readTimeoutMs`); a write that fails transiently is yours to re-run.
 - Back up the registry with the data, and the keystore too if you encrypt. If you lose the key, the data is gone.
 - Schedule your loads, and `retireExpired` if you use retention. Run loads off the request path.

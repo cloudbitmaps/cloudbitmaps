@@ -2837,9 +2837,11 @@ export class CloudRoaring {
    * timing.
    *
    * **Not checked:** read-after-delete, the registry's `If-Match` on compare-and-swap, multipart abort permission,
-   * versioning, backups and the keystore's backup. Apart from the lifecycle read, which needs its own optional
-   * permission, it makes no request that a load does not. A run costs about seven requests (a first run on GCS makes
-   * eight, and Azure Blob always eight): two writes and a delete, the rest reads and one listing.
+   * versioning, backups, the keystore's backup and an S3 SDK from 3.641.0 to 3.699.0 (an older SDK shows as a
+   * `write-once` problem; these drop `If-Match`, which only a registry write refuses). It makes no kind of request that a
+   * load does not, though the lifecycle read needs its own optional permission. A run costs about seven requests (a
+   * first run on GCS makes eight, the eighth a second listing that checks the bucket exists, and Azure Blob always
+   * eight): two writes and a delete, the rest reads and one listing.
    *
    * Throws {@link UnsupportedError}, and only that, for a store with no backend, since there is nothing to check.
    */

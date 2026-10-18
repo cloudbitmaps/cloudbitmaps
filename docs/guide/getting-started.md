@@ -293,8 +293,8 @@ keys of encrypted segments all live there. There is no second service to run.
   tries to write the same key again, reads the object back, lists it, deletes it, and asks the backend to check the
   bucket's lifecycle rules, then answers `{ ok, checks }`, with all seven checks listed and each one `ok`, `problem` or
   `unchecked` with a sentence saying why. It never throws over a finding, so print the checks that are not `ok`. It is
-  about seven requests (eight on Azure Blob, and on a first run on GCS): two writes, a delete and the rest reads and one
-  listing, on the store's own credentials. [Check the setup with `store.preflight()`](production.md#check-the-setup-with-storepreflight)
+  about seven requests (eight on Azure Blob, and on a first run on GCS, where the eighth is a second listing, the check that the bucket
+  exists): two writes, a delete and the rest reads and one listing, on the store's own credentials. [Check the setup with `store.preflight()`](production.md#check-the-setup-with-storepreflight)
   says what each check proves, and [what it does not check](production.md#what-preflight-does-not-check) is one list.
 - **The credentials need five S3 actions**, `s3:ListBucket` among them: [Permissions](production.md#permissions) lists them, and which resource each one goes on.
   Preflight exercises four of them (list, get, put and delete) and not `s3:AbortMultipartUpload`.
@@ -309,8 +309,8 @@ keys of encrypted segments all live there. There is no second service to run.
 - **If you pass your own `client`, use `@aws-sdk/client-s3` 3.700.0 or later.** Older versions drop a conditional
   header they do not model, without an error: they overwrite an existing object, which loses a published generation,
   or send the registry's compare-and-swap unconditionally. The registry refuses such an SDK on the first registry write it would send without its precondition. Preflight shows an
-  SDK of 3.640.0 or older as a `write-once` problem, but cannot see one from 3.641.0 to 3.699.0, which drops `If-Match`
-  on `PutObject` only: its registry check is read-only, so this floor stays yours to check. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
+  SDK of 3.640.0 or older as a `write-once` problem, but cannot see one from 3.641.0 to 3.699.0, which keeps `If-None-Match` but drops
+  `If-Match`: its registry check is read-only, so this floor stays yours to check. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
 - **GCS and Azure Blob** pass the same conformance suites as S3 and sit outside the validated envelope, which covers
   S3 storage only. They are the right choice if you are on that cloud, but you are an early user. The
   [roadmap](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) states the exact claim.

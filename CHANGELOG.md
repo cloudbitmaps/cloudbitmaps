@@ -22,7 +22,8 @@ so, and so do the module headers in the code.
   throws: a failed step, a transient fault included, is a `problem` whose detail says to run it again for a transient
   fault, except the lifecycle step, whose failures, its timeout included, are `unchecked`; the checks that need a failed
   step are `unchecked`; the one throw is `UnsupportedError` for a store with no backend. It takes no options and sends
-  about seven requests (eight on Azure Blob, and on a first run on GCS): two writes, a delete and the rest reads and one
+  about seven requests (eight on Azure Blob, and on a first run on GCS, where the eighth is a second listing, the check that the bucket
+  exists): two writes, a delete and the rest reads and one
   listing. A backend without `checkLifecycle()` (a third-party backend, or a `brandAsBackend` wrapper that does not
   forward it) is read as `unchecked`, and so is a lifecycle check that has not answered in 30 seconds of the store's
   clock, and one the identity may not make (`s3:GetLifecycleConfiguration`, `storage.buckets.get`); Azure Blob has the

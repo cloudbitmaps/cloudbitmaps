@@ -285,7 +285,8 @@ export class S3Storage implements StorageBackend {
    * Reads the bucket's lifecycle configuration (one `GetBucketLifecycleConfiguration` request, plus the SDK's own
    * retries, bounded by `readTimeoutMs` when it is set) and reports a rule that would expire, or move to GLACIER,
    * DEEP_ARCHIVE or a class it does not know, the current objects under this store's prefix, generations and registry
-   * rows alike. Needs `s3:GetLifecycleConfiguration`, which the store itself never uses: without it the
+   * rows alike. Needs `s3:GetLifecycleConfiguration`, which a load never uses (`store.preflight()`'s
+   * lifecycle step does): without it the
    * answer is `unchecked`, naming the permission. A missing rule that aborts incomplete multipart uploads is advice in
    * `detail`, not a problem. Never rejects; a `detail` carries no credential. Rule reading: see the production guide.
    */
