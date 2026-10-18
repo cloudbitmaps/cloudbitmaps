@@ -208,7 +208,8 @@ export class S3Storage implements StorageBackend {
    * Builds the S3 backend over one bucket, which `bucket` names. Pass `client`, or `region`, `endpoint`, `pathStyle`,
    * `credentials` and `maxSockets` to have one built, not both. `prefix` puts every object under a key prefix. Throws
    * `ValidationError` for an unknown option, no bucket, a `now` that is not a function, a client setting beside
-   * `client`, a `maxSockets` (with no `client`) that is not a positive integer, or an invalid `prefix` or `readTimeoutMs`.
+   * `client`, a `maxSockets` (with no `client`) that is not a positive integer, a `partBytes` or `maxObjectBytes` that
+   * is not a positive integer, a `conditionalDelete` that is not a boolean, or an invalid `prefix` or `readTimeoutMs`.
    */
   constructor(options: S3StorageOptions) {
     refuseUnknownOptions(
