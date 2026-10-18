@@ -73,10 +73,13 @@ Any other key is refused by name.
   Its `detail` gives the `az storage account management-policy show` command and what to look for, including a rule with no `prefixMatch`
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
-  call, or check `store.generations(ref)`. Every write is tagged with a random id and a conflict is settled by reading
-  it back, because the client's own retry has no per-request switch. A registry row is overwritten by compare-and-swap,
-  so a replay that meets another writer's write on top of its own landed one reads back that writer's id and reports a
-  conflict: for a row the read-back is not definitive, and a load or a rollback reads the row again to settle it. That retry sends a write again after a
+  call, or check `store.generations(ref)`. Every write is tagged with a random id and, on a conflict, the stored blob is
+  read back: one that carries the write's own id is a success, and any other is a `WriteConflictError`. A registry row's
+  read-back is not definitive, since a writer that swaps in over a write that landed, before the read-back, makes it
+  report a conflict. A load's publish then reads the row again, and finds its write only while the pointer still names
+  its generation and the row's `pointerId` is its own write's; overtaken by a newer load, it reports `superseded`. A
+  rollback reads the row again too, and goes on only when the pointer is at its target over a token it sent. The tag is
+  there because the client's own retry has no per-request switch. That retry sends a write again after a
   `503 ServerBusy` or a `500 OperationTimedOut`. A load whose row write gets no answer reads the row and sends a fresh
   compare-and-swap from it, at most three times, and that policy runs under each: a registry that never answers costs up
   to four times the policy's tries before the load throws `TransientError` and keeps its object: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).

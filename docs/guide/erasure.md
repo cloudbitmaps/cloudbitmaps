@@ -41,7 +41,7 @@ driver (`IStorageDriver`) or a pre-built `StorageChunkSource` instead of a backe
 **What it costs.** `subjectReport` costs one pass over the registered segments. `eraseSubject` costs more: a segment
 whose current generation lacks the id is searched generation by generation, so a fleet that keeps long histories
 pays for every one. The per-op budget is charged for them, once for each generation however often the call opens
-it. The scan runs at a bounded `concurrency` (default 8; pass `{ concurrency }`), so it is quick over a large fleet
+it: a retry of a failed read, or a later open of a generation the call already opened, costs no further unit. The scan runs at a bounded `concurrency` (default 8; pass `{ concurrency }`), so it is quick over a large fleet
 without stampeding your backend. A fault on one segment never aborts the ledger.
 
 An erasure that deletes an object a load may still publish (one above the pointer, a first load's object on a segment

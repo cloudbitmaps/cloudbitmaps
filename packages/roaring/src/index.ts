@@ -1940,8 +1940,10 @@ export class CloudRoaring {
    * `O(registered segments + superseded generations)`, no hot-path cost: a segment whose current generation lacks
    * the id is searched generation by generation, one open for each other generation in its bucket, and with the
    * keep-everything default of the `*Into` verbs that is one per generation the segment ever had. The per-op
-   * `budget` is charged one unit for each segment and one for each generation opened beyond the one its row names,
-   * so a fleet with long histories can exhaust it where the segment count alone would not. A segment that does is
+   * `budget` is charged one unit for each segment and one for each generation opened beyond the one its row names, so
+   * a fleet with long histories can exhaust it where the segment count alone would not. A generation is charged at its
+   * first open only: a later open of it in the call, a retry of a failed read included, costs no more units. A segment
+   * that exhausts the budget is
    * reported `erased: false` with an `error:` note, before it deletes anything (the one refusal that can come after a
    * rewrite is the last check for a generation a concurrent writer left behind), and the
    * rest of the scan continues: the call itself does not throw for it. Per-subject crypto-shred is infeasible (a subject's bit is
