@@ -4,7 +4,12 @@ import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-open';
 import { publishGeneration } from '../helpers/publish';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
+import {
+  IntegrityError,
+  TransientError,
+  WriteConflictError,
+  unsettledConflict,
+} from '@/core/errors';
 import type { AuditEvent } from '@/core/audit';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
@@ -53,7 +58,11 @@ type Fault =
   /** Apply the write, then fail as if its response were lost; `after` runs in between. */
   | { kind: 'land-then-transient'; after?: () => void }
   /** Apply the write, then report a conflict, as an Azure replay meeting its own row does. */
-  | { kind: 'land-then-conflict' }
+  | { kind: 'land-then-conflict'; after?: () => Promise<void> }
+  /** Apply the write, then report a conflict its registry marks as one that may follow its own landing. */
+  | { kind: 'land-then-unsettled'; after?: () => Promise<void> }
+  /** Report a marked conflict without applying anything; `meanwhile` is what another writer did first. */
+  | { kind: 'unsettled-unapplied'; meanwhile?: () => Promise<void> }
   /** Report a conflict without applying anything: another writer won; `meanwhile` is what it did first. */
   | { kind: 'conflict-unapplied'; meanwhile?: () => Promise<void> }
   /** Fail before applying it, keeping the call to land later; `meanwhile` runs before the failure is reported. */
@@ -106,7 +115,17 @@ function world(
         }
         if (f.kind === 'land-then-conflict') {
           await send();
+          await f.after?.();
           throw new WriteConflictError('the replay met its own row');
+        }
+        if (f.kind === 'land-then-unsettled') {
+          await send();
+          await f.after?.();
+          throw unsettledConflict('the replay met a row over its own');
+        }
+        if (f.kind === 'unsettled-unapplied') {
+          await f.meanwhile?.();
+          throw unsettledConflict('another writer is over the row');
         }
         if (f.kind === 'conflict-unapplied') {
           await f.meanwhile?.();
@@ -784,6 +803,133 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(r).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
     expect(w.writes.compareAndSwap).toBe(1);
     expect(await idsOf(w.storage, 3)).toEqual([1, 3]);
+  });
+});
+
+describe('a conflict the registry marks as one that may follow the write itself landing', () => {
+  const moveOn = (w: ReturnType<typeof world>) => async () => {
+    // Another writer publishes generation 4 directly: the row moves past the version this write was made against.
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 4 }, [9], { registry: w.base });
+  };
+  const refusals = (seen: AuditEvent[]) => seen.filter((e) => e.kind === 'segment.load-refused');
+
+  it('landed, and the row shows it: published, written once, no refusal', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-unsettled' });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(1);
+    expect(refusals(seen)).toEqual([]);
+  });
+
+  it('landed, then another writer moved the row on: superseded, and the refusal says unanswered', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-unsettled', after: moveOn(w) });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(refusals(seen)).toEqual([
+      expect.objectContaining({ reason: 'superseded', unanswered: true }),
+    ]);
+    expect(w.deletes()).toBe(0);
+  });
+
+  it('the same conflict unmarked is an answer: superseded, and the refusal carries no unanswered', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-conflict', after: moveOn(w) });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(refusals(seen)).toHaveLength(1);
+    expect(refusals(seen)[0]).not.toHaveProperty('unanswered');
+  });
+
+  it('never applied, and another writer moved the row on: superseded, and the refusal says unanswered', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'unsettled-unapplied', meanwhile: moveOn(w) });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(w.writes.compareAndSwap).toBe(1);
+    expect(refusals(seen)).toEqual([
+      expect.objectContaining({ reason: 'superseded', unanswered: true }),
+    ]);
+  });
+
+  it('never applied, and the row unchanged: the next attempt publishes, and no refusal is audited', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'unsettled-unapplied' });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(2);
+    expect(refusals(seen)).toEqual([]);
+  });
+
+  it('the first create: refused by a row another writer made, the refusal says unanswered', async () => {
+    const w = world();
+    w.arm({
+      kind: 'unsettled-unapplied',
+      meanwhile: async () => {
+        await w.base.create(SEG, { currentGen: null });
+      },
+    });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [7, 8], w.deps, {
+      allowEmpty: true,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
+  });
+
+  it('attempts that run out on it, over a registry that reports no tokens and a second writers object under the number: not published', async () => {
+    // The proof by the object runs only after a write whose answer was not definite. Without the mark, the last
+    // conflict reads as an answer and the call, over a registry with no tokens, takes the pointer at its number as its own.
+    const w = world(
+      () => 1_000,
+      (clock) => withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 4);
+    w.arm({
+      kind: 'unsettled-unapplied',
+      meanwhile: async () => {
+        await w.storage.delete({ ...SEG, generation: 3 });
+        await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [42, 43], {
+          registry: w.base,
+        });
+      },
+    });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+    expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
+    expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
   });
 });
 

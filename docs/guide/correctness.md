@@ -162,7 +162,8 @@ whether the first attempt landed, check `store.generations(ref)` rather than rep
 
 A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
 been current for a while before another writer moved on: its `segment.load-refused` audit event carries `unanswered:
-true`.
+true`. So does a refusal that follows a conflict the registry marked as one that may follow the write's own landing
+(`unsettledConflict`, which the Azure Blob registry raises for every conflict of a row write).
 
 On a registry that reports write tokens, a `superseded` refusal over a row that names this load's generation says only
 that the row's `pointerId` is not the token of a write this load sent. Usually another load published that number. It
@@ -1087,8 +1088,11 @@ that write report `WriteConflictError`. The publish reads the row again on it, a
 without an answer, and recognises its own write there by its effect: the pointer at its generation and, on a registry
 that reports write tokens (Azure Blob's does), the row's `pointerId` the token of a write it sent, or, on one that does
 not, its own object under the number. A publish overtaken by a write that moved the pointer reports `superseded`, and
-its refusal event carries no `unanswered: true` on this path, since a driver has no way to tell the publish that a
-conflict may follow a landed write (a [roadmap](../ROADMAP.md#on-the-way-to-10) deferral). A rollback reads the row again on both too, and recognises
+its refusal event carries `unanswered: true`: the Azure Blob registry throws every conflict of a row write as one that may
+follow the write's own landing (`unsettledConflict`), since its client's retry cannot be seen from the driver, so on Azure
+Blob a load that lost an ordinary race at the registry carries the flag too (a
+[roadmap](../ROADMAP.md#on-the-way-to-10) item records the narrower refinement). A conflict from the S3 or GCS registry,
+each row write sent once, carries none. A rollback reads the row again on both too, and recognises
 its swap there: on a registry that reports write tokens, by the row's `pointerId` being the token of a write the call
 sent, after a conflict or after no answer; on one that does not, only after no answer, by the row the swap would leave,
 and after a conflict it never settles as landed. No caller deletes a generation because of either, and a load whose row

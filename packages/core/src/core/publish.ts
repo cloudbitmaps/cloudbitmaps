@@ -10,6 +10,7 @@ import {
   WriteConflictError,
   isIntegrityError,
   isTransientError,
+  isUnsettledConflict,
   isWriteConflictError,
 } from './errors';
 import type { Yielder } from './cooperative';
@@ -196,9 +197,10 @@ interface PublishOptions {
   /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
   rng?: Rng;
   /**
-   * Called once for each registry write that ended without an answer, before the row is read back. A caller whose
-   * publish then answers `false` can say that it cannot tell whether its own write landed first: the row may have
-   * held its generation for a while before another writer moved on.
+   * Called once for each registry write whose answer did not say whether it landed, before the row is read back: one
+   * that ended without an answer, or a conflict its registry marked with `unsettledConflict` as one that may follow
+   * the write's own landing. A caller whose publish then answers `false` can say that it cannot tell whether its own
+   * write landed first: the row may have held its generation for a while before another writer moved on.
    */
   onUnanswered?: () => void;
   /**
@@ -293,7 +295,10 @@ interface PublishOptions {
  *   current re-publish.
  *
  * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
- * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
+ * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race. A
+ * conflict the registry marked with `unsettledConflict` is also a write that may have landed: it is reported to
+ * `onUnanswered`, and when the row does not show the write there, a call that ends refused has not proved the write
+ * did not land.
  * The check runs before the next attempt's `expectAbsent`, `expectToken` and `expectFrom` fences, which a write of the
  * caller's own that landed would fail. With a registry that reports tokens it names the writer of the write that last
  * set the pointer, so another writer's object under the number does not pass it; with one that does not, the footer
@@ -539,14 +544,15 @@ export async function publishGenerationKept(
       }; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
       if (isWriteConflictError(err)) {
+        // A conflict the registry marks may follow this write's own landing: no more an answer than a transient fault.
+        if (isUnsettledConflict(err)) sawUnanswered = noteUnsettled(options);
         failedOn = record; // lost the race, or met its own landed write: the next read says which
         if (throughChurn) attempt -= 1; // a lease write won it; the bound on those is the churn's
         continue;
       }
       // Only the write itself raises a transient fault in here, and it is the one outcome that is not an answer.
       if (!isTransientError(err)) throw err;
-      options.onUnanswered?.();
-      sawUnanswered = true;
+      sawUnanswered = noteUnsettled(options);
       let now: RegistryRecord | null;
       try {
         now = await registry.get(key);
@@ -602,6 +608,15 @@ export async function publishGenerationKept(
   throw new WriteConflictError(
     `publishGeneration: contention setting currentGen for ${key.segment}${CONTENTION_NEXT_STEP}`,
   );
+}
+
+/**
+ * Tell the caller that a registry write's answer did not say whether it landed (no answer, or a conflict its registry
+ * marked with `unsettledConflict`), before the row is read back. Returns `true`, for the call's own record of it.
+ */
+function noteUnsettled(options: PublishOptions): true {
+  options.onUnanswered?.();
+  return true;
 }
 
 /** What a publish did: whether the pointer is at the generation, and what the write recorded in the row. */

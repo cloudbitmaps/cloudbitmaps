@@ -795,6 +795,6 @@ write's own id is a success. For a generation's object that answer is definitive
 registry row is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the
 read-back, makes that write report a conflict. The publish then reads the row again, and finds its write only while the
 pointer still names its generation and the row's `pointerId` is its own write's; overtaken by a newer load, it answers
-`published: false, reason: 'superseded'`, and its `segment.load-refused` event does not carry `unanswered: true`. A registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to
+`published: false, reason: 'superseded'`, and its `segment.load-refused` event carries `unanswered: true`, as does the refusal of a load that lost an ordinary race at the registry on Azure Blob, which marks every conflict of a row write as one that may follow the write's own landing. A registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to
 send twice because of its precondition. Each package's conditional writes, and what a tagged write does on a conflict, are in
 [How retries stay correct](correctness.md#how-retries-stay-correct).

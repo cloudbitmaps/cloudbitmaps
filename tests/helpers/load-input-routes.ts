@@ -142,6 +142,7 @@ export const ROUTED: readonly string[] = [
   'tests/drivers/azure/read-timeout.test.ts',
   'tests/drivers/azure/rollback-settle.test.ts',
   'tests/drivers/azure/throttled-write.test.ts',
+  'tests/drivers/azure/unsettled-conflict.test.ts',
   'tests/drivers/gcs/throttled-write.test.ts',
   'tests/drivers/s3/read-timeout.test.ts',
   'tests/drivers/s3/throttled-write.test.ts',

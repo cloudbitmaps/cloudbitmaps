@@ -46,6 +46,9 @@
  *    `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to
  *    `false`. One that does neither reads every write of its own that landed after an error or a lost answer as not its
  *    own (`superseded`), and deletes nothing.
+ *    A conflict that may follow the write's own landing (the client sent it more than once and the read-back finds
+ *    another writer's write over the row) is raised with `unsettledConflict`, so a load refused after it reports
+ *    `unanswered: true`; any other conflict is a plain `WriteConflictError`.
  *  - Either: never replay a conditional write without telling the replay apart (send it once, or recognise your
  *    own write on the read-back), and raise a transient fault as `TransientError`.
  *
@@ -114,7 +117,8 @@ export type { Entropy } from './core/determinism';
 // to, and the operation names an event carries.
 export type { IMetricsSink, MetricEvent, MetricOpName } from './core/metrics';
 
-// The typed errors a driver must throw, the class they extend, and `errorKind`, which classifies one.
+// The typed errors a driver must throw, the class they extend, `errorKind`, which classifies one, and
+// `unsettledConflict`, a registry's conflict that may follow its own write's landing.
 //
 // In an ordinary install `instanceof` holds: every package here leaves `@cloudbitmaps/core` external, so one
 // copy of these classes is shared. Throw and catch them normally. `errorKind` matters where that stops
@@ -127,6 +131,7 @@ export {
   IntegrityError,
   NotFoundError,
   TransientError,
+  unsettledConflict,
   ValidationError,
   WriteConflictError,
 } from './core/errors';

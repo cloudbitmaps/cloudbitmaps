@@ -11,7 +11,8 @@
  * **The atomic swap is offloaded to Azure's blob conditions**: `ifNoneMatch: '*'` is create-only and
  * `ifMatch: <etag>` is compare-and-swap — the same pair S3 spells `If-None-Match: *` / `If-Match: <etag>`,
  * and the same pair the storage driver already uses for write-once generations. A lost race returns `409`
- * (`BlobAlreadyExists`) or `412` → {@link WriteConflictError}. Reads are strongly consistent, satisfying the
+ * (`BlobAlreadyExists`) or `412` → {@link WriteConflictError}, which a row write marks with `unsettledConflict` (the
+ * client's retry may have sent it twice, and the read-back cannot rule out that it landed). Reads are strongly consistent, satisfying the
  * registry's `strongRead` contract. The `ContainerClient` is **injected**, exactly like
  * {@link AzureBlobStorageDriver} — it is already container-scoped, so there is no separate container option.
  *
@@ -42,6 +43,7 @@ import {
   normalizeObjectPrefix,
   requireBool,
   toTransient,
+  unsettledConflict,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { BlobDownloadResponseParsed, ContainerClient } from '@azure/storage-blob';
@@ -133,9 +135,11 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
         metadata: writeIdMetadata(writeId),
       });
     } catch (err) {
-      // A compare-and-swap whose row was deleted since it was read is a lost race, as a delete's 404 already is.
+      // A compare-and-swap whose row was deleted since it was read is a lost race, as a delete's 404 already is. The
+      // client's retry may have sent it again, and the first copy may have landed before the row was deleted, so it is
+      // marked like the read-back's conflict below.
       if (expect !== 'absent' && isNotFound(err)) {
-        throw new WriteConflictError(`registry OCC conflict for ${key}`);
+        throw unsettledConflict(`registry OCC conflict for ${key}`);
       }
       if (!isConditionalConflict(err)) throw mapError(err, this.container.containerName);
       // The client's retry policy may have sent this write again after a lost response, and the replay meets the
@@ -148,7 +152,8 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
         throw mapError(readErr, this.container.containerName);
       }
       if (stored === writeId) return;
-      throw new WriteConflictError(`registry OCC conflict for ${key}`);
+      // Marked: another writer's id, or none (the blob is gone), does not show that this write did not land first.
+      throw unsettledConflict(`registry OCC conflict for ${key}`);
     }
   }
 

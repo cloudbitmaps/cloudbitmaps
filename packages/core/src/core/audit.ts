@@ -79,10 +79,13 @@ export type AuditEvent =
        * segment's registry row changed while the load was writing). `cardinality` is what the refused generation
        * would have contained, and `0` for a load that lost its generation number and wrote nothing.
        *
-       * `unanswered` is present, and `true`, on a `'superseded'` refusal whose registry write ended without an answer
-       * before the row was found to have moved on: that write may have landed, so the generation may have been the
-       * segment's current one for a while before another writer replaced it. The refusal says only that it is not
-       * current now. Absent when every write the load made was answered.
+       * `unanswered` is present, and `true`, on a `'superseded'` refusal after a registry write whose answer did not say
+       * whether it landed: one that ended without an answer, or a conflict its registry marked as one that may follow
+       * the write's own landing (Azure Blob marks every conflict of a row write, since its client may have sent the
+       * write twice). That write may have landed, so the generation may have been the segment's current one for a
+       * while before another write replaced it, or, where a write renewed the row's `pointerId` over it, may be
+       * current still. Absent when every write was answered and every conflict was one its registry vouches the write
+       * did not land.
        */
       readonly kind: 'segment.load-refused';
       readonly namespace?: string;

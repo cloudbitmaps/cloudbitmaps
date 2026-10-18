@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RecordingAuditSink } from '@/core/audit';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { TransientError, WriteConflictError } from '@/core/errors';
+import { TransientError, WriteConflictError, unsettledConflict } from '@/core/errors';
 import { loadSegment, type LoadResult } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
@@ -128,12 +128,13 @@ function windowBelow(row: RegistryRecord | null): number[] {
   return (row.knownGens ?? []).map((e) => e.generation).filter((g) => g < row.currentGen!);
 }
 
-type Mode = 'send' | 'transient' | 'landThenConflict';
+type Mode = 'send' | 'transient' | 'landThenConflict' | 'landThenUnsettled';
 
 /**
  * `registry`, whose first create or compare-and-swap naming `currentGen: gen` waits at `g` before it is sent. Then:
  * `send` sends it; `transient` throws `TransientError` and never sends it; `landThenConflict` sends it, runs `between`,
- * and throws `WriteConflictError`, as a replay that met its own landed write does. It forwards `options`, and inherits
+ * and throws `WriteConflictError`, as a replay that met its own landed write does; `landThenUnsettled` does the same
+ * and throws the conflict a registry marks with `unsettledConflict`. It forwards `options`, and inherits
  * the flag from `registry`. It wraps with `Object.create`, so it suits registries whose methods read no `#private`
  * field.
  */
@@ -156,6 +157,10 @@ function holdWrite(
     if (mode === 'landThenConflict') {
       await between?.();
       throw new WriteConflictError('a replay met its own landed write');
+    }
+    if (mode === 'landThenUnsettled') {
+      await between?.();
+      throw unsettledConflict('a replay met a row over its own landed write');
     }
     return out;
   };
@@ -391,6 +396,61 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       await g.reached;
       g.open();
       expect(outcome(await b)).toEqual({ published: false, reason: 'superseded' });
+    });
+  });
+
+  describe('a conflict the registry marks as one that may follow the write itself landing', () => {
+    async function refusedAfter(mode: 'landThenConflict' | 'landThenUnsettled') {
+      await loadSegment(REF, [9], deps, { allowEmpty: true });
+      const g = gate();
+      const audit = new RecordingAuditSink();
+      const b = loadSegment(
+        REF,
+        [4, 8],
+        {
+          ...deps,
+          registry: holdWrite(registry, 1, g, mode, async () => {
+            await loadSegment(REF, [9, 10], deps, { allowEmpty: true, keep: 1 });
+          }),
+        },
+        { allowEmpty: true, keep: 1, audit },
+      );
+      await g.reached;
+      g.open();
+      const result = await b;
+      return {
+        result,
+        refusals: audit.snapshot().filter((e) => e.kind === 'segment.load-refused'),
+      };
+    }
+
+    it('landed and overtaken by another load: superseded, and the refusal says unanswered', async () => {
+      const { result, refusals } = await refusedAfter('landThenUnsettled');
+      expect(outcome(result)).toEqual({ published: false, reason: 'superseded' });
+      expect(refusals).toEqual([expect.objectContaining({ unanswered: true })]);
+    });
+
+    it('the plain conflict after the same landing is superseded with no unanswered', async () => {
+      const { result, refusals } = await refusedAfter('landThenConflict');
+      expect(outcome(result)).toEqual({ published: false, reason: 'superseded' });
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).not.toHaveProperty('unanswered');
+    });
+
+    it('landed and the row shows it: published, and no refusal audited', async () => {
+      await loadSegment(REF, [9], deps, { allowEmpty: true });
+      const g = gate();
+      const audit = new RecordingAuditSink();
+      const b = loadSegment(
+        REF,
+        [4, 8],
+        { ...deps, registry: holdWrite(registry, 1, g, 'landThenUnsettled') },
+        { allowEmpty: true, keep: 1, audit },
+      );
+      await g.reached;
+      g.open();
+      expect(outcome(await b)).toEqual({ published: true, reason: undefined });
+      expect(kinds(audit)).toEqual(['segment.publish']);
     });
   });
 

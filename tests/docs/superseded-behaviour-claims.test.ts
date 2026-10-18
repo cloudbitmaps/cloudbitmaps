@@ -358,6 +358,23 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g('does not yet cover these verbs'), 'i'), // read in plain text, its bold gone
     why: 'the load guard covers the *Into verbs',
   },
+  // A registry marks a conflict that may follow its own write's landing with `unsettledConflict`, and a load refused
+  // after one carries `unanswered: true`. No page may say the driver cannot tell the publish, or that such a refusal
+  // carries no flag. Of a registry that sends each row write once (S3, GCS), the true sentence is that its conflicts
+  // carry none: say "a conflict from the S3 or GCS registry carries none".
+  {
+    claim: new RegExp(g('no way to tell the publish that a conflict may follow'), 'i'),
+    why: 'a registry marks such a conflict with `unsettledConflict`, and the publish reports it',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?:event does not carry|(?:refusal )?event carries no|refusal carries no) \`?unanswered: true\`?(?: on this path|,? although)`,
+      ),
+      'i',
+    ),
+    why: 'on Azure Blob a refusal after a conflict of a row write carries `unanswered: true`',
+  },
   // No page (the guide, the privacy notes, a shipped doc-comment, a test) may call a store with no timed refresh a
   // pin ("pin forever", "pins the generation for its lifetime"), because such a store still moves on: its reader
   // cache evicting the segment, a read finding the generation it holds swept, and an invalidation (its own `load`,

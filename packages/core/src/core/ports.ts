@@ -913,6 +913,11 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   Either send each write once, with the backend client's retry off for that request, or recognise your own
  *   write when the precondition fails by reading an id you stored with it back. The shipped registries do
  *   one or the other.
+ * - **Raise a conflict that may follow your own write's landing with `unsettledConflict`** (from the driver kit). A
+ *   client that sent the write more than once, and a read-back that finds another writer's write over the row, cannot
+ *   say that this write did not land first, since a row is overwritten: raise that conflict as `unsettledConflict`, so
+ *   a load refused after it reports `unanswered: true`. Any other conflict (a write sent once, a check made before
+ *   sending) is a plain {@link WriteConflictError}.
  * - **Raise a transient fault as {@link TransientError}.**
  */
 export interface IRegistryDriver {
