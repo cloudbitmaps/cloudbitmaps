@@ -419,6 +419,13 @@ function quietOf(options: ListingOptions): boolean {
   return options.quiet === true;
 }
 
+/** The refusal a pass makes when the pointer or the row's names moved under a delete it had queued. */
+function changedWhileCollecting(ref: SegmentRef): WriteConflictError {
+  return new WriteConflictError(
+    `segment ${ref.segment} changed incarnation while its generations were being collected`,
+  );
+}
+
 /** The refusal a pass makes when the row it reads is not the one its caller worked from. It reaches users in a ledger note. */
 function refusedOtherRow(ref: SegmentRef): WriteConflictError {
   return new WriteConflictError(
@@ -602,10 +609,7 @@ export async function listingPass(
     const asked = isAskedRow(options.incarnation, still);
     if (!ok || !unnamed || !asked) {
       if (quiet) return 'stop';
-      if (!asked) throw refusedOtherRow(ref);
-      throw new WriteConflictError(
-        `segment ${ref.segment} changed incarnation while its generations were being collected`,
-      );
+      throw asked ? changedWhileCollecting(ref) : refusedOtherRow(ref);
     }
     // A lease that landed since the row was first read: this name is spared, and the pass goes on to the next.
     if (guard !== undefined && heldGenerations(still, guard.now()).has(generation)) return 'skip';
