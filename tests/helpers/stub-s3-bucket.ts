@@ -19,7 +19,8 @@ export type Operation =
   | 'GetObject'
   | 'HeadObject'
   | 'ListObjectsV2'
-  | 'DeleteObject';
+  | 'DeleteObject'
+  | 'GetBucketLifecycleConfiguration';
 
 interface StubRequest {
   readonly method: string;
@@ -42,7 +43,10 @@ function operationOf(req: StubRequest): Operation {
   if (req.method === 'POST')
     return 'uploads' in q ? 'CreateMultipartUpload' : 'CompleteMultipartUpload';
   if (req.method === 'DELETE') return 'uploadId' in q ? 'AbortMultipartUpload' : 'DeleteObject';
-  if (req.method === 'GET') return 'list-type' in q ? 'ListObjectsV2' : 'GetObject';
+  if (req.method === 'GET') {
+    if ('lifecycle' in q) return 'GetBucketLifecycleConfiguration';
+    return 'list-type' in q ? 'ListObjectsV2' : 'GetObject';
+  }
   if (req.method === 'HEAD') return 'HeadObject';
   throw new Error(`the stub does not serve ${req.method} ${req.path}`);
 }
@@ -82,6 +86,8 @@ export class StubBucket {
   readonly ifMatchOnDelete: Array<string | undefined> = [];
   /** The host each request the transport received was addressed to, in order: where the SDK resolved the endpoint. */
   readonly hosts: Array<string | undefined> = [];
+  /** The `<LifecycleConfiguration>` XML a `GetBucketLifecycleConfiguration` answers; none answers `NoSuchLifecycleConfiguration`. */
+  lifecycleXml: string | undefined;
   private seq = 0;
   private fault:
     | { op: Operation; kind: 'lose-response' | 'drop' | 'clock-skew' }
@@ -162,6 +168,11 @@ export class StubBucket {
   private async apply(op: Operation, req: StubRequest): Promise<StubResponse> {
     const key = decodeURIComponent(req.path.slice(`/${BUCKET}/`.length));
     const q = req.query ?? {};
+    if (op === 'GetBucketLifecycleConfiguration') {
+      return this.lifecycleXml === undefined
+        ? s3Error(404, 'NoSuchLifecycleConfiguration')
+        : respond(200, { 'content-type': 'application/xml' }, this.lifecycleXml);
+    }
     if (op === 'ListObjectsV2') {
       const prefix = String(q.prefix ?? '');
       const esc = (t: string): string => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');

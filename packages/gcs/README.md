@@ -60,6 +60,11 @@ It builds its own client from Application Default Credentials. Any other key is 
   `roles/storage.objectAdmin` covers all four.
 - **The write-once guarantee rides GCS preconditions** (`ifGenerationMatch`), so nothing else needs enabling.
 - **Never add a lifecycle rule that expires current objects or the `registry/` prefix.**
+- **Check the bucket's lifecycle rules with `await backend.checkLifecycle()`.** It reads the bucket's metadata with one
+  request (bounded by `readTimeoutMs`, when set) and answers `problem` for a `Delete` rule that applies to live objects and can match your prefix, `ok`, or
+  `unchecked`. It needs `storage.buckets.get`, which the store itself never uses and `roles/storage.objectAdmin` does
+  not include: without it the answer is `unchecked`, naming the permission
+  ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
 - **The SDK does not retry downloads; the driver does.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and
   8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process
   with `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client

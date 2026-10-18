@@ -2,16 +2,21 @@ import {
   STORAGE_BACKEND,
   ValidationError,
   brandAsBackend,
+  normalizeObjectPrefix,
+  prefixPart,
   refuseUnknownOptions,
   requirePositiveInt,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
+  LifecycleVerdict,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { S3Client } from '@aws-sdk/client-s3';
 import { defined } from './defined';
+import { checkS3Lifecycle } from './lifecycle';
+import { resolveReadTimeoutMs } from './read-timeout';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
 import { SocketAdvisory, type PooledHandler } from './socket-advisory';
@@ -194,6 +199,10 @@ export class S3Storage implements StorageBackend {
   /** The client both halves share — built here unless one was supplied. */
   readonly client: S3Client;
   private readonly sockets: SocketAdvisory;
+  private readonly bucket: string;
+  /** The key prefix every object sits under: `''`, or `trimmed/`. */
+  private readonly keyPrefix: string;
+  private readonly readTimeoutMs: number;
 
   constructor(options: S3StorageOptions) {
     refuseUnknownOptions(
@@ -239,6 +248,9 @@ export class S3Storage implements StorageBackend {
       );
       limitSockets(this.client, maxSockets);
     }
+    this.bucket = options.bucket;
+    this.keyPrefix = prefixPart(normalizeObjectPrefix(options.prefix));
+    this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
     this.sockets = new SocketAdvisory(this.client, options.bucket);
     const shared = {
       client: this.client,
@@ -267,5 +279,17 @@ export class S3Storage implements StorageBackend {
    */
   attachMetrics(sink: IMetricsSink): void {
     this.sockets.attach(sink);
+  }
+
+  /**
+   * Reads the bucket's lifecycle configuration (one `GetBucketLifecycleConfiguration` request, plus the SDK's own
+   * retries, bounded by `readTimeoutMs` when it is set) and reports a rule that would expire, or move to GLACIER,
+   * DEEP_ARCHIVE or a class it does not know, the current objects under this store's prefix, generations and registry
+   * rows alike. Needs `s3:GetLifecycleConfiguration`, which the store itself never uses: without it the
+   * answer is `unchecked`, naming the permission. A missing rule that aborts incomplete multipart uploads is advice in
+   * `detail`, not a problem. Never rejects; a `detail` carries no credential. Rule reading: see the production guide.
+   */
+  checkLifecycle(): Promise<LifecycleVerdict> {
+    return checkS3Lifecycle(this.client, this.bucket, this.keyPrefix, this.readTimeoutMs);
   }
 }

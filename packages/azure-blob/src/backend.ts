@@ -2,11 +2,14 @@ import {
   STORAGE_BACKEND,
   ValidationError,
   brandAsBackend,
+  normalizeObjectPrefix,
+  prefixPart,
   refuseUnknownOptions,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
+  LifecycleVerdict,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
@@ -87,6 +90,8 @@ export class AzureBlobStorage implements StorageBackend {
   readonly registry: IRegistryDriver;
   /** The container client both halves share — built here unless one was supplied. */
   readonly containerClient: ContainerClient;
+  /** The blob-name prefix every object sits under: `''`, or `trimmed/`. */
+  private readonly keyPrefix: string;
 
   constructor(options: AzureBlobStorageOptions) {
     refuseUnknownOptions(
@@ -122,6 +127,7 @@ export class AzureBlobStorage implements StorageBackend {
         'AzureBlobStorage needs either `containerClient`, or both `connectionString` and `container`',
       );
     }
+    this.keyPrefix = prefixPart(normalizeObjectPrefix(options.prefix));
     const shared = {
       containerClient: this.containerClient,
       ...defined({ prefix: options.prefix, readTimeoutMs: options.readTimeoutMs }),
@@ -139,5 +145,23 @@ export class AzureBlobStorage implements StorageBackend {
       ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
+  }
+
+  /**
+   * Always `unchecked`, and makes no request: an Azure storage account's lifecycle management policy belongs to the
+   * management plane (Azure Resource Manager), which a blob client's credentials do not reach, and the package takes
+   * no management SDK for it. The `detail` says how to read the policy by hand. Never rejects.
+   */
+  checkLifecycle(): Promise<LifecycleVerdict> {
+    const scope = `${this.containerClient.containerName}/${this.keyPrefix}`;
+    return Promise.resolve({
+      status: 'unchecked',
+      detail:
+        'Azure lifecycle management policies are set on the storage account, outside what a blob client can read. ' +
+        'Check by hand: `az storage account management-policy show --account-name <account> --resource-group <group>`, ' +
+        'and confirm that every enabled rule with a baseBlob delete or tierToArchive action either has a blobIndexMatch ' +
+        `filter or has a prefixMatch that overlaps nothing in ${JSON.stringify(scope)} (a prefixMatch overlaps it when ` +
+        'one is a prefix of the other; a rule with no prefixMatch applies to every blob in the account, so it overlaps).',
+    });
   }
 }

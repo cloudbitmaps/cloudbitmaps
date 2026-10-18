@@ -759,6 +759,35 @@ export interface StorageBackend {
    * exception propagates from the store's constructor, so a backend's bug fails fast rather than going unseen.
    */
   attachMetrics?(sink: IMetricsSink): void;
+  /**
+   * Optional. Reads the setup the backend cannot change but can be broken by, and says whether it will delete or
+   * archive what the store keeps: today, the bucket's lifecycle rules over the generation objects and the
+   * `<prefix>registry/` rows. It is meant for a check run by hand or at deploy time, not for the read or write path, and
+   * costs one request, plus the SDK's own retries. It never rejects: a check that could not be made resolves to `unchecked` with the
+   * reason in `detail`. A backend without it, a third-party one or a {@link brandAsBackend} wrapper that does not
+   * forward it, offers no lifecycle check.
+   *
+   * The cloud rules stay in the driver. A `detail` is for a person, carries no credential, and never changes what a
+   * caller does: act on `status`.
+   */
+  checkLifecycle?(): Promise<LifecycleVerdict>;
+}
+
+/**
+ * What {@link StorageBackend.checkLifecycle} found.
+ *
+ * - `ok`: no rule that could delete or archive the store's objects. `detail` may still carry advice, such as a missing
+ *   rule that cleans up abandoned multipart uploads, which is never a `problem` by itself.
+ * - `problem`: a rule that deletes or archives the store's current objects, or one that cannot be told apart from it.
+ *   Where a rule is unclear, the check reports a `problem`: a condition it does not interpret, or a value it does not
+ *   recognise (a storage class, an action).
+ * - `unchecked`: the check could not be made (no permission to read the configuration, an error, or a backend whose
+ *   rules are out of the data plane's reach). `detail` says what to grant or how to check by hand.
+ */
+export interface LifecycleVerdict {
+  readonly status: 'ok' | 'problem' | 'unchecked';
+  /** A sentence or two for a person. Never a credential. */
+  readonly detail: string;
 }
 
 /**

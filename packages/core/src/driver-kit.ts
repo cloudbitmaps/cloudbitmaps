@@ -63,6 +63,7 @@ export type {
   GenKey,
   IRegistryDriver,
   IStorageDriver,
+  LifecycleVerdict,
   SegmentRef,
   StorageBackend,
   StorageCaps,
