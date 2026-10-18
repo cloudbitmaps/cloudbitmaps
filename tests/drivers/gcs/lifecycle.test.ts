@@ -197,8 +197,87 @@ describe('GcsStorage.checkLifecycle: a rule that must be a problem, and its safe
     expect((await verdict([])).status).toBe('ok');
   });
 
-  it('reads a malformed rule as no threat rather than throwing', async () => {
-    expect((await verdict([null, 7, 'x', {}, { action: 3 }])).status).toBe('ok');
+  it('skips what is not a rule, rather than throwing', async () => {
+    expect((await verdict([null, 7, 'x'])).status).toBe('ok');
+  });
+
+  it('reads a rule with no action type as a problem, and says so', async () => {
+    for (const rule of [{ condition: { age: 30 } }, {}, { action: 3 }, { action: { type: '' } }]) {
+      const out = await verdict([rule]);
+      expect(out.status).toBe('problem');
+      expect(out.detail).toContain('no action type');
+    }
+  });
+
+  it('keeps a rule with no action type on another prefix safe', async () => {
+    expect((await verdict([{ condition: { matchesPrefix: ['other/'] } }])).status).toBe('ok');
+  });
+
+  it('cuts an action type it does not know at 64 characters', async () => {
+    const out = await verdict([{ action: { type: 'a'.repeat(5000) }, condition: { age: 30 } }]);
+    expect(out.status).toBe('problem');
+    expect(out.detail).toMatch(/a{64}/);
+    expect(out.detail).not.toMatch(/a{65}/);
+  });
+
+  it('tells a prefixed store how to narrow a covering rule, without the no-prefix text', async () => {
+    const out = await verdict([del({ age: 30, matchesPrefix: ['c'] })]);
+    expect(out.detail).toContain('exclude "cr/"');
+    expect(out.detail).toContain('noncurrent versions');
+    expect(out.detail).not.toContain('no prefix');
+    expect(out.detail).not.toContain('retarget');
+  });
+
+  it('tells a rule with no prefix condition to be narrowed on a prefixed store', async () => {
+    const out = await verdict([del({ age: 30 })]);
+    expect(out.detail).toContain('exclude "cr/"');
+  });
+
+  it('tells a rule inside the store prefix to be removed or retargeted, not narrowed', async () => {
+    for (const p of ['cr/registry/', 'cr/']) {
+      const out = await verdict([del({ age: 30, matchesPrefix: [p] })]);
+      expect(out.detail).toContain('remove it or retarget it to another prefix');
+      expect(out.detail).not.toContain('Narrow the rule');
+      expect(out.detail).not.toContain('no prefix');
+    }
+  });
+
+  it('gives both pieces of advice when one rule covers the store and another sits inside it', async () => {
+    const out = await verdict([
+      del({ age: 30, matchesPrefix: ['c'] }),
+      del({ age: 30, matchesPrefix: ['cr/ns/'] }),
+    ]);
+    expect(out.detail).toContain('Narrow the rule');
+    expect(out.detail).toContain('remove it or retarget it');
+  });
+
+  it('tells a store with no prefix to give it one, without an empty exclude', async () => {
+    const out = await verdict([del({ age: 30, matchesPrefix: ['other/'] })], null);
+    expect(out.status).toBe('problem');
+    expect(out.detail).not.toContain('exclude ""');
+    expect(out.detail).toContain('The store has no prefix');
+    expect(out.detail).toContain('give the store a prefix');
+    expect(out.detail).not.toContain('retarget');
+  });
+
+  it('names exactly MAX_NAMED_RULES problem rules without saying there are more', async () => {
+    const out = await verdict([1, 2, 3].map((age) => del({ age })));
+    expect(out.detail).toContain('"age":1}');
+    expect(out.detail).toContain('"age":2}');
+    expect(out.detail).toContain('"age":3}');
+    expect(out.detail).not.toContain('more');
+  });
+
+  it('cuts the store prefix at 64 characters in a problem and in an ok detail', async () => {
+    const long = 'p'.repeat(200);
+    const problem = await verdict([del({ age: 30 })], long);
+    expect(problem.status).toBe('problem');
+    expect(problem.detail).toMatch(/p{64}/);
+    expect(problem.detail).not.toMatch(/p{65}/);
+    const ok = await verdict([], long);
+    expect(ok.status).toBe('ok');
+    expect(ok.detail).toMatch(/p{64}/);
+    expect(ok.detail).not.toMatch(/p{65}/);
   });
 });
 

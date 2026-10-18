@@ -88,6 +88,10 @@ const label = (rule: LifecycleRule): string => {
   return `${id}(prefix ${JSON.stringify(cut(rulePrefix(rule), MAX_FIELD))})`;
 };
 
+/** Whether a rule's prefix is the store's or longer, so narrowing it cannot exclude the store's prefix. */
+const sitsInside = (rule: LifecycleRule, prefix: string): boolean =>
+  prefix !== '' && rulePrefix(rule).startsWith(prefix);
+
 /** Whether an abort-incomplete-upload rule covers generation keys, `<prefix><ns>/segments/…`, not only `<prefix>registry/`. */
 function coversGenerations(rule: LifecycleRule, prefix: string): boolean {
   const own = rulePrefix(rule);
@@ -114,10 +118,13 @@ const INFREQUENT_ADVICE =
 function judgeRules(rules: readonly LifecycleRule[], prefix: string): LifecycleVerdict {
   const live = rules.filter((r) => isEnabled(r) && overlaps(rulePrefix(r), prefix));
   const untagged = live.filter((r) => !hasTagFilter(r));
-  const problems = untagged.flatMap((r) => {
+  const threats = untagged.flatMap((r) => {
     const how = threat(r);
-    return how === undefined ? [] : [`rule ${label(r)} ${how}`];
+    return how === undefined
+      ? []
+      : [{ text: `rule ${label(r)} ${how}`, inside: sitsInside(r, prefix) }];
   });
+  const problems = threats.map((t) => t.text);
   const transitionsTo = (classes: ReadonlySet<string>): boolean =>
     untagged.some((r) =>
       (r.Transitions ?? []).some(
@@ -138,16 +145,24 @@ function judgeRules(rules: readonly LifecycleRule[], prefix: string): LifecycleV
     const named = problems.slice(0, MAX_NAMED_RULES).join('; ');
     const more =
       problems.length > MAX_NAMED_RULES ? ` and ${problems.length - MAX_NAMED_RULES} more` : '';
+    const quoted = JSON.stringify(cut(prefix, MAX_FIELD));
+    const narrow = `Narrow the rule's prefix to exclude ${quoted}, or restrict it to noncurrent versions.`;
+    const retarget =
+      `A rule that sits inside ${quoted} cannot be narrowed to exclude it: remove it or retarget it to another ` +
+      'prefix, or restrict it to noncurrent versions.';
     const where =
       prefix === ''
         ? 'The store has no prefix, so every bucket-wide or prefixed rule can reach it: give the store a prefix, ' +
-          'or scope the rule away from its paths'
-        : `Narrow the rule's prefix to exclude ${JSON.stringify(cut(prefix, MAX_FIELD))}`;
+          'or scope the rule away from its paths.'
+        : [
+            threats.some((t) => !t.inside) ? narrow : '',
+            threats.some((t) => t.inside) ? retarget : '',
+          ]
+            .filter((x) => x !== '')
+            .join(' ');
     return {
       status: 'problem',
-      detail:
-        `${named}${more}. The store keeps current objects it must be able to read back. ${where}` +
-        `${prefix === '' ? '' : ', or restrict it to noncurrent versions'}.${advice}`,
+      detail: `${named}${more}. The store keeps current objects it must be able to read back. ${where}${advice}`,
     };
   }
   return {

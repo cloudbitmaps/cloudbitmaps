@@ -260,6 +260,54 @@ describe('S3Storage.checkLifecycle: a rule that must be a problem, and its safe 
     expect(out.detail).toContain('give the store a prefix');
   });
 
+  it('tells a prefixed store how to narrow a covering rule, without the no-prefix text', async () => {
+    const out = await verdict([rule(prefixed('c', days()))]);
+    expect(out.status).toBe('problem');
+    expect(out.detail).toContain('exclude "cr/"');
+    expect(out.detail).toContain('noncurrent versions');
+    expect(out.detail).not.toContain('no prefix');
+    expect(out.detail).not.toContain('retarget');
+  });
+
+  it('tells a rule inside the store prefix to be removed or retargeted, not narrowed', async () => {
+    const out = await verdict([rule(prefixed('cr/registry/', days()))]);
+    expect(out.status).toBe('problem');
+    expect(out.detail).toContain('remove it or retarget it to another prefix');
+    expect(out.detail).not.toContain('Narrow the rule');
+    expect(out.detail).not.toContain('no prefix');
+  });
+
+  it('treats a rule on exactly the store prefix as inside it', async () => {
+    const out = await verdict([rule(prefixed('cr/', days()))]);
+    expect(out.detail).toContain('remove it or retarget it');
+    expect(out.detail).not.toContain('Narrow the rule');
+  });
+
+  it('gives both pieces of advice when one rule covers the store and another sits inside it', async () => {
+    const out = await verdict([rule(prefixed('c', days())), rule(prefixed('cr/ns/', days()))]);
+    expect(out.detail).toContain('Narrow the rule');
+    expect(out.detail).toContain('remove it or retarget it');
+  });
+
+  it('names exactly MAX_NAMED_RULES problem rules without saying there are more', async () => {
+    const three = [0, 1, 2].map((i) => rule(prefixed('cr/', days()), 'Enabled', `rule-${i}`));
+    const out = await verdict(three);
+    for (const i of [0, 1, 2]) expect(out.detail).toContain(`"rule-${i}"`);
+    expect(out.detail).not.toContain('more');
+  });
+
+  it('cuts the store prefix at 64 characters in a problem and in an ok detail', async () => {
+    const long = 'p'.repeat(200);
+    const problem = await verdict([rule(`<Filter></Filter>${days()}`)], long);
+    expect(problem.status).toBe('problem');
+    expect(problem.detail).toMatch(/p{64}/);
+    expect(problem.detail).not.toMatch(/p{65}/);
+    const ok = await verdict([], long);
+    expect(ok.status).toBe('ok');
+    expect(ok.detail).toMatch(/p{64}/);
+    expect(ok.detail).not.toMatch(/p{65}/);
+  });
+
   it('reads the prefix as the key builders do', async () => {
     expect((await verdict([rule(prefixed('cr/', days()))], '/cr//')).status).toBe('problem');
     expect((await verdict([rule(prefixed('crx/', days()))], '/cr//')).status).toBe('ok');

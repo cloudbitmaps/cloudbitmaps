@@ -779,7 +779,8 @@ export interface StorageBackend {
  * - `ok`: no rule that could delete or archive the store's objects. `detail` may still carry advice, such as a missing
  *   rule that cleans up abandoned multipart uploads, which is never a `problem` by itself.
  * - `problem`: a rule that deletes or archives the store's current objects, or one that cannot be told apart from it.
- *   Where a rule is unclear (a condition the check does not interpret), the check reports a `problem`.
+ *   Where a rule is unclear, the check reports a `problem`: a condition it does not interpret, or a value it does not
+ *   recognise (a storage class, an action).
  * - `unchecked`: the check could not be made (no permission to read the configuration, an error, or a backend whose
  *   rules are out of the data plane's reach). `detail` says what to grant or how to check by hand.
  */

@@ -55,7 +55,10 @@ describe('AzureBlobStorage.checkLifecycle', () => {
     expect(detail).toContain('applies to every blob in the account');
     expect(detail).toContain('tierToArchive');
     expect(detail).toContain('delete');
-    expect(detail).toContain('blobIndexMatch');
+    expect(detail).toContain(
+      'either has a blobIndexMatch filter or has a prefixMatch that overlaps nothing in "box/cr/"',
+    );
+    expect(detail).not.toContain('unless');
   });
 
   it('names the whole container when the store has no prefix', async () => {
