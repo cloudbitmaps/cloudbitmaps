@@ -580,7 +580,7 @@ describe('runPreflight: a fault at each step is a finding, never a throw', () =>
     expect(gens[0]).toBe(2 ** 48 - 1);
   });
 
-  it('M1: an entropy source that throws is a write problem; registry and lifecycle still run', async () => {
+  it('an entropy source that throws is a write problem; registry and lifecycle still run', async () => {
     const r = rig();
     const rest = r.deps;
     for (const entropy of [
@@ -613,7 +613,7 @@ describe('runPreflight: a fault at each step is a finding, never a throw', () =>
     expect(await r.present()).toEqual([]);
   });
 
-  it('M1: a store whose runtime has no Web Crypto reports it instead of throwing', async () => {
+  it('a store whose runtime has no Web Crypto reports it instead of throwing', async () => {
     const memory = new MemoryStorage();
     const store = new CloudRoaring({
       storage: memory,
