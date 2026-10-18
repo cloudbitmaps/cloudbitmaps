@@ -806,17 +806,17 @@ function assertEntrySdkFree(pkgDir) {
 /**
  * No declaration the flavor ships imports the `roaring` package, so no public signature can name one of its types.
  * `deserializePortable` returns the library's own `ReadonlyBitmap`; a signature that named `roaring`'s class again
- * would put `import ... from 'roaring'` back into the emitted `.d.ts`, and a consumer without that package's types
+ * would put `import ... from 'roaring'`, or a `/// <reference types="roaring" />` directive, back into the emitted
+ * `.d.ts`, and a consumer without that package's types
  * would see `any`.
  */
 function assertNoRoaringTypesInDeclarations(pkgDir) {
   const { readFileSync } = require('node:fs');
-  const { blankComments } = require('./dts-specifiers.cjs');
+  const { namesPackage } = require('./dts-specifiers.cjs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
-  const NAMES_ROARING = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*(['"])roaring\1/;
   const files = declarationFiles(dist);
   for (const file of files) {
-    if (NAMES_ROARING.test(blankComments(readFileSync(path.join(dist, file), 'utf8')))) {
+    if (namesPackage(readFileSync(path.join(dist, file), 'utf8'), 'roaring')) {
       throw new Error(
         `@cloudbitmaps/${pkgDir}: dist/${file} imports the \`roaring\` package. No public signature may name one ` +
           `of its types: return the library's own type (see \`ReadonlyBitmap\`).`,

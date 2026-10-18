@@ -270,10 +270,9 @@ The `store.load` row lists the guards and what throws instead.
 format, or `{ bitmap }`, any `PortableBitmap` (an object with `serialize('portable')`, such as `roaring`'s
 `RoaringBitmap32`, and optionally `getSerializationSizeInBytes('portable')`, which lets a load refuse one over the cap
 before serializing it), which is loaded as `{ serialized: bitmap.serialize('portable') }`, serialized once at the
-call. A
-bare `RoaringBitmap32` from the `roaring` this package uses, or a bitmap `deserializePortable` returned, passed as ids,
-is loaded as `{ bitmap }`. Bitmap bytes are
-capped at 537,403,396 bytes (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, and
+call. A bare `RoaringBitmap32` from the `roaring` this package uses, or a bitmap `deserializePortable` returned, passed
+as ids, is loaded as `{ bitmap }`. Bitmap bytes are capped at 537,403,396 bytes (more than any canonical 32-bit bitmap
+serializes to), must hold exactly one bitmap, and
 are checked structurally and decoded by the safe deserializer before the first request; malformed or oversized
 bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then
 cut from the bitmap's own containers, with no per-id work, and the generation holds chunk for chunk what the same ids
@@ -288,8 +287,9 @@ whatever the segment's size, and writes the same object an unsorted load of the 
 id lower than the one before throws `ValidationError` naming its position. The row, the number and the key are settled
 before the first id is read. An error the ids raise reaches the caller as the very object raised, never seen by the
 storage driver, and a storage driver that runs its write again gets `IntegrityError`. With `{ serialized }`, `{ bitmap
-}`, a bitmap `deserializePortable` returned or a `RoaringBitmap32` of this package's `roaring` (one from another copy loads as its ids, and takes `sorted`), and
-as a value that is not a boolean, it throws `ValidationError` before any request; the `*Into` verbs do not take it
+}`, a bitmap `deserializePortable` returned or a `RoaringBitmap32` of this package's `roaring` (one from another copy
+loads as its ids, and takes `sorted`), and as a value that is not a boolean, it throws `ValidationError` before any
+request; the `*Into` verbs do not take it
 ([ids that already ascend](loading.md#what-a-load-accepts)).
 
 ### Decode portable bytes — `deserializePortable(bytes)`
@@ -302,9 +302,12 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 
 `ReadonlyBitmap` is a type of this library's own, exported as a type. It is a `PortableBitmap` and an
 `Iterable<number>` with `size` (how many ids it holds) and `has(id)`. Iterating it yields its ids ascending, which is a
-promise. A load takes it as `{ bitmap }`, or bare where ids go, and the library keeps no reference to it. Its class is
-not part of the contract: do not cast it and do not test it with `instanceof`. For the rest of a Roaring library's API
-(set algebra, `toArray`, and so on) decode its portable bytes with that library, after the check:
+promise. `serialize` takes exactly `'portable'`, and any other call throws `ValidationError`. The bitmap
+`deserializePortable` returned has only these members, and a call to any other throws `TypeError`. A load takes it as
+`{ bitmap }`, and the bitmap `deserializePortable` returned also loads bare where ids go; the library keeps no reference
+to it. Its class is not part of the contract: do not cast it and do not test it with `instanceof`. For the rest of a
+Roaring library's API (set algebra, `toArray`, and so on) decode its portable bytes with that library, after the
+check:
 
 ```ts
 const checked = deserializePortable(bytes); // ValidationError if malformed

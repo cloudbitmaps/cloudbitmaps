@@ -114,7 +114,21 @@ function rewriteSpecifiers(source, fix) {
   return { text, count: edits.length };
 }
 
+/**
+ * Whether a declaration file names the package `name`: an `import`, `export … from`, `require` or `import()` of it, or
+ * a `/// <reference types="name" />` directive. The directive is matched on the raw text, before comments are
+ * blanked, because it is a comment; the other forms are matched after, so prose that shows an import does not count.
+ */
+function namesPackage(source, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const directive = new RegExp(`^\\s*///\\s*<reference\\s+types\\s*=\\s*(['"])${escaped}\\1`, 'm');
+  if (directive.test(source)) return true;
+  const specifier = new RegExp(`(?:\\bfrom|\\bimport|\\brequire)\\s*\\(?\\s*(['"])${escaped}\\1`);
+  return specifier.test(blankComments(source));
+}
+
 module.exports = {
+  namesPackage,
   blankComments,
   scanSpecifiers,
   findSpecifiers,

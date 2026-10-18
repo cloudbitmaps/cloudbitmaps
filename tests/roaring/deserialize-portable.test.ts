@@ -1,6 +1,7 @@
 import roaring from 'roaring';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage, ValidationError, deserializePortable } from '@/index';
+import { SafeBitmap } from '@/roaring-codec';
 import type { LoadInput, PortableBitmap, ReadonlyBitmap } from '@/index';
 import { MAX_SERIALIZED_LOAD_BYTES, decodeSerialized } from '@/core/load-input';
 import type { CodecInterface } from '@/core/codec';
@@ -284,6 +285,74 @@ describe('a decoded bitmap, loaded', () => {
     await expect(store.load(SEG, decoded, { sorted: true })).rejects.toBeInstanceOf(
       ValidationError,
     );
+  });
+});
+
+describe('a decoded bitmap is a read-only view', () => {
+  const decode = (): ReadonlyBitmap => deserializePortable(sample().serialize('portable'));
+  type Loose = Record<string, (...args: unknown[]) => unknown>;
+  const stale = [
+    'add',
+    'addMany',
+    'remove',
+    'removeMany',
+    'orInPlace',
+    'andInPlace',
+    'andNotInPlace',
+    'xorInPlace',
+    'clone',
+    'toArray',
+    'toUint32Array',
+    'isEmpty',
+    'minimum',
+    'maximum',
+    'rank',
+    'select',
+    'contentToString',
+    'runOptimize',
+    'getSerializationSizeInBytes',
+  ];
+
+  it.each(stale)('a call to %s written for a RoaringBitmap32 throws TypeError', (name) => {
+    const decoded = decode() as unknown as Loose;
+    const before = [...(decoded as unknown as ReadonlyBitmap)];
+    expect(() =>
+      (decoded[name] as (...args: unknown[]) => unknown)(new RoaringBitmap32([1])),
+    ).toThrow(TypeError);
+    expect([...(decoded as unknown as ReadonlyBitmap)]).toEqual(before);
+  });
+
+  it.each([
+    ['croaring', ['croaring']],
+    ['uint32_array', ['uint32_array']],
+    ['false', [false]],
+    ['no argument', []],
+    ['an output buffer as a second argument', ['portable', new Uint8Array(8)]],
+  ] as const)('serialize refuses %s with a ValidationError', (_name, args) => {
+    const decoded = decode() as unknown as { serialize(...a: unknown[]): unknown };
+    expect(() => decoded.serialize(...args)).toThrow(ValidationError);
+  });
+
+  it('serialize names what it got', () => {
+    const decoded = decode() as unknown as { serialize(...a: unknown[]): unknown };
+    expect(() => decoded.serialize('uint32_array')).toThrow(/'uint32_array'/);
+  });
+
+  it('is not a SafeBitmap, and its prototype chain names the four members and nothing else', () => {
+    const decoded = decode();
+    expect(decoded).not.toBeInstanceOf(SafeBitmap);
+    const names: Array<string | symbol> = [];
+    for (let o = Object.getPrototypeOf(decoded); o !== null && o !== Object.prototype;) {
+      names.push(...Object.getOwnPropertyNames(o), ...Object.getOwnPropertySymbols(o));
+      o = Object.getPrototypeOf(o);
+    }
+    expect(Object.getOwnPropertyNames(decoded)).toEqual([]);
+    expect(
+      names
+        .filter((n) => n !== 'constructor')
+        .map(String)
+        .sort(),
+    ).toEqual(['Symbol(Symbol.iterator)', 'has', 'serialize', 'size'].sort());
   });
 });
 

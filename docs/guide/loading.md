@@ -93,11 +93,11 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
 - **Ascending, with repeats.** An id equal to the one before it is skipped. An id lower than the one before it throws
   `ValidationError` naming its position and never the id (`ids[41]: lower than the id before it; …`): sort at the
   source, or leave `sorted` off. A bad id is refused as it is without the option, at its position.
-- **For ids only.** With `{ serialized }`, `{ bitmap }`, a bitmap `deserializePortable` returned, or a `RoaringBitmap32` of
-  the `roaring` this package uses,
-  `sorted: true` throws `ValidationError` before any request: those are held whole already and written from their own
-  containers. A bitmap from another copy of `roaring` loads as the ids it iterates, which ascend, so it takes `sorted`.
-  A `sorted` that is not a boolean throws too. The `*Into` verbs do not take it.
+- **For ids only.** With `{ serialized }`, `{ bitmap }`, a bitmap `deserializePortable` returned, or a
+  `RoaringBitmap32` of the `roaring` this package uses, `sorted: true` throws `ValidationError` before any request:
+  those are held whole already and written from their own containers. A bitmap from another copy of `roaring` loads as
+  the ids it iterates, which ascend, so it takes `sorted`. A `sorted` that is not a boolean throws too. The `*Into`
+  verbs do not take it.
 - **The segment is judged before an id is read.** The row and its refusals (a destroyed segment, an encrypted one the
   load has no keystore for, `requireEncryption` on a cleartext one), the generation number and the key are all settled
   first, so a load refused there reads none of your ids.
@@ -162,9 +162,9 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 - **It holds more than the bitmap.** At its peak a bitmap load holds a decoded copy of the bitmap and its
   re-encoded bytes, each about the size of the serialization, on top of the bytes you passed and what the backend
   buffers of the object it writes (one 8 MiB part on S3).
-- **A bare bitmap `deserializePortable` returned, or a bare `RoaringBitmap32`, passed where ids go takes the same path**,
-  the `RoaringBitmap32` when it comes from the copy of `roaring` that `@cloudbitmaps/roaring` uses. One from another copy is loaded as the ids it iterates, which is correct and slower;
-  `{ bitmap }` works with either.
+- **A bare bitmap `deserializePortable` returned takes the same path where ids go, and so does a bare
+  `RoaringBitmap32` from the copy of `roaring` that `@cloudbitmaps/roaring` uses.** A `RoaringBitmap32` from another
+  copy loads as the ids it iterates, which is correct and slower; `{ bitmap }` works with either.
 - **A byte array is not ids.** A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids is refused with
   `ValidationError`, because each byte would be loaded as an id. Pass bytes as `{ serialized }`, and ids as a
   `Uint32Array` or an array of numbers. Every other typed array is ids. The refusal is made when the load runs: a byte
@@ -223,9 +223,10 @@ export async function loadParts(
   `Uint8Array`, which a Node `Buffer` is. What it returns is a `ReadonlyBitmap`, with `size`, `has(id)`, ascending
   iteration and `serialize('portable')`; the rest of `roaring`'s API (the union here) is reached by decoding its bytes
   with `roaring`, which is the second line of the map.
-- **The recipe pays a second serialize and decode per part.** The decode is made from the checked bitmap's own bytes,
-  never from the bytes you were sent: a `SharedArrayBuffer` can change between the check and a decode of the original,
-  and the library copies a shared buffer only for its own decode. A single part that needs no joining goes straight to
+- **The recipe costs about three passes over a part where a native decode makes one.** Each part's bytes are decoded
+  twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the bytes you
+  were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library copies a
+  shared buffer only for its own decode. A single part that needs no joining goes straight to
   `store.load(ref, { serialized: bytes })`.
 - **Overlap is refused by the size check.** `orMany` merges parts that share ids without a word, so a range that two
   workers both built would load as if nothing were wrong. The members of disjoint parts add up to the members of their

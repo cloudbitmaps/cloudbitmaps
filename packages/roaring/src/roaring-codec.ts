@@ -20,7 +20,7 @@ import type {
   LoadInput,
   PortableBitmap,
 } from '@cloudbitmaps/core';
-import { IntegrityError, decodeSerialized } from '@cloudbitmaps/core';
+import { IntegrityError, ValidationError, decodeSerialized } from '@cloudbitmaps/core';
 import { checkPortableLayout, containerPayloads } from './portable/layout';
 
 const { RoaringBitmap32, SerializationFormat, DeserializationFormat } = roaring;
@@ -204,7 +204,7 @@ export class SafeBitmap implements CodecBitmap {
  * iterates, which is correct and slower.
  */
 export function bitmapAsLoadInput(input: LoadInput): LoadInput {
-  return input instanceof RoaringBitmap32 || input instanceof SafeBitmap
+  return input instanceof RoaringBitmap32 || input instanceof ReadonlyRoaringView
     ? { bitmap: input as PortableBitmap }
     : input;
 }
@@ -225,14 +225,56 @@ export const roaringCodec: CodecInterface = {
 /**
  * A decoded bitmap that can only be read: what {@link deserializePortable} returns. Its ids come out ascending when
  * it is iterated, which is a promise. It is a `PortableBitmap`, so a load takes it as `{ bitmap }`, and the library
- * keeps no reference to it. Its class is not part of the contract: do not cast it and do not test it with
- * `instanceof`. For the rest of a Roaring library's API, decode its portable bytes with that library.
+ * keeps no reference to it. What {@link deserializePortable} returns has these members only: a call to any other
+ * throws `TypeError`, it has no `getSerializationSizeInBytes`, and `serialize` takes exactly `'portable'`. Its class
+ * is not part of the contract: do not cast it and do not test it with `instanceof`. For the rest of a Roaring
+ * library's API, decode its portable bytes with that library.
  */
 export interface ReadonlyBitmap extends PortableBitmap, Iterable<number> {
   /** How many ids it holds. */
   readonly size: number;
   /** Whether it holds `id`. */
   has(id: number): boolean;
+}
+
+/**
+ * What {@link deserializePortable} returns: a decoded bitmap with the four members of {@link ReadonlyBitmap} and
+ * nothing else, so a call written for a `RoaringBitmap32` (`add`, `andInPlace`, `toArray`, …) throws `TypeError`
+ * rather than changing the bitmap or answering wrongly. The decoded bitmap sits in a private field. It is not
+ * exported from the package.
+ */
+class ReadonlyRoaringView implements ReadonlyBitmap {
+  readonly #bitmap: SafeBitmap;
+
+  constructor(bitmap: SafeBitmap) {
+    this.#bitmap = bitmap;
+  }
+
+  get size(): number {
+    return this.#bitmap.size;
+  }
+
+  has(id: number): boolean {
+    return this.#bitmap.has(id);
+  }
+
+  [Symbol.iterator](): IterableIterator<number> {
+    return this.#bitmap[Symbol.iterator]();
+  }
+
+  /** The portable bytes, for exactly the argument `'portable'`; any other call is a `ValidationError`. */
+  serialize(...args: unknown[]): Uint8Array {
+    if (args.length !== 1 || args[0] !== 'portable') {
+      const got =
+        args.length === 0
+          ? 'no argument'
+          : args.map((a) => (typeof a === 'string' ? `'${a}'` : typeof a)).join(', ');
+      throw new ValidationError(
+        `a decoded bitmap serializes only as serialize('portable'); got ${got}`,
+      );
+    }
+    return this.#bitmap.serialize();
+  }
 }
 
 /**
@@ -243,5 +285,5 @@ export interface ReadonlyBitmap extends PortableBitmap, Iterable<number> {
  * @throws {ValidationError} for bytes that are not exactly one well-formed portable bitmap, as a load refuses them.
  */
 export function deserializePortable(bytes: Uint8Array): ReadonlyBitmap {
-  return decodeSerialized(bytes, roaringCodec) as SafeBitmap;
+  return new ReadonlyRoaringView(decodeSerialized(bytes, roaringCodec) as SafeBitmap);
 }
