@@ -103,6 +103,21 @@ describe('S3Storage.checkLifecycle: a rule that must be a problem, and its safe 
     expect(out.detail).toMatch(/expires current objects|moves current objects/);
   });
 
+  it.each([
+    [
+      'the second of two transitions',
+      transition('STANDARD_IA', 30) + transition('GLACIER', 90),
+      'GLACIER',
+    ],
+    ['a transition on day 0', transition('GLACIER', 0), 'GLACIER'],
+    ['a transition to DEEP_ARCHIVE on day 0', transition('DEEP_ARCHIVE', 0), 'DEEP_ARCHIVE'],
+  ])('names the archive class of %s, as one it knows', async (_name, inner, storageClass) => {
+    const out = await verdict([rule(prefixed('cr/', inner))]);
+    expect(out.status).toBe('problem');
+    expect(out.detail).toContain(`moves current objects to ${storageClass}`);
+    expect(out.detail).not.toContain('does not know');
+  });
+
   it('names the class of a transition it does not know, as a problem', async () => {
     const out = await verdict([rule(prefixed('cr/', transition('COLD_ARCHIVE_X')))]);
     expect(out.status).toBe('problem');
