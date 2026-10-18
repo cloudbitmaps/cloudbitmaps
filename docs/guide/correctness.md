@@ -593,7 +593,9 @@ because deleting the row is what makes the name writable again:
    when the tombstone landed, the sweep collects it first, then purges. (The collection takes every generation of a
    destroyed row, and nothing else would ever run it for a tombstoned segment.) Only if storage still cannot be proven
    gone does the row stay, with `tombstone-not-empty`. Without the row the collection can no longer see the segment at
-   all, and the objects would be billed forever. That reason also covers the case where the collection declined because
+   all, and the objects would be billed forever. The collection is held to the tombstone the sweep is working: if
+   another sweep or a delete purged it and the name was loaded again meanwhile, the collection refuses the new row
+   and deletes nothing of it. That reason also covers the case where the collection declined because
    the row changed under it. That is not a storage fault, and the next cycle simply retries.
 
 **What the purge removes.** On a backend whose registry can delete a row only while it is unchanged, the purge removes
@@ -903,7 +905,8 @@ repaired. These limits hold on every driver:
   trip between the collection's re-read of the row and its delete, which is the rollback case above.
 - `dropSegment`'s sweep, and the retention sweep's collection of a tombstoned segment, delete by number every object a
   listing names under a `destroyed` row. Every writer refuses that row, so a number there is taken again only once the
-  row is purged and the name re-created.
+  row is purged and the name re-created. The retention sweep's collection, and an erasure's under a tombstone, are
+  held to the row they worked from and refuse a re-created one, so they cannot delete its generations.
 
 **The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (an internal function of the engine) over every registered segment, and each ledger entry is that function's result.
 
@@ -936,7 +939,10 @@ repaired. These limits hold on every driver:
   [the first rule](erasure.md#three-rules-while-you-erase) asks you not to run.
 - A tombstoned row has its bucket searched too. A crypto-shred leaves objects no key opens, but a cleartext destroy, a
   drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
-  id, every object under the tombstone is deleted and the entry reads `erased: true`. Otherwise the result is
+  id, every object under the tombstone is deleted and the entry reads `erased: true`. The collection is held to the
+  row the call searched: if the name was purged and loaded again before the collection read the row, the row it
+  finds is another segment's, and the collection throws `WriteConflictError` and deletes nothing, so the new row's
+  generations stay and no `segment.collect` event names them. Otherwise the result is
   `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
 - An object no read of the segment can open (on an encrypted segment, one sealed under a key the row does not hold; on
   a cleartext one with a generation, an encrypted one) is deleted as a holder whatever the id, wherever the call meets
