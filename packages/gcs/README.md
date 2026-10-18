@@ -56,16 +56,16 @@ It builds its own client from Application Default Credentials. Any other key is 
 
 - **This backend is outside the validated envelope.** It passes the same conformance suites as S3, but the proven
   scale and the calibration were done on S3. You are an early user.
-- **Run `await store.preflight()` once before the first load.** It writes, rewrites, reads, lists and deletes one probe
+- **Run `await store.preflight()` once before the first load.** It writes, tries to write again, reads, lists and deletes one probe
   object, and reads the registry and the bucket's lifecycle rules (`storage.buckets.get` for the last), and answers
-  `{ ok, checks }`. It does not check a read after a delete or versioning.
+  `{ ok, checks }`. It does not check a read after a delete or versioning, among others: [the full list](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#what-preflight-does-not-check). A first run is eight requests here.
 - **Grant the bucket's object permissions.** The library creates, reads, lists and deletes objects:
   `roles/storage.objectAdmin` covers all four.
 - **The write-once guarantee rides GCS preconditions** (`ifGenerationMatch`), so nothing else needs enabling.
 - **Never add a lifecycle rule that expires current objects or the `registry/` prefix.**
 - **Check the bucket's lifecycle rules with `await backend.checkLifecycle()`.** It reads the bucket's metadata with one
   request (bounded by `readTimeoutMs`, when set) and answers `problem` for a `Delete` rule that applies to live objects and can match your prefix, `ok`, or
-  `unchecked`. It needs `storage.buckets.get`, which the store itself never uses and `roles/storage.objectAdmin` does
+  `unchecked`. It needs `storage.buckets.get`, which a load never uses, `store.preflight()`'s lifecycle step does, and `roles/storage.objectAdmin` does
   not include: without it the answer is `unchecked`, naming the permission
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
 - **The SDK does not retry downloads; the driver does.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and

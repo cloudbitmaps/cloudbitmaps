@@ -5,10 +5,10 @@ checklist: work down the table, and follow each link for the detail.
 
 | Check | Why it matters | Where |
 |---|---|---|
-| `await store.preflight()` is `ok` on a first run | It finds a missing permission, a storage that overwrites, a lagging listing and a lifecycle rule before the first load | [Check the setup](#check-the-setup-with-storepreflight) |
+| `await store.preflight()` passes on a first run: every check is `ok`, or each `unchecked` one has been checked by hand | It finds a missing permission, a storage that overwrites and a lagging listing before the first load, and a lifecycle rule where the backend can read the rules. `ok` does not vouch for an `unchecked` check, and `lifecycle` is `unchecked` under the documented permissions | [Check the setup](#check-the-setup-with-storepreflight) |
 | Permissions are granted for the actions the library issues | A missing action fails a load or, on S3, turns a missing pointer into a `403`. Checked by `store.preflight()`, except `s3:AbortMultipartUpload` | [Permissions](#permissions) |
 | An abort rule for incomplete uploads is on the bucket | A killed process leaves multipart parts that are billed but invisible | [Bucket lifecycle](#bucket-lifecycle) |
-| Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable. Checked by `store.preflight()` where the backend can read the rules | [Bucket lifecycle](#bucket-lifecycle) |
+| Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable. Checked by `store.preflight()` where the backend can read the rules and the identity may (otherwise its `lifecycle` check is `unchecked`: look yourself) | [Bucket lifecycle](#bucket-lifecycle) |
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes and is strongly consistent, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten, and a check that a delete landed can be wrong. `store.preflight()` checks that a second write is refused and that a read and a listing see a write, not the registry's `If-Match` or a read after a delete | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
@@ -28,7 +28,8 @@ Run it once on a first run or at deploy time, before the first load, under the i
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'cr' }) });
 const report = await store.preflight();
 for (const c of report.checks) if (c.status !== 'ok') console.log(`${c.name}: ${c.status}: ${c.detail}`);
-if (!report.ok) process.exit(1);
+// Exit on both branches: after its 30 s give-up the lifecycle request may still be running, and would hold the process open.
+process.exit(report.ok ? 0 : 1);
 ```
 
 ```
@@ -45,41 +46,54 @@ a failed step the error's name and message.
 
 | Check | What it does | It is a `problem` when |
 |---|---|---|
-| `registry` | One read of the probe's registry row, and a look at whether the registry can write | The read fails (no permission, a missing bucket, an S3 SDK older than the floor); a row exists at the probe's address; the registry reads but cannot write in this runtime |
+| `registry` | One read of the probe's registry row, and a look at whether the registry can write | The read fails (no permission, a missing bucket); a row exists at the probe's address; the registry reads but cannot write in this runtime |
 | `write` | Writes a small new object, the probe | The write fails |
-| `write-once` | Writes the same key again | The second write succeeds, so the storage can overwrite a generation; or it fails for a reason other than the key existing |
+| `write-once` | Writes the same key again | The second write succeeds, so the storage can overwrite a generation (an S3 SDK of 3.640.0 or older, which drops `If-None-Match`, shows up here); or it fails for a reason other than the key existing |
 | `read` | Reads the object back | It is missing right after the write, or its bytes or size differ |
 | `list` | Lists the probe's segment | The listing does not name the probe, so a listing lags a write |
 | `delete` | Deletes the run's own object, with the version the read gave where the driver applies one | The delete fails: the detail names the object, which is left behind |
-| `lifecycle` | Calls the backend's [`checkLifecycle()`](#check-the-lifecycle-rules-from-code) | A rule would delete or archive the store's objects. A backend without the check, such as a third-party one or a `brandAsBackend` wrapper that does not forward it, gives `unchecked`; so does Azure Blob always, and so does a check that does not answer within 30 seconds (the fixed bound, counted on the store's clock), with the advice to run it again |
+| `lifecycle` | Calls the backend's [`checkLifecycle()`](#check-the-lifecycle-rules-from-code) | A rule would delete or archive the store's objects. It is `unchecked`, and `ok` stays true, when the identity lacks the two optional permissions (`s3:GetLifecycleConfiguration` on S3, `storage.buckets.get` on GCS: [neither is in the documented grants](#permissions), so this is the commonest reason); always on Azure Blob; for a backend without the check, such as a third-party one or a `brandAsBackend` wrapper that does not forward it; and when the check does not answer within 30 seconds (the fixed bound, counted on the store's clock), with the advice to run it again |
 
 **It never throws over a finding.** A step that fails, a transient fault included, is a `problem`, and for a transient
-fault the detail says to run `preflight()` again. A step whose answer another needs makes that one `unchecked`: if the
-write fails, `write-once`, `read`, `list` and `delete` are `unchecked`. The one throw is a store with no backend (a
-store built on a bare driver or a source of your own), which has nothing to check: `UnsupportedError`. `preflight()`
-takes no options.
+fault the detail says to run `preflight()` again. The exception is the lifecycle step, whose failures, its timeout
+included, are `unchecked`. A step whose answer another needs makes that one `unchecked`: if the write fails,
+`write-once`, `read`, `list` and `delete` are `unchecked`. Nothing a step meets escapes: an error or a verdict that
+cannot be read, a clock that fails, an entropy source that throws (that is a `write` problem naming it, with the other
+steps still run). The one throw is a store with no backend (a store built on a bare driver or a source of your own),
+which has nothing to check: `UnsupportedError`. `preflight()` takes no options.
 
 **The probe** is one object of about 30 bytes, at `cbm.due.preflight/segments/probe.<number>.crbm` under the store's
 prefix, where `<number>` is 48 random bits. That namespace is inside the reserved `cbm.due.` prefix, which no
 application ref can name, so the probe can never be one of your segments, and no registry row is written. No scan,
 sweep, erasure, export or collection reads a probe object or row as a segment. A run deletes only the object it wrote,
-by version where the driver applies one. A probe that another run left (cut off, or still running) is named in the
+by version where the driver applies one. The probe sits at `<prefix>cbm.due.preflight/`, outside the namespaces your application uses. The documented grant over everything under the prefix covers it, but a grant scoped per namespace, narrower than that, does not: it shows as a `write` problem for a store that loads fine. A probe that another run left (cut off, or still running) is named in the
 `list` detail and never deleted, since it could be a run in progress; delete it by hand if no run is. On `LocalFsStorage`
 the probe really is a file, and a run leaves two empty directories behind.
 
 **What it costs.** About seven requests: the registry read, two writes, a tail read, a listing, a delete and the
 lifecycle request (S3 and GCS; Azure Blob spends none on the lifecycle and one more on each of the second write and the
-tail read, so eight). GCS adds one listing the first time a driver sees a missing row. About $0.000016 a run on S3 (derived from the cost model's prices: three PUT-class and three GET-class requests).
+tail read, so eight). GCS adds one listing the first time a driver sees a missing row, which the probe's row always is on a first run, so a first run on GCS is eight. About $0.000016 a run on S3 (derived from the cost model's prices: three PUT-class and three GET-class requests; the seventh, the DELETE, is free).
 `MemoryStorage` and `LocalFsStorage` make no network request.
 
-**What it does not check**, so check it another way: a read after a delete (the listing proves a write, not a delete);
-the registry's `If-Match` on compare-and-swap; the multipart abort permission (`s3:AbortMultipartUpload`); versioning
-and backups; the keystore, which a first load fails early and typed on. [Permissions](#permissions), [Conditional writes
-and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and backups](#versioning-and-backups) cover the rest.
+### What preflight does not check
+
+So check it another way: a read after a delete (the listing proves a write, not a delete); the registry's `If-Match` on
+compare-and-swap; the multipart abort permission (`s3:AbortMultipartUpload`); versioning and backups; the keystore and
+its backup, which a first load fails early and typed on; and an S3 SDK from 3.641.0 to 3.699.0. An SDK of 3.640.0 or
+older drops `If-None-Match`, which shows as a `write-once` problem. One from 3.641.0 to 3.699.0 drops `If-Match` on
+`PutObject` only, which the registry's compare-and-swap needs; preflight cannot see that, because its registry check
+only reads and only a registry write refuses such an SDK. An SDK below 3.698.0 also drops `If-Match` on `DeleteObject`,
+which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check.
+[Permissions](#permissions), [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and
+backups](#versioning-and-backups) cover the rest.
 
 **Timing.** The lifecycle step is the only one with a bound of its own, because the drivers' `readTimeoutMs` defaults to
 none: after 30 seconds of the store's clock it stops waiting and the check is `unchecked`. The other steps are the store's
-ordinary calls and keep their timing, so one that hangs hangs the call; set `readTimeoutMs` where that matters.
+ordinary calls and keep their timing, so one that hangs hangs the call. `readTimeoutMs` bounds the registry read and the
+tail read; the two writes, the listing and the delete are untimed by the library, so bounding them takes a timeout on
+your client. The request the lifecycle step gave up on is not cancelled: at the default `readTimeoutMs` of `0` it runs on
+untimed and can hold a process open, so a deploy script exits explicitly once it has read the result, as the example does,
+on both branches.
 
 ## Permissions
 
@@ -107,8 +121,8 @@ four; a custom role needs `storage.objects.create`, `storage.objects.get`, `stor
 `Storage Blob Data Contributor` role on the container covers all of them. A connection string carries the account
 key, which grants far more: prefer a `containerClient` built from a managed identity.
 
-**Two optional permissions, for the identity that checks the lifecycle rules.** A store never needs them. They are
-read-only reads of the bucket's configuration, and the identity that runs [`checkLifecycle()`](#check-the-lifecycle-rules-from-code),
+**Two optional permissions, for the identity that checks the lifecycle rules.** A load never needs them; `store.preflight()`'s
+lifecycle step does use them. They are read-only reads of the bucket's configuration, and the identity that runs [`checkLifecycle()`](#check-the-lifecycle-rules-from-code),
 normally the store's own, needs one more: on S3, `s3:GetLifecycleConfiguration` on the bucket; on GCS,
 `storage.buckets.get` on the bucket, which `roles/storage.objectAdmin` does not include. Without it the check answers
 `unchecked` and names the permission. Azure Blob has no such permission to grant: its lifecycle policy is read through Azure Resource Manager, not

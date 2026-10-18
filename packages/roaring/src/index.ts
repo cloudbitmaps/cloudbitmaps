@@ -2838,8 +2838,8 @@ export class CloudRoaring {
    *
    * **Not checked:** read-after-delete, the registry's `If-Match` on compare-and-swap, multipart abort permission,
    * versioning, backups and the keystore's backup. Apart from the lifecycle read, which needs its own optional
-   * permission, it makes no request a load does not, and costs about seven requests (a first run on GCS makes eight,
-   * and Azure Blob always eight): two writes and a delete, the rest reads and one listing.
+   * permission, it makes no request that a load does not. A run costs about seven requests (a first run on GCS makes
+   * eight, and Azure Blob always eight): two writes and a delete, the rest reads and one listing.
    *
    * Throws {@link UnsupportedError}, and only that, for a store with no backend, since there is nothing to check.
    */

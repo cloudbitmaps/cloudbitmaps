@@ -20,13 +20,17 @@ so, and so do the module headers in the code.
   by version where the driver applies one) and `lifecycle` (the backend's `checkLifecycle()`). Each check is `ok`,
   `problem` or `unchecked` with a `detail` for a person, and `ok` is true when none is a `problem`. A finding never
   throws: a failed step, a transient fault included, is a `problem` whose detail says to run it again for a transient
-  fault, and the checks that need it are `unchecked`; the one throw is `UnsupportedError` for a store with no backend.
-  It takes no options and sends about seven requests (eight on Azure Blob). A backend without `checkLifecycle()` (a
-  third-party backend, or a `brandAsBackend` wrapper that does not forward it) is read as `unchecked`, and so is a
-  lifecycle check that has not answered in 30 seconds of the store's clock. The probe lives in `cbm.due.preflight`,
+  fault, except the lifecycle step, whose failures, its timeout included, are `unchecked`; the checks that need a failed
+  step are `unchecked`; the one throw is `UnsupportedError` for a store with no backend. It takes no options and sends
+  about seven requests (eight on Azure Blob, and on a first run on GCS): two writes, a delete and the rest reads and one
+  listing. A backend without `checkLifecycle()` (a third-party backend, or a `brandAsBackend` wrapper that does not
+  forward it) is read as `unchecked`, and so is a lifecycle check that has not answered in 30 seconds of the store's
+  clock, and one the identity may not make (`s3:GetLifecycleConfiguration`, `storage.buckets.get`); Azure Blob has the
+  method and always answers `unchecked`. The probe lives in `cbm.due.preflight`,
   inside the reserved prefix, so no segment can share its name and no scan or sweep reads it as one; a probe left by a
   run that was cut off is named and never deleted. Not checked: a read after a delete, the registry's `If-Match` on
-  compare-and-swap, the multipart abort permission, versioning and backups. The first-run prerequisites in the guide now
+  compare-and-swap, the multipart abort permission, versioning, backups, the keystore and an S3 SDK from 3.641.0 to
+  3.699.0 (an older SDK shows as a `write-once` problem). The first-run prerequisites in the guide now
   start from this call. See [check the setup with `store.preflight()`](docs/guide/production.md#check-the-setup-with-storepreflight).
 - **A storage backend can check the bucket's lifecycle rules: the optional `StorageBackend.checkLifecycle()`, exported
   from `@cloudbitmaps/core/driver-kit` with its `LifecycleVerdict`.** It resolves to `{ status: 'ok' | 'problem' |

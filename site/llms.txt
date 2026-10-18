@@ -142,7 +142,7 @@ store.rollback(ref, generation), to a generation still in the bucket (store.gene
 deletes nothing. Compliance is built in: subjectReport (Art. 15) and eraseSubject (Art. 17 -- a generation
 rewrite that deletes the generation holding the bit, and any other generation that holds it, so for every segment its ledger reports `erased: true` the
 bit is physically gone from the bucket when the call returns), both scoped by a `namespace` or
-`{ allNamespaces: true }`; dropSegment; checkConsistency; preflight -- a first-run check that writes, rewrites, reads, lists and deletes one probe object, reads the registry and asks the backend for its lifecycle verdict, answering { ok, checks } and never throwing over a finding; exportSegments -- eject every segment to portable roaring or ndjson,
+`{ allNamespaces: true }`; dropSegment; checkConsistency; preflight -- a first-run check that writes, tries to write again, reads, lists and deletes one probe object, reads the registry and asks the backend for its lifecycle verdict, answering { ok, checks } and never throwing over a finding; exportSegments -- eject every segment to portable roaring or ndjson,
 which is the exit path; and the crypto-shred free functions destroySegment and eraseNamespace, which take the
 backend's registry rather than the store, so a store beside them is told with store.invalidate(ref).
 

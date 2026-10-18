@@ -58,7 +58,8 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 - **Run `await store.preflight()` once before the first load.** It reads the registry, writes one probe object, writes the
   same key again (which must be refused), reads it back, lists it, deletes it and checks the lifecycle rules, with
   `s3:ListBucket`, `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject`, and `s3:GetLifecycleConfiguration` for the last. It does
-  not check `s3:AbortMultipartUpload`, the registry's `If-Match`, or a read after a delete.
+  not check `s3:AbortMultipartUpload`, the registry's `If-Match`, or a read after a delete, among others: [the full list](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#what-preflight-does-not-check). It
+  shows an SDK of 3.640.0 or older as a `write-once` problem, and cannot see one from 3.641.0 to 3.699.0, so the floor below stays yours to check. The probe sits at `<prefix>cbm.due.preflight/`, outside your application's namespaces: a grant scoped per namespace shows as a `write` problem.
 - **The bucket must honor conditional writes**: `If-None-Match: *` for a write-once generation and `If-Match` for the
   pointer. AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service that ignores the headers
   turns write-once into overwrite, so check yours before you depend on it. It must also be strongly consistent: a read
@@ -80,8 +81,8 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   ([bucket lifecycle](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#bucket-lifecycle)).
 - **Check the bucket's lifecycle rules with `await backend.checkLifecycle()`.** It reads the configuration with one
   request (bounded by `readTimeoutMs`, when set) and answers `ok`, `problem` (an enabled, untagged rule over your prefix that expires current objects or moves
-  them to `GLACIER`, `DEEP_ARCHIVE` or a class it does not know) or `unchecked`. It needs `s3:GetLifecycleConfiguration`, which the store itself
-  never uses: without it the answer is `unchecked`, naming the permission. A missing abort-incomplete-upload rule is
+  them to `GLACIER`, `DEEP_ARCHIVE` or a class it does not know) or `unchecked`. It needs `s3:GetLifecycleConfiguration`, which a load never uses and
+  `store.preflight()`'s lifecycle step does: without it the answer is `unchecked`, naming the permission. A missing abort-incomplete-upload rule is
   advice in `detail`, never a `problem`
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the

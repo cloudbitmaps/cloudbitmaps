@@ -96,16 +96,16 @@ give the method and what the numbers do not establish. To price your own store, 
 
 ## Before production
 
-- Run `await store.preflight()` once before the first load. It reads the registry, writes, rewrites, reads, lists and
+- Run `await store.preflight()` once before the first load. It reads the registry, writes, tries to write again, reads, lists and
   deletes one probe object and checks the backend's lifecycle rules, and answers `{ ok, checks }`; see [`store.preflight()`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-setup-with-storepreflight).
-  It does not check `s3:AbortMultipartUpload`, the registry's `If-Match`, or a read after a delete.
+  It does not check `s3:AbortMultipartUpload`, the registry's `If-Match`, or a read after a delete, among others: [the full list](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#what-preflight-does-not-check).
 - Grant the permissions the library issues and add a lifecycle rule to abort incomplete uploads. The S3 and GCS
   backends' `checkLifecycle()` read the bucket's rules and say whether one would delete or archive what the store
   keeps; Azure Blob's answers `unchecked` and says how to check by hand; `MemoryStorage` and `LocalFsStorage` have no
   rules and answer `ok`.
 - Use a bucket that honors conditional writes and is strongly consistent (a read or a listing made after a write or a
-  delete sees it), and `@aws-sdk/client-s3` 3.700.0 or later if you pass your own S3 client. Preflight reports an older SDK, a second write that
-  succeeds, and a read or listing that lags a write.
+  delete sees it), and `@aws-sdk/client-s3` 3.700.0 or later if you pass your own S3 client. Preflight reports a second write that succeeds (which is how an SDK of 3.640.0 or older shows) and a read or listing
+  that lags a write, but not an SDK from 3.641.0 to 3.699.0, which drops `If-Match` on `PutObject` only: the SDK floor stays yours to check.
 - Set a request timeout on your storage client. Reads retry by themselves, and a read can be timed on every backend (`readTimeoutMs`); a write that fails transiently is yours to re-run.
 - Back up the registry with the data, and the keystore too if you encrypt. If you lose the key, the data is gone.
 - Schedule your loads, and `retireExpired` if you use retention. Run loads off the request path.

@@ -481,7 +481,7 @@
   },
   {
     "entry": "@cloudbitmaps/roaring CloudRoaring.preflight",
-    "reason": "a new store method, agreed with the maintainer: a first-run check that reads the registry, writes, rewrites, reads, lists and deletes one probe object and asks the backend for its lifecycle verdict; it takes no options and never throws over a finding, only UnsupportedError for a store with no backend"
+    "reason": "a new store method, agreed with the maintainer: a first-run check that reads the registry, writes, tries to write again, reads, lists and deletes one probe object and asks the backend for its lifecycle verdict; it takes no options and never throws over a finding, only UnsupportedError for a store with no backend"
   },
   {
     "entry": "@cloudbitmaps/roaring PreflightResult*",
