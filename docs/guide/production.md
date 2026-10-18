@@ -67,9 +67,11 @@ prefix, where `<number>` is 48 random bits. That namespace is inside the reserve
 application ref can name, so the probe can never be one of your segments, and no registry row is written. No scan,
 sweep, erasure, export or collection reads a probe object or row as a segment. A run deletes only the object it wrote,
 by version where the driver applies one. The probe sits at `<prefix>cbm.due.preflight/`, outside the namespaces your application uses. The documented grant over everything under the prefix covers it, but a grant scoped per namespace, narrower than that, does not: it shows as a `write` problem for a store that loads fine, and as a `registry` problem too when the registry grant is scoped per namespace (the probe row's read at `<prefix>registry/cbm.due.preflight/probe.reg` is refused). A step's `detail` carries the error's name and message, cut to a length, as the driver raised it, so on `LocalFsStorage` an
-`EACCES` names the path of the probe file. A step that reads `no object was written` ran after a failed write, which is
-not proof that none landed: an SDK retry under it could have stored one, and a later run's `list` names it. A probe that another run left (cut off, or still running) is named in the
-`list` detail and never deleted, since it could be a run in progress; delete it by hand if no run is. On `LocalFsStorage`
+`EACCES` names a host path under the store's root. A step that reads `no object was written` ran after a failed write,
+which is not proof that none landed: a write that lost its response may have stored an object. The run deletes its key
+after a failed write, so a later run's `list` names the object only when that delete failed or the write landed after it. A probe that another run left (cut off, or still running) is named in the
+`list` detail and not deleted, since it could be a run in progress (the one exception is a probe left at the same 48-bit
+number, which another run's cleanup can remove); delete it by hand if no run is. On `LocalFsStorage`
 the probe really is a file, and a run leaves two empty directories behind.
 
 **What it costs.** About seven requests: the registry read, two writes, a tail read, a listing, a delete and the
@@ -574,9 +576,11 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
-would find itself already there and report a conflict. So the drivers send a conditional write once, and again only
+would find itself already there and report a conflict. So a driver sends a conditional write once, and again only
 where an id it carries tells a replay apart (a throttled object), and the load settles an unanswered registry write by
-reading the row. A fault those do not settle reaches you as `TransientError`, and the retry is yours.
+reading the row. The exception is Azure Blob, whose client's own retry can replay any write, a registry row included:
+the id tells a replay from another writer's object, and for a row that read-back is not definitive
+([how retries stay correct](correctness.md#how-retries-stay-correct)). A fault those do not settle reaches you as `TransientError`, and the retry is yours.
 
 Re-running a `load` is safe. It takes a fresh generation number and re-reads the pointer, so it publishes whether or
 not the first attempt landed, under every guard setting. Three things to know:
@@ -785,7 +789,9 @@ upload, which the SDK retries within its session, and the GCS registry's delete.
 random id in its metadata: every Azure Blob write, a GCS resumable upload, and an S3 or GCS object sent again after a
 throttle. When such a write reports a conflict, the backend reads the stored object back, and one that carries the
 write's own id is a success. For a generation's object that answer is definitive, since nothing overwrites it. A
-registry row is overwritten by compare-and-swap, so a writer that swaps in first makes a write that did land report a
-conflict, and the publish then reads the row again to find it. A registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to
+registry row is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the
+read-back, makes that write report a conflict. The publish then reads the row again, and finds its write only while the
+pointer still names its generation and the row's `pointerId` is its own write's; overtaken by a newer load, it answers
+`published: false, reason: 'superseded'`, and its `segment.load-refused` event does not carry `unanswered: true`. A registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to
 send twice because of its precondition. Each package's conditional writes, and what a tagged write does on a conflict, are in
 [How retries stay correct](correctness.md#how-retries-stay-correct).

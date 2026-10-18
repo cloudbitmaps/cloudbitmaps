@@ -80,8 +80,10 @@ so, and so do the module headers in the code.
 - **The guides no longer say a tagged write's random id "settles" a conflict.** The id tells a write's own landing from
   another writer's object when a conditional write reports a conflict, and the backend reads the stored object back to
   see it. For a generation's write-once object that answer is definitive. For a registry row it is not: a writer that
-  swaps in first makes a write that did land report `WriteConflictError`, and the publish then reads the row again to
-  find it. The production and correctness guides, the Azure Blob README and the architecture page now say so. The
+  swaps in over a write that landed, before the read-back, makes it report `WriteConflictError`. The publish then reads
+  the row again and finds its write only while the pointer still names its generation and the row's `pointerId` is its
+  own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`, and its
+  `segment.load-refused` event does not carry `unanswered: true`. The production and correctness guides, the Azure Blob README and the architecture page now say so. The
   erasure guide and the `eraseSubject` doc comment also say that a generation costs its budget unit at its first open
   only, so a retry of a failed read costs nothing more. No behaviour changed.
 - **A collection under a tombstone only collects the row it was asked to.** An erasure that found a tombstone's

@@ -912,7 +912,10 @@ repaired. These limits hold on every driver:
   an erasure's are held to the row they worked from: a row purged and created again before the pass reads it, or while
   it lists, is refused and loses nothing, and so is one re-created before a delete, at the read before it. One
   re-created inside the round trip between that read and the delete can lose the generation under that number, which is
-  the rollback case above; and no read of the row follows the last delete, so the pass does not see it. `dropSegment`'s
+  the rollback case above; and no read of the row follows the last delete, so the pass does not see it. On a registry whose tokens carry no incarnation id (none this library ships), a name
+  purged, created again and itself destroyed within one creation stamp is accepted as the tombstone the pass was asked
+  for: its leftovers are deleted, which the collection rule allows, but an erasure's event attributes them to the other
+  incarnation. `dropSegment`'s
   sweep never re-reads the row.
 
 **The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (an internal function of the engine) over every registered segment, and each ledger entry is that function's result.
@@ -1072,8 +1075,10 @@ only on a conflict, works with a client you pass, and adds no option. A read-bac
 `TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
 is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
 that write report `WriteConflictError`. The publish reads the row again on it, and after any registry write that ended
-without an answer, and recognises its own write there by its effect: the pointer at its generation, over its own
-object. No caller deletes a generation because of either, and a load whose row writes all go unanswered throws the
+without an answer, and recognises its own write there by its effect: the pointer at its generation and, on a registry that reports write
+tokens (Azure Blob's does), the row's `pointerId` the token of a write it sent, or, on one that does not, its own object
+under the number. A publish overtaken by a write that moved the pointer reports `superseded`, and its refusal event
+carries no `unanswered: true` on this path. No caller deletes a generation because of either, and a load whose row writes all go unanswered throws the
 registry's `TransientError` and keeps its object. A multipart upload whose completion ends ambiguously or exhausted is
 aborted: S3 completes an upload atomically, so a completion that had landed survives the abort and one that had not is
 cancelled.

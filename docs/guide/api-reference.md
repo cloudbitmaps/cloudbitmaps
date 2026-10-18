@@ -1292,7 +1292,8 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer. Every request goes
 through the client's retry policy, the conditional writes included. Each conditional write carries a random id in
 the blob's metadata, and a conflict reads the stored blob back, so a blob that carries its own id is a success and
-any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)). The client's policy sends
+any other a `WriteConflictError`; for a registry row that read-back is not definitive, since a writer that swapped in over
+a write that landed makes it report a conflict, and the publish reads the row again ([why](production.md#reliability-retries-backoff--timeouts)). The client's policy sends
 a write again after a `503 ServerBusy` or a `500 OperationTimedOut`, and a write that every try refused throws
 `TransientError`. A load's fresh compare-and-swap after an unanswered row write goes through that policy too, so a registry
 that never answers costs up to four times the policy's tries: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry removes a

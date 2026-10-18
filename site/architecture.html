@@ -559,7 +559,8 @@
             Transient faults split too, along a different line: a read of segment data retries them
             automatically, while a <em>write</em> is retried only where the retry can be told from a second
             write. A conditional write that lands and then loses its response would, replayed blindly, report its
-            own write as a conflict, so the registry row is sent once and then reconciled by its effect: the
+            own write as a conflict, so on S3 and GCS the registry row is sent once, on Azure Blob the client's retry can replay it (a replay that meets a
+            conflict is read back by its id, which is not definitive for a row), and either way it is reconciled by its effect: the
             load reads the row back, takes a landed write as published, and sends a row that is unchanged again
             as a fresh compare-and-swap, a few times and after a wait, which the fence refuses if anything moved
             in between. A write-once object is sent again after a throttle on S3 and GCS under a write id that
@@ -622,7 +623,8 @@
               a replay can be told from a second write. A write-once object is sent again after a throttle on S3 and
               on GCS, under a write id the object carries, and on Azure Blob, and on GCS above its simple-upload
               threshold, the client's own retry can replay it and the driver tells that from another writer's object by reading the write id back.
-              A registry row is sent once and reconciled by its effect: a publish that gets no answer, or loses its
+              A registry row is sent once on S3 and GCS, and on Azure Blob the client's retry can replay it, and a replay that meets a
+              conflict is read back by its id, which is not definitive for a row. Either way it is reconciled by its effect: a publish that gets no answer, or loses its
               compare-and-swap, re-reads the row and advances only if its fences still hold, and otherwise says so to
               its caller. Eight kinds of
               change are audit events beside it, on the sink the call was given: <span class="m">segment.publish</span>,
