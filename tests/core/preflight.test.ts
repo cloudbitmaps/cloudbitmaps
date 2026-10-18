@@ -600,6 +600,8 @@ describe('runPreflight: a fault at each step is a finding, never a throw', () =>
         lifecycle: 'ok',
       });
       expect(detail(out, 'write')).toContain('No number could be drawn');
+      expect(detail(out, 'write')).toContain('Web Crypto');
+      expect(detail(out, 'write')).toContain('`entropy` seam');
       expect(out.ok).toBe(false);
     }
     const named = await runPreflight({
@@ -835,6 +837,8 @@ describe('runPreflight: nothing a step meets escapes', () => {
     const out = await runPreflight(r.deps);
     expect(statuses(out).lifecycle).toBe('unchecked');
     expect(detail(out, 'lifecycle')).toContain('sleep failed');
+    expect(detail(out, 'lifecycle')).toContain("store's clock failed");
+    expect(detail(out, 'lifecycle')).not.toContain('The lifecycle check failed');
     expect(out.checks.filter((c) => c.status === 'ok')).toHaveLength(6);
   });
 
@@ -907,23 +911,67 @@ describe('runPreflight: what the cleanup did after a first write that failed', (
     expect(detail(out, 'delete')).not.toContain('no object was written');
   });
 
-  it('a write an access refusal proves was refused does not say it may have been left behind', async () => {
-    const denied = Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
-    const forbidden = Object.assign(new Error('nope'), { $metadata: { httpStatusCode: 403 } });
-    const nested = Object.assign(new Error('wrapped'), { cause: forbidden });
-    for (const refusal of [denied, forbidden, nested, new ValidationError('no such bucket')]) {
-      const r = rig({
-        storage: {
-          putImmutable: () => Promise.reject(refusal),
-          delete: () => Promise.reject(new Error('also denied')),
-        },
-      });
-      const out = await runPreflight(r.deps);
+  const withFailingDelete = (refusal: unknown) =>
+    rig({
+      storage: {
+        putImmutable: () => Promise.reject(refusal),
+        delete: () => Promise.reject(new Error('also denied')),
+      },
+    });
+  const named = (name: string) => Object.assign(new Error(name), { name });
+  const withCause = (cause: unknown) => Object.assign(new Error('wrapped'), { cause });
+
+  it.each([
+    ['status 401', Object.assign(new Error('x'), { $metadata: { httpStatusCode: 401 } })],
+    ['status 403', Object.assign(new Error('x'), { $metadata: { httpStatusCode: 403 } })],
+    ['name AccessDenied', named('AccessDenied')],
+    ['name Forbidden', named('Forbidden')],
+    ['name AuthorizationFailure', named('AuthorizationFailure')],
+    ['name AuthorizationPermissionMismatch', named('AuthorizationPermissionMismatch')],
+    ['statusCode 403', Object.assign(new Error('x'), { statusCode: 403 })],
+    ['status 401', Object.assign(new Error('x'), { status: 401 })],
+    ['code 403', Object.assign(new Error('x'), { code: 403 })],
+    ['a ValidationError', new ValidationError('no such bucket')],
+    ['a 403 one cause down', withCause(Object.assign(new Error('x'), { statusCode: 403 }))],
+    ['a refusal name one cause down', withCause(named('AccessDenied'))],
+  ])(
+    'a refusal (%s) is a proved refusal: the detail never says nothing was left behind',
+    async (_n, refusal) => {
+      const out = await runPreflight(withFailingDelete(refusal).deps);
       expect(detail(out, 'write')).not.toContain('left behind');
       expect(detail(out, 'delete')).toContain('also denied');
-      expect(detail(out, 'delete')).toContain('no object was left behind');
-    }
-  });
+      expect(detail(out, 'delete')).toContain('most likely refused and stored nothing');
+      expect(detail(out, 'delete')).toContain('names any probe it finds');
+      expect(detail(out, 'delete')).not.toContain('no object was left behind');
+    },
+  );
+
+  it.each([
+    ['a 500', Object.assign(new Error('x'), { $metadata: { httpStatusCode: 500 } })],
+    ['a 403 two causes down', withCause(withCause(named('AccessDenied')))],
+    [
+      'a 403 status two causes down',
+      withCause(withCause(Object.assign(new Error('x'), { statusCode: 403 }))),
+    ],
+    [
+      'an error whose getters throw',
+      new Proxy(
+        {},
+        {
+          get(): never {
+            throw new Error('trap');
+          },
+        },
+      ),
+    ],
+  ])(
+    '%s does not prove a refusal: the write keeps "may have been left behind"',
+    async (_n, error) => {
+      const out = await runPreflight(withFailingDelete(error).deps);
+      expect(detail(out, 'write')).toContain('may have been left behind');
+      expect(detail(out, 'delete')).not.toContain('most likely refused');
+    },
+  );
 });
 
 describe('runPreflight: the bound against the last tick, and the read detail in two corners', () => {

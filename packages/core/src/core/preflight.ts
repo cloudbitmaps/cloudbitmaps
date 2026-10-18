@@ -11,8 +11,8 @@
  *   lifecycle ─ backend.checkLifecycle(), bounded by a timer, unchecked when the backend has none
  * ```
  *
- * The probe key is `cbm.due.preflight/probe.<48-bit random>`. That namespace sits inside the reserved `cbm.due.`
- * prefix an application can never name, so no segment of the application's can collide with it, and the registry
+ * The probe key is `cbm.due.preflight/segments/probe.<n>.crbm`, where `<n>` is a 48-bit random number. That
+ * namespace sits inside the reserved `cbm.due.` prefix an application can never name, so no segment of the application's can collide with it, and the registry
  * writes nothing: the probe is a storage object only, which no registry row names and no scan of the registry
  * reaches. Storage is only ever listed one segment at a time, from rows or from refs the application gave.
  *
@@ -216,6 +216,7 @@ async function lifecycleStep(deps: PreflightDeps): Promise<Slot> {
   type Outcome =
     | { readonly kind: 'answered'; readonly verdict: unknown }
     | { readonly kind: 'threw'; readonly error: unknown }
+    | { readonly kind: 'clock'; readonly error: unknown }
     | { readonly kind: 'timeout' };
   const run: Promise<Outcome> = (async (): Promise<Outcome> => {
     try {
@@ -227,8 +228,12 @@ async function lifecycleStep(deps: PreflightDeps): Promise<Slot> {
     }
   })();
   const bound: Promise<Outcome> = (async (): Promise<Outcome> => {
-    for (let waited = 0; waited < LIFECYCLE_TIMEOUT_MS && !settled; waited += LIFECYCLE_TICK_MS) {
-      await deps.clock.sleep(LIFECYCLE_TICK_MS);
+    try {
+      for (let waited = 0; waited < LIFECYCLE_TIMEOUT_MS && !settled; waited += LIFECYCLE_TICK_MS) {
+        await deps.clock.sleep(LIFECYCLE_TICK_MS);
+      }
+    } catch (error) {
+      return { kind: 'clock', error };
     }
     return { kind: 'timeout' };
   })();
@@ -238,6 +243,12 @@ async function lifecycleStep(deps: PreflightDeps): Promise<Slot> {
     return {
       status: 'unchecked',
       detail: `The lifecycle check did not answer within ${LIFECYCLE_TIMEOUT_MS / 1000} seconds. Run preflight() again, or look at the bucket lifecycle rules by hand.`,
+    };
+  }
+  if (outcome.kind === 'clock') {
+    return {
+      status: 'unchecked',
+      detail: `The store's clock failed while the lifecycle check was timed: ${describeError(outcome.error)}. Run preflight() again, or look at the bucket lifecycle rules by hand.`,
     };
   }
   if (outcome.kind === 'threw') {
@@ -467,7 +478,7 @@ async function deleteStep(probe: Probe, wrote: boolean): Promise<void> {
     if (probe.refused) {
       probe.found.set('delete', {
         status: 'unchecked',
-        detail: `The write failed, so this check was not made. The run tried to delete its key in case the write had landed, and that failed with ${describeError(err)}. The write was refused, so no object was left behind.`,
+        detail: `The write failed, so this check was not made. The run tried to delete its key in case the write had landed, and that failed with ${describeError(err)}. The write was most likely refused and stored nothing; a later run's \`list\` names any probe it finds.`,
       });
       return;
     }
