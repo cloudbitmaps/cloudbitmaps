@@ -50,7 +50,7 @@ export interface PreflightCheck {
   readonly detail: string;
 }
 
-/** What {@link runPreflight} found: every check, and whether none of them is a `problem`. */
+/** What `store.preflight()` found: every check, and whether none of them is a `problem`. */
 export interface PreflightResult {
   /** True when no check is a `problem`. A check that is `unchecked` does not make it false. */
   readonly ok: boolean;
