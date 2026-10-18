@@ -29,6 +29,12 @@ export function incarnationField(token: Token | undefined): { readonly incarnati
   return incarnation === undefined ? {} : { incarnation };
 }
 
+/** What tells one incarnation of a name's row from another: its token and its creation stamp. */
+export interface Incarnation {
+  readonly token: Token;
+  readonly createdAt: number;
+}
+
 /**
  * Whether two reads of one name's row are one incarnation of it.
  *
@@ -39,10 +45,7 @@ export function incarnationField(token: Token | undefined): { readonly incarnati
  *   stamp is the only signal left. It is a clock reading, so `landedHere` also checks the object under the number by
  *   its footer, and `onlyLeasesDiffer` also requires every field but the leases to match.
  */
-export function sameIncarnation(
-  a: { readonly token: Token; readonly createdAt: number },
-  b: { readonly token: Token; readonly createdAt: number },
-): boolean {
+export function sameIncarnation(a: Incarnation, b: Incarnation): boolean {
   const ia = incarnationOf(a.token);
   const ib = incarnationOf(b.token);
   if (ia !== undefined || ib !== undefined) return ia === ib;

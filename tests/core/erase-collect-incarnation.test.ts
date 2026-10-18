@@ -1,7 +1,7 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { destroySegment } from '@/core/erasure';
-import { WriteConflictError } from '@/core/errors';
-import { gcOrphanGenerations } from '@/core/generation-gc';
+import { ValidationError, WriteConflictError } from '@/core/errors';
+import { gcOrphanGenerations, listingPass } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { MIN_EXPIRES_AT_MS, SWEEP_MARK } from '@/core/retention';
 import { retireExpired } from '@/core/retention-sweep';
@@ -136,6 +136,25 @@ describe('a collection under a tombstone is held to the incarnation its caller r
     expect(await generationsOf(storage)).toEqual([0, 1, 2]);
   });
 
+  it('a pass with nothing to delete still refuses a row replaced while it lists', async () => {
+    let t = 1_000;
+    const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
+    const storage = new MemoryStorageDriver();
+    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
+    const asked = (await registry.get(SEG))!;
+    const listing = Object.create(storage) as IStorageDriver;
+    listing.list = async function* (ref) {
+      await registry.delete(SEG);
+      await registry.create(SEG, { currentGen: 2 });
+      yield* storage.list(ref);
+    };
+    await expect(
+      gcOrphanGenerations(SEG, { ...deps, storage: listing }, { keep: 3, incarnation: asked }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await generationsOf(storage)).toEqual([0, 1, 2]);
+  });
+
   it('a pass asked for a row that is already replaced refuses before it lists the bucket', async () => {
     let t = 1_000;
     const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
@@ -156,5 +175,87 @@ describe('a collection under a tombstone is held to the incarnation its caller r
     ).rejects.toBeInstanceOf(WriteConflictError);
     expect(listed).toBe(0);
     expect(await generationsOf(storage)).toEqual([0, 1]);
+  });
+
+  it('on a registry whose tokens carry no incarnation id and whose rows share a creation stamp, an erasure still refuses a re-created row', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, X], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1], { registry });
+    await destroySegment(SEG, { registry }, { confirmSegment: 's', allowCleartext: true });
+
+    // The rows as a registry of someone else's would give them: an opaque token, and one creation stamp for every row.
+    const tokenless = Object.create(registry) as IRegistryDriver;
+    tokenless.get = async (ref) => {
+      const row = await registry.get(ref);
+      return row === null
+        ? null
+        : {
+            ...row,
+            token: `opaque:${row.token}`,
+            pointerId: `opaque:${row.pointerId}`,
+            createdAt: 0,
+          };
+    };
+    const kinds: string[] = [];
+    const audit: IAuditSink = { onEvent: (e) => void kinds.push(e.kind) };
+    const racing = interleave({ storage, registry: tokenless }, 'getTail', async () => {
+      await gcOrphanGenerations(SEG, deps);
+      await registry.delete(SEG);
+      await loadSegment(SEG, [5], deps, { keep: 1 });
+      await loadSegment(SEG, [6], deps, { keep: 1 });
+    });
+
+    await expect(
+      eraseIdFromSegment(SEG, X, { ...deps, ...racing }, { audit }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await generationsOf(storage)).toEqual([0, 1]);
+    expect((await registry.get(SEG))?.status).toBe('active');
+    expect(kinds).not.toContain('segment.collect');
+  });
+
+  it('a pass on an active row refuses when the row is replaced after its re-read and before a delete, and deletes nothing', async () => {
+    let t = 1_000;
+    const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
+    const storage = new MemoryStorageDriver();
+    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
+    const asked = (await registry.get(SEG))!;
+    // Reads: the first, the re-read after the listing, then the re-proof before the first delete. The new row's pointer
+    // is the old one, so the pointer rule alone would let the pass go on.
+    let reads = 0;
+    const replacing = Object.create(registry) as IRegistryDriver;
+    replacing.get = async (ref) => {
+      reads += 1;
+      if (reads === 3) {
+        await registry.delete(SEG);
+        await registry.create(SEG, { currentGen: asked.currentGen });
+      }
+      return registry.get(ref);
+    };
+    await expect(
+      gcOrphanGenerations(SEG, { ...deps, registry: replacing }, { keep: 0, incarnation: asked }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect(reads).toBe(3);
+    expect(await generationsOf(storage)).toEqual([0, 1, 2]);
+  });
+
+  it('a quiet pass given an incarnation is refused before it reads anything', async () => {
+    const registry = new MemoryRegistryDriver();
+    const storage = new MemoryStorageDriver();
+    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    await loadSegment(SEG, [1], deps, { keep: 1 });
+    const asked = (await registry.get(SEG))!;
+    let reads = 0;
+    const counting = Object.create(registry) as IRegistryDriver;
+    counting.get = (ref) => {
+      reads += 1;
+      return registry.get(ref);
+    };
+    await expect(
+      listingPass(SEG, { ...deps, registry: counting }, { quiet: true, incarnation: asked }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(reads).toBe(0);
   });
 });
