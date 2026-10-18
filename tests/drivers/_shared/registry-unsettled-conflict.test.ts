@@ -100,6 +100,24 @@ describe('ObjectStoreRegistry passes the mark of a store conflict through', () =
     },
   );
 
+  it.each([
+    ['marked', marked, true],
+    ['plain', plain, false],
+  ] as const)(
+    'a create over a tombstone whose second write throws a %s conflict keeps the mark it had',
+    async (_n, error, isMarked) => {
+      const { store, registry } = make();
+      await registry.create(REF, { currentGen: 0 });
+      await registry.delete(REF);
+      store.fault = { error: error(), land: false };
+      const err = await registry
+        .create(REF, { currentGen: 0 }, { held: null })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(WriteConflictError);
+      expect(isUnsettledConflict(err)).toBe(isMarked);
+    },
+  );
+
   it('a create of its own, over a row that is there, is a plain conflict', async () => {
     const { registry } = make();
     await registry.create(REF, { currentGen: 0 });
