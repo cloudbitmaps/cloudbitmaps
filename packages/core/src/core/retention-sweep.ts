@@ -698,7 +698,7 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
       // objects are billed forever, and the sweep pays two list calls per cycle to say so again. Measured.
       let collectFault: { error: unknown } | undefined;
       if (!dryRun) {
-        await gcOrphanGenerations(ref, deps).catch((error: unknown) => {
+        await gcOrphanGenerations(ref, deps, { incarnation: rec }).catch((error: unknown) => {
           collectFault = { error };
         });
       }
