@@ -67,6 +67,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
+  them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
+  editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an
+  entry passes with its own doc comment, or one inherited from the member it implements or overrides, and a key the
+  test cannot resolve fails by name. No signature changes.
 - **A load's footer no longer builds a temporary array of numbers to encode the chunk index.** The index is now
   written into one buffer sized to it, so the bytes are the same and the footer no longer holds an array beside the
   index. Every load gains it, sorted or not: at the 65,536 chunks a segment can have, the array it dropped held about
