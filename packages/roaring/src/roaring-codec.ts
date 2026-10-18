@@ -238,10 +238,10 @@ export interface ReadonlyBitmap extends PortableBitmap, Iterable<number> {
 }
 
 /**
- * What {@link deserializePortable} returns: a decoded bitmap with the four members of {@link ReadonlyBitmap} and
- * nothing else, so a call written for a `RoaringBitmap32` (`add`, `andInPlace`, `toArray`, …) throws `TypeError`
- * rather than changing the bitmap or answering wrongly. The decoded bitmap sits in a private field. It is not
- * exported from the package.
+ * What {@link deserializePortable} returns: a decoded bitmap with four of the members of {@link ReadonlyBitmap} and
+ * nothing else (the type's optional `getSerializationSizeInBytes` is absent), so a call written for a
+ * `RoaringBitmap32` (`add`, `andInPlace`, `toArray`, …) throws `TypeError` rather than changing the bitmap or
+ * answering wrongly. The decoded bitmap sits in a private field. It is not exported from the package.
  */
 class ReadonlyRoaringView implements ReadonlyBitmap {
   readonly #bitmap: SafeBitmap;

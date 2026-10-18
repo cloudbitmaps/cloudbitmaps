@@ -134,6 +134,18 @@ describe('namesPackage — the smoke gate that no shipped declaration names the 
     ['a require', "import roaring = require('roaring');"],
     ['a reference directive', '/// <reference types="roaring" />\nexport {};'],
     ['a reference directive in single quotes', "///<reference types='roaring'/>"],
+    ['an import type', "import type { RoaringBitmap32 } from 'roaring';"],
+    [
+      'a reference directive after a header comment',
+      '/* header */\n/// <reference types="roaring" />\nexport {};',
+    ],
+    ['a subpath import', "import type RoaringBitmap32 from 'roaring/RoaringBitmap32';"],
+    ['a subpath export from', "export { X } from 'roaring/RoaringBitmap32';"],
+    ['a subpath import type', "import type { X } from 'roaring/RoaringBitmap32Iterator';"],
+    ['a subpath type-position import', "type T = import('roaring/RoaringBitmap32').X;"],
+    ['a subpath reference directive', '/// <reference types="roaring/RoaringBitmap32" />'],
+    ['a module declaration', "declare module 'roaring' {}"],
+    ['a subpath module declaration', "declare module 'roaring/RoaringBitmap32' {}"],
   ])('flags %s', (_name, source) => {
     expect(namesPackage(source, 'roaring')).toBe(true);
   });
@@ -144,6 +156,12 @@ describe('namesPackage — the smoke gate that no shipped declaration names the 
     ['a longer package name', "import { X } from 'roaring-node';"],
     ['another package in a directive', '/// <reference types="node" />'],
     ['a relative path ending in roaring', "import { X } from './roaring';"],
+    ['a relative subpath of roaring', "import { X } from './roaring/RoaringBitmap32';"],
+    ['a longer package name with a subpath', "import { X } from 'roaring-node/x';"],
+    ['a longer name in type-position import', "type T = import('roaring-node').X;"],
+    ['a longer name in a reference directive', '/// <reference types="roaring-node/x" />'],
+    ['a longer name in a module declaration', "declare module 'roaring-node' {}"],
+    ['a longer name in an export from', "export * from 'roaring-node';"],
   ])('does not flag %s', (_name, source) => {
     expect(namesPackage(source, 'roaring')).toBe(false);
   });

@@ -115,15 +115,24 @@ function rewriteSpecifiers(source, fix) {
 }
 
 /**
- * Whether a declaration file names the package `name`: an `import`, `export … from`, `require` or `import()` of it, or
- * a `/// <reference types="name" />` directive. The directive is matched on the raw text, before comments are
- * blanked, because it is a comment; the other forms are matched after, so prose that shows an import does not count.
+ * Whether a declaration file names the package `name` or one of its subpaths (`roaring/RoaringBitmap32`): an
+ * `import`, `export ... from`, `require`, `import()` or `declare module` of it, or a `/// <reference types="name" />`
+ * directive. The name ends at the closing quote or at a `/`, so `roaring-node` and `./roaring` do not count. The
+ * directive is matched on the raw text, before comments are blanked, because it is a comment; the other forms are
+ * matched after, so prose that shows an import does not count. Known limit: `/// <reference path=".../roaring/..." />`
+ * names a file, not a package, and is not matched.
  */
 function namesPackage(source, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const directive = new RegExp(`^\\s*///\\s*<reference\\s+types\\s*=\\s*(['"])${escaped}\\1`, 'm');
+  const end = `(?:/[^'"]*)?`;
+  const directive = new RegExp(
+    `^\\s*///\\s*<reference\\s+types\\s*=\\s*(['"])${escaped}${end}\\1`,
+    'm',
+  );
   if (directive.test(source)) return true;
-  const specifier = new RegExp(`(?:\\bfrom|\\bimport|\\brequire)\\s*\\(?\\s*(['"])${escaped}\\1`);
+  const specifier = new RegExp(
+    `(?:\\bfrom|\\bimport|\\brequire|\\bdeclare\\s+module)\\s*\\(?\\s*(['"])${escaped}${end}\\1`,
+  );
   return specifier.test(blankComments(source));
 }
 

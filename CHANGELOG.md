@@ -16,17 +16,20 @@ so, and so do the module headers in the code.
 - **`deserializePortable(bytes)` returns `ReadonlyBitmap`, a type of this library's own, in place of `roaring`'s
   `RoaringBitmap32`, and no public signature names a type of the `roaring` package.** A `ReadonlyBitmap` is a
   `PortableBitmap` and an `Iterable<number>` with `size`, `has(id)`, ascending iteration and `serialize('portable')`.
-  It is not a `RoaringBitmap32` at run time, and it has only those four members: any other call, such as `add`,
-  `andInPlace` or `toArray`, throws `TypeError`, and `serialize` with any argument but `'portable'` throws
-  `ValidationError`. Passing it as an argument to a `RoaringBitmap32` method (`intersects`, `andCardinality` and the
-  like) is `roaring`'s own behaviour, which does not throw and gives a wrong answer; code that needs those decodes the
-  portable bytes natively. The reason is that the codec behind it can then change without another
-  change to a signature. For the rest of a Roaring library's API, decode the bitmap's portable bytes with that library
-  (see [the parts recipe](docs/guide/loading.md#parts-of-one-segment-built-separately)). A `RoaringBitmap32` you build
+  It is not a `RoaringBitmap32` at run time, and the bitmap it returns has only those four members: any other call,
+  such as `add`, `andInPlace` or `toArray`, throws `TypeError`, and `serialize` with any argument but `'portable'`
+  throws `ValidationError`. Passed as an argument to a `roaring` method, it behaves as `roaring` decides, and
+  TypeScript refuses it at compile time for the predicates and counts: `intersects`, `andCardinality` and the like
+  answer wrongly without throwing; the static `RoaringBitmap32.and`, `or` and `orMany` throw; the constructor and the
+  in-place operations (`orInPlace`, `addMany` and the like) read it as ids. Code that needs any of these decodes the
+  portable bytes natively. The reason is that the codec behind it can then change without another change to a
+  signature. For the rest of a Roaring library's API, decode the bitmap's portable bytes with that library (see
+  [the parts recipe](docs/guide/loading.md#parts-of-one-segment-built-separately)). A `RoaringBitmap32` you build
   loads as before. To migrate: an annotation `RoaringBitmap32` becomes `ReadonlyBitmap`; set algebra moves onto
   `RoaringBitmap32.deserialize(bitmap.serialize('portable'), 'portable')`; `.toArray()` becomes `[...bitmap]`;
-  `getSerializationSizeInBytes('portable')` becomes `serialize('portable').byteLength`; an
-  `instanceof RoaringBitmap32` check goes.
+  `getSerializationSizeInBytes('portable')` becomes `serialize('portable').byteLength`;
+  `JSON.stringify(bitmap)` gives `"{}"` where it gave the ids, because the bitmap has no `toJSON`, so write
+  `JSON.stringify([...bitmap])`; an `instanceof RoaringBitmap32` check goes.
 
 ### Added
 

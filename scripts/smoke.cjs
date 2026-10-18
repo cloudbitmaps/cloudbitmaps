@@ -807,8 +807,7 @@ function assertEntrySdkFree(pkgDir) {
  * No declaration the flavor ships imports the `roaring` package, so no public signature can name one of its types.
  * `deserializePortable` returns the library's own `ReadonlyBitmap`; a signature that named `roaring`'s class again
  * would put `import ... from 'roaring'`, or a `/// <reference types="roaring" />` directive, back into the emitted
- * `.d.ts`, and a consumer without that package's types
- * would see `any`.
+ * `.d.ts`, and a consumer without that package's types would see `any`.
  */
 function assertNoRoaringTypesInDeclarations(pkgDir) {
   const { readFileSync } = require('node:fs');

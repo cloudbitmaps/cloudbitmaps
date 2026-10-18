@@ -302,10 +302,11 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 
 `ReadonlyBitmap` is a type of this library's own, exported as a type. It is a `PortableBitmap` and an
 `Iterable<number>` with `size` (how many ids it holds) and `has(id)`. Iterating it yields its ids ascending, which is a
-promise. `serialize` takes exactly `'portable'`, and any other call throws `ValidationError`. The bitmap
-`deserializePortable` returned has only these members, and a call to any other throws `TypeError`. A load takes it as
-`{ bitmap }`, and the bitmap `deserializePortable` returned also loads bare where ids go; the library keeps no reference
-to it. Its class is not part of the contract: do not cast it and do not test it with `instanceof`. For the rest of a
+promise. The bitmap `deserializePortable` returned has only these members: its `serialize` takes exactly
+`'portable'` and throws `ValidationError` for any other argument (a `RoaringBitmap32` also satisfies the type and takes
+other formats), and a call to any other member throws `TypeError`. A load takes it as `{ bitmap }`, and the bitmap
+`deserializePortable` returned also loads bare where ids go; the library keeps no reference to it. Its class is not part
+of the contract: do not cast it and do not test it with `instanceof`. For the rest of a
 Roaring library's API (set algebra, `toArray`, and so on) decode its portable bytes with that library, after the
 check:
 

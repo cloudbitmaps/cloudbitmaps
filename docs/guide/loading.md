@@ -223,10 +223,10 @@ export async function loadParts(
   `Uint8Array`, which a Node `Buffer` is. What it returns is a `ReadonlyBitmap`, with `size`, `has(id)`, ascending
   iteration and `serialize('portable')`; the rest of `roaring`'s API (the union here) is reached by decoding its bytes
   with `roaring`, which is the second line of the map.
-- **The recipe costs about three passes over a part where a native decode makes one.** Each part's bytes are decoded
-  twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the bytes you
-  were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library copies a
-  shared buffer only for its own decode. A single part that needs no joining goes straight to
+- **The recipe costs about four passes over a part where a native decode makes one.** Each part's bytes are checked,
+  decoded twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the
+  bytes you were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library
+  copies a shared buffer only for its own decode. A single part that needs no joining goes straight to
   `store.load(ref, { serialized: bytes })`.
 - **Overlap is refused by the size check.** `orMany` merges parts that share ids without a word, so a range that two
   workers both built would load as if nothing were wrong. The members of disjoint parts add up to the members of their
