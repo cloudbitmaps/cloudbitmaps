@@ -14,6 +14,7 @@ import {
 } from './errors';
 import type { Yielder } from './cooperative';
 import type { Rng } from './determinism';
+import { pointerSetBy } from './pointer-id';
 import { sameIncarnation } from './token';
 import { nextKnown } from './known-generations';
 import {
@@ -663,7 +664,7 @@ async function landedHere(
   // write (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the
   // pointer off it) reads as not its own too: the two cannot be told apart, so the call reports none published and
   // deletes nothing.
-  if (sent !== undefined) return sent.has(now.pointerId);
+  if (sent !== undefined) return pointerSetBy(now, before, key.generation, sent);
   if (holdsOwnObject === undefined) {
     throw new TransientError(
       `publish of "${key.segment}" generation ${key.generation}: whether its registry write landed could not be ` +

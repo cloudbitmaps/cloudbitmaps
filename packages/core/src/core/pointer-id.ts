@@ -16,6 +16,7 @@
  */
 import { UnsupportedError } from './errors';
 import type { RegistryPatch, RegistryRecord, Token } from './ports';
+import { sameIncarnation } from './token';
 
 /** The fields a read resolves through: a patch that names any of them renews the row's `pointerId`. */
 export const RESOLVED_FIELDS = [
@@ -57,4 +58,23 @@ export function pointerIdOf(row: RegistryRecord): Token {
     );
   }
   return pointerId;
+}
+
+/**
+ * Whether `now` shows a write this call sent as the one that put the pointer where it is: an active row of the same
+ * incarnation as `before` (a `create` has none to compare), whose pointer names `generation` and whose `pointerId` is the
+ * token of one of the writes in `sent`, which a registry that reports its writes' tokens gave before sending each. The
+ * token decides and nothing else is asked, so another writer's write of the same pointer is not taken for this call's. A
+ * write that renews the `pointerId` over this call's own landed write (an erasure's renewal, or a write of the pointer
+ * back onto the same generation) reads as not this call's: the two cannot be told apart. Pure: no I/O.
+ */
+export function pointerSetBy(
+  now: RegistryRecord | null,
+  before: RegistryRecord | null,
+  generation: number,
+  sent: ReadonlySet<Token>,
+): boolean {
+  if (now === null || now.status === 'destroyed' || now.currentGen !== generation) return false;
+  if (before !== null && !sameIncarnation(before, now)) return false;
+  return sent.has(now.pointerId);
 }

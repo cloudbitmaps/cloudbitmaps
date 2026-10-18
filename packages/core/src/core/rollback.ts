@@ -19,6 +19,7 @@
 import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
+import { pointerSetBy } from './pointer-id';
 import { footerCrcUnder, openRollbackTargetFrom, readRollbackTargetFooter } from './crbm-open';
 import {
   describingKnown,
@@ -51,6 +52,7 @@ import type {
   KnownGeneration,
   RegistryRecord,
   RegistrySummary,
+  RegistryWriteOptions,
   SegmentRef,
   Token,
 } from './ports';
@@ -378,13 +380,24 @@ export async function rollbackSegment(
   // What the swap wrote: the token it was given, which the row's pointerId then carries, and the token of the row the
   // undo below is fenced on, which a lease write after the swap moves.
   let swapped: { readonly pointerId: Token; readonly token: Token };
+  // The tokens of every swap this call sent, as a registry that reports them says before it sends each one (a resend
+  // reports a new one); absent for a registry that does not, whose swap is then settled by the row it leaves.
+  const sent: Set<Token> | undefined =
+    deps.registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
+  const writeOptions: RegistryWriteOptions | undefined =
+    sent === undefined ? undefined : { onToken: (token) => void sent.add(token) };
   for (;;) {
     try {
-      const { token } = await deps.registry.compareAndSwap(ref, against, {
-        currentGen: toGeneration,
-        summary,
-        ...(knownAfter === undefined ? {} : { knownGens: knownAfter }),
-      });
+      const { token } = await deps.registry.compareAndSwap(
+        ref,
+        against,
+        {
+          currentGen: toGeneration,
+          summary,
+          ...(knownAfter === undefined ? {} : { knownGens: knownAfter }),
+        },
+        writeOptions,
+      );
       swapped = { pointerId: token, token };
       break;
     } catch (err) {
@@ -397,20 +410,28 @@ export async function rollbackSegment(
           { toGeneration, summary, known: knownAfter },
           deps.registry,
           err,
+          sent,
         );
         swapped = { pointerId: landed.pointerId, token: landed.token };
         break;
       }
       if (!isWriteConflictError(err)) throw err;
       const seen = await deps.registry.get(ref);
+      // A swap that landed and came back as a conflict (a client's replay that met another writer's write, or a replay
+      // after a delete) is settled by the row, before any wait: the pointer is over this call's write, whatever else
+      // has been written to the row since.
+      if (seen !== null && sent !== undefined && pointerSetBy(seen, record, toGeneration, sent)) {
+        swapped = { pointerId: seen.pointerId, token: seen.token };
+        break;
+      }
       const settled = await churn.settle(record, seen, () => deps.registry.get(ref));
       const now = settled?.row ?? null;
       // The row after the wait is the one the swap goes on against, if it is still the one read with only leases changed.
       if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) {
         // The driver's error stays as the cause; the message says what the caller can do about it.
         const lost = new WriteConflictError(
-          "rollback: the segment's row changed while the rollback ran and the pointer was not moved; check " +
-            'store.generations(ref) and run it again',
+          "rollback: the segment's row changed while the rollback ran, and its pointer is not over this rollback's " +
+            'write; check store.generations(ref) and run it again',
         );
         lost.cause = err;
         throw lost;
@@ -685,6 +706,7 @@ async function swapLanded(
   },
   registry: IRegistryDriver,
   unanswered: TransientError,
+  sent: ReadonlySet<Token> | undefined,
 ): Promise<RegistryRecord> {
   let now: RegistryRecord | null;
   try {
@@ -692,6 +714,10 @@ async function swapLanded(
   } catch (readErr) {
     if (isIntegrityError(readErr)) throw readErr;
     throw unanswered;
+  }
+  if (sent !== undefined) {
+    if (now === null || !pointerSetBy(now, record, swap.toGeneration, sent)) throw unanswered;
+    return now;
   }
   const left: RegistryRecord = {
     ...record,
