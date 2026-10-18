@@ -904,7 +904,7 @@ describe('a conflict the registry marks as one that may follow the write itself 
     expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
   });
 
-  it('attempts that run out on it, over a registry that reports no tokens and a second writers object under the number: not published', async () => {
+  it('attempts that run out on it, over a registry that reports no tokens and an object another writer put under the number: not published', async () => {
     // The proof by the object runs only after a write whose answer was not definite. Without the mark, the last
     // conflict reads as an answer and the call, over a registry with no tokens, takes the pointer at its number as its own.
     const w = world(
