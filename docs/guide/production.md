@@ -568,8 +568,8 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
 would find itself already there and report a conflict. So the drivers send a conditional write once, and again only
-where an id it carries tells a replay apart (a throttled object), and the load settles an unanswered registry write by
-reading the row. A fault those do not settle reaches you as `TransientError`, and the retry is yours.
+where an id it carries tells a replay apart (a throttled object), and a load or a rollback settles an unanswered registry
+write by reading the row. A fault those do not settle reaches you as `TransientError`, and the retry is yours.
 
 Re-running a `load` is safe. It takes a fresh generation number and re-reads the pointer, so it publishes whether or
 not the first attempt landed, under every guard setting. Three things to know:

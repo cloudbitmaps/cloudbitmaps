@@ -2174,8 +2174,10 @@ export class CloudRoaring {
    * key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out
    * as `AbortSignal.timeout()` and the AWS SDK report a timeout), a rollback onto a known generation still happens,
    * opening nothing, and the row carries no summary of the target. Any other failure of the keystore is
-   * thrown. A swap of the pointer that gets no answer is settled by reading the row: one that landed, the row being the
-   * one the swap leaves, is checked as any is, and otherwise its `TransientError` is thrown. After the swap the target's
+   * thrown. A swap of the pointer that gets no answer, or that meets a conflict, is settled by reading the row: one that landed,
+   * the row's pointer being at the target over a write this call sent (the write token, on a registry that reports
+   * them), is checked as any is, and otherwise its `TransientError` is thrown, or a `WriteConflictError` after a
+   * conflict, with no move recorded. After the swap the target's
    * footer is read once more, and the pointer put back if the object is gone or is another.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —

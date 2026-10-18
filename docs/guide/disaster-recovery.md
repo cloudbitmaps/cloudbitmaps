@@ -652,7 +652,7 @@ The current generation is always known on a row whose list is usable, so `genera
 Otherwise: a generation the row does not know throws `ValidationError`, before any request to storage; a known
 generation whose object is another one than the row recorded throws `IntegrityError`; a generation not in the bucket
 throws `NotFoundError` and **names what is available**; a `destroyed` row (a crypto-shred's or a drop's tombstone)
-throws `ValidationError`; and a row that changed after `rollback` read it throws `WriteConflictError` and moves nothing.
+throws `ValidationError`; and a row that changed after `rollback` read it throws `WriteConflictError` and records no move.
 A generation above the pointer that a rollback left is known, so undoing a rollback needs no flag; `store.rollback`
 invalidates its own store. It deletes nothing, so the rollback is itself reversible. It records the move as
 `segment.rollback` on the `audit` sink passed to the call, with `unknown: true` when the row did not vouch for the
@@ -671,9 +671,10 @@ number, it moves the pointer back and throws `NotFoundError` saying `the pointer
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
 response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
 or still on the missing generation, the torn state this section resolves. A move that gets no answer at all
-(`TransientError`) is settled by reading the row: one the row shows landed (the row is the one the move leaves) is
-checked as above, and otherwise the rollback throws the `TransientError`, and the pointer may still move, since the
-write may yet land.
+(`TransientError`), or one that meets a conflict, is settled by reading the row: one the row shows landed (its pointer
+is at the target, over a write the rollback sent) is checked as above, and otherwise the rollback throws the
+`TransientError`, or after a conflict a `WriteConflictError`, and records no move; after no answer the pointer may
+still move, since the write may yet land.
 Check with `store.generations(ref)`, which marks the current generation, and `checkConsistency()`; roll back again
 to a generation it lists, or restore the object. Neither failure records `segment.rollback` — the event is emitted
 only once the pointer is on the target — so keep the error with your incident record.

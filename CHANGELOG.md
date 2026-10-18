@@ -77,6 +77,18 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A rollback settles a swap that met a conflict or got no answer by its write token, as a load's publish does.** On a
+  registry that reports its writes' tokens (the in-memory, local-file and shared object-store registries, and, through
+  its write id, the Azure Blob registry's replays), a rollback's swap that landed and then met a conflict, or got no
+  answer, is its own when the row's pointer is at the target over a token the call sent, whatever else was written to
+  the row since (a lease, a retention or residency write). It is then checked, audited as `segment.rollback` and
+  reported, as if it had answered; before, a lease or retention write that overtook it made the call throw "the pointer
+  was not moved" (or the `TransientError`) with the move landed and unrecorded, and a re-run then found nothing to do and
+  recorded nothing either. A swap the pointer has moved past by another write, another rollback's identical move
+  included, throws `WriteConflictError` after a conflict and `TransientError` after no answer, records no move and
+  deletes nothing. The conflict's message now says "its pointer is not over this rollback's write". A registry that
+  reports no tokens settles a swap that got no answer by the row the swap would leave, as before, and never settles a
+  conflict as landed.
 - **A collection under a tombstone only collects the row it was asked to.** An erasure that found a tombstone's
   leftover objects, and the retention sweep's collection of a tombstone it was purging, read the row afresh before
   deleting. If the tombstone had been purged and the name loaded again in between, they treated the new row's

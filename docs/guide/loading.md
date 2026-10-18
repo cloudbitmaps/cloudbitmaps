@@ -548,7 +548,7 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   (see "What happens to the generations above the new pointer" below), and `seg.pinAt` can reopen it, with its
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
   meanwhile is never undone: the rollback throws `WriteConflictError`, or, when its own swap got no answer, that
-  `TransientError` (below). A load that evicts the target from the row's record between the rollback's read and its
+  `TransientError` (below), and records no move. A load that evicts the target from the row's record between the rollback's read and its
   swap is such a write. Every collection and the erasure takes what it will delete out of the record before it deletes, or never deletes what
   the row names, so none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
   its pass that keeps by count skips every generation the row names when it re-reads the row, an erasure's rewrite leaves
@@ -623,26 +623,36 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   collection that is not fenced on the row took it, or an erasure deleted one above the pointer) or is another object
   (a load took its number meanwhile), the pointer, the old summary and the old record are put back, the target
   leaves the record, and the rollback throws `NotFoundError`. That read takes the place of a listing of the bucket.
-- A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row is the one
-  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and the record it wrote (none, over a row with no usable record: a rollback starts no record, a
-  load seeds one, so a load's write differs there), and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
-  pointer put back if the target went meanwhile. Otherwise the rollback throws that `TransientError`, and the pointer
-  may still move, since the write may yet land: run the rollback again, which finds the pointer where it is. A load or
-  another writer that moved the row meanwhile is left standing, and the rollback throws that `TransientError` rather
-  than `WriteConflictError`. Some writes leave the very row the swap would, and cannot be told from it. On a cleartext
-  segment: another rollback onto the same target, whatever row it read, and a load that wrote, under the target's
-  number, the very object the rollback read and recorded the record the rollback would (a load that keeps every
-  generation, onto a row whose record the rollback carried). On an encrypted segment, the swap's sealed summary tells every other write
+- A swap of the pointer that gets no answer (`TransientError`), or that meets a conflict, is settled by reading the row.
+  On a registry that reports write tokens (every shipped one does), the swap is the rollback's own when the row's
+  pointer is at the target and its `pointerId` is the token of a swap this call sent (a resend reports a token of its
+  own, and every one is kept). Whatever else was written to the row since (a lease, a retention or residency write, a
+  ledger-only write) does not matter: the target is checked as after any swap, the pointer put back if the target went
+  meanwhile, the move audited and reported. Otherwise the rollback throws: the `TransientError` after no answer, and
+  after a conflict a `WriteConflictError` that says the pointer is not over this rollback's write, and the pointer may
+  still move after no answer, since the write may yet land: run the rollback again, which finds the pointer where it
+  is. A load or another writer that moved the pointer meanwhile is left standing. Another rollback's identical move is
+  not taken for this one's, though it leaves the very row the swap would: its `pointerId` is its own token. A write that
+  renews the `pointerId` over the rollback's landed swap (an erasure's renewal, or a write of the pointer back onto the
+  target) reads as another writer's too, since the two cannot be told apart, and the rollback then throws and records no
+  move: run it again, which finds the pointer where it is and reports a no-op. A registry that reports no tokens
+  settles a swap that got no answer by the row the swap would leave: the row the rollback read, with the target as its
+  pointer, the summary the swap wrote and the record it wrote (none, over a row with no usable record: a rollback
+  starts no record, a load seeds one, so a load's write differs there), and nothing else changed but its leases and
+  its pointerId. Some writes leave that very row, and cannot be told from the swap there. On a cleartext segment:
+  another rollback onto the same target, whatever row it read, and a load that wrote, under the target's number, the
+  very object the rollback read and recorded the record the rollback would (a load that keeps every generation, onto a
+  row whose record the rollback carried). On an encrypted segment, the swap's sealed summary tells every other write
   apart, except when the rollback had no key at hand and wrote no summary: then another such rollback onto the same
-  target cannot be told apart. The pointer is then where the rollback asked for it, and the rollback reports the move as
-  its own.
+  target cannot be told apart. The pointer is then where the rollback asked for it, and the rollback reports the move
+  as its own. A conflict on such a registry is never settled as landed.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
   ([the audit trail](observability.md#audit-trail-security--compliance-events)), carrying `unknown: true` when the row
   did not vouch for the target (`allowUnknown`, or one of the two cases above), and this store drops its cached view of
-  the segment. A rollback whose swap got no answer and that takes another writer's identical move for its own (above)
-  emits it too, so that one move is recorded twice.
+  the segment. A rollback whose swap got no answer, on a registry that reports no tokens, and that takes another
+  writer's identical move for its own (above) emits it too, so that one move is recorded twice.
 - **Requests** (measured, memory driver, cleartext segment, index within the tail read): a known target is **4**: the
   row, the target's tail, the swap, and its footer once more. A target the row does not know is refused after **1**, the
   row. The current generation is **2**, the row and its footer. A target that is not in the bucket, with `allowUnknown`,

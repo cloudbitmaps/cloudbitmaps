@@ -217,15 +217,21 @@ export interface RollbackResult {
  * failure of the keystore is thrown. After the swap the target's footer is read once more, and the pointer put back,
  * restoring the summary and the record the row had, unless it is still the object that was read: collection can delete a
  * target below the old pointer between the read and the swap, and an erasure can delete one above it and a load take its
- * number. A swap that gets no answer is settled by reading the row: one the row shows landed, the row being the one the
- * swap leaves, is checked as any swap is, and otherwise its `TransientError` is thrown, since it may have landed or may
- * still land, and a re-run finds the pointer where it is. A write by another writer is not taken for it, unless it leaves
- * the very row this swap would. On a cleartext segment two writes can: another rollback onto the same target, whatever
- * row it read, and a load that wrote under that number the very object the rollback read and carried the ledger the
- * rollback would (a load that carries a usable ledger, as one with a `keep` above 64 does; over a row with no usable
- * ledger the rollback writes none and a load seeds one, so those rows differ). On an encrypted segment a rollback with no
- * key at hand writes no summary, so another such rollback onto the same target can too. That call then reports and
- * audits the move as its own; the pointer is where it asked for it.
+ * number. A swap that meets a conflict or gets no answer is settled by reading the row. On a registry that reports its
+ * writes' tokens, one the row shows landed, its pointer at the target over the token of a swap this call sent, is
+ * checked as any swap is, the move audited and reported, whatever else was written to the row since (a lease, a
+ * retention or residency write, or a write of the ledger alone). Otherwise the call throws, and nothing is audited or
+ * deleted: the `WriteConflictError` after a conflict, and the `TransientError` after no answer, since it may have landed
+ * or may still land and a re-run finds the pointer where it is. Another writer's write of the same pointer is not taken
+ * for it, another rollback's identical move included, and neither is a write that renewed the row's `pointerId` over
+ * this swap, which cannot be told from it. A registry that reports no tokens settles a swap that got no answer by the
+ * row it would leave, and never settles a conflict as landed. Over such a registry a write by another writer is not
+ * taken for the swap unless it leaves the very row this swap would. On a cleartext segment two writes can: another
+ * rollback onto the same target, whatever row it read, and a load that wrote under that number the very object the
+ * rollback read and carried the ledger the rollback would (a load that carries a usable ledger, as one with a `keep`
+ * above 64 does; over a row with no usable ledger the rollback writes none and a load seeds one, so those rows differ).
+ * On an encrypted segment a rollback with no key at hand writes no summary, so another such rollback onto the same
+ * target can too. That call then reports and audits the move as its own; the pointer is where it asked for it.
  *
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*
@@ -381,7 +387,8 @@ export async function rollbackSegment(
   // undo below is fenced on, which a lease write after the swap moves.
   let swapped: { readonly pointerId: Token; readonly token: Token };
   // The tokens of every swap this call sent, as a registry that reports them says before it sends each one (a resend
-  // reports a new one); absent for a registry that does not, whose swap is then settled by the row it leaves.
+  // reports a new one); absent for a registry that does not, whose swap that got no answer is then settled by the row it
+  // leaves, and whose conflict is never settled as landed.
   const sent: Set<Token> | undefined =
     deps.registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
   const writeOptions: RegistryWriteOptions | undefined =
@@ -419,7 +426,7 @@ export async function rollbackSegment(
       const seen = await deps.registry.get(ref);
       // A swap that landed and came back as a conflict (a client's replay that met another writer's write, or a replay
       // after a delete) is settled by the row, before any wait: the pointer is over this call's write, whatever else
-      // has been written to the row since.
+      // has been written to the row since. The undo below is fenced on the row read back.
       if (seen !== null && sent !== undefined && pointerSetBy(seen, record, toGeneration, sent)) {
         swapped = { pointerId: seen.pointerId, token: seen.token };
         break;
@@ -675,7 +682,9 @@ function keyServiceUnanswered(err: unknown): boolean {
 /**
  * The row after a swap that got no answer, when it shows that the swap landed; otherwise `unanswered` is thrown.
  *
- * It shows it when it is the row the swap leaves: the row the rollback read, of the same incarnation, with the swap's
+ * With `sent`, the tokens of the swaps this call sent to a registry that reports them, it shows it when the row's
+ * pointer is at the target over one of them ({@link pointerSetBy}), whatever else is written to the row. Without it,
+ * it shows it when it is the row the swap leaves: the row the rollback read, of the same incarnation, with the swap's
  * pointer, summary and ledger, and nothing else changed but its leases, which a reader can write the moment the target
  * is current, and its pointerId. Another writer's publish of the same number is not that row: a load records the
  * summary of its own object, and a ledger drawn from its window. A sealed summary
