@@ -115,6 +115,8 @@ import { OpenChargingStorage } from './open-charging-storage';
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
+import { runPreflight } from '@cloudbitmaps/core';
+import type { PreflightResult } from '@cloudbitmaps/core';
 import type {
   CombineManyFeed,
   CombineManyOperand,
@@ -966,6 +968,8 @@ export class CloudRoaring {
   // no underlying driver to write through).
   private readonly storageDriver: IStorageDriver | undefined;
   private readonly registry: IRegistryDriver | undefined;
+  // The backend itself, for its optional `checkLifecycle`; `undefined` for a bare driver or a source.
+  private readonly backend: StorageBackend | undefined;
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
   /** Resolved store-level per-op budget (null = disabled); the admin scans use it, with a per-op override. */
@@ -1102,6 +1106,7 @@ export class CloudRoaring {
     // since a read is safe to repeat and one fault there would otherwise fail the whole write.
     this.storageDriver = wired.driver;
     this.registry = wired.registry;
+    this.backend = wired.backend;
     this.keystore = options.encryption?.keystore;
     this.requireEncryption = options.encryption?.required ?? false;
   }
@@ -2809,6 +2814,59 @@ export class CloudRoaring {
   }
 
   /**
+   * **First-run check of the store's storage and registry.** Call it once at deploy time, or on a first run, before
+   * the first load: it finds a missing permission, a storage that does not refuse a second write to a key, a listing
+   * that lags, or a lifecycle rule that would delete the store's objects, while nothing depends on them yet.
+   *
+   * It runs seven checks and always lists all seven, in this order: `registry` (one read of a row that must be
+   * absent, and the registry able to write), `write` (a new object), `write-once` (a second write to the same key must
+   * be refused), `read` (the object reads back as written), `list` (the listing names it), `delete` (this run's own
+   * object is removed, with the version the read gave where the driver applies one) and `lifecycle` (the backend's
+   * lifecycle check). The probe is one small object at `cbm.due.preflight/segments/probe.<number>.crbm` under the
+   * store's prefix; no registry row is written, and no segment of yours can share the name. A probe left by a run that
+   * was cut off is named in the `list` detail and never deleted, since it could be a run in progress.
+   *
+   * It **never throws over a finding**. A failed step, a transient fault included, is a `problem` whose `detail`
+   * says to run again when the fault was transient, and the checks that cannot run without it are `unchecked`. The
+   * exception is the `lifecycle` step, whose failures, its timeout included, are `unchecked`. `ok` is true when no
+   * check is a `problem`: read an `unchecked` check yourself, as `ok` does not vouch for it. The `lifecycle` check is
+   * `unchecked` for a backend whose check says so (Azure Blob always), for a backend that has no such method (a
+   * third-party backend, a `brandAsBackend` wrapper that does not forward it), when the identity lacks the optional
+   * permission to read the lifecycle rules (`s3:GetLifecycleConfiguration`, `storage.buckets.get`), and when the check
+   * takes longer than 30 seconds of the store's clock. The other steps are the store's ordinary calls and keep their
+   * timing.
+   *
+   * **Not checked:** read-after-delete, the registry's `If-Match` on compare-and-swap, multipart abort permission,
+   * versioning, backups, the keystore's backup and an S3 SDK from 3.641.0 to 3.699.0 (an older SDK shows as a
+   * `write-once` problem; these drop `If-Match`, which only a registry write refuses). It makes no kind of request that a
+   * load does not, though the lifecycle read needs its own optional permission. A run costs about seven requests (a
+   * first run on GCS makes eight, the eighth a second listing that checks the bucket exists, and Azure Blob always
+   * eight): two writes and a delete, the rest reads and one listing.
+   *
+   * Throws {@link UnsupportedError}, and only that, for a store with no backend, since there is nothing to check.
+   */
+  async preflight(): Promise<PreflightResult> {
+    const deps = this.lifecycleDeps('preflight');
+    const backend = this.backend;
+    let checkLifecycle: NonNullable<StorageBackend['checkLifecycle']> | undefined;
+    try {
+      // A wrapper may carry anything under the name; only a function is a check.
+      const method: unknown = backend?.checkLifecycle;
+      if (typeof method === 'function')
+        checkLifecycle = method.bind(backend) as typeof checkLifecycle;
+    } catch {
+      // a getter that throws offers no check
+    }
+    return runPreflight({
+      storage: deps.storage,
+      registry: deps.registry,
+      clock: this.clock,
+      entropy: this.entropy,
+      checkLifecycle,
+    });
+  }
+
+  /**
    * **Export ("eject") every registered segment's current generation** through the injected `sink`, using only
    * public read APIs — so your data is readable **without CloudRoaring** (the exit path; see the README's "Your
    * data stays yours"). `format: 'roaring'` (default) writes one **portable RoaringBitmap32** per segment
@@ -4110,6 +4168,8 @@ export type {
   MetricsSnapshot,
   PinnedAt,
   PortableBitmap,
+  PreflightCheck,
+  PreflightResult,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,

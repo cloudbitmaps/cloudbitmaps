@@ -175,6 +175,9 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/drivers/sorted-load-source-errors.test.ts':
     'throws from inside the id stream to show the error reaches the caller through each driver; a serialized rerouting ' +
     'would drain the ids, and raise the error, before the load starts',
+  'tests/core/preflight-isolation.test.ts':
+    'its loads only seed a real segment beside a planted probe, to show no scan, sweep, erasure, export or collection reads the ' +
+    'probe as a segment; the input form is not what it tests',
   'tests/core/write-identity-deletes.test.ts':
     "it races loads of one fixed set of ids to show what a delete does with another write's object; the input form is " +
     'not what it tests',

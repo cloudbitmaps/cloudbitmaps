@@ -108,6 +108,11 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'it and every version before. A third-party version, not a claim about our release',
   ],
   [
+    '3.697.0',
+    "the last @aws-sdk/client-s3 version whose DeleteObject serializer omits If-Match, named in the production guide's " +
+      'list of what preflight does not check. A third-party version, not a claim about our release',
+  ],
+  [
     '3.698.0',
     'the first @aws-sdk/client-s3 version whose DeleteObject serializer sends If-Match, named in the production guide as ' +
       'the header the registry checks for before it removes a row with a conditional delete. A third-party version, not ' +

@@ -13,6 +13,26 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`store.preflight()` checks a new store's storage and registry before its first load.** It resolves to `{ ok, checks }`
+  and always lists seven checks, in this order: `registry` (one read of a probe row that must be absent, and a registry
+  that can write), `write` (one small probe object), `write-once` (a second write to the same key must be refused),
+  `read` (the object reads back as written), `list` (the listing names it), `delete` (the run's own object is removed,
+  by version where the driver applies one) and `lifecycle` (the backend's `checkLifecycle()`). Each check is `ok`,
+  `problem` or `unchecked` with a `detail` for a person, and `ok` is true when none is a `problem`. A finding never
+  throws: a failed step, a transient fault included, is a `problem` whose detail says to run it again for a transient
+  fault, except the lifecycle step, whose failures, its timeout included, are `unchecked`; the checks that need a failed
+  step are `unchecked`; the one throw is `UnsupportedError` for a store with no backend. It takes no options and sends
+  about seven requests (eight on Azure Blob, and on a first run on GCS, where the eighth is a second listing, the check that the bucket
+  exists): two writes, a delete and the rest reads and one
+  listing. A backend without `checkLifecycle()` (a third-party backend, or a `brandAsBackend` wrapper that does not
+  forward it) is read as `unchecked`, and so is a lifecycle check that has not answered in 30 seconds of the store's
+  clock, and one the identity may not make (`s3:GetLifecycleConfiguration`, `storage.buckets.get`); Azure Blob has the
+  method and always answers `unchecked`. The probe lives in `cbm.due.preflight`,
+  inside the reserved prefix, so no segment can share its name and no scan or sweep reads it as one; a probe left by a
+  run that was cut off is named and never deleted. Not checked: a read after a delete, the registry's `If-Match` on
+  compare-and-swap, the multipart abort permission, versioning, backups, the keystore and an S3 SDK from 3.641.0 to
+  3.699.0 (an older SDK shows as a `write-once` problem). The first-run prerequisites in the guide now
+  start from this call. See [check the setup with `store.preflight()`](docs/guide/production.md#check-the-setup-with-storepreflight).
 - **A storage backend can check the bucket's lifecycle rules: the optional `StorageBackend.checkLifecycle()`, exported
   from `@cloudbitmaps/core/driver-kit` with its `LifecycleVerdict`.** It resolves to `{ status: 'ok' | 'problem' |
   'unchecked', detail }` and never rejects. `S3Storage` reads the bucket's lifecycle configuration (one request, plus the SDK's own retries, needing
@@ -27,7 +47,7 @@ so, and so do the module headers in the code.
   `INTELLIGENT_TIERING` (its archive access tiers need a restore before a read), a transition to an infrequent-access
   class or `GLACIER_IR` (a minimum storage duration and a per-GB retrieval fee). The S3 and GCS requests honour
   `readTimeoutMs`; one that gets no answer in time is `unchecked`. A backend without the method offers no lifecycle
-  check. See [check the lifecycle rules from code](docs/guide/production.md#check-the-lifecycle-rules-from-code).
+  check, which `store.preflight()` reads as `unchecked`. See [check the lifecycle rules from code](docs/guide/production.md#check-the-lifecycle-rules-from-code).
 - **`store.load(ref, ids, { sorted: true })` loads ids that already ascend one chunk at a time, while the object
   uploads.** A load of ids holds the whole generation in memory before it writes; a sorted load holds one chunk's ids
   and bitmap and the writer's index of the chunks written, whatever the segment's size: up to about 7 MiB at the

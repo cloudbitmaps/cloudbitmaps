@@ -53,6 +53,8 @@ interface WiredStore {
   readonly source: StorageChunkSource;
   readonly driver: IStorageDriver | undefined;
   readonly registry: IRegistryDriver | undefined;
+  /** The backend the store was given, for its optional lifecycle check; `undefined` for a bare driver or a source. */
+  readonly backend: StorageBackend | undefined;
   /** The read retry the store shares with its lifecycle reads; `undefined` when retry is off. */
   readonly retryOptions: RetryingOptions | undefined;
 }
@@ -134,6 +136,7 @@ export function wireStore(
     source: resolved.source,
     driver: resolved.driver,
     registry: resolved.registry,
+    backend: isStorageBackend(options.storage) ? options.storage : undefined,
     retryOptions,
   };
 }

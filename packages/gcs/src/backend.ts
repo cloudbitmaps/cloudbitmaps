@@ -195,7 +195,7 @@ export class GcsStorage implements StorageBackend {
    * Reads the bucket's metadata (one request, plus the SDK's own retries, bounded by `readTimeoutMs` when it is set) and
    * reports a lifecycle rule with a `Delete` action (or one it does not know) that applies to live
    * objects whose names can be this store's: generations and registry rows alike. Needs `storage.buckets.get`, which
-   * the store itself never uses and `roles/storage.objectAdmin` does not include: without it the answer is
+   * a load never uses (`store.preflight()`'s lifecycle step does) and `roles/storage.objectAdmin` does not include: without it the answer is
    * `unchecked`, naming the permission. Never rejects; a `detail` carries no credential. Rule reading: see the
    * production guide.
    */

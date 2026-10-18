@@ -453,7 +453,7 @@
   },
   {
     "entry": "@cloudbitmaps/core/driver-kit StorageBackend.checkLifecycle",
-    "reason": "a new optional method on a backend, agreed with the maintainer: it reports whether the bucket's lifecycle rules would delete or archive the objects the store keeps, in one request (plus the SDK's own retries) and without ever rejecting; a backend without it offers no lifecycle check, so no implementer or caller has to change"
+    "reason": "a new optional method on a backend, agreed with the maintainer: it reports whether the bucket's lifecycle rules would delete or archive the objects the store keeps, in one request (plus the SDK's own retries) and without ever rejecting; a backend without it offers no lifecycle check, and store.preflight() reads that as unchecked, so no implementer or caller has to change"
   },
   {
     "entry": "@cloudbitmaps/core/driver-kit LifecycleVerdict*",
@@ -478,5 +478,17 @@
   {
     "entry": "@cloudbitmaps/roaring LocalFsStorage.checkLifecycle",
     "reason": "LocalFsStorage implements the optional lifecycle check as ok: a local directory has no lifecycle rules"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.preflight",
+    "reason": "a new store method, agreed with the maintainer: a first-run check that reads the registry, writes, tries to write again, reads, lists and deletes one probe object and asks the backend for its lifecycle verdict; it takes no options and never throws over a finding, only UnsupportedError for a store with no backend"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PreflightResult*",
+    "reason": "the answer of CloudRoaring.preflight, { ok, checks }, where ok means no check is a problem; a new type that only the new method returns"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PreflightCheck*",
+    "reason": "one check in the answer of CloudRoaring.preflight, { name, status, detail }, with the seven names a literal union in the order a run lists them and a status of ok, problem or unchecked; a new type that only the new method returns"
   }
 ]
