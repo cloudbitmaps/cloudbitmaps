@@ -337,8 +337,9 @@ export class CrbmWriter {
     if (indexNonce !== undefined) footer.set(indexNonce, FOOTER.indexNonce);
     if (indexTag !== undefined) footer.set(indexTag, FOOTER.indexTag);
     view.setBigUint64(FOOTER.generation, BigInt(this.options.generation), true);
-    // Hide chunk count + cardinality on an encrypted object (a leak reveals neither); the reader derives both
-    // from the decrypted index. Cleartext objects keep them for the O(1) count()/validation path.
+    // Zero the chunk count and cardinality on an encrypted object, so neither is stored (the index's clear length
+    // still bounds the chunk count); the reader derives both from the decrypted index. Cleartext objects keep them
+    // for the O(1) count()/validation path.
     view.setUint32(FOOTER.chunkCount, encrypted ? 0 : this.entries.length, true);
     view.setBigUint64(FOOTER.totalCardinality, BigInt(encrypted ? 0 : this.totalCardinality), true);
     view.setUint32(FOOTER.footerCrc32c, crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)), true);
