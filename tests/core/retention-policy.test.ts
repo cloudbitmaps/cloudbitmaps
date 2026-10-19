@@ -215,7 +215,7 @@ describe('setRetention / getRetention / clearRetention', () => {
       await w.registry.create(SEG, { currentGen: 0, wrappedDeks: minted.wrapped });
       await destroySegment(SEG, { registry: w.registry }, { confirmSegment: 's' });
 
-      // A sweep never retires a tombstone it did not write, so a policy on one would never act.
+      // A sweep never retires a tombstone (it purges only its own, by their stamp), so a policy on one would never act.
       await expect(w.store().setRetention(SEG, { expiresAt: FUTURE })).rejects.toBeInstanceOf(
         ValidationError,
       );

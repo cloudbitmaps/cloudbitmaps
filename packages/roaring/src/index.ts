@@ -2247,7 +2247,8 @@ export class CloudRoaring {
    * the recorded one throws {@link IntegrityError}, with or without a keystore, since the footer is in the clear. A
    * generation not in the bucket (collected, or never written) throws `NotFoundError` naming what *is* available, a
    * destroyed segment (crypto-shredded, destroyed in the clear or dropped) throws {@link ValidationError}, because no
-   * generation resolves through a destroyed row, and a target that is cleartext under an encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from
+   * generation resolves through a destroyed row, and a target that is cleartext under an encrypted segment, or
+   * encrypted under a cleartext one, throws {@link IntegrityError} from
    * one tail read of it, because every read would refuse it. Rolling to the generation already current is a no-op that
    * reports itself, once one footer read finds its object in the bucket (and the one the row recorded); when the object is
    * gone it throws `NotFoundError` naming what is.
@@ -2593,7 +2594,9 @@ export class CloudRoaring {
    *
    * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
    * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself
-   * first, since nothing else ever would for a tombstoned segment. Attribution is a **positive marker the sweep
+   * first, since nothing else runs that collection on its own for a tombstoned segment (an erasure collects there
+   * only
+   * when an object holds its id, and a re-run drop sweeps it). Attribution is a **positive marker the sweep
    * stamps on its own retirements**, not an inference from "destroyed + an expired policy": a crypto-shred leaves
    * `retention` untouched, so setting a policy and then honouring a right-to-erasure request mid-window produces
    * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. By default a
@@ -2862,7 +2865,8 @@ export class CloudRoaring {
    * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent,
    * errored }` — `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object
    * store, or roll the registry back to a coherent point). Needs the store built with a **backend**
-   * (throws {@link UnsupportedError} otherwise). `destroyed` segments (crypto-shredded, destroyed in the clear or dropped) are skipped. Pair
+   * (throws {@link UnsupportedError} otherwise). `destroyed` segments (crypto-shredded, destroyed in the clear or
+   * dropped) are skipped. Pair
    * it with the DR runbook (docs/guide/disaster-recovery.md).
    *
    * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still
@@ -2968,7 +2972,8 @@ export class CloudRoaring {
    * enumeration and the read path provably share one registry. Encrypted segments are decrypted transparently
    * **iff** this store was wired with their keystore — the export is therefore **cleartext**; protect it.
    * Destroyed segments (crypto-shredded, destroyed in the clear or dropped) are skipped. A segment that can't be read
-   * is isolated into the manifest's `failed[]` (the run continues), so "a manifest exists" means the run finished — check `failed`. The `export-segments`
+   * is isolated into the manifest's `failed[]` (the run continues), so "a manifest exists" means the run finished —
+   * check `failed`. The `export-segments`
    * CLI wraps this with a filesystem sink. The `'roaring'` format's bitmaps are built by the store's own codec.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {

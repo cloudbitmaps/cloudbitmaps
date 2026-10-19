@@ -246,8 +246,9 @@ async function reindex(
  * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
  * row's `retention` metadata are preserved — this owns one key, not the whole object.
  *
- * Refuses a `destroyed` segment: a sweep never retires a tombstone it did not write, so a policy on one would never
- * act. Objects a destroy left in the bucket are deleted by `dropSegment` on the tombstone, not by a policy.
+ * Refuses a `destroyed` segment: a sweep never retires a tombstone (it purges only its own, by their stamp), so a
+ * policy on one would never act. Objects a destroy left in the bucket are deleted by `dropSegment` on the tombstone,
+ * not by a policy.
  */
 export async function setSegmentRetention(
   ref: SegmentRef,
