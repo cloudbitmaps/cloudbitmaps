@@ -885,7 +885,7 @@ function assertRuntimeNeutralCoversCore() {
   );
   const wanted = Object.entries(manifest.exports)
     .filter(([key]) => key !== './node')
-    .map(([, target]) => path.normalize(target.default).replace(/^dist\//, ''))
+    .map(([, target]) => path.posix.normalize(target.default).replace(/^dist\//, ''))
     .sort();
   const listed = RUNTIME_NEUTRAL_ENTRIES.filter(([pkg]) => pkg === 'core')
     .map(([, file]) => file)
