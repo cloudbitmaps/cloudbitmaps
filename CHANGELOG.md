@@ -93,13 +93,15 @@ so, and so do the module headers in the code.
 ### Fixed
 
 - **A fault on a read inside a load's, an erasure's or a bulk load's registry write no longer reads as a write with no
-  answer.** A throttled or failed read of the row, made while the publish waited out a lease write or inside the
-  registry before it sent anything, used to count as a registry write that got no answer. A load refused after it then
-  carried `unanswered: true` on its `segment.load-refused` event although every write it sent had been answered, and the
-  publish read the row back and could send its write again. That read's own `TransientError` is now thrown at once for
-  a load, an erasure and a bulk load, and the object they wrote is kept. After a lease write the publish also passes the
-  row it just re-read to the registry with its write, so the object-store registries (S3, GCS and Azure Blob) send it
-  without reading the row a second time: one request fewer.
+  answer.** A throttled or failed read of the row, made while the publish waited out a lease write, inside the registry
+  before it sent anything (on the local-file registry too, whose read of the row is under its lock), or inside the
+  registry after a first load's create-only write lost a race, used to count as a registry write that got no answer. A
+  load refused after it then carried `unanswered: true` on its `segment.load-refused` event although every write it sent
+  had been answered, and the publish read the row back and could send its write again. That read's own `TransientError`
+  is now thrown at once for a load, an erasure and a bulk load, and the object they wrote is kept; for a first load
+  that lost its create-only write, the refusal is the conflict itself, flagged only where the registry marks it (Azure
+  Blob). After a lease write the publish also passes the row it just re-read to the registry with its write, so the
+  object-store registries (S3, GCS and Azure Blob) send it without reading the row a second time: one request fewer.
 - **A rollback settles a swap that met a conflict or got no answer by its write token, as a load's publish does.** On a
   registry that reports its writes' tokens (the in-memory, local-file, S3, GCS and Azure Blob registries), a rollback's
   swap that landed and then met a conflict, or got no answer, is its own when the row's pointer is at the target over a
