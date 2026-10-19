@@ -294,7 +294,9 @@ interface PublishOptions {
  *   the caller's own object, or is on another incarnation, is a lost race too and answers `false`, never an already
  *   current re-publish.
  *
- * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
+ * A failed read throws `TransientError` too, and so does a fault before the write reports its token on a registry that
+ * reports tokens (the registry's own read of the row, before anything was sent): it is thrown at once as the read's
+ * fault, and is not reconciled. The same check of the pointer runs after a {@link WriteConflictError},
  * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race. A
  * conflict the registry marked with `unsettledConflict` is also a write that may have landed: it is reported to
  * `onUnanswered`, and when the row does not show the write there, a call that ends refused has not proved the write

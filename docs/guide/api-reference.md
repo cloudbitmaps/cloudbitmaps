@@ -680,15 +680,16 @@ to build against, makes the consumer's copy the only one:
 }
 ```
 
-**On correctness, know what you cannot run.** The conformance suite the in-repo drivers are held
-to (`packages/roaring/src/testing/conformance.ts`) is *not* exported as a public subpath, so a third-party
-driver cannot execute it. The load-bearing behaviours to reproduce by hand are: a
-conditional create that **refuses** rather than overwrites (hard invariant 2 — this is the one that silently
-loses data if you get it wrong), ranged reads that return exactly the requested bytes, a compare-and-swap on
-the pointer row that reports a lost race rather than clobbering, a delete that removes a row only while it is
-the version the delete read, if you report `conditionalDelete: true`, a storage delete given `ifVersion` that removes
-only the object that version names, refuses another with `WriteConflictError` and takes an absent one as a no-op, if
-your storage reports `conditionalDelete: true`, and the four `currentGen: null` obligations listed below.
+**On correctness, know what you cannot run.** The conformance suite the in-repo drivers are held to
+(`packages/roaring/src/testing/conformance.ts`) is *not* exported as a public subpath, so a third-party driver cannot
+execute it. The load-bearing behaviours to reproduce by hand are: a conditional create that **refuses** rather than
+overwrites (hard invariant 2 — this is the one that silently loses data if you get it wrong), ranged reads that return
+exactly the requested bytes, a compare-and-swap on the pointer row that reports a lost race rather than clobbering, a
+delete that removes a row only while it is the version the delete read, if you report `conditionalDelete: true`, a
+storage delete given `ifVersion` that removes only the object that version names, refuses another with
+`WriteConflictError` and takes an absent one as a no-op, if your storage reports `conditionalDelete: true`, if you
+report write tokens, a `create` and a `compareAndSwap` that call `onToken` before sending anything that can land, so
+that one whose `onToken` throws leaves the row untouched, and the four `currentGen: null` obligations listed below.
 
 </details>
 
@@ -996,30 +997,34 @@ therefore:
 - keep `status: 'active'` meaningful for such a row: a null pointer is a **live** segment, not a tombstone;
 - yield `destroyed` tombstones from `list()` — the sweep can only purge a row it can see.
 
-**A registry can tell a writer which row writes are its own.** A load, an erasure's rewrite and every other publish
-that meets a conflict, or a write that got no answer, has to decide whether its own write landed, and the row's
-`pointerId` (the token of the write that last set the pointer) answers it, if the writer knows the tokens of the writes
-it sent. A registry that reports them says so with `reportsWriteTokens: true` on the driver (a getter or a field), and
-calls the `onToken` function of the `RegistryWriteOptions` it is handed, once for each `create` and `compareAndSwap` it
-sends, with the token that write carries, **before it sends the request**: a write that gets no answer may still land,
-and its token has to be known by then. A write sent again with a new token reports it; one that repeats the same body
-repeats the token already reported. The token reported is the one the write records, so a write that lands leaves the
-row's `token` equal to it, and its `pointerId` too when the write names a resolved field; a write that does not land
-leaves no row carrying it. **The token is unique to that write attempt, also against another writer racing the same
-version**: a version counter alone is not enough, since a loser's write would then pass for the winner's. The writer
-counts a write as its own if and only if the row's `pointerId` is one of the tokens it was told, which is equality only,
-so it needs no read of the object and cannot mistake another writer's write of the same ids for its own. A `pointerId`
-that is not one is another writer's write, or the writer's own write that landed and was then followed, before the
-writer read the row again, by a write that renews the row's `pointerId` over it: an erasure's renewal, or a rollback
-back onto the generation after a publish or another rollback moved the pointer off it. The writer cannot tell the two
-apart, reports none published though its generation may be current, and deletes nothing, and a re-run publishes, or
-erases. `ObjectStoreRegistry` (so
-the S3, GCS and Azure Blob registries), the in-memory registry and the local-filesystem registry report; the registry
-conformance suite holds a registry that sets the flag to the cases above, among them N writers racing one write with
-one body, which must report tokens no loser shares with the row. **A registry that wraps or extends another and
-overrides `create` or `compareAndSwap` either passes `options` through to the write it forwards, or sets
-`reportsWriteTokens` to `false`.** One that does neither reads every write of its own that landed after an error or a
-lost answer as not its own (`superseded`), and deletes nothing. A registry that sets the flag to `false`, or leaves it
+**A registry can tell a writer which row writes are its own.** A load, an erasure's rewrite and every other publish that
+meets a conflict, or a write that got no answer, has to decide whether its own write landed, and the row's `pointerId`
+(the token of the write that last set the pointer) answers it, if the writer knows the tokens of the writes it sent. A
+registry that reports them says so with `reportsWriteTokens: true` on the driver (a getter or a field), and calls the
+`onToken` function of the `RegistryWriteOptions` it is handed, once for each `create` and `compareAndSwap` it sends,
+with the token that write carries, **before it sends the request**: a write that gets no answer may still land, and its
+token has to be known by then. A publish relies on the report coming first, both ways. A write that faults after its
+report may have landed, and is settled by reading the row. A `TransientError` before any report is taken for a fault
+before sending, such as the driver's own read of the row: the publish throws it at once, with no read of the row and no
+fresh write. So nothing that can land is sent before the report, a client's own resend included. A write sent again with
+a new token reports it; one that repeats the same body repeats the token already reported. The token reported is the one
+the write records, so a write that lands leaves the row's `token` equal to it, and its `pointerId` too when the write
+names a resolved field; a write that does not land leaves no row carrying it. **The token is unique to that write
+attempt, also against another writer racing the same version**: a version counter alone is not enough, since a loser's
+write would then pass for the winner's. The writer counts a write as its own if and only if the row's `pointerId` is one
+of the tokens it was told, which is equality only, so it needs no read of the object and cannot mistake another writer's
+write of the same ids for its own. A `pointerId` that is not one is another writer's write, or the writer's own write
+that landed and was then followed, before the writer read the row again, by a write that renews the row's `pointerId`
+over it: an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the
+pointer off it. The writer cannot tell the two apart, reports none published though its generation may be current, and
+deletes nothing, and a re-run publishes, or erases. `ObjectStoreRegistry` (so the S3, GCS and Azure Blob registries),
+the in-memory registry and the local-filesystem registry report; the registry conformance suite holds a registry that
+sets the flag to the cases above, among them N writers racing one write with one body, which must report tokens no loser
+shares with the row. **A registry that wraps or extends another and overrides `create` or `compareAndSwap` either passes
+`options` through to the write it forwards, or sets `reportsWriteTokens` to `false`.** One that does neither reads a
+write of its own that landed and then met a conflict as not its own (`superseded`), and takes every `TransientError` of
+its writes, a throttle and a lost answer alike, for a fault before sending: the publish throws it at once, with no read
+of the row and no fresh write. Either way it deletes nothing. A registry that sets the flag to `false`, or leaves it
 off, is settled by the object: the publish reads the footer of the object under the pointer, which carries the write
 identity its writer drew, so another load's object under the number, of the same ids or not, does not pass for the
 publish's own (an object whose identity field is all zero is the exception).

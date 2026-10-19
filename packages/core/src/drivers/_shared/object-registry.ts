@@ -255,6 +255,11 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     return row.env.record;
   }
 
+  /**
+   * Write a new row, create-only over none or over a tombstone. `held: null` is the publish's contract: its caller read
+   * the row absent. A direct caller that passes it over a tombstone may see a conflict when the read-back after the
+   * lost create faults, though no live row exists.
+   */
   async create(
     ref: SegmentRef,
     record: NewRegistryRecord,
