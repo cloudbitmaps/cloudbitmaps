@@ -167,6 +167,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A rollback whose target went while the pointer was moving reports the pointer as put back when the move back landed
+  and lost its answer.** Before, the move back sent no write token and any failure ended the loop, so a move back that
+  landed read as "the pointer may still name" the target while the pointer was back. The call now reads the row and takes
+  the move back as landed when the row's `pointerId` is a token it sent; one that never landed still says the pointer
+  may be on the target. The production guide's and the API reference's account of what each lifecycle helper settles, and
+  the roadmap's deferral list, now state what the code does: a write token, the row gone, or the object gone, and what
+  still throws `TransientError` (both the answer and the read-back lost, a delete that lands after its check, a registry
+  that reports no write tokens).
 - **The retention sweep reports a purge or a pointer delete whose response was lost as the delete it was.** Before, a
   purge that landed and lost its answer was `skipped` with `failed: ...` and counted in `purgeFaults`, and no later call
   reported the purge; on Azure Blob, whose client resends a delete after a lost response, the resend met the row it had

@@ -434,6 +434,30 @@ names the generation it asked to delete whether or not it was there.
 higher than the one a purge and re-creation or a rollback leaves behind, which is why the ordinary branch above takes
 the lower of the two.
 
+### A write that gets no answer
+
+<a id="a-write-that-gets-no-answer"></a>Every write below that gets no answer reads back its row or its object and takes the write as landed only when what it
+reads carries the call's own mark. Over a registry that reports write tokens the mark is the token the call sent before the
+write; no other writer's write carries it. Only a load, an `*Into` verb and an erasure's rewrite send the write again when
+the read-back shows it did not land; the others throw `TransientError`, and a re-run is safe.
+
+- **A crypto-shred** (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement): settled by the tombstone's
+  `pointerId`, the token of the shred's own write. When the read-back fails too, the call throws `TransientError` and the
+  segment may be destroyed. Its re-run answers `'already'`, with no `segment.erase`.
+- **A drop's tombstone for a segment with no row**: settled the same way. A re-run answers `'already'` and sweeps the bucket.
+- **`setRetention`, `clearRetention`**: settled by the row's token. When another write has followed this call's write
+  before the read-back, the row cannot say whose write it shows, and the call decides again from the row.
+- **A `rollback`'s move and its move back**: settled by the row's `pointerId` being the token of a write the call sent. A
+  move back that landed is reported as "the pointer was put back". One that never landed, or whose read-back failed too,
+  says the pointer may still name the target. A registry that reports no tokens settles the move onto the target by the
+  row it would leave, and cannot settle the move back: that message stays.
+- **A sweep's purge and its pointer removals**: settled by reading the row. A row that is gone counts as removed, whichever
+  request removed it, so two sweeps over the same rows at once can both count one purge.
+- **A storage delete** (a load's collection, an erasure's deletes, a drop's sweep): settled by one zero-byte read of the
+  object. Gone, it counts as deleted. For an erasure's delete of a holder, another object under the number is the refusal a
+  conditional delete gives. When the read fails too, or the delete lands after it, the call reports the fault, and a re-run
+  finds the object gone: an erasure's re-run then lists nothing for the segment.
+
 ### A rollback that races a collection
 
 <a id="every-delete-reads-the-row"></a>Every loop that deletes generations reads the segment's row just before each delete. A rollback that is held to the
@@ -1082,7 +1106,7 @@ won. This covers a generation's write-once put and the registry's create, compar
 write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone,
 but for two GCS writes that keep it: an object above `simpleUploadThresholdBytes` (a resumable upload, which the SDK
 retries within its session), and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to
-send twice (a copy that meets the first's landed delete reads as a lost race, and a re-read settles it). With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
+send twice (a copy that meets the first's landed delete reads as a lost race, and the retention sweep, which sends that delete, settles it by reading the row and finding it gone). With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
 after a throttle, when a random id in its metadata tells a first send that landed from another writer's object. A row
 write that gets no answer is settled by the load itself, which reads the row and sends a fresh compare-and-swap from
 it if nothing changed, at most three times

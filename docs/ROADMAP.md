@@ -400,14 +400,17 @@ between here and there:
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
    - an `op` metric for `store.load`, which the metrics sink does not time;
-   - the reconcile of an unanswered registry write, for the writes of `setRetention` and a crypto-shred; the publish
-     of a load, an `*Into` or an erasure's rewrite, and the write an erasure makes to the row before it deletes an
-     object a load may still publish, settle one by reading the row. A `rollback` reads the row too, and goes on from a
-     swap the row shows landed, but does not send again one the row shows did not land: it throws the
-     `TransientError`;
-   - settling a rollback's undo by the write token: the undo is fenced on the row read back, and its failure message
-     says the pointer "may" still name the target. The undo also restores the ledger the row had before the swap, so a
-     ledger-only write made in between (a prune) is undone with it;
+   - sending a lifecycle write again when the row shows it did not land. Every write settles a write that got no answer by
+     reading back its row or its object, and goes on from one that landed. Only the publish of a load, an `*Into` or an
+     erasure's rewrite, and an erasure's write to the row, send one again. The others throw the `TransientError`, and a
+     re-run is safe: a crypto-shred, a drop's tombstone, `setRetention`, `clearRetention`, a rollback's move and move
+     back, a sweep's deletes, and a storage delete;
+   - a record of a crypto-shred whose answer and read-back were both lost. The tombstone does not say which call wrote it
+     or that it was a crypto-shred, so the re-run answers `'already'` and emits no `segment.erase`;
+   - a delete that lands after the read that checked it, and a registry that reports no write tokens, which cannot show a
+     write by its token: both leave the call reporting the fault, and a re-run is safe;
+   - a rollback's move back restores the ledger the row had before the move, so a ledger-only write made in between (a
+     prune) is undone with it;
    - a `rollback` with no key at hand (no keystore, or one that cannot open the key) below the pointer of an encrypted
      segment whose row has no usable `knownGens`, or onto a number below a full list's oldest entry, which opens nothing:
      it checks that the object is in the bucket and, from its footer, that it is encrypted exactly when the row has
