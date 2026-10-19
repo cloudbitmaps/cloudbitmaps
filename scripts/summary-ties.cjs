@@ -77,6 +77,7 @@ const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { lstatSync, readFileSync, writeFileSync } = require('node:fs');
 const { join, posix, resolve } = require('node:path');
+const { removeAll } = require('../bench/lib/remove-all.cjs');
 
 const ROOT = resolve(__dirname, '..');
 const SOURCE = 'docs/guide/correctness.md';
@@ -677,7 +678,7 @@ function splitCells(line) {
  * thematic breaks and reference definitions are not blocks; a block quote reads as its text.
  */
 function markdownBlocks(text) {
-  const src = text.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ''));
+  const src = removeAll(text, /<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ''));
   const lines = src.split('\n');
   const raw = [];
   const refs = new Map();
@@ -780,7 +781,7 @@ const HTML_BLOCK = new Set(
 
 /** An HTML page as blocks: a heading (h1 to h6, the title), and each block element's text, its cells apart. */
 function htmlBlocks(text) {
-  const src = text.replace(HTML_DROP, (m) => m.replace(/[^\n]/g, ''));
+  const src = removeAll(text, HTML_DROP, (m) => m.replace(/[^\n]/g, ''));
   const newlines = [];
   for (let i = 0; i < src.length; i++) if (src.charCodeAt(i) === 10) newlines.push(i);
   const lineAt = (offset) => {
@@ -878,10 +879,9 @@ function slugify(heading) {
 
 /** A heading's text as a reader sees it: links as their text, code spans and emphasis gone. */
 const headingText = (text) =>
-  text
+  removeAll(text, /<[^<>]*>/g)
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/[`*]/g, '')
-    .replace(/<[^<>]*>/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 
