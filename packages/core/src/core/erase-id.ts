@@ -1283,7 +1283,7 @@ async function unpublished(c: EraseCall): Promise<EraseIdResult> {
 
 /** The newest object listed under the tombstone that holds the id, searched as `holds` searches one; reads only. */
 async function holderUnderTombstone(c: HoldsCall): Promise<{ generation: number } | undefined> {
-  const newestFirst = (await generationsOf(c.deps.storage, c.ref)).reverse();
+  const newestFirst = (await c.read(() => generationsOf(c.deps.storage, c.ref))).reverse();
   return (await holdsEach(c, newestFirst, { stopAtHolder: true })).find((h) => h.held === true);
 }
 
@@ -1292,7 +1292,7 @@ async function holderUnderTombstone(c: HoldsCall): Promise<{ generation: number 
  * {@link eraseIdFromSegment} makes under a tombstone, without its deletes. The caller has read the row as `destroyed`;
  * this reads no row. It lists the bucket once and opens objects newest first, a few at a time, stopping at the first
  * that holds the id; an object sealed under a key is no holder. It writes and deletes nothing. A fault on a read is
- * thrown, after the read retry in `deps.readRetry`, never read as "not found".
+ * thrown, after the read retry in `deps.readRetry` (the listing is retried too), never read as "not found".
  */
 export async function findIdUnderTombstone(
   ref: SegmentRef,

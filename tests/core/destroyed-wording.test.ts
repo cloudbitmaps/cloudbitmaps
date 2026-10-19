@@ -84,7 +84,7 @@ describe.each(ROUTES)('a segment destroyed by a %s', (route) => {
       ),
     );
     expect(message).toBe(
-      'segment "s" is destroyed — refusing to set a retention policy on a tombstone; there is nothing left to retire. Use a new segment.',
+      'segment "s" is destroyed — refusing to set a retention policy on a tombstone. Use a new segment; to delete objects a destroy left in the bucket, run dropSegment.',
     );
   });
 

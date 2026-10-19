@@ -173,8 +173,8 @@ interface Resolution {
 }
 
 /**
- * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a crypto-shredded
- * one, whose DEK is gone from the row, so no read through it can decrypt its Storage bytes; and a row with no Storage
+ * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a destroyed
+ * one, through which no read resolves a generation (after a crypto-shred its DEK is gone from the row too); and a row with no Storage
  * generation yet (minted by `setSegmentRetention` ahead of the first load, so admin tools can see the segment), which
  * resolves exactly like a segment with no row. Returning `null` for that last one rather than a generation is the whole reason such a row is safe
  * to create: the alternative, pointing at a generation that does not exist, is the `missing-storage-generation` state.
@@ -1509,8 +1509,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   async exists(ref: SegmentRef): Promise<boolean> {
     validateUserRef(ref);
-    // A `destroyed` row is a segment that was dropped, retired or shredded: it holds nothing, so a combine that names it
-    // is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
+    // A `destroyed` row is a segment that was dropped, retired, crypto-shredded or destroyed in the clear: no
+    // generation resolves through it, so a combine that names it is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
     // nobody. A row with no generation yet (a retention policy set first) still exists.
     if (this.registry !== undefined) {
       const row = await this.registry.get(ref);
@@ -2074,8 +2074,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    *
    * A *second* NotFound is pathological (GC outrunning resolution) and propagates rather than fabricating an
    * absent answer — never return a wrong result. `ifGone` is returned when the segment has no committed
-   * generation to serve: storage is empty, or the row is destroyed (crypto-shredded, destroyed in the clear or dropped), in which case reading empty
-   * is the documented outcome rather than a failure.
+   * generation to serve: storage is empty, or the row is destroyed (crypto-shredded, destroyed in the clear or dropped), in which case
+   * reading empty is the documented outcome rather than a failure.
    *
    * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry
    * re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a

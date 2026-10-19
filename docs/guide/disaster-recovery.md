@@ -249,7 +249,7 @@ makes the coordinated restore point easy to hit rather than something you have t
    restoring the row to the state that names them or loading their ids again
    ([erasure](erasure.md#three-rules-while-you-erase)).
 8. **Re-apply every erasure made after `T`.** The restore undid them: a crypto-shred's row has its wrapped key back,
-   and a dropped or erased segment has its generations back, with the registry pointing at them. Take the segments
+   a cleartext-destroyed segment's row is active again, and a dropped or erased segment has its generations back, with the registry pointing at them. Take the segments
    from the events your audit sink stamped after `T`, and the subjects from your own record of erasure requests,
    since no event carries a subject id:
 
@@ -364,7 +364,7 @@ in-process `catch` that would re-stamp it cannot run.
 writes on its own work*. The alternative — inferring "this tombstone was a retirement because the row is
 `destroyed` and carries an expired policy" — is wrong in a way that matters: `destroySegment` never touches
 `retention`, so the ordinary sequence *(set a 30-day policy → a GDPR request arrives mid-window →
-`destroySegment`)* produces a **crypto-shred** tombstone carrying an expired policy. Auto-purging that row
+`destroySegment`)* produces a **crypto-shred** tombstone (a cleartext destroy's is the same) carrying an expired policy. Auto-purging that row
 destroys your local attestation for a right-to-erasure execution and un-fences the name for every writer. The
 marker cannot be forged by that ordering; the inference can. One narrower ordering does put the marker on a
 crypto-shred's tombstone: a `destroySegment` that lands between the sweep's re-read of an expired row and its
@@ -413,20 +413,22 @@ for await (const rec of registry.list(/* namespace? */)) {
 }
 ```
 
-Every row this prints is an unstamped tombstone. **Most of them are legitimate** — a crypto-shred
-(`destroySegment` / `eraseNamespace`) or a manual `dropSegment` is *supposed* to be unstamped and permanent.
+Every row this prints is an unstamped tombstone. **Most of them are legitimate** — a crypto-shred or a cleartext
+destroy (`destroySegment` / `eraseNamespace`) or a manual `dropSegment` is *supposed* to be unstamped and permanent.
 Deciding which is which is the part that needs a person:
 
 - **Check your audit sink** for that segment, and read its events together, because no event says who made the
   call: an event carries no origin, only what your sink stamps on it. A crypto-shred (`destroySegment`,
-  `eraseNamespace`) emits `segment.erase` alone, and `eraseNamespace` adds one `namespace.erase` for the namespace.
+  `eraseNamespace`) emits `segment.erase` alone, and `eraseNamespace` adds one `namespace.erase` for the namespace. A
+  cleartext destroy (`allowCleartext`) destroys no key and emits no `segment.erase`.
   A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` that writes or
   finds a tombstone then emits `segment.dispose` once its storage sweep ends (a drop of a name with no row and no
   objects, and a dry run, emit nothing). The sweep's retirements are `dropSegment` calls, so they emit
   exactly what a manual drop does. One killed mid-sweep emits the `segment.erase` if the segment was encrypted,
   nothing if it was cleartext, and no `segment.dispose`; one killed after its sweep but before the stamp emits
   both. So a `segment.erase` with no `segment.dispose` is a crypto-shred or an interrupted drop of an encrypted
-  segment, and a `segment.dispose` is a drop, the sweep's or anyone's. What tells the sweep's drops apart is the actor your
+  segment, a `segment.dispose` is a drop, the sweep's or anyone's, and a tombstone with no event at all is a cleartext
+  destroy or an interrupted drop of a cleartext segment. What tells the sweep's drops apart is the actor your
   sink stamps, when the process that runs the sweep passes a sink that names it. If the events cannot settle it,
   leave the row alone: a tombstone kept costs a fenced name and a few bytes, and a crypto-shred's tombstone deleted
   is a lost attestation.
@@ -652,7 +654,7 @@ await store.rollback(ref, 6, { audit, allowUnknown: true });  // or: move onto t
 The current generation is always known on a row whose list is usable, so `generations()` never marks it `known: false`.
 Otherwise: a generation the row does not know throws `ValidationError`, before any request to storage; a known
 generation whose object is another one than the row recorded throws `IntegrityError`; a generation not in the bucket
-throws `NotFoundError` and **names what is available**; a `destroyed` row (a crypto-shred's or a drop's tombstone)
+throws `NotFoundError` and **names what is available**; a `destroyed` row (the tombstone of a crypto-shred, a cleartext destroy or a drop)
 throws `ValidationError`; and a row that another writer changed before the rollback's swap landed throws `WriteConflictError` and records no
 move.
 A generation above the pointer that a rollback left is known, so undoing a rollback needs no flag; `store.rollback`

@@ -29,8 +29,8 @@ temporary segment and then calling `andNot` makes an intermediate nobody wants, 
 `exclude` included, with a `ValidationError` that names it. Read directly, a segment that was never loaded is empty,
 which is right. As an operand, a mistyped name or a missing `namespace` would contribute nothing and look correct,
 and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
-operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy, crypto-shredded or destroyed in
-the clear is refused the same way, since it holds nothing. A segment loaded with no ids, or one that only has a retention policy,
+operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy, crypto-shredded or
+destroyed in the clear is refused the same way, since no generation resolves through it. A segment loaded with no ids, or one that only has a retention policy,
 counts as existing.
 
 A combine lists its operands' chunk keys at most 16 operands at a time, then asks the registry once about each operand
@@ -370,7 +370,7 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
   and loaded again, so a number alone does not name an object. A bare number, a fingerprint that is not one a pin
   recorded, or a key other than `generation` and `fingerprint` throws `ValidationError`.
 - **A generation that is gone throws `NotFoundError`, and `pinAt` never reads empty.** Collected, purged, on a
-  crypto-shredded segment, or another object than the fingerprint names: each is `NotFoundError`, at the call. A
+  destroyed segment, or another object than the fingerprint names: each is `NotFoundError`, at the call. A
   generation above the pointer after a rollback is refused too. A rollback deletes nothing, though, so once a later load
   moves the pointer past it, a generation it rolled back from can be reopened while its object is still stored and
   the fingerprint matches.

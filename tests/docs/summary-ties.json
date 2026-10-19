@@ -98,12 +98,6 @@
       "starts": "A removed row stays recoverable wherever the storage"
     },
     {
-      "file": "PRIVACY.md",
-      "claim": "tombstones-purged-narrowly",
-      "sentence": "1559552aa000",
-      "starts": "A tombstone a hand-run dropSegment or a crypto-shred"
-    },
-    {
       "file": "docs/ROADMAP.md",
       "claim": "refusal-is-reported-not-thrown",
       "sentence": "bb4bce1b3003",
@@ -138,12 +132,6 @@
       "claim": "row-write-settled",
       "sentence": "4b35ddc65c14",
       "starts": "A throttled write sent again, and a registry"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "rollback-settles-its-swap",
-      "sentence": "cb22daf058a8",
-      "starts": "Refuses a target the row's knownGens does not"
     },
     {
       "file": "docs/ROADMAP.md",
@@ -906,12 +894,6 @@
       "claim": "drop-registry-first",
       "sentence": "6956d6e54192",
       "starts": "dropSegment writes the tombstone before the storage sweep,"
-    },
-    {
-      "file": "docs/guide/retention.md",
-      "claim": "tombstones-purged-narrowly",
-      "sentence": "d3a5cb1468d6",
-      "starts": "A tombstone a hand-run dropSegment wrote is never"
     },
     {
       "file": "packages/azure-blob/README.md",

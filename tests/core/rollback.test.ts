@@ -278,18 +278,21 @@ describe('rollbackSegment', () => {
     },
   );
 
-  it("the store's rollback and generations say the same of a dropped segment", async () => {
+  it("the store's rollback and generations say the same of a cleartext-destroyed segment", async () => {
     const w = world();
     await loadSegment(SEG, [1], w.load, { keep: 9 });
     await loadSegment(SEG, [2], w.load, { keep: 9 });
     const store = new CloudRoaring({ storage: w.backend, retry: false });
-    await store.dropSegment(SEG, { confirmSegment: 's' });
+    await destroySegment(SEG, w.deps, { confirmSegment: 's', allowCleartext: true });
     await expect(store.rollback(SEG, 0)).rejects.toThrow(
       new ValidationError(
         'rollback: segment "s" is destroyed — no generation resolves through a destroyed row',
       ),
     );
-    expect((await store.generations(SEG)).filter((e) => e.current)).toEqual([]);
+    // The objects stay in the bucket, readable, and the listing shows them: none is current.
+    const listed = await store.generations(SEG);
+    expect(listed.map((e) => e.generation)).toEqual([0, 1]);
+    expect(listed.filter((e) => e.current)).toEqual([]);
   });
 
   it('refuses a segment with no registry row', async () => {

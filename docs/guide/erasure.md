@@ -42,8 +42,9 @@ audit sink gets `segment.collect` for it with no `fromGeneration`, and that even
 The two calls look in different places: `subjectReport` reads what a reader reads, each segment's current generation,
 and searches each destroyed segment's leftover objects as the erasure does, listing one that holds the id under
 `tombstones`. A cleartext `destroySegment` (`allowCleartext`), or a `dropSegment` whose sweep missed an object a load was
-still writing, leaves the id readable in the bucket though no read resolves the segment; a crypto-shredded segment is
-never listed, because its objects are sealed under a key no row holds. `eraseSubject` also searches an active
+still writing, leaves the id readable in the bucket though no read resolves the segment. A crypto-shredded segment's own
+objects are sealed under a key no row holds and are never a holder, so it is listed only when an object left under it in
+the clear holds the id (a cleartext writer's leftover, say). `eraseSubject` also searches an active
 segment's older generations and a first load's object that never published, so the ledger can still name a segment the
 report did not. `subjectReport` reads each segment and throws on the first it cannot read (`KeyUnavailableError` for an
 encrypted segment on a store with no keystore, or for a cleartext one under `required`), rather than return a report
@@ -59,7 +60,11 @@ scope, one listing and an open of each object under it until one holds the id (t
 which never does), charged to the budget as `eraseSubject` charges them. Measured on the in-memory backend: a drop that
 deleted everything costs 1 request; a cleartext destroy with 3 objects costs 7 (one listing, then a tail read and a
 chunk read for each object); with 10 objects, 21; a crypto-shred with 10 objects, 21 (two tail reads each, no chunk
-read). `eraseSubject` costs more: a segment
+read). A fault reading a destroyed segment's leftover objects (the listing included, after the store's retry), or a
+budget that runs out, rejects the whole report rather than leaving the segment out, so one leftover object that cannot
+be opened makes every report over its scope reject until it is removed: `store.generations(ref)` lists what is left
+under the segment, and `store.dropSegment(ref, { confirmSegment })` deletes it (a drop of an already destroyed row sweeps
+again). `eraseSubject` costs more: a segment
 whose current generation lacks the id is searched generation by generation, so a fleet that keeps long histories
 pays for every one. The per-op budget is charged for them, once for each generation however often the call opens
 it: a retry of a failed read, or a later open of a generation the call already opened, costs no further unit. The scan runs at a bounded `concurrency` (default 8; pass `{ concurrency }`), so it is quick over a large fleet
@@ -302,8 +307,9 @@ so an entry for a generation it deleted stays in the list until the entry's own 
 write prunes it: it spares nothing, since the object is gone, and it counts toward the 64 places until then. A
 `dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone. A `destroySegment`
 deletes no generation: it clears the row's leases with its keys, so the tombstone holds no lease, and the objects stay
-in the bucket, unreadable after a crypto-shred and readable after a cleartext destroy (`allowCleartext`). So erasure, shred, drop and retention always win, and a lease never holds an erased subject's data past the bounds in
-the table above.
+in the bucket. After a crypto-shred they are unreadable once no retained copy of the row holds the key (or every KEK
+that wrapped it is destroyed); after a cleartext destroy (`allowCleartext`) they are readable. So erasure, shred, drop
+and retention always win, and a lease never holds an erased subject's data past the bounds in the table above.
 
 A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
 rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on

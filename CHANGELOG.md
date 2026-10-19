@@ -38,11 +38,14 @@ so, and so do the module headers in the code.
   was still writing, leave the id readable in the bucket though no read resolves the segment. `eraseSubject` already
   searched and deleted those objects; the report now finds the same ones by the same search, so an Art. 15 answer
   names what an Art. 17 erasure would delete. `SubjectReport` gains the required `tombstones: SubjectSegmentRef[]`,
-  `[]` when none, and `segments` is unchanged. A crypto-shredded segment is never listed: its objects are sealed under
-  a key no row holds. Each destroyed segment in scope costs one more listing, and each object searched a tail read
+  `[]` when none, and `segments` is unchanged. A crypto-shredded segment's own objects are sealed under a key no row holds and are never a holder, so it is listed
+  only when an object left under it in the clear holds the id. Each destroyed segment in scope costs one more listing, and each object searched a tail read
   and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted object); the budget is
   charged one unit for each object opened past the one the row names, as `eraseSubject` charges, and a report that
-  runs out throws `BudgetExceededError`.
+  runs out throws `BudgetExceededError` (with `spent` at `limit + 1`, a lower bound). A fault reading a destroyed
+  segment's leftover objects, or a budget that runs out, rejects the whole report rather than leaving the segment out, so
+  one leftover object that cannot be opened makes every report over its scope reject until it is removed:
+  `store.generations(ref)` lists what is left under it, and `dropSegment` deletes it.
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
   exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
   `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it
@@ -155,10 +158,11 @@ so, and so do the module headers in the code.
 
 - **An error about a destroyed segment no longer says it was crypto-shredded.** A `dropSegment`, a retention retirement
   and a cleartext `destroySegment` leave a destroyed row too, and a cleartext destroy leaves its objects readable in the
-  bucket. `rollback`, a load, `setRetention` and a publish that races a destroy now say the segment is destroyed and that
-  no generation resolves through a destroyed row. Each is the same `ValidationError` as before. The guides and
-  doc-comments that called every destroyed row crypto-shredded, or its generations unreadable, say the same, and the
-  erasure guide no longer says a `destroySegment` deletes every generation.
+  bucket. `rollback`, a load and a publish that races a destroy now say the segment is destroyed and that no
+  generation resolves through a destroyed row, and `setRetention` says it refuses a tombstone and that `dropSegment`
+  deletes what a destroy left in the bucket. Each is the same `ValidationError` as before. The guides, the format
+  reference and the doc-comments that called every destroyed row crypto-shredded, or its generations unreadable, say
+  the same, and the erasure guide no longer says a `destroySegment` deletes every generation.
 - **`generations()` marks no generation `current` on a destroyed segment.** The tombstone keeps the pointer it had, but
   no read resolves a generation through it, so the entry that pointer named was listed as current.
 - **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
