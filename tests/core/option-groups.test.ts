@@ -497,8 +497,11 @@ describe('cache.genTtlMs is a number of milliseconds', () => {
     }
   });
 
-  it('takes 0, which turns the timed refresh off on purpose, any finite positive value, and null as absent', () => {
-    for (const ok of [0, 1, 2_000, 0.5, null, undefined]) {
+  it('takes 0, which turns the timed refresh off on purpose, and any finite positive value, and refuses null', () => {
+    expect(
+      () => new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: null as never } }),
+    ).toThrow(ValidationError);
+    for (const ok of [0, 1, 2_000, 0.5, undefined]) {
       expect(
         () => new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: ok as never } }),
       ).not.toThrow();
