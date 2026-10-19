@@ -2406,8 +2406,9 @@ export class CloudRoaring {
   }
 
   /**
-   * **Record when this segment becomes eligible for retirement.** One registry write; nothing is deleted here,
-   * and nothing starts running. `retireExpired` is what acts on the policy, and **you** decide when that runs —
+   * **Record when this segment becomes eligible for retirement.** One policy write, plus a best-effort write of its
+   * due-index pointer (and removal of the old pointer when the expiry day moves); no data is deleted here, and
+   * nothing starts running. `retireExpired` is what acts on the policy, and **you** decide when that runs —
    * an EventBridge rule, a CronJob, a queue consumer, whatever your deployment already has. This library starts
    * no background thread (it has to work identically in a Lambda, an edge isolate and a long-lived server).
    *
@@ -2483,18 +2484,20 @@ export class CloudRoaring {
    *
    * const swept = await store.retireExpired({ namespace: 'active-daily' });
    * for (const e of swept.entries) {
-   *   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`); // invalid-policy / limit / failed: …
+   *   // invalid-policy / policy-changed / tombstone-not-empty / failed: …
+   *   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`);
    *   if (e.action === 'retired' && e.result.generationsRemaining.length > 0) {
    *     console.warn(`${e.segment}: storage not fully reclaimed — re-run`);
    *   }
    * }
-   * if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
+   * if (swept.limited) scheduleAnotherPassSoon(); // more work (retirements or purges) remains
    * ```
    *
    * **Read the ledger.** A per-segment *fault* is an entry, not an exception — a throw from the middle of a fleet
    * sweep would leave the caller unable to say which segments were retired, having already retired some. (A bad
    * argument does throw, and so does a fleet larger than `maxScanSegments`.) `limited: true` means the per-cycle
-   * `limit` (default 100) cut the pass short and more are eligible. That cap is charged on **attempts**, not
+   * `limit` (default 100) cut the pass short, and more work (retirements or purges) remains: `limit` caps the
+   * retirements and tombstone purges one call attempts, together, and a segment it deferred gets no entry. That cap is charged on **attempts**, not
    * successes, which is what makes it a real bound: `dropSegment` writes the tombstone before sweeping Storage, so a
    * fault in the Storage phase is a segment that is already retired. Retirements are sequential, so `limit` is a
    * wall-clock knob too, and `retired` counts deletions only — a dry run reports `wouldRetire` instead, so a

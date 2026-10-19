@@ -658,7 +658,7 @@ dropped by hand keeps a tombstone with no stamp, which the sweep neither retires
 nothing for ever. A sweep that reads such a pointer reads the segment's row again, and if it is still a tombstone
 without the sweep's stamp removes the pointer, fenced on the pointer's token, and leaves the tombstone as it was. It
 works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds; those past the
-cap wait for the next call, and `limited` reports retirements still eligible, not this cleanup. An index scan reads it in the days it covers and an unscoped `'fleet'` scan reads every one; neither runs
+cap wait for the next call, and `limited` reports retirements or purges still to do, not this cleanup. An index scan reads it in the days it covers and an unscoped `'fleet'` scan reads every one; neither runs
 under `dryRun`, or on a registry that only tombstones its rows (a delete there rewrites the pointer as a tombstone, which every scan would still read). A pointer
 removal the registry refuses is counted in `purgeFaults`.
 

@@ -358,7 +358,9 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 them included), its timestamps and its token. It holds no id, and on an encrypted segment no wrapped key, since the
 drop shreds it. The due index holds a pointer to it whose name spells out the same namespace and name. Both stay
 for `tombstoneGraceMs` (24 h by default) after the retirement, and for as long as the segment's storage cannot be
-proven gone. Then the sweep's purge removes the row, and the pointers it read to it, from the bucket, where the registry
+proven gone, except a segment that held no generation, whose row the same pass deletes (from the bucket where the
+registry reports `conditionalDelete`; elsewhere as a deleted marker that keeps the same fields), so it never waits out
+the grace. Then the sweep's purge removes the row, and the pointers it read to it, from the bucket, where the registry
 reports `conditionalDelete`: the default for S3 when its client sends to an AWS S3 host,
 for Azure Blob, the local filesystem and memory. **A pointer can outlive its row**, and with it the name in its key: a
 purge that ran with another `tombstoneGraceMs` than the sweep that filed the pointer, a delete that landed and lost its
@@ -367,8 +369,10 @@ response, a removal the registry refused (`purgeFaults` counts it), or a pointer
 it reads, and an unscoped fleet scan, one given no `namespace`, from every day. A deployment that scopes every sweep to a
 namespace, or runs only index scans, keeps such a pointer until an unscoped fleet scan runs. Where the registry does not
 report `conditionalDelete` (an S3 client that sends to an S3-compatible store or an emulator, or a GCS client, by default, or
-`conditionalDelete: false`), the purge leaves a tombstone instead: every one of those fields, in the bucket, indefinitely, read by every full listing. A registry that does not
-report it files no pointer to begin with. A removed
+`conditionalDelete: false`), the purge leaves a tombstone instead: every one of those fields, in the bucket, indefinitely, read by every full listing. Such a
+registry files no pointer for a retirement's purge, but `setRetention` files its expiry-day pointer on every registry,
+and removing it there (at the retirement, a `clearRetention`, or a moved expiry) leaves a deleted marker under the
+reserved `cbm.due.` namespace whose key spells out the segment's namespace and name, also indefinitely. A removed
 row stays recoverable wherever the storage keeps a copy of it: with object versioning on, its earlier versions stay until
 a noncurrent-version rule expires them, as an overwritten row's do; with soft delete on, it stays for the retention
 window (GCS: on by default for a new bucket, 7 days; Azure Blob: where enabled, for the days set), whatever the registry
