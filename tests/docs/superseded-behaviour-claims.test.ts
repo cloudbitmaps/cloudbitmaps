@@ -1999,46 +1999,8 @@ describe('no document claims behaviour this library does not have', () => {
     expect(isHistory(join('bench', 'calibration', '2026-09-14-12345.json.md'))).toBe(false);
   });
 
-  // The operating manual's fourth invariant still says the refused parenthetical. This lets through that one
-  // sentence, once, in the manual (`CLAUDE.md` is the same file); the next test fails once the sentence is gone, so
-  // the exemption is removed with it. A second copy anywhere, or the other refused claim, is a hit.
-  const MANUAL = new Set(['AGENTS.md', 'CLAUDE.md']);
-  const MANUAL_SENTENCE =
-    'the sole exception is a `destroyed` (crypto-shredded) segment, where every generation is garbage because no reader can resolve it.';
-  const AWAITING_EDIT =
-    /^(?:AGENTS|CLAUDE)\.md:\d+ — "destroyed \(crypto-shredded\)" is not true\./;
-  const saysTheSentence = (text: string): boolean =>
-    text.replace(/\s+/g, ' ').includes(MANUAL_SENTENCE);
-  const afterExemption = (rel: string, text: string): string[] => {
-    const hits = hitsIn(rel, text);
-    if (!MANUAL.has(rel)) return hits;
-    let spare = saysTheSentence(text) ? 1 : 0;
-    return hits.filter((h) => !(AWAITING_EDIT.test(h) && spare-- > 0));
-  };
   it.each(files)('%s', (rel) => {
-    expect(afterExemption(rel, readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
-  });
-
-  it('exempts the operating manual only while it still says the refused sentence, once', () => {
-    const manual = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
-    expect(saysTheSentence(manual)).toBe(true);
-    expect(hitsIn('AGENTS.md', manual).filter((h) => AWAITING_EDIT.test(h))).toHaveLength(1);
-  });
-
-  it('refuses a second copy of the phrase in the manual, and any copy once the sentence is gone', () => {
-    const manual = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
-    const second = `${manual}\nA \`destroyed\` (crypto-shredded) segment holds nothing anyone can read.\n`;
-    expect(afterExemption('AGENTS.md', second)).toHaveLength(1);
-    expect(afterExemption('CLAUDE.md', second)).toHaveLength(1);
-    const reworded = manual.replace(
-      MANUAL_SENTENCE,
-      'the sole exception is a `destroyed` segment.',
-    );
-    expect(afterExemption('AGENTS.md', reworded)).toEqual([]);
-    expect(
-      afterExemption('AGENTS.md', `${reworded}\nA \`destroyed\` (crypto-shredded) row.\n`),
-    ).toHaveLength(1);
-    expect(afterExemption('docs/guide/x.md', manual)).toHaveLength(1);
+    expect(hitsIn(rel, readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
   });
 });
 
