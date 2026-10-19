@@ -275,6 +275,23 @@ describe('an endpoint that is empty or not a string is refused, and no request i
     expect(() => gcs(v)).toThrow(ValidationError);
     expect(() => gcs(v)).toThrow(/^GcsStorage: `apiEndpoint` must be a non-empty string/);
   });
+  it.each([
+    ['http://'],
+    ['https://'],
+    ['localhost:9000'],
+    ['not a url'],
+    ['s3.amazonaws.com'],
+    ['ftp://host'],
+  ])('S3Storage endpoint %j is not an http or https URL', (v) => {
+    expect(() => s3(v)).toThrow(ValidationError);
+    expect(() => s3(v)).toThrow(/^S3Storage: `endpoint` must be an http or https URL/);
+  });
+  it.each([['http://'], ['https://'], ['ftp:']])(
+    'GcsStorage apiEndpoint %j names no host, and the message names apiEndpoint',
+    (v) => {
+      expect(() => gcs(v)).toThrow(/^GcsStorage: `apiEndpoint` must name a host/);
+    },
+  );
   it('takes a URL, and none', () => {
     expect(() => s3('http://localhost:9000')).not.toThrow();
     expect(() => s3(undefined)).not.toThrow();
@@ -294,8 +311,12 @@ describe('the other client settings are refused when they cannot be used', () =>
   });
   it.each([
     ['a string', 'x', /credentials needs an options object/],
-    ['an empty object', {}, /`credentials.accessKeyId` is required/],
-    ['no secret', { accessKeyId: 'a' }, /`credentials.secretAccessKey` is required/],
+    ['an empty object', {}, /`credentials.accessKeyId` must be a non-empty string; got undefined/],
+    [
+      'no secret',
+      { accessKeyId: 'a' },
+      /`credentials.secretAccessKey` must be a non-empty string; got undefined/,
+    ],
     [
       'a numeric id',
       { accessKeyId: 5, secretAccessKey: 's' },
@@ -320,9 +341,23 @@ describe('the other client settings are refused when they cannot be used', () =>
     expect(() => s3({ credentials })).toThrow(ValidationError);
     expect(() => s3({ credentials })).toThrow(message);
   });
-  it('never puts a credential value in a message', () => {
-    expect(() => s3({ credentials: { accessKeyId: 'AKIAFAKEVALUE', secretAccessKey: 5 } })).toThrow(
-      /^(?!.*AKIAFAKEVALUE)/,
+  it('never puts a credential value in a message, a number included: it names the field and the type', () => {
+    let message = '';
+    try {
+      s3({ credentials: { accessKeyId: 'AKIAFAKEVALUE', secretAccessKey: 12345 } });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toBe(
+      'S3Storage: `credentials.secretAccessKey` must be a non-empty string; got a number',
+    );
+    expect(() => s3({ credentials: { accessKeyId: 99887766, secretAccessKey: 's' } })).toThrow(
+      /^(?!.*99887766)/,
+    );
+  });
+  it('a credential provider function is refused, with where it goes', () => {
+    expect(() => s3({ credentials: () => Promise.resolve({}) })).toThrow(
+      'not a provider function; pass a provider on an S3Client given as `client`',
     );
   });
   it('takes a credentials object the SDK has already stamped, or a provider returned', () => {

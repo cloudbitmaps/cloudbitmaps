@@ -87,6 +87,32 @@ const ERASE_CONCURRENCY = 8;
  */
 const MAX_STORAGE_SWEEPS = 3;
 
+/**
+ * Refuse `deps` with no registry driver before anything is read: a misspelt `registry` key, or none, would leave it
+ * undefined, and an untyped `TypeError` at the first read. Other keys are the caller's own wiring and are left alone.
+ */
+function checkEraseDeps(name: string, deps: unknown): void {
+  const registry =
+    deps === null || typeof deps !== 'object'
+      ? undefined
+      : (deps as { registry?: { get?: unknown } | null }).registry;
+  if (registry === undefined || registry === null || typeof registry.get !== 'function') {
+    throw new ValidationError(
+      `${name}: \`deps.registry\` must be a registry driver, such as \`backend.registry\``,
+    );
+  }
+}
+
+/**
+ * Refuse a drop's options before anything is read. Internal, but the facade and the sweep reach it: a `dryRun` that is
+ * the string `'true'` must not drop for real.
+ */
+function checkDropOptions(options: { dryRun?: boolean; audit?: IAuditSink }): void {
+  refuseUnknownOptions('dropSegment', options, ['confirmSegment', 'dryRun', 'audit']);
+  requireBool('dropSegment: `dryRun`', options.dryRun);
+  checkedAuditSink(options.audit, 'dropSegment');
+}
+
 /** The options `destroySegment` takes. */
 const DESTROY_SEGMENT_KEYS = ['confirmSegment', 'allowCleartext', 'audit'] as const;
 
@@ -115,6 +141,7 @@ export async function destroySegment(
   validateUserRef(ref);
   // Before the registry is read: a `dryRun` (which this call does not take) must not shred, nor a string for
   // `allowCleartext` be read as true.
+  checkEraseDeps('destroySegment', deps);
   refuseUnknownOptions('destroySegment', options, DESTROY_SEGMENT_KEYS);
   requireBool('destroySegment: `allowCleartext`', options.allowCleartext);
   checkedAuditSink(options.audit, 'destroySegment');
@@ -165,6 +192,7 @@ export async function eraseNamespace(
     throw new ValidationError('eraseNamespace: namespace must be a non-empty string');
   }
   validateUserNamespace(namespace);
+  checkEraseDeps('eraseNamespace', deps);
   refuseUnknownOptions('eraseNamespace', options, ERASE_NAMESPACE_KEYS);
   requireBool('eraseNamespace: `allowCleartext`', options.allowCleartext);
   checkedAuditSink(options.audit, 'eraseNamespace');
@@ -398,7 +426,7 @@ export async function dropSegmentFor(
   sweep: SweepDrop | undefined,
 ): Promise<DropResult | null> {
   validateUserRef(ref);
-  checkedAuditSink(options.audit, 'dropSegment');
+  checkDropOptions(options);
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `dropSegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental deletion)`,

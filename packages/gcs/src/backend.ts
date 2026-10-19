@@ -150,7 +150,7 @@ export class GcsStorage implements StorageBackend {
       GCS_STORAGE_OPTION_KEYS,
       'a @google-cloud/storage client goes in `client`',
     );
-    if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
+    if (typeof options.bucket !== 'string' || options.bucket.trim().length === 0) {
       throw new ValidationError('GcsStorage needs a `bucket`: the name of one, a non-empty string');
     }
     if (options.now !== undefined && typeof options.now !== 'function') {
@@ -175,7 +175,13 @@ export class GcsStorage implements StorageBackend {
       readClient = downloadClient(options.client, true);
     } else {
       // An empty `apiEndpoint` is no endpoint: the client would send to the public cloud, not the service meant.
-      requireNonEmptyString('GcsStorage: `apiEndpoint`', options.apiEndpoint);
+      const apiEndpoint = requireNonEmptyString('GcsStorage: `apiEndpoint`', options.apiEndpoint);
+      // A bare scheme names no host; the client's own refusal of it talks about an environment variable instead.
+      if (apiEndpoint !== undefined && /^[a-z][a-z0-9+.-]*:\/*$/i.test(apiEndpoint.trim())) {
+        throw new ValidationError(
+          'GcsStorage: `apiEndpoint` must name a host, such as "http://localhost:4443" or "storage.googleapis.com"',
+        );
+      }
       requireNonEmptyString('GcsStorage: `projectId`', options.projectId);
       this.client = new GcsClient(
         defined({ projectId: options.projectId, apiEndpoint: options.apiEndpoint }),

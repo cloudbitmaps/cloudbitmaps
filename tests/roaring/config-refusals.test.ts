@@ -4,6 +4,7 @@ import { CloudRoaring, InProcessKeystore, MemoryStorage, ValidationError } from 
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { judgeLoad } from '@/core/load';
+import { dropSegment as coreDropSegment } from '@/core/erasure';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
@@ -294,5 +295,29 @@ describe('setRetention refuses a policy key it does not take', () => {
       store.setRetention({ segment: 'a' }, { expiresAt: T0 + 1, extra: 1 } as never),
     ).rejects.toThrow('setRetention policy does not take `extra`. It takes `expiresAt`.');
     expect((await storage.registry.get({ segment: 'a' }))?.token).toBe(before?.token);
+  });
+});
+
+describe("core's dropSegment refuses what the facade does", () => {
+  it('a dryRun that is a string does not drop for real, and an unknown key is refused', async () => {
+    const storage = new MemoryStorage();
+    const store = new CloudRoaring({ storage });
+    await store.load({ segment: 'a' }, [1, 2]);
+    const deps = { registry: storage.registry, storage: storage.storage };
+    await expect(
+      coreDropSegment({ segment: 'a' }, deps as never, {
+        confirmSegment: 'a',
+        dryRun: 'true' as never,
+      }),
+    ).rejects.toThrow('dropSegment: `dryRun` must be a boolean; got "true"');
+    await expect(
+      coreDropSegment(
+        { segment: 'a' },
+        deps as never,
+        { confirmSegment: 'a', dryrun: true } as never,
+      ),
+    ).rejects.toThrow('dropSegment does not take `dryrun`');
+    expect((await storage.registry.get({ segment: 'a' }))?.status).not.toBe('destroyed');
+    expect(await store.segment('a').count()).toBe(2);
   });
 });

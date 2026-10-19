@@ -23,6 +23,15 @@ so, and so do the module headers in the code.
     `eraseNamespace` every segment of the namespace, because neither call checked its options; `allowCleartext:
     'false'` was read as true. Remove the option the call does not take (there is no dry run for these two); pass a real
     boolean.
+  - **Round 2 additions.** `concurrency` of `null` on `checkConsistency`, `intersect`, `union`, `andNot` and the `*Into`
+    verbs, and a per-call `budget` of `null` (as the store's already was), are refused instead of read as the default.
+    `S3Storage` refuses a `client` that has no `send` and `AzureBlobStorage` a `containerClient` that is not a container
+    client (a `BlobServiceClient` is the likely slip: pass `.getContainerClient(name)`); `S3Storage` refuses an `endpoint`
+    that is not an http or https URL, and `GcsStorage` an `apiEndpoint` that names no host; a `bucket` or a local-files
+    root of only spaces is refused. S3 `credentials` never print a value in a message, say a credential provider goes on
+    an `S3Client` given as `client`, and take only the keys documented plus the four the SDK stamps. `destroySegment` and
+    `eraseNamespace` refuse `deps` that are not `{ registry }` (with an optional `clock` and `rng`), before any read.
+    Core's own `dropSegment` refuses a `dryRun` that is not a boolean.
   - **`new InProcessKeystore(options)`** refuses an option it does not take (a misspelt `recoveryKeyID` used to build a
     keystore with no recovery wrapping, so every segment it wrote had one wrapping and losing the active key made it
     unreadable), no options, a `keys` that is not a plain object (a `Map` included), and an `activeKeyId` or

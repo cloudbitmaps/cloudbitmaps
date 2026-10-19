@@ -155,6 +155,15 @@ export class AzureBlobStorage implements StorageBackend {
             'the `containerClient` already determines the account and container',
         );
       }
+      // A BlobServiceClient has no `getBlockBlobClient`: it is the one a connection string makes first, a call before this one.
+      if (
+        typeof (options.containerClient as { getBlockBlobClient?: unknown }).getBlockBlobClient !==
+        'function'
+      ) {
+        throw new ValidationError(
+          'AzureBlobStorage: `containerClient` must be a ContainerClient; a BlobServiceClient goes through `.getContainerClient(name)`',
+        );
+      }
       this.containerClient = options.containerClient;
     } else if (options.connectionString !== undefined && options.container !== undefined) {
       requireNonEmptyString('AzureBlobStorage: `container`', options.container);

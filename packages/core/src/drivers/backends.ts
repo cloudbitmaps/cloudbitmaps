@@ -96,7 +96,7 @@ export class LocalFsStorage implements StorageBackend {
     readonly root: string,
     options: LocalFsStorageOptions = {},
   ) {
-    if (typeof root !== 'string' || root.length === 0) {
+    if (typeof root !== 'string' || root.trim().length === 0) {
       throw new ValidationError(
         `LocalFsStorage needs a root directory: a non-empty string, got ${root === '' ? 'an empty string' : typeof root}`,
       );
