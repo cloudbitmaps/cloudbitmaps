@@ -10,28 +10,33 @@
  * every race is reported, where the mechanism names two that are not. Editing a claim means finding every copy of it by
  * hand, and the most restated claims have more than ten.
  *
- * THE TIE. Each claim in correctness.md opens with an anchor, `<a id="<key>"></a>**The claim.**`; a section's intro, the
- * text between its heading and its first anchor, is the claim keyed by the heading's own slug. A restatement links the
- * claim: `[a crash never moves the pointer](correctness.md#crash-never-moves-the-pointer)`, relative in docs/ and the
- * root pages, the absolute https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#<key> in a
- * package README, on the site and in llms.txt. A link to a section heading with no intro, or to the page, is navigation,
- * not a tie; a link to one of the three headings that key an intro is a tie to that intro, wherever it sits. The unit is the block (a paragraph, a list item, a table row): its ties are the claims it links, wherever
- * in the block the link sits.
+ * THE TIE. Each claim in correctness.md opens with an anchor, `<a id="<key>"></a>**The claim.**`, a section's intro
+ * included, and the key names the claim, never its heading. A restatement links the claim: `[a crash never moves the
+ * pointer](correctness.md#crash-never-moves-the-pointer)`, relative in docs/ and the root pages, the absolute
+ * https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#<key> in a package README, on the
+ * site and in llms.txt. A link to a heading, or to the page, is navigation, not a tie. The unit is the block (a
+ * paragraph, a list item, a table row): its ties are the claims it links, wherever in the block the link sits.
  *
- * WHAT FAILS.
- *   R1  correctness.md: a paragraph or bulleted item that opens with a bold claim and no anchor; an anchor that does
- *       not open its block; two anchors with one key; a key that is a heading's slug or not lower-case words and
- *       hyphens. (A numbered item is a step of the claim above it, and needs none.)
+ * WHAT FAILS. (The labels skip R5, which would check a record that someone read a changed pair, a record the gate
+ * does not keep.)
+ *   R1  correctness.md: a paragraph or bulleted item that opens with a bold claim and no anchor; text under a section
+ *       heading before its first anchor; an anchor that does not open its block; two anchors with one key; a key that
+ *       is a heading's slug or not lower-case words and hyphens. (A numbered item is a step of the claim above it,
+ *       and needs none.)
  *   R2  a link into correctness.md whose fragment names neither a claim nor a heading (links.test.ts resolves every
  *       link; this gate cannot classify such a link, so it refuses it too).
  *   R3  a sentence that matches a claim's signature, in a block that does not tie that claim.
- *   R3b a sentence that shares MIN_SHARED or more word 4-grams with one claim, more than with any other, in a block
- *       that ties neither that claim nor one sharing as many.
+ *   R3b a sentence that shares MIN_SHARED or more word 4-grams with a claim, in a block that ties neither the claim it
+ *       shares the most with (or one sharing as many) nor the claim the longest run of those words was copied from.
+ *       The message names the first, quotes the run, and names the run's claim where it is another, so a writer can
+ *       check that the claim states what the sentence says before linking it.
  *   R4  a block under a summary heading that ties no claim; a summary region that names no section of correctness.md,
  *       or two, or another section than its heading; a section with no summary region, or two. A summary heading is a
  *       heading in docs/guide/ whose text is a section heading of correctness.md or "How it stays correct", and its
  *       section is the one its navigation link names.
  *   R6  a baseline row that excuses nothing, or one the baseline at the merge base with origin/main does not have.
+ *       Where the merge base has no baseline file (the branch that adds it), there are no rows to compare, and the
+ *       output says so; any other failure to read it fails the gate.
  *   R7  a signature that names a key correctness.md does not have, or a pattern of it that matches nothing in the
  *       scope or in correctness.md. (Each signature's own fixtures, a real sentence it must match and a real look-alike
  *       it must not, are checked by tests/docs/summary-ties.test.ts.)
@@ -39,8 +44,8 @@
  * THE BASELINE. tests/docs/summary-ties.json lists the restatements R3 and R3b found untied when the gate was written:
  * a row each, `{ file, claim, sentence, starts }`, where `sentence` is the hash of the sentence's text. A row excuses
  * that sentence, every copy of it in that file, for that claim, and nothing in a summary region. Editing the sentence
- * changes its hash, so it fails as new: touching it means tying it. `--update` drops the rows that excuse nothing and
- * never adds one.
+ * changes its hash, so it fails as new: touching it means tying it. `--update` drops the rows that excuse nothing,
+ * never adds one, and exits non-zero while the gate still fails.
  *
  * SCOPE. Every tracked .md file and every .html and .txt page under site/, but the exclusions in EXCLUDED, each with its
  * reason. A new page is read by default.
@@ -48,21 +53,32 @@
  * KNOWN LIMITS. It proves that a restatement is tied, not that it is true.
  *  - A tied summary that says more than its claim, or drops its exception, passes. Reading the two together is the
  *    docs-fidelity review's, and `--changed` hands it the pairs to read: each changed claim with the blocks that tie
- *    it, and each changed tied block with its claims. Nothing here records that anyone read them.
+ *    it and the baselined copies that do not, and each changed or re-pointed tied block with its claims. Nothing here
+ *    records that anyone read them.
  *  - A claim edited while its summary is not, or a summary edited, passes when both stay tied: the gate holds the link,
  *    not the reading. `--changed` lists the pair.
- *  - A paraphrase that matches no signature and copies no run of MIN_SHARED 4-grams passes untied. Each one a review
- *    finds becomes a signature.
+ *  - A paraphrase that matches no signature and copies no run of MIN_SHARED 4-grams passes untied, and a signature is
+ *    brittle to rewording: one word changed ("is always reported", "only sent once", "never half encrypted") can step
+ *    past it. Each one a review finds becomes a signature, or widens one.
  *  - A tied block that restates a second claim it does not tie, in words neither check sees, passes.
  *  - A guarantee correctness.md does not hold has nothing to tie to, and is not seen.
- *  - A signature reads a sentence's text: links read as their text, code spans as plain text, emphasis, tags and
- *    comments gone, fenced code and HTML <pre>, <script>, <style> and <svg> skipped. A negation in the three words
- *    before a match ("nothing promises that at most one lands") stands it down; a negation further back does not.
+ *  - A signature reads a sentence's text: links read as their text, code spans as plain text, emphasis, strikethrough,
+ *    tags and comments gone, non-breaking hyphens read as hyphens, fenced code and HTML <pre>, <script>, <style> and
+ *    <svg> skipped. A negation in the three words before a match ("nothing promises that at most one lands") stands it
+ *    down; a negation further back does not, and neither does "no answer", which is a claim's own wording.
+ *  - Markdown it reads as a reader would not: a setext heading (text over `===` or `---`) is not a heading, so a summary
+ *    under one has no region, which fails R4; an indented code block, and a fence indented four spaces or more, read
+ *    as prose; a code span that wraps onto the next line does not hide a `<!--` in it; an HTML tag with a `>` inside a
+ *    quoted attribute ends at that `>`.
+ *  - A paragraph of correctness.md that opens with no bold claim and no anchor belongs to the claim above it, so a new
+ *    mechanism written that way is tied by that claim's links.
+ *  - A pattern that matches only correctness.md's own wording is never reported dead: the dead-pattern check reads
+ *    the source too, which keeps it alive.
  *  - Code comments and doc-comments are not read: they describe the code beside them, which is their source of truth.
  *    Nor is an attribute's text on the site (a meta description, alt text).
  *  - The baseline lists the restatements that were untied when the gate was written. Each is excused until it is tied
  *    or reworded; the baseline can only shrink, which needs the history and origin/main to compare with. On the branch
- *    that adds the baseline, the merge base has none, so every row is that branch's own.
+ *    that adds the baseline, the merge base has none, so every row is that branch's own, and there is nothing to compare.
  *  - Whether correctness.md is true of the code is the tests' job.
  *
  * Usage:
@@ -71,7 +87,9 @@
  *   node scripts/summary-ties.cjs --changed [--against <ref>]
  *                                                          the claims and tied blocks this branch changed, against the
  *                                                          merge base with <ref> (origin/main by default), each beside
- *                                                          what it ties or is tied by
+ *                                                          what it ties or is tied by; on a stacked branch, pass the
+ *                                                          branch it is stacked on
+ *   Exit 0: clean. Exit 1: problems found (or, with --update, still there). Exit 2: the gate could not run, and why.
  */
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
@@ -110,6 +128,11 @@ const EXCLUDED = [
   },
   { path: '.changeset/', reason: 'the changesets that become the changelog' },
   {
+    path: 'bench/calibration/',
+    reason:
+      'history: each report is a dated record of one calibration run, written by the run, and says what was measured then',
+  },
+  {
     path: 'packages/roaring/PRIVACY.md',
     reason:
       'the copy npm publishes, held equal to PRIVACY.md by privacy-note-sync.test.ts, so it carries the same ties ' +
@@ -123,15 +146,18 @@ const EXCLUDED = [
   },
   { path: 'CLAUDE.md', reason: 'a link to AGENTS.md' },
   {
-    pattern: /^(?:tests|scripts|bench|fuzz|api-surface)\/(?:.+\/)?README\.md$/,
-    label: 'the READMEs under tests/, scripts/, bench/, fuzz/ and api-surface/',
+    pattern: /^(?:tests|scripts|bench|fuzz|api-surface|site)\/(?:.+\/)?README\.md$/,
+    label: 'the READMEs under tests/, scripts/, bench/, fuzz/, api-surface/ and site/',
     reason: 'they describe the repository to a contributor, not the library to its user',
   },
 ];
 
-/** A negation in the three words before a match, in its clause (no comma between), which stands the match down. */
+/**
+ * A negation in the three words before a match, in its clause (no comma between), which stands the match down. "No
+ * answer" is not one: it is the wording of the claim about a write that gets none.
+ */
 const NEGATED =
-  /\b(?:no|not|nothing|never|cannot|can't|nor|none|neither)\b(?:\s+[\w'’-]+){0,3}\s*$/i;
+  /\b(?:no(?!\s+answer\b)|not|nothing|never|cannot|can't|nor|none|neither)\b(?:\s+[\w'’-]+){0,3}\s*$/i;
 
 /**
  * The claim signatures: the predicate forms a short restatement of each claim takes, not its words alone ("a crash …
@@ -140,7 +166,7 @@ const NEGATED =
  */
 const SIGNATURES = [
   {
-    claim: 'when-a-load-is-refused',
+    claim: 'refusal-is-reported-not-thrown',
     patterns: [
       /\brefus\w+ (?:is|are) (?:reported|an outcome|a normal outcome)/i,
       /returns? published: false[^.]{0,40}rather than throw/i,
@@ -183,7 +209,7 @@ const SIGNATURES = [
     claim: 'row-write-settled',
     patterns: [
       /settle[sd]? (?:an unanswered registry write )?by reading the row/i,
-      /reads? the row (?:again )?and (?:decides|sends a fresh compare-and-swap)/i,
+      /(?<![\w-])reads? the row (?:again )?and (?:decides|sends a fresh compare-and-swap)/i,
       /write (?:that )?(?:ends|ended|got|gets) (?:without|no) (?:an )?answer[^.]{0,80}(?:reads?|settled|may still land)/i,
     ],
     summary:
@@ -241,7 +267,7 @@ const SIGNATURES = [
       /dies between its write and its publish/i,
     ],
     summary:
-      'Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write.',
+      'Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is a newer identical generation, and there is no partially-visible write.',
     lookAlike: 'A corrupt or hostile chunk is a typed error, not a crash.',
   },
   {
@@ -319,7 +345,7 @@ const SIGNATURES = [
       'A segment.publish is not a receipt for anything: it says a set was loaded, not what was removed from it.',
   },
   {
-    claim: 'a-rollback-that-races-a-collection',
+    claim: 'every-delete-reads-the-row',
     patterns: [
       /(?:read|reads) the (?:segment's )?row (?:just )?before (?:each|every) delete/i,
       /kept out of all of them/i,
@@ -330,12 +356,17 @@ const SIGNATURES = [
   },
   {
     claim: 'deleting-call-detects',
-    patterns: [
-      /(?:deleting call|the call|the load)[^.]{0,40}detects?/i,
-      /over the next 1\.75 s|up to 1\.75 s/i,
-    ],
+    patterns: [/(?:deleting call|the call|the load)[^.]{0,40}detects?/i],
     summary: 'Nothing can restore a deleted object, so the deleting call detects it.',
     lookAlike: 'A CRC detects damage; it does not authenticate.',
+  },
+  {
+    claim: 'rollback-check-gets-time',
+    patterns: [/(?:over the next|up to) 1\.75 s/i],
+    summary:
+      'The deleting call then finds the pointer on a generation it deleted and, once its reads of the row over the next 1.75 s all still find it there, throws NotFoundError naming it rather than answer; it repairs nothing.',
+    lookAlike:
+      'A rollback whose swap got no answer is one: it puts the pointer back only after its own request timeout and a read of the row, often longer than the 1.75 s the deleting call waits.',
   },
   {
     claim: 'ledger-loses-what-it-deletes',
@@ -358,18 +389,24 @@ const SIGNATURES = [
       'An erasure ledger — per-subject-request proof of physical deletion — is returned by eraseSubject.',
   },
   {
-    claim: 'racing-writers',
+    claim: 'erasure-racing-writers',
     patterns: [
       /\brace\w*[^.]{0,80}\b(?:is|are) (?:reported|caught)/i,
-      /nothing reported/i,
       /(?:is|are) caught and the entry says/i,
     ],
     summary:
-      'Each leaves the pointer on a missing object with nothing reported, and only checkConsistency() finds it.',
+      "A race with a load, a rollback or another erasure is reported, as 'superseded', an error: note or a thrown error, with two exceptions at a refused rewrite's delete of its own object above the winner's pointer: a rollback onto that object between the call's renewal of the row and the delete, and, on a storage driver that does not report conditionalDelete, a delete that removes a load's generation published under that object's number.",
     lookAlike: 'One race stays, and the fleet scan repairs it.',
   },
   {
-    claim: 'number-taken-again',
+    claim: 'rollback-during-erasure',
+    patterns: [/nothing reported/i],
+    summary:
+      'Each leaves the pointer on a missing object with nothing reported, and only checkConsistency() finds it.',
+    lookAlike: 'What the call reports depends on where the rollback lands:',
+  },
+  {
+    claim: 'erasure-number-taken-again',
     patterns: [
       /\bthe load's generation stays/i,
       /took the number[^.]{0,60}keeps? its generation/i,
@@ -423,7 +460,7 @@ const SIGNATURES = [
       'The purge removes every pointer it read to the row, and the one its own grace would have filed.',
   },
   {
-    claim: 'pin-costs-a-number',
+    claim: 'pin-shares-the-caches',
     patterns: [/never handed a chunk a live read fetched/i],
     summary:
       "A pin shares the store's bounded reader and chunk caches, under keys of its own, so it is never handed a chunk a live read fetched from another generation.",
@@ -556,6 +593,9 @@ const ENTITIES = {
   sup2: '²',
   sup3: '³',
 };
+/** Every line ending a page can use: `\n`, `\r\n`, or a lone `\r`. */
+const LINE_BREAK = /\r\n?|\n/;
+
 const ENTITY = /&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi;
 function decodeEntity(m) {
   const e = m[1];
@@ -568,46 +608,56 @@ function decodeEntity(m) {
 
 /**
  * One pass over a Markdown unit's inline text: a code span is kept as it is (its backticks go later, with emphasis); a
- * link reads as its text and an image as its alt text, each target recorded; a comment or a tag goes, a `<br>` reads as a
- * space, an `href` is recorded; a bare URL stays and is recorded, as GitHub links one.
+ * link reads as its text and an image as its alt text, each target recorded, a reference link's and a shortcut
+ * reference's (`[text]` with a `[text]: url` definition) included; a comment or a tag goes, a `<br>` reads as a space, an
+ * `href` is recorded, quoted or not; a bare URL stays and is recorded, as GitHub links one.
  */
 const INLINE = new RegExp(
   [
-    /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/.source, // 1, 2: a code span
-    /!\[([^\]]*)\]\([^)]*\)/.source, // 3: an image
-    /\[((?:[^[\]]|\[[^\]]*\])*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/.source, // 4, 5: a link
-    /\[([^\]]+)\]\[([^\]]*)\]/.source, // 6, 7: a reference link
+    /(?<tick>`+)(?!`)(?<code>[\s\S]*?[^`])\k<tick>(?!`)/.source,
+    /!\[(?<alt>[^\]]*)\]\([^)]*\)/.source,
+    /\[(?<text>(?:[^[\]]|\[[^\]]*\])*)\]\(\s*<?(?<target>[^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/.source,
+    /\[(?<refText>[^\]]+)\]\[(?<ref>[^\]]*)\]/.source,
+    /\[(?<shortcut>[^[\]]+)\](?![[(])/.source,
     /<!--[\s\S]*?-->/.source,
-    /<(br|wbr)\b[^<>]*>/.source, // 8
-    /<[a-zA-Z][^<>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^<>]*>/.source, // 9, 10: a tag with an href
+    /<(?<br>br|wbr)\b[^<>]*>/.source,
+    /<[a-zA-Z][^<>]*?\bhref\s*=\s*(?:"(?<href>[^"]*)"|'(?<hrefSingle>[^']*)'|(?<hrefBare>[^\s"'<>]+))[^<>]*>/
+      .source,
     /<\/?[a-zA-Z][^<>]*>/.source,
-    /(https?:\/\/[^\s<>()`"']+)/.source, // 11: a bare URL
+    /(?<url>https?:\/\/[^\s<>()`"']+)/.source,
   ].join('|'),
   'g',
 );
 
 function inline(t, refs, links) {
   return replaceTracked(t, INLINE, (m) => {
-    if (m[1] !== undefined) return `\`${m[2]}\``;
-    if (m[3] !== undefined) return m[3];
-    if (m[5] !== undefined) {
-      links.push(m[5]);
-      return m[4];
+    const g = m.groups;
+    if (g.code !== undefined) return `\`${g.code}\``;
+    if (g.alt !== undefined) return g.alt;
+    if (g.target !== undefined) {
+      links.push(g.target);
+      return g.text;
     }
-    if (m[6] !== undefined) {
-      const target = refs.get((m[7] === '' ? m[6] : m[7]).toLowerCase());
+    if (g.refText !== undefined) {
+      const target = refs.get((g.ref === '' ? g.refText : g.ref).toLowerCase());
       if (target !== undefined) links.push(target);
-      return m[6];
+      return g.refText;
     }
-    if (m[8] !== undefined) return ' ';
-    if (m[9] !== undefined || m[10] !== undefined) {
-      links.push(m[9] ?? m[10]);
+    if (g.shortcut !== undefined) {
+      const target = refs.get(g.shortcut.toLowerCase());
+      if (target === undefined) return m[0];
+      links.push(target);
+      return g.shortcut;
+    }
+    if (g.br !== undefined) return ' ';
+    const href = g.href ?? g.hrefSingle ?? g.hrefBare;
+    if (href !== undefined) {
+      links.push(href);
       return '';
     }
-    if (m[11] !== undefined) {
-      const url = m[11].replace(/[.,;:!?*]+$/, '');
-      links.push(url);
-      return m[11];
+    if (g.url !== undefined) {
+      links.push(g.url.replace(/[.,;:!?*]+$/, ''));
+      return g.url;
     }
     return '';
   });
@@ -616,13 +666,32 @@ function inline(t, refs, links) {
 /** A sentence ends at a stop, after any emphasis, code span, quote or bracket that closes on it. */
 const SENTENCE_END = /(?<=[.!?:][*_`"')\]]*)\s+(?=[A-Z`*[(])/g;
 
-/** A sentence's text as a reader is given it: code spans as plain text, emphasis gone, entities decoded. */
-function plainOf(s) {
-  return s
-    .replace(/`/g, '')
-    .replace(/\*\*|__/g, '')
+/** Emphasis and strikethrough markers gone from text outside code: `**`, `__`, a single `*` or `_` at a word's edge, `~~`. */
+const unemphasised = (s) =>
+  s
+    .replace(/\*\*|__|~~/g, '')
     .replace(/(?<![\w*])\*(?=[^\s*])|(?<=[^\s*])\*(?![\w*])/g, '')
+    .replace(/(?<![\w_])_(?=[^\s_])|(?<=[^\s_])_(?![\w_])/g, '');
+
+const CODE_SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
+
+/**
+ * A sentence's text as a reader is given it: code spans as plain text, emphasis and strikethrough gone outside them,
+ * entities decoded, a non-breaking or Unicode hyphen read as `-` and a soft hyphen dropped.
+ */
+function plainOf(s) {
+  let out = '';
+  let last = 0;
+  for (const m of s.matchAll(CODE_SPAN)) {
+    out += unemphasised(s.slice(last, m.index)) + m[2];
+    last = m.index + m[0].length;
+  }
+  out += unemphasised(s.slice(last));
+  return out
+    .replace(/`/g, '')
     .replace(ENTITY, (...m) => decodeEntity(m))
+    .replace(/[\u2010\u2011]/g, '-')
+    .replace(/\u00ad/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -673,17 +742,38 @@ function splitCells(line) {
   return cells;
 }
 
+/** `line` with the text inside each code span blanked, its length kept, so a search for markup passes over code. */
+function maskCode(line) {
+  return line.replace(CODE_SPAN, (m, tick, code) => tick + ' '.repeat(code.length) + tick);
+}
+
+/**
+ * `line` with every comment outside a code span gone, and whether a comment it opens is still open at its end. A
+ * comment in a code span or in fenced code is text: the caller never passes a fenced line.
+ */
+function uncommented(line) {
+  let out = line;
+  for (;;) {
+    const masked = maskCode(out);
+    const open = masked.indexOf('<!--');
+    if (open === -1) return { line: out, open: false };
+    const close = masked.indexOf('-->', open + 4);
+    if (close === -1) return { line: out.slice(0, open), open: true };
+    out = out.slice(0, open) + out.slice(close + 3);
+  }
+}
+
 /**
  * A Markdown (or plain-text) page as blocks: a heading, a paragraph, a list item, a table row. Fenced code, comments,
  * thematic breaks and reference definitions are not blocks; a block quote reads as its text.
  */
 function markdownBlocks(text) {
-  const src = removeAll(text, /<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ''));
-  const lines = src.split('\n');
+  const lines = text.split(LINE_BREAK);
   const raw = [];
   const refs = new Map();
   let cur = null;
   let fence = null;
+  let comment = false;
   const flush = () => {
     if (cur !== null) raw.push(cur);
     cur = null;
@@ -691,6 +781,13 @@ function markdownBlocks(text) {
   lines.forEach((full, i) => {
     const n = i + 1;
     let line = full;
+    if (comment) {
+      // A comment's lines are not text, and they end the paragraph before them.
+      const close = line.indexOf('-->');
+      if (close === -1) return flush();
+      comment = false;
+      line = line.slice(close + 3);
+    }
     const quote = /^\s{0,3}(?:>\s?)+/.exec(line);
     if (quote !== null) line = line.slice(quote[0].length);
     const f = /^\s*(`{3,}|~{3,})/.exec(line);
@@ -703,6 +800,9 @@ function markdownBlocks(text) {
       fence = f[1];
       return;
     }
+    const stripped = uncommented(line);
+    line = stripped.line;
+    comment = stripped.open;
     if (line.trim() === '') return flush();
     const h = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
     if (h !== null) {
@@ -885,9 +985,10 @@ const headingText = (text) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-/** A page's blocks, each with the slug of the heading it sits under. */
+/** A page's blocks, each with the slug of the heading it sits under. A `\r\n` or a lone `\r` ends a line as `\n` does. */
 function blocksOf(path, text) {
-  const blocks = path.endsWith('.html') ? htmlBlocks(text) : markdownBlocks(text);
+  const lf = text.replace(/\r\n?/g, '\n');
+  const blocks = path.endsWith('.html') ? htmlBlocks(lf) : markdownBlocks(lf);
   const seen = new Set();
   let under = { slug: '', text: '', level: 0 };
   for (const b of blocks) {
@@ -922,24 +1023,28 @@ function grams(s) {
 
 /**
  * correctness.md's claims, keyed, with their text and 4-grams, its sections, and every R1 problem. A claim runs from its
- * anchor, or from a heading with text before its first anchor (the intro, keyed by the heading's slug), to the next
- * anchor or heading.
+ * anchor to the next anchor or heading. Its `raw` is its source lines, fenced code and link targets included, with
+ * whitespace collapsed: what `--changed` compares, so an edit there is a change too.
  */
 function readSource(text) {
   const blocks = blocksOf(SOURCE, text);
+  const lines = text.split(LINE_BREAK);
   const problems = [];
   const claims = new Map();
   const headings = new Set();
   const sections = [];
+  const bounds = [];
   let cur = null;
-  let pendingHeading = null;
+  let section = null;
   const fail = (line, message) => problems.push({ rule: 'R1', file: SOURCE, line, message });
   for (const b of blocks) {
     if (b.kind === 'heading') {
       headings.add(b.slug);
-      if (b.level >= 2)
+      bounds.push(b.line);
+      if (b.level >= 2) {
         sections.push({ slug: b.slug, text: headingText(b.text), level: b.level, line: b.line });
-      pendingHeading = b.level >= 2 ? b : null;
+        section = { text: headingText(b.text), reported: false };
+      } else section = null;
       cur = null;
       continue;
     }
@@ -955,27 +1060,36 @@ function readSource(text) {
       if (!KEY_SHAPE.test(key))
         fail(b.line, `the key "${key}" is not lower-case words joined by hyphens`);
       if (claims.has(key)) fail(b.line, `two anchors share the key "${key}"`);
-      cur = { key, kind: 'claim', line: b.line, under: b.under, blocks: [] };
+      cur = { key, line: b.line, under: b.under, blocks: [] };
       claims.set(key, cur);
-      pendingHeading = null;
+      bounds.push(b.line);
     } else if (opensBold) {
       fail(
         b.line,
         `a claim with no key: "${b.sentences[0]?.text.slice(0, 80) ?? ''}" opens with a bold claim and no anchor. ` +
           'Start it with `<a id="<key>"></a>`, a key no other claim has.',
       );
-    } else if (cur === null && pendingHeading !== null) {
-      cur = { key: pendingHeading.slug, kind: 'intro', line: b.line, under: b.under, blocks: [] };
-      claims.set(cur.key, cur);
-      pendingHeading = null;
+    } else if (cur === null && section !== null && !section.reported) {
+      section.reported = true;
+      fail(
+        b.line,
+        `the text under "${section.text}" before its first anchor is a claim with no key. Start it with ` +
+          '`<a id="<key>"></a>`, a key that names what it says rather than the heading.',
+      );
     }
     if (cur !== null) cur.blocks.push(b);
   }
+  bounds.sort((a, b) => a - b);
   for (const c of claims.values()) {
-    if (c.kind === 'claim' && headings.has(c.key))
-      fail(c.line, `the key "${c.key}" is a heading's slug on the page`);
+    if (headings.has(c.key)) fail(c.line, `the key "${c.key}" is a heading's slug on the page`);
     c.text = c.blocks.map((b) => b.sentences.map((s) => s.text).join(' ')).join('\n');
     c.grams = new Set(grams(c.text));
+    const end = bounds.find((n) => n > c.line) ?? lines.length + 1;
+    c.raw = lines
+      .slice(c.line - 1, end - 1)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
   return { claims, headings, sections, problems };
 }
@@ -1095,11 +1209,36 @@ function analyse({
       gramClaims.get(g).push(c.key);
     }
   }
+  /**
+   * For each claim a sentence shares 4-grams with: how many it shares, and its longest run of them in a row, which is
+   * the stretch of words most plainly copied from it.
+   */
   const shared = (text) => {
+    const g = grams(text);
     const count = new Map();
-    for (const g of new Set(grams(text)))
-      for (const k of gramClaims.get(g) ?? []) count.set(k, (count.get(k) ?? 0) + 1);
-    return count;
+    const longest = new Map();
+    const counted = new Set();
+    let runs = new Map();
+    g.forEach((gram, i) => {
+      const next = new Map();
+      for (const k of gramClaims.get(gram) ?? []) {
+        const run = { from: runs.get(k)?.from ?? i, length: (runs.get(k)?.length ?? 0) + 1 };
+        next.set(k, run);
+        if (run.length > (longest.get(k)?.length ?? 0)) longest.set(k, run);
+        if (!counted.has(`${k}\0${gram}`)) {
+          counted.add(`${k}\0${gram}`);
+          count.set(k, (count.get(k) ?? 0) + 1);
+        }
+      }
+      runs = next;
+    });
+    const quote = (k) => {
+      const run = longest.get(k);
+      return words(text)
+        .slice(run.from, run.from + run.length + 3)
+        .join(' ');
+    };
+    return { count, longest, quote };
   };
 
   const rows = new Map();
@@ -1157,13 +1296,28 @@ function analyse({
       blocks.push(b);
       for (const s of b.sentences) {
         const found = matchSignatures(s.text).map((claim) => ({ rule: 'R3', claim }));
-        const count = shared(s.text);
+        const { count, longest, quote } = shared(s.text);
         let top = 0;
         for (const n of count.values()) top = Math.max(top, n);
         if (top >= minShared) {
           const best = [...count].filter(([, n]) => n === top).map(([k]) => k);
-          const tied = best.some((k) => b.ties.has(k));
-          if (!tied) found.push({ rule: 'R3b', claim: best.sort()[0], shared: top });
+          const claim = best.sort()[0];
+          // The claim the longest run of copied words comes from, among those sharing enough. It is often the claim
+          // sharing the most; where it is a neighbour, the message names both, and a tie to either passes.
+          const source = [...count]
+            .filter(([, n]) => n >= minShared)
+            .map(([k]) => k)
+            .sort(
+              (x, y) =>
+                longest.get(y).length - longest.get(x).length ||
+                count.get(y) - count.get(x) ||
+                (x < y ? -1 : 1),
+            )[0];
+          const tied = b.ties.has(source) || best.some((k) => b.ties.has(k));
+          if (!tied) {
+            const run = longest.get(source).length > longest.get(claim).length ? source : claim;
+            found.push({ rule: 'R3b', claim, shared: top, run: quote(run), runClaim: run });
+          }
         }
         for (const f of found) {
           if (f.rule === 'R3' && b.ties.has(f.claim)) continue;
@@ -1192,7 +1346,10 @@ function analyse({
     const how =
       h.rule === 'R3'
         ? `matches the signature of \`${h.claim}\``
-        : `shares ${h.shared} word 4-grams with \`${h.claim}\`, more than with any other claim`;
+        : `shares ${h.shared} word 4-grams with \`${h.claim}\`, ` +
+          (h.runClaim === h.claim
+            ? `copying "${h.run}"`
+            : `but its longest copied run, "${h.run}", is from \`${h.runClaim}\` (a tie to either passes)`);
     problems.push({
       rule: h.rule,
       file: h.file,
@@ -1200,7 +1357,8 @@ function analyse({
       claim: h.claim,
       message:
         `"${h.sentence.length > 160 ? `${h.sentence.slice(0, 157)}...` : h.sentence}" ${how}, and its block ` +
-        `does not tie it. Link the claim from this block: [...](${tieForm(h.file, h.claim)}).` +
+        `does not tie it. If that claim states what the sentence says, link it from this block: ` +
+        `[...](${tieForm(h.file, h.claim)}); if it does not, reword the sentence.` +
         (h.region === undefined ? '' : ' A summary region is never excused by the baseline.'),
     });
   }
@@ -1288,7 +1446,7 @@ function analyse({
     });
   }
 
-  return { page, scope, blocks, regions, hits, stale, problems };
+  return { page, scope, blocks, regions, hits, stale, problems, notes: [] };
 }
 
 /** Rows `head` has that `base` does not: a restatement excused by hand rather than tied. */
@@ -1308,39 +1466,35 @@ function baselineGrowth(head, base) {
 }
 
 /**
- * Each claim whose text changed between `base` and `head` with the blocks that tie it, and each tied block that is new
- * or changed with the claims it ties: the pairs the docs-fidelity review reads.
+ * The pairs the docs-fidelity review reads, between `base` and `head`: each claim whose source changed (its text, a link
+ * target in it, its fenced code) with the blocks that tie it and the restatements of it the baseline excuses, and each
+ * tied block that is new, changed, or tied to other claims than before, with the claims it ties.
  */
-function changedPairs(base, head) {
-  const was = analyse({ files: base, baseline: [], exclusions: EXCLUDED }).page.claims;
-  const now = analyse({ files: head, baseline: [] });
+function changedPairs(base, head, baseline = [], gate = {}) {
+  const was = analyse({ ...gate, files: base, baseline: [] });
+  const now = analyse({ ...gate, files: head, baseline });
   const claims = [];
   for (const [key, c] of now.page.claims) {
-    const before = was.get(key);
-    if (before !== undefined && before.text === c.text) continue;
+    const before = was.page.claims.get(key);
+    if (before !== undefined && before.raw === c.raw) continue;
     claims.push({
       key,
       line: c.line,
       text: c.text,
       added: before === undefined,
       tiedBy: now.blocks.filter((b) => b.ties.has(key)),
+      untied: now.hits.filter((h) => h.excused && h.claim === key),
     });
   }
-  for (const [key, c] of was) {
+  for (const [key, c] of was.page.claims) {
     if (!now.page.claims.has(key))
-      claims.push({ key, line: c.line, text: c.text, removed: true, tiedBy: [] });
+      claims.push({ key, line: c.line, text: c.text, removed: true, tiedBy: [], untied: [] });
   }
   const textOf = (b) => b.sentences.map((s) => s.text).join(' ');
-  const baseBlocks = new Set();
-  for (const [path, text] of base) {
-    if (path === SOURCE || excludedBy(path) !== undefined) continue;
-    for (const b of blocksOf(path, text)) {
-      if (b.kind !== 'heading')
-        baseBlocks.add(`${path}\0${b.sentences.map((s) => s.text).join(' ')}`);
-    }
-  }
+  const blockKey = (b) => `${b.file}\0${textOf(b)}\0${[...b.ties].sort().join(' ')}`;
+  const baseBlocks = new Set(was.blocks.map(blockKey));
   const summaries = now.blocks
-    .filter((b) => b.ties.size > 0 && !baseBlocks.has(`${b.file}\0${textOf(b)}`))
+    .filter((b) => b.ties.size > 0 && !baseBlocks.has(blockKey(b)))
     .map((b) => ({
       file: b.file,
       line: b.line,
@@ -1387,8 +1541,17 @@ function readTree(root = ROOT) {
   return files;
 }
 
+/** A reason the gate cannot run, which the command line prints as it is. */
+class GateError extends Error {}
+
+/** The baseline's rows in `json`, read from `where`, or a thrown error when it holds no list of them. */
+function rowsOf(json, where) {
+  if (!Array.isArray(json?.untied)) throw new GateError(`${where} holds no "untied" list of rows`);
+  return json.untied;
+}
+
 function readBaseline(root = ROOT) {
-  return JSON.parse(readFileSync(join(root, BASELINE), 'utf8')).untied;
+  return rowsOf(JSON.parse(readFileSync(join(root, BASELINE), 'utf8')), BASELINE);
 }
 
 const FETCH =
@@ -1397,50 +1560,79 @@ const FETCH =
 /** The merge base of the head with `against`, or a thrown error naming the command that makes one findable. */
 function mergeBase(root = ROOT, against = BASE) {
   if (git(root, 'rev-parse', '--is-shallow-repository').trim() !== 'false') {
-    throw new Error(`a shallow checkout: ${FETCH}`);
+    throw new GateError(`a shallow checkout: ${FETCH}`);
   }
   try {
-    git(root, 'rev-parse', '--verify', '--quiet', `${against}^{commit}`);
+    git(root, 'rev-parse', '--verify', '--quiet', '--end-of-options', `${against}^{commit}`);
   } catch {
-    throw new Error(`no ${against} to compare with: ${FETCH}`);
+    throw new GateError(`no ${against} to compare with: ${FETCH}`);
   }
   try {
-    return git(root, 'merge-base', 'HEAD', against).trim();
+    return git(root, 'merge-base', '--end-of-options', 'HEAD', against).trim();
   } catch {
-    throw new Error(`the head and ${against} share no history: ${FETCH}`);
+    throw new GateError(`the head and ${against} share no history: ${FETCH}`);
   }
 }
 
-/** The baseline's rows at `sha`, or undefined where the file is not there yet (the change that adds the gate). */
+/**
+ * The baseline's rows at `sha`, or undefined where that commit has no baseline file (the change that adds the gate).
+ * Any other failure to read it is thrown: a gate that cannot read the base must not compare with nothing.
+ */
 function baselineAt(root, sha) {
+  let listed;
+  try {
+    listed = git(root, 'ls-tree', '-z', '--end-of-options', sha, '--', BASELINE);
+  } catch (err) {
+    throw new GateError(
+      `cannot read the tree of ${sha}: ${String(err.stderr ?? err.message).trim()}`,
+    );
+  }
+  if (listed === '') return undefined;
   let text;
   try {
     text = git(root, 'show', `${sha}:${BASELINE}`);
-  } catch {
-    return undefined;
+  } catch (err) {
+    throw new GateError(
+      `cannot read ${BASELINE} at ${sha}: ${String(err.stderr ?? err.message).trim()}`,
+    );
   }
-  return JSON.parse(text).untied;
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (err) {
+    throw new GateError(`${BASELINE} at ${sha} is not JSON: ${err.message}`);
+  }
+  return rowsOf(json, `${BASELINE} at ${sha}`);
 }
 
 /** Every page at `sha` that the head tracks, as `analyse` takes it. */
 function treeAt(root, sha, paths) {
   const files = new Map();
-  for (const path of paths) {
-    try {
-      files.set(path, git(root, 'show', `${sha}:${path}`));
-    } catch {
-      // not there at `sha`
-    }
-  }
+  const at = new Set(
+    git(root, 'ls-tree', '-r', '-z', '--name-only', '--end-of-options', sha)
+      .split('\0')
+      .filter(Boolean),
+  );
+  for (const path of paths) if (at.has(path)) files.set(path, git(root, 'show', `${sha}:${path}`));
   return files;
 }
 
-/** The whole gate over the checked-out tree: every problem, R6's comparison with the merge base included. */
-function check(root = ROOT) {
+/**
+ * The whole gate over the checked-out tree at `root`: every problem, R6's comparison with the merge base included.
+ * `gate` passes `analyse` its other options (a test's own signatures or exclusions).
+ */
+function check(root = ROOT, gate = {}) {
   const files = readTree(root);
   const baseline = readBaseline(root);
-  const result = analyse({ files, baseline });
-  result.problems.push(...baselineGrowth(baseline, baselineAt(root, mergeBase(root))));
+  const result = analyse({ ...gate, files, baseline });
+  const sha = mergeBase(root);
+  const base = baselineAt(root, sha);
+  if (base === undefined) {
+    result.notes.push(
+      `the merge base ${sha.slice(0, 12)} has no ${BASELINE}, so there are no rows to compare: ` +
+        'R6 cannot refuse a row this branch adds until the baseline is on origin/main',
+    );
+  } else result.problems.push(...baselineGrowth(baseline, base));
   return result;
 }
 
@@ -1450,63 +1642,105 @@ function report(problems) {
     .join('\n');
 }
 
-function main(argv) {
+/** The problems, or the line that says there are none, and the exit code for them. */
+function verdict(result, io) {
+  for (const n of result.notes) io.log(`note: ${n}`);
+  if (result.problems.length > 0) {
+    io.error(report(result.problems));
+    io.error(`\n${result.problems.length} problem${result.problems.length === 1 ? '' : 's'}`);
+    return 1;
+  }
+  io.log('every restatement found ties the claim it restates');
+  return 0;
+}
+
+function changedReport(sha, { claims, summaries }) {
+  const out = [];
+  out.push(
+    `Against the merge base ${sha.slice(0, 12)}. Read each summary against each claim beside it.`,
+  );
+  out.push('', `Claims changed (${claims.length}):`);
+  for (const c of claims) {
+    const state = c.removed ? ' (removed)' : c.added ? ' (new)' : '';
+    out.push('', `## ${c.key}${state}  ${SOURCE}:${c.line}`, c.text.replace(/\n/g, '\n\n'));
+    if (c.tiedBy.length === 0 && !c.removed) out.push('', '  tied by no block');
+    for (const b of c.tiedBy)
+      out.push(
+        '',
+        `  tied by ${b.file}:${b.line}`,
+        `  ${b.sentences.map((s) => s.text).join(' ')}`,
+      );
+    if (c.untied.length > 0) {
+      out.push(
+        '',
+        `  restated untied, excused by the baseline, not checked against it (${c.untied.length}):`,
+      );
+      for (const h of c.untied) out.push(`  - ${h.file}:${h.line}  ${h.sentence}`);
+    }
+  }
+  out.push('', `Tied blocks changed, new or re-pointed (${summaries.length}):`);
+  for (const s of summaries) {
+    out.push('', `## ${s.file}:${s.line}`, s.text);
+    for (const c of s.claims)
+      out.push('', `  ties ${c.key} (${SOURCE}:${c.line})`, `  ${c.text.replace(/\n/g, ' ')}`);
+  }
+  return out.join('\n');
+}
+
+function run(argv, { root, gate, io }) {
   if (argv.includes('--update')) {
-    const baseline = readBaseline(ROOT);
-    const { stale } = analyse({ files: readTree(ROOT), baseline });
+    const baseline = readBaseline(root);
+    const { stale } = analyse({ ...gate, files: readTree(root), baseline });
     const kept = baseline.filter((r) => !stale.includes(r));
-    const path = join(ROOT, BASELINE);
+    const path = join(root, BASELINE);
     const json = JSON.parse(readFileSync(path, 'utf8'));
     json.untied = kept;
     writeFileSync(path, `${JSON.stringify(json, null, 2)}\n`);
-    for (const r of stale) console.log(`dropped: ${r.file}, ${r.claim}, "${r.starts}"`);
-    console.log(`${stale.length} rows dropped, ${kept.length} kept`);
+    for (const r of stale) io.log(`dropped: ${r.file}, ${r.claim}, "${r.starts}"`);
+    io.log(`${stale.length} rows dropped, ${kept.length} kept`);
+    const after = check(root, gate);
+    if (after.problems.length > 0) {
+      io.error(report(after.problems));
+      io.error(
+        `\nthe gate still fails: ${after.problems.length} problem${after.problems.length === 1 ? '' : 's'}`,
+      );
+      return 1;
+    }
     return 0;
   }
   if (argv.includes('--changed')) {
     const at = argv.indexOf('--against');
-    const sha = mergeBase(ROOT, at === -1 ? BASE : argv[at + 1]);
-    const head = readTree(ROOT);
-    const { claims, summaries } = changedPairs(treeAt(ROOT, sha, [...head.keys()]), head);
-    const out = [];
-    out.push(
-      `Against the merge base ${sha.slice(0, 12)}. Read each summary against each claim beside it.`,
-    );
-    out.push('', `Claims changed (${claims.length}):`);
-    for (const c of claims) {
-      const state = c.removed ? ' (removed)' : c.added ? ' (new)' : '';
-      out.push('', `## ${c.key}${state}  ${SOURCE}:${c.line}`, c.text.replace(/\n/g, '\n\n'));
-      if (c.tiedBy.length === 0 && !c.removed) out.push('', '  tied by no block');
-      for (const b of c.tiedBy)
-        out.push(
-          '',
-          `  tied by ${b.file}:${b.line}`,
-          `  ${b.sentences.map((s) => s.text).join(' ')}`,
-        );
-    }
-    out.push('', `Tied blocks changed or new (${summaries.length}):`);
-    for (const s of summaries) {
-      out.push('', `## ${s.file}:${s.line}`, s.text);
-      for (const c of s.claims)
-        out.push('', `  ties ${c.key} (${SOURCE}:${c.line})`, `  ${c.text.replace(/\n/g, ' ')}`);
-    }
-    console.log(out.join('\n'));
+    const against = at === -1 ? BASE : argv[at + 1];
+    if (against === undefined || against.startsWith('-'))
+      throw new GateError('--against needs the ref to compare with, such as origin/feature/x');
+    const sha = mergeBase(root, against);
+    const head = readTree(root);
+    const base = treeAt(root, sha, [...head.keys()]);
+    io.log(changedReport(sha, changedPairs(base, head, readBaseline(root), gate)));
     return 0;
   }
-  const { problems } = check(ROOT);
-  if (problems.length > 0) {
-    console.error(report(problems));
-    console.error(`\n${problems.length} problem${problems.length === 1 ? '' : 's'}`);
-    return 1;
+  return verdict(check(root, gate), io);
+}
+
+/**
+ * The command line: `argv` as the header's usage says, over the tree at `root`. A reason the gate cannot run is printed
+ * as a message, exit 2; any other throw is a bug and keeps its stack.
+ */
+function main(argv, { root = ROOT, gate = {}, io = console } = {}) {
+  try {
+    return run(argv, { root, gate, io });
+  } catch (err) {
+    if (!(err instanceof GateError)) throw err;
+    io.error(`summary-ties: ${err.message}`);
+    return 2;
   }
-  console.log('every restatement found ties the claim it restates');
-  return 0;
 }
 
 module.exports = {
   ABSOLUTE,
   BASELINE,
   EXCLUDED,
+  GateError,
   MIN_SHARED,
   SIGNATURES,
   SOURCE,
@@ -1519,6 +1753,7 @@ module.exports = {
   check,
   excludedBy,
   grams,
+  main,
   mergeBase,
   readBaseline,
   readSource,
@@ -1526,6 +1761,7 @@ module.exports = {
   report,
   sha,
   sourceFragment,
+  words,
   starts,
   tieForm,
   trackedPages,
