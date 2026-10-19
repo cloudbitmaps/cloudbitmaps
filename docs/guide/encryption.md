@@ -185,9 +185,10 @@ messages as carrying what the seal hides.
 
 ## How it stays correct
 
-Each chunk is sealed with a fresh random 96-bit nonce, and a repeated nonce stays negligibly likely below about 2³²
-seals under one key, a limit nothing counts and far past any realistic workload. A segment's encryption is decided at
-its first generation, so a segment is never half-encrypted: a load onto a cleartext segment stays cleartext, or is
-refused with `encryption: { required: true }`, and an encrypted generation is never published onto a row with no key
-material. The seal count, and why a half-encrypted segment is refused either way round, are in
-[How encryption stays correct](correctness.md#how-encryption-stays-correct).
+[Each chunk is sealed with a fresh random 96-bit nonce](correctness.md#seal-count), and a repeated nonce stays
+negligibly likely below about 2³² seals under one key, a limit nothing counts and far past any realistic workload. A
+segment's encryption [is decided at its first generation, so a segment is never
+half-encrypted](correctness.md#never-half-encrypted): a load onto a cleartext segment stays cleartext, or is refused
+with `encryption: { required: true }`, and an encrypted generation is never published onto a row with no key material.
+The seal count, and why a half-encrypted segment is refused either way round, are in [How encryption stays
+correct](correctness.md#how-encryption-stays-correct).

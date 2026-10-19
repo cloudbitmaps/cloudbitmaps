@@ -73,7 +73,8 @@ function filesToCheck(): string[] {
     }
   };
   walk('docs', (n) => n.endsWith('.md'));
-  walk('site', (n) => n.endsWith('.html'));
+  // The site's plain-text pages too: `llms.txt` is read by agents, and its links are bare URLs.
+  walk('site', (n) => n.endsWith('.html') || n.endsWith('.txt'));
   walk('.github', (n) => n.endsWith('.md'));
   out.push(
     ...execFileSync('git', ['ls-files', '*.md'], { cwd: ROOT, encoding: 'utf8' })
@@ -83,8 +84,11 @@ function filesToCheck(): string[] {
   return [...new Set(out)];
 }
 
-/** Markdown `[text](target)` plus HTML `href="target"` / `src="target"`. */
-function linkTargets(src: string): string[] {
+/**
+ * Markdown `[text](target)` plus HTML `href="target"` / `src="target"`, and in a plain-text page (`plainText`), where
+ * nothing marks a link up, every bare `http(s)://` URL.
+ */
+function linkTargets(src: string, plainText = false): string[] {
   const targets: string[] = [];
   // A link written *inside* a code span or fenced block is a quoted example, not a link — a doc that talks
   // about how to write links would otherwise fail on its own examples. Stripping code spans
@@ -113,6 +117,10 @@ function linkTargets(src: string): string[] {
   // only one spelling checks whichever the author happened to type.
   for (const m of prose.matchAll(/(?:href|src)=(?:"([^"]+)"|'([^']+)')/g))
     targets.push((m[1] ?? m[2]) as string);
+  // A URL ends where the prose around it resumes: at a space, a bracket or a quote, less any stop that follows it.
+  if (plainText)
+    for (const m of prose.matchAll(/https?:\/\/[^\s<>()"'`]+/g))
+      targets.push(m[0].replace(/[.,;:!?*]+$/, ''));
   return targets;
 }
 
@@ -188,6 +196,7 @@ describe('docs & site links', () => {
     // A silently-empty walk, or a hardcoded entry that stopped existing, would make everything below vacuous.
     for (const named of NAMED_FILES) expect(files).toContain(named);
     expect(files.filter((f) => f.startsWith('site/')).length).toBeGreaterThanOrEqual(4);
+    expect(files).toContain(join('site', 'llms.txt'));
     expect(files.filter((f) => f.startsWith(join('docs', 'guide'))).length).toBeGreaterThan(0);
     expect(files.filter((f) => f.startsWith('.github'))).toContain(
       join('.github', 'PULL_REQUEST_TEMPLATE.md'),
@@ -205,7 +214,7 @@ describe('docs & site links', () => {
   const publicSurface = files;
   it.each(publicSurface)('%s — references no document outside this repository', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
-    const internal = linkTargets(src)
+    const internal = linkTargets(src, rel.endsWith('.txt'))
       .filter(isRelative)
       .filter((raw) => {
         const path = raw.split('#')[0]?.split('?')[0] ?? '';
@@ -221,7 +230,7 @@ describe('docs & site links', () => {
   it.each(files)('%s — every relative link resolves', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     const dead: string[] = [];
-    for (const raw of linkTargets(src)) {
+    for (const raw of linkTargets(src, rel.endsWith('.txt'))) {
       if (!isRelative(raw)) continue;
       // Strip a trailing `#anchor` / `?query` — the path is what has to exist.
       const path = raw.split('#')[0]?.split('?')[0] ?? '';
@@ -254,7 +263,7 @@ describe('docs & site links', () => {
   it.each(files)('%s — every anchor into a .md file resolves to a real heading', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     const broken: string[] = [];
-    for (const raw of linkTargets(src)) {
+    for (const raw of linkTargets(src, rel.endsWith('.txt'))) {
       const hash = raw.indexOf('#');
       if (hash === -1) continue;
       const frag = decodeURIComponent(raw.slice(hash + 1));
@@ -280,7 +289,7 @@ describe('docs & site links', () => {
   it.each(files)('%s — every link back into this repo resolves, path and anchor', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     const broken: string[] = [];
-    for (const raw of linkTargets(src)) {
+    for (const raw of linkTargets(src, rel.endsWith('.txt'))) {
       const target = selfLinkTarget(raw);
       if (target === undefined) continue;
       const hash = target.indexOf('#');

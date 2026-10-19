@@ -314,16 +314,19 @@ infeasible, because one key covers the whole segment. See [`PRIVACY.md`](../../P
 
 ## How it stays correct
 
-An erasure is a rewrite: for each segment the id is a member of, `eraseSubject` streams the current generation into a
-new one with that bit cleared, verifies it, publishes it fenced on the generation it streamed and the row's token, and
-deletes every generation in the bucket that holds the id, above the pointer or below. Before it deletes anything, it
-takes what it will delete out of the row's ledger of known generations, so a rollback without `allowUnknown` cannot
-bring an erased generation back, even when a delete fails, except where the pointer alone decides. A race with a load,
-a rollback or another erasure is reported, as `'superseded'`, an `error:` note or a thrown error, with two exceptions
-at a refused rewrite's delete of its own object above the winner's pointer: a rollback onto that object between the
-call's renewal of the row and the delete, and, on a storage driver that does not report `conditionalDelete`, a delete
-that removes a load's generation published under that object's number. Each leaves the pointer on a missing object
-with nothing reported, and only `checkConsistency()` finds it. A call that could not collect throws rather than report
-`erased: true` over bytes still there. The mechanism, its memory and request bounds, each race, which drivers apply a
-conditional delete, and what each result means are in
-[How an erasure stays correct](correctness.md#how-an-erasure-stays-correct).
+[An erasure is a rewrite](correctness.md#erasure-is-a-rewrite): for each segment the id is a member of, `eraseSubject`
+streams the current generation into a new one with that bit cleared, verifies it, [publishes it fenced on the generation
+it streamed and the row's token](correctness.md#which-fence), and [deletes every generation in the bucket that holds the
+id, above the pointer or below](correctness.md#every-holder-goes). Before it deletes anything, it [takes what it will
+delete out of the row's ledger of known generations](correctness.md#ledger-loses-what-it-deletes), so a rollback without
+`allowUnknown` cannot bring an erased generation back, even when a delete fails, except where the pointer alone decides.
+[A race with a load, a rollback or another erasure is reported](correctness.md#erasure-racing-writers), as
+`'superseded'`, an `error:` note or a thrown error, with two exceptions at a refused rewrite's delete of its own object
+above the winner's pointer: [a rollback onto that object between the call's renewal of the row and the
+delete](correctness.md#rollback-during-erasure), and, on a storage driver that does not report `conditionalDelete`, [a
+delete that removes a load's generation published under that object's
+number](correctness.md#erasure-number-taken-again). Each leaves the pointer on a missing object with nothing reported,
+and only `checkConsistency()` finds it. A call that could not collect [throws rather than report `erased: true` over
+bytes still there](correctness.md#erasure-results). The mechanism, its memory and request bounds, each race, which
+drivers apply a conditional delete, and what each result means are in [How an erasure stays
+correct](correctness.md#how-an-erasure-stays-correct).

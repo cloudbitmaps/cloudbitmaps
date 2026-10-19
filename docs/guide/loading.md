@@ -38,22 +38,25 @@ silently did nothing.
 
 ## When a load is refused
 
-A refused load returns `published: false` and a `reason` rather than throwing, and the previous generation stays
-current: `'empty'` (the ids produced nothing over a segment that is not empty), `'min-cardinality'`, `'min-retained'`
-and `'max-growth'` (a `guard` bound), or `'superseded'` (another writer got there first). It also emits
-`segment.load-refused` to the `audit` sink you pass. What to do about each reason, how the two ratio bounds judge, how
+[A refused load returns `published: false` and a `reason` rather than throwing, and the previous generation stays
+current](correctness.md#refusal-is-reported-not-thrown): [`'empty'` (the ids produced nothing over a segment that is not
+empty), `'min-cardinality'`, `'min-retained'` and `'max-growth'` (a `guard` bound), or `'superseded'` (another writer
+got there first)](correctness.md#what-each-reason-means). It also emits `segment.load-refused` to the `audit` sink you
+pass. What to do about each reason, how the two ratio bounds judge, how
 to bound a growth in ids or refuse a key shift, and what throws instead of a refusal are in
 [When a load is refused](correctness.md#when-a-load-is-refused).
 
 ### When a write is throttled or gets no answer
 
-A load makes two writes. The generation's object goes to a number no other object holds, so a write the service
-throttles is sent again, and a random id in the object's metadata tells a re-send that landed from another writer's
-object. A registry row write that ends without an answer may still land, so the load reads the row again and decides
-from what it holds, deleting nothing until it has. A load that throws `TransientError` leaves its object above the
-pointer: re-run it. The outcomes, each backend's retries and waits, and what a `superseded` refusal over the load's own
-generation can mean are in
-[When a write is throttled or gets no answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer).
+[A load makes two writes](correctness.md#a-load-makes-two-writes). The generation's object goes to a number no other
+object holds, so [a write the service throttles is sent again](correctness.md#object-write-resent), and a random id in
+the object's metadata tells a re-send that landed from another writer's object. A registry row write that ends without
+an answer may still land, so [the load reads the row again and decides from what it
+holds](correctness.md#row-write-settled), deleting nothing until it has. A load that throws `TransientError` [leaves its
+object above the pointer](correctness.md#transient-error-leaves-its-object): re-run it. The outcomes, each backend's
+retries and waits, and [what a `superseded` refusal over the load's own generation can
+mean](correctness.md#superseded-over-own-generation) are in [When a write is throttled or gets no
+answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer).
 
 ## What a load accepts
 
@@ -549,8 +552,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
   meanwhile is never undone: the rollback throws `WriteConflictError`, or, when its own swap got no answer, that
   `TransientError` (below), and records no move. A load that evicts the target from the row's record between the rollback's read and its
-  swap is such a write. Every collection and the erasure takes what it will delete out of the record before it deletes, or never deletes what
-  the row names, so none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
+  swap is such a write. [Every collection and the erasure takes what it will delete out of the record before it deletes, or never deletes what
+  the row names](correctness.md#every-delete-reads-the-row), so none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
   its pass that keeps by count skips every generation the row names when it re-reads the row, an erasure's rewrite leaves
   only the rewrite in it, and an erasure that rewrites nothing removes each generation it will delete from it in a write
   made before its first delete. A rollback that read the row before such a write loses its swap with
@@ -623,7 +626,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   collection that is not fenced on the row took it, or an erasure deleted one above the pointer) or is another object
   (a load took its number meanwhile), the pointer, the old summary and the old record are put back, the target
   leaves the record, and the rollback throws `NotFoundError`. That read takes the place of a listing of the bucket.
-- A swap of the pointer that gets no answer (`TransientError`), or that meets a conflict, is settled by reading the row.
+- A swap of the pointer that gets no answer (`TransientError`), or that meets a conflict, [is settled by reading the
+  row](correctness.md#rollback-settles-its-swap).
   On a registry that reports write tokens (every shipped one does), the swap is the rollback's own when the row's
   pointer is at the target and its `pointerId` is the token of a swap this call sent (a resend reports a token of its
   own, and every one is kept). Whatever else was written to the row since (a lease, a retention or residency write, a
@@ -765,9 +769,10 @@ otherwise. Five properties follow from "a write is a load":
 
   An empty result into a destination that was never loaded still publishes: there is nothing to protect. Pass
   `allowEmpty: true` when emptying the destination is the point, and `guard: { minCardinality, minRetained, maxGrowth }` for the
-  same bounds `load()` takes, judged against what the destination held. A refusal is reported, not thrown; a lost race
-  still throws `WriteConflictError`, and a rollback onto the object the refusal deleted throws `NotFoundError`, as a
-  load's does ([what throws instead](correctness.md#when-a-load-is-refused)). A refused call also emits `segment.load-refused` to
+  same bounds `load()` takes, judged against what the destination held. [A refusal is reported, not
+  thrown](correctness.md#refusal-is-reported-not-thrown); a lost race still throws `WriteConflictError`, and a rollback
+  onto the object the refusal deleted throws `NotFoundError`, as a load's does ([what throws
+  instead](correctness.md#what-throws-instead)). A refused call also emits `segment.load-refused` to
   `audit`, since a materialization is a load.
 
 A `WriteConflictError` from an `*Into` means the destination changed underneath the call, and it does not by itself
@@ -775,7 +780,7 @@ mean nothing was published. The same error covers a pointer that moved, a row re
 supersession at all (a `setRetention`), and a purge. Re-read
 the destination and decide; do not treat it as "the write did not happen". A call that involves a released or lapsed
 lease is refused earlier and harder, with `LeaseExpiredError`. An `*Into` publishes with the fences a load does: see
-[which fence a publish carries](correctness.md#how-a-load-stays-correct).
+[which fence a publish carries](correctness.md#which-fence).
 
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
 then calling `andNotInto`. The suppression folds into the same chunk-aligned pass, and each exclude is read only where
@@ -1229,22 +1234,28 @@ is an ordinary one: every guard and every race check runs, judged against each `
 
 ## How it stays correct
 
-A load takes the next generation number itself, writes its object first, and only once the object is durable moves the
-pointer, by a compare-and-swap that never moves it backwards and is fenced on the row the load read. So a crash never
-moves the pointer, a rerun is a newer identical generation, and of two loads racing on one segment at most one lands.
-A load that dies between its write and its publish leaves an orphan, which a later load's collection removes.
-A load's collection deletes only below the pointer on an active segment, keeps the window the row records, spares a
-generation a live lease holds, and re-proves the row before every delete. The whole mechanism is in
-[How a load stays correct](correctness.md#how-a-load-stays-correct).
+A load [takes the next generation number itself](correctness.md#numbering-is-the-loads), [writes its object first, and
+only once the object is durable moves the pointer](correctness.md#publish-is-forward-only), by a compare-and-swap that
+never moves it backwards and [is fenced on the row the load read](correctness.md#which-fence). So [a crash never moves
+the pointer](correctness.md#crash-never-moves-the-pointer), [a rerun is a newer identical generation, and of two loads
+racing on one segment at most one lands](correctness.md#publish-is-forward-only). A load that dies between its write and
+its publish leaves an orphan, which [a later load's collection removes](correctness.md#orphan-collected-later). A load's
+collection [deletes only below the pointer on an active segment, keeps the window the row
+records](correctness.md#what-collection-does), [spares a generation a live lease
+holds](correctness.md#lease-read-from-the-row), and [re-proves the row before every
+delete](correctness.md#collection-re-proves-the-row). The whole mechanism is in [How a load stays
+correct](correctness.md#how-a-load-stays-correct).
 
 ### A rollback that races a collection
 
-Every loop that deletes generations reads the segment's row just before each delete, and a rollback held to the row's
-`knownGens` is kept out of all of them. One that is not (`allowUnknown`, or a target the pointer alone decides) can land
-on a generation in the round trip between that read and the delete. The deleting call then finds the pointer on a
-generation it deleted and, once its reads of the row over the next 1.75 s all still find it there, throws
-`NotFoundError` naming it rather than answer; it repairs nothing. One delete is not held to this, a refused erasure
-rewrite's delete of its own object, which only `checkConsistency()` finds. Look with `store.generations(ref)` or
-`checkConsistency()` before acting:
-[a rollback that races a collection](correctness.md#a-rollback-that-races-a-collection) says what each delete reports,
-what to do, and what the check costs.
+[Every loop that deletes generations reads the segment's row just before each delete, and a rollback held to the row's
+`knownGens` is kept out of all of them](correctness.md#every-delete-reads-the-row). One that is not (`allowUnknown`, or
+a target the pointer alone decides) can land on a generation in the round trip between that read and the delete. The
+deleting call then [finds the pointer on a generation it deleted](correctness.md#deleting-call-detects) and, [once its
+reads of the row over the next 1.75 s all still find it there](correctness.md#rollback-check-gets-time), throws
+`NotFoundError` naming it rather than answer; [it repairs nothing](correctness.md#rollback-race-limits). One delete is
+not held to this, [a refused erasure rewrite's delete of its own object](correctness.md#deleting-call-detects), which
+only `checkConsistency()` finds. [Look with `store.generations(ref)` or `checkConsistency()` before
+acting](correctness.md#rollback-race-what-to-do): [a rollback that races a
+collection](correctness.md#a-rollback-that-races-a-collection) says what each delete reports, what to do, and what the
+check costs.

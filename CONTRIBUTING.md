@@ -297,7 +297,10 @@ order:
    - **testing quality** — are the invariants + edge cases actually covered? property/oracle adequacy,
      determinism, no flaky/slow tests,
    - **docs & spec fidelity** — does the code match its own doc-comments and the
-     [hard invariants](AGENTS.md#hard-correctness-invariants)? are the roadmap/guide/changelog current?
+     [hard invariants](AGENTS.md#hard-correctness-invariants)? are the roadmap/guide/changelog current? Run
+     `pnpm docs:ties --changed` and read each summary it lists against each claim beside it: the gate holds that a
+     restatement links its claim, and only this reading holds what it says
+     ([tie a summary to its claim](#tie-a-summary-to-the-claim-it-restates)),
    - **anything else** the domain suggests.
 
    Triage → fix the real ones in the same change, or record them in the PR
@@ -366,6 +369,41 @@ inside the published `.d.ts` and sourcemaps. **CI-enforced** by
 which spell the forms out to define the rule. A shell or Python script is not scanned, so keep ids out of those by
 hand. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
 [`AGENTS.md`](AGENTS.md), a `§` section of a public guide, and a `#123` issue or PR on this repository.
+
+### Tie a summary to the claim it restates
+
+[`docs/guide/correctness.md`](docs/guide/correctness.md) says how each guarantee holds under crashes, races and faults,
+and every other page that states one of those guarantees is a restatement of it. Each claim there opens with an
+anchor of its own, as [a crash never moves the pointer](docs/guide/correctness.md#crash-never-moves-the-pointer) does
+(`<a id="crash-never-moves-the-pointer"></a>**A crash never moves the pointer.**`), a section's opening paragraph
+included, and a page that restates the claim, in short or in its own words, links it from the same paragraph, list
+item or table row, as this one does: `[a crash never moves the pointer](correctness.md#crash-never-moves-the-pointer)`,
+relative in `docs/` and the root pages, and absolute
+(`https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#…`) in a package README, on the
+site and in `llms.txt`. A link to a heading is navigation, not a tie. Each guide keeps one summary of its part of
+`correctness.md`, under `How it stays correct` or the section's own heading: it links its own section's heading once,
+and no other section's, and each claim it restates is linked from its paragraph.
+
+- **A new claim** gets an anchor at its start, with a key no other claim has: lower-case words joined by hyphens that
+  name what the claim says, never a heading's slug. A key is a link target other pages keep, so a reworded claim keeps
+  its key.
+- **An edited claim, or an edited summary**: run `pnpm docs:ties --changed`, read each summary against each claim it
+  lists, and fix what no longer says the same thing. Under each changed claim it also lists the restatements the
+  baseline excuses, which nothing ties yet. On a branch stacked on another pull request's, pass that branch,
+  `pnpm docs:ties --changed --against origin/<its branch>`, or the list holds that pull request's changes too. The
+  adversarial review's docs-fidelity lens reads the same list.
+- **A failure names a claim**: link it only if the claim states what your sentence says. A run of copied words can
+  come from a claim's neighbour, so the message quotes the run and, where it comes from another claim than the one
+  named, names that one too; a tie to either passes. If the claim (or, for a run of copied words, neither claim) does
+  not state your sentence, reword it.
+- **CI-enforced** by [`tests/docs/summary-ties.test.ts`](tests/docs/summary-ties.test.ts), and `pnpm docs:ties` runs the
+  same check by hand: it reads every tracked page, finds a restatement by its claim's signature or by a run of words
+  copied from the claim, and fails on one whose block does not link that claim. The restatements untied when the gate
+  was written are listed in `tests/docs/summary-ties.json`, which only shrinks: editing one of those sentences makes it
+  fail as new, so tie it, and then `pnpm docs:ties --update` drops its row. A restatement that matches no signature
+  passes untied, so a review that finds one adds a signature to [`scripts/summary-ties.cjs`](scripts/summary-ties.cjs),
+  with a real sentence it must match and a real look-alike it must not, and in the same change ties every sentence the
+  new signature matches, since the baseline cannot take a row for them.
 
 ## Code style
 

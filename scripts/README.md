@@ -15,6 +15,7 @@ code** — imported or sourced by another script or a test.
 - [Deployability and memory](#deployability-and-memory)
 - [The integration backends](#the-integration-backends)
 - [The site](#the-site)
+- [The documentation](#the-documentation)
 - [`lib/`](#lib)
 - [Conventions](#conventions)
 
@@ -82,6 +83,12 @@ Cloud Storage and Azure Blob Storage.
 | `site-replay.cjs` | Holds the `/demo` page's figures, which live in its markup, to `bench/scale-results.json`, the benchmark it replays: each one is read from that file or derived from how `bench/scale.cjs` builds its segments, the two are cross-checked first, and a figure the benchmark cannot account for fails. It writes nothing. | CI — `pnpm site:replay:check` |
 | `site_markup.py` | What the two site gates above read out of a page: its tags and attributes in any quoting, its inline scripts and styles, and each script's strings with its comments removed. Shared so the gates cannot read one spelling of the markup each. | by `site-links.py` and `site-classes.py` |
 | `site-screenshots.mjs` | Full-page screenshots of every page in both themes, derived from the pages on disk, for design briefs. Drives Chrome directly, with no browser-automation dependency. | by hand — `pnpm site:screenshots` |
+
+## The documentation
+
+| script | what it does | when |
+|---|---|---|
+| `summary-ties.cjs` | The gate behind `tests/docs/summary-ties.test.ts`: every restatement of a guarantee links the claim of `docs/guide/correctness.md` it restates. It reads every tracked page but the ones it excludes, each with its reason, splits each into blocks and sentences, and holds a sentence that matches a claim's signature, or copies a run of its words, to a link to that claim in its block; it holds each guide's summary region to the section it summarises, and each claim to an anchor of its own. `--update` drops the rows of `tests/docs/summary-ties.json`, the baseline of restatements untied when the gate was written, that excuse nothing, never adds one, and exits 1 while the gate still fails. `--changed` prints each claim this branch changed (its text, a link in it or its fenced code) with the blocks that tie it and the baselined restatements of it, and each tied block it changed or re-pointed with its claims, against the merge base with `origin/main` or with `--against <ref>`, for the docs-fidelity review to read side by side. A reason it cannot run (a shallow checkout, no base to compare with, a baseline at the merge base it cannot read) is one line on stderr and exit 2. Its header states the rules and the limits. | CI, through `pnpm test`; by hand — `pnpm docs:ties`, `pnpm docs:ties --update`, `pnpm docs:ties --changed` |
 
 ## `lib/`
 

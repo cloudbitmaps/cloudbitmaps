@@ -416,10 +416,10 @@ exactly that family's daily segments, and `eraseNamespace` can retire the whole 
 
 ## How it stays correct
 
-`dropSegment` writes the tombstone first and sweeps storage second, so no reader can reach bytes about to disappear and
-no load can publish onto the segment, and a failure part-way through leaks bytes, not correctness: check
-`generationsRemaining`, and drop again while it is not empty. The sweep purges a tombstone only when the row carries the
-sweep's own retirement stamp, its grace period has passed, and storage is provably empty for it, so a tombstone a
-crypto-shred or a hand-run drop wrote is never purged. What a purge removes on each backend, the due index's pointers
-and the race the fleet scan repairs, what each step costs, and `purgeTombstones: false` are in
-[How retention stays correct](correctness.md#how-retention-stays-correct).
+[`dropSegment` writes the tombstone first and sweeps storage second](correctness.md#drop-registry-first), so no reader
+can reach bytes about to disappear and no load can publish onto the segment, and a failure part-way through leaks bytes,
+not correctness: check `generationsRemaining`, and drop again while it is not empty. The sweep [purges a tombstone only
+when the row carries the sweep's own retirement stamp](correctness.md#tombstones-purged-narrowly), its grace period has
+passed, and storage is provably empty for it, so a tombstone a crypto-shred or a hand-run drop wrote is never purged.
+What a purge removes on each backend, the due index's pointers and the race the fleet scan repairs, what each step
+costs, and `purgeTombstones: false` are in [How retention stays correct](correctness.md#how-retention-stays-correct).

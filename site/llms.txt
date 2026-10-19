@@ -61,7 +61,7 @@ bare `IStorageDriver` (a storage driver, not a backend), which has no registry, 
 StorageChunkSource of your own, a read source, which is read-only too and reads as it was written to: the store
 adds no registry, no keystore and no timed refresh to it. Both ports are exported by `@cloudbitmaps/core/driver-kit`, not by `@cloudbitmaps/roaring`. A driver author who wants a storage and a registry of their own — an instrumented storage, a registry
 elsewhere — pairs them with `brandAsBackend({ storage, registry })` from `@cloudbitmaps/core/driver-kit`.
-Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write. There is
+Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is a newer identical generation, and there is no partially-visible write (https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#crash-never-moves-the-pointer, https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#publish-is-forward-only). There is
 no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol, publishing their result as a
 new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
 or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than

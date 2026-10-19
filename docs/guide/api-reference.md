@@ -346,7 +346,7 @@ segment mid-call and how the timed refresh behaves.
 |---|---|
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `Promise<SubjectReport>` | GDPR Art. 15 — which registered segments is this id in? Needs an explicit `namespace` or an `allNamespaces: true` ack, and throws `ValidationError` with neither. `concurrency` (default 8) is how many segments are scanned at once. Needs a backend |
 | `store.eraseSubject(id, { namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `Promise<EraseSubjectResult>` | GDPR Art. 17: for every registered segment the id is in, **rewrite the current generation without it** and delete every generation that held the bit, so it is gone from the bucket on return. Returns the erasure ledger, one entry per segment ([erasure](erasure.md)). `concurrency` (default 8) is how many segments are erased at once. Needs a `namespace` or `allNamespaces: true`, and a backend |
-| `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit?, sorted? })` → `Promise<LoadResult>` | **replace this segment's contents** with `input` (ids, `{ serialized }` or `{ bitmap }`) as one new immutable generation: next number, write, check, move the pointer, collect; `sorted: true` writes ascending ids one chunk at a time. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](correctness.md#when-a-load-is-refused)). Needs a backend |
+| `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit?, sorted? })` → `Promise<LoadResult>` | **replace this segment's contents** with `input` (ids, `{ serialized }` or `{ bitmap }`) as one new immutable generation: next number, write, check, move the pointer, collect; `sorted: true` writes ascending ids one chunk at a time. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](correctness.md#refusal-is-reported-not-thrown)). Needs a backend |
 | `store.materializeMany({ operands, outputs, keep, feed?, mayBeEmpty?, after?, through?, pin?, maxBufferedBytes?, budget?, publishConcurrency?, concurrency?, allowAbsentOperands?, dryRun? })` → `Promise<MaterializeManyRun>`, or `Promise<MaterializeManyDryRun>` with `dryRun: true` | **many `*Into` outputs from one chunk-ordered pass**: `operands` names stored segments, each of `outputs` is `{ dest, expr, exclude?, guard?, allowEmpty?, metadata?, audit?, keep? }` with `expr` an `Expr` (`string \| { and: Expr[] } \| { or: Expr[] } \| { andNot: Expr[] }`), and `keep` is required. `pin` defaults to `true`, `concurrency` (the range requests held ahead per operand) to 1 and `publishConcurrency` to 8. `run.outputs[i]` is what output `i`'s `*Into` would have returned (`MaterializeResult`) or `{ published: false, error }`, index-aligned; `run.stats` has the groups, requests (`rangeReads`, `chunkReads`, `registryReads`, `opens`, `publishes` and `attributed: { get, put }`, a lower bound), the budget used, memory, `maxRangesInFlight` (the most range requests in flight at once), `feed` (`{ records, keys, ids }`: what a feed delivered, when the call had one) and every operand's pinned, start and end generation and whether it moved. **`dryRun: true`** computes and judges every output as its publish would and writes nothing: each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore, wouldRefuse? }` or `{ published: false, error }`, reading what the publishing call reads, without the writes ([a dry run](loading.md#look-before-you-publish-a-dry-run)). `dryRun: true` is typed as a dry run and `false` or absent as a publish; a `dryRun` held in a variable, a `boolean` or an optional one, is typed as either, and the flag says which. Every stored operand is pinned for the call by default (one generation per operand, not one instant), every pinned operand an output subtracts (its `exclude`, or after the first entry of an `andNot`) is re-checked, and one that was replaced gets its outputs `StaleOperandError`, and `maxBufferedBytes` (default 256 MiB) counts resident bytes, plan included, regrouping (and reading the operands again) when outputs do not fit; process memory is more than the count ([how much](loading.md#many-outputs-from-one-pass-materializemany)). `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order (`records` is an `AsyncIterable<{ key, operands: Record<string, Uint32Array> }>`, `counts` required): every record is checked before the pass sees it, a bad feed refuses every fed output and publishes none, a fed call runs as one group and **requires `maxBufferedBytes`**, `mayBeEmpty` lists the fed names allowed to be empty, and an erasure in this store refuses a fed call with `StaleOperandError` (`reason: 'erased'`); the call waits as long as the producer takes, so an iterator or `counts` that never settles hangs it, stored-only outputs too, and an iterator's slow `return()` delays it, and a feed no output names is never read ([the feed](loading.md#operands-that-arrive-as-records-a-feed)). A set you hold is fed ([a set you hold](loading.md#a-set-you-hold-feed-it)). Throws `ValidationError` for bad input before any request ([details](loading.md#many-outputs-from-one-pass-materializemany)). Needs a backend |
 | `store.exists(ref)` → `Promise<boolean>` | whether a read of this segment would find anything, as **one registry point read**. Not the same as `count() > 0` ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.segments({ namespace? })` → `AsyncIterable<SegmentInfo>` | every segment the registry holds, **streamed**, optionally scoped to one namespace. An admin call, not a request-path one ([details](loading.md#does-this-segment-exist)). Needs a backend |
@@ -1004,19 +1004,20 @@ registry that reports them says so with `reportsWriteTokens: true` on the driver
 `onToken` function of the `RegistryWriteOptions` it is handed, once for each `create` and `compareAndSwap` it sends,
 with the token that write carries, **before it sends the request**: a write that gets no answer may still land, and its
 token has to be known by then. A publish relies on the report coming first, both ways. A write that faults after its
-report may have landed, and is settled by reading the row. A `TransientError` before any report is taken for a fault
-before sending, such as the driver's own read of the row: the publish throws it at once, with no read of the row and no
-fresh write. So nothing that can land is sent before the report, a client's own resend included. A write sent again with
-a new token reports it; one that repeats the same body repeats the token already reported. The token reported is the one
-the write records, so a write that lands leaves the row's `token` equal to it, and its `pointerId` too when the write
-names a resolved field; a write that does not land leaves no row carrying it. **The token is unique to that write
-attempt, also against another writer racing the same version**: a version counter alone is not enough, since a loser's
-write would then pass for the winner's. The writer counts a write as its own if and only if the row's `pointerId` is one
-of the tokens it was told, which is equality only, so it needs no read of the object and cannot mistake another writer's
-write of the same ids for its own. A `pointerId` that is not one is another writer's write, or the writer's own write
-that landed and was then followed, before the writer read the row again, by a write that renews the row's `pointerId`
-over it: an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the
-pointer off it. The writer cannot tell the two apart, reports none published though its generation may be current, and
+report may have landed, and [is settled by reading the row](correctness.md#row-write-settled). A `TransientError` before
+any report is taken for a fault before sending, such as the driver's own read of the row: the publish throws it at once,
+with no read of the row and no fresh write. So nothing that can land is sent before the report, a client's own resend
+included. A write sent again with a new token reports it; one that repeats the same body repeats the token already
+reported. The token reported is the one the write records, so a write that lands leaves the row's `token` equal to it,
+and its `pointerId` too when the write names a resolved field; a write that does not land leaves no row carrying it.
+**The token is unique to that write attempt, also against another writer racing the same version**: a version counter
+alone is not enough, since a loser's write would then pass for the winner's. The writer counts a write as its own if and
+only if the row's `pointerId` is one of the tokens it was told, which is equality only, so it needs no read of the
+object and cannot mistake another writer's write of the same ids for its own. A `pointerId` that is not one is another
+writer's write, or the writer's own write that landed and was then followed, before the writer read the row again, by a
+write that renews the row's `pointerId` over it: an erasure's renewal, or a rollback back onto the generation after a
+publish or another rollback moved the pointer off it. The writer [cannot tell the two
+apart](correctness.md#superseded-over-own-generation), reports none published though its generation may be current, and
 deletes nothing, and a re-run publishes, or erases. `ObjectStoreRegistry` (so the S3, GCS and Azure Blob registries),
 the in-memory registry and the local-filesystem registry report; the registry conformance suite holds a registry that
 sets the flag to the cases above, among them N writers racing one write with one body, which must report tokens no loser
@@ -1217,10 +1218,10 @@ Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `CloudRoaring
 
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
-Each conditional request the backend makes — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`,
+Each of these conditional requests — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`,
 the registry's create, compare-and-swap and tombstone, and with `conditionalDelete` the registry's `DeleteObject` under
-`If-Match` — is sent with the SDK's retry off for that request alone, whether
-the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. The registry's
+`If-Match` — is [sent with the SDK's retry off for that request alone](correctness.md#sdk-retry), whether
+the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry, the storage half's conditional `DeleteObject` (below) included. The registry's
 writes are sent once. A generation's object is sent again, at most three more times, after `503 SlowDown` (or any `503`)
 and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s: it carries a random id in its user metadata
 (`x-amz-meta-cbwid`), and a precondition failure on a re-send, or an upload S3 no longer knows, reads it back, so an
@@ -1289,7 +1290,7 @@ retry options. Every object carries a random id in its metadata, and a `412` on 
 meeting itself (a resumable upload's, or a single request's after a re-send) reads the stored object back, so an
 object that carries its own id is a success and any other a `WriteConflictError`
 ([why](production.md#reliability-retries-backoff--timeouts)). With `conditionalDelete`, the registry removes a row with
-a delete under `ifGenerationMatch`, which the SDK retries as it does any request with a precondition: a second copy can
+a delete under `ifGenerationMatch`, which [the SDK retries as it does any request with a precondition](correctness.md#sdk-retry): a second copy can
 remove nothing the first could not, and one that meets the first's landed delete is a 404, which the registry reads as
 a lost race and re-reads. With it the storage half deletes an erasure's holder under `ifGenerationMatch` too, the
 generation its tail read reported, and there a `404` is an absent object, a no-op, and a `412` is a conflict only while

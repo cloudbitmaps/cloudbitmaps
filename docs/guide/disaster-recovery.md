@@ -672,7 +672,8 @@ number, it moves the pointer back and throws `NotFoundError` saying `the pointer
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
 response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
 or still on the missing generation, the torn state this section resolves. A move that gets no answer at all
-(`TransientError`), or one that meets a conflict, is settled by reading the row: one the row shows landed (its pointer
+(`TransientError`), or one that meets a conflict, [is settled by reading the
+row](correctness.md#rollback-settles-its-swap): one the row shows landed (its pointer
 is at the target, over a write the rollback sent) is checked as above, and otherwise the rollback throws the
 `TransientError`, or after a conflict a `WriteConflictError`, and records no move; after no answer the pointer may
 still move, since the write may yet land.

@@ -578,12 +578,16 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
-would find itself already there and report a conflict. So a driver sends a conditional write once, and again only
-where an id it carries tells a replay apart (a throttled object), and a load or a rollback settles an unanswered
-registry write by reading the row. The exception is Azure Blob, whose client's own retry can replay any write, a
-registry row included: the id tells a replay from another writer's object, and for a row that read-back is not definitive
-([how retries stay correct](correctness.md#how-retries-stay-correct)). A fault those do not settle reaches you as
-`TransientError`, and the retry is yours.
+would find itself already there and report a conflict. So [the S3 and GCS drivers send a conditional write
+once](correctness.md#sdk-retry), and again only where an id it carries tells a replay apart (a throttled object), and [a
+load or a rollback settles an unanswered registry write by reading the row](correctness.md#row-write-settled). Two GCS
+writes keep the SDK's retry: a resumable upload (an object above `simpleUploadThresholdBytes`), which carries the same
+id, and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to send twice (a copy that meets
+the first's landed delete reads as a lost race, and a re-read settles it). Azure Blob's
+client retry can replay any write, a registry row included: [the id tells a replay from another writer's
+object](correctness.md#tagged-writes), and for a row that read-back is not definitive ([how retries stay
+correct](correctness.md#how-retries-stay-correct)). A fault those do not settle reaches you as `TransientError`, and
+the retry is yours.
 
 Re-running a `load` is safe. It takes a fresh generation number and re-reads the pointer, so it publishes whether or
 not the first attempt landed, under every guard setting. Three things to know:
@@ -784,19 +788,21 @@ dispatched CI run can build one and attach it to that run.
 
 ## How it stays correct
 
-A fault costs a read some latency and a write a re-run, never correctness: generations are write-once, a publish only
-moves the pointer forward, and every byte is checksum-verified before use. A cloud SDK's own retry gives the wrong
-answer for a conditional write, since a write that lands and loses its response meets itself when it is sent again. So
+[A fault costs a read some latency and a write a re-run, never correctness](correctness.md#fault-costs-a-re-run):
+generations are write-once, [a publish only moves the pointer forward](correctness.md#publish-is-forward-only), and
+every byte is checksum-verified before use. [A cloud SDK's own retry gives the wrong answer for a conditional
+write](correctness.md#sdk-retry), since a write that lands and loses its response meets itself when it is sent again. So
 the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone, except a GCS resumable
-upload, which the SDK retries within its session, and the GCS registry's delete. A write that can meet itself carries a
-random id in its metadata: every Azure Blob write, a GCS resumable upload, and an S3 or GCS object sent again after a
-throttle. When such a write reports a conflict, the backend reads the stored object back, and one that carries the
-write's own id is a success. For a generation's object that answer is definitive, since nothing overwrites it. A
-registry row is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the
-read-back, makes that write report a conflict. The publish then reads the row again, and finds its write only while the
-pointer still names its generation and the row's `pointerId` is its own write's; overtaken by a newer load, it answers
-`published: false, reason: 'superseded'`, and its `segment.load-refused` event carries `unanswered: true`, as does the
-refusal of a load that lost an ordinary race at the registry on Azure Blob, which marks every conflict of a row write as
-one that may follow the write's own landing. A registry delete under a precondition that goes through the SDK's retry,
-on GCS and Azure Blob, is safe to send twice because of its precondition. Each package's conditional writes, and what a
-tagged write does on a conflict, are in [How retries stay correct](correctness.md#how-retries-stay-correct).
+upload, which the SDK retries within its session, and the GCS registry's delete. [A write that can meet itself carries a
+random id in its metadata](correctness.md#tagged-writes): every Azure Blob write, a GCS resumable upload, and [an S3 or
+GCS object sent again after a throttle](correctness.md#object-write-resent). When such a write reports a conflict, the
+backend reads the stored object back, and one that carries the write's own id is a success. For a generation's object
+that answer is definitive, since nothing overwrites it. A registry row is overwritten by compare-and-swap, so a writer
+that swaps in over a write that landed, before the read-back, makes that write report a conflict. The publish then reads
+the row again, and finds its write only while the pointer still names its generation and the row's `pointerId` is its
+own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`, and its
+`segment.load-refused` event carries `unanswered: true`, as does the refusal of a load that lost an ordinary race at the
+registry on Azure Blob, which marks every conflict of a row write as one that may follow the write's own landing. A
+registry delete under a precondition that goes through the SDK's retry, on GCS and Azure Blob, is safe to send twice
+because of its precondition. Each package's conditional writes, and what a tagged write does on a conflict, are in [How
+retries stay correct](correctness.md#how-retries-stay-correct).
