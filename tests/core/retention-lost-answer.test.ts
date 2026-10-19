@@ -101,6 +101,36 @@ describe.each<Kind>(['memory', 'localfs'])(
         expect(await due(w)).toEqual([day(Y)]);
       });
 
+      it('keeps createdRow true after a later policy write, and writes no pointer for a changed expiry', async () => {
+        const w = world();
+        w.registry.arm('create', 'a');
+        w.registry.between(async () => {
+          const row = (await w.raw.get(SEG))!;
+          await w.raw.compareAndSwap(SEG, row.token, {
+            retention: { expiresAt: X },
+          });
+        });
+
+        const res = await w.store.setRetention(SEG, { expiresAt: Y });
+
+        expect(res).toMatchObject({ expiresAt: Y, createdRow: true });
+        expect(await due(w)).toEqual([day(X)]);
+      });
+
+      it('says createdRow is false after a later load published onto the row', async () => {
+        const w = world();
+        w.registry.arm('create', 'a');
+        w.registry.between(async () => {
+          const row = (await w.raw.get(SEG))!;
+          await w.raw.compareAndSwap(SEG, row.token, { currentGen: 0 });
+        });
+
+        const res = await w.store.setRetention(SEG, { expiresAt: Y });
+
+        expect(res).toMatchObject({ expiresAt: Y, createdRow: false, indexed: true });
+        expect((await w.raw.get(SEG))?.retention).toEqual({ expiresAt: Y });
+      });
+
       it('throws a create that never landed, and its re-run creates the row', async () => {
         const w = world();
         w.registry.arm('create', 'c');
