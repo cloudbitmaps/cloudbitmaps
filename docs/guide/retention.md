@@ -53,7 +53,8 @@ await store.load(ref, idsSeenToday);
 ```
 
 That is one policy write, plus a best-effort write of its due-index pointer (and removal of the old pointer when the
-expiry day moves). No data is deleted and no timer starts. Call it once, when you first record the segment, not on every load. It is idempotent, so re-running is harmless, but it is a write.
+expiry day moves). No data is deleted and no timer starts. Call it once, when you first record the segment, not on
+every load. It is idempotent, so re-running is harmless, but it is a write.
 
 - **`expiresAt` is an absolute instant in epoch milliseconds**, which you compute. A duration would have to be measured
   from something, and every anchor the library could use is wrong. `updatedAt` and `currentGen` are rewritten by every

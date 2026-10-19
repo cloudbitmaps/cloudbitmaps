@@ -100,7 +100,8 @@ for (const r of destroyed) if (!r.destroyed) console.warn(r.segment, r.reason); 
 
 What happens: the call deletes the segment's wrapped DEK from its current registry row and leaves a `destroyed`
 tombstone. The encrypted objects stay in the bucket, and nothing that opens the segment through that row can read
-them; a retained earlier copy of the row still holds the wrapped DEK until your storage expires it. The segment reads as empty to a store that opens it
+them; any retained earlier copy of the row (a noncurrent version, a backup) still holds the wrapped DEK until your
+storage expires it. The segment reads as empty to a store that opens it
 afresh, and a load refuses a destroyed segment, so a load racing an erasure cannot bring it back. To also reclaim the
 storage, use `dropSegment` ([retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt)): it
 crypto-shreds an encrypted segment and deletes its objects.

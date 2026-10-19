@@ -2497,9 +2497,9 @@ export class CloudRoaring {
    * sweep would leave the caller unable to say which segments were retired, having already retired some. (A bad
    * argument does throw, and so does a fleet larger than `maxScanSegments`.) `limited: true` means the per-cycle
    * `limit` (default 100) cut the pass short, and more work (retirements or purges) remains: `limit` caps the
-   * retirements and tombstone purges one call attempts, together, and a segment it deferred gets no entry. That cap is charged on **attempts**, not
-   * successes, which is what makes it a real bound: `dropSegment` writes the tombstone before sweeping Storage, so a
-   * fault in the Storage phase is a segment that is already retired. Retirements are sequential, so `limit` is a
+   * retirements and tombstone purges one call attempts, together, and a segment it deferred gets no entry. That cap
+   * is charged on **attempts**, not successes, which is what makes it a real bound: `dropSegment` writes the
+   * tombstone before sweeping Storage, so a fault in the Storage phase is a segment that is already retired. Retirements are sequential, so `limit` is a
    * wall-clock knob too, and `retired` counts deletions only — a dry run reports `wouldRetire` instead, so a
    * dashboard summing `retired` can never show a phantom deletion.
    *
