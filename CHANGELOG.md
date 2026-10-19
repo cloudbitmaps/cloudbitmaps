@@ -33,6 +33,16 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`subjectReport` lists a destroyed segment whose leftover objects still hold the id, in a new `tombstones`
+  field.** A cleartext `destroySegment` (`allowCleartext`), and a `dropSegment` whose sweep missed an object a load
+  was still writing, leave the id readable in the bucket though no read resolves the segment. `eraseSubject` already
+  searched and deleted those objects; the report now finds the same ones by the same search, so an Art. 15 answer
+  names what an Art. 17 erasure would delete. `SubjectReport` gains the required `tombstones: SubjectSegmentRef[]`,
+  `[]` when none, and `segments` is unchanged. A crypto-shredded segment is never listed: its objects are sealed under
+  a key no row holds. Each destroyed segment in scope costs one more listing, and each object searched a tail read
+  and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted object); the budget is
+  charged one unit for each object opened past the one the row names, as `eraseSubject` charges, and a report that
+  runs out throws `BudgetExceededError`.
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
   exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
   `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it

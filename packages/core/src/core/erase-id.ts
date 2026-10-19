@@ -386,6 +386,25 @@ interface Pass {
 /** What the row says about a call's premise: `null` while it holds, otherwise the reason to report. */
 type Verdict = 'superseded' | 'absent' | 'destroyed' | null;
 
+/** What the search for an id in an object needs of the store: the objects, the codec, and the read bounds. */
+export type SearchDeps = Pick<EraseIdDeps, 'storage' | 'codec' | 'maxBitmapBytes' | 'readRetry'>;
+
+/** What {@link holds} and its callers read of an {@link EraseCall}, so a search that deletes nothing can build one. */
+type HoldsCall = Pick<
+  EraseCall,
+  | 'ref'
+  | 'chunkKey'
+  | 'remainder'
+  | 'codec'
+  | 'maxBytes'
+  | 'base'
+  | 'tombstoned'
+  | 'aead'
+  | 'read'
+  | 'sealed'
+  | 'versions'
+> & { readonly deps: SearchDeps };
+
 /**
  * What one pass of {@link eraseIdFromSegment} works from, passed to every phase of it. The first group is fixed once the
  * row is read; the second is what the phases change as they go, and each field says who changes it.
@@ -612,7 +631,7 @@ function refusedResult(
 }
 
 /** The crypto for the object at `generation`: the segment's DEK, bound to that generation. */
-function cryptoAt(c: EraseCall, generation: number): CrbmCrypto | undefined {
+function cryptoAt(c: HoldsCall, generation: number): CrbmCrypto | undefined {
   const { ref, aead } = c;
   return aead === undefined
     ? undefined
@@ -620,7 +639,7 @@ function cryptoAt(c: EraseCall, generation: number): CrbmCrypto | undefined {
 }
 
 /** Whether `holds` found the id in `generation`, as opposed to counting it a holder it could not search. */
-function found(c: EraseCall, generation: number, held: boolean | null): boolean {
+function found(c: HoldsCall, generation: number, held: boolean | null): boolean {
   return held === true && !c.sealed.has(generation);
 }
 
@@ -642,7 +661,7 @@ function found(c: EraseCall, generation: number, held: boolean | null): boolean 
  * segment's first generation, a publish never adds one to a segment that has generations, and only a crypto-shred,
  * which tombstones the row, removes it), so no generation a reader of the row can open is ever counted here.
  */
-async function holds(c: EraseCall, generation: number): Promise<boolean | null> {
+async function holds(c: HoldsCall, generation: number): Promise<boolean | null> {
   const { deps, chunkKey, remainder, codec, maxBytes, base, tombstoned, read, sealed, versions } =
     c;
   const key: GenKey = { ...base, generation };
@@ -730,7 +749,7 @@ async function holds(c: EraseCall, generation: number): Promise<boolean | null> 
  * the first fault in that order is the one thrown, so a fault past a holder never surfaces, as it never did.
  */
 async function holdsEach(
-  c: EraseCall,
+  c: HoldsCall,
   generations: readonly number[],
   { stopAtHolder }: { readonly stopAtHolder: boolean },
 ): Promise<{ generation: number; held: boolean | null }[]> {
@@ -1262,6 +1281,44 @@ async function unpublished(c: EraseCall): Promise<EraseIdResult> {
   throw cannotRemove(c, left);
 }
 
+/** The newest object listed under the tombstone that holds the id, searched as `holds` searches one; reads only. */
+async function holderUnderTombstone(c: HoldsCall): Promise<{ generation: number } | undefined> {
+  const newestFirst = (await generationsOf(c.deps.storage, c.ref)).reverse();
+  return (await holdsEach(c, newestFirst, { stopAtHolder: true })).find((h) => h.held === true);
+}
+
+/**
+ * The newest generation left under a tombstone that holds `id` in the clear, or `null`: the search
+ * {@link eraseIdFromSegment} makes under a tombstone, without its deletes. The caller has read the row as `destroyed`;
+ * this reads no row. It lists the bucket once and opens objects newest first, a few at a time, stopping at the first
+ * that holds the id; an object sealed under a key is no holder. It writes and deletes nothing. A fault on a read is
+ * thrown, after the read retry in `deps.readRetry`, never read as "not found".
+ */
+export async function findIdUnderTombstone(
+  ref: SegmentRef,
+  id: number,
+  deps: SearchDeps,
+): Promise<number | null> {
+  validateUserRef(ref);
+  const { chunkKey, remainder } = splitId(id);
+  const codec = requireCodec(deps.codec, 'findIdUnderTombstone');
+  const c: HoldsCall = {
+    ref,
+    deps,
+    chunkKey,
+    remainder,
+    codec,
+    maxBytes: deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES,
+    base: { segment: ref.segment, namespace: ref.namespace },
+    tombstoned: true,
+    aead: undefined,
+    read: <T>(op: () => Promise<T>): Promise<T> => retryRead(op, deps.readRetry),
+    sealed: new Set(),
+    versions: new Map(),
+  };
+  return (await holderUnderTombstone(c))?.generation ?? null;
+}
+
 /**
  * The row is a tombstone, so no generation is the segment's any more and every object left is garbage (invariant 4's
  * one exception). A crypto-shred leaves objects no key opens, but a cleartext destroy, a drop whose sweep left
@@ -1271,10 +1328,7 @@ async function unpublished(c: EraseCall): Promise<EraseIdResult> {
  */
 async function underTombstone(c: EraseCall): Promise<EraseIdResult> {
   const { ref, deps, base } = c;
-  const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
-  const holder = (await holdsEach(c, newestFirst, { stopAtHolder: true })).find(
-    (h) => h.held === true,
-  );
+  const holder = await holderUnderTombstone(c);
   if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
   const collected = await gcOrphanGenerations(ref, deps, { keep: 0, incarnation: c.record });
   const left = await holderLeft(c, new Set());

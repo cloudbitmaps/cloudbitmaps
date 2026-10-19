@@ -16,6 +16,7 @@ import { RecordingAuditSink } from '@cloudbitmaps/roaring';
 // Art. 15: which segments is this id in? (scoped to one tenant)
 const report = await store.subjectReport(userId, { namespace: 'eu' });
 report.segments; // [{ segment, namespace }, ...]    report.scannedSegments: the completeness denominator
+report.tombstones; // destroyed segments whose leftover objects still hold the id
 
 // Art. 17: remove the id everywhere, across all tenants (the explicit fleet-wide acknowledgement)
 const audit = new RecordingAuditSink(); // or your own audit sink: see Observability
@@ -30,15 +31,24 @@ Segments the id is not in are not listed. A segment where the erasure found the 
 deleted only objects no read of the segment can open ([below](#three-rules-while-you-erase)), is not listed either: the
 audit sink gets `segment.collect` for it with no `fromGeneration`, and that event is the only record of the deletion.
 The two calls look in different places: `subjectReport` reads what a reader reads, each segment's current generation,
-while `eraseSubject` also searches older generations, a tombstoned segment's objects and a first load's object that
-never published. So the ledger can name a segment the report did not.
+and searches each destroyed segment's leftover objects as the erasure does, listing one that holds the id under
+`tombstones`. A cleartext `destroySegment` (`allowCleartext`), or a `dropSegment` whose sweep missed an object a load was
+still writing, leaves the id readable in the bucket though no read resolves the segment; a crypto-shredded segment is
+never listed, because its objects are sealed under a key no row holds. `eraseSubject` also searches an active
+segment's older generations and a first load's object that never published, so the ledger can still name a segment the
+report did not.
 
 `eraseSubject` needs a store built on a backend, because it writes generations. `subjectReport` needs one too, for
 the registry it lists. A store missing what a call needs throws `UnsupportedError`: a store built on a bare storage
 driver (`IStorageDriver`) or a pre-built `StorageChunkSource` instead of a backend cannot run either. Build it on `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
 `AzureBlobStorage`.
 
-**What it costs.** `subjectReport` costs one pass over the registered segments. `eraseSubject` costs more: a segment
+**What it costs.** `subjectReport` costs one pass over the registered segments, plus, for each destroyed segment in
+scope, one listing and an open of each object under it until one holds the id (two tail reads for an encrypted object,
+which never does), charged to the budget as `eraseSubject` charges them. Measured on the in-memory backend: a drop that
+deleted everything costs 1 request; a cleartext destroy with 3 objects costs 7 (one listing, then a tail read and a
+chunk read for each object); with 10 objects, 21; a crypto-shred with 10 objects, 21 (two tail reads each, no chunk
+read). `eraseSubject` costs more: a segment
 whose current generation lacks the id is searched generation by generation, so a fleet that keeps long histories
 pays for every one. The per-op budget is charged for them, once for each generation however often the call opens
 it: a retry of a failed read, or a later open of a generation the call already opened, costs no further unit. The scan runs at a bounded `concurrency` (default 8; pass `{ concurrency }`), so it is quick over a large fleet

@@ -693,6 +693,12 @@ that hold the key, so a large suppression list is not charged for keys it cannot
 limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads no
 payload: it answers from the row's summary, or from the index when the row has none it can use, so it approaches the ceiling only on a source that cannot serve cardinalities.
 
+`subjectReport` charges one unit per registered segment too, and, for each destroyed segment in scope, one for each
+object it opens under it beyond the one the row names (a segment's own listing and that open are in its unit). A drop
+that deleted everything costs 1 listing; a cleartext destroy with 3 objects, 7 requests; 10 objects, 21, of which 10 are
+budget units when the id is only in the oldest. A report that runs out throws `BudgetExceededError`, never a short
+answer.
+
 `eraseSubject` charges one unit per registered segment, and one for each generation it opens beyond the one the
 row names. Only the enumeration can refuse the whole call. A segment that runs the budget out during the scan is
 listed in the ledger with `erased: false` and an `error:` note, before anything of it is deleted, and the scan carries

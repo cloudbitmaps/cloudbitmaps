@@ -47,6 +47,7 @@ import {
   excludingReservedRows,
   dropSegment,
   eraseIdFromSegment,
+  findIdUnderTombstone,
   judgeLoad,
   loadSegment,
   loadSegmentChunks,
@@ -543,12 +544,19 @@ export interface SubjectSegmentRef {
   readonly namespace?: string;
 }
 
-/** Result of {@link CloudRoaring.subjectReport} — the segments an id is a member of (over registered segments). */
+/** Result of {@link CloudRoaring.subjectReport}: the segments an id is a member of, and the destroyed segments whose leftover objects hold it. */
 export interface SubjectReport {
   /** The id the report is about. */
   readonly id: number;
   /** The registered segments the id is currently a member of. */
   readonly segments: SubjectSegmentRef[];
+  /**
+   * The destroyed segments whose leftover objects still hold the id in the clear: one destroyed with `allowCleartext`,
+   * or dropped while a load wrote an object its sweep did not catch. No read resolves them, so the id is a member of
+   * none, but its bytes are in the bucket, and `eraseSubject` deletes them. A crypto-shredded segment is never listed
+   * (its objects are sealed under a key no row holds), nor a destroyed one with no object left. `[]` when none.
+   */
+  readonly tombstones: SubjectSegmentRef[];
   /** How many registered segments were scanned (the completeness denominator). */
   readonly scannedSegments: number;
 }
@@ -1838,6 +1846,17 @@ export class CloudRoaring {
    * read, so a load or an erasure from another process shows at once — whatever `cache.genTtlMs` is, `0` included.
    * The comparison is on the generation **and** the row's token, so a segment retired, purged and loaded again from
    * generation 0 while this store held its old generation 0 is told apart too.
+   *
+   * **A destroyed segment is searched as {@link CloudRoaring.eraseSubject} searches it.** No read resolves a
+   * tombstone, so the id is a member of none, but a cleartext `destroySegment` (`allowCleartext`), or a `dropSegment`
+   * whose sweep missed an object a load was still writing, leaves objects anyone with bucket access can read. Each
+   * object left under the tombstone is opened newest first until one holds the id, and the segment is then listed in
+   * `tombstones`, never in `segments`. A crypto-shredded segment is never listed: its objects are sealed under a key no
+   * row holds. The cost is one listing per destroyed segment in scope (1 request when nothing is left), and for each
+   * object opened a tail read and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted
+   * object, which never holds the id): 7 requests for a cleartext destroy with 3 objects, 21 for 10. The budget is
+   * charged one unit for each object opened past the one the row names, as `eraseSubject` charges, and a report that
+   * runs out, or whose read fails after the store's retry, rejects rather than under-reporting.
    */
   async subjectReport(
     id: number,
@@ -1866,14 +1885,32 @@ export class CloudRoaring {
       budget,
       'subjectReport',
     );
+    // The scan charged one unit a segment; each object opened under a tombstone past the one its row names is
+    // charged too, to the same call-wide count, as `eraseSubject` charges them.
+    let opens = 0;
+    const charge = (): void => {
+      opens += 1;
+      checkBudget(budget, recs.length + opens, 'subjectReport');
+    };
     // Bounded fan-out of `has()` across registered segments. Order-preserving ⇒ deterministic result. A has()
     // fault propagates (a report that can't read a segment must fail loud, not silently under-report).
     const membership = await mapWithConcurrency(
       recs,
       options.concurrency ?? DEFAULT_ADMIN_CONCURRENCY,
-      async (rec): Promise<SubjectSegmentRef | null> => {
-        if (rec.status === 'destroyed') return null; // already unreadable — never a member
+      async (rec): Promise<{ tombstone: boolean; ref: SubjectSegmentRef } | null> => {
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
+        if (rec.status === 'destroyed') {
+          // No read resolves a destroyed row, so the id is a member of none. A cleartext destroy, or a drop whose
+          // sweep left an object, leaves objects anyone with bucket access reads, which `eraseSubject` searches and
+          // deletes: search them the same way, charged as it charges them.
+          const deps = this.lifecycleDeps('subjectReport');
+          const storage =
+            budget === null
+              ? deps.storage
+              : new OpenChargingStorage(deps.storage, rec.currentGen, charge);
+          const held = await findIdUnderTombstone(ref, id, { ...deps, storage });
+          return held === null ? null : { tombstone: true, ref };
+        }
         // The row this scan just listed is authoritative; the reader's snapshot may be up to `cache.genTtlMs` behind
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
         // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
@@ -1887,13 +1924,13 @@ export class CloudRoaring {
           const listed = rec.currentGen === null ? null : `${rec.currentGen}:${pointerIdOf(rec)}`;
           if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
-        return (await this.engine.has(ref, id))
-          ? { segment: rec.segment, namespace: rec.namespace }
-          : null;
+        return (await this.engine.has(ref, id)) ? { tombstone: false, ref } : null;
       },
     );
-    const segments = membership.filter((m): m is SubjectSegmentRef => m !== null);
-    return { id, segments, scannedSegments: recs.length };
+    const listed = membership.filter((m) => m !== null);
+    const segments = listed.filter((m) => !m.tombstone).map((m) => m.ref);
+    const tombstones = listed.filter((m) => m.tombstone).map((m) => m.ref);
+    return { id, segments, tombstones, scannedSegments: recs.length };
   }
 
   /**
