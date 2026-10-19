@@ -77,6 +77,24 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A rollback settles a swap that met a conflict or got no answer by its write token, as a load's publish does.** On a
+  registry that reports its writes' tokens (the in-memory, local-file, S3, GCS and Azure Blob registries), a rollback's
+  swap that landed and then met a conflict, or got no answer, is its own when the row's pointer is at the target over a
+  token the call sent, whatever else was written to the row since (a lease, a retention or residency write, a write of
+  the ledger alone). It is then checked, audited as `segment.rollback` and reported, as if it had answered. Before, a
+  lease or retention write that overtook a swap that met a conflict made the call throw "the pointer was not moved" with
+  the move landed and unrecorded, and a retention or residency write that overtook one that got no answer made it throw
+  the `TransientError` the same way (a lease alone was already settled there); a re-run then found nothing to do and
+  recorded nothing either. Three outcomes change the other way, from a reported and audited success to the
+  `TransientError` after no answer: another rollback's identical move, which was taken for this one's and audited a
+  second time; a write that renewed the row's `pointerId` over the landed swap before the row was read back, which
+  cannot be told from another writer's and leaves a move unaudited (run the rollback again: it finds the pointer where it
+  is and reports a no-op); and, on a registry that sets `reportsWriteTokens` but drops the options of a write, a
+  swap that landed, which is not taken for its own. A swap the pointer has moved past by another write throws
+  `WriteConflictError` after a conflict and `TransientError` after no answer, records no move and deletes nothing. The
+  conflict's message now says that this rollback could not confirm its swap is the one the row shows, which holds on
+  every registry, with or without tokens. A registry that reports no tokens settles a swap that got no answer by the row
+  the swap would leave, as before, and never settles a conflict as landed.
 - **The guides no longer say a tagged write's random id "settles" a conflict.** The id tells a write's own landing from
   another writer's object when a conditional write reports a conflict, and the backend reads the stored object back to
   see it. For a generation's write-once object that answer is definitive. For a registry row it is not: a writer that

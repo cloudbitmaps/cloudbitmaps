@@ -63,7 +63,7 @@ marked with the release it is to ship in, and sits under `[Unreleased]` in the [
 | A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
 | A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
 | Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
-| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a target the row's `knownGens` does not name and one whose footer checksum is not the recorded one (with or without a key), unless `allowUnknown` is passed, which is audited; a collected target, a crypto-shredded segment; rolling to the current generation checks its object is there and is the recorded one, and a swap that gets no answer is settled by reading the row |
+| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a target the row's `knownGens` does not name and one whose footer checksum is not the recorded one (with or without a key), unless `allowUnknown` is passed, which is audited; a collected target, a crypto-shredded segment; rolling to the current generation checks its object is there and is the recorded one, and a swap that met a conflict or got no answer is settled by reading the row, by the write token on a registry that reports them |
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained, maxGrowth }` adds the plausibility bounds, judged against what `dest` held |
@@ -401,6 +401,9 @@ between here and there:
      object a load may still publish, settle one by reading the row. A `rollback` reads the row too, and goes on from a
      swap the row shows landed, but does not send again one the row shows did not land: it throws the
      `TransientError`;
+   - settling a rollback's undo by the write token: the undo is fenced on the row read back, and its failure message
+     says the pointer "may" still name the target. The undo also restores the ledger the row had before the swap, so a
+     ledger-only write made in between (a prune) is undone with it;
    - a `rollback` with no key at hand (no keystore, or one that cannot open the key) below the pointer of an encrypted
      segment whose row has no usable `knownGens`, or onto a number below a full list's oldest entry, which opens nothing:
      it checks that the object is in the bucket and, from its footer, that it is encrypted exactly when the row has
@@ -431,7 +434,8 @@ between here and there:
      asked-for row's, since the event carries no incarnation to tell the two apart;
    - a publish overtaken by a write that moved the pointer after its registry write landed but reported a conflict (Azure Blob's row
      read-back is not definitive) answers `superseded`, and its `segment.load-refused` event does not carry
-     `unanswered: true`, although its generation was current for a moment;
+     `unanswered: true`, although its generation was current for a moment. A registry's conflict does not say the write
+     may have landed, so telling the publish needs a signal from the driver, which is new surface for the driver kit;
    - the erasure's own collections on an active row, which are not held to the row they worked from (one round trip,
      and the collection spares what the row names): they should decline quietly when the row changed;
    - the erasure's two passes over a tombstone: an erasure that finds the row tombstoned mid-call (the first pass

@@ -640,6 +640,19 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     why: 'a registry write that gets no answer is settled by reading the row, and sent again as a bounded fresh compare-and-swap when it is unchanged; only a fault that read does not settle is reported',
   },
   {
+    claim: new RegExp(g('and the pointer was not moved'), 'i'),
+    why: "a rollback's swap that met a conflict may have landed, and the conflict says this rollback could not confirm its swap is the one the row shows, not that it was not moved",
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`row that changed after \`?rollback\`? read it throws \`?WriteConflictError\`? and moves nothing`,
+      ),
+      'i',
+    ),
+    why: "a rollback's swap that met a conflict may have landed: say that it records no move, not that it moves nothing",
+  },
+  {
     claim: new RegExp(
       g(String.raw`(?:is|are) what the S3 driver and the single-request GCS upload do(?=[;,.])`),
       'i',

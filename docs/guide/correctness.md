@@ -171,6 +171,15 @@ row's `pointerId` over it: an erasure's renewal, or a rollback back onto the gen
 rollback moved the pointer off it. The load cannot tell the two apart, so it reports none published though its
 generation may be current, and deletes nothing. A re-run publishes a new generation.
 
+A rollback settles its swap the same way as a load's publish. On a registry that reports write tokens, a swap that met a conflict or got no
+answer is its own when the row's pointer is at the target and its `pointerId` is the token of a swap the rollback sent,
+whatever else was written to the row since (a lease, a retention or residency write): the rollback then checks the
+target, audits the move and returns, as if the swap had answered. A row whose pointer is at the target by another
+write's token is not its own: another rollback's identical move, or a write that renewed the `pointerId` over this
+rollback's landed swap, which cannot be told apart from it. Then the rollback throws `WriteConflictError` after a
+conflict and `TransientError` after no answer, audits nothing and deletes nothing, and a re-run finds the pointer where
+it is. A registry that reports no tokens settles a swap that got no answer by the row the swap would leave, and a conflict never as landed.
+
 ## How a load stays correct
 
 **Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: the one
@@ -1075,10 +1084,15 @@ only on a conflict, works with a client you pass, and adds no option. A read-bac
 `TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
 is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
 that write report `WriteConflictError`. The publish reads the row again on it, and after any registry write that ended
-without an answer, and recognises its own write there by its effect: the pointer at its generation and, on a registry that reports write
-tokens (Azure Blob's does), the row's `pointerId` the token of a write it sent, or, on one that does not, its own object
-under the number. A publish overtaken by a write that moved the pointer reports `superseded`, and its refusal event
-carries no `unanswered: true` on this path. No caller deletes a generation because of either, and a load whose row writes all go unanswered throws the
-registry's `TransientError` and keeps its object. A multipart upload whose completion ends ambiguously or exhausted is
+without an answer, and recognises its own write there by its effect: the pointer at its generation and, on a registry
+that reports write tokens (Azure Blob's does), the row's `pointerId` the token of a write it sent, or, on one that does
+not, its own object under the number. A publish overtaken by a write that moved the pointer reports `superseded`, and
+its refusal event carries no `unanswered: true` on this path, since a driver has no way to tell the publish that a
+conflict may follow a landed write (a [roadmap](../ROADMAP.md#on-the-way-to-10) deferral). A rollback reads the row again on both too, and recognises
+its swap there: on a registry that reports write tokens, by the row's `pointerId` being the token of a write the call
+sent, after a conflict or after no answer; on one that does not, only after no answer, by the row the swap would leave,
+and after a conflict it never settles as landed. No caller deletes a generation because of either, and a load whose row
+writes all go unanswered throws the registry's `TransientError` and keeps its object. A multipart upload whose
+completion ends ambiguously or exhausted is
 aborted: S3 completes an upload atomically, so a completion that had landed survives the abort and one that had not is
 cancelled.
