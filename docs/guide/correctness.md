@@ -437,7 +437,7 @@ the lower of the two.
 <a id="a-write-that-gets-no-answer"></a>Every write below that gets no answer reads back its row or its object and takes the write as landed only when what it
 reads carries the call's own mark. Over a registry that reports write tokens the mark is the token the call sent before the
 write; no other writer's write carries it. Only a load, an `*Into` verb and an erasure's rewrite send the write again when
-the read-back shows it did not land; the others throw `TransientError`, and a re-run is safe. A read-back waits between its reads by default, at every site (under half a second, then under a second, with jitter), and gives up after three.
+the read-back shows it did not land; the others throw `TransientError`, and a re-run is safe. A read-back waits between its reads on the clock the call passes (under half a second, then under a second, with jitter) and gives up after three reads. Through the store, every lifecycle call passes a sleeping clock, so it waits; a direct call into core's internal entry with no clock does not wait.
 
 - <a id="settle-shred"></a>**A crypto-shred** (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement): settled by the tombstone's
   `pointerId`, the token of the shred's own write. When the read-back fails too, the call throws `TransientError` and the
