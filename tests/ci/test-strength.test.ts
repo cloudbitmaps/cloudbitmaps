@@ -97,6 +97,20 @@ describe('the test-strength switch', () => {
     expect(readers).toEqual([join('helpers', 'strength.ts')]);
   });
 
+  it('runs the nightly lane on a pull request that changes the workflow, the switch or a heavy test, and on no other path', () => {
+    const NIGHTLY = '.github/workflows/full-nightly.yml';
+    const wf = readYaml<{ on?: { pull_request?: { paths?: string[] } } }>(NIGHTLY);
+    const paths = wf.on?.pull_request?.paths ?? [];
+    // The heavy tests are read off the switch, so a new one is held here the day its row is added.
+    const wanted = new Set([
+      NIGHTLY,
+      'tests/helpers/strength.ts',
+      ...names.map((name) => `tests/${HEAVY_SIZES[name].file}`),
+    ]);
+    expect(new Set(paths).size, `${NIGHTLY} lists a path twice`).toBe(paths.length);
+    expect([...paths].sort(), `${NIGHTLY}'s pull_request.paths`).toEqual([...wanted].sort());
+  });
+
   it('is on for the nightly lane: every step that runs the unit suite has the variable set to full', () => {
     type Wf = {
       jobs: Record<

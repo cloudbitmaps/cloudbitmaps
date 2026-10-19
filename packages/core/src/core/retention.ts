@@ -1,9 +1,10 @@
 /**
  * Segment retention policy — **when** a segment becomes eligible for retirement.
  *
- * This module only *records and reads the intent*. Nothing here deletes anything, and nothing here runs on a
- * timer: setting a policy is one registry write, and the sweep that acts on it (`retireExpired`) is a separate
- * call the operator schedules. That split is deliberate — see the "who owns what" note below.
+ * This module only *records and reads the intent*. Nothing here deletes data, and nothing here runs on a
+ * timer: setting a policy is one policy write, plus a best-effort write of its due-index pointer (and removal of the
+ * old pointer when the expiry day moves), and the sweep that acts on it (`retireExpired`) is a separate call the
+ * operator schedules. That split is deliberate — see the "who owns what" note below.
  *
  * **The expiry is an absolute epoch-ms the writer sets, not a duration the library derives.** A relative TTL
  * anchored to anything the library knows would be wrong: every load republishes `currentGen` and touches

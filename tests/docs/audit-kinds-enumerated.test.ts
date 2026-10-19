@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
  *
  * `segment.rollback` records an operator moving the pointer BACKWARDS, and the disaster-recovery guide tells
  * operators it is the one event whose effect cannot be reconstructed from the objects in the bucket — so a
- * compliance reader building a trail from a list without it would leave out the only irreversible one.
+ * compliance reader building a trail from a list without it would leave out the one event that cannot be rebuilt from the bucket.
  * `segment.load-refused` is how a refused load is distinguished from a job that never ran; without it, the
  * absence of a `segment.publish` means two different things.
  *

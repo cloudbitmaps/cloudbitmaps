@@ -40,7 +40,8 @@ the failure the test exists to catch (run the failure case at the reduced size a
 `ci/test-strength.test.ts`, which fails until it has one. That test holds each full size to the literal the test carried
 before its reduction, checks that each named file asks for its size, that the helper hands out the full sizes when the
 variable is `full` and throws on any other value, that the nightly workflow sets the variable on every step that runs
-`pnpm test`, and that no other test file names the variable.
+`pnpm test`, that its pull-request paths are exactly the workflow, the switch and every file the table names, and that
+no other test file names the variable.
 
 What a reduced size keeps: for each, the failure its test exists to catch still fails at it, for the failures tried. For
 the four property run counts that is not a promise about a bug only the deepest or widest shapes show, which a smaller

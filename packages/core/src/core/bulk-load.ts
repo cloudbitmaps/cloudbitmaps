@@ -508,9 +508,10 @@ async function rowForWrite(
   // An encrypted row with no keystore is a lost key, not a cleartext segment — the same fail-fast the erasure
   // rewrite does. Without it this wrote a CLEARTEXT generation onto a row that still advertises `wrappedDeks`, and the
   // damage is not just a confusing state: `destroySegment` keys `cryptoShredded` off the *presence* of wrappings,
-  // so shredding that segment emits `segment.erase` — the audit event defined as "these bytes are unreadable
-  // everywhere, backups included" — over bytes that are plaintext and stay readable from any copy. An audit trail
-  // that over-attests is the one failure it exists to prevent, so this refuses to create the state.
+  // so shredding that segment emits `segment.erase` — the audit event that attests a crypto-shred, the one erasure
+  // that reaches backup and WORM copies of the objects — over bytes that are plaintext and stay readable from any
+  // copy. An audit trail that over-attests is the one failure it exists to prevent, so this refuses to create the
+  // state.
   if (
     existing?.wrappedDeks !== undefined &&
     existing.wrappedDeks.length > 0 &&

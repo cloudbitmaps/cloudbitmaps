@@ -151,9 +151,10 @@ export { aadFor } from './core/crypto';
 export { NodeAead, InProcessKeystore } from './drivers/crypto';
 export type { InProcessKeystoreOptions } from './drivers/crypto';
 
-// Crypto-shred erasure: delete a segment's key → its encrypted Storage bytes are unrecoverable. `dropSegment` is
-// the operational sibling: it deletes the objects, so it works on cleartext and actually reclaims the storage —
-// where crypto-shred makes bytes unreadable but leaves them billed.
+// Crypto-shred erasure: delete a segment's key from its current row → its encrypted Storage bytes are unrecoverable
+// once no retained copy of the row holds it. `dropSegment` is the operational sibling: it deletes the objects, so it
+// works on cleartext and actually reclaims the storage — where crypto-shred makes bytes unreadable but leaves them
+// billed.
 export { destroySegment, dropSegment, eraseNamespace } from './core/erasure';
 export type { DropDeps, DropResult, EraseDeps, DestroyResult } from './core/erasure';
 

@@ -189,7 +189,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     const entry = res.entries[0]!;
     expect(entry.action).toBe('would-retire');
     // The preview goes through `dropSegment` itself, so the numbers are the real ones, not a guess — and it
-    // surfaces the irreversible half (`wouldCryptoShred`), which a preview of the recoverable half only would not.
+    // surfaces the key-shred half (`wouldCryptoShred`), which a preview of the recoverable half only would not.
     expect(entry.action === 'would-retire' && entry.result.wouldDelete).toEqual([0]);
     expect(entry.action === 'would-retire' && entry.result.wouldCryptoShred).toBe(false);
 
@@ -327,7 +327,7 @@ describe('retireExpired — faults, races and malformed input', () => {
     // Storage phase is a segment that is already retired. A cap charged on *success* lets a partial storage outage
     // march through the entire fleet with the limit never engaging, reporting `retired: 0, limited: false` — a
     // "completed sweep that retired nothing" — while every segment in the namespace is tombstoned. For an
-    // encrypted fleet each of those is an irreversible crypto-shred, so a transient S3 5xx could destroy keys
+    // encrypted fleet each of those is a crypto-shred, so a transient S3 5xx could destroy keys
     // fleet-wide.
     const w = world();
     for (const day of ['d1', 'd2', 'd3', 'd4', 'd5']) {
@@ -611,7 +611,7 @@ describe('retireExpired — faults, races and malformed input', () => {
   });
 
   it('forwards the audit sink, and an encrypted retirement is a real crypto-shred', async () => {
-    // Retiring an encrypted segment discards its DEK wrappings, which is irreversible and must emit
+    // Retiring an encrypted segment discards its DEK wrappings, which the library cannot undo, and it must emit
     // `segment.erase` — the receipt a compliance dashboard reads — on top of `segment.dispose`. This asserts
     // both, so deleting the `audit:` forward fails here.
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
@@ -635,7 +635,7 @@ describe('retireExpired — faults, races and malformed input', () => {
         .map((e) => e.segment)
         .sort(),
     ).toEqual(['enc', 'plain']);
-    // …and the irreversible one is distinguished, because `segment.erase` claims "unreadable everywhere".
+    // …and the key shred is distinguished, because `segment.erase` claims the objects are unreadable once no retained copy of the row holds the key.
     expect(events.filter((e) => e.kind === 'segment.erase').map((e) => e.segment)).toEqual(['enc']);
   });
 });

@@ -356,7 +356,7 @@ describe('audit: segment.erase / namespace.erase', () => {
       audit,
     });
     expect(res.destroyed).toBe(true); // tombstoned…
-    expect(res.cryptoShredded).toBe(false); // …but not an irreversible crypto-shred
+    expect(res.cryptoShredded).toBe(false); // …but not a crypto-shred
     expect(audit.snapshot()).toEqual([]); // so no false erasure receipt
   });
 

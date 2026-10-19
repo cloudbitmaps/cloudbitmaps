@@ -13,8 +13,8 @@
  * segment's current generation via a store's `segment(...).iterate()`, and writes bytes through an injected
  * {@link ExportSink} — so it never imports `node:fs` (the `export-segments` CLI supplies a filesystem sink; a
  * test supplies an in-memory one; you could supply an S3 uploader). Crypto-shredded (`destroyed`) segments are
- * skipped (their bytes are unrecoverable); an encrypted segment is decrypted transparently **iff** the store was
- * wired with its keystore — so the export is **cleartext**, and protecting it is on you.
+ * skipped (their rows hold no key to decrypt them with); an encrypted segment is decrypted transparently **iff** the
+ * store was wired with its keystore — so the export is **cleartext**, and protecting it is on you.
  *
  * **Enumeration** = the registry's known set. Every loaded segment has a registry row (the publish writes it),
  * so the registry is complete by construction; a segment loaded without a registry is not exportable here — wire

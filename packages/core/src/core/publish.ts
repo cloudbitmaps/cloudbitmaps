@@ -462,7 +462,7 @@ export async function publishGenerationKept(
         // spends a KMS call plus a whole object write before getting here — seconds to minutes on a large load.
         // A check of `currentGen` alone cannot see a `destroySegment` landing inside that window: it would
         // advance the pointer on a destroyed record, leaving an object encrypted with the DEK that destroy had
-        // just shredded — permanently unreadable, still paid for, and attached to a segment the registry says
+        // just shredded from the current row, so no read through it decrypts it, still paid for, and attached to a segment the registry says
         // was erased.
         //
         // Checking here rather than at the caller is what makes it a fence instead of a second guess: this
@@ -513,7 +513,8 @@ export async function publishGenerationKept(
         // advances the pointer to an object encrypted under a key that exists
         // nowhere, so the data is unrecoverable the moment the call returns; carrying it makes the row advertise
         // encryption over a lineage that still holds readable cleartext objects, which is what makes
-        // `destroySegment` emit `segment.erase` — "unreadable everywhere, backups included" — over plaintext.
+        // `destroySegment` emit `segment.erase` — the receipt of a crypto-shred, which reaches backup copies of the
+        // objects — over plaintext.
         // Two entry points reach it with no race: a re-load with a keystore newly wired, and an `*Into` on a
         // keystore-wired store whose destination is cleartext. So the state is refused before the pointer moves;
         // the object stays an orphan.

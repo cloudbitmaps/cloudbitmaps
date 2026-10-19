@@ -212,7 +212,7 @@ describe('dropSegment', () => {
   it('does NOT emit `segment.erase` for a cleartext drop — that event means crypto-shred', async () => {
     // An emit condition of `cryptoShredded || generationsDeleted.length > 0` would make a cleartext drop emit the
     // event that four documents — dashboards.md calls it the compliance *receipt* — define as proof of
-    // irreversible destruction. Deleting an object is weaker than discarding a key: a noncurrent version, a
+    // key destruction. Deleting an object is weaker than discarding a key: a noncurrent version, a
     // replica or a PITR snapshot still holds the cleartext. A dashboard built on our own docs would over-attest.
     const w = await world();
     await seed(w, [1, 2]);
@@ -563,7 +563,7 @@ describe('dropSegment result fields', () => {
     expect(row?.wrappedDeks).toBeUndefined();
   });
 
-  it('dryRun distinguishes absent from already, and previews the irreversible half', async () => {
+  it('dryRun distinguishes absent from already, and previews the key-shred half', async () => {
     // This pins `reason` on a dry run, on both branches. A retention sweep dry-running yesterday's already-collected bucket
     // is the primary use case, and `reason` is how it tells "will delete" from "gone".
     const keystore = new InProcessKeystore({
@@ -581,7 +581,7 @@ describe('dropSegment result fields', () => {
     const armed = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });
     expect(armed.reason).toBeUndefined();
     expect(armed.wouldDelete).toEqual([0]);
-    expect(armed.wouldCryptoShred).toBe(true); // irreversible EVERYWHERE, backups included
+    expect(armed.wouldCryptoShred).toBe(true); // the key-shred half: no read through the row decrypts
 
     await dropSegment(SEG, w.deps, CONFIRM);
     const after = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });
@@ -592,7 +592,7 @@ describe('dropSegment result fields', () => {
   });
 
   it('propagates a Storage driver that cannot list — but still records a crypto-shred that happened', async () => {
-    // The throw is right: a caller must re-run. But the shred is ALREADY irreversible by then, so emitting the
+    // The throw is right: a caller must re-run. But the shred has ALREADY landed by then, so emitting the
     // receipt after the sweep would mean no record of a destruction that really occurred — the exact mirror of
     // the over-attestation the audit condition prevents.
     const keystore = new InProcessKeystore({
@@ -716,7 +716,7 @@ describe('gcOrphanGenerations on a destroyed segment', () => {
 describe('segment.dispose audit event', () => {
   it('a cleartext drop emits segment.dispose and NOT segment.erase', async () => {
     // A cleartext disposal needs a kind of its own: `segment.erase` is defined by four documents as proof of an
-    // irreversible crypto-shred, so reusing it for an object delete would make a compliance dashboard
+    // crypto-shred, so reusing it for an object delete would make a compliance dashboard
     // over-attest, and emitting nothing would leave the disposal invisible to the audit sink.
     const w = await world();
     await seed(w, [1, 2, 3]);
@@ -740,7 +740,7 @@ describe('segment.dispose audit event', () => {
     });
 
     expect(result.cryptoShredded).toBe(true);
-    // Order matters: the shred is irreversible the moment the tombstone lands, the reclamation only after the
+    // Order matters: the shred has landed the moment the tombstone does, the reclamation only after the
     // sweep. Attesting them in that order is what makes a replayed trail truthful.
     expect(events.map((e) => e.kind)).toEqual(['segment.erase', 'segment.dispose']);
   });

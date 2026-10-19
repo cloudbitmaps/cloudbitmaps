@@ -1875,7 +1875,8 @@ export class CloudRoaring {
 
   /**
    * **Subject erasure (GDPR Art. 17): remove an id from every segment it's in, with the bit physically gone
-   * from the bucket on return.**
+   * from the bucket on return for each segment the ledger reports `erased: true`.** A noncurrent version, a replica
+   * or a backup keeps the old object until its own lifecycle removes it.
    *
    * For each **registered** segment the id is a member of, `eraseIdFromSegment` rewrites the current generation
    * without the id — every chunk streamed through, one bit cleared — publishes the rewrite **fenced on the
@@ -2336,11 +2337,14 @@ export class CloudRoaring {
   }
 
   /**
-   * **Dispose of a segment — tombstone it, then delete its storage objects.** Irreversible.
+   * **Dispose of a segment — tombstone it, then delete its storage objects.** It cannot be undone through the
+   * library (a restore from the registry's and the bucket's versions or backups can).
    *
-   * The operation a rolling window needs: `destroySegment` crypto-shreds (bytes unreadable everywhere including
-   * backups, but still sitting in your bucket and still billed, and it requires encryption), while this one
-   * removes the storage and works on a cleartext segment. On an encrypted segment it does both.
+   * The operation a rolling window needs: `destroySegment` crypto-shreds (it removes the key from the segment's
+   * current registry row, so the bytes are unreadable everywhere, backups included, once no retained copy of the row
+   * holds the key or every KEK that wrapped it is destroyed; the objects still sit in your bucket and are still
+   * billed, and it requires encryption), while this one removes the storage and works on a cleartext segment. On an
+   * encrypted segment it does both.
    *
    * Pass `{ dryRun: true }` first — it reports the generations it *would* delete and changes nothing. That
    * matters more than the `confirmSegment` guard for anything automated, because in a loop the guard is the same
@@ -2402,8 +2406,9 @@ export class CloudRoaring {
   }
 
   /**
-   * **Record when this segment becomes eligible for retirement.** One registry write; nothing is deleted here,
-   * and nothing starts running. `retireExpired` is what acts on the policy, and **you** decide when that runs —
+   * **Record when this segment becomes eligible for retirement.** One policy write, plus a best-effort write of its
+   * due-index pointer (and removal of the old pointer when the expiry day moves); no data is deleted here, and
+   * nothing starts running. `retireExpired` is what acts on the policy, and **you** decide when that runs —
    * an EventBridge rule, a CronJob, a queue consumer, whatever your deployment already has. This library starts
    * no background thread (it has to work identically in a Lambda, an edge isolate and a long-lived server).
    *
@@ -2479,20 +2484,22 @@ export class CloudRoaring {
    *
    * const swept = await store.retireExpired({ namespace: 'active-daily' });
    * for (const e of swept.entries) {
-   *   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`); // invalid-policy / limit / failed: …
+   *   // invalid-policy / policy-changed / tombstone-not-empty / failed: …
+   *   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`);
    *   if (e.action === 'retired' && e.result.generationsRemaining.length > 0) {
    *     console.warn(`${e.segment}: storage not fully reclaimed — re-run`);
    *   }
    * }
-   * if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
+   * if (swept.limited) scheduleAnotherPassSoon(); // more work (retirements or purges) remains
    * ```
    *
    * **Read the ledger.** A per-segment *fault* is an entry, not an exception — a throw from the middle of a fleet
    * sweep would leave the caller unable to say which segments were retired, having already retired some. (A bad
    * argument does throw, and so does a fleet larger than `maxScanSegments`.) `limited: true` means the per-cycle
-   * `limit` (default 100) cut the pass short and more are eligible. That cap is charged on **attempts**, not
-   * successes, which is what makes it a real bound: `dropSegment` writes the tombstone before sweeping Storage, so a
-   * fault in the Storage phase is a segment that is already retired. Retirements are sequential, so `limit` is a
+   * `limit` (default 100) cut the pass short, and more work (retirements or purges) remains: `limit` caps the
+   * retirements and tombstone purges one call attempts, together, and a segment it deferred gets no entry. That cap
+   * is charged on **attempts**, not successes, which is what makes it a real bound: `dropSegment` writes the
+   * tombstone before sweeping Storage, so a fault in the Storage phase is a segment that is already retired. Retirements are sequential, so `limit` is a
    * wall-clock knob too, and `retired` counts deletions only — a dry run reports `wouldRetire` instead, so a
    * dashboard summing `retired` can never show a phantom deletion.
    *

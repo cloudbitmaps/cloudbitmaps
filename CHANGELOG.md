@@ -99,6 +99,41 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
+  audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,
+  `eraseNamespace` and `dropSegment`, the API reference, the encryption and retention guides and the roadmap said a
+  crypto-shred leaves the bytes unreadable everywhere, backups included, and is irreversible. A shred is one
+  compare-and-swap that removes the wrapped key from the segment's current registry row and destroys no KEK: a
+  retained copy of the row (a noncurrent version, a backup, a point-in-time copy) still holds the key, and a registry
+  restore to a point before the shred makes the segment readable again. It is complete once no retained copy of the
+  row holds the key, or once every KEK that wrapped it is destroyed, as `PRIVACY.md` and the disaster-recovery guide's
+  *Encryption & DR* section already said. `eraseSubject`'s "gone from the bucket on return" holds for each segment its
+  ledger reports `erased: true`, and a noncurrent version, a replica or a backup keeps the old object until its own
+  lifecycle removes it; a ledger entry carries `note`, never `reason`, and the engine's `'absent'`, `'destroyed'`,
+  `'no-generation'` and `'not-member'` results list no entry (`docs/guide/correctness.md`, *The result of erasing one
+  segment*). The privacy notes add that a retired segment that held no generation loses its row in the same pass (with `purgeTombstones` on, the default), and
+  that removing `setRetention`'s due-index pointer, on a registry that does not report `conditionalDelete`, leaves a
+  marker whose key names the segment. The encryption guide says what an encrypted object leaks: the footer's count
+  fields are zero and the index is sealed, but its length is in the clear and bounds the chunk count, and the payload
+  sizes bound the id count (exactly, for a set that fits one chunk stored as an array), because nothing is padded. The
+  hover doc of `SegmentInfo.status` (what `store.segments()` returns) no longer says a destroyed segment's generations
+  are gone: a `dropSegment` deletes them, and a crypto-shred leaves them in the bucket with the wrapped key removed
+  from the row.
+- **Other docs state what the code and the calibration runs show.** A cache miss on a segment the store has not opened
+  is three requests on S3, a pointer read, a tail read and the chunk's (measured), and four on Azure Blob, whose tail
+  read is two; `LocalFsStorage` creates files at most `0600` and
+  directories at most `0700`; a rollback refuses a generation its row does not know, below the pointer as well as
+  above, unless `allowUnknown`, outside the two cases the pointer alone decides (a row with no usable `knownGens`, and
+  a target below a full ledger's bound); $11.20 per million is a segment's first single-part `store.load()`, and a multipart one
+  made 5 PUT-class + 3 GET, $26.20; a combine refuses an absent operand unless `allowAbsentOperands`; `limit` caps a
+  sweep's retirements and tombstone purges together, a segment it defers gets no ledger entry, and an index scan's
+  `maxScanSegments` check runs before each pointer's row is read; `setRetention` also writes its due-index pointer; a
+  fleet scan reads every tombstone and, where deletes leave markers, every marker; `segment.dispose` follows only a
+  drop that writes or finds a tombstone; the metrics' `op` event also times `materializeMany`; the S3 object ceiling
+  is 78 GiB at the default part size, raised by `maxObjectBytes`; an encrypted metadata body is 35 to 1,052 bytes; and
+  the calibration harness's README states its current projections (28,973 GET-class for the large suite, about 94,900
+  GET-class and 567 PUT-class for the default run).
+
 - **A fault on a read inside a load's, an erasure's or a bulk load's registry write no longer reads as a write with no
   answer.** A throttled or failed read of the row, made while the publish waited out a lease write, inside the registry
   before it sent anything (on the local-file registry too, whose read of the row is under its lock), or inside the
