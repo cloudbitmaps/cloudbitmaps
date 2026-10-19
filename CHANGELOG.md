@@ -65,7 +65,9 @@ so, and so do the module headers in the code.
   runs out throws `BudgetExceededError` (with `spent` at `limit + 1`, a lower bound). A fault reading a destroyed
   segment's leftover objects, or a budget that runs out, rejects the whole report rather than leaving the segment out, so
   one leftover object that cannot be opened makes every report over its scope reject until it is removed:
-  `store.generations(ref)` lists what is left under it, and `dropSegment` deletes it.
+  `store.generations(ref)` lists what is left under it, and `dropSegment` deletes it. The listing of the bucket under a
+  destroyed segment, which `eraseSubject` makes too, is now retried under the store's read retry like the object reads,
+  so a transient fault on it no longer fails the report or puts an `error:` note in the ledger.
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
   exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
   `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it

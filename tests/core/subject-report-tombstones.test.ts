@@ -295,7 +295,7 @@ describe('subjectReport lists a cleartext tombstone whose leftover object holds 
       });
       const tight = store.subjectReport(ID, { namespace: NS, budget: { maxRequests: 5 } });
       await expect(tight).rejects.toMatchObject({ limit: 5, spent: 6 });
-      await expect(short).rejects.toThrow(/subjectReport would fan out to \d+ units/);
+      await expect(short).rejects.toThrow(/subjectReport would fan out to more than 9 units/);
 
       const free = await store.subjectReport(ID, { namespace: NS, budget: false });
       expect(free.tombstones).toEqual([ref('long')]);
