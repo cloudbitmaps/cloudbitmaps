@@ -468,7 +468,9 @@ an opaque blob (base64) of the keystore that wrote it. A keystore is pluggable, 
 `nonce(12) ‖ ciphertext ‖ tag(16)`, the AES-256-GCM seal of the 32-byte data key under the KEK with the UTF-8 bytes of
 `keyId` as associated data, so a wrapping cannot be relabelled to another KEK; another keystore (a KMS adapter, say)
 writes its own bytes there. Whether a later release fixes the inside of the blob or only the envelope is a freeze
-question ([section 11](#11-versioning-and-compatibility)). Discarding the list leaves the segment's bytes unreadable.
+question ([section 11](#11-versioning-and-compatibility)). Discarding every copy of the list, the row's retained
+versions included, leaves the segment's bytes unreadable; a
+crypto-shred discards it from the current row.
 The footer's `keyId` field stays zero.
 
 **What a reader without the key can still read.** The preamble, and every field of the footer, in the clear: the flags,

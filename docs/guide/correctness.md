@@ -335,7 +335,8 @@ generation is noticed there at the next refresh, within `cache.genTtlMs`, and no
 recent `keep` of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It
 deletes nothing while `currentGen` is `null`, because an object under a pointer-less row is either a load about to
 publish or an orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (the
-tombstone of a drop, a crypto-shred or a cleartext destroy) every generation is garbage and all are collected, because no reader can resolve a tombstoned
+tombstone of a drop, a crypto-shred or a cleartext destroy) every generation is garbage and all are collected, because
+no reader can resolve a tombstoned
 segment.
 
 A by-name pass takes the generations the load's publish pushed out of the row's window, which it learned from the
@@ -590,7 +591,8 @@ it can finish only after the rollback's move, so the call's next read of the row
    tombstone landed still finishes the write. Its publish is then refused, but the object survives and holds the
    complete set. **Check `generationsRemaining`**: non-empty means bytes are still there and the drop should be
    repeated, since a re-drop of a tombstone re-sweeps its storage. The retention sweep collects them only for a
-   tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` or a `destroySegment` wrote is left to
+   tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` or a `destroySegment` wrote is
+   left to
    you.
 
 <a id="tombstones-purged-narrowly"></a>**Tombstones are purged, narrowly.** A retired segment leaves a `destroyed` row behind, and one dead row per retired
@@ -599,7 +601,8 @@ because deleting the row is what makes the name writable again:
 
 1. **The row carries the sweep's own retirement stamp.** This is a positive marker `retireExpired` writes on the
    tombstones it creates. It is not an inference from "destroyed plus an expired policy", which would be wrong, and
-   dangerously so. A crypto-shred or a cleartext destroy leaves `retention` untouched, so the ordinary ordering (set a 30-day policy, then a
+   dangerously so. A crypto-shred or a cleartext destroy leaves `retention` untouched, so the ordinary ordering (set a
+   30-day policy, then a
    right-to-erasure request arrives mid-window and you call `destroySegment`) produces a GDPR tombstone that carries an
    expired policy. Deleting that row would destroy the local attestation for an Art. 17 execution and un-fence the
    name. A marker cannot be forged that way, so a `destroyed` row the sweep did not create is never touched.
@@ -607,7 +610,8 @@ because deleting the row is what makes the name writable again:
    segment, and that is what stops an in-flight load from resurrecting it.
 3. **Storage is provably empty for it.** If storage still holds a straggler generation, such as a load that was writing
    when the tombstone landed, the sweep collects it first, then purges. (The collection takes every generation of a
-   destroyed row, and nothing else would ever run it for a tombstoned segment.) Only if storage still cannot be proven
+   destroyed row, and nothing else runs it on its own for a tombstoned segment: an erasure collects under a tombstone
+   only when an object there holds its id, and a re-run drop sweeps it.) Only if storage still cannot be proven
    gone does the row stay, with `tombstone-not-empty`. Without the row the collection can no longer see the segment at
    all, and the objects would be billed forever. `tombstone-not-empty` also covers the case where the collection
    declined because the row changed under it. That is not a storage fault, and the next cycle simply retries. The
@@ -655,8 +659,10 @@ a pointer would only add a row for every scan to read, and the fleet scan purges
 longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
 `lookbackBuckets`, the fleet scan purges the row.
 
-<a id="pointer-to-foreign-tombstone"></a>**A pointer to a tombstone the sweep did not write is removed.** A segment given a policy and then crypto-shredded, destroyed
-in the clear or dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
+<a id="pointer-to-foreign-tombstone"></a>**A pointer to a tombstone the sweep did not write is removed.** A segment
+given a policy and then crypto-shredded, destroyed
+in the clear or dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its
+pointer would name
 nothing for ever. A sweep that reads such a pointer reads the segment's row again, and if it is still a tombstone
 without the sweep's stamp removes the pointer, fenced on the pointer's token, and leaves the tombstone as it was. It
 works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds; those past the
@@ -970,8 +976,10 @@ call caught. A ledger entry carries `note`, never `reason`.
   the third rule asks you not to run during an erasure) and a load of the id that takes its number before the call's
   last read. Every route needs a load of the id while it is erased, which
   [the first rule](erasure.md#three-rules-while-you-erase) asks you not to run.
-- A tombstoned row has its bucket searched too. A crypto-shred leaves objects no key opens, but a cleartext destroy, a
-  drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
+- A tombstoned row has its bucket searched too. A crypto-shred leaves objects no read through the library can open
+  (the row holds no key), but a cleartext destroy,
+  a drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds
+  the
   id, every object under the tombstone is deleted and the entry reads `erased: true`. The collection is held to the
   row the call searched: if the name was purged and loaded again before the collection read the row, the row it
   finds is another segment's, and the collection throws `WriteConflictError` and deletes nothing, so the new row's
