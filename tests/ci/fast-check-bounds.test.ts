@@ -179,6 +179,8 @@ describe('the replay line', () => {
       for (const [k, v] of Object.entries(process.env)) {
         if (v !== undefined && !k.startsWith('VITEST') && k !== 'FC_SEED') env[k] = v;
       }
+      delete env.FORCE_COLOR;
+      env.NO_COLOR = '1';
       const child = spawn('sh', ['-c', command], {
         cwd: ROOT,
         env,
