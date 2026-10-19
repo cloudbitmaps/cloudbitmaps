@@ -170,7 +170,11 @@ export interface RetireExpiredOptions {
    * zero is the opposite of another's is a reading hazard for whoever tunes both.
    */
   readonly purgeTombstones?: boolean;
-  /** How long a retirement's tombstone must age before this sweep deletes it (default 24 h). */
+  /**
+   * How long a retirement's tombstone must age before this sweep deletes it (default 24 h). Keep it well
+   * above the longest time a first load's registry write can still arrive (seconds on S3 and GCS, over a minute on
+   * Azure Blob at the SDK's default retry schedule): a create sent again after the purge makes the segment again.
+   */
   readonly tombstoneGraceMs?: number;
 }
 

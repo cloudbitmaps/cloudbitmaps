@@ -199,7 +199,7 @@ holds nothing behind it: the purges after it still go through, and the row is co
 The next call tries again. A lost race (`failed: contended`) is not a fault: it is the fence working,
 it is charged to `limit`, and the purges go on.
 
-**Two bounds to set deliberately.**
+**Three bounds to set deliberately.**
 
 - `limit` (default 100; a whole number of at least 1, and `Number.MAX_SAFE_INTEGER` for no practical cap) caps the
   retirements and tombstone purges one call attempts, together, and `limited: true` means the cap cut the pass short
@@ -211,6 +211,13 @@ it is charged to `limit`, and the purges go on.
   not a partial result to be mistaken for a complete one. On `scan: 'index'` the check runs before each pointer's row
   is read, so live indexed rows equal to the cap followed by a pointer whose row is gone are refused too: size it above
   the live rows. Narrow with `namespace` (and, for an index scan, a smaller `lookbackBuckets`) before raising it.
+- `tombstoneGraceMs` (default 86,400,000, 24 h) is how long a retirement's tombstone fences the name before a later
+  sweep may purge it. Keep it well above the longest time a first load's registry write can still arrive: seconds on S3
+  and GCS, over a minute on Azure Blob at the SDK's default retry schedule
+  ([the Azure driver](../../packages/azure-blob/README.md)). A first load whose create landed and lost its answer sends
+  it again when it finds no row, so a purge inside that window lets the create make the segment again, pointing at a
+  generation the retirement deleted and, on an encrypted segment, holding the key it removed. An hour or more is far
+  above both; the default is, and a grace of seconds is not safe whatever the option accepts.
 
 **Every `skipped` reason is worth an alert, for a different reason:**
 

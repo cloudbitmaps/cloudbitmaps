@@ -194,7 +194,8 @@ messages as carrying what the seal hides.
 ## How it stays correct
 
 [Each chunk is sealed with a fresh random 96-bit nonce](correctness.md#seal-count), and a repeated nonce stays
-negligibly likely below about 2³² seals under one key, a limit nothing counts and far past any realistic workload. A
+negligibly likely below about 2³² seals under one key, a limit nothing counts: a segment at the 65,536-chunk maximum reaches it after about 65,500 loads or erasure rewrites,
+230 days at one every 5 minutes. A
 segment's encryption [is decided at its first generation, so a segment is never
 half-encrypted](correctness.md#never-half-encrypted): a load onto a cleartext segment stays cleartext, or is refused
 with `encryption: { required: true }`, and an encrypted generation is never published onto a row with no key material.

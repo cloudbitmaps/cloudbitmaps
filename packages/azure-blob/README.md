@@ -87,7 +87,7 @@ Any other key is refused by name.
   under each: a registry that never answers costs up to four times the policy's tries before the load throws
   `TransientError` and keeps its object: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s
   between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that
-  schedule, not measured).
+  schedule, not measured). A retention sweep's `tombstoneGraceMs` must stay above that window; the default 24 h does.
 - **Set `readTimeoutMs` to bound a read that stalls.** No client setting does: the SDK's per-try timer stops once the
   response headers arrive, so a body that stalls after them holds the read as long as the connection stays open. With
   `readTimeoutMs` set, each read request (a range read, a tail read's properties and its download, a registry row's

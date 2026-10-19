@@ -480,7 +480,13 @@ correct](correctness.md#how-a-pin-stays-correct).
 call `.batches()` on it for one `Uint32Array` per chunk.
 
 ```ts
-for await (const id of audience.iterate()) send(id); // one id per await
+// Your segments and functions.
+declare const audience: Segment;
+declare const optOut: Segment;
+declare function sendOne(id: number): void;
+declare function sendMany(ids: Uint32Array): Promise<void>;
+
+for await (const id of audience.iterate()) sendOne(id); // one id per await
 for await (const ids of audience.iterate().batches()) await sendMany(ids); // one array per chunk
 for await (const ids of audience.andNot([optOut]).batches()) await sendMany(ids);
 ```

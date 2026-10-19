@@ -124,6 +124,11 @@ rather than its ids. `{ bitmap }` takes anything with `serialize('portable')`, s
 `{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
 export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
 
+The samples that build a bitmap import `roaring` itself, so add it to your own `package.json`: `pnpm add roaring@2.7.0`
+is the version `@cloudbitmaps/roaring` uses, so the two share one copy and a bare bitmap takes the fast path (another
+version works, slower). Under pnpm a package your own
+`package.json` does not list cannot be imported.
+
 ```ts
 import roaring from 'roaring';
 const { RoaringBitmap32 } = roaring;
@@ -225,7 +230,9 @@ export async function loadParts(
   size cap, the structural check, exactly one bitmap) and throws `ValidationError` for bytes that fail it. It takes a
   `Uint8Array`, which a Node `Buffer` is. What it returns is a `ReadonlyBitmap`, with `size`, `has(id)`, ascending
   iteration and `serialize('portable')`; the rest of `roaring`'s API (the union here) is reached by decoding its bytes
-  with `roaring`, which is the second line of the map.
+  with `roaring`, which is the second line of the map. Passing the `ReadonlyBitmap` itself to a `roaring` method answers
+  wrongly, and `JSON.stringify` of one gives `"{}"`: write `JSON.stringify([...bitmap])`
+  ([why](api-reference.md#decode-portable-bytes--deserializeportablebytes)).
 - **The recipe costs about four passes over a part where a native decode makes one.** Each part's bytes are checked,
   decoded twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the
   bytes you were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library
