@@ -22,7 +22,6 @@
  * by no layer: that is deliberate evasion, out of scope. The `.d.ts` tree is not checked for Node types. A load is
  * not a run: the check loads the entry, it does not execute the engine in an isolate.
  */
-const path = require('node:path');
 const vm = require('node:vm');
 const { stripComments } = require('./sdk-specifiers.cjs');
 
@@ -37,7 +36,9 @@ const NODE_SPECIFIER = /^node:[a-z0-9_]+(?:\/[a-z0-9_]+)*$/;
 function findBuiltinSpecifiers(source) {
   const code = stripComments(source);
   const literals = code.match(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g) ?? [];
-  const found = literals.map((lit) => lit.slice(1, -1)).filter((value) => NODE_SPECIFIER.test(value));
+  const found = literals
+    .map((lit) => lit.slice(1, -1))
+    .filter((value) => NODE_SPECIFIER.test(value));
   return [...new Set(found)];
 }
 
@@ -114,18 +115,27 @@ async function loadWithoutNode(entryFile, { tsconfig } = {}) {
     code = result.outputFiles[0].text;
   } catch (e) {
     const errors = e && e.errors ? e.errors.map((x) => x.text).join('; ') : String(e);
-    throw new Error(`${entryFile} does not bundle for a platform with no Node builtin: ${errors}`);
+    throw new Error(`${entryFile} does not bundle for a platform with no Node builtin: ${errors}`, {
+      cause: e,
+    });
   }
   const ctx = vm.createContext(webGlobals());
   for (const name of NODE_ONLY_GLOBALS) {
     if (vm.runInContext(`typeof ${name}`, ctx) !== 'undefined') {
-      throw new Error(`the load context exposes ${name}: the control cannot detect a Node-only global`);
+      throw new Error(
+        `the load context exposes ${name}: the control cannot detect a Node-only global`,
+      );
     }
   }
   try {
     vm.runInContext(code, ctx);
   } catch (e) {
-    throw new Error(`${entryFile} does not load with web globals only: ${e && e.message ? e.message : e}`);
+    throw new Error(
+      `${entryFile} does not load with web globals only: ${e && e.message ? e.message : e}`,
+      {
+        cause: e,
+      },
+    );
   }
   return { exports: Object.keys(ctx.__entry) };
 }

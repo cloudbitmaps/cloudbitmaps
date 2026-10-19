@@ -18,7 +18,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the store, and the storage y
 
 Depend on `@cloudbitmaps/core` directly only to write a driver, through `@cloudbitmaps/core/driver-kit`.
 
-> **The main entry of this package is internal.** It is the engine `@cloudbitmaps/roaring` and the driver packages are built on, and it is outside the stability promise: it can change in any minor release, and a change to it gets no CHANGELOG Breaking entry. Install `@cloudbitmaps/roaring` and a driver. The public entry here is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
+> **The main entry of this package, and `@cloudbitmaps/core/node`, are internal.** It is the engine `@cloudbitmaps/roaring` and the driver packages are built on, and it is outside the stability promise: it can change in any minor release, and a change to either gets no CHANGELOG Breaking entry. Install `@cloudbitmaps/roaring` and a driver. The public entry here is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
 
 > **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
 > [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
@@ -29,7 +29,7 @@ Depend on `@cloudbitmaps/core` directly only to write a driver, through `@cloudb
 
 The codec-agnostic cloud engine: a bounded in-memory cache over immutable `.crbm` objects, chunk-skipping
 intersection, the segment registry, the write-once load-and-publish path, generation collection, encryption at rest
-and crypto-shred, erasure by rewrite, retention, and the in-memory and local-filesystem backends. It has **zero runtime
+and crypto-shred, erasure by rewrite, retention, and the in-memory and local-filesystem backends (exported from `@cloudbitmaps/core/node`, so the main entry imports no Node builtin). It has **zero runtime
 dependencies and no cloud SDK**. The cloud backends are their own packages, built against
 `@cloudbitmaps/core/driver-kit`, the declared contract a driver depends on. A third-party driver can use it too.
 

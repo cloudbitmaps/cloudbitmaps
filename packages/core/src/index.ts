@@ -1,7 +1,7 @@
 /**
  * `@cloudbitmaps/core` — the codec-agnostic cloud engine behind the @cloudbitmaps family.
  *
- * Everything here is **independent of any bitmap codec**: the read engine, the SDK-free storage backends, the `.crbm`
+ * Everything here is **independent of any bitmap codec**: the read engine, the `.crbm`
  * format, the loaded store's write path (`loadSegment`: write, guard, publish, collect), encryption/crypto-shred, the registry,
  * the budget/consistency/eject machinery. Bitmaps are only ever constructed and combined through the
  * {@link CodecInterface} seam, so a *flavor* package (`@cloudbitmaps/roaring` today) supplies the codec and a
@@ -12,6 +12,9 @@
  * entry. Install `@cloudbitmaps/roaring` and a driver; `@cloudbitmaps/roaring` re-exports, by name, what an application
  * uses. The public entry of this package is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
  * Within a minor, this entry changes only additively: a removal or a changed signature waits for the next minor.
+ *
+ * The drivers that need a Node builtin (the in-memory and local-filesystem backends, the in-process cipher and
+ * keystore) are exported by `@cloudbitmaps/core/node`, so nothing this entry reaches imports a `node:*` builtin.
  *
  * Nothing in here may import a flavor package — the dependency arrow is one-way (flavor → core), so core stays
  * publishable on its own and every codec reuses one driver set with zero duplication.
@@ -43,10 +46,6 @@ export { segmentKey } from './core/keys';
 // `isStorageBackend` tests the brand a backend class carries.
 export { isStorageBackend } from './core/ports';
 // ---------------------------------------------------------------------------------------------------
-// The two SDK-free backends: each states its location once, so the objects and the pointer cannot be
-// mismatched. Their cloud siblings ship in their own packages, where the SDK does.
-export { LocalFsStorage, MemoryStorage } from './drivers/backends';
-export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
 // A storage source over the `.crbm` generations in an `IStorageDriver`.
 export { CrbmStorageChunkSource } from './core/crbm-storage-source';
 export type {
@@ -138,8 +137,8 @@ export {
   errorKind,
 } from './core/errors';
 
-// Encryption-at-rest: the `.crbm` reader's crypto pair (`core/`, crypto-free) + the default in-process AES-256-GCM
-// implementation (`node:crypto`, outside core). The keystore port (`IKeystore`, `Aead`, `AeadSealed`, `WrappedDek`) is
+// Encryption-at-rest: the `.crbm` reader's crypto pair (`core/`, crypto-free). The default in-process AES-256-GCM
+// implementation needs `node:crypto`, so `@cloudbitmaps/core/node` exports it. The keystore port (`IKeystore`, `Aead`, `AeadSealed`, `WrappedDek`) is
 // exported from `@cloudbitmaps/core/driver-kit`; KMS/Vault adapters are future optional packages against it. See the
 // encryption guide for key-management guidance.
 export type { CrbmCrypto } from './core/crypto';
@@ -148,8 +147,6 @@ export type { CrbmCrypto } from './core/crypto';
 // ENCRYPTED archive has to construct it. Without this the only way to do that is to re-derive an undocumented
 // byte layout, where a mistake is an `IntegrityError` indistinguishable from real corruption.
 export { aadFor } from './core/crypto';
-export { NodeAead, InProcessKeystore } from './drivers/crypto';
-export type { InProcessKeystoreOptions } from './drivers/crypto';
 
 // Crypto-shred erasure: delete a segment's key from its current row → its encrypted Storage bytes are unrecoverable
 // once no retained copy of the row holds it. `dropSegment` is the operational sibling: it deletes the objects, so it

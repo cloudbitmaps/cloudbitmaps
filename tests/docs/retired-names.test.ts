@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import * as core from '@cloudbitmaps/core';
 import * as driverKit from '@cloudbitmaps/core/driver-kit';
+import * as coreNode from '@cloudbitmaps/core/node';
 import * as roaring from '@/index';
 import * as s3 from '@cloudbitmaps/s3';
 import * as gcs from '@cloudbitmaps/gcs';
@@ -675,7 +676,7 @@ describe('a removed export is named nowhere a reader looks', () => {
     }
     // What replaces them is there, so the check above cannot pass on a barrel that failed to load.
     expect(typeof core.loadSegment).toBe('function');
-    expect(typeof core.MemoryStorage).toBe('function');
+    expect(typeof coreNode.MemoryStorage).toBe('function');
     expect(typeof s3.S3Storage).toBe('function');
     expect(typeof driverKit.brandAsBackend).toBe('function');
     expect(typeof core.RetryingStorageChunkSource).toBe('function');
@@ -695,7 +696,7 @@ describe('a removed export is named nowhere a reader looks', () => {
       expect(name in tools, `@cloudbitmaps/tools does not export ${name}`).toBe(true);
     }
     expect('estimateCost' in roaring.CloudRoaring).toBe(false);
-    const seg = new roaring.CloudRoaring({ storage: new core.MemoryStorage() }).segment('s');
+    const seg = new roaring.CloudRoaring({ storage: new coreNode.MemoryStorage() }).segment('s');
     expect('costReport' in seg).toBe(false);
   });
 

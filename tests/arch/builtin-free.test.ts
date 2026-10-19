@@ -100,7 +100,7 @@ describe('the builtin-free gate fails the layer that can see the plant', () => {
 describe('the builtin-free gate does NOT fire on', () => {
   it.each<[string, string]>([
     ['a JSDoc naming node:crypto', '/** hashes with `node:crypto` */\nexport const x = 1;'],
-    ['a line comment naming node:fs', "// from 'node:fs' in the old layout\nexport const x = 1;"],
+    ['a line comment naming node:fs', "// reads from 'node:fs'\nexport const x = 1;"],
     [
       'an error message naming a builtin mid-sentence',
       "export const m = 'install node:crypto support first';",

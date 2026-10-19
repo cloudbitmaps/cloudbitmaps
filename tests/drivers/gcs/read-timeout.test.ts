@@ -379,6 +379,7 @@ describe('a GCS read with readTimeoutMs', () => {
       packages: 'external',
       alias: {
         '@cloudbitmaps/core/driver-kit': `${ROOT}packages/core/src/driver-kit.ts`,
+        '@cloudbitmaps/core/node': `${ROOT}packages/core/src/node.ts`,
         '@cloudbitmaps/core': `${ROOT}packages/core/src/index.ts`,
       },
     });

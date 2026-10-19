@@ -532,8 +532,9 @@ move it up.
   `serialize('portable')`) instead, or a bare `RoaringBitmap32` passed as ids loses that fast path.
 - **Membership from an edge runtime — explicitly *not* supported today, and being explored.** A Cloudflare
   Worker answering "is id N in segment S?" against a storage generation in R2 is two ranged reads and a decode,
-  which is the access pattern this format was designed for. What stops it is not the engine: `core/` imports no
-  `node:*` builtin and has zero runtime dependencies, so the seam already loads in a V8 isolate. It is the
+  which is the access pattern this format was designed for. What stops it is not the engine: core's main entry,
+  with every module it reaches, imports no `node:*` builtin and has zero runtime dependencies, and `pnpm smoke` loads
+  the built entry in a context with no Node builtin on every CI run, so the seam loads in a V8 isolate. It is the
   **codec** — `roaring` is a native C++ addon, and no isolate can load one under any compatibility flag. So the
   first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which is in
   the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
@@ -541,7 +542,10 @@ move it up.
   is **not exported, not wired into anything, and not something you can use yet**. Read-only by
   design: loads stay in Node, where the native codec is the right tool. **We will not claim this works on any
   runtime until CI runs the conformance suite inside that runtime**: what a runtime can load is easy to get
-  wrong, and a claim is not a test.
+  wrong, and a claim is not a test. The first piece the in-memory backend needs is its SHA-256: it uses `node:crypto`,
+  so `MemoryStorage` is exported by `@cloudbitmaps/core/node` and not the main entry. Porting that hash to Web Crypto
+  and returning the backend to the main entry means re-measuring the two benches that time loads onto it, since the
+  hash would then settle on the thread pool.
 - **Incremental writes, if there is demand** — immutable delta generations on the same bucket, read as base ∪ deltas at
   chunk granularity; never a mutable row store. Nothing is queued; an issue describing a workload that genuinely
   cannot micro-batch into a load is what would move it.

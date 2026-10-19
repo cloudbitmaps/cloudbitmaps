@@ -4119,7 +4119,7 @@ export class Segment {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// What `@cloudbitmaps/roaring` re-exports from `@cloudbitmaps/core`, by name: the types the store's signatures name,
+// What `@cloudbitmaps/roaring` re-exports from `@cloudbitmaps/core` and `@cloudbitmaps/core/node`, by name: the types the store's signatures name,
 // the backends, the errors and their classifier, and the helpers an application calls. An application installs this
 // package and imports from it alone. Nothing else of core's is re-exported: its main entry is internal. The driver
 // contracts the store's signatures stop at (`IStorageDriver`, `IRegistryDriver`, `StorageBackend`,
@@ -4129,20 +4129,22 @@ export class Segment {
 // of this package, so add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists
 // it.
 // ---------------------------------------------------------------------------------------------------
+// The backends and the keystore that need a Node builtin, which core exports from `@cloudbitmaps/core/node`.
+export { MemoryStorage, LocalFsStorage, InProcessKeystore } from '@cloudbitmaps/core/node';
+export type {
+  InProcessKeystoreOptions,
+  LocalFsStorageOptions,
+  MemoryStorageOptions,
+} from '@cloudbitmaps/core/node';
 // Decode portable bytes you hold, through the check a `{ serialized }` load makes.
 export { deserializePortable };
 export type { ReadonlyBitmap } from './roaring-codec';
 export {
-  // Backends
-  MemoryStorage,
-  LocalFsStorage,
   // Crypto-shred and the retention policy helpers
   destroySegment,
   eraseNamespace,
   excludingReservedRows,
   readRetentionPolicy,
-  // Encryption
-  InProcessKeystore,
   // Errors and their copy-safe classifier
   CloudRoaringError,
   ValidationError,
@@ -4188,18 +4190,15 @@ export type {
   GenerationMetadata,
   IAuditSink,
   IMetricsSink,
-  InProcessKeystoreOptions,
   LoadGuard,
   LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
-  LocalFsStorageOptions,
   MaterializeManyFeedRecord,
   MaterializeManyOperandStats,
   MaterializeManyOutputStats,
   MaterializeManyStats,
-  MemoryStorageOptions,
   MetricEvent,
   MetricOpName,
   MetricsSnapshot,

@@ -719,6 +719,11 @@ function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
  *
  * The same sweep runs over every other package that is not a driver, `@cloudbitmaps/tools` among them.
  *
+ * THE BUILTIN HALF. Core's main entry names no cloud SDK AND imports no `node:*` builtin, so it loads where no builtin
+ * exists (a V8 isolate); `assertEntryBuiltinFree` holds that for core's main entry, `driver-kit` and the tools, by a
+ * specifier scan of every reachable built file and a load of the entry bundled for a platform with no builtin, in a
+ * context with web globals only. `@cloudbitmaps/core/node` is the one core entry that may reach a builtin.
+ *
  * WHAT IS NOT. The three driver packages, which name an SDK because that is what they are for. The boundary is
  * a package name, so this is a list of packages to skip rather than a path prefix to avoid, and core is
  * SDK-free unconditionally.
@@ -745,41 +750,44 @@ function declarationFiles(dist) {
   return out;
 }
 
-function assertEntrySdkFree(pkgDir) {
+/**
+ * Everything `entryFile` (a path relative to `dist`) can reach, followed TRANSITIVELY and through lazy `import()` as
+ * well as static `from`.
+ *
+ * One level of static imports would miss a chunk imported by a chunk, or a lazy `import()`; this walk keeps holding
+ * if either ever appears.
+ */
+function reachableFrom(dist, entryFile) {
   const { readFileSync, statSync } = require('node:fs');
+  const read = (f) => readFileSync(path.join(dist, f), 'utf8');
+  const seen = new Set();
+  const queue = [entryFile];
+  while (queue.length > 0) {
+    const rel = queue.shift();
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    for (const spec of allSpecifiers(read(rel))) {
+      const next = path.normalize(path.join(path.dirname(rel), spec));
+      // Stay inside dist/, and only follow real files. Without the first check a stray `../package.json`
+      // would be read and reported as a leak, naming the SDKs in `peerDependencies` — an accusation about
+      // a file that is not even shipped. Without the second, a directory specifier passes `existsSync`
+      // and then throws EISDIR out of `readFileSync`, which names no gate and no cause.
+      if (next.startsWith('..')) continue;
+      if (!statSync(path.join(dist, next), { throwIfNoEntry: false })?.isFile()) continue;
+      queue.push(next);
+    }
+  }
+  return [...seen];
+}
+
+function assertEntrySdkFree(pkgDir) {
+  const { readFileSync } = require('node:fs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
   const read = (f) => readFileSync(path.join(dist, f), 'utf8');
 
-  // Everything the main entry can reach, followed TRANSITIVELY and through lazy `import()` as well as
-  // static `from`.
-  //
-  // One level of static imports would miss a chunk imported by a chunk, or a lazy `import()`; this walk keeps
-  // holding if either ever appears. Neither does today: there is not one dynamic import in either package's
-  // source, which is why both entries report 2 reachable modules.
-  //
   // Scoping is a package boundary rather than a chunk boundary: an SDK lives in a driver PACKAGE, which this
   // walk never enters, so there is no driver-only chunk inside core or the flavor for it to have to avoid.
-  const reachable = (entry) => {
-    const seen = new Set();
-    const queue = [entry];
-    while (queue.length > 0) {
-      const rel = queue.shift();
-      if (seen.has(rel)) continue;
-      seen.add(rel);
-      for (const spec of allSpecifiers(read(rel))) {
-        const next = path.normalize(path.join(path.dirname(rel), spec));
-        // Stay inside dist/, and only follow real files. Without the first check a stray `../package.json`
-        // would be read and reported as a leak, naming the SDKs in `peerDependencies` — an accusation about
-        // a file that is not even shipped. Without the second, a directory specifier passes `existsSync`
-        // and then throws EISDIR out of `readFileSync`, which names no gate and no cause.
-        if (next.startsWith('..')) continue;
-        if (!statSync(path.join(dist, next), { throwIfNoEntry: false })?.isFile()) continue;
-        queue.push(next);
-      }
-    }
-    return [...seen];
-  };
-  const entryGraph = reachable('index.js');
+  const entryGraph = reachableFrom(dist, 'index.js');
 
   // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal below.
   // Rename it there and this walk would quietly cover less, so make that loud instead.
@@ -814,6 +822,81 @@ function assertEntrySdkFree(pkgDir) {
     `  main entry SDK-free: @cloudbitmaps/${pkgDir} ` +
       `(${entryGraph.length} reachable module(s), ${declarationFiles(dist).length} .d.ts)`,
   );
+}
+
+/**
+ * The built entries that must load where no Node builtin exists (a V8 isolate): core's main entry and `driver-kit`, and
+ * the offline tools. `@cloudbitmaps/core/node` is the one core entry that may reach a builtin, and is not listed.
+ */
+const RUNTIME_NEUTRAL_ENTRIES = [
+  ['core', 'index.js'],
+  ['core', 'driver-kit.js'],
+  ['tools', 'index.js'],
+];
+
+/** The import specifier of a built entry file: `index.js` is the package, any other is a subpath of it. */
+function specifierOfEntry(pkgDir, entryFile) {
+  const name = `@cloudbitmaps/${pkgDir}`;
+  return entryFile === 'index.js' ? name : `${name}/${entryFile.replace(/\.js$/, '')}`;
+}
+
+/**
+ * Hard invariant 7, the builtin half, against the BUILT files: no module `entryFile` reaches names a `node:*`
+ * specifier, and the entry, bundled for a platform with no builtin, loads in a context holding web globals only and
+ * exposes exactly the names the real entry does. Each layer catches what the other cannot; see `builtin-free.cjs`.
+ */
+async function assertEntryBuiltinFree(pkgDir, entryFile) {
+  const { readFileSync } = require('node:fs');
+  const { findBuiltinSpecifiers, loadWithoutNode } = require('./builtin-free.cjs');
+  const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
+  const specifier = specifierOfEntry(pkgDir, entryFile);
+  const graph = reachableFrom(dist, entryFile);
+  for (const file of graph) {
+    const hits = findBuiltinSpecifiers(readFileSync(path.join(dist, file), 'utf8'));
+    if (hits.length > 0) {
+      throw new Error(
+        `${specifier}: dist/${file} imports a Node builtin (${hits.join(', ')}).\n` +
+          `  A module the main entry reaches imports a Node builtin; export it from @cloudbitmaps/core/node (or put\n` +
+          `  it behind a port), never from the main entry, so the entry loads where no builtin exists.`,
+      );
+    }
+  }
+  const { exports: loaded } = await loadWithoutNode(path.join(dist, entryFile));
+  const real = Object.keys(await import(specifier)).sort();
+  if (JSON.stringify([...loaded].sort()) !== JSON.stringify(real)) {
+    throw new Error(
+      `${specifier}: the bundle loaded with no Node builtin exposes ${loaded.length} export(s), the real entry ` +
+        `${real.length}, so the neutral load did not cover the whole entry.`,
+    );
+  }
+  console.log(
+    `  main entry builtin-free: ${specifier} (${graph.length} reachable module(s), ` +
+      `loads with no Node builtin, ${loaded.length} exports)`,
+  );
+}
+
+/** Every `exports` key of core's manifest but `./node` is on the list, so a new subpath cannot skip the gate. */
+function assertRuntimeNeutralCoversCore() {
+  const manifest = JSON.parse(
+    require('node:fs').readFileSync(
+      path.join(__dirname, '..', 'packages', 'core', 'package.json'),
+      'utf8',
+    ),
+  );
+  const wanted = Object.entries(manifest.exports)
+    .filter(([key]) => key !== './node')
+    .map(([, target]) => path.normalize(target.default).replace(/^dist\//, ''))
+    .sort();
+  const listed = RUNTIME_NEUTRAL_ENTRIES.filter(([pkg]) => pkg === 'core')
+    .map(([, file]) => file)
+    .sort();
+  if (JSON.stringify(wanted) !== JSON.stringify(listed)) {
+    throw new Error(
+      `RUNTIME_NEUTRAL_ENTRIES lists core entries [${listed.join(', ')}] but core's manifest exports ` +
+        `[${wanted.join(', ')}] besides ./node. Add the new entry to the list, so it is checked to load with no ` +
+        `Node builtin, or make it ./node-style on purpose and say why.`,
+    );
+  }
 }
 
 /**
@@ -964,9 +1047,13 @@ async function main() {
     assertDtsSpecifiers(pkgDir);
     assertSubpathsResolveWithoutExports(pkgDir);
   }
+  assertRuntimeNeutralCoversCore();
+  for (const [pkgDir, entryFile] of RUNTIME_NEUTRAL_ENTRIES) {
+    await assertEntryBuiltinFree(pkgDir, entryFile);
+  }
 
   console.log(
-    'smoke: ESM + CJS import (via exports map) + roaring round-trip + cross-bundle errors + SDK-free entries OK',
+    'smoke: ESM + CJS import (via exports map) + roaring round-trip + cross-bundle errors + SDK-free and builtin-free entries OK',
   );
 }
 
