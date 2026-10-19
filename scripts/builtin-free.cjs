@@ -21,86 +21,27 @@
  * The load context also follows two rules Cloudflare documents for a Workers isolate: string code generation is off,
  * and random values, timers and `fetch` throw at global scope (a call inside a function is fine).
  *
- * Known limits. The tokenizer decides whether a `/` divides or opens a regular expression from the token before it;
- * a form it reads wrongly (an `if (x)` header followed by a regex literal) can hide a specifier after it. The set of
+ * Known limits. The tokenizer (`js-tokens.cjs`) reads whether a `/` divides or opens a regular expression from the
+ * token before it; a form it reads wrongly can hide a specifier after it. The set of
  * web globals is deliberately the common core of Workers, Deno and Vercel Edge; add one to `WEB_GLOBALS` when all
  * three have it. A builtin reached through `process.getBuiltinModule('fs')` (a bare name) inside a function is caught
  * by no layer: that is deliberate evasion, out of scope. The `.d.ts` tree is not checked for Node types. A load is
  * not a run: the check loads the entry, it does not execute the engine in an isolate.
  */
 const vm = require('node:vm');
-const ts = require('typescript');
+const { stringLiterals } = require('./js-tokens.cjs');
 
 /** A whole string value that is a `node:` specifier, with an optional subpath (`node:fs/promises`). */
 const NODE_SPECIFIER = /^node:[a-z0-9_]+(?:\/[a-z0-9_]+)*$/;
 
 /**
- * Token kinds after which a `/` divides, so the scanner must not read a regular expression there. A `)` is taken as
- * the end of an expression (`(a + b) / c`), not of an `if (x)` header followed by a regex statement; a `}` as the
- * start of a statement, so a `/` after it opens a regex.
- */
-const DIVIDES_AFTER = new Set([
-  ts.SyntaxKind.Identifier,
-  ts.SyntaxKind.PrivateIdentifier,
-  ts.SyntaxKind.NumericLiteral,
-  ts.SyntaxKind.BigIntLiteral,
-  ts.SyntaxKind.StringLiteral,
-  ts.SyntaxKind.RegularExpressionLiteral,
-  ts.SyntaxKind.NoSubstitutionTemplateLiteral,
-  ts.SyntaxKind.TemplateTail,
-  ts.SyntaxKind.CloseParenToken,
-  ts.SyntaxKind.CloseBracketToken,
-  ts.SyntaxKind.PlusPlusToken,
-  ts.SyntaxKind.MinusMinusToken,
-  ts.SyntaxKind.ThisKeyword,
-  ts.SyntaxKind.SuperKeyword,
-  ts.SyntaxKind.TrueKeyword,
-  ts.SyntaxKind.FalseKeyword,
-  ts.SyntaxKind.NullKeyword,
-]);
-
-/**
  * Every string or substitution-free template literal in `source` whose WHOLE value is a `node:` specifier. Whole
  * value, not prefix: an error message that starts with `node:` or names `node:crypto` mid-sentence does not trip it,
- * and a specifier cannot dodge it. Deduplicated.
- *
- * The source is tokenized by TypeScript's scanner, which skips comments and tells a regular expression literal from
- * a division, so a quote inside a comment or a regex (`/(sig=["']?)/`) cannot pair with a later quote and hide the
- * strings after it. The one heuristic is whether a `/` divides or opens a regex (see {@link DIVIDES_AFTER}).
+ * and a specifier cannot dodge it. Deduplicated. Read from tokens (see `js-tokens.cjs`), so a quote in a comment or a
+ * regular expression cannot pair with a later one and hide the strings after it.
  */
 function findBuiltinSpecifiers(source) {
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    true,
-    ts.LanguageVariant.Standard,
-    source,
-  );
-  const found = new Set();
-  // One entry per open `{`: true when it is a template substitution, whose `}` resumes the template.
-  const braces = [];
-  let previous = ts.SyntaxKind.Unknown;
-  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
-    if (
-      (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
-      !DIVIDES_AFTER.has(previous)
-    ) {
-      kind = scanner.reScanSlashToken();
-    } else if (kind === ts.SyntaxKind.CloseBraceToken && braces.pop() === true) {
-      kind = scanner.reScanTemplateToken(false);
-    }
-    if (kind === ts.SyntaxKind.TemplateHead) braces.push(true);
-    else if (kind === ts.SyntaxKind.OpenBraceToken) braces.push(false);
-    else if (kind === ts.SyntaxKind.TemplateMiddle) braces.push(true);
-    if (
-      (kind === ts.SyntaxKind.StringLiteral ||
-        kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral) &&
-      NODE_SPECIFIER.test(scanner.getTokenValue())
-    ) {
-      found.add(scanner.getTokenValue());
-    }
-    previous = kind;
-  }
-  return [...found];
+  return [...new Set(stringLiterals(source).filter((value) => NODE_SPECIFIER.test(value)))];
 }
 
 /** The web-platform globals every V8 isolate runtime has. */

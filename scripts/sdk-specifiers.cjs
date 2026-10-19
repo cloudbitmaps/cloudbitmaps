@@ -29,23 +29,9 @@ const SDK_ROOTS = ['@aws-sdk/', '@google-cloud/', '@azure/', 'aws-sdk'];
 const DRIVER_SUBPATH =
   /^@cloudbitmaps\/(?:(s3|gcs|azure-blob)(\/|$)|[^/]+\/(s3|gcs|azure(?:-blob)?)(\/|$))/;
 
-/**
- * Blank out comments while KEEPING string and template literals.
- *
- * This is what keeps out the false positive that matters. esbuild preserves JSDoc on class members, and
- * this repo deliberately documents invariant 7 *in prose, in the files it governs* — so without it a comment
- * reading `a driver takes its client from "@aws-sdk/client-s3"` in `dist/` trips the gate, with an error
- * asserting something false. The remedy a contributor reaches for is to water down the comment, which is
- * precisely the documentation erosion the gate exists to protect.
- *
- * Strings are kept because a real specifier IS a string literal; comments are the only place prose lives.
- */
-function stripComments(source) {
-  return source.replace(
-    /(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
-    (match) => (match[0] === '"' || match[0] === "'" || match[0] === '`' ? match : ' '),
-  );
-}
+// Strings are read from tokens, not by pairing quotes (see `js-tokens.cjs`): esbuild keeps JSDoc in `dist/`, and this
+// repo documents invariant 7 in prose in the files it governs, so a comment naming an SDK must not trip the gate.
+const { stringLiterals, stripComments } = require('./js-tokens.cjs');
 
 /**
  * A string literal whose value BEGINS with one of those roots.
@@ -63,15 +49,11 @@ function stripComments(source) {
  * breaks a consumer's build for a different reason and is not the leak this guards.
  */
 function findSdkSpecifiers(source) {
-  const code = stripComments(source);
-  const literals = code.match(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g) ?? [];
-  const found = literals
-    .map((lit) => lit.slice(1, -1))
-    .filter(
-      (value) =>
-        SDK_ROOTS.some((root) => value === root || value.startsWith(root)) ||
-        DRIVER_SUBPATH.test(value),
-    );
+  const found = stringLiterals(source).filter(
+    (value) =>
+      SDK_ROOTS.some((root) => value === root || value.startsWith(root)) ||
+      DRIVER_SUBPATH.test(value),
+  );
   return [...new Set(found)];
 }
 

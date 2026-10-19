@@ -37,6 +37,15 @@ describe('the SDK-free gate detects a specifier', () => {
       'createRequire, whose result may be named anything',
       'const req = cr(u); req("@aws-sdk/client-s3")',
     ],
+    [
+      'a require in try/catch after a regex literal holding quotes, which pairing quotes by regex misses',
+      `var SIG = /(sig=["']?)[^&"']*/g;
+export function f() { try { return require('@aws-sdk/client-s3'); } catch { return undefined; } }`,
+    ],
+    [
+      'a dynamic import after a regex literal holding a single quote',
+      `const r = /'/g; export const load = () => import("@google-cloud/storage");`,
+    ],
     ['an aws-sdk v2 deep path', 'require("aws-sdk/clients/s3")'],
     ['google cloud', 'require("@google-cloud/storage")'],
     ['azure', 'require("@azure/storage-blob")'],
@@ -71,6 +80,11 @@ describe('the SDK-free gate does NOT fire on', () => {
       'an error message telling a user what to install',
       'throw new Error("install @aws-sdk/client-s3 first")',
     ],
+    [
+      'a regex literal holding quotes, then prose that merely names the SDK',
+      `const r = /["']/g; throw new Error("install @aws-sdk/client-s3 first");`,
+    ],
+    ['a division, then an ordinary string', `const a = (1 + 2) / 3; f('hello'); const b = 4 / 2;`],
     ['a package we do not guard', 'require("@smithy/node-http-handler")'],
     ['an unrelated scoped package', 'require("@cloudbitmaps/core")'],
     ['the flavor main entry, which is not a driver', 'require("@cloudbitmaps/roaring")'],
@@ -88,4 +102,17 @@ it('reports every distinct specifier it found, deduplicated', () => {
     const again = require("@aws-sdk/client-s3");
   `;
   expect(findSdkSpecifiers(source).sort()).toEqual(['@aws-sdk/client-s3', '@azure/storage-blob']);
+});
+
+it('strips comments and keeps strings, templates and regex literals as written', () => {
+  const { stripComments } = createRequire(import.meta.url)('../../scripts/js-tokens.cjs') as {
+    stripComments: (source: string) => string;
+  };
+  const out = stripComments(
+    `/* a "q */ const s = '// not a comment'; // tail "\nconst r = /["']/g;`,
+  );
+  expect(out).toContain(`'// not a comment'`);
+  expect(out).toContain(`/["']/g`);
+  expect(out).not.toContain('tail');
+  expect(out).not.toContain('a "q');
 });
