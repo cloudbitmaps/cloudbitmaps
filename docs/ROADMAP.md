@@ -432,10 +432,18 @@ between here and there:
      name purged, created again and itself destroyed, sharing one creation stamp, is accepted as the tombstone a pass was
      asked for: its leftovers are deleted, which the collection rule allows, but the erasure's event names them as the
      asked-for row's, since the event carries no incarnation to tell the two apart;
-   - a publish overtaken by a write that moved the pointer after its registry write landed but reported a conflict (Azure Blob's row
-     read-back is not definitive) answers `superseded`, and its `segment.load-refused` event does not carry
-     `unanswered: true`, although its generation was current for a moment. A registry's conflict does not say the write
-     may have landed, so telling the publish needs a signal from the driver, which is new surface for the driver kit;
+   - on Azure Blob a load that loses an ordinary race at the registry carries `unanswered: true` on its
+     `segment.load-refused` event too, since the driver cannot see its client's retry and so marks every conflict of a
+     row write as one that may follow the write's own landing. A narrower mark would read the counter in the row's token
+     (tokens are `incarnation.counter.write`): after a compare-and-swap's conflict, a row at counter n+1 under another
+     token in the same incarnation proves this write did not land, from a read the publish already makes. That holds for
+     a compare-and-swap only: a create starts a new incarnation, so it has no counter to compare. The SDK exposes no
+     request counter to read instead;
+   - on Azure Blob a create's only condition is `ifNoneMatch: '*'`, its client's retry sends it again, and a success has
+     no read-back. Inside the retry window after a `setRetention`, a retirement and its purge, the replay finds the row
+     absent and creates it again with the token it was first written with and, on a first load that minted a key, the
+     wrapped key a shred removed, and the load reports itself published. Rare, since only the retention sweep deletes a
+     segment row. To fix;
    - the erasure's own collections on an active row, which are not held to the row they worked from (one round trip,
      and the collection spares what the row names): they should decline quietly when the row changed;
    - the erasure's two passes over a tombstone: an erasure that finds the row tombstoned mid-call (the first pass

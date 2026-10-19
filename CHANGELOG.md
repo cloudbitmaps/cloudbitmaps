@@ -13,6 +13,21 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
+  exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
+  `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it
+  `'WriteConflictError'`, `instanceof` and every handler of a conflict hold) and a publish built from another copy of
+  the package reads the mark. A load's publish reads the row again after any conflict; after a marked one that does not
+  show the write there, a load refused for it carries `unanswered: true` on its `segment.load-refused` event, as after a
+  write that got no answer, and a registry without tokens proves its own object before it takes a pointer at its number.
+  The Azure Blob registry raises every conflict of a row write this way, the read-back's and the 404 of a
+  compare-and-swap whose row was deleted: its client's retry may have sent the write twice, and the read-back of the
+  write id cannot tell a landed write from one a later writer swapped in over. So on Azure Blob a load that lost an
+  ordinary race at the registry carries `unanswered: true` too. The S3 and GCS registries send each row write once and
+  raise a plain conflict, as do the memory and local-file registries. A conflict the registry itself raises before it
+  sends anything, and a registry delete's, stay plain. The predicate that reads the mark is internal. The
+  `segment.load-refused` event's `unanswered` doc comment, the driver-kit and port docs, the guides and the Azure Blob
+  README say so.
 - **`store.preflight()` checks a new store's storage and registry before its first load.** It resolves to `{ ok, checks }`
   and always lists seven checks, in this order: `registry` (one read of a probe row that must be absent, and a registry
   that can write), `write` (one small probe object), `write-once` (a second write to the same key must be refused),
@@ -67,6 +82,13 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A registry that reports write tokens must report each one before it sends the write.** One that reports late has a
+  write's fault read as a read's: a load, an erasure or a bulk load throws the `TransientError` at once, without
+  reading the row to see whether the write landed, and does not settle it. A registry that wraps or extends one that
+  reports tokens and overrides `create` or `compareAndSwap` without passing `options` through, or without setting
+  `reportsWriteTokens` to `false`, reports no token, so every `TransientError` of its writes, a throttle included, is
+  thrown at once where it used to be read back and sent again. Report the token before sending, pass `options`
+  through, or set the flag to `false`.
 - **A load's footer no longer builds a temporary array of numbers to encode the chunk index.** The index is now
   written into one buffer sized to it, so the bytes are the same and the footer no longer holds an array beside the
   index. Every load gains it, sorted or not: at the 65,536 chunks a segment can have, the array it dropped held about
@@ -77,6 +99,16 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A fault on a read inside a load's, an erasure's or a bulk load's registry write no longer reads as a write with no
+  answer.** A throttled or failed read of the row, made while the publish waited out a lease write, inside the registry
+  before it sent anything (on the local-file registry too, whose read of the row is under its lock), or inside the
+  registry after a first load's create-only write lost a race, used to count as a registry write that got no answer. A
+  load refused after it then carried `unanswered: true` on its `segment.load-refused` event although every write it sent
+  had been answered, and the publish read the row back and could send its write again. That read's own `TransientError`
+  is now thrown at once for a load, an erasure and a bulk load, and the object they wrote is kept; for a first load
+  that lost its create-only write, the refusal is the conflict itself, flagged only where the registry marks it (Azure
+  Blob). After a lease write the publish also passes the row it just re-read to the registry with its write, so the
+  object-store registries (S3, GCS and Azure Blob) send it without reading the row a second time: one request fewer.
 - **A rollback settles a swap that met a conflict or got no answer by its write token, as a load's publish does.** On a
   registry that reports its writes' tokens (the in-memory, local-file, S3, GCS and Azure Blob registries), a rollback's
   swap that landed and then met a conflict, or got no answer, is its own when the row's pointer is at the target over a
@@ -100,10 +132,10 @@ so, and so do the module headers in the code.
   see it. For a generation's write-once object that answer is definitive. For a registry row it is not: a writer that
   swaps in over a write that landed, before the read-back, makes it report `WriteConflictError`. The publish then reads
   the row again and finds its write only while the pointer still names its generation and the row's `pointerId` is its
-  own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`, and its
-  `segment.load-refused` event does not carry `unanswered: true`. The production and correctness guides, the Azure Blob README and the architecture page now say so. The
-  erasure guide and the `eraseSubject` doc comment also say that a generation costs its budget unit at its first open
-  only, so a retry of a failed read costs nothing more. No behaviour changed.
+  own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`. The production and
+  correctness guides, the Azure Blob README and the architecture page now say so. The erasure guide and the
+  `eraseSubject` doc comment also say that a generation costs its budget unit at its first open only, so a retry of a
+  failed read costs nothing more. No behaviour changed.
 - **A collection under a tombstone only collects the row it was asked to.** An erasure that found a tombstone's
   leftover objects, and the retention sweep's collection of a tombstone it was purging, read the row afresh before
   deleting. If the tombstone had been purged and the name loaded again in between, they treated the new row's

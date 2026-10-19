@@ -224,8 +224,14 @@ describe('a refused load whose row another writer changed', () => {
     // publishes over it with a window of one, which keeps this load's generation.
     let lost = false;
     const lossy = Object.create(w.registry) as IRegistryDriver;
-    lossy.compareAndSwap = async (ref, expected, patch) => {
-      const written = await w.registry.compareAndSwap(ref, expected, patch);
+    lossy.compareAndSwap = async (ref, expected, patch, options) => {
+      // The write is sent, so it reports its token first, as a registry does; its answer is what is lost.
+      const written = await w.registry.compareAndSwap(
+        ref,
+        expected,
+        patch,
+        lost ? undefined : options,
+      );
       if (lost) return written;
       lost = true;
       await loadSegment(REF, [7, 8, 9], w.deps);

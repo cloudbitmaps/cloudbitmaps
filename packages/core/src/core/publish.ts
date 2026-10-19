@@ -10,6 +10,7 @@ import {
   WriteConflictError,
   isIntegrityError,
   isTransientError,
+  isUnsettledConflict,
   isWriteConflictError,
 } from './errors';
 import type { Yielder } from './cooperative';
@@ -196,9 +197,10 @@ interface PublishOptions {
   /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
   rng?: Rng;
   /**
-   * Called once for each registry write that ended without an answer, before the row is read back. A caller whose
-   * publish then answers `false` can say that it cannot tell whether its own write landed first: the row may have
-   * held its generation for a while before another writer moved on.
+   * Called once for each registry write whose answer did not say whether it landed, before the row is read back: one
+   * that ended without an answer, or a conflict its registry marked with `unsettledConflict` as one that may follow
+   * the write's own landing. A caller whose publish then answers `false` can say that it cannot tell whether its own
+   * write landed first: the row may have held its generation for a while before another writer moved on.
    */
   onUnanswered?: () => void;
   /**
@@ -292,8 +294,13 @@ interface PublishOptions {
  *   the caller's own object, or is on another incarnation, is a lost race too and answers `false`, never an already
  *   current re-publish.
  *
- * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
- * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
+ * A failed read throws `TransientError` too, and so does a fault before the write reports its token on a registry that
+ * reports tokens (the registry's own read of the row, before anything was sent): it is thrown at once as the read's
+ * fault, and is not reconciled. The same check of the pointer runs after a {@link WriteConflictError},
+ * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race. A
+ * conflict the registry marked with `unsettledConflict` is also a write that may have landed: it is reported to
+ * `onUnanswered`, and when the row does not show the write there, a call that ends refused has not proved the write
+ * did not land.
  * The check runs before the next attempt's `expectAbsent`, `expectToken` and `expectFrom` fences, which a write of the
  * caller's own that landed would fail. With a registry that reports tokens it names the writer of the write that last
  * set the pointer, so another writer's object under the number does not pass it; with one that does not, the footer
@@ -326,6 +333,11 @@ export async function publishGenerationKept(
   // Whether any write of this call ended without an answer: what the pointer then says about this number is not
   // taken for the caller's own write without the proof.
   let sawUnanswered = false;
+  // The fault of the lease churn's re-read, the one transient fault in a write's `try` that is a read's.
+  let readFault: unknown;
+  const readAgain = readOf(registry, key, (e) => (readFault = e));
+  // Whether the attempt's write has reported its token, which a registry does before it sends the write.
+  let tokenReported: boolean;
   // The row the last attempt acted on, which its write was made against: where the incarnation is read from when the
   // attempts run out.
   let lastRecord: RegistryRecord | null | undefined;
@@ -334,22 +346,20 @@ export async function publishGenerationKept(
   const sent: Set<Token> | undefined =
     registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
   const report: ((token: Token) => void) | undefined =
-    sent === undefined ? undefined : (token) => void sent.add(token);
+    sent === undefined ? undefined : (token) => void (sent.add(token), (tokenReported = true));
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
     // The row a write is made against is passed to the registry as `held`, so that it need not read the row again for
-    // the version its write is fenced on: the caller's own row on the first attempt, or the one this attempt read.
-    // Never a row read to settle a write that got no answer: that one is read again by the write that follows it.
-    const holdsRow = fresh === undefined;
+    // the version its write is fenced on: the caller's own row on the first attempt, the one this attempt read, or the
+    // one the wait on lease churn read, which is as fresh as a read of the write's own would be. Never a row read to
+    // settle a write that got no answer: the registry reads that one again, so that the version its write is fenced on
+    // is not from before the write that may still land.
+    const holdsRow = fresh === undefined || fresh === waited;
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
-    const write: RegistryWriteOptions | undefined =
-      holdsRow || report !== undefined
-        ? {
-            ...(holdsRow ? { held: record } : {}),
-            ...(report !== undefined ? { onToken: report } : {}),
-          }
-        : undefined;
+    const write = writeOptions(holdsRow ? { held: record } : {}, report);
+    // Whether this attempt's write has reported a token yet.
+    tokenReported = false;
     fresh = undefined;
     unanswered = undefined;
     lastRecord = record;
@@ -404,7 +414,7 @@ export async function publishGenerationKept(
           const settled =
             record === waited
               ? undefined
-              : await churn.settle(held, record, () => registry.get(key), options.expectRowIgnores);
+              : await churn.settle(held, record, readAgain, options.expectRowIgnores);
           if (settled !== undefined) {
             waited = settled.row;
             fresh = settled.row;
@@ -539,14 +549,19 @@ export async function publishGenerationKept(
       }; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
       if (isWriteConflictError(err)) {
+        // A conflict the registry marks may follow this write's own landing: no more an answer than a transient fault.
+        if (isUnsettledConflict(err)) sawUnanswered = noteUnsettled(options);
         failedOn = record; // lost the race, or met its own landed write: the next read says which
         if (throughChurn) attempt -= 1; // a lease write won it; the bound on those is the churn's
         continue;
       }
-      // Only the write itself raises a transient fault in here, and it is the one outcome that is not an answer.
-      if (!isTransientError(err)) throw err;
-      options.onUnanswered?.();
-      sawUnanswered = true;
+      // Only the write itself raises a transient fault in here that is not a read's, and it is the one outcome that is
+      // not an answer: the lease churn's re-read is a read, whose fault is thrown as it is.
+      if (!isTransientError(err) || err === readFault) throw err;
+      // A write that faulted before it reported its token was never sent: a registry reports the token before it sends
+      // anything, a resend included, so the fault is the registry's own read of the row, a read's fault.
+      if (sent !== undefined && !tokenReported) throw err;
+      sawUnanswered = noteUnsettled(options);
       let now: RegistryRecord | null;
       try {
         now = await registry.get(key);
@@ -602,6 +617,41 @@ export async function publishGenerationKept(
   throw new WriteConflictError(
     `publishGeneration: contention setting currentGen for ${key.segment}${CONTENTION_NEXT_STEP}`,
   );
+}
+
+/** What a registry write is given: the row it is made against, when held, and the report of its token, when asked for. */
+function writeOptions(
+  held: Pick<RegistryWriteOptions, 'held'>,
+  onToken: ((token: Token) => void) | undefined,
+): RegistryWriteOptions | undefined {
+  return held.held === undefined && onToken === undefined
+    ? undefined
+    : { ...held, ...(onToken === undefined ? {} : { onToken }) };
+}
+
+/** A read of the row for a step inside the write's `try`: a fault it throws is handed to `onFault`, then thrown. */
+function readOf(
+  registry: IRegistryDriver,
+  key: GenKey,
+  onFault: (err: unknown) => void,
+): () => Promise<RegistryRecord | null> {
+  return async () => {
+    try {
+      return await registry.get(key);
+    } catch (err) {
+      onFault(err);
+      throw err;
+    }
+  };
+}
+
+/**
+ * Tell the caller that a registry write's answer did not say whether it landed (no answer, or a conflict its registry
+ * marked with `unsettledConflict`), before the row is read back. Returns `true`, for the call's own record of it.
+ */
+function noteUnsettled(options: PublishOptions): true {
+  options.onUnanswered?.();
+  return true;
 }
 
 /** What a publish did: whether the pointer is at the generation, and what the write recorded in the row. */

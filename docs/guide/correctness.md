@@ -145,7 +145,9 @@ the pointer is over this load's write if and only if the `pointerId` is one of t
 part, so another load of the same cleartext ids, which takes the number once an erasure has freed it, is not mistaken for
 this one: this load reports `superseded`, audits no `segment.publish` and deletes nothing. The
 same check runs after a write the registry refused as a conflict, since a client that re-sends a write can meet its own
-landed copy, and after a write that went unanswered. A registry of your own that does not report tokens is settled by
+landed copy, and after a write that went unanswered. A fault that comes before the write reports its token, such as
+the registry's own read of the row, was never a write with no answer: on a registry that reports tokens the load throws
+it at once as that read's fault, with no read of the row and no fresh write. A registry of your own that does not report tokens is settled by
 the object instead: the load reads the footer of the object under the pointer and takes a match as its own. The footer
 carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index
 nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum: another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
@@ -162,7 +164,8 @@ whether the first attempt landed, check `store.generations(ref)` rather than rep
 
 A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
 been current for a while before another writer moved on: its `segment.load-refused` audit event carries `unanswered:
-true`.
+true`. So does a refusal that follows a conflict the registry marked as one that may follow the write's own landing
+(`unsettledConflict`, which the Azure Blob registry raises for every conflict of a row write).
 
 On a registry that reports write tokens, a `superseded` refusal over a row that names this load's generation says only
 that the row's `pointerId` is not the token of a write this load sent. Usually another load published that number. It
@@ -1074,25 +1077,26 @@ package stands:
 | `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict reads the stored blob back to tell the write's own landing from another writer's, as described below. The policy runs under each fresh compare-and-swap a load sends for a row write that went unanswered, so a registry that never answers costs a load up to four times the policy's tries (sixteen requests at its default of four) before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry's delete under `ifMatch` is sent the same way, safe for the same reason as GCS's |
 | in-memory and local filesystem | nothing is throttled, so nothing is sent again |
 
-**Writes that are tagged.** Azure Blob's retry is a policy on the client's pipeline, a GCS resumable upload is a
-session the SDK retries within, and the S3 and GCS drivers send a generation's object again after a throttle, so each of
-those writes can meet itself. Each carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes
-and outside the registry row's body. When such a write reports a conflict (for an S3 object or a GCS single-request
-upload, only one that follows a re-send), the backend reads the stored blob or object back with one metadata request.
-It reports success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens
-only on a conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
-`TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
-is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
-that write report `WriteConflictError`. The publish reads the row again on it, and after any registry write that ended
-without an answer, and recognises its own write there by its effect: the pointer at its generation and, on a registry
-that reports write tokens (Azure Blob's does), the row's `pointerId` the token of a write it sent, or, on one that does
-not, its own object under the number. A publish overtaken by a write that moved the pointer reports `superseded`, and
-its refusal event carries no `unanswered: true` on this path, since a driver has no way to tell the publish that a
-conflict may follow a landed write (a [roadmap](../ROADMAP.md#on-the-way-to-10) deferral). A rollback reads the row again on both too, and recognises
-its swap there: on a registry that reports write tokens, by the row's `pointerId` being the token of a write the call
-sent, after a conflict or after no answer; on one that does not, only after no answer, by the row the swap would leave,
-and after a conflict it never settles as landed. No caller deletes a generation because of either, and a load whose row
-writes all go unanswered throws the registry's `TransientError` and keeps its object. A multipart upload whose
-completion ends ambiguously or exhausted is
-aborted: S3 completes an upload atomically, so a completion that had landed survives the abort and one that had not is
-cancelled.
+**Writes that are tagged.** Azure Blob's retry is a policy on the client's pipeline, a GCS resumable upload is a session
+the SDK retries within, and the S3 and GCS drivers send a generation's object again after a throttle, so each of those
+writes can meet itself. Each carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes and
+outside the registry row's body. When such a write reports a conflict (for an S3 object or a GCS single-request upload,
+only one that follows a re-send), the backend reads the stored blob or object back with one metadata request. It reports
+success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens only on a
+conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws `TransientError`.
+A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row is overwritten by
+compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes that write report
+`WriteConflictError`. The publish reads the row again on it, and after any registry write that ended without an answer,
+and recognises its own write there by its effect: the pointer at its generation and, on a registry that reports write
+tokens (Azure Blob's does), the row's `pointerId` the token of a write it sent, or, on one that does not, its own object
+under the number. A publish overtaken by a write that moved the pointer reports `superseded`, and its refusal event
+carries `unanswered: true`: the Azure Blob registry throws every conflict of a row write as one that may follow the
+write's own landing (`unsettledConflict`), since its client's retry cannot be seen from the driver, so on Azure Blob a
+load that lost an ordinary race at the registry carries the flag too (a [roadmap](../ROADMAP.md#on-the-way-to-10) item
+records the narrower refinement). A conflict from the S3 or GCS registry, each row write sent once, carries none. A
+rollback reads the row again on both too, and recognises its swap there: on a registry that reports write tokens, by the
+row's `pointerId` being the token of a write the call sent, after a conflict or after no answer; on one that does not,
+only after no answer, by the row the swap would leave, and after a conflict it never settles as landed. No caller
+deletes a generation because of either, and a load whose row writes all go unanswered throws the registry's
+`TransientError` and keeps its object. A multipart upload whose completion ends ambiguously or exhausted is aborted: S3
+completes an upload atomically, so a completion that had landed survives the abort and one that had not is cancelled.
