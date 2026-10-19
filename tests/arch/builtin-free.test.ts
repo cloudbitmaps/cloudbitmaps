@@ -21,7 +21,7 @@ const detectors = createRequire(import.meta.url)('../../scripts/builtin-free.cjs
 };
 const { findBuiltinSpecifiers, loadWithoutNode, webGlobals, NODE_ONLY_GLOBALS } = detectors;
 
-type Outcome = 'passes' | 'fails';
+type Outcome = 'passes' | 'fails' | 'not reached';
 interface Layers {
   scan: Outcome;
   bundle: Outcome;
@@ -43,7 +43,7 @@ async function layersOf(chunk: string): Promise<Layers> {
       const message = String((e as Error).message);
       if (message.includes('does not bundle')) {
         bundle = 'fails';
-        vm = 'passes';
+        vm = 'not reached';
       } else {
         vm = 'fails';
       }
@@ -59,22 +59,39 @@ describe('the builtin-free gate fails the layer that can see the plant', () => {
     [
       'a static import in a chunk',
       "import fs from 'node:fs'; export const x = fs;",
-      { scan: 'fails', bundle: 'fails', vm: 'passes' },
+      { scan: 'fails', bundle: 'fails', vm: 'not reached' },
     ],
-    ['a re-export', "export * from 'node:path';", { scan: 'fails', bundle: 'fails', vm: 'passes' }],
+    [
+      'a re-export',
+      "export * from 'node:path';",
+      { scan: 'fails', bundle: 'fails', vm: 'not reached' },
+    ],
     [
       'a lazy import nothing calls',
       "export async function f() { return import('node:crypto'); }",
-      { scan: 'fails', bundle: 'fails', vm: 'passes' },
+      { scan: 'fails', bundle: 'fails', vm: 'not reached' },
     ],
     [
       'a bare builtin name, which only the bundle sees',
       "import p from 'path'; export const x = p;",
-      { scan: 'passes', bundle: 'fails', vm: 'passes' },
+      { scan: 'passes', bundle: 'fails', vm: 'not reached' },
     ],
     [
       'a require inside try/catch, which only the scan sees',
       "export function f() { try { return require('node:fs'); } catch { return undefined; } }",
+      { scan: 'fails', bundle: 'passes', vm: 'passes' },
+    ],
+    [
+      'a require inside try/catch after a regex literal holding quotes, which only the scan sees',
+      `var SIG = /(sig=["']?)[^&"']*/g;
+export function redact(s) { return s.replace(SIG, '$1'); }
+export function f() { try { return require('node:crypto'); } catch { return undefined; } }`,
+      { scan: 'fails', bundle: 'passes', vm: 'passes' },
+    ],
+    [
+      'process.getBuiltinModule after a regex literal holding a quote',
+      `export const r = /"/g;
+export function f() { return process.getBuiltinModule('node:fs'); }`,
       { scan: 'fails', bundle: 'passes', vm: 'passes' },
     ],
     [
@@ -109,13 +126,7 @@ describe('the builtin-free gate does NOT fire on', () => {
     ['a property named path', 'export const o = { path: 1 }; export const p = o.path;'],
     ['a plain string naming a bare builtin', "export const s = 'fs';"],
     ['a top-level TextEncoder', 'export const e = new TextEncoder();'],
-    [
-      'a lazy Web Crypto call',
-      'export function r(a: Uint8Array) { return crypto.getRandomValues(a); }'.replace(
-        ': Uint8Array',
-        '',
-      ),
-    ],
+    ['a lazy Web Crypto call', 'export function r(a) { return crypto.getRandomValues(a); }'],
   ])('%s', async (_label, chunk) => {
     expect(await layersOf(chunk)).toEqual({ scan: 'passes', bundle: 'passes', vm: 'passes' });
   });
@@ -128,10 +139,62 @@ it('finds only whole node: specifiers, deduplicated', () => {
   expect(findBuiltinSpecifiers("'node:Fs'")).toEqual([]);
 });
 
+describe('the scan reads tokens, not quote pairs', () => {
+  it.each<[string, string, string[]]>([
+    [
+      'a regex with quotes before a specifier',
+      `const r = /["']/g; require('node:fs');`,
+      ['node:fs'],
+    ],
+    [
+      'a division, then a specifier',
+      `const a = (1 + 2) / 3; f('node:fs'); const b = 4 / 2;`,
+      ['node:fs'],
+    ],
+    [
+      'a regex after return',
+      `function f(s) { return /'/.test(s); } g('node:path');`,
+      ['node:path'],
+    ],
+    ['a template substitution, then a specifier', 'const t = `a${1}b`; f("node:fs");', ['node:fs']],
+    ['a template holding a specifier alone', 'f(`node:fs`);', ['node:fs']],
+    ['a template with a substitution is no specifier', 'f(`node:${x}`);', []],
+    ['a specifier in a block comment', "/* 'node:fs' */ const x = 1;", []],
+    ['a specifier in a regex', "const r = /'node:fs'/;", []],
+  ])('%s', (_label, source, expected) => {
+    expect(findBuiltinSpecifiers(source)).toEqual(expected);
+  });
+});
+
 it('builds a load context with none of the Node-only globals', () => {
   const globals = webGlobals();
   for (const name of NODE_ONLY_GLOBALS) expect(globals).not.toHaveProperty(name);
   expect(globals).toHaveProperty('TextEncoder');
+});
+
+describe('the load context follows the Workers rules', () => {
+  it.each<[string, string]>([
+    ['a top-level getRandomValues', 'export const r = crypto.getRandomValues(new Uint8Array(1));'],
+    ['a top-level randomUUID', 'export const r = crypto.randomUUID();'],
+    ['a top-level setTimeout', 'export const r = setTimeout(() => {}, 1);'],
+    ['a top-level fetch', "export const r = fetch('https://example.com');"],
+    ['a top-level eval', "export const r = eval('1');"],
+    ['a top-level new Function', "export const r = new Function('return 1');"],
+  ])('refuses %s', async (_label, chunk) => {
+    expect((await layersOf(chunk)).vm).toBe('fails');
+  });
+
+  it('allows the same calls inside a function', async () => {
+    const chunk =
+      "export function f(a) { crypto.getRandomValues(a); crypto.randomUUID(); setTimeout(() => {}, 1); return eval('1'); }";
+    expect(await layersOf(chunk)).toEqual({ scan: 'passes', bundle: 'passes', vm: 'passes' });
+  });
+
+  it('exposes the isolate globals Workers, Deno and Vercel Edge share', async () => {
+    const chunk =
+      'export const t = [typeof navigator, typeof CompressionStream, typeof self, typeof FormData].join();';
+    expect(await layersOf(chunk)).toEqual({ scan: 'passes', bundle: 'passes', vm: 'passes' });
+  });
 });
 
 describe('the real source loads with no Node builtin', () => {
