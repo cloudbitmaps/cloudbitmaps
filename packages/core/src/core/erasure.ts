@@ -29,7 +29,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import { casRetry } from './cas-retry';
-import { readBack, writeTokens } from './settle';
+import { deleteSettled, readBack, writeTokens } from './settle';
 import type { ChurnDeps } from './leases';
 import type {
   IStorageDriver,
@@ -524,7 +524,7 @@ export async function dropSegmentFor(
     if (present.length === 0) break;
     const outcomes = await mapWithConcurrency(present, ERASE_CONCURRENCY, async (generation) => {
       try {
-        await deps.storage.delete({ ...ref, generation });
+        await deleteSettled(deps.storage, { ...ref, generation }, undefined, undefined, deps);
         return generation;
       } catch {
         // Leave it orphaned. The segment already reads as empty, so this is a billing problem, not a

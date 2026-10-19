@@ -6,11 +6,14 @@
  */
 import { TransientError, unsettledConflict } from '@/core/errors';
 import type {
+  GenKey,
   IRegistryDriver,
   IStorageDriver,
   RegistryRecord,
   RegistryWriteOptions,
   SegmentRef,
+  StorageDeleteOptions,
+  TailRead,
 } from '@/core/ports';
 
 /**
@@ -122,15 +125,53 @@ export interface FaultyStorage extends IStorageDriver {
    * way to fail the listing that follows a write rather than the one before it.
    */
   failListsAfter(trigger: () => Promise<boolean>, n: number): void;
+  /**
+   * Fault the next `times` deletes whose key `match`es (every key by default): `'a'` applies the delete and throws
+   * `TransientError`; `'c'` throws it without applying (the delete never landed). Any other delete passes through.
+   */
+  armDelete(fault: 'a' | 'c', match?: (key: GenKey) => boolean, times?: number): void;
+  /**
+   * After the next armed delete fault fires, make the next `n` `getTail` calls throw `TransientError`: the double
+   * fault. `failTails(0)` clears what is left of them.
+   */
+  failTails(n: number): void;
+  /**
+   * Make the next armed delete fault a request that lands after the call looks: it throws without applying, the next
+   * `getTail` of that key answers as it would, and the delete is applied right after that read.
+   */
+  landAfterCheck(): void;
+  /** Run `hook` after an armed delete fault's request has been applied (or skipped) and before its error is thrown. */
+  between(hook: (key: GenKey) => Promise<void>): void;
+  /** How many armed delete faults have fired. */
+  readonly fired: number;
 }
 
 export function faultyStorage(base: IStorageDriver): FaultyStorage {
   let trigger: (() => Promise<boolean>) | undefined;
   let toFail = 0;
+  const armed: { fault: 'a' | 'c'; match: (key: GenKey) => boolean; left: number }[] = [];
+  let tailsToFail = 0;
+  let tailsFailing = 0;
+  let late = false;
+  let pending: GenKey | undefined;
+  let applyLate: (() => Promise<void>) | undefined;
+  let hook: ((key: GenKey) => Promise<void>) | undefined;
+  let fired = 0;
   const own: Record<string, unknown> = {
     failListsAfter: (when: () => Promise<boolean>, n: number) => {
       trigger = when;
       toFail = n;
+    },
+    armDelete: (fault: 'a' | 'c', match: (key: GenKey) => boolean = () => true, times = 1) =>
+      void armed.push({ fault, match, left: times }),
+    failTails: (n: number) => {
+      tailsToFail = n;
+      if (n === 0) tailsFailing = 0;
+    },
+    landAfterCheck: () => void (late = true),
+    between: (fn: (key: GenKey) => Promise<void>) => void (hook = fn),
+    get fired() {
+      return fired;
     },
     list: (ref: SegmentRef) =>
       (async function* () {
@@ -140,6 +181,34 @@ export function faultyStorage(base: IStorageDriver): FaultyStorage {
         }
         yield* base.list(ref);
       })(),
+    delete: async (key: GenKey, options?: StorageDeleteOptions): Promise<void> => {
+      const hit = armed.find((a) => a.left > 0 && a.match(key));
+      if (hit === undefined) return base.delete(key, options);
+      hit.left -= 1;
+      fired += 1;
+      if (late) {
+        late = false;
+        pending = key;
+        applyLate = () => base.delete(key, options);
+      } else if (hit.fault === 'a') await base.delete(key, options);
+      tailsFailing = tailsToFail;
+      await hook?.(key);
+      throw new TransientError('the storage delete got no answer');
+    },
+    getTail: async (key: GenKey, maxBytes: number): Promise<TailRead> => {
+      if (tailsFailing > 0) {
+        tailsFailing -= 1;
+        throw new TransientError('the storage read failed');
+      }
+      try {
+        return await base.getTail(key, maxBytes);
+      } finally {
+        if (pending !== undefined && pending.generation === key.generation) {
+          pending = undefined;
+          await applyLate?.();
+        }
+      }
+    },
   };
   return new Proxy(base, {
     get: (target, prop) => (prop in own ? own[prop as string] : bound(target, prop)),

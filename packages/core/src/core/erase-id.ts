@@ -163,6 +163,7 @@ import type {
 } from './ports';
 import { generationsOf } from './generation-list';
 import { ascending } from './order';
+import { deleteSettled } from './settle';
 import { type ReadRetry, jitteredWait, retryRead } from './retry';
 import { metadataToCarry, ownSummary, usableSummary } from './summary';
 import { validateUserRef } from './validate';
@@ -299,7 +300,7 @@ export interface EraseIdResult {
    * a missing holder as "someone else got there", never as a failure.
    *
    * A call that cannot establish the claim **throws** `WriteConflictError` or the underlying fault rather than
-   * report `erased: true` over bytes that are still there. Four ways that happens: a Storage `delete` fault; a
+   * report `erased: true` over bytes that are still there. Four ways that happens: a Storage `delete` fault the call cannot settle by reading the object back; a
    * collection pass that could not prove the segment was still the same one (which an ordinary retirement landing
    * mid-call is enough to cause); the same refusal on the path where the current generation did not hold the id
    * and nothing was published at all; and a generation still holding the id when the bucket is listed at the end
@@ -308,6 +309,12 @@ export interface EraseIdResult {
    * bucket. The row write an erasure makes before deleting a holder a load may still publish, or before a refused
    * rewrite discards its own object, when it gets no answer that reading the row can settle, throws the registry's
    * `TransientError`, and that object is not deleted.
+   *
+   * A delete that gets no answer is settled by reading its key: gone, it counts as deleted and is listed in
+   * `collected`; another object under the number, for a delete conditioned on the version searched, is the refusal that
+   * condition gives. When that read fails too, or the delete lands after it, the call reports the fault, and a re-run
+   * finds the object gone and lists nothing for the segment: keep the error with the ledger as the record of the
+   * deletion.
    *
    * A rollback that lands between the call's read of the row and one of its deletes, onto the generation being deleted,
    * leaves the pointer on an object that is gone. The call finds it at its next read of the row, or by reading the row
@@ -1161,7 +1168,12 @@ async function deleteFenced(
     }
     if (moved !== null) break;
     try {
-      await deps.storage.delete({ ...base, generation }, { ifVersion: versions.get(generation) });
+      await deleteSettled(
+        deps.storage,
+        { ...base, generation },
+        { ifVersion: versions.get(generation) },
+        c.read,
+      );
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
       // Another object is under the number now: the one searched was deleted, and the number taken again. What this
@@ -1719,7 +1731,7 @@ async function discardRefused(
   let row = await deps.registry.get(ref);
   for (let attempts = 1; ; attempts++) {
     if (row !== null && row.status === 'destroyed') {
-      await deps.storage.delete(key);
+      await deleteSettled(deps.storage, key, undefined, c.read);
       return row;
     }
     if (row === null || row.status !== 'active' || row.currentGen === null) return row;
@@ -1732,7 +1744,7 @@ async function discardRefused(
     const renewed = await renewal.renew(row);
     if ('row' in renewed) {
       try {
-        await deps.storage.delete(key, { ifVersion: proven.version });
+        await deleteSettled(deps.storage, key, { ifVersion: proven.version }, c.read);
       } catch (err) {
         if (!isWriteConflictError(err)) throw err;
       }

@@ -7,9 +7,23 @@
  * I/O of its own.
  */
 import type { Rng } from './determinism';
-import { isIntegrityError, type TransientError } from './errors';
+import {
+  WriteConflictError,
+  isIntegrityError,
+  isNotFoundError,
+  isTransientError,
+  type TransientError,
+} from './errors';
 import { UNANSWERED_BASE_MS } from './leases';
-import type { IRegistryDriver, RegistryRecord, RegistryWriteOptions, Token } from './ports';
+import type {
+  GenKey,
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+  RegistryWriteOptions,
+  StorageDeleteOptions,
+  Token,
+} from './ports';
 import { type Sleeper, jitteredWait } from './retry';
 
 /** The write tokens one call has sent, and the option that collects them. */
@@ -86,4 +100,53 @@ export async function readBack<T>(
     }
   }
   throw unanswered;
+}
+
+/**
+ * Delete an object, and settle a delete that got no answer by reading its key: `getTail(key, 0)` finding the object
+ * missing means the delete landed (a deleted object is missing to the next read), and the call counts it as deleted,
+ * as every driver already reports a delete that meets an object a concurrent collector removed first. Nothing can say
+ * which request removed it. With `ifVersion`, a tail of another version means the object the caller decided to delete
+ * is gone and another took its number: that is the conditional delete's own conflict, thrown as
+ * {@link WriteConflictError}. Any other outcome, and a read-back that fails every time, throws the original error.
+ *
+ * `read` runs the zero-byte read (an erasure passes its read retry); `waits` is what the read-back waits with.
+ */
+export async function deleteSettled(
+  storage: IStorageDriver,
+  key: GenKey,
+  options?: StorageDeleteOptions,
+  read: <T>(op: () => Promise<T>) => Promise<T> = (op) => op(),
+  waits: ReadBackWaits = {},
+): Promise<void> {
+  try {
+    await storage.delete(key, options);
+    return;
+  } catch (err) {
+    if (!isTransientError(err)) throw err;
+    const tail = await readBack(
+      () =>
+        read(() => storage.getTail(key, 0)).then(
+          (t) => t,
+          (readErr: unknown) => {
+            if (isNotFoundError(readErr)) return null;
+            throw readErr;
+          },
+        ),
+      err,
+      waits,
+    );
+    if (tail === null) return;
+    const version = tail.version;
+    if (
+      options?.ifVersion !== undefined &&
+      version !== undefined &&
+      version !== options.ifVersion
+    ) {
+      throw new WriteConflictError(
+        `generation s.${key.generation} is another object than the version given; not deleted`,
+      );
+    }
+    throw err;
+  }
 }
