@@ -42,8 +42,8 @@
  * incarnation of a name, and a name that is retired and re-created restarts at `0`, so the number alone matched
  * a different segment entirely. Anything else — a load that published in the meantime, or another
  * erasure that got there first — is reported as `reason: 'superseded'`, `erased: false`, and the caller re-runs
- * against the new generation. A writer that claims the same generation *number* first surfaces as a
- * `WriteConflictError` (write-once).
+ * against the new generation. So is a writer that claims the same generation *number* first (write-once): the put
+ * is refused with a `WriteConflictError`, which is read here as the lost race it is.
  *
  * The same answer covers the read half, and for the same reason. An erasure collects with `keep: 0`, which takes
  * every generation below its new pointer — so a racing erasure can delete the generation this call is streaming,
@@ -1585,17 +1585,32 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
     // authenticated and the summary is, so a stripped block is not made permanent by the rewrite. Such a source gets
     // here only past a fingerprint forged to match the row's, since stripping the block changes the object's size.
     const metadata = metadataToCarry(reader.metadata, aead === undefined ? undefined : described);
-    const tally = await writeCrbmGenerationStream(
-      deps.storage,
-      key,
-      rewrite(reader, chunkKey, target, codec, maxBytes, read),
-      {
-        crypto: cryptoAt(c, generation),
-        clock: deps.clock,
-        metadata,
-        entropy: deps.entropy,
-      },
-    );
+    let tally: Awaited<ReturnType<typeof writeCrbmGenerationStream>>;
+    try {
+      tally = await writeCrbmGenerationStream(
+        deps.storage,
+        key,
+        rewrite(reader, chunkKey, target, codec, maxBytes, read),
+        {
+          crypto: cryptoAt(c, generation),
+          clock: deps.clock,
+          metadata,
+          entropy: deps.entropy,
+        },
+      );
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+      // Another writer, usually an erasure of a different id on this segment, took the number between this call's
+      // `nextGeneration` and its put. Nothing of ours is in the bucket, so nothing is discarded. A retry would number
+      // again and be fenced on `from`, which that writer moves, so the answer is the one a lost publish gives.
+      let now: RegistryRecord | null;
+      try {
+        now = await deps.registry.get(ref);
+      } catch {
+        throw err;
+      }
+      return refusedResult(c, rowVerdict(c, now) ?? 'superseded');
+    }
     written = generation; // `putImmutable` commits atomically, so the object exists exactly now
     c.rewrote = { generation, fingerprint: tally.fingerprint };
     // Re-check the pointer before spending the verification read. The fence below is what makes the publish
@@ -1845,7 +1860,8 @@ async function resolveDek(
   if (record.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
     if (deps.keystore === undefined) {
       throw new KeyUnavailableError(
-        `segment "${ref.segment}" is encrypted but eraseIdFromSegment has no keystore`,
+        `segment "${ref.segment}" is encrypted, and the erasure has no keystore to open its key ` +
+          `(encryption.keystore on the store)`,
       );
     }
     return await deps.keystore.openDek(record.wrappedDeks);

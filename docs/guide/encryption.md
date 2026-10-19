@@ -68,7 +68,9 @@ Every later write to that segment reuses its DEK: a reload through `store.load` 
 an `*Into` verb on such a store, and the erasure rewrite. Loading a cleartext generation onto an encrypted segment is
 refused with `KeyUnavailableError`, before anything is written. A cleartext first load that the segment's first
 encrypted load overtakes after its object is written is refused at its publish instead, as `superseded`, and its
-cleartext object is deleted. With `encryption: { required: true }`, any cleartext write or read throws.
+cleartext object is deleted. With `encryption: { required: true }`, any cleartext write or read throws. An erasure over a cleartext segment is a
+read, so on such a store it is refused: `eraseSubject` lists the segment as an `error:` entry whatever id it erases,
+and `subjectReport` throws `KeyUnavailableError`, so run them from a store that can read every segment in scope.
 
 **Rotate keys without re-encrypting data.** Add a new KEK, point `activeKeyId` at it, and keep the old KEK: old
 segments keep decrypting. Use a **recovery KEK**, kept offline, so that losing the active one is not fatal.

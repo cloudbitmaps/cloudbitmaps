@@ -212,6 +212,10 @@ it is charged to `limit`, and the purges go on.
   is read, so live indexed rows equal to the cap followed by a pointer whose row is gone are refused too: size it above
   the live rows. Narrow with `namespace` (and, for an index scan, a smaller `lookbackBuckets`) before raising it.
 
+`namespace` scopes the sweep to one namespace; omit it to sweep every namespace, segments loaded with no `namespace`
+included. `'_default'`, the label the export tool and the disaster-recovery samples print for those segments, is an
+ordinary namespace name here: passing it sweeps a namespace of that name, not them.
+
 **Every `skipped` reason is worth an alert, for a different reason:**
 
 - **`invalid-policy`**: the row's `expiresAt` cannot be used. That segment is not expiring, and someone probably

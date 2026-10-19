@@ -94,7 +94,11 @@ const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
  * and whether and when it purges the tombstones of earlier retirements.
  */
 export interface RetireExpiredOptions {
-  /** Scope the sweep to one namespace. Omit to sweep every namespace the registry knows. */
+  /**
+   * Scope the sweep to one namespace. Omit to sweep every namespace the registry knows, segments loaded with no
+   * namespace included: `'_default'` is an ordinary namespace name here, not those segments, and scopes the sweep
+   * to a namespace of that name.
+   */
   readonly namespace?: string;
   /**
    * The instant to compare policies against (epoch-ms). Required here because `core/` takes its time from the

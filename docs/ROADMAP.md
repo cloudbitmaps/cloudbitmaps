@@ -485,6 +485,10 @@ move it up.
   nothing created**. Today's cost tooling can only answer that once you're already a user, which is backwards. It
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
+- **A scope of its own for un-namespaced segments, after 0.23.0.** A segment loaded with no `namespace` is reached by
+  `subjectReport`, `eraseSubject` and `retireExpired` only when the call covers every namespace (`allNamespaces: true`,
+  or no `namespace` on a sweep), because the registry port cannot list the absent namespace alone, and `'_default'`
+  names an ordinary namespace. A scope for just those segments needs a filter on the registry port.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
 - **A ledger that tells a generation a load published from one a seed recorded.** A rollback refuses a generation the
   row's `knownGens` does not name, but a publish over a row with no usable ledger seeds one from the bucket, an orphan or
