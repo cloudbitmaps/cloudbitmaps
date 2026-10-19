@@ -320,12 +320,13 @@ it streamed and the row's token](correctness.md#which-fence), and [deletes every
 id, above the pointer or below](correctness.md#every-holder-goes). Before it deletes anything, it [takes what it will
 delete out of the row's ledger of known generations](correctness.md#ledger-loses-what-it-deletes), so a rollback without
 `allowUnknown` cannot bring an erased generation back, even when a delete fails, except where the pointer alone decides.
-[A race with a load, a rollback or another erasure is reported](correctness.md#racing-writers), as `'superseded'`, an
-`error:` note or a thrown error, with two exceptions at a refused rewrite's delete of its own object above the winner's
-pointer: [a rollback onto that object between the call's renewal of the row and the
+[A race with a load, a rollback or another erasure is reported](correctness.md#erasure-racing-writers), as
+`'superseded'`, an `error:` note or a thrown error, with two exceptions at a refused rewrite's delete of its own object
+above the winner's pointer: [a rollback onto that object between the call's renewal of the row and the
 delete](correctness.md#rollback-during-erasure), and, on a storage driver that does not report `conditionalDelete`, [a
-delete that removes a load's generation published under that object's number](correctness.md#number-taken-again). Each
-leaves the pointer on a missing object with nothing reported, and only `checkConsistency()` finds it. A call that could
-not collect [throws rather than report `erased: true` over bytes still there](correctness.md#erasure-results). The
-mechanism, its memory and request bounds, each race, which drivers apply a conditional delete, and what each result
-means are in [How an erasure stays correct](correctness.md#how-an-erasure-stays-correct).
+delete that removes a load's generation published under that object's
+number](correctness.md#erasure-number-taken-again). Each leaves the pointer on a missing object with nothing reported,
+and only `checkConsistency()` finds it. A call that could not collect [throws rather than report `erased: true` over
+bytes still there](correctness.md#erasure-results). The mechanism, its memory and request bounds, each race, which
+drivers apply a conditional delete, and what each result means are in [How an erasure stays
+correct](correctness.md#how-an-erasure-stays-correct).

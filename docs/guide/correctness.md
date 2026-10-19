@@ -22,7 +22,7 @@ which code, tests and docs cite by number.
 
 ## When a load is refused
 
-A load that is refused returns `published: false` and a `reason`. It does not throw. The previous generation stays
+<a id="refusal-is-reported-not-thrown"></a>A load that is refused returns `published: false` and a `reason`. It does not throw. The previous generation stays
 current, and the result still carries the numbers (`cardinality`, `cardinalityBefore`) so you can log what was
 refused.
 
@@ -32,6 +32,8 @@ delete, unless another write changed the segment's row meanwhile in more than it
 bucket, an orphan that a later load's collection takes, and until it goes a rollback onto it is refused unless it passes
 `allowUnknown`, since the row never recorded it ([why, and the exceptions](#how-a-load-stays-correct)). Nothing a reader sees changes. To judge the outputs of a `materializeMany` call without writing anything, use a
 [dry run](loading.md#look-before-you-publish-a-dry-run).
+
+<a id="what-each-reason-means"></a>Each `reason`, what it means, and what to do:
 
 | `reason` | Means | What to do |
 |---|---|---|
@@ -109,7 +111,7 @@ one that was passed.
 
 ### When a write is throttled or gets no answer
 
-A load makes two writes, and the backend handles each on its own terms.
+<a id="a-load-makes-two-writes"></a>A load makes two writes, and the backend handles each on its own terms.
 
 <a id="object-write-resent"></a>**The generation's object** is written once, to a number no other object holds, so a write the service refuses as too
 fast can be sent again. S3 answering `503 SlowDown` (or any `503`), and GCS answering `429` or `503`, make the driver
@@ -162,19 +164,19 @@ object is the one state no reader can recover from. Re-run the load. It numbers 
 whether or not the first attempt landed, and collection removes the orphan once a generation above it is current. To know
 whether the first attempt landed, check `store.generations(ref)` rather than replaying the request.
 
-A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
+<a id="unanswered-refusal-is-flagged"></a>A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
 been current for a while before another writer moved on: its `segment.load-refused` audit event carries `unanswered:
 true`. So does a refusal that follows a conflict the registry marked as one that may follow the write's own landing
 (`unsettledConflict`, which the Azure Blob registry raises for every conflict of a row write).
 
-On a registry that reports write tokens, a `superseded` refusal over a row that names this load's generation says only
+<a id="superseded-over-own-generation"></a>On a registry that reports write tokens, a `superseded` refusal over a row that names this load's generation says only
 that the row's `pointerId` is not the token of a write this load sent. Usually another load published that number. It
 can also be this load's own write that landed, followed before the load read the row again by a write that renews the
 row's `pointerId` over it: an erasure's renewal, or a rollback back onto the generation after a publish or another
 rollback moved the pointer off it. The load cannot tell the two apart, so it reports none published though its
 generation may be current, and deletes nothing. A re-run publishes a new generation.
 
-A rollback settles its swap the same way as a load's publish. On a registry that reports write tokens, a swap that met a conflict or got no
+<a id="rollback-settles-its-swap"></a>A rollback settles its swap the same way as a load's publish. On a registry that reports write tokens, a swap that met a conflict or got no
 answer is its own when the row's pointer is at the target and its `pointerId` is the token of a swap the rollback sent,
 whatever else was written to the row since (a lease, a retention or residency write): the rollback then checks the
 target, audits the move and returns, as if the swap had answered. A row whose pointer is at the target by another
@@ -430,7 +432,7 @@ the lower of the two.
 
 ### A rollback that races a collection
 
-Every loop that deletes generations reads the segment's row just before each delete. A rollback that is held to the
+<a id="every-delete-reads-the-row"></a>Every loop that deletes generations reads the segment's row just before each delete. A rollback that is held to the
 row's record of its generations (`knownGens`) is kept out of all of them:
 
 - a load's collection by name removes the generations it deletes from the record in its publish, before it deletes
@@ -527,7 +529,7 @@ it can finish only after the rollback's move, so the call's next read of the row
 
 ## How a pin stays correct
 
-- <a id="pin-costs-a-number"></a>**A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every
+- <a id="pin-shares-the-caches"></a>**A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every
   other reader. Its decoded chunks share the store's chunk cache and its bound, under keys of their own that no live
   read writes. So a pin is never handed a chunk a live read fetched from another generation, and it pays one GET for a
   chunk a live read of its generation already cached. A small generation's reader also holds that generation's
@@ -767,7 +769,7 @@ ledger again before the call deletes it. The same write renews the row's `pointe
   does a call whose renewal another erasure's write already made after this call listed the bucket and whose names that
   write already took out: two erasures of different ids on one segment that delete the same generations write once
   between them, and both report `erased: true`.
-- <a id="load-lands-first"></a>**A load that lands first.** Holders below the pointer: the call prunes against the pointer it finds, keeping the
+- <a id="erasure-load-lands-first"></a>**A load that lands first.** Holders below the pointer: the call prunes against the pointer it finds, keeping the
   generation it found clean, which the load's window names and the collection then spares as the load's grace
   generation, and reports `erased: true` with every holder gone. Holders above the pointer that the load's number has
   left below it are taken the same way, with no renewal, since no load can publish a number below the pointer; but when
@@ -776,11 +778,11 @@ ledger again before the call deletes it. The same write renews the row's `pointe
   holder being out of the ledger; on a row with no usable ledger nothing is taken out, and below the pointer the pointer
   alone decides) leaves that holder current, and the call reports `'superseded'` after it has taken the
   holders below the pointer.
-- <a id="write-that-loses"></a>**A write that loses** to another writer is made again against the row read after it. The fifth lost write across the
+- <a id="erasure-write-that-loses"></a>**A write that loses** to another writer is made again against the row read after it. The fifth lost write across the
   call's fences ends the call with `'superseded'` and no claim; when it is the first write, nothing was deleted. On a
   segment that loads many times a second that is an outcome to expect now and then, and a re-run settles it. A write of
   the row's leases alone costs no attempt.
-- <a id="collection-spared-a-name"></a>**A collection that spared a name the row knows** is followed by a second pass. A rollback onto a holder (with `allowUnknown`), a load that
+- <a id="erasure-collection-spared-a-name"></a>**A collection that spared a name the row knows** is followed by a second pass. A rollback onto a holder (with `allowUnknown`), a load that
   kept a holder in its window, or a load that started a ledger on a row that had none, made the row name what the
   collection meant to delete since the write took it out. The call writes the row again to take those names out and
   collects again until a collection spares nothing the row names: at most six collections in all, the first and five
@@ -788,12 +790,12 @@ ledger again before the call deletes it. The same write renews the row's `pointe
   and, with a holder left in the bucket, throws a `WriteConflictError` for a re-run to finish, or answers
   `'superseded'` when the pointer has meanwhile moved past every holder. The rewrite's collection does the same for the generations below the
   rewrite.
-- <a id="row-gone"></a>**A row that is gone** or a tombstone has no ledger: the deletes by name stop with the row's reason, and the
+- <a id="erasure-row-gone"></a>**A row that is gone** or a tombstone has no ledger: the deletes by name stop with the row's reason, and the
   collection reads the row itself. When every holder is below the pointer, so nothing is deleted by name, the call never
   answers `'absent'` while a holder is still in the bucket: it throws. A call that deletes by name and finds its row gone
   answers `'absent'`.
 
-<a id="racing-writers"></a>**Racing writers.** Another writer that moves the pointer off the generation the rewrite derived from can be a load,
+<a id="erasure-racing-writers"></a>**Racing writers.** Another writer that moves the pointer off the generation the rewrite derived from can be a load,
 another erasure, or an operator's `rollback`. Another erasure collects with `keep: 0`, so it can delete the generation
 this rewrite was still streaming, or the object it had just written. When two erasures of different ids race on one
 segment, the loser's rewrite still holds the winner's id, and when it sits above the winner's pointer the loser deletes
@@ -854,7 +856,7 @@ not forward-only, for the reason given in [which fence a publish carries](#how-a
   with no usable ledger, can name the object in the ledger it seeds; after the delete that entry names a
   missing generation, which takes a place in the window until a later load's collection drops it, and fails no read.
 
-<a id="number-taken-again"></a>**A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
+<a id="erasure-number-taken-again"></a>**A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
 a call deletes a holder by name, above the pointer or on a segment with no generation yet, another erasure of the same
 id can delete that holder first, and a load that read the row after both erasures renewed it can then take the
 number, write its own generation under it and publish it: nothing refuses that publish. So each such delete names the
@@ -1056,11 +1058,13 @@ loop re-reads the row first, so no publish can move it back. All bytes are check
 the store's retry. For a conditional write that retry gives the wrong answer. A write that lands and then loses its
 response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
 won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a tombstone
-write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone:
-a registry row once, whatever the answer, and a generation's object once, or again after a throttle, when a random id
-in its metadata tells a first send that landed from another writer's object. A row write that gets no answer is settled
-by the load itself, which reads the row and sends a fresh compare-and-swap from it if nothing changed, at most three
-times
+write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone,
+but for two GCS writes that keep it: an object above `simpleUploadThresholdBytes`, a resumable upload the SDK retries
+within its session, and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to send
+twice. With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
+after a throttle, when a random id in its metadata tells a first send that landed from another writer's object. A row
+write that gets no answer is settled by the load itself, which reads the row and sends a fresh compare-and-swap from
+it if nothing changed, at most three times
 ([a load's writes](#when-a-write-is-throttled-or-gets-no-answer)). The Azure Blob package, whose retry has
 no per-request switch, tags each write and, on a conflict, reads the stored blob back to see whose write it is. The GCS package does the same for an
 object above `simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client

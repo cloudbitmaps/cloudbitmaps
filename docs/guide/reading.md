@@ -465,13 +465,13 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
 
 ### How a pin stays correct
 
-A pin [shares the store's bounded reader and chunk caches](correctness.md#pin-costs-a-number), under keys of its own, so
-it is never handed a chunk a live read fetched from another generation. [One call reads a segment at one
+A pin [shares the store's bounded reader and chunk caches](correctness.md#pin-shares-the-caches), under keys of its own,
+so it is never handed a chunk a live read fetched from another generation. [One call reads a segment at one
 generation](correctness.md#one-generation-per-call): a combine that holds a segment at two generations is refused with
 `ValidationError`. A pin [records its object's size and footer checksum](correctness.md#pin-safe-across-re-creation), so
 it never reads a re-created segment's object, and where its object is gone or replaced a read that must fetch [fails
-with `NotFoundError` rather than going empty part-way through a call](correctness.md#pin-of-no-generation). What
-invalidates a pin, what it answers from meanwhile, and what it needs are in [How a pin stays
+with `NotFoundError` rather than going empty part-way through a call](correctness.md#pin-answers-from-what-it-holds).
+What invalidates a pin, what it answers from meanwhile, and what it needs are in [How a pin stays
 correct](correctness.md#how-a-pin-stays-correct).
 
 ## Read a chunk at a time: `batches()`

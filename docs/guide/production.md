@@ -578,12 +578,15 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
-would find itself already there and report a conflict. So a driver sends a conditional write once, and again only
-where an id it carries tells a replay apart (a throttled object), and a load or a rollback settles an unanswered
-registry write by reading the row. The exception is Azure Blob, whose client's own retry can replay any write, a
-registry row included: the id tells a replay from another writer's object, and for a row that read-back is not definitive
-([how retries stay correct](correctness.md#how-retries-stay-correct)). A fault those do not settle reaches you as
-`TransientError`, and the retry is yours.
+would find itself already there and report a conflict. So [the S3 and GCS drivers send a conditional write
+once](correctness.md#sdk-retry), and again only where an id it carries tells a replay apart (a throttled object), and [a
+load or a rollback settles an unanswered registry write by reading the row](correctness.md#row-write-settled). Two GCS
+writes keep the SDK's retry: a resumable upload (an object above `simpleUploadThresholdBytes`), which carries the same
+id, and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to send twice. Azure Blob's
+client retry can replay any write, a registry row included: [the id tells a replay from another writer's
+object](correctness.md#tagged-writes), and for a row that read-back is not definitive ([how retries stay
+correct](correctness.md#how-retries-stay-correct)). A fault those do not settle reaches you as `TransientError`, and
+the retry is yours.
 
 Re-running a `load` is safe. It takes a fresh generation number and re-reads the pointer, so it publishes whether or
 not the first attempt landed, under every guard setting. Three things to know:

@@ -51,13 +51,13 @@
     },
     {
       "file": "PRIVACY.md",
-      "claim": "racing-writers",
+      "claim": "erasure-racing-writers",
       "sentence": "858daa967579",
       "starts": "A writer that lands during the rewrite is"
     },
     {
       "file": "PRIVACY.md",
-      "claim": "racing-writers",
+      "claim": "erasure-racing-writers",
       "sentence": "0b255be11659",
       "starts": "When two erasures of different ids race on"
     },
@@ -69,7 +69,7 @@
     },
     {
       "file": "PRIVACY.md",
-      "claim": "erasure-results",
+      "claim": "erasure-number-taken-again",
       "sentence": "a82d6084111c",
       "starts": "Each delete names the object the erasure read:"
     },
@@ -128,12 +128,6 @@
       "starts": "A tombstone a hand-run dropSegment or a crypto-shred"
     },
     {
-      "file": "bench/calibration/2026-10-13-b329d.md",
-      "claim": "rollback-race-cost",
-      "sentence": "cf466af06a18",
-      "starts": "A load that deletes by name made 2"
-    },
-    {
       "file": "docs/ROADMAP.md",
       "claim": "write-goes-out-on-the-row-read",
       "sentence": "5173ef10e078",
@@ -141,7 +135,7 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "when-a-load-is-refused",
+      "claim": "refusal-is-reported-not-thrown",
       "sentence": "bb4bce1b3003",
       "starts": "A refusal is reported (published: false + reason),"
     },
@@ -177,7 +171,13 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "transient-error-leaves-its-object",
+      "claim": "row-write-settled",
+      "sentence": "cb22daf058a8",
+      "starts": "Refuses a target the row's knownGens does not"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "rollback-settles-its-swap",
       "sentence": "cb22daf058a8",
       "starts": "Refuses a target the row's knownGens does not"
     },
@@ -237,13 +237,7 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "number-taken-again",
-      "sentence": "a5700e9d0390",
-      "starts": "A holder an erasure deletes by name, above"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "erasure-results",
+      "claim": "erasure-number-taken-again",
       "sentence": "a5700e9d0390",
       "starts": "A holder an erasure deletes by name, above"
     },
@@ -273,13 +267,13 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "4a8864215b19",
       "starts": "the one round trip between a tombstone collection's"
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "7c54a354292b",
       "starts": "On a registry whose tokens carry no incarnation"
     },
@@ -327,7 +321,7 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "bcbd87615375",
       "starts": "An erasure's delete of a holder by name"
     },
@@ -363,7 +357,7 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "deleting-call-detects",
+      "claim": "rollback-check-gets-time",
       "sentence": "865e16af2dfa",
       "starts": "A collection that deleted anything reads the row"
     },
@@ -381,7 +375,7 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "when-a-load-is-refused",
+      "claim": "refusal-is-reported-not-thrown",
       "sentence": "e646f8447b80",
       "starts": "false is a normal outcome, not a throw,"
     },
@@ -429,7 +423,7 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "transient-error-leaves-its-object",
+      "claim": "rollback-settles-its-swap",
       "sentence": "bce4bbb81d16",
       "starts": "A swap that met a conflict or got"
     },
@@ -477,7 +471,7 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "1f84fc51f8be",
       "starts": "getTail reports a version for every object it"
     },
@@ -489,37 +483,13 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "a15182c7b365",
       "starts": "A version names the object, not the key,"
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "row-write-settled",
-      "sentence": "f00ab68680a8",
-      "starts": "A registry that reports them says so with"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "row-write-settled",
-      "sentence": "023166e977b3",
-      "starts": "A write sent again with a new token"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "transient-error-leaves-its-object",
-      "sentence": "2cad202ea860",
-      "starts": "A pointerId that is not one is another"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "transient-error-leaves-its-object",
-      "sentence": "4222df979a32",
-      "starts": "The writer cannot tell the two apart, reports"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "d24f77dc6457",
       "starts": "A registry that sets the flag to false,"
     },
@@ -603,7 +573,7 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "cf95e8f0fad0",
       "starts": "The storage half's DeleteObject under If-Match, which with"
     },
@@ -687,7 +657,7 @@
     },
     {
       "file": "docs/guide/disaster-recovery.md",
-      "claim": "a-rollback-that-races-a-collection",
+      "claim": "every-delete-reads-the-row",
       "sentence": "505e6ad7b911",
       "starts": "It moves the pointer and then reads the"
     },
@@ -789,7 +759,7 @@
     },
     {
       "file": "docs/guide/erasure.md",
-      "claim": "transient-error-leaves-its-object",
+      "claim": "superseded-over-own-generation",
       "sentence": "1402f77833e4",
       "starts": "The same can happen to a rewrite whose"
     },
@@ -855,7 +825,7 @@
     },
     {
       "file": "docs/guide/getting-started.md",
-      "claim": "when-a-load-is-refused",
+      "claim": "refusal-is-reported-not-thrown",
       "sentence": "1a419fa58d68",
       "starts": "A refusal is reported in the result, not"
     },
@@ -873,7 +843,7 @@
     },
     {
       "file": "docs/guide/loading.md",
-      "claim": "when-a-load-is-refused",
+      "claim": "refusal-is-reported-not-thrown",
       "sentence": "6d24789061fc",
       "starts": "A refusal is reported rather than thrown, so"
     },
@@ -951,7 +921,19 @@
     },
     {
       "file": "docs/guide/loading.md",
+      "claim": "every-delete-reads-the-row",
+      "sentence": "f0c7e8057162",
+      "starts": "Every collection and the erasure takes what it"
+    },
+    {
+      "file": "docs/guide/loading.md",
       "claim": "deleting-call-detects",
+      "sentence": "ff21a39483d2",
+      "starts": "What is left is a rollback that is"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "every-delete-reads-the-row",
       "sentence": "ff21a39483d2",
       "starts": "What is left is a rollback that is"
     },
@@ -975,25 +957,19 @@
     },
     {
       "file": "docs/guide/loading.md",
-      "claim": "transient-error-leaves-its-object",
+      "claim": "rollback-settles-its-swap",
       "sentence": "ff088156d1f8",
       "starts": "On a registry that reports write tokens (every"
     },
     {
       "file": "docs/guide/loading.md",
-      "claim": "transient-error-leaves-its-object",
+      "claim": "rollback-settles-its-swap",
       "sentence": "ab6e18cf8450",
       "starts": "Whatever else was written to the row since"
     },
     {
       "file": "docs/guide/loading.md",
-      "claim": "transient-error-leaves-its-object",
-      "sentence": "4c61286ded1a",
-      "starts": "A write that renews the pointerId over the"
-    },
-    {
-      "file": "docs/guide/loading.md",
-      "claim": "transient-error-leaves-its-object",
+      "claim": "rollback-settles-its-swap",
       "sentence": "9f42e8a39c98",
       "starts": "A registry that reports no tokens settles a"
     },
@@ -1002,12 +978,6 @@
       "claim": "every-holder-goes",
       "sentence": "26886ef1182e",
       "starts": "Or an erasure deletes them: all of them"
-    },
-    {
-      "file": "docs/guide/loading.md",
-      "claim": "which-fence",
-      "sentence": "70f6e5aa597d",
-      "starts": "An Into publishes with the fences a load"
     },
     {
       "file": "docs/guide/loading.md",
@@ -1050,18 +1020,6 @@
       "claim": "row-write-settled",
       "sentence": "bd1b064493af",
       "starts": "Only where it is safe, and not by"
-    },
-    {
-      "file": "docs/guide/production.md",
-      "claim": "row-write-settled",
-      "sentence": "d304188b536b",
-      "starts": "So a driver sends a conditional write once,"
-    },
-    {
-      "file": "docs/guide/production.md",
-      "claim": "sdk-retry",
-      "sentence": "d304188b536b",
-      "starts": "So a driver sends a conditional write once,"
     },
     {
       "file": "docs/guide/production.md",
@@ -1113,7 +1071,7 @@
     },
     {
       "file": "packages/azure-blob/README.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "32b1d5dea635",
       "starts": "whether the service applies ifMatch on a Delete"
     },
@@ -1173,7 +1131,7 @@
     },
     {
       "file": "packages/gcs/README.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "a4fe23105232",
       "starts": "whether the service applies ifGenerationMatch on an object"
     },
@@ -1191,25 +1149,7 @@
     },
     {
       "file": "packages/gcs/README.md",
-      "claim": "sdk-retry",
-      "sentence": "8003b9ffba99",
-      "starts": "A transient failure of a write throws TransientError,"
-    },
-    {
-      "file": "packages/gcs/README.md",
-      "claim": "sdk-retry",
-      "sentence": "2862e29e58e4",
-      "starts": "The driver sends each registry write once; a"
-    },
-    {
-      "file": "packages/gcs/README.md",
       "claim": "object-write-resent",
-      "sentence": "71c332dccaa2",
-      "starts": "A generation's object of up to simpleUploadThresholdBytes is"
-    },
-    {
-      "file": "packages/gcs/README.md",
-      "claim": "sdk-retry",
       "sentence": "71c332dccaa2",
       "starts": "A generation's object of up to simpleUploadThresholdBytes is"
     },
@@ -1227,7 +1167,7 @@
     },
     {
       "file": "packages/s3/README.md",
-      "claim": "number-taken-again",
+      "claim": "erasure-number-taken-again",
       "sentence": "e55c3947a994",
       "starts": "whether the store applies If-Match on a DeleteObject:"
     },
@@ -1239,25 +1179,7 @@
     },
     {
       "file": "packages/s3/README.md",
-      "claim": "sdk-retry",
-      "sentence": "8003b9ffba99",
-      "starts": "A transient failure of a write throws TransientError,"
-    },
-    {
-      "file": "packages/s3/README.md",
-      "claim": "sdk-retry",
-      "sentence": "2862e29e58e4",
-      "starts": "The driver sends each registry write once; a"
-    },
-    {
-      "file": "packages/s3/README.md",
       "claim": "object-write-resent",
-      "sentence": "06af8f8ba684",
-      "starts": "A generation's object is sent again, up to"
-    },
-    {
-      "file": "packages/s3/README.md",
-      "claim": "sdk-retry",
       "sentence": "06af8f8ba684",
       "starts": "A generation's object is sent again, up to"
     },
@@ -1272,12 +1194,6 @@
       "claim": "tagged-writes",
       "sentence": "bf238e257d39",
       "starts": "A load whose row writes all go unanswered"
-    },
-    {
-      "file": "packages/s3/README.md",
-      "claim": "sdk-retry",
-      "sentence": "91c43bf11518",
-      "starts": "A bare 429 (AWS S3 does not send"
     },
     {
       "file": "site/architecture.html",
@@ -1314,12 +1230,6 @@
       "claim": "sdk-retry",
       "sentence": "3417b3b10e44",
       "starts": "A write — a load, an Into 's"
-    },
-    {
-      "file": "site/architecture.html",
-      "claim": "row-write-settled",
-      "sentence": "cddcbcae28dc",
-      "starts": "Write conflicts are the one middle case, and"
     },
     {
       "file": "site/architecture.html",
@@ -1362,18 +1272,6 @@
       "claim": "what-collection-does",
       "sentence": "80877f1bab0b",
       "starts": "All four rest on a protocol written down"
-    },
-    {
-      "file": "site/llms.txt",
-      "claim": "publish-is-forward-only",
-      "sentence": "41485cdde7cf",
-      "starts": "Nothing mutates a stored bitmap, so a crash"
-    },
-    {
-      "file": "site/llms.txt",
-      "claim": "crash-never-moves-the-pointer",
-      "sentence": "41485cdde7cf",
-      "starts": "Nothing mutates a stored bitmap, so a crash"
     },
     {
       "file": "site/llms.txt",
