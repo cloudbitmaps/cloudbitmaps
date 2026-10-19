@@ -45,7 +45,11 @@ import ts from 'typescript';
  *   - a Proxy trap written as a `switch`, a ternary or a lookup table;
  *   - a fake that reports its token on one path and not on another, or after the throw it sent;
  *   - the order of the report against the send (`onToken` called after the inner write): the registry conformance
- *     suite holds a registry to that, and this gate holds only the tests' own doubles.
+ *     suite holds a registry to that, and this gate holds only the tests' own doubles;
+ *   - whether the two escapes are true: a `never sent` comment is taken at its word, so a fake that does send and
+ *     carries it passes; and a mention of `reportsWriteTokens` anywhere in the nearest enclosing function or class
+ *     passes every double inside it, which in a test is often a whole `it` callback. Use either only where it is
+ *     true of the double it sits on.
  *
  * Known false positive: a forwarding call whose options reach the inner write only inside a closure, or under a name the
  * gate cannot connect to the parameter. Pass the options as an argument of the call, or add the words above.
