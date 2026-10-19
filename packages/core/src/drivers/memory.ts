@@ -225,7 +225,9 @@ export class MemoryStorageDriver implements IStorageDriver {
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
     validateSegmentRef(ref);
     const prefix = `${segmentKey(ref)} `;
-    for (const k of this.objects.keys()) {
+    // The keys as they stand now, so an object written during the listing is not yielded, as a backend's listing
+    // answers for the moment it began.
+    for (const k of [...this.objects.keys()]) {
       if (k.startsWith(prefix)) {
         yield {
           namespace: ref.namespace,
