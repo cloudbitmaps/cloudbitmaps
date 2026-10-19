@@ -817,6 +817,30 @@ function assertEntrySdkFree(pkgDir) {
 }
 
 /**
+ * No declaration the flavor ships imports the `roaring` package, so no public signature can name one of its types.
+ * `deserializePortable` returns the library's own `ReadonlyBitmap`; a signature that named `roaring`'s class again
+ * would put `import ... from 'roaring'`, or a `/// <reference types="roaring" />` directive, back into the emitted
+ * `.d.ts`, and a consumer without that package's types would see `any`.
+ */
+function assertNoRoaringTypesInDeclarations(pkgDir) {
+  const { readFileSync } = require('node:fs');
+  const { namesPackage } = require('./dts-specifiers.cjs');
+  const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
+  const files = declarationFiles(dist);
+  for (const file of files) {
+    if (namesPackage(readFileSync(path.join(dist, file), 'utf8'), 'roaring')) {
+      throw new Error(
+        `@cloudbitmaps/${pkgDir}: dist/${file} imports the \`roaring\` package. No public signature may name one ` +
+          `of its types: return the library's own type (see \`ReadonlyBitmap\`).`,
+      );
+    }
+  }
+  console.log(
+    `  no roaring import in the shipped declarations: @cloudbitmaps/${pkgDir} (${files.length} .d.ts)`,
+  );
+}
+
+/**
  * The bin must still run when it is reached through a SYMLINK, because that is how it is always reached.
  *
  * Every normal install puts a symlink at `node_modules/.bin/<name>`, and `npx` and every npm script invoke
@@ -936,6 +960,7 @@ async function main() {
     // The SDK sweep skips the driver packages — naming an SDK is what they exist for. The specifier check
     // does not: they publish `.d.ts` like everything else.
     if (!DRIVER_PACKAGES.includes(pkgDir)) assertEntrySdkFree(pkgDir);
+    if (pkgDir === 'roaring') assertNoRoaringTypesInDeclarations(pkgDir);
     assertDtsSpecifiers(pkgDir);
     assertSubpathsResolveWithoutExports(pkgDir);
   }

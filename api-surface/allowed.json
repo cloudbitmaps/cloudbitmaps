@@ -494,5 +494,17 @@
   {
     "entry": "@cloudbitmaps/core/driver-kit unsettledConflict",
     "reason": "a driver-kit addition: a registry driver marks a conflict that may follow its own landed write, so a load refused after one reports unanswered: true, as after a write with no answer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring (referenced) RoaringBitmap32*",
+    "reason": "no public signature names the roaring package's class any more, agreed with the maintainer on 2026-10-18: deserializePortable returns ReadonlyBitmap, the library's own type; a RoaringBitmap32 you hold still loads as { bitmap } and where ids go, and roaring's whole API is reached by decoding the bitmap's portable bytes with roaring"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring deserializePortable",
+    "reason": "returns ReadonlyBitmap in place of roaring's RoaringBitmap32, agreed with the maintainer on 2026-10-18 so that the codec behind it can change without another change to a signature; the check, the decode and the errors are unchanged, and the result has size, has(id), ascending iteration and serialize('portable')"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ReadonlyBitmap*",
+    "reason": "a new type, agreed with the maintainer on 2026-10-18: the read-only bitmap deserializePortable returns, a PortableBitmap and an Iterable<number> with size and has(id); roaring's RoaringBitmap32 satisfies it as it is"
   }
 ]

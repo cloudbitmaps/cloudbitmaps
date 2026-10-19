@@ -2257,8 +2257,9 @@ export class CloudRoaring {
    * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
    * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
    * containers with no per-id work, and gives the generation chunk for chunk what its ids would. A bare
-   * `RoaringBitmap32` passed as ids loads as `{ bitmap }`. A `Uint8Array` or `Buffer` passed as ids is refused with
-   * `ValidationError`, since each byte would load as an id: pass bytes as `{ serialized }`.
+   * `RoaringBitmap32`, or a bitmap `deserializePortable` returned, passed as ids loads as `{ bitmap }`. A
+   * `Uint8Array` or `Buffer` passed as ids is refused with `ValidationError`, since each byte would load as an id:
+   * pass bytes as `{ serialized }`.
    *
    * Ids are held whole in memory before the object is written: the generation's bitmaps and a buffer of up to about 28
    * MB. Ids that already ascend can be loaded with `sorted: true` instead, which writes them one chunk at a time while
@@ -4130,6 +4131,7 @@ export class Segment {
 // ---------------------------------------------------------------------------------------------------
 // Decode portable bytes you hold, through the check a `{ serialized }` load makes.
 export { deserializePortable };
+export type { ReadonlyBitmap } from './roaring-codec';
 export {
   // Backends
   MemoryStorage,

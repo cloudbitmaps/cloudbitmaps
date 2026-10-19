@@ -34,9 +34,12 @@ import { testEntropy } from '../helpers/entropy';
 
 const DAY = 86_400_000;
 const T0 = 1_790_000_000_000;
-/** The consumer's numbers: a 72 h retention, and a 14-day grace before a tombstone is purged. */
-const RETENTION = 3 * DAY;
-const GRACE = 14 * DAY;
+/**
+ * A two-day retention, and a ten-day grace before a tombstone is purged. The grace must stay longer than a day, the
+ * default: several tests move between day buckets inside it, and with one day they would pass without doing so.
+ */
+const RETENTION = 2 * DAY;
+const GRACE = 10 * DAY;
 
 /** A registry over a counting store, storage in memory, and a clock the test moves. */
 function world(options: { conditionalDelete?: boolean } = {}) {
@@ -109,14 +112,14 @@ describe('the done-when: a full sweep costs what is live and in its grace, not w
     expect(retired.retired).toBe(N);
 
     // Mid-grace, the tombstones are still rows, and a sweep reads each: proportional to the grace-period rows.
-    w.advance(7 * DAY);
+    w.advance(GRACE / 2);
     const midGrace = await readsOf(w, () =>
       retireExpired(w.deps, { namespace: ns, now: w.now(), tombstoneGraceMs: GRACE }),
     );
     expect(midGrace.result.scanned).toBe(N + 1);
     expect(midGrace.reads).toBe(N + 1);
 
-    w.advance(7 * DAY);
+    w.advance(GRACE / 2);
     const purged = await retireExpired(w.deps, {
       namespace: ns,
       now: w.now(),
