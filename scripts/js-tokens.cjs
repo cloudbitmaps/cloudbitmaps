@@ -1,111 +1,90 @@
 'use strict';
 /*
- * The one scanner behind the specifier detectors (`sdk-specifiers.cjs`, `builtin-free.cjs`), so they cannot disagree
- * about where a string or a comment begins.
+ * The one reader behind the specifier detectors (`sdk-specifiers.cjs`, `builtin-free.cjs`) and the module-graph walk
+ * (`dts-specifiers.cjs`), so they cannot disagree about where a string or a comment begins.
  *
  * Pairing quotes with a regular expression goes wrong at a regular expression literal that holds a quote
  * (`/(sig=["']?)[^&"']*\/g`): the quote pairs with a later one, and every string after it is missed, which turns a
- * detector of `require('...')` in a function body green. TypeScript's scanner tells a regex literal from a division
- * and skips comments properly, so both detectors read tokens.
- *
- * The one heuristic is whether a `/` divides or opens a regular expression, read from the token before it (see
- * DIVIDES_AFTER). A form it reads wrongly (an `if (x)` header followed by a regex literal) can hide a specifier
- * after it.
+ * detector of `require('...')` in a function body green. Telling a regular expression from a division by the token
+ * before a `/` goes wrong too, after any keyword-shaped name (`opts.type / 2`). So this reads the TypeScript parser's
+ * tree: a string is a string-literal node, a comment is trivia the parser attached to a token, and nothing is guessed.
+ * A 460 KB bundle parses in about 70 ms.
  */
 const ts = require('typescript');
 
-/**
- * Token kinds after which a `/` divides, so the scanner must not read a regular expression there. A `)` is taken as
- * the end of an expression (`(a + b) / c`), not of an `if (x)` header followed by a regex statement; a `}` as the
- * start of a statement, so a `/` after it opens a regex.
- */
-const DIVIDES_AFTER = new Set([
-  ts.SyntaxKind.Identifier,
-  ts.SyntaxKind.PrivateIdentifier,
-  ts.SyntaxKind.NumericLiteral,
-  ts.SyntaxKind.BigIntLiteral,
-  ts.SyntaxKind.StringLiteral,
-  ts.SyntaxKind.RegularExpressionLiteral,
-  ts.SyntaxKind.NoSubstitutionTemplateLiteral,
-  ts.SyntaxKind.TemplateTail,
-  ts.SyntaxKind.CloseParenToken,
-  ts.SyntaxKind.CloseBracketToken,
-  ts.SyntaxKind.PlusPlusToken,
-  ts.SyntaxKind.MinusMinusToken,
-  ts.SyntaxKind.ThisKeyword,
-  ts.SyntaxKind.SuperKeyword,
-  ts.SyntaxKind.TrueKeyword,
-  ts.SyntaxKind.FalseKeyword,
-  ts.SyntaxKind.NullKeyword,
-]);
+/** The parsed tree of `source`. `kind` is the script kind: `.js` for built files, `.ts` for declarations. */
+function parse(source, kind = ts.ScriptKind.JS) {
+  return ts.createSourceFile('input', source, ts.ScriptTarget.Latest, false, kind);
+}
 
-const TRIVIA = new Set([
-  ts.SyntaxKind.WhitespaceTrivia,
-  ts.SyntaxKind.NewLineTrivia,
-  ts.SyntaxKind.SingleLineCommentTrivia,
-  ts.SyntaxKind.MultiLineCommentTrivia,
-]);
-
-/**
- * Calls `visit(kind, scanner)` for each token of `source`, regex literals and template parts resolved. With
- * `trivia` set, whitespace and comments are visited too.
- */
-function walkTokens(source, visit, { trivia = false } = {}) {
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    !trivia,
-    ts.LanguageVariant.Standard,
-    source,
-  );
-  // One entry per open `{`: true when it is a template substitution, whose `}` resumes the template.
-  const braces = [];
-  let previous = ts.SyntaxKind.Unknown;
-  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
-    if (
-      (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
-      !DIVIDES_AFTER.has(previous)
-    ) {
-      kind = scanner.reScanSlashToken();
-    } else if (kind === ts.SyntaxKind.CloseBraceToken && braces.pop() === true) {
-      kind = scanner.reScanTemplateToken(false);
-    }
-    if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle)
-      braces.push(true);
-    else if (kind === ts.SyntaxKind.OpenBraceToken) braces.push(false);
-    visit(kind, scanner);
-    if (!TRIVIA.has(kind)) previous = kind;
-  }
+function visitNodes(root, visit) {
+  const walk = (node) => {
+    visit(node);
+    ts.forEachChild(node, walk);
+  };
+  walk(root);
 }
 
 /** The value of every string literal and substitution-free template literal in `source`, comments skipped. */
 function stringLiterals(source) {
   const values = [];
-  walkTokens(source, (kind, scanner) => {
+  visitNodes(parse(source), (node) => {
     if (
-      kind === ts.SyntaxKind.StringLiteral ||
-      kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral
+      node.kind === ts.SyntaxKind.StringLiteral ||
+      node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral
     ) {
-      values.push(scanner.getTokenValue());
+      values.push(node.text);
     }
   });
   return values;
 }
 
-/** `source` with each comment replaced by one space, and every string, template and regex kept as written. */
-function stripComments(source) {
-  let out = '';
-  walkTokens(
-    source,
-    (kind, scanner) => {
-      out +=
-        kind === ts.SyntaxKind.SingleLineCommentTrivia ||
-        kind === ts.SyntaxKind.MultiLineCommentTrivia
-          ? ' '
-          : scanner.getTokenText();
-    },
-    { trivia: true },
-  );
-  return out;
+/** The leading text of every template literal that has a substitution: `` `@aws-sdk/client-${svc}` `` gives `@aws-sdk/client-`. */
+function templateHeads(source) {
+  const values = [];
+  visitNodes(parse(source), (node) => {
+    if (node.kind === ts.SyntaxKind.TemplateExpression) values.push(node.head.text);
+  });
+  return values;
 }
 
-module.exports = { walkTokens, stringLiterals, stripComments, DIVIDES_AFTER };
+/** The `[pos, end)` of every comment in `source`: the trivia attached to each token, the end-of-file token included. */
+function commentRanges(source, kind = ts.ScriptKind.TS) {
+  const file = ts.createSourceFile('input', source, ts.ScriptTarget.Latest, false, kind);
+  const ranges = new Map();
+  const addAt = (pos) => {
+    for (const r of [
+      ...(ts.getLeadingCommentRanges(source, pos) ?? []),
+      ...(ts.getTrailingCommentRanges(source, pos) ?? []),
+    ]) {
+      ranges.set(r.pos, r.end);
+    }
+  };
+  const walk = (node) => {
+    // A JSDoc node lies inside a comment already found as trivia, and scanning from inside one would invent comments.
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode)
+      return;
+    const children = node.getChildren(file);
+    if (children.length === 0) addAt(node.pos);
+    else for (const child of children) walk(child);
+  };
+  walk(file);
+  return [...ranges].map(([pos, end]) => ({ pos, end }));
+}
+
+/**
+ * `source` with every comment replaced by spaces of the same length, newlines kept, so an offset found in the result
+ * is an offset in the original and line numbers survive. Strings, templates and regular expressions are untouched.
+ */
+function blankComments(source, kind = ts.ScriptKind.TS) {
+  let out = '';
+  let at = 0;
+  for (const { pos, end } of commentRanges(source, kind).sort((a, b) => a.pos - b.pos)) {
+    if (pos < at) continue;
+    out += source.slice(at, pos) + source.slice(pos, end).replace(/[^\n]/g, ' ');
+    at = end;
+  }
+  return out + source.slice(at);
+}
+
+module.exports = { parse, stringLiterals, templateHeads, commentRanges, blankComments };

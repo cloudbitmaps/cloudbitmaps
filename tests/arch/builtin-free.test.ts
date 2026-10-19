@@ -15,7 +15,7 @@ const detectors = createRequire(import.meta.url)('../../scripts/builtin-free.cjs
   loadWithoutNode: (
     entryFile: string,
     options?: { tsconfig?: string },
-  ) => Promise<{ exports: string[] }>;
+  ) => Promise<{ exports: string[]; entry: Record<string, unknown> }>;
   webGlobals: () => Record<string, unknown>;
   NODE_ONLY_GLOBALS: string[];
 };
@@ -26,6 +26,18 @@ interface Layers {
   scan: Outcome;
   bundle: Outcome;
   vm: Outcome;
+}
+
+/** Load an entry that re-exports `chunk` in a context with web globals only, and return its exports object. */
+async function loadChunk(chunk: string): Promise<Record<string, unknown>> {
+  const dir = mkdtempSync(join(tmpdir(), 'builtin-free-'));
+  try {
+    writeFileSync(join(dir, 'index.js'), "export * from './chunk-a.js';\n");
+    writeFileSync(join(dir, 'chunk-a.js'), chunk);
+    return (await loadWithoutNode(join(dir, 'index.js'))).entry;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Plant `chunk` in a chunk an entry imports, run all three layers, and say which failed. */
@@ -184,15 +196,39 @@ describe('the load context follows the Workers rules', () => {
     expect((await layersOf(chunk)).vm).toBe('fails');
   });
 
-  it('allows the same calls inside a function', async () => {
+  it('refuses a random value asked for in a promise callback the load queued', async () => {
     const chunk =
-      "export function f(a) { crypto.getRandomValues(a); crypto.randomUUID(); setTimeout(() => {}, 1); return eval('1'); }";
-    expect(await layersOf(chunk)).toEqual({ scan: 'passes', bundle: 'passes', vm: 'passes' });
+      'Promise.resolve().then(() => crypto.getRandomValues(new Uint8Array(1))); export const ok = 1;';
+    expect((await layersOf(chunk)).vm).toBe('fails');
+  });
+
+  it('allows the same calls inside a function, once the load is over', async () => {
+    const entry = await loadChunk(
+      `export function f(a) {
+         return { bytes: crypto.getRandomValues(a), id: crypto.randomUUID(), timer: setTimeout(() => {}, 1) };
+       }`,
+    );
+    const got = (entry.f as (a: Uint8Array) => { bytes: Uint8Array; id: string; timer: unknown })(
+      new Uint8Array(8),
+    );
+    expect(got.bytes).toHaveLength(8);
+    expect(got.id).toHaveLength(36);
+    expect(got.timer).toBeDefined();
+    clearTimeout(got.timer as NodeJS.Timeout);
   });
 
   it('exposes the isolate globals Workers, Deno and Vercel Edge share', async () => {
-    const chunk =
-      'export const t = [typeof navigator, typeof CompressionStream, typeof self, typeof FormData].join();';
+    const chunk = `for (const [name, type] of Object.entries({
+      navigator: typeof navigator,
+      CompressionStream: typeof CompressionStream,
+      DecompressionStream: typeof DecompressionStream,
+      TextEncoderStream: typeof TextEncoderStream,
+      TextDecoderStream: typeof TextDecoderStream,
+      FormData: typeof FormData,
+      File: typeof File,
+      self: typeof self,
+    })) if (type === 'undefined') throw new Error(name + ' is missing');
+    export const ok = 1;`;
     expect(await layersOf(chunk)).toEqual({ scan: 'passes', bundle: 'passes', vm: 'passes' });
   });
 });

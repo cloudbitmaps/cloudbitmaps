@@ -19,16 +19,17 @@
  * and evaluates the bundle in a context holding only the globals a V8 isolate has.
  *
  * The load context also follows two rules Cloudflare documents for a Workers isolate: string code generation is off,
- * and random values, timers and `fetch` throw at global scope (a call inside a function is fine).
+ * and random values, timers and `fetch` throw at global scope, including in a promise callback the load queues (a call
+ * inside a function is fine).
  *
- * Known limits. The tokenizer (`js-tokens.cjs`) reads whether a `/` divides or opens a regular expression from the
- * token before it; a form it reads wrongly can hide a specifier after it. The set of
+ * Known limits. The specifiers are read from the parser's tree (`js-tokens.cjs`), so nothing is guessed. The set of
  * web globals is deliberately the common core of Workers, Deno and Vercel Edge; add one to `WEB_GLOBALS` when all
  * three have it. A builtin reached through `process.getBuiltinModule('fs')` (a bare name) inside a function is caught
  * by no layer: that is deliberate evasion, out of scope. The `.d.ts` tree is not checked for Node types. A load is
  * not a run: the check loads the entry, it does not execute the engine in an isolate.
  */
 const vm = require('node:vm');
+const timers = require('node:timers');
 const { stringLiterals } = require('./js-tokens.cjs');
 
 /** A whole string value that is a `node:` specifier, with an optional subpath (`node:fs/promises`). */
@@ -99,14 +100,19 @@ const NODE_ONLY_GLOBALS = [
 /**
  * The globals object of a context holding only {@link WEB_GLOBALS}, copied from the host, with the Workers rule that
  * `crypto.getRandomValues`, `crypto.randomUUID`, `setTimeout`, `setInterval` and `fetch` throw when called while the
- * module loads (global scope). `state.loading` is true during the load; the caller flips it off afterwards.
+ * module loads (global scope). `state.loading` is true during the load and the microtasks it queues; the caller flips
+ * it off afterwards. A refused call is also recorded in `state.violation`, because a throw inside a promise callback
+ * would otherwise reject a promise nobody reads.
  */
 function webGlobals(state = { loading: false }) {
   const globals = {};
   for (const name of WEB_GLOBALS) if (name in globalThis) globals[name] = globalThis[name];
   const guard = (name, fn) =>
     function guarded(...args) {
-      if (state.loading) throw new Error(`${name} is not allowed in global scope`);
+      if (state.loading) {
+        state.violation ??= `${name} is not allowed in global scope`;
+        throw new Error(`${name} is not allowed in global scope`);
+      }
       return fn.apply(this, args);
     };
   for (const name of ['setTimeout', 'setInterval', 'fetch']) {
@@ -125,7 +131,8 @@ function webGlobals(state = { loading: false }) {
 
 /**
  * Bundle `entryFile` for `platform: 'neutral'` (no builtin resolves) and evaluate it in a context with web globals
- * only. Resolves `{ exports }`, the entry's export names, or rejects with an error naming the entry and the cause.
+ * only. Resolves `{ exports, entry }`, the entry's export names and its exports object (callable once the load is
+ * over), or rejects with an error naming the entry and the cause.
  */
 async function loadWithoutNode(entryFile, { tsconfig } = {}) {
   const esbuild = require('esbuild');
@@ -162,8 +169,14 @@ async function loadWithoutNode(entryFile, { tsconfig } = {}) {
       );
     }
   }
+  // A rejection inside the context is read through `state.violation`, so keep Node from treating it as a crash.
+  const ignore = () => {};
+  process.on('unhandledRejection', ignore);
   try {
     vm.runInContext(code, ctx);
+    // The guard stays on until the promise callbacks the load queued have run: a Workers startup runs them too.
+    await new Promise((resolve) => timers.setImmediate(resolve));
+    if (state.violation) throw new Error(state.violation);
     state.loading = false;
   } catch (e) {
     throw new Error(
@@ -172,8 +185,11 @@ async function loadWithoutNode(entryFile, { tsconfig } = {}) {
         cause: e,
       },
     );
+  } finally {
+    process.off('unhandledRejection', ignore);
+    state.loading = false;
   }
-  return { exports: Object.keys(ctx.__entry) };
+  return { exports: Object.keys(ctx.__entry), entry: ctx.__entry };
 }
 
 module.exports = {

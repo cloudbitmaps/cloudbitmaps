@@ -103,16 +103,3 @@ it('reports every distinct specifier it found, deduplicated', () => {
   `;
   expect(findSdkSpecifiers(source).sort()).toEqual(['@aws-sdk/client-s3', '@azure/storage-blob']);
 });
-
-it('strips comments and keeps strings, templates and regex literals as written', () => {
-  const { stripComments } = createRequire(import.meta.url)('../../scripts/js-tokens.cjs') as {
-    stripComments: (source: string) => string;
-  };
-  const out = stripComments(
-    `/* a "q */ const s = '// not a comment'; // tail "\nconst r = /["']/g;`,
-  );
-  expect(out).toContain(`'// not a comment'`);
-  expect(out).toContain(`/["']/g`);
-  expect(out).not.toContain('tail');
-  expect(out).not.toContain('a "q');
-});

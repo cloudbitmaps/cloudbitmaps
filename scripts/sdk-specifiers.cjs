@@ -31,7 +31,7 @@ const DRIVER_SUBPATH =
 
 // Strings are read from tokens, not by pairing quotes (see `js-tokens.cjs`): esbuild keeps JSDoc in `dist/`, and this
 // repo documents invariant 7 in prose in the files it governs, so a comment naming an SDK must not trip the gate.
-const { stringLiterals, stripComments } = require('./js-tokens.cjs');
+const { stringLiterals, templateHeads } = require('./js-tokens.cjs');
 
 /**
  * A string literal whose value BEGINS with one of those roots.
@@ -49,12 +49,12 @@ const { stringLiterals, stripComments } = require('./js-tokens.cjs');
  * breaks a consumer's build for a different reason and is not the leak this guards.
  */
 function findSdkSpecifiers(source) {
-  const found = stringLiterals(source).filter(
-    (value) =>
-      SDK_ROOTS.some((root) => value === root || value.startsWith(root)) ||
-      DRIVER_SUBPATH.test(value),
-  );
+  const names = (value) =>
+    SDK_ROOTS.some((root) => value === root || value.startsWith(root)) ||
+    DRIVER_SUBPATH.test(value);
+  // A template with a substitution (`@aws-sdk/client-${svc}`) is read by its literal head, which is where the root is.
+  const found = [...stringLiterals(source), ...templateHeads(source)].filter(names);
   return [...new Set(found)];
 }
 
-module.exports = { findSdkSpecifiers, stripComments, SDK_ROOTS, DRIVER_SUBPATH };
+module.exports = { findSdkSpecifiers, SDK_ROOTS, DRIVER_SUBPATH };
