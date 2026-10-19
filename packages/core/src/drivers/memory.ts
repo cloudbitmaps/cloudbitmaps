@@ -13,7 +13,7 @@ import type { BlobSink } from '../core/blob';
 import type { Entropy } from '../core/determinism';
 import { NotFoundError, ValidationError, WriteConflictError } from '../core/errors';
 import { segmentKey } from '../core/keys';
-import { PORT_KEYS, validateSegmentRef } from '../core/validate';
+import { validateSegmentRef } from '../core/validate';
 import type {
   StorageCaps,
   StorageDeleteOptions,
@@ -83,7 +83,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
-    validateSegmentRef(ref, PORT_KEYS);
+    validateSegmentRef(ref);
     const row = this.rows.get(segmentKey(ref));
     return row ? structuredClone(row) : null; // clone out: callers can't mutate stored (nested) state
   }
@@ -94,7 +94,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
     checkRegistryWriteOptions(options);
-    validateSegmentRef(ref, PORT_KEYS);
+    validateSegmentRef(ref);
     const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
     if (this.rows.has(key)) {
@@ -119,7 +119,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
     checkRegistryWriteOptions(options);
-    validateSegmentRef(ref, PORT_KEYS);
+    validateSegmentRef(ref);
     const checked = validateRegistryPatch(patch);
     const key = segmentKey(ref);
     const existing = this.rows.get(key);
@@ -142,7 +142,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
   }
 
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
-    validateSegmentRef(ref, PORT_KEYS);
+    validateSegmentRef(ref);
     const key = segmentKey(ref);
     if (expected !== undefined && this.rows.get(key)?.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
@@ -227,7 +227,7 @@ export class MemoryStorageDriver implements IStorageDriver {
   }
 
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
-    validateSegmentRef(ref, PORT_KEYS);
+    validateSegmentRef(ref);
     const prefix = `${segmentKey(ref)} `;
     for (const k of this.objects.keys()) {
       if (k.startsWith(prefix)) {
@@ -251,7 +251,7 @@ export class MemoryStorageDriver implements IStorageDriver {
 
 /** Collision-proof object key for a generation: `<segmentKey> <generation>` (the name parts are encoded, so a space cannot appear inside one). */
 function genObjectKey(key: GenKey): string {
-  validateSegmentRef(key, PORT_KEYS);
+  validateSegmentRef(key);
   requireInteger(key.generation, { min: 0, what: 'generation' });
   return `${segmentKey(key)} ${key.generation}`;
 }

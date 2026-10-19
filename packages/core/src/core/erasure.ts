@@ -8,7 +8,7 @@
  * backup or a point-in-time copy of the row), or once every KEK that wrapped it is destroyed; until then a registry
  * restore to a point before the shred makes the segment readable again. **Immediate**, and it cannot be undone
  * through the library (a registry restore to before it can), so it's gated behind an explicit confirmation (the
- * segment's name; the namespace is not checked, so build the ref's from a value you have checked). A `destroyed` segment reads as empty (its current row holds no DEK). Only works on an
+ * segment's name; the namespace is not checked, so build the ref's `namespace` from a value you have checked). A `destroyed` segment reads as empty (its current row holds no DEK). Only works on an
  * **encrypted** segment; a cleartext segment has no key to shred.
  *
  * The tombstone is also the fence every writer respects: a load refuses

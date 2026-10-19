@@ -116,12 +116,13 @@ function requireRefObject(ref: unknown, hint = ''): void {
 /**
  * Throws `ValidationError` unless `ref` is an object whose `segment` and, when given, `namespace` are valid names, and
  * which holds no other key: a misspelt `namespace` would otherwise address the segment of that name in the default
- * namespace. `extraKeys` are the keys the port takes beyond a ref's own, such as `generation` for a generation key.
+ * namespace. The keys it takes are a port's: `segment`, `namespace`, a `GenKey`'s `generation`, a `ChunkRef`'s
+ * `chunkKey`, and a registry row's own fields and a `segments()` row's, so a row a driver listed can be passed back.
  * It does not refuse a reserved namespace, which a driver must be able to store.
  */
-export function validateSegmentRef(ref: SegmentRef, extraKeys: readonly string[] = []): void {
+export function validateSegmentRef(ref: SegmentRef): void {
   requireRefObject(ref);
-  refuseUnknownKeys(ref, extraKeys);
+  refuseUnknownKeys(ref);
   validatePart(ref.segment, 'segment');
   if (ref.namespace !== undefined) validatePart(ref.namespace, 'namespace');
 }
@@ -164,11 +165,26 @@ export function validateUserNamespace(namespace: string): void {
 }
 
 /**
- * The keys a driver port takes beyond a ref's own: the store hands its ports a generation key (a ref and a
- * `generation`) or a chunk ref (a ref and a `chunkKey`) wherever they name a segment, so a registry port and a
- * storage port both accept them.
+ * The keys a driver port takes beyond a ref's own. The store hands its ports a generation key (a ref and a
+ * `generation`) or a chunk ref (a ref and a `chunkKey`) wherever they name a segment, and an operator repairing a
+ * registry hands them a row from `registry.list()` or `get()`, whose fields are fixed and listed here. A test holds
+ * the row fields to `RegistryRecord`'s.
  */
-export const PORT_KEYS: readonly string[] = ['generation', 'chunkKey'];
+export const PORT_KEYS: readonly string[] = [
+  'generation',
+  'chunkKey',
+  'wrappedDeks',
+  'keyId',
+  'retention',
+  'residency',
+  'summary',
+  'knownGens',
+  'leases',
+  'createdAt',
+  'updatedAt',
+  'token',
+  'pointerId',
+];
 
 /** The mark the flavor's `Segment` handle carries on its prototype; a handle is not a ref. */
 const SEGMENT_HANDLE_MARK: unique symbol = Symbol.for('cloudbitmaps.roaring.segment/1');
@@ -180,15 +196,16 @@ function unknownKeysOf(ref: object, extraKeys: readonly string[]): string[] {
   );
 }
 
-/** Refuse a ref holding a key the port does not take; the port's own keys beyond a ref's are `extraKeys`. */
-function refuseUnknownKeys(ref: object, extraKeys: readonly string[]): void {
-  const unknown = unknownKeysOf(ref, extraKeys);
+/** Refuse a ref holding a key a driver port does not take, naming each such key and the keys it does take. */
+function refuseUnknownKeys(ref: object): void {
+  const unknown = unknownKeysOf(ref, PORT_KEYS);
   if (unknown.length === 0) return;
   const list = unknown.map((k) => `"${k}"`).join(', ');
-  const takes = ['segment', 'namespace', ...extraKeys].join(', ');
   throw new ValidationError(
-    `unknown ${unknown.length === 1 ? 'key' : 'keys'} ${list} in the segment ref; it takes { ${takes} } ` +
-      `(a segment addressed without its namespace is a different segment)`,
+    `a driver port: unknown ${unknown.length === 1 ? 'key' : 'keys'} ${list} in the segment ref; it takes ` +
+      `{ segment, namespace } and a generation key's \`generation\`, a chunk ref's \`chunkKey\`, a \`segments()\` ` +
+      `row's \`currentGen\` and \`status\`, or a registry row's own fields (a segment addressed without its ` +
+      `namespace is a different segment)`,
   );
 }
 
@@ -252,7 +269,7 @@ export function validateChunkKeyOrder(keys: readonly number[]): void {
 
 /** Validate a chunk ref: the segment/namespace rules plus `chunkKey` ∈ `[0, 65535]` (a u16). A driver-boundary check. */
 export function validateChunkRef(ref: ChunkRef): void {
-  validateSegmentRef(ref, PORT_KEYS);
+  validateSegmentRef(ref);
   validateChunkKey(ref.chunkKey);
 }
 

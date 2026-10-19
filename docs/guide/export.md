@@ -145,7 +145,8 @@ And a store loads one straight back, with no per-id work:
   nothing else: not its generation metadata, its `retention` and `residency` policy, its leases, nor the older
   generations `keep` retained. If you will load the files into a new prefix, save beside each file the segment's
   generation metadata (`seg.stat()`) and its row's whole `retention` and `residency` objects
-  (`backend.registry.get(ref)`). After each load, read the row the load created (`const row = await
+  (`backend.registry.get(ref)`), where `ref` is `{ segment, namespace }` built from the manifest entry (an entry is not
+  a ref, and a store call refuses it). After each load, read the row the load created (`const row = await
   backend.registry.get(ref)`) and write back the ones the old row had with `backend.registry.compareAndSwap(ref,
   row.token, { retention, residency })`, since `store.setRetention` writes `expiresAt` alone; then, for a policy with an
   `expiresAt`, call `store.setRetention(ref, { expiresAt })` as well, which keeps your other keys and files the segment

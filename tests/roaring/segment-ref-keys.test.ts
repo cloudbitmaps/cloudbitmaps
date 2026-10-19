@@ -8,6 +8,7 @@ import { listGenerations, rollbackSegment } from '@/core/rollback';
 import type { SegmentRef } from '@/index';
 import type { SegmentInfo } from '@/core/discover';
 import { REF_KEYS } from '@/core/validate';
+import { TYPO, storeCalls } from '../helpers/ref-calls';
 
 /**
  * A segment ref that holds a key it does not take is refused. Read as `{ segment: 'x' }`, `{ segment: 'x', namspace:
@@ -15,7 +16,6 @@ import { REF_KEYS } from '@/core/validate';
  * wrong segment, which TypeScript catches only in an object literal. Every public call that takes a ref refuses it, naming the key the caller wrote and the keys a ref takes.
  */
 
-const TYPO = { segment: 'a', namspace: 'eu' } as unknown as SegmentRef;
 const MESSAGE = /unknown key "namspace" in the segment ref; a ref takes \{ segment, namespace \}/;
 
 async function world() {
@@ -39,19 +39,7 @@ async function snapshot(store: CloudRoaring) {
 }
 
 describe('every public call that takes a segment ref refuses a key it does not take', () => {
-  const facade: Array<[string, (s: CloudRoaring) => unknown]> = [
-    ['load', (s) => s.load(TYPO, [1])],
-    ['exists', (s) => s.exists(TYPO)],
-    ['generations', (s) => s.generations(TYPO)],
-    ['rollback', (s) => s.rollback(TYPO, 0)],
-    ['dropSegment', (s) => s.dropSegment(TYPO, { confirmSegment: 'a' })],
-    ['setRetention', (s) => s.setRetention(TYPO, { expiresAt: Date.now() + 2 * 365 * 86_400_000 })],
-    ['getRetention', (s) => s.getRetention(TYPO)],
-    ['clearRetention', (s) => s.clearRetention(TYPO)],
-    ['invalidate', (s) => s.invalidate(TYPO)],
-  ];
-
-  it.each(facade)('store.%s', async (verb, call) => {
+  it.each(storeCalls)('store.%s', async (verb, call) => {
     const { store } = await world();
     const before = await snapshot(store);
     await expect(Promise.resolve().then(() => call(store))).rejects.toBeInstanceOf(ValidationError);

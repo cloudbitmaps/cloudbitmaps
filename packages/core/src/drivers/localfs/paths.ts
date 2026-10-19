@@ -10,7 +10,7 @@
 import { join } from 'node:path';
 import { requireInteger } from '@/core/check';
 import { ValidationError } from '@/core/errors';
-import { PORT_KEYS, validateSegmentRef } from '@/core/validate';
+import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
 import {
   DEFAULT_NAMESPACE,
@@ -39,27 +39,27 @@ function assertFits(component: string, extraBytes: number): void {
  * the temp suffix) would be longer than a filesystem allows. A name inside the library's own cap can still be.
  */
 export function assertStorageNamesFit(key: GenKey): void {
-  validateSegmentRef(key, PORT_KEYS);
+  validateSegmentRef(key);
   assertFits(namespacePathPart(key.namespace), 0);
   assertFits(storageObjectFilename(key.segment, key.generation), TEMP_SUFFIX_BYTES);
 }
 
 /** The same refusal for a registry row: the namespace directory, and the row file with the temp suffix. */
 export function assertRegistryNamesFit(ref: SegmentRef): void {
-  validateSegmentRef(ref, PORT_KEYS);
+  validateSegmentRef(ref);
   assertFits(namespacePathPart(ref.namespace), 0);
   assertFits(`${encodeNameForPath(ref.segment)}${REGISTRY_SUFFIX}`, TEMP_SUFFIX_BYTES);
 }
 
 /** Directory holding all of a namespace's segment objects. */
 export function segmentsDir(root: string, ref: SegmentRef): string {
-  validateSegmentRef(ref, PORT_KEYS);
+  validateSegmentRef(ref);
   return join(root, namespacePathPart(ref.namespace), 'segments');
 }
 
 /** Absolute path of one `.crbm` generation object. */
 export function storageObjectPath(root: string, key: GenKey): string {
-  validateSegmentRef(key, PORT_KEYS);
+  validateSegmentRef(key);
   requireInteger(key.generation, { min: 0, what: 'generation' });
   return join(
     segmentsDir(root, { segment: key.segment, namespace: key.namespace }),
@@ -99,7 +99,7 @@ export function registryDir(root: string, namespace: string | undefined): string
 
 /** Absolute path of one segment's registry row file: `<ns>/registry/<segment>.reg`. */
 export function registryRowPath(root: string, ref: SegmentRef): string {
-  validateSegmentRef(ref, PORT_KEYS);
+  validateSegmentRef(ref);
   return join(
     registryDir(root, ref.namespace),
     `${encodeNameForPath(ref.segment)}${REGISTRY_SUFFIX}`,

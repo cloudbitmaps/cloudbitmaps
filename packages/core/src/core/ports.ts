@@ -31,10 +31,12 @@ export type Token = string;
  * `cbm.dueX` and `cbmdue.eu` are ordinary namespaces, and a segment name is never restricted.
  *
  * **A key other than `segment` and `namespace` throws `ValidationError`**, in every call of the store and of the free
- * functions behind it that takes a ref, and at a driver port (which also takes a `generation` or a `chunkKey`): a
- * misspelt `namespace` would otherwise address the segment of that name in the default namespace. A `segments()` row
- * is the one exception: its `currentGen` and `status` are taken and read for nothing. A segment handle, and a result
- * row such as a consistency issue, a ledger entry or an audit event, is not a ref: pass `{ segment, namespace }`.
+ * functions behind it that takes a ref, and at a driver port (which also takes a `generation`, a `chunkKey` and a
+ * registry row's own fields): a misspelt `namespace` would otherwise address the segment of that name in the default
+ * namespace. A `segments()` row is the one exception at the store: its `currentGen` and `status` are taken and read for
+ * nothing. A segment handle, a registry row from `registry.get()` or `list()` (a driver port takes one, a store call does
+ * not), and a result row such as a consistency issue, a ledger entry, an export manifest entry or an audit event, is not
+ * a ref at the store: pass `{ segment, namespace }`.
  */
 export interface SegmentRef {
   /** The segment's namespace, or `undefined` for the default one. */

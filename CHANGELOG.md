@@ -23,11 +23,14 @@ so, and so do the module headers in the code.
   be passed back). The registry and storage ports of every shipped driver refuse the same way, naming the keys they take
   (a ref, a `generation`, a `chunkKey`). Their per-call options are checked too: a storage `delete` takes `{ ifVersion }`
   only, a string, so a misspelt `ifVersion` is no longer an unconditional delete, and a registry `create` and
-  `compareAndSwap` take `{ held, onToken }` only. A driver of your own that calls `validateSegmentRef` gets the check;
-  `checkDeleteOptions` and `checkRegistryWriteOptions` in the driver kit do the options.
+  `compareAndSwap` take `{ held, onToken }` only. A driver of your own that calls `validateSegmentRef(ref)` now also
+  refuses any key beyond `segment`, `namespace`, a generation key's `generation`, a chunk ref's `chunkKey`, a
+  `segments()` row's `currentGen` and `status`, and a registry row's own fields (the call takes no second argument), and
+  nothing else changes for it. `checkDeleteOptions` and `checkRegistryWriteOptions` in the driver kit do the options.
   Also refused now, though each type-checks as a ref when passed as a variable: a row of any other result (a
   `checkConsistency` issue, an `eraseSubject` or `retireExpired` ledger entry, an export manifest entry, an audit
-  event), a segment handle and an array. To migrate: fix the key's spelling, and build the ref as a typed
+  event), a registry row from `registry.get` or `list` handed to a store call (the ports take one), a segment handle
+  and an array. To migrate: fix the key's spelling, and build the ref as a typed
   `{ segment, namespace }` from the row's two fields. Do not pick the keys out of a config object, as in
   `{ segment: cfg.segment, namespace: cfg.namespace }`: a misspelt key in `cfg` leaves `namespace` undefined, which is
   the default namespace, and no check can see it. Validate the config's keys, or pass `cfg` itself so the ref check sees

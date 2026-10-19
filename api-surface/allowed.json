@@ -508,10 +508,6 @@
     "reason": "a new type, agreed with the maintainer on 2026-10-18: the read-only bitmap deserializePortable returns, a PortableBitmap and an Iterable<number> with size and has(id); roaring's RoaringBitmap32 satisfies it as it is"
   },
   {
-    "entry": "@cloudbitmaps/core/driver-kit validateSegmentRef",
-    "reason": "it now refuses a key beyond segment, namespace, a listing row's currentGen and status, and the optional extraKeys a port passes (a generation key's generation, a chunk key's chunkKey), so a misspelt namespace at a driver port throws instead of addressing the default namespace"
-  },
-  {
     "entry": "@cloudbitmaps/core/driver-kit checkDeleteOptions",
     "reason": "added so every storage driver refuses a misspelt or mistyped ifVersion in one place, rather than deleting unconditionally"
   },

@@ -392,7 +392,7 @@ function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promi
 function validateRead(ref: SegmentRef, keys: readonly number[]): void {
   validateUserRef(ref, 'read', PORT_KEYS);
   // A chunk ref is a copy of this ref, so it carries only the ref's own enumerable names: checked once, not once a key.
-  if (keys.length > 0) validateSegmentRef({ ...ref }, PORT_KEYS);
+  if (keys.length > 0) validateSegmentRef({ ...ref });
   for (const chunkKey of keys) validateChunkKey(chunkKey);
   validateChunkKeyOrder(keys);
 }
@@ -955,6 +955,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * storage side can close the window; with no registry, no clock or `cache.genTtlMs: 0`, nothing bounds it at all.
    */
   invalidate(ref: SegmentRef): void {
+    validateUserRef(ref, 'read', PORT_KEYS);
     const key = segmentKey(ref);
     this.invalidated.invalidate(key);
     this.snapshots.delete(key);

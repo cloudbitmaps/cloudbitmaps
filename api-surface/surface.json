@@ -225,7 +225,7 @@
     "@cloudbitmaps/core/driver-kit storageObjectKey": "function storageObjectKey(prefix: string | undefined, key: GenKey): string;",
     "@cloudbitmaps/core/driver-kit toTransient": "function toTransient(err: unknown, isTransient: (err: unknown) => boolean, message: (err: unknown) => string): unknown;",
     "@cloudbitmaps/core/driver-kit unsettledConflict": "function unsettledConflict(message: string): WriteConflictError;",
-    "@cloudbitmaps/core/driver-kit validateSegmentRef": "function validateSegmentRef(ref: SegmentRef, extraKeys?: readonly string[]): void;",
+    "@cloudbitmaps/core/driver-kit validateSegmentRef": "function validateSegmentRef(ref: SegmentRef): void;",
     "@cloudbitmaps/gcs GcsStorage": "class GcsStorage implements StorageBackend",
     "@cloudbitmaps/gcs GcsStorage.[STORAGE_BACKEND]": "readonly [STORAGE_BACKEND]: true;",
     "@cloudbitmaps/gcs GcsStorage.checkLifecycle": "checkLifecycle(): Promise<LifecycleVerdict>;",

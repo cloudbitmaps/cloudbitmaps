@@ -5,12 +5,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import type { ObjectRegistryStore, ObjectRow } from '@/drivers/_shared/object-registry';
 import { S3StorageDriver } from '@/s3/storage';
+import { GcsStorageDriver } from '@/gcs/storage';
+import { AzureBlobStorageDriver } from '@/azure-blob/storage';
+import { brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+import { validateSegmentRef, PORT_KEYS, REF_KEYS } from '@/core/validate';
+import type { RegistryRecord } from '@/core/ports';
+import { STUB_GCS_BUCKET, StubGcsService } from '../helpers/gcs-stub';
+import { StubBlobService } from '../helpers/azure-blob-stub';
 import { BUCKET, StubBucket } from '../helpers/stub-s3-bucket';
 import { isolateAwsEnv } from '../helpers/aws-env';
 import type { IsolatedAwsEnv } from '../helpers/aws-env';
@@ -26,8 +34,7 @@ import type { IsolatedAwsEnv } from '../helpers/aws-env';
 const TYPO = { segment: 'a', namspace: 'eu' } as unknown as SegmentRef;
 const TYPO_GEN = { segment: 'a', namspace: 'eu', generation: 0 } as unknown as GenKey;
 const KEY: GenKey = { segment: 'a', generation: 0 };
-const KEYS =
-  /unknown key "namspace" in the segment ref; it takes \{ segment, namespace, generation, chunkKey \}/;
+const KEYS = /unknown key "namspace" in the segment ref; it takes \{ segment, namespace \}/;
 const bytes = (b: Uint8Array) => async (sink: BlobSink) => sink.write(b);
 
 class MapStore implements ObjectRegistryStore {
@@ -160,5 +167,168 @@ describe.each(storages)('the %s storage port', (_name, make) => {
     );
     await expect(storage.delete(KEY, null as never)).rejects.toBeInstanceOf(ValidationError);
     expect(Array.from(await storage.getRange(KEY, 0, 3))).toEqual([1, 2, 3]);
+  });
+});
+
+describe('the chunk source port refuses a ref with a key it does not take, on every method', () => {
+  const source = new CrbmStorageChunkSource(new MemoryStorageDriver(), {
+    registry: new MemoryRegistryDriver(),
+  });
+  const methods = [
+    'cardinalities',
+    'currentGeneration',
+    'currentVersion',
+    'exists',
+    'invalidate',
+    'listChunkKeys',
+    'sizeOf',
+    'stat',
+    'summary',
+  ] as const;
+  it.each(methods)('%s', async (method) => {
+    const call = source[method] as (ref: SegmentRef) => unknown;
+    await expect(Promise.resolve().then(() => call.call(source, TYPO))).rejects.toThrow(
+      'unknown key "namspace"',
+    );
+  });
+  it('getChunk and getChunks', async () => {
+    await expect(source.getChunk({ ...TYPO, chunkKey: 0 } as never)).rejects.toThrow(
+      'unknown key "namspace"',
+    );
+    const drain = async (): Promise<void> => {
+      for await (const chunk of source.getChunks!(TYPO, [0])) void chunk;
+    };
+    await expect(drain()).rejects.toThrow('unknown key "namspace"');
+  });
+});
+
+describe('the GCS and Azure storage ports refuse a misspelt or mistyped delete option', () => {
+  const quick = { retryOptions: { maxTries: 1, retryDelayInMs: 1, maxRetryDelayInMs: 2 } };
+
+  it('GCS: nothing is sent, and the object stays', async () => {
+    const stub = new StubGcsService();
+    await stub.start();
+    try {
+      const storage = new GcsStorageDriver({
+        storage: stub.client(),
+        bucket: STUB_GCS_BUCKET,
+        clock: { sleep: async () => {} },
+      });
+      await storage.putImmutable(KEY, bytes(new Uint8Array([1, 2, 3])));
+      const { version } = await storage.getTail(KEY, 1);
+      await expect(storage.delete(KEY, { ifVersoin: version } as never)).rejects.toThrow(
+        'delete options does not take `ifVersoin`',
+      );
+      await expect(storage.delete(KEY, { ifVersion: 7 } as never)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      await expect(storage.delete(TYPO_GEN)).rejects.toThrow(KEYS);
+      expect(stub.count('delete')).toBe(0);
+      expect(Array.from(await storage.getRange(KEY, 0, 3))).toEqual([1, 2, 3]);
+    } finally {
+      await stub.stop();
+    }
+  });
+
+  it('Azure Blob: no DELETE is sent, and the blob stays', async () => {
+    const stub = new StubBlobService();
+    await stub.start();
+    try {
+      const storage = new AzureBlobStorageDriver({ containerClient: stub.client(quick) });
+      await storage.putImmutable(KEY, bytes(new Uint8Array([1, 2, 3])));
+      const { version } = await storage.getTail(KEY, 1);
+      await expect(storage.delete(KEY, { ifVersoin: version } as never)).rejects.toThrow(
+        'delete options does not take `ifVersoin`',
+      );
+      await expect(storage.delete(KEY, { ifVersion: 7 } as never)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      await expect(storage.delete(TYPO_GEN)).rejects.toThrow(KEYS);
+      expect(stub.count('DELETE')).toBe(0);
+      expect(Array.from(await storage.getRange(KEY, 0, 3))).toEqual([1, 2, 3]);
+    } finally {
+      await stub.stop();
+    }
+  });
+});
+
+describe('driver-kit validateSegmentRef, called as a driver of your own calls it', () => {
+  it('takes a generation key, a chunk ref and a registry row with no second argument', () => {
+    expect(() => validateSegmentRef({ segment: 'a', generation: 1 } as never)).not.toThrow();
+    expect(() => validateSegmentRef({ segment: 'a', chunkKey: 1 } as never)).not.toThrow();
+    expect(() =>
+      validateSegmentRef({ segment: 'a', currentGen: 1, status: 'active' } as never),
+    ).not.toThrow();
+    expect(() =>
+      validateSegmentRef({ segment: 'a', generation: 1, namspace: 'x' } as never),
+    ).toThrow('unknown key "namspace"');
+  });
+
+  it('a wrapping registry and a wrapping storage that validate then forward still run a load', async () => {
+    const { CloudRoaring } = await import('@/index');
+    const registry = new MemoryRegistryDriver();
+    const storage = new MemoryStorageDriver();
+    const wrapReg = Object.create(registry) as IRegistryDriver;
+    for (const m of ['get', 'create', 'compareAndSwap', 'delete'] as const) {
+      (wrapReg as unknown as Record<string, unknown>)[m] = (
+        ref: SegmentRef,
+        ...rest: unknown[]
+      ) => {
+        validateSegmentRef(ref);
+        return (registry[m] as (...a: unknown[]) => unknown)(ref, ...rest);
+      };
+    }
+    const wrapStore = Object.create(storage) as IStorageDriver;
+    for (const m of ['putImmutable', 'getRange', 'getTail', 'delete'] as const) {
+      (wrapStore as unknown as Record<string, unknown>)[m] = (key: GenKey, ...rest: unknown[]) => {
+        validateSegmentRef(key);
+        return (storage[m] as (...a: unknown[]) => unknown)(key, ...rest);
+      };
+    }
+    const backend = { storage: wrapStore, registry: wrapReg };
+    brandAsBackend(backend as never);
+    const store = new CloudRoaring({ storage: backend as never });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    expect(await store.segment('a').count()).toBe(3);
+  });
+});
+
+describe('a registry row is taken at the ports, and the list of its fields follows RegistryRecord', () => {
+  it('a row from list() goes straight to registry.delete and storage.list, a misspelt extra key does not', async () => {
+    const registry = new MemoryRegistryDriver();
+    await registry.create({ segment: 'a' }, { currentGen: 0 });
+    let row: RegistryRecord | undefined;
+    for await (const r of registry.list()) row = r;
+    expect(row).toBeDefined();
+    const storage = new MemoryStorageDriver();
+    await expect(storage.list(row!)[Symbol.asyncIterator]().next()).resolves.toBeDefined();
+    await expect(registry.delete({ ...row!, namspace: 'eu' } as never)).rejects.toThrow(
+      'unknown key "namspace"',
+    );
+    await registry.delete(row!);
+    expect(await registry.get({ segment: 'a' })).toBeNull();
+  });
+
+  it('PORT_KEYS and REF_KEYS cover exactly the fields of RegistryRecord, a generation key and a chunk ref', () => {
+    const fields: Record<keyof RegistryRecord, true> = {
+      segment: true,
+      namespace: true,
+      currentGen: true,
+      wrappedDeks: true,
+      keyId: true,
+      status: true,
+      retention: true,
+      residency: true,
+      summary: true,
+      knownGens: true,
+      leases: true,
+      createdAt: true,
+      updatedAt: true,
+      token: true,
+      pointerId: true,
+    };
+    const taken = new Set<string>([...REF_KEYS, ...PORT_KEYS]);
+    for (const k of Object.keys(fields)) expect(taken.has(k)).toBe(true);
+    expect([...taken].filter((k) => !(k in fields)).sort()).toEqual(['chunkKey', 'generation']);
   });
 });
