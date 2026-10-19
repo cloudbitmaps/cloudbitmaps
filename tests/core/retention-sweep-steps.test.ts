@@ -70,9 +70,31 @@ describe('resolveRetireOptions', () => {
     [{ now: NOW, limit: 0 }, /`limit`/],
     [{ now: NOW, tombstoneGraceMs: -1 }, /`tombstoneGraceMs`/],
     [{ now: NOW, maxScanSegments: 0 }, /`maxScanSegments`/],
+    [{ now: NOW, scan: 'bogus' as never }, /`scan` must be 'fleet' or 'index'; got "bogus"/],
+    [{ now: NOW, scan: 'idnex' as never }, /`scan` must be 'fleet' or 'index'; got "idnex"/],
+    [{ now: NOW, scan: 'Index' as never }, /`scan` must be 'fleet' or 'index'; got "Index"/],
+    [{ now: NOW, scan: null as never }, /`scan` must be 'fleet' or 'index'; got null/],
+    [
+      { now: NOW, lookbackBuckets: -1 },
+      /`lookbackBuckets` must be an integer of at least 0; got -1/,
+    ],
+    [{ now: NOW, lookbackBuckets: 'x' as never }, /`lookbackBuckets` must be an integer/],
+    [{ now: NOW, lookbackBuckets: null as never }, /`lookbackBuckets` must be an integer/],
+    [{ now: NOW, scan: 'index', lookbackBuckets: 1.5 }, /`lookbackBuckets` must be an integer/],
+    [{ now: NOW, limit: null as never }, /`limit` must be an integer/],
+    [{ now: NOW, tombstoneGraceMs: null as never }, /`tombstoneGraceMs` must be a finite number/],
+    [{ now: NOW, shards: [], totalShards: 2 }, /shards is empty/],
+    [{ now: NOW, shards: [0, 0], totalShards: 2 }, /shard 0 is listed twice/],
+    [{ now: NOW, shards: [0, 1, 1], totalShards: 3 }, /shard 1 is listed twice/],
   ])('refuses %j', (options, message) => {
     expect(() => resolveRetireOptions(options)).toThrow(ValidationError);
     expect(() => resolveRetireOptions(options)).toThrow(message);
+  });
+
+  it('takes a lookbackBuckets of 0 and each scan', () => {
+    expect(resolveRetireOptions({ now: NOW, lookbackBuckets: 0 }).lookbackBuckets).toBe(0);
+    expect(resolveRetireOptions({ now: NOW, scan: 'fleet' }).scan).toBe('fleet');
+    expect(resolveRetireOptions({ now: NOW, scan: 'index' }).scan).toBe('index');
   });
 
   it('reports the first bad option in the order the checks run', () => {

@@ -6,7 +6,7 @@
  * per-chunk payloads. The write path lives beside it, in `crbm-write.ts`, `publish.ts` and `bulk-load.ts`, and the
  * opening of a stored generation in `crbm-open.ts`.
  */
-import { requireFiniteNumber, requirePositiveInteger } from './check';
+import { checkRequireEncryption, requireFiniteNumber, requirePositiveInteger } from './check';
 import {
   DEFAULT_CURRENT_GEN_TTL_MS,
   DEFAULT_MAX_OPEN_INDEX_BYTES,
@@ -626,6 +626,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       maxOpenIndexBytes,
       ...readerOptions
     } = options;
+    // Exactly a boolean: a truthy string read as `true` here, and not by the write paths, which compare with `=== true`.
+    checkRequireEncryption(requireEncryption);
+    if (maxOpenSegments !== undefined) requirePositiveInteger(maxOpenSegments, 'maxOpenSegments');
+    if (maxOpenIndexBytes !== undefined) {
+      requirePositiveInteger(maxOpenIndexBytes, 'maxOpenIndexBytes');
+    }
     if (keystore !== undefined && registry === undefined) {
       throw new CapabilityError(
         'a keystore needs a storage backend — that is where the wrapped DEKs live. A bare IStorageDriver has no registry to hold them',

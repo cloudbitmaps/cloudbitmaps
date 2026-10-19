@@ -318,8 +318,8 @@ export interface Workload {
 /** One (group of) segment(s) for planning. `count` = how many like this (default 1). */
 export interface SegmentSizing {
   /**
-   * The segment's stored size in bytes. When both are given it wins over `cardinality`; when neither is, the segment
-   * counts as 0 bytes.
+   * The segment's stored size in bytes. When both are given it wins over `cardinality`; when neither is,
+   * {@link estimateCost} refuses the segment (pass `sizeBytes: 0` for one that stores nothing).
    */
   readonly sizeBytes?: number;
   /**
@@ -1176,6 +1176,12 @@ export function estimateCost(input: EstimateInput): CostReport {
   let storageBytes = 0;
   let sizesFromCardinality = false;
   for (const [i, spec] of input.segments.entries()) {
+    // A segment with no size would be priced at $0 of storage and still reported as a win, which is a bill nobody asked for.
+    if (spec.sizeBytes === undefined && spec.cardinality === undefined) {
+      throw new ValidationError(
+        `estimateCost: segments[${i}] needs sizeBytes or cardinality (pass sizeBytes: 0 to price a segment with no storage)`,
+      );
+    }
     const count = requireFiniteNonNeg(spec.count ?? 1, 'segment.count');
     if (!Number.isInteger(count)) {
       throw new ValidationError(

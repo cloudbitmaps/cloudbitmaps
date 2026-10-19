@@ -29,7 +29,7 @@ import type { IMetricsSink } from '@cloudbitmaps/core/driver-kit';
 export interface S3StorageOptions {
   /** Target bucket (must already exist). */
   readonly bucket: string;
-  /** Optional key prefix under which everything lives — generations and the registry alike. */
+  /** Optional key prefix under which everything lives — generations and the registry alike. A string, else `ValidationError`. */
   readonly prefix?: string;
   /**
    * A constructed client. Supply one for a credential chain the SDK cannot infer; otherwise one is built. Its retry
@@ -37,7 +37,10 @@ export interface S3StorageOptions {
    * configured to do: a registry row once, and a generation's object again only after a throttle, under its own backoff.
    */
   readonly client?: S3Client;
-  /** Region for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
+  /**
+   * Region for the client built when `client` is absent (refused beside `client`): a non-empty string, else
+   * `ValidationError`. Falls back to the SDK's own resolution.
+   */
   readonly region?: string;
   /** Endpoint for an S3-compatible store (MinIO, Ceph, R2). Refused beside `client`, which carries its own. */
   readonly endpoint?: string;
@@ -243,6 +246,13 @@ export class S3Storage implements StorageBackend {
     } else {
       const maxSockets =
         requirePositiveInt('maxSockets', options.maxSockets) ?? DEFAULT_MAX_SOCKETS;
+      // The SDK refuses an empty region only when the first request is built, with an untyped error, and takes a number.
+      const region: unknown = options.region;
+      if (region !== undefined && (typeof region !== 'string' || region.length === 0)) {
+        throw new ValidationError(
+          "S3Storage's `region` must be a non-empty string such as 'us-east-1'",
+        );
+      }
       // `credentials` is not the last member: the leak scan reads a property read that ends a built line as a
       // possible secret, and the bundler drops the trailing comma after the last one.
       this.client = new S3Client(

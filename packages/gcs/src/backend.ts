@@ -27,7 +27,7 @@ import { downloadClient } from './read-client';
 export interface GcsStorageOptions {
   /** Target bucket (must already exist). */
   readonly bucket: string;
-  /** Optional object-name prefix under which everything lives — generations and the registry alike. */
+  /** Optional object-name prefix under which everything lives — generations and the registry alike. A string, else `ValidationError`. */
   readonly prefix?: string;
   /**
    * A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. Its retry

@@ -26,7 +26,9 @@ Read these first. They are the traps.
   was itself encrypted).
 - **The keystore applies to every segment the store touches**, including the ones you meant to leave cleartext. It is
   wired on the store, not on a segment. Use a separate store for cleartext segments, or set
-  `encryption: { required: true }` so a cleartext write or read throws.
+  `encryption: { required: true }` so a cleartext write or read throws. `required` must be exactly `true` or `false`: a
+  string such as `process.env.REQUIRE_ENCRYPTION` is refused with `ValidationError`, so compare it yourself
+  (`=== 'true'`) rather than pass it on.
 - **Back up the keystore with your data.** [The disaster-recovery guide](disaster-recovery.md#encryption--dr) covers
   what a restore needs.
 - **A lost key is usually not a business loss.** Segments are almost always derived data, so you load it again from
@@ -70,8 +72,14 @@ refused with `KeyUnavailableError`, before anything is written. A cleartext firs
 encrypted load overtakes after its object is written is refused at its publish instead, as `superseded`, and its
 cleartext object is deleted. With `encryption: { required: true }`, any cleartext write or read throws.
 
+`InProcessKeystore` takes `keys`, `activeKeyId` and `recoveryKeyId`, and refuses anything else with `ValidationError`
+naming it, so a misspelt `recoveryKeyID` fails where the keystore is built rather than leaving every segment with one
+wrapping. It also refuses no options, a `keys` that is not an object, and an `activeKeyId` or `recoveryKeyId` that is
+not a string.
+
 **Rotate keys without re-encrypting data.** Add a new KEK, point `activeKeyId` at it, and keep the old KEK: old
-segments keep decrypting. Use a **recovery KEK**, kept offline, so that losing the active one is not fatal.
+segments keep decrypting. Use a **recovery KEK**, kept offline, so that losing the active one is not fatal. To check it is in force, read a new
+segment's registry row: its `wrappedDeks` lists both key ids, the active one and the recovery one.
 
 **KMS and Vault.** The default is dependency-free, in-process, bring-your-own-key. `IKeystore` is the interface a KMS
 or Vault adapter would implement; none ships, and encryption never forces a cloud dependency on you. It is exported by

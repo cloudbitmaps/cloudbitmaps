@@ -121,7 +121,7 @@ const swept = await store.retireExpired({ namespace: 'active-daily' });
 // → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, purgeFaults, firstPurgeFault?, dryRun, entries }
 ```
 
-A bad argument throws `ValidationError`. A per-segment fault is an `entries` row, never a throw.
+A bad argument throws `ValidationError`, before the registry is listed: an unknown `scan` (a misspelt `'index'` would otherwise run the fleet sweep), a `lookbackBuckets` that is not an integer of at least 0 (checked on either scan), a `null` where a number is taken, or a bad `shards` (below). A per-segment fault is an `entries` row, never a throw.
 
 **It is a call, not a daemon.** Nothing in this library schedules itself, and that is deliberate: the same code has
 to behave identically in a Lambda, an edge isolate and a long-lived server, and a timer that only works in one of
@@ -137,8 +137,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 
 > ⚠️ **Run the sweep from one process, or shard it.** N replicas each running the full sweep would contend over the
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
-> disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
-> without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
+> disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, `shards`
+> without `totalShards`, an empty `shards` and a number listed twice are each a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
 > same slice across restarts.
 
 **Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans

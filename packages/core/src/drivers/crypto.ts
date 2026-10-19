@@ -10,6 +10,7 @@
  */
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { Aead, AeadSealed, IKeystore, WrappedDek } from '../core/crypto';
+import { refuseUnknownOptions } from './_shared/options';
 import { IntegrityError, KeyUnavailableError, ValidationError } from '../core/errors';
 
 const UTF8 = new TextEncoder();
@@ -93,7 +94,8 @@ function unwrapKey(wrapped: string, kek: Uint8Array, keyId: string): Uint8Array 
  * Options for {@link InProcessKeystore}. `keys` maps a `keyId` → its 32-byte KEK; `activeKeyId` names the KEK
  * new DEKs are wrapped under; an optional `recoveryKeyId` additionally wraps each new DEK under a second
  * (e.g. offline) KEK, so losing the active KEK isn't fatal. Rotating the active KEK needs no data
- * re-encryption: add the new KEK, point `activeKeyId` at it, keep the old one to unwrap existing segments.
+ * re-encryption: add the new KEK, point `activeKeyId` at it, keep the old one to unwrap existing segments. An option
+ * it does not take, such as a misspelt `recoveryKeyId`, throws `ValidationError`.
  */
 export interface InProcessKeystoreOptions {
   /** Each key-encryption key (KEK) by its id: 32 bytes each, at least one. */
@@ -117,12 +119,31 @@ export class InProcessKeystore implements IKeystore {
   private readonly recoveryKeyId: string | undefined;
 
   /**
-   * Builds a keystore from `options`; throws `ValidationError` for no keys, a key given as text rather than a
+   * Builds a keystore from `options`; throws `ValidationError` for no options object, an option it does not take
+   * (a misspelt `recoveryKeyId` would otherwise leave no recovery wrapping), a `keys` that is not an object, an
+   * `activeKeyId` or `recoveryKeyId` that is not a string, no keys, a key given as text rather than a
    * `Uint8Array`, a key that is not 32 bytes, or an `activeKeyId` or `recoveryKeyId` that is not in `keys`. A
    * `recoveryKeyId` equal to `activeKeyId` means no recovery key.
    */
   constructor(options: InProcessKeystoreOptions) {
-    const entries = Object.entries(options.keys);
+    refuseUnknownOptions('InProcessKeystore', options, ['keys', 'activeKeyId', 'recoveryKeyId']);
+    const keys: unknown = options.keys;
+    if (keys === null || typeof keys !== 'object' || Array.isArray(keys)) {
+      throw new ValidationError(
+        'InProcessKeystore: `keys` must be an object of key id to 32-byte Uint8Array KEK',
+      );
+    }
+    if (typeof options.activeKeyId !== 'string') {
+      throw new ValidationError(
+        'InProcessKeystore: `activeKeyId` must be a string naming one of `keys`',
+      );
+    }
+    if (options.recoveryKeyId !== undefined && typeof options.recoveryKeyId !== 'string') {
+      throw new ValidationError(
+        'InProcessKeystore: `recoveryKeyId` must be a string naming one of `keys`, or absent for none',
+      );
+    }
+    const entries = Object.entries(keys);
     if (entries.length === 0) throw new ValidationError('keystore needs at least one KEK');
     for (const [id, k] of entries) {
       // Text of the right length would pass the length check and become a key of printable characters, with no key

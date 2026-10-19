@@ -102,6 +102,28 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Config objects refuse what they do not take, with a `ValidationError` that names the option.** Each of these was
+  accepted, or threw an untyped error, and did something other than what was asked:
+  - `new InProcessKeystore(options)` refuses an option it does not take. A misspelt `recoveryKeyID` used to build a
+    keystore with no recovery wrapping, so every segment it wrote had one wrapping and losing the active key made it
+    unreadable. It also refuses no options, a `keys` that is not an object, and an `activeKeyId` or `recoveryKeyId` that
+    is not a string, where it threw a `TypeError` that `errorKind` did not classify.
+  - `encryption.required` must be exactly `true` or `false`. A truthy string such as `'true'` used to make reads refuse
+    cleartext while loads, erasures and `*Into` writes still wrote it. The same check holds the core read source and the
+    core write entries that take `requireEncryption`.
+  - `retireExpired` refuses a `scan` that is not `'fleet'` or `'index'` (a misspelt `'index'` ran the fleet sweep), a
+    `lookbackBuckets` that is not an integer of at least 0 on either scan (it was checked only on `'index'`), a `null`
+    `limit` or `tombstoneGraceMs` (read as the default), and `shards` that is empty or lists a number twice. All are
+    refused before the registry is listed.
+  - A `cache` size is refused under the name you wrote: `cache.maxChunks`, `cache.readerMax` and `cache.readerMaxBytes`
+    must be integers of at least 1 and `cache.ttlMs` a finite number above 0. The errors named `maxEntries`, `maxBytes`
+    or `ttlMs`, and `readerMaxBytes: 1.5` was accepted. A source built by hand refuses `maxOpenSegments` and
+    `maxOpenIndexBytes` the same way.
+  - `estimateCost` refuses a segment with neither `sizeBytes` nor `cardinality`, which it priced at $0 of storage. Pass
+    `sizeBytes: 0` for a segment that stores nothing. A missing `workload` stays allowed.
+  - `AzureBlobStorage` refuses a `connectionString` that is empty, not a string, or not one the SDK can parse, with a
+    message that never holds the string. `S3Storage` refuses a `region` that is not a non-empty string. The three cloud
+    backends refuse a `prefix` that is not a string (a number or `null` threw a `TypeError`).
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an

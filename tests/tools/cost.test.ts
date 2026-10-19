@@ -397,8 +397,8 @@ describe('Redis sized to the data', () => {
     const both = redisNote(estimateCost({ segments: [{ sizeBytes: 2e6, cardinality: 5e6 }] }));
     expect(both).toContain('holds the 1.91 MiB stored');
     expect(both).not.toContain('cardinality');
-    // A spec with neither sizes nothing, from cardinality or from anything else.
-    const neither = redisNote(estimateCost({ segments: [{ sizeBytes: 2e6 }, {}] }));
+    // A spec of zero bytes sizes nothing, from cardinality or from anything else.
+    const neither = redisNote(estimateCost({ segments: [{ sizeBytes: 2e6 }, { sizeBytes: 0 }] }));
     expect(neither).toContain('holds the 1.91 MiB stored');
     expect(neither).not.toContain('cardinality');
   });
@@ -2114,5 +2114,29 @@ describe('cost tools refuse inputs they would otherwise misread', () => {
         },
       }),
     ).toThrow(/groundedReport: the total cost/);
+  });
+});
+
+describe('estimateCost refuses a segment it has no size for', () => {
+  it.each([[{ count: 3 }], [{}], [{ sizeBytes: undefined, cardinality: undefined }]])(
+    'segments[0] of %j',
+    (spec) => {
+      const price = (): CostReport => estimateCost({ segments: [spec] });
+      expect(price).toThrow(ValidationError);
+      expect(price).toThrow(
+        'estimateCost: segments[0] needs sizeBytes or cardinality (pass sizeBytes: 0 to price a segment with no storage)',
+      );
+    },
+  );
+
+  it('names the segment that has no size', () => {
+    expect(() => estimateCost({ segments: [{ sizeBytes: 5 }, { cardinality: 1 }, {}] })).toThrow(
+      'segments[2] needs sizeBytes or cardinality',
+    );
+  });
+
+  it('takes a size of zero, from either field, and a missing workload', () => {
+    expect(() => estimateCost({ segments: [{ sizeBytes: 0 }] })).not.toThrow();
+    expect(() => estimateCost({ segments: [{ cardinality: 0, count: 2 }] })).not.toThrow();
   });
 });

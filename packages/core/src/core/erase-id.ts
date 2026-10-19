@@ -152,6 +152,7 @@ import { UNANSWERED_BASE_MS, UNANSWERED_RESENDS, leaseChurn, onlyLeasesDiffer } 
 import { renewPointer, renewsPointer } from './pointer-id';
 import { pruneKnown, usableKnownGens } from './known-generations';
 import { assertRegistryCanWrite } from './ports';
+import { checkRequireEncryption } from './check';
 import type {
   GenKey,
   IStorageDriver,
@@ -1787,6 +1788,7 @@ async function resolveDek(
   record: RegistryRecord,
   row: { readonly tombstoned: boolean; readonly pointerless: boolean },
 ): Promise<Aead | undefined> {
+  checkRequireEncryption(deps.requireEncryption);
   if (row.tombstoned) return undefined;
   if (record.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
     if (deps.keystore === undefined) {

@@ -73,6 +73,16 @@ export function requireInteger(
   return value;
 }
 
+/**
+ * Refuse a `requireEncryption` that is present and not exactly a boolean. Every site that acts on the flag compares it
+ * with `=== true`, so a truthy string would be taken for `true` by one and for `false` by another.
+ */
+export function checkRequireEncryption(value: unknown): void {
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw new ValidationError(`requireEncryption must be a boolean; got ${shown(value)}`);
+  }
+}
+
 /** `value` if it is a safe integer of 1 or more, else a `ValidationError` naming `what`. */
 export function requirePositiveInteger(value: unknown, what: string): number {
   return requireInteger(value, { min: 1, what });

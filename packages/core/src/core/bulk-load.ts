@@ -4,6 +4,7 @@
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { KeyUnavailableError, ValidationError } from './errors';
+import { checkRequireEncryption } from './check';
 import { YIELD_EVERY_IDS, yieldEvery } from './cooperative';
 import type { Clock, Entropy } from './determinism';
 import { incarnationField } from './token';
@@ -387,6 +388,7 @@ export async function bulkLoadAhead(
   ids: BulkLoadInput,
   options: BulkLoadOptions = {},
 ): Promise<BulkLoadResult> {
+  checkRequireEncryption(options.requireEncryption);
   requireKeystoreWhenEncryptionRequired(options);
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   const entropy = requireEntropy(options.entropy, 'a load');

@@ -183,3 +183,80 @@ describe.each(SWITCHES)(
     });
   },
 );
+
+const PREFIXED: ReadonlyArray<readonly [string, (prefix: unknown) => unknown]> = [
+  ['S3Storage', (v) => new S3Storage({ bucket: 'b', prefix: v as string })],
+  [
+    'GcsStorage',
+    (v) => new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:9', prefix: v as string }),
+  ],
+  [
+    'AzureBlobStorage',
+    (v) =>
+      new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c', prefix: v as string }),
+  ],
+];
+
+describe.each(PREFIXED)('%s refuses a `prefix` that is not a string', (_backend, build) => {
+  it.each([[5], [null], [true], [{}], [['a']]])('%j', (value) => {
+    expect(() => build(value)).toThrow(ValidationError);
+    expect(() => build(value)).toThrow(/^prefix must be a string; got /);
+  });
+
+  it('takes a string and absence', () => {
+    for (const ok of ['', 'p/', 'a/b', undefined]) expect(() => build(ok)).not.toThrow();
+  });
+});
+
+describe('S3Storage refuses a `region` that is not a non-empty string', () => {
+  it.each([[''], [5], [null], [true], [{}]])('%j', (value) => {
+    const make = (): S3Storage => new S3Storage({ bucket: 'b', region: value as string });
+    expect(make).toThrow(ValidationError);
+    expect(make).toThrow("S3Storage's `region` must be a non-empty string such as 'us-east-1'");
+  });
+
+  it('takes a region and absence, and still refuses one beside a client', () => {
+    expect(() => new S3Storage({ bucket: 'b', region: 'eu-west-1' })).not.toThrow();
+    expect(() => new S3Storage({ bucket: 'b' })).not.toThrow();
+    expect(() => new S3Storage({ bucket: 'b', client: s3Client(), region: 'eu-west-1' })).toThrow(
+      ValidationError,
+    );
+  });
+});
+
+describe('AzureBlobStorage refuses a connection string it cannot use', () => {
+  const FAKE_KEY = 'AccountKey=FAKEKEYFAKEKEYFAKEKEY';
+  const make = (connectionString: unknown): AzureBlobStorage =>
+    new AzureBlobStorage({ connectionString: connectionString as string, container: 'c' });
+
+  it.each([
+    ['an empty string', ''],
+    ['whitespace', '   '],
+    ['text that is not a connection string', 'garbage'],
+    ['an account name alone', 'AccountName=a'],
+    ['a number', 5],
+    ['null', null],
+    ['an object', {}],
+  ])('%s', (_label, value) => {
+    expect(() => make(value)).toThrow(ValidationError);
+    expect(() => make(value)).toThrow(/^AzureBlobStorage: `connectionString` /);
+  });
+
+  it('never puts the string, or a cause that could hold it, in the error', () => {
+    for (const bad of [`${FAKE_KEY};AccountName=a`, `${FAKE_KEY};BlobEndpoint=not a url`]) {
+      let thrown: unknown;
+      try {
+        make(bad);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(ValidationError);
+      expect((thrown as Error).message).not.toContain('FAKEKEY');
+      expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
+    }
+  });
+
+  it('takes a valid connection string', () => {
+    expect(() => make(AZURITE_CONN)).not.toThrow();
+  });
+});

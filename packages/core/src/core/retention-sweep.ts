@@ -102,7 +102,7 @@ export interface RetireExpiredOptions {
    */
   readonly now: number;
   /**
-   * Maximum segments to retire in this cycle (default 100). It also bounds the purges attempted (a purge the registry
+   * Maximum segments to retire in this cycle (default 100; an integer of at least 1, `null` refused). It also bounds the purges attempted (a purge the registry
    * refuses is not charged; {@link RetireExpiredResult.purgeFaults} says how purging stops after refusals), the
    * due-index pointers to nothing one call removes, and, counted apart from the retirements, the tombstones this sweep
    * did not write whose pointers one call removes.
@@ -135,6 +135,8 @@ export interface RetireExpiredOptions {
    * tombstone under the day the tombstone's grace ends, and the scan reads it back with the expiry pointers. A pointer
    * whose segment is gone is removed once read, by an index scan in the buckets it reads, and by an unscoped `'fleet'`
    * scan (no `namespace`) in every bucket.
+   *
+   * Any other value, a misspelt `'index'` or a `null` included, throws `ValidationError` rather than running the fleet scan.
    */
   readonly scan?: 'fleet' | 'index';
   /**
@@ -143,14 +145,17 @@ export interface RetireExpiredOptions {
    * across restarts.
    */
   readonly shards?: readonly number[];
-  /** Total shards the fleet is split into. Required with {@link shards}; ignored without it. */
+  /**
+   * Total shards the fleet is split into. Required with {@link shards}; ignored without it. `shards` must list at least
+   * one number from 0 to `totalShards - 1`, each once, else `ValidationError`.
+   */
   readonly totalShards?: number;
   /**
    * How many **past** buckets an `'index'` scan reads besides the current one (default 7, one per day).
    * A sweep that did not run — scaled to zero, a failed deploy, a paused
    * schedule — leaves its buckets behind, and this is how far back a later cycle reaches for them. Bounded so a
    * long outage costs a bounded number of list calls per cycle rather than one per day since the epoch;
-   * anything older is the `'fleet'` repair pass's job.
+   * anything older is the `'fleet'` repair pass's job. An integer of at least 0 on either scan, else `ValidationError`.
    */
   readonly lookbackBuckets?: number;
   /**
@@ -552,10 +557,34 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
     if (!Array.isArray(options.shards)) {
       throw new ValidationError('retireExpired: shards must be an array of shard numbers');
     }
+    if (options.shards.length === 0) {
+      throw new ValidationError(
+        'retireExpired: shards is empty, so this sweep would own no segment; pass at least one shard number, ' +
+          'or leave shards out to sweep every one',
+      );
+    }
+    const seen = new Set<number>();
     for (const shard of options.shards as readonly unknown[]) {
-      requireInteger(shard, { min: 0, max: total - 1, what: 'retireExpired: a shard' });
+      const n = requireInteger(shard, { min: 0, max: total - 1, what: 'retireExpired: a shard' });
+      if (seen.has(n)) {
+        throw new ValidationError(
+          `retireExpired: shard ${n} is listed twice; shards is a set of shard numbers`,
+        );
+      }
+      seen.add(n);
     }
   }
+  // A misspelt `scan` would otherwise run the fleet sweep, which is not the scan the caller asked for.
+  const scan: unknown = options.scan === undefined ? 'fleet' : options.scan;
+  if (scan !== 'fleet' && scan !== 'index') {
+    throw new ValidationError(
+      `retireExpired: \`scan\` must be 'fleet' or 'index'; got ${typeof scan === 'string' ? JSON.stringify(scan) : scan === null ? 'null' : typeof scan}`,
+    );
+  }
+  // Only an absent value means the default: a `null` or a malformed one is refused, on either scan.
+  const lookbackBuckets =
+    options.lookbackBuckets === undefined ? DEFAULT_LOOKBACK_BUCKETS : options.lookbackBuckets;
+  requireInteger(lookbackBuckets, { min: 0, what: 'retireExpired: `lookbackBuckets`' });
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const now = options.now;
   requireFiniteNumber(now, { what: 'retireExpired: `now`', note: 'epoch milliseconds' });
@@ -569,10 +598,11 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
         `rather than milliseconds. A sweep with a wrong-units clock treats every policy as expired.`,
     );
   }
-  const limit = options.limit ?? DEFAULT_RETIRE_LIMIT;
+  const limit = options.limit === undefined ? DEFAULT_RETIRE_LIMIT : options.limit;
   requirePositiveInteger(limit, 'retireExpired: `limit`');
   const purgeTombstones = options.purgeTombstones ?? true;
-  const grace = options.tombstoneGraceMs ?? DEFAULT_TOMBSTONE_GRACE_MS;
+  const grace =
+    options.tombstoneGraceMs === undefined ? DEFAULT_TOMBSTONE_GRACE_MS : options.tombstoneGraceMs;
   requireFiniteNumber(grace, { min: 0, what: 'retireExpired: `tombstoneGraceMs`' });
   // Only an absent value means the default: a `null` or a malformed one is refused, as a malformed `budget` is.
   const maxScanSegments =
@@ -587,8 +617,8 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
     grace,
     maxScanSegments,
     dryRun: options.dryRun === true,
-    scan: options.scan ?? 'fleet',
-    lookbackBuckets: options.lookbackBuckets ?? DEFAULT_LOOKBACK_BUCKETS,
+    scan,
+    lookbackBuckets,
     shards: options.shards,
     totalShards: options.totalShards ?? 0,
   };
