@@ -11,12 +11,12 @@ import { fileURLToPath } from 'node:url';
  * guides, READMEs, privacy note, roadmap and site restate those guarantees in short. A restatement written apart from
  * its mechanism drifts from it: it says that a write's random id settles it where the mechanism also reads the row
  * again, or that every race is reported where the mechanism names two that are not. The script's header states the
- * tie, every rule (R1 to R7, which the test names below use), the baseline and the known limits.
+ * tie, every rule, the baseline and the known limits; the test names below use its labels, R1 to R7.
  *
- * The cases below are named for what they plant. F1 to F12 must fail, each on the rule it names; N1 to N11 must not.
- * F5 and F6 plant an edit to a tied claim and to a tied summary: the gate keeps no record of who read what, so both
- * pass the check, and the case asserts that `--changed` hands the review the pair. There is no F7: it would plant a
- * stale record of that reading, which the gate does not keep.
+ * The cases below are named for what they plant: the ones labelled F1 to F12 must fail, each on the rule it names, and
+ * the ones labelled N1 to N11 must not. F5 plants an edit to a tied claim, F6 one to a tied summary: the gate keeps no
+ * record of who read what, so both pass the check, and each case asserts that `--changed` hands the review the pair.
+ * The label F7 is not used: it would plant a stale record of that reading, which the gate does not keep.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 

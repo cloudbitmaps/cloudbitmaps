@@ -47,13 +47,14 @@ to bound a growth in ids or refuse a key shift, and what throws instead of a ref
 
 ### When a write is throttled or gets no answer
 
-A load makes two writes. The generation's object goes to a number no other object holds, so a write the service
-throttles is sent again, and a random id in the object's metadata tells a re-send that landed from another writer's
-object. A registry row write that ends without an answer may still land, so the load reads the row again and decides
-from what it holds, deleting nothing until it has. A load that throws `TransientError` leaves its object above the
-pointer: re-run it. The outcomes, each backend's retries and waits, and what a `superseded` refusal over the load's own
-generation can mean are in
-[When a write is throttled or gets no answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer).
+A load makes two writes. The generation's object goes to a number no other object holds, so [a write the service
+throttles is sent again](correctness.md#object-write-resent), and a random id in the object's metadata tells a re-send
+that landed from another writer's object. A registry row write that ends without an answer may still land, so [the load
+reads the row again and decides from what it holds](correctness.md#row-write-settled), deleting nothing until it has. A
+load that throws `TransientError` [leaves its object above the
+pointer](correctness.md#transient-error-leaves-its-object): re-run it. The outcomes, each backend's retries and waits,
+and what a `superseded` refusal over the load's own generation can mean are in [When a write is throttled or gets no
+answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer).
 
 ## What a load accepts
 
@@ -1229,22 +1230,26 @@ is an ordinary one: every guard and every race check runs, judged against each `
 
 ## How it stays correct
 
-A load takes the next generation number itself, writes its object first, and only once the object is durable moves the
-pointer, by a compare-and-swap that never moves it backwards and is fenced on the row the load read. So a crash never
-moves the pointer, a rerun is a newer identical generation, and of two loads racing on one segment at most one lands.
-A load that dies between its write and its publish leaves an orphan, which a later load's collection removes.
-A load's collection deletes only below the pointer on an active segment, keeps the window the row records, spares a
-generation a live lease holds, and re-proves the row before every delete. The whole mechanism is in
-[How a load stays correct](correctness.md#how-a-load-stays-correct).
+A load [takes the next generation number itself](correctness.md#numbering-is-the-loads), [writes its object first, and
+only once the object is durable moves the pointer](correctness.md#publish-is-forward-only), by a compare-and-swap that
+never moves it backwards and [is fenced on the row the load read](correctness.md#which-fence). So [a crash never moves
+the pointer](correctness.md#crash-never-moves-the-pointer), a rerun is a newer identical generation, and of two loads
+racing on one segment at most one lands. A load that dies between its write and its publish leaves an orphan, which [a
+later load's collection removes](correctness.md#orphan-collected-later). A load's collection [deletes only below the
+pointer on an active segment, keeps the window the row records](correctness.md#what-collection-does), [spares a
+generation a live lease holds](correctness.md#lease-read-from-the-row), and [re-proves the row before every
+delete](correctness.md#collection-re-proves-the-row). The whole mechanism is in [How a load stays
+correct](correctness.md#how-a-load-stays-correct).
 
 ### A rollback that races a collection
 
 Every loop that deletes generations reads the segment's row just before each delete, and a rollback held to the row's
 `knownGens` is kept out of all of them. One that is not (`allowUnknown`, or a target the pointer alone decides) can land
-on a generation in the round trip between that read and the delete. The deleting call then finds the pointer on a
-generation it deleted and, once its reads of the row over the next 1.75 s all still find it there, throws
-`NotFoundError` naming it rather than answer; it repairs nothing. One delete is not held to this, a refused erasure
-rewrite's delete of its own object, which only `checkConsistency()` finds. Look with `store.generations(ref)` or
-`checkConsistency()` before acting:
-[a rollback that races a collection](correctness.md#a-rollback-that-races-a-collection) says what each delete reports,
-what to do, and what the check costs.
+on a generation in the round trip between that read and the delete. The deleting call then [finds the pointer on a
+generation it deleted](correctness.md#deleting-call-detects) and, [once its reads of the row over the next 1.75 s all
+still find it there](correctness.md#rollback-check-gets-time), throws `NotFoundError` naming it rather than answer; [it
+repairs nothing](correctness.md#rollback-race-limits). One delete is not held to this, [a refused erasure rewrite's
+delete of its own object](correctness.md#deleting-call-detects), which only `checkConsistency()` finds. [Look with
+`store.generations(ref)` or `checkConsistency()` before acting](correctness.md#rollback-race-what-to-do): [a rollback
+that races a collection](correctness.md#a-rollback-that-races-a-collection) says what each delete reports, what to do,
+and what the check costs.
