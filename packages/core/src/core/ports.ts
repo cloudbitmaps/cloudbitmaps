@@ -517,8 +517,9 @@ export interface RegistryRecord extends SegmentRef {
   readonly currentGen: number | null;
   /**
    * Per-segment data-key (DEK) wrappings for encryption-at-rest: the DEK envelope-wrapped under one or more KEKs
-   * (active + optional recovery). Reading unwraps with any held KEK; **crypto-shred deletes this whole list**,
-   * making the segment's at-rest bytes permanently unrecoverable. Absent ⇒ the segment is cleartext.
+   * (active + optional recovery). Reading unwraps with any held KEK; **crypto-shred deletes this whole list** from
+   * the current row, so the segment's at-rest bytes are unrecoverable once no retained copy of the row (a noncurrent
+   * version, a backup) still holds it, or every KEK that wrapped it is destroyed. Absent ⇒ the segment is cleartext.
    */
   readonly wrappedDeks?: readonly WrappedDek[];
   /**

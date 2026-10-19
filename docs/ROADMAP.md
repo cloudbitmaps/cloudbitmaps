@@ -208,11 +208,13 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   envelope-wrapped per-segment DEKs under operator-held KEKs, AAD binding each ciphertext to its
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
   process; no cloud KMS dependency is forced on you.
-- **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
-  one's current generation without the id (read through the coalesced chunk stream, at most 4 ranges ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
-  and deletes every generation that held the bit before returning, above the pointer as well as below it, and a
+- **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, [rewrites each
+  one's current generation without the id](guide/correctness.md#erasure-is-a-rewrite) (read through the coalesced
+  chunk stream, at most 4 ranges ahead of the writer, one bit cleared), [publishes it fenced on the generation it
+  streamed](guide/correctness.md#which-fence), and [deletes every generation that held the
+  bit](guide/correctness.md#every-holder-goes) before returning, above the pointer as well as below it, and a
   first load's object on a segment with no generation yet —
-  **physical deletion on return**, with a
+  **physical deletion on return** for every segment its ledger reports `erased: true`, with a
   per-segment ledger and an audit event per segment erased: `segment.rewrite`, or `segment.collect` where only other
   generations held the id, which is also emitted, with no `fromGeneration`, for a segment where the erasure deleted only
   objects no read of it can open. `subjectReport` is the read side (access). What a
@@ -221,8 +223,10 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   the erasure read, on a storage driver that reports
   `conditionalDelete` (in-memory, Azure Blob, S3 on an AWS host, GCS when set), so a load that took its number since
   keeps its generation ([the limits](guide/correctness.md#how-an-erasure-stays-correct)); the local-filesystem driver cannot.
-- **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` discard the DEK for immediate, verifiable
-  destruction that survives immutable backups and WORM.
+- **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` remove the wrapped DEK from the segment's current
+  registry row in one compare-and-swap, which reaches immutable backups and WORM copies of the objects once no
+  retained copy of the row holds it, or once every KEK that wrapped it is destroyed
+  ([encryption & DR](guide/disaster-recovery.md#encryption--dr)).
 - **Segment disposal** — `store.dropSegment` retires a segment and *reclaims its storage*: tombstone first, then
   every Storage generation, so a failure part-way leaves orphaned bytes and never a wrong answer. Works on
   cleartext (crypto-shred needs a key); on an encrypted segment it does both. `dryRun` previews. This is the

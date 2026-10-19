@@ -407,8 +407,8 @@ describe("a segment's encryption posture is decided at its first generation", ()
   it('publishGeneration refuses new key material on an advance, rather than dropping it', async () => {
     // The fence itself, and the reason it is a throw: the object is already written, so the only two silent
     // outcomes are an unreadable generation (dropping the wrapping) or a row that advertises encryption over
-    // cleartext objects — which is what makes `destroySegment` emit `segment.erase`, defined as "unreadable
-    // everywhere, backups included", over plaintext that stays readable from any copy.
+    // cleartext objects — which is what makes `destroySegment` emit `segment.erase`, the receipt of a key shred that
+    // reaches every copy of the objects, over plaintext that stays readable from any copy.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world();
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1], {

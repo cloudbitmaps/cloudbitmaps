@@ -727,8 +727,9 @@ tunes both.
 tombstone, so `eraseSubject` does what every other write in the library does. For each registered segment the id is a
 member of, it streams the current generation through, with every chunk decoded and re-encoded and the one holding the
 id with that bit cleared. It verifies the new object, publishes it fenced on the generation it streamed, and then
-deletes the generation that held the bit (a collection with `keep: 0`). The bit is physically gone from the bucket
-when the call returns. It reads the generation through the reader's coalesced chunk stream, in key order: chunks that sit within 256 KiB of
+deletes the generation that held the bit (a collection with `keep: 0`). For every segment its ledger reports
+`erased: true`, the bit is physically gone from the bucket when the call returns; a noncurrent version, a replica or a
+backup keeps the old object until its own lifecycle removes it. It reads the generation through the reader's coalesced chunk stream, in key order: chunks that sit within 256 KiB of
 each other are fetched in one range request of at most 1 MiB, so a segment of 2,000 chunks of about 8 KiB takes about
 16 range requests rather than 2,000 (expected, from the test that counts them), and the ranges go out 4 at a time. Every
 chunk is checked exactly as a read of it alone is checked: its CRC32C, its AEAD on an encrypted segment, and the
@@ -932,11 +933,15 @@ repaired. These limits hold on every driver:
   row's, since the event carries no incarnation to tell the two apart. `dropSegment`'s
   sweep never re-reads the row.
 
-<a id="erasure-results"></a>**The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (an internal function of the engine) over every registered segment, and each ledger entry is that function's result.
+<a id="erasure-results"></a>**The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (an
+internal function of the engine) over every registered segment and turns each result into a ledger entry. That
+function answers `erased: true`, or a `reason`: `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no
+generation in the bucket holds it) or `'superseded'`. The ledger lists no entry for the first four. An entry is
+`erased: true`; `erased: false` with `note: 'superseded'`; or `erased: false` with `note: 'error: …'` for a fault the
+call caught. A ledger entry carries `note`, never `reason`.
 
 - `erased: true` means no generation of the segment holds the id, checked by listing the bucket and reading what is
-  left. Otherwise `reason` is `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no generation in the bucket
-  holds it) or `'superseded'`.
+  left.
 - That last read opens again every generation the call already found clean, but for two: the generation it found
   current and its own rewrite. Each of those is skipped only while the row, read after the listing, names it in
   `knownGens` with the footer checksum of the object the call read or wrote (to the 32 bits of the checksum, as above):
@@ -969,7 +974,8 @@ repaired. These limits hold on every driver:
   generations stay and no `segment.collect` event names them. A re-creation inside the one round trip before a
   delete is the window that remains (see the limits below): inside it the call can still answer `erased: true`, with
   its `segment.collect` event naming the new row's generation. Otherwise the result is
-  `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
+  `'destroyed'`, and the segment is not listed; the objects are left to the retention sweep's purge or a re-run of the
+  drop.
 - An object no read of the segment can open (on an encrypted segment, one sealed under a key the row does not hold; on
   a cleartext one with a generation, an encrypted one) is deleted as a holder whatever the id, wherever the call meets
   it but as the current generation or under a tombstone, and listed in `collected`; only a searched generation that
@@ -989,7 +995,8 @@ repaired. These limits hold on every driver:
   removes it ([a number taken again during an erasure](#how-an-erasure-stays-correct)). So a crashed first load's object is
   erased as any other holder is. On an encrypted store such an object is sealed under a key its load has not published, so it cannot
   be searched: it counts as a holder whatever the id, and is deleted too, and with only such objects the result is
-  `'no-generation'` with them in `collected` ([the effect across a fleet](erasure.md#three-rules-while-you-erase)). A row with no
+  `'no-generation'` with them in `collected`, so the ledger lists nothing for the segment and its `segment.collect`
+  event is the record ([the effect across a fleet](erasure.md#three-rules-while-you-erase)). A row with no
   object that holds the id, read with no generation by the call's first read, is `'no-generation'`, under
   `requireEncryption` too, and the call writes nothing. A row that loses its pointer after the call found one is
   `'superseded'`, not `'no-generation'`. A load
@@ -1005,8 +1012,8 @@ repaired. These limits hold on every driver:
   replaced, the object this call meant to delete was deleted, as a holder by another erasure (above the pointer, or on
   a segment with no generation yet) or by the refused load that wrote it, and a load stored another object under its
   number, so the storage driver's conditional delete refused this call's delete, whether or not the pointer moved. It means this call did not erase the id, not
-  that the id is still there. Re-run, and if a racing erasure of the same id got there first, the re-run reports
-  `'not-member'`.
+  that the id is still there. Re-run, and if a racing erasure of the same id got there first, the re-run lists nothing
+  for that segment (the engine's result is `'not-member'`).
 - A racing erasure collects with `keep: 0`, so it can delete the generation this call was streaming or the object it had
   just written. The reason is read off the row, so a row tombstoned mid-rewrite reports `'destroyed'` once the
   tombstone's objects are searched as a fresh call searches them (`erased: true` when one still held the id and was

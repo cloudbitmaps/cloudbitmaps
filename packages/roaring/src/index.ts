@@ -1875,7 +1875,8 @@ export class CloudRoaring {
 
   /**
    * **Subject erasure (GDPR Art. 17): remove an id from every segment it's in, with the bit physically gone
-   * from the bucket on return.**
+   * from the bucket on return for each segment the ledger reports `erased: true`.** A noncurrent version, a replica
+   * or a backup keeps the old object until its own lifecycle removes it.
    *
    * For each **registered** segment the id is a member of, `eraseIdFromSegment` rewrites the current generation
    * without the id — every chunk streamed through, one bit cleared — publishes the rewrite **fenced on the
@@ -2336,11 +2337,14 @@ export class CloudRoaring {
   }
 
   /**
-   * **Dispose of a segment — tombstone it, then delete its storage objects.** Irreversible.
+   * **Dispose of a segment — tombstone it, then delete its storage objects.** It cannot be undone through the
+   * library (a restore from the registry's and the bucket's versions or backups can).
    *
-   * The operation a rolling window needs: `destroySegment` crypto-shreds (bytes unreadable everywhere including
-   * backups, but still sitting in your bucket and still billed, and it requires encryption), while this one
-   * removes the storage and works on a cleartext segment. On an encrypted segment it does both.
+   * The operation a rolling window needs: `destroySegment` crypto-shreds (it removes the key from the segment's
+   * current registry row, so the bytes are unreadable everywhere, backups included, once no retained copy of the row
+   * holds the key or every KEK that wrapped it is destroyed; the objects still sit in your bucket and are still
+   * billed, and it requires encryption), while this one removes the storage and works on a cleartext segment. On an
+   * encrypted segment it does both.
    *
    * Pass `{ dryRun: true }` first — it reports the generations it *would* delete and changes nothing. That
    * matters more than the `confirmSegment` guard for anything automated, because in a loop the guard is the same

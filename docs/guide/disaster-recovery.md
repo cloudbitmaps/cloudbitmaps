@@ -420,8 +420,9 @@ Deciding which is which is the part that needs a person:
 - **Check your audit sink** for that segment, and read its events together, because no event says who made the
   call: an event carries no origin, only what your sink stamps on it. A crypto-shred (`destroySegment`,
   `eraseNamespace`) emits `segment.erase` alone, and `eraseNamespace` adds one `namespace.erase` for the namespace.
-  A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` then emits
-  `segment.dispose` once its storage sweep ends. The sweep's retirements are `dropSegment` calls, so they emit
+  A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` that writes or
+  finds a tombstone then emits `segment.dispose` once its storage sweep ends (a drop of a name with no row and no
+  objects, and a dry run, emit nothing). The sweep's retirements are `dropSegment` calls, so they emit
   exactly what a manual drop does. One killed mid-sweep emits the `segment.erase` if the segment was encrypted,
   nothing if it was cleartext, and no `segment.dispose`; one killed after its sweep but before the stamp emits
   both. So a `segment.erase` with no `segment.dispose` is a crypto-shred or an interrupted drop of an encrypted

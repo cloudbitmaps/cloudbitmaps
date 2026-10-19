@@ -174,7 +174,7 @@ interface Resolution {
 
 /**
  * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a crypto-shredded
- * one, whose DEK is gone, so its Storage bytes are unrecoverable; and a row with no Storage generation yet (minted by
+ * one, whose DEK is gone from the row, so no read through it can decrypt its Storage bytes; and a row with no Storage generation yet (minted by
  * `setSegmentRetention` ahead of the first load, so admin tools can see the segment), which resolves exactly like a
  * segment with no row. Returning `null` for that last one rather than a generation is the whole reason such a row is safe
  * to create: the alternative, pointing at a generation that does not exist, is the `missing-storage-generation` state.

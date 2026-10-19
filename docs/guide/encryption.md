@@ -76,8 +76,11 @@ or Vault adapter would implement; none ships, and encryption never forces a clou
 
 ## Erase a segment or a namespace (crypto-shred)
 
-Destroying a segment's wrapped key makes its encrypted objects permanently unreadable, everywhere, backups included.
-Both calls are irreversible, so each makes you name the exact segment or namespace as confirmation.
+Destroying a segment's wrapped key removes it from the segment's current registry row. Every copy of the encrypted
+objects, backups and WORM copies included, is then unreadable once no retained copy of that row still holds the
+wrapped key, or once every KEK that wrapped it is destroyed ([disaster recovery](disaster-recovery.md#encryption--dr)).
+Neither call can be undone through the library (a registry restore to a point before it can), so each makes you name
+the exact segment or namespace as confirmation.
 
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
@@ -93,8 +96,9 @@ const { destroyed } = await eraseNamespace('tenant-42', { registry: backend.regi
 for (const r of destroyed) if (!r.destroyed) console.warn(r.segment, r.reason); // still holds data
 ```
 
-What happens: the call deletes the segment's wrapped DEK from the registry and leaves a `destroyed` tombstone. The
-encrypted objects stay in the bucket but can no longer be read. The segment reads as empty to a store that opens it
+What happens: the call deletes the segment's wrapped DEK from its current registry row and leaves a `destroyed`
+tombstone. The encrypted objects stay in the bucket, and nothing that opens the segment through that row can read
+them; a retained earlier copy of the row still holds the wrapped DEK until your storage expires it. The segment reads as empty to a store that opens it
 afresh, and a load refuses a destroyed segment, so a load racing an erasure cannot bring it back. To also reclaim the
 storage, use `dropSegment` ([retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt)): it
 crypto-shreds an encrypted segment and deletes its objects.

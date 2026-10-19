@@ -66,10 +66,12 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
 `store.eraseSubject(id, { namespace })` — or `{ allNamespaces: true }` to sweep every tenant deliberately. For
-every **registered** segment the id is in, it rewrites the current generation without the id, publishes the
-rewrite, and deletes every generation that held the bit — the one it replaced, a retained superseded one, and
-any above the pointer that a rollback left — so the bit is physically gone from the bucket on return, for idle
-and archival segments as much as busy ones. It checks rather than assumes: before an entry says `erased: true`,
+every **registered** segment the id is in, it [rewrites the current generation without the
+id](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#erasure-is-a-rewrite), publishes the rewrite, and deletes [every generation that held
+the bit](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#every-holder-goes) — the one it replaced, a retained superseded one, and any
+above the pointer that a rollback left — so the bit is physically gone from the bucket on return, for idle
+and archival segments as much as busy ones (a noncurrent version, a replica or a backup keeps the old object until
+its own lifecycle removes it; see *Honest limits* below). It checks rather than assumes: before an entry says `erased: true`,
 the call lists the segment's generations and reads each one it has not already seen without the id. There is no logical-then-physical gap and no
 scheduled step to wait for: an erasure *is* a new generation, the same shape as every other write in the library.
 It reuses the store's own drivers (so build the store with a backend). It returns an

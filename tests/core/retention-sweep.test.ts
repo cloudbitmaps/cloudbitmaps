@@ -635,7 +635,7 @@ describe('retireExpired — faults, races and malformed input', () => {
         .map((e) => e.segment)
         .sort(),
     ).toEqual(['enc', 'plain']);
-    // …and the irreversible one is distinguished, because `segment.erase` claims "unreadable everywhere".
+    // …and the key shred is distinguished, because `segment.erase` claims it reaches every copy of the objects.
     expect(events.filter((e) => e.kind === 'segment.erase').map((e) => e.segment)).toEqual(['enc']);
   });
 });

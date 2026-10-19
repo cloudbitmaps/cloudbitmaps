@@ -392,7 +392,8 @@ const SIGNATURES = [
       /every generation (?:in the bucket )?that (?:holds?|held) (?:the id|the bit)/i,
       /\bphysically gone\b/i,
     ],
-    summary: 'The bit is physically gone from the bucket when the call returns.',
+    summary:
+      'For every segment its ledger reports `erased: true`, the bit is physically gone from the bucket when the call returns; a noncurrent version, a replica or a backup keeps the old object until its own lifecycle removes it.',
     lookAlike:
       'An erasure ledger — per-subject-request proof of physical deletion — is returned by eraseSubject.',
   },

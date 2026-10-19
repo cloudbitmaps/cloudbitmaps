@@ -5,9 +5,10 @@
  * There is no per-id delete on an immutable object, and there is no mutable tier to hold a tombstone, so erasure
  * is what every other write in this library is: a new generation. The current generation is streamed chunk by
  * chunk through the ascending writer — every chunk decoded, range-checked and re-encoded, the one holding the id
- * with that bit cleared — then published fenced on the generation it streamed, and that generation is collected immediately
- * (`keep: 0`), so the bit is **physically gone from the bucket when this returns**. Bounded memory: a window of 32
- * chunk reads ahead of the writer, never the whole segment.
+ * with that bit cleared — then published fenced on the generation it streamed, and that generation is collected
+ * immediately (`keep: 0`), so when it answers `erased: true` the bit is **physically gone from the bucket when this
+ * returns** (a noncurrent version, a replica or a backup keeps the old object until its own lifecycle removes it).
+ * Bounded memory: a window of 32 chunk reads ahead of the writer, never the whole segment.
  *
  * The rewrite is the same generation without one id, so it keeps everything else: the new object carries the source's
  * metadata as it is, and the row's summary of it, built from what was written, counts one id fewer and holds the same
@@ -28,8 +29,10 @@
  * read of the row.
  *
  * What it does NOT reach: backups, replicas and noncurrent object versions hold the old object until their own
- * lifecycle removes it. For an at-rest guarantee that survives those, use encryption plus crypto-shred
- * (`destroySegment`), which is per segment — a per-id shred is infeasible because one DEK covers the whole segment.
+ * lifecycle removes it. For an at-rest guarantee that reaches those, use encryption plus crypto-shred
+ * (`destroySegment`), which is per segment — a per-id shred is infeasible because one DEK covers the whole segment —
+ * and is complete once no retained copy of the segment's registry row holds its wrapped key, or every KEK that
+ * wrapped it is destroyed.
  *
  * Concurrency. This is a **read-modify-write**, not a plain forward-only publish, and that distinction is where
  * its correctness lives: the new generation is `from` minus one bit, so it is a valid successor to `from` and to

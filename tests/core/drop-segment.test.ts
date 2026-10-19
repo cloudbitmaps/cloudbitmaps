@@ -581,7 +581,7 @@ describe('dropSegment result fields', () => {
     const armed = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });
     expect(armed.reason).toBeUndefined();
     expect(armed.wouldDelete).toEqual([0]);
-    expect(armed.wouldCryptoShred).toBe(true); // irreversible EVERYWHERE, backups included
+    expect(armed.wouldCryptoShred).toBe(true); // the half that reaches every copy, backups included
 
     await dropSegment(SEG, w.deps, CONFIRM);
     const after = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });

@@ -230,11 +230,12 @@ a policy. Four levers exist, and they answer different questions:
 |---|---|---|
 | **`store.retireExpired({ … })`** | lists the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window**: the usual answer, [above](#run-the-sweep-storeretireexpired) |
 | **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, then deletes its storage generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it also discards the key, so it is a strict superset there. Afterwards the segment **reads as empty** | **retiring a bucket and reclaiming the storage** |
-| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: discards the key so the storage bytes are unreadable everywhere, backups and WORM included, but leaves the objects in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies |
+| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: removes the key from the segment's current registry row, so the storage bytes, backups and WORM copies included, are unreadable once no retained copy of that row holds it, or once every KEK that wrapped it is destroyed; the objects stay in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies of the objects |
 | `store.load(ref, ids, { keep })`, or an `*Into` given `keep` | the write's own collection: deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([generations and `keep`](loading.md#generations-and-keep)), not live data |
 
-Deleting an object does not reach a noncurrent version, a cross-region replica, or a point-in-time snapshot. Discarding
-the key does. So if your requirement is "the data must become unreadable" rather than "stop paying for it",
+Deleting an object does not reach a noncurrent version, a cross-region replica, or a point-in-time snapshot. Removing
+the key reaches them, once no retained copy of the registry row holds it
+([disaster recovery](disaster-recovery.md#encryption--dr)). So if your requirement is "the data must become unreadable" rather than "stop paying for it",
 [encryption at rest](encryption.md) is a prerequisite, and `dropSegment` on an encrypted segment gives you both at
 once.
 

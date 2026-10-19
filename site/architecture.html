@@ -370,7 +370,8 @@
               tombstone to honour on the read path, and nothing to compact later: for every
               segment the ledger reports <span class="m">erased: true</span>, the bit is <b>physically gone</b>
               from the bucket when the call returns. A noncurrent version, a soft-deleted copy, a replica or a
-              backup keeps the old object until its own lifecycle removes it.
+              backup keeps the old object until its own lifecycle removes it
+              (<a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#erasure-is-a-rewrite" target="_blank" rel="noopener" aria-label="How an erasure stays correct (opens in a new tab)">how an erasure stays correct</a>).
             </p>
           </figure>
 

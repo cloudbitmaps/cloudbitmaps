@@ -39,18 +39,6 @@
     },
     {
       "file": "PRIVACY.md",
-      "claim": "every-holder-goes",
-      "sentence": "7835719c30ee",
-      "starts": "For every registered segment the id is in,"
-    },
-    {
-      "file": "PRIVACY.md",
-      "claim": "erasure-is-a-rewrite",
-      "sentence": "7835719c30ee",
-      "starts": "For every registered segment the id is in,"
-    },
-    {
-      "file": "PRIVACY.md",
       "claim": "erasure-racing-writers",
       "sentence": "858daa967579",
       "starts": "A writer that lands during the rewrite is"
@@ -210,24 +198,6 @@
       "claim": "row-write-settled",
       "sentence": "53fddb2f1daf",
       "starts": "When its write gets no answer, the load"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "which-fence",
-      "sentence": "0874461f77fc",
-      "starts": "eraseSubject finds every registered segment an id is"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "every-holder-goes",
-      "sentence": "0874461f77fc",
-      "starts": "eraseSubject finds every registered segment an id is"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "erasure-is-a-rewrite",
-      "sentence": "0874461f77fc",
-      "starts": "eraseSubject finds every registered segment an id is"
     },
     {
       "file": "docs/ROADMAP.md",
@@ -396,12 +366,6 @@
       "claim": "pin-needs-a-crbm-reader",
       "sentence": "e24ca5cf9d40",
       "starts": "Needs a .crbm reader, which the store builds"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "every-holder-goes",
-      "sentence": "c84c7cb134bc",
-      "starts": "GDPR Art. 17: for every registered segment the"
     },
     {
       "file": "docs/guide/api-reference.md",
@@ -1113,12 +1077,6 @@
     },
     {
       "file": "site/architecture.html",
-      "claim": "erasure-is-a-rewrite",
-      "sentence": "4fa7d975e855",
-      "starts": "There is no tombstone to honour on the"
-    },
-    {
-      "file": "site/architecture.html",
       "claim": "object-write-resent",
       "sentence": "3417b3b10e44",
       "starts": "A write — a load, an Into 's"
@@ -1182,18 +1140,6 @@
       "claim": "what-collection-does",
       "sentence": "f1623bc8e071",
       "starts": "The only scheduled work is the retention sweep"
-    },
-    {
-      "file": "site/llms.txt",
-      "claim": "every-holder-goes",
-      "sentence": "7649406c8948",
-      "starts": "Compliance is built in: subjectReport (Art. 15) and"
-    },
-    {
-      "file": "site/llms.txt",
-      "claim": "erasure-is-a-rewrite",
-      "sentence": "7649406c8948",
-      "starts": "Compliance is built in: subjectReport (Art. 15) and"
     },
     {
       "file": "site/usage.html",

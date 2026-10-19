@@ -62,7 +62,8 @@ async function members(store: CloudRoaring, ref: SegmentRef = SEG): Promise<numb
  * erasure rewrite. That is what makes crypto-shred a single, total act: one key covers every generation the
  * segment has ever had, so discarding it makes all of them unreadable at once. If a write ever minted a second
  * DEK instead, shredding would leave whichever generations used the other key perfectly readable, and
- * `destroySegment`'s attestation ("unreadable everywhere, backups included") would be false.
+ * `destroySegment`'s attestation (the `segment.erase` receipt of a key shred, which reaches every copy of the
+ * objects) would be false.
  *
  * These cases therefore assert the same thing from three directions: the wrapped-DEK list on the row never
  * changes, every generation still decrypts with the one key, and a reader without the keystore can read none
@@ -117,8 +118,8 @@ describe('encryption lifecycle — one DEK per segment, across every generation'
 
     // The trap this closes: writing a CLEARTEXT generation onto a row that still advertises wrapped DEKs.
     // `destroySegment` keys `cryptoShredded` off the presence of those wrappings, so shredding that segment
-    // would emit `segment.erase` — "unreadable everywhere, backups included" — over bytes that stay readable
-    // from any copy. Over-attestation is the one failure an audit trail exists to prevent.
+    // would emit `segment.erase` — the receipt of a key shred, which reaches every copy of the objects — over bytes
+    // that stay readable from any copy. Over-attestation is the one failure an audit trail exists to prevent.
     await expect(
       bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [9], { registry: w.registry }),
     ).rejects.toBeInstanceOf(KeyUnavailableError);
@@ -178,7 +179,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
 
     const rec = (await w.registry.get(SEG))!;
     expect(rec.status).toBe('destroyed');
-    expect(rec.wrappedDeks).toBeUndefined(); // the key is gone — the .crbm bytes are unreadable forever
+    expect(rec.wrappedDeks).toBeUndefined(); // the key is gone from the current row — no read through it decrypts
 
     // Reads empty even though we still hold the KEK: there is no DEK left to unwrap. Note the objects are
     // still in the bucket (that is `dropSegment`'s job) — this is unreadability, not reclamation.

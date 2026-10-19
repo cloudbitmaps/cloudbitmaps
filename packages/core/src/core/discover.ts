@@ -24,8 +24,8 @@ export interface SegmentInfo extends SegmentRef {
   readonly currentGen: number | null;
   /**
    * `destroyed` is a tombstone: the row stays so sweeps can still find it, and the generations are gone — on an
-   * encrypted segment the DEK wrappings went with them, which is what makes the bytes unrecoverable rather than
-   * merely deleted.
+   * encrypted segment the DEK wrappings went with them, which is what makes every copy of the bytes unrecoverable
+   * rather than merely deleted, once no retained copy of the row still holds them.
    */
   readonly status: RegistryRecord['status'];
 }
