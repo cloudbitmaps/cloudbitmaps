@@ -626,7 +626,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   collection that is not fenced on the row took it, or an erasure deleted one above the pointer) or is another object
   (a load took its number meanwhile), the pointer, the old summary and the old record are put back, the target
   leaves the record, and the rollback throws `NotFoundError`. That read takes the place of a listing of the bucket.
-- A swap of the pointer that gets no answer (`TransientError`), or that meets a conflict, is settled by reading the row.
+- A swap of the pointer that gets no answer (`TransientError`), or that meets a conflict, [is settled by reading the
+  row](correctness.md#rollback-settles-its-swap).
   On a registry that reports write tokens (every shipped one does), the swap is the rollback's own when the row's
   pointer is at the target and its `pointerId` is the token of a swap this call sent (a resend reports a token of its
   own, and every one is kept). Whatever else was written to the row since (a lease, a retention or residency write, a

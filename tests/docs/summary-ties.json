@@ -957,24 +957,6 @@
     },
     {
       "file": "docs/guide/loading.md",
-      "claim": "rollback-settles-its-swap",
-      "sentence": "ff088156d1f8",
-      "starts": "On a registry that reports write tokens (every"
-    },
-    {
-      "file": "docs/guide/loading.md",
-      "claim": "rollback-settles-its-swap",
-      "sentence": "ab6e18cf8450",
-      "starts": "Whatever else was written to the row since"
-    },
-    {
-      "file": "docs/guide/loading.md",
-      "claim": "rollback-settles-its-swap",
-      "sentence": "9f42e8a39c98",
-      "starts": "A registry that reports no tokens settles a"
-    },
-    {
-      "file": "docs/guide/loading.md",
       "claim": "every-holder-goes",
       "sentence": "26886ef1182e",
       "starts": "Or an erasure deletes them: all of them"
