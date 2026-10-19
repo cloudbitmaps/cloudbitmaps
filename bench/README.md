@@ -126,7 +126,7 @@ overlaps, so what it costs scales with the include operand and not with the size
 
 The workload's client makes one attempt per request and every timed store has its own retry off, so no retry's backoff
 can sit inside a latency sample and every count stays exact. On its own, that would let one transient fault anywhere
-in a run's requests (up to ~94,600 GET-class and 405 PUT-class at the default workload) fail the whole run, and a
+in a run's requests (up to about 94,900 GET-class and 567 PUT-class at the default workload) fail the whole run, and a
 partial run is not evidence. One in-region run failed on a single transient connection fault after about 86,300
 requests; at that rate a run of this size would finish about a third of the time. So a **sample** that fails with a
 transient fault is **discarded**, never retried inside ([`lib/calibrate-samples.cjs`](lib/calibrate-samples.cjs)):
@@ -225,7 +225,8 @@ constants and the source text:
   finds the number taken, to number past the object and to collect, and once more it writes the row to record the window
   it kept; on S3 a listing and that write bill at the PUT rate), and reads
   the pointer twice with nothing racing it, up to six when the check finds the number taken, twice more for each publish
-  attempt it loses, and fourteen times at most: fifteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
+  attempt it loses, and fifteen times at most (fourteen at the default `keep` over two strays, fifteen at `keep: 0`, which
+  deletes both): sixteen GET-class requests with the check, the bound the projection uses. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was
   billed too, so the projection allows every discard a run may make, at the costliest sample's bound, and a plan that
@@ -438,7 +439,7 @@ at more than twenty times the byte bound, and over the ceiling. The two constant
 source, and by the harness, before it creates anything, to the installed packages' own text (a CloudShell run measures the
 published packages, which another release's constants could differ in, and is refused if they do); a property test holds the engine to the cap over random selective layouts and over layouts built to approach it,
 and fails against a cap of half its size. A load's bound is the default suite's, with the parts its object can take. At
-the default plan the bound is 663 PUT-class and 28,919 GET-class requests with every discard the run allows, which a
+the default plan the bound is 663 PUT-class and 28,973 GET-class requests with every discard the run allows, which a
 sample discarded part-way through an `*Into`'s upload is held to as well as one discarded in a read, $0.0149, and
 the ceiling stays five cents. The per-sample ceiling check and the end-of-run `PROJECTION EXCEEDED` check work as they
 do for the default suite.
