@@ -1,22 +1,20 @@
 /**
  * Whole-segment erasure: crypto-shred (`destroySegment`, `eraseNamespace`) and disposal (`dropSegment`).
  *
- * GDPR "right to erasure" on immutable, backed-up storage: you can't delete a `.crbm` object from every
- * backup, but you can **delete its key**. `destroySegment` drops the segment's wrapped DEK(s) from its current
- * registry row (a CAS to a `destroyed` tombstone). Every copy of the encrypted Storage bytes, backups and WORM copies
- * included, is then unreadable once no retained copy of the row still holds the wrapped key (a noncurrent version, a
- * backup or a point-in-time copy of the row), or once every KEK that wrapped it is destroyed; until then a registry
- * restore to a point before the shred makes the segment readable again. **Immediate**, and it cannot be undone
- * through the library (a registry restore to before it can), so it's gated behind an explicit confirmation (name the
- * exact segment/namespace). A `destroyed` segment reads as empty: no generation resolves through a destroyed row.
- * Only
- * an **encrypted** segment is crypto-shredded; a cleartext one has no key to shred, and `allowCleartext` tombstones
- * it
+ * GDPR "right to erasure" on immutable, backed-up storage: you can't delete a `.crbm` object from every backup, but you
+ * can **delete its key**. `destroySegment` drops the segment's wrapped DEK(s) from its current registry row (a CAS to a
+ * `destroyed` tombstone). Every copy of the encrypted Storage bytes, backups and WORM copies included, is then
+ * unreadable once no retained copy of the row still holds the wrapped key (a noncurrent version, a backup or a
+ * point-in-time copy of the row), or once every KEK that wrapped it is destroyed; until then a registry restore to a
+ * point before the shred makes the segment readable again. **Immediate**, and it cannot be undone through the library
+ * (a registry restore to before it can), so it's gated behind an explicit confirmation (name the exact
+ * segment/namespace). A `destroyed` segment reads as empty: no generation resolves through a destroyed row. Only an
+ * **encrypted** segment is crypto-shredded; a cleartext one has no key to shred, and `allowCleartext` tombstones it
  * with its objects left readable.
  *
- * The tombstone is also the fence every writer respects: a load refuses
- * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
- * operation — `eraseIdFromSegment` rewrites the generation without it.
+ * The tombstone is also the fence every writer respects: a load refuses a `destroyed` row, so a load racing an erasure
+ * cannot resurrect the segment. A single id's erasure is a different operation — `eraseIdFromSegment` rewrites the
+ * generation without it.
  */
 import { type AuditEvent, type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
@@ -137,7 +135,7 @@ export async function destroySegment(
       ...incarnationField(token),
     });
   } else if (isCleartextTombstone(result)) {
-    safeAudit(options.audit ?? NOOP_AUDIT).onEvent(destroyEvent(ref, token));
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent(tombstoneEvent(ref, token));
   }
   return result;
 }
@@ -148,9 +146,9 @@ function isCleartextTombstone(result: DestroyResult): boolean {
 }
 
 /** The event for a tombstone written over a segment that held no key: it is recorded, and it is not an erasure receipt. */
-function destroyEvent(ref: SegmentRef, token: Token | undefined): AuditEvent {
+function tombstoneEvent(ref: SegmentRef, token: Token | undefined): AuditEvent {
   return {
-    kind: 'segment.destroy',
+    kind: 'segment.tombstone',
     namespace: ref.namespace,
     segment: ref.segment,
     ...incarnationField(token),
@@ -251,7 +249,7 @@ export async function eraseNamespace(
         ...incarnationField(token),
       });
     } else if (isCleartextTombstone(result)) {
-      audit.onEvent(destroyEvent(ref, token));
+      audit.onEvent(tombstoneEvent(ref, token));
     }
     return result;
   });
@@ -662,7 +660,7 @@ async function shredSegment(
   };
   // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: `casRetry`
   // waits out a race lost to a lease write without using an attempt, up to the churn bound.
-  return casRetry(
+  const shred = casRetry(
     deps,
     ref,
     {
@@ -734,6 +732,17 @@ async function shredSegment(
       return { ...base, destroyed: true, cryptoShredded: encrypted, token: tombstone.token };
     },
   );
+  try {
+    return await shred;
+  } catch (err) {
+    // A swap of this call that landed on the last attempt and came back as a conflict is not contention: the row says
+    // so.
+    if (isWriteConflictError(err)) {
+      const own = ownShred(await deps.registry.get(ref).catch(() => null));
+      if (own !== null) return own;
+    }
+    throw err;
+  }
 }
 
 /** The patch that turns a row into a tombstone: the one shred write. */

@@ -24,29 +24,26 @@
  *    load-bearing question is *which* segments were retired, and a throw from the middle of the loop answers it
  *    for none of them while having already retired some. Same posture as `eraseNamespace`.
  *
- * It also **purges the tombstones its own retirements leave behind**. A retired segment that had a registry row
- * gets a `destroyed` row, and one dead row per retired daily bucket — or per retired dedup wave — is exactly the
- * registry litter `dropSegment` already refuses to create for a row-less accumulator. Purging is narrow on
- * purpose: only a tombstone carrying the **stamp this sweep writes on its own retirements** (so it is attributably
- * ours: a crypto-shred's or a cleartext destroy's tombstone does not carry it, unless the shred lands between this
- * sweep's re-read of the
- * row and its drop, which then reports the tombstone dropped and stamps it), only after a grace period, and only
- * once Storage is provably empty for it —
- * because deleting the row is what makes the name reusable and takes the segment out of reach of
- * the generation collection.
+ * It also **purges the tombstones its own retirements leave behind**. A retired segment that had a registry row gets a
+ * `destroyed` row, and one dead row per retired daily bucket — or per retired dedup wave — is exactly the registry
+ * litter `dropSegment` already refuses to create for a row-less accumulator. Purging is narrow on purpose: only a
+ * tombstone carrying the **stamp this sweep writes on its own retirements** (so it is attributably ours: a
+ * crypto-shred's or a cleartext destroy's tombstone does not carry it, unless the shred lands between this sweep's
+ * re-read of the row and its drop, which then reports the tombstone dropped and stamps it), only after a grace period,
+ * and only once Storage is provably empty for it — because deleting the row is what makes the name reusable and takes
+ * the segment out of reach of the generation collection.
  *
  * **On a registry that reports `conditionalDelete`, the purge removes the row for good**, so a full scan stops paying a
  * read for every name a namespace ever held: the scan costs what is live and what is inside its grace. The delete is
- * fenced on the token the purge judged and applied by the store only to that version of the row. Each retirement
- * files a pointer in the due index under the day its tombstone's grace ends, so `scan: 'index'` purges as well as
- * retires; nothing on the row records that day, which the purge derives from the stamp. The purge removes every pointer
- * it read to the row, and a pointer that outlives its row anyway (a purge that ran with another grace, a delete that
- * landed and lost its response, a pointer older than an index scan's lookback) is removed by the next scan that reads
- * it: an index scan in its buckets, and an unscoped fleet scan, which reads every pointer, in all of them. Where a
- * delete only rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would
- * only add a row for every scan to read. The pointers a scan reads to a tombstone this sweep did not write (a
- * crypto-shred, a cleartext destroy, a drop by hand) are removed too, since the sweep will never act on that row; the
- * row stays.
+ * fenced on the token the purge judged and applied by the store only to that version of the row. Each retirement files
+ * a pointer in the due index under the day its tombstone's grace ends, so `scan: 'index'` purges as well as retires;
+ * nothing on the row records that day, which the purge derives from the stamp. The purge removes every pointer it read
+ * to the row, and a pointer that outlives its row anyway (a purge that ran with another grace, a delete that landed and
+ * lost its response, a pointer older than an index scan's lookback) is removed by the next scan that reads it: an index
+ * scan in its buckets, and an unscoped fleet scan, which reads every pointer, in all of them. Where a delete only
+ * rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would only add a row
+ * for every scan to read. The pointers a scan reads to a tombstone this sweep did not write (a crypto-shred, a
+ * cleartext destroy, a drop by hand) are removed too, since the sweep will never act on that row; the row stays.
  */
 import { requireFiniteNumber, requireInteger, requirePositiveInteger } from './check';
 import { type IAuditSink, checkedAuditSink } from './audit';
@@ -55,6 +52,7 @@ import { gcOrphanGenerations } from './generation-gc';
 import { drainRegistry } from './registry-scan';
 import { dropSegmentFor } from './erasure';
 import { generationsOf } from './generation-list';
+import { readBack } from './settle';
 import { sameIncarnation } from './token';
 import type { DropDeps, DropResult } from './erasure';
 import { MIN_EXPIRES_AT_MS, SWEEP_MARK, readRetentionPolicy } from './retention';
@@ -193,10 +191,13 @@ export type RetireEntry =
       readonly expiresAt: number;
       readonly result: DropResult;
       /**
-       * Present when the retirement **completed the destructive part and then faulted** — the tombstone is written
-       * and the segment reads empty, but something after that (the Storage sweep) threw. The storage may not be fully
-       * reclaimed; re-run. Reported as `retired` rather than `skipped` because the segment really is retired, and
-       * saying otherwise is the one thing a caller cannot recover from.
+       * Present when the **tombstone landed and the retirement then faulted**: its storage sweep or listing threw, or
+       * the shred's own write got no answer that a read of the row could settle (then no `segment.erase` was emitted:
+       * record the crypto-shred yourself). `result.generationsRemaining` lists what a listing of the bucket found after
+       * the fault (the generations the row named, when that listing failed too). A sweep's re-run does not collect
+       * those objects inside `tombstoneGraceMs`: run `store.dropSegment(ref, { confirmSegment })`. Reported as `retired`
+       * rather than `skipped` because the segment really is retired, and saying otherwise is the one thing a caller
+       * cannot recover from.
        */
       readonly fault?: `failed: ${string}`;
     }
@@ -236,6 +237,7 @@ export type RetireEntry =
        * re-reads before every deletion precisely so cancelling an expiry works on a sweep already in flight.
        * `` `failed: …` `` — any fault, isolated to this segment. A fault that happened *after* the tombstone
        * landed is reported as `retired` with a `fault` instead, because that segment IS retired.
+       * When the row cannot be read afterwards either, the reason says the tombstone may have landed.
        */
       readonly reason:
         'invalid-policy' | 'limit' | 'tombstone-not-empty' | 'policy-changed' | `failed: ${string}`;
@@ -289,7 +291,8 @@ export interface RetireExpiredResult {
   readonly firstPurgeFault?: `failed: ${string}`;
   /** Whether the sweep was a dry run, which changes nothing. */
   readonly dryRun: boolean;
-  /** Per-segment ledger. Inspect it: a `skipped` or failed entry is a segment that still holds data. */
+  /** Per-segment ledger. Inspect it: a `skipped` or failed entry is a segment that still holds data, except one whose reason says the row could
+   * not be read afterwards: its tombstone may have landed. */
   readonly entries: readonly RetireEntry[];
 }
 
@@ -680,8 +683,8 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
   const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
   const base = { segment: rec.segment, namespace: rec.namespace };
   // A tombstone this sweep did not write (a crypto-shred, a cleartext destroy, a drop by hand) is never retired or
-  // purged here, and it
-  // has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and the row stays.
+  // purged here, and it has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and
+  // the row stays.
   const stamp = retirementStamp(rec.retention);
   if (stamp === null) {
     const found = pointers.get(segmentKey(ref)) ?? [];
@@ -717,11 +720,11 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
   tally.attempted += 1;
   try {
     if (!(await isFullyReclaimed(deps, ref))) {
-      // Self-heal rather than report-and-wait: `gcOrphanGenerations` takes EVERY generation of a destroyed
-      // row, and nothing else calls it on its own for this segment (no load publishes onto a tombstone, the
-      // erasure rewrite refuses one, an erasure collects there only when an object holds its id, and a re-run drop
-      // sweeps it). Without this the row is stuck forever, the
-      // objects are billed forever, and the sweep pays two list calls per cycle to say so again. Measured.
+      // Self-heal rather than report-and-wait: `gcOrphanGenerations` takes EVERY generation of a destroyed row, and
+      // nothing else calls it on its own for this segment (no load publishes onto a tombstone, the erasure rewrite
+      // refuses one, an erasure collects there only when an object holds its id, and a re-run drop sweeps it). Without
+      // this the row is stuck forever, the objects are billed forever, and the sweep pays two list calls per cycle to
+      // say so again. Measured.
       let collectFault: { error: unknown } | undefined;
       if (!dryRun) {
         await gcOrphanGenerations(ref, deps, { incarnation: rec }).catch((error: unknown) => {
@@ -908,10 +911,10 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
       // Fenced on the tombstone just written, so a name purged and re-created by someone else since is not
       // tombstoned by this delete: only a `destroyed` row is removed, and only at the token it was read with.
       //
-      // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable
-      // from a crypto-shred's or a cleartext destroy's tombstone, which no sweep may ever delete, so one transient
-      // registry fault would
-      // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it. The
+      // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable from a
+      // crypto-shred's or a cleartext destroy's tombstone, which no sweep may ever delete, so one transient registry
+      // fault would keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges
+      // it. The
       // stamp itself only touches a `destroyed` row, so a name that was re-created meanwhile is left alone.
       const tombstone = await deps.registry.get(ref).catch(() => null);
       if (tombstone?.status === 'destroyed') {
@@ -931,9 +934,9 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     return null;
   } catch (err) {
     // A fault AFTER the tombstone landed is a segment that IS retired, and reporting it as skipped told the
-    // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). One cheap read
-    // settles which side of the tombstone we failed on.
-    const after = await deps.registry.get(ref).catch(() => null);
+    // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). A read of the row
+    // settles which side of the tombstone we failed on, and it is read back as a lost shred answer is, with waits.
+    const after = await rowAfterFault(deps, ref, err);
     // Only this sweep's own tombstone, the one carrying its mark: a tombstone someone else wrote (a crypto-shred, a
     // drop) is not a retirement of this sweep, and claiming it would let a later sweep purge an attestation.
     if (
@@ -944,7 +947,36 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     ) {
       return retiredAfterFault(live, policy.expiresAt, err, ctx);
     }
+    if (after === undefined) {
+      // The row could not be read either, so the retirement's own write may have landed: the reason says so, and it
+      // is not the plain refusal a `skipped` failure otherwise is.
+      return {
+        ...base,
+        action: 'skipped',
+        reason: `${failureReason(err)} (the row could not be read afterwards: the tombstone may have landed, and the segment may be shredded)`,
+      };
+    }
     return { ...base, action: 'skipped', reason: failureReason(err) };
+  }
+}
+
+/**
+ * The row after a fault, read back as a lost shred answer is, with waits: `undefined` when every read failed, which
+ * leaves it unknown whether the tombstone landed.
+ */
+async function rowAfterFault(
+  deps: DropDeps,
+  ref: SegmentRef,
+  err: unknown,
+): Promise<RegistryRecord | null | undefined> {
+  try {
+    return await readBack(
+      () => deps.registry.get(ref),
+      err instanceof Error ? err : new Error(String(err)),
+      deps,
+    );
+  } catch {
+    return undefined;
   }
 }
 

@@ -4,7 +4,7 @@
  * `reportsWriteTokens` and `capabilities()` pass through and a driver with private fields still works
  * (`Object.create` breaks one).
  */
-import { TransientError, unsettledConflict } from '@/core/errors';
+import { TransientError, WriteConflictError, unsettledConflict } from '@/core/errors';
 import type {
   GenKey,
   IRegistryDriver,
@@ -20,9 +20,10 @@ import type {
  * What goes wrong with one write:
  * - `'a'`: it lands, and its answer is lost (`TransientError`);
  * - `'b'`: it lands, and what comes back is a conflict that may follow its own landing (`unsettledConflict`);
- * - `'c'`: it never lands: its token is reported, as a registry does before it sends, and `TransientError` follows.
+ * - `'c'`: it never lands: its token is reported, as a registry does before it sends, and `TransientError` follows;
+ * - `'d'`: it never lands: it loses a race, and a plain `WriteConflictError` comes back.
  */
-export type Fault = 'a' | 'b' | 'c';
+export type Fault = 'a' | 'b' | 'c' | 'd';
 
 /** The writes of a registry that can be armed. */
 type WriteOp = 'create' | 'compareAndSwap' | 'delete';
@@ -42,9 +43,9 @@ export interface FaultyRegistry extends IRegistryDriver {
   arm(op: WriteOp, fault: Fault, match?: (ref: SegmentRef) => boolean, times?: number): void;
   /**
    * After the next armed fault fires, make the next `n` `get` calls throw `TransientError`: the double fault, an
-   * answer lost and the read-back with it. `skip` reads answer first. `failReads(0)` clears what is left of them.
+   * answer lost and the read-back with it. `skip` reads answer first, and `error` is what they throw (a `TransientError` by default). `failReads(0)` clears what is left of them.
    */
-  failReads(n: number, skip?: number): void;
+  failReads(n: number, skip?: number, error?: Error): void;
   /** Run `hook` after an armed fault's write has been applied (or skipped, for `'c'`) and before the fault is thrown. */
   between(hook: () => Promise<void>): void;
   /** How many armed faults have fired. */
@@ -61,6 +62,7 @@ export function faultyRegistry(base: IRegistryDriver): FaultyRegistry {
   let readsToFail = 0;
   let readsToSkip = 0;
   let readsFailing = 0;
+  let readError: Error | undefined;
   let readsSkipping = 0;
   let hook: (() => Promise<void>) | undefined;
   let fired = 0;
@@ -74,11 +76,12 @@ export function faultyRegistry(base: IRegistryDriver): FaultyRegistry {
     if (hit === undefined) return send(options);
     hit.left -= 1;
     fired += 1;
-    if (hit.fault === 'c') options?.onToken?.(`unapplied.${fired}.${fired}`);
+    if (hit.fault === 'c' || hit.fault === 'd') options?.onToken?.(`unapplied.${fired}.${fired}`);
     else await send(options);
     readsFailing = readsToFail;
     readsSkipping = readsToSkip;
     await hook?.();
+    if (hit.fault === 'd') throw new WriteConflictError('the write lost a race');
     if (hit.fault === 'b')
       throw unsettledConflict('the write met a conflict that may follow its own landing');
     throw new TransientError('the registry write got no answer');
@@ -86,7 +89,8 @@ export function faultyRegistry(base: IRegistryDriver): FaultyRegistry {
   const own: Record<string, unknown> = {
     arm: (op: WriteOp, fault: Fault, match: (ref: SegmentRef) => boolean = () => true, times = 1) =>
       void armed.push({ op, fault, match, left: times }),
-    failReads: (n: number, skip = 0) => {
+    failReads: (n: number, skip = 0, error?: Error) => {
+      readError = error;
       readsToFail = n;
       readsToSkip = skip;
       if (n === 0) readsFailing = 0;
@@ -109,7 +113,7 @@ export function faultyRegistry(base: IRegistryDriver): FaultyRegistry {
       if (readsSkipping > 0) readsSkipping -= 1;
       else if (readsFailing > 0) {
         readsFailing -= 1;
-        throw new TransientError('the registry read failed');
+        throw readError ?? new TransientError('the registry read failed');
       }
       return base.get(ref);
     },

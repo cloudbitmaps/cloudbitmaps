@@ -521,6 +521,6 @@
   },
   {
     "entry": "@cloudbitmaps/roaring AuditEvent",
-    "reason": "a cleartext destroySegment or eraseNamespace (allowCleartext) now emits a segment.destroy event, so the union gains a member { kind: 'segment.destroy', namespace?, segment, incarnation?, objectsReadable: true } (a tombstone that deleted nothing and destroyed no key; not an erasure receipt); only a switch over event.kind that ends in a never check stops compiling until it gains the case; the event type is an output the library builds"
+    "reason": "a cleartext destroySegment or eraseNamespace (allowCleartext) now emits a segment.tombstone event, so the union gains a member { kind: 'segment.tombstone', namespace?, segment, incarnation?, objectsReadable: true } (a tombstone that deleted nothing and destroyed no key; not an erasure receipt); only a switch over event.kind that ends in a never check stops compiling until it gains the case; the event type is an output the library builds"
   }
 ]

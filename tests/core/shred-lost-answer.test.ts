@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { CloudRoaring, RecordingAuditSink, destroySegment, eraseNamespace } from '@/index';
 import type { RetireEntry, SegmentRef } from '@/index';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { TransientError } from '@/core/errors';
+import { TransientError, ValidationError } from '@/core/errors';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { incarnationOf } from '@/core/token';
@@ -68,6 +68,7 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
       raw,
       registry,
       deps,
+      waits,
       audit,
       store: () => storeOver(storage, registry),
       storeOver,
@@ -188,6 +189,90 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
         destroySegment(SEG, deps, { ...CONFIRM, audit: w.audit }),
       ).rejects.toBeInstanceOf(TransientError);
       expect(w.audit.snapshot()).toEqual([]);
+    });
+  });
+
+  describe('the read-back', () => {
+    it('waits under half a second and then under a second between its reads', async () => {
+      const w = world();
+      await load(w, SEG, 1);
+      w.registry.arm('compareAndSwap', 'a');
+      w.registry.failReads(3);
+
+      await expect(destroySegment(SEG, w.deps, { ...CONFIRM })).rejects.toBeInstanceOf(
+        TransientError,
+      );
+
+      expect(w.waits.sleeps).toEqual([250, 500]); // the bounds, 500 ms and 1000 ms, halved by the rng
+    });
+
+    it('settles on the second read when the first fails', async () => {
+      const w = world();
+      await load(w, SEG, 1);
+      w.registry.arm('compareAndSwap', 'a');
+      w.registry.failReads(1);
+
+      const res = await destroySegment(SEG, w.deps, { ...CONFIRM, audit: w.audit });
+
+      expect(res).toMatchObject({ destroyed: true, cryptoShredded: true });
+      expect(w.waits.sleeps).toEqual([250]);
+      expect(kinds(w)).toEqual(['segment.erase']);
+    });
+
+    // Fake timers also stall the local-files driver's own timers, so this one runs on the memory drivers.
+    it.skipIf(kind !== 'memory')(
+      'waits on the documented call, which passes only { registry }',
+      async () => {
+        const w = world();
+        await load(w, SEG, 1);
+        w.registry.arm('compareAndSwap', 'a');
+        w.registry.failReads(3);
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(0.5);
+        try {
+          const timers = vi.spyOn(globalThis, 'setTimeout');
+          const call = destroySegment(SEG, { registry: w.registry }, { ...CONFIRM }).catch(
+            (e: unknown) => e,
+          );
+          await vi.advanceTimersByTimeAsync(2000);
+          expect(await call).toBeInstanceOf(TransientError);
+          const delays = timers.mock.calls
+            .map((c) => c[1])
+            .filter((ms) => typeof ms === 'number' && ms < 1000);
+          expect(delays).toEqual([250, 500]);
+        } finally {
+          vi.useRealTimers();
+          vi.restoreAllMocks();
+        }
+      },
+    );
+
+    it('throws a read error that is not transient as it is', async () => {
+      const w = world();
+      await load(w, SEG, 1);
+      w.registry.arm('compareAndSwap', 'a');
+      const refused = new ValidationError('the registry refused the read');
+      w.registry.failReads(3, 0, refused);
+
+      await expect(destroySegment(SEG, w.deps, { ...CONFIRM })).rejects.toBe(refused);
+    });
+
+    it('reports its own landed shred when it is the eighth attempt that landed', async () => {
+      const w = world();
+      await load(w, SEG, 1);
+      // Seven attempts lose a race to another write of the row; the eighth lands and comes back as a conflict.
+      w.registry.arm('compareAndSwap', 'd', undefined, 7);
+      w.registry.arm('compareAndSwap', 'b');
+      let n = 0;
+      w.registry.between(async () => {
+        const row = (await w.raw.get(SEG))!;
+        await w.raw.compareAndSwap(SEG, row.token, { retention: { churn: ++n } });
+      });
+
+      const res = await destroySegment(SEG, w.deps, { ...CONFIRM, audit: w.audit });
+
+      expect(res).toMatchObject({ destroyed: true, cryptoShredded: true });
+      expect(kinds(w)).toEqual(['segment.erase']);
     });
   });
 
@@ -413,6 +498,69 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
       expect(await present(w)).toEqual([0, 1]);
     });
 
+    it('reports the sweep as skipped, saying the tombstone may have landed, when the row cannot be read either', async () => {
+      const w = world();
+      await expired(w);
+      w.registry.arm('compareAndSwap', 'a');
+      w.registry.failReads(6); // the shred's read-back, then the sweep's
+
+      const res = await w.store().retireExpired({ now: T0, audit: w.audit });
+
+      const entry = entryOf(res.entries);
+      expect(entry).toMatchObject({ action: 'skipped' });
+      expect(entry).toMatchObject({
+        reason: expect.stringContaining('the tombstone may have landed'),
+      });
+      expect(res.retired).toBe(0);
+      expect((await w.raw.get(SEG))?.status).toBe('destroyed');
+    });
+
+    it('reads the row again, with waits, before the sweep reports a fault: a fourth failed read still retires', async () => {
+      const w = world();
+      await expired(w);
+      w.registry.arm('compareAndSwap', 'a');
+      w.registry.failReads(4); // the shred's read-back, then the first read of the sweep's
+
+      const res = await w.store().retireExpired({ now: T0, audit: w.audit });
+
+      expect(entryOf(res.entries)).toMatchObject({
+        action: 'retired',
+        result: { dropped: true, cryptoShredded: true, generationsRemaining: [0, 1] },
+      });
+      expect(entryOf(res.entries)).toHaveProperty('fault');
+    });
+
+    it('lists generationsRemaining from the bucket, which holds an object the row does not name', async () => {
+      const w = world();
+      await expired(w);
+      // A load's object above the pointer, written with no publish: the row names [0, 1] only.
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 2 }, [9], {});
+      const storage = faultyStorage(w.storage);
+      storage.failListsAfter(async () => (await w.raw.get(SEG))?.status === 'destroyed', 1);
+
+      const res = await w.storeOver(storage, w.registry).retireExpired({ now: T0, audit: w.audit });
+
+      expect(entryOf(res.entries)).toMatchObject({
+        action: 'retired',
+        result: { generationsRemaining: [0, 1, 2] },
+      });
+    });
+
+    it('falls back to the generations the row named when the listing after the fault fails too', async () => {
+      const w = world();
+      await expired(w);
+      const storage = faultyStorage(w.storage);
+      storage.failListsAfter(async () => (await w.raw.get(SEG))?.status === 'destroyed', 2);
+
+      const res = await w.storeOver(storage, w.registry).retireExpired({ now: T0, audit: w.audit });
+
+      expect(entryOf(res.entries)).toMatchObject({
+        action: 'retired',
+        result: { generationsRemaining: [0, 1], cryptoShredded: true },
+      });
+      expect(entryOf(res.entries)).toHaveProperty('fault');
+    });
+
     it("does not claim a tombstone of another incarnation that carries the sweep's mark", async () => {
       const w = world();
       await expired(w);
@@ -451,15 +599,15 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
   });
 
   describe('a cleartext destroy', () => {
-    const destroyEvent = async (w: World, ref: SegmentRef = SEG) => ({
-      kind: 'segment.destroy',
+    const tombstoneEvent = async (w: World, ref: SegmentRef = SEG) => ({
+      kind: 'segment.tombstone',
       namespace: ref.namespace,
       segment: ref.segment,
       incarnation: await incarnationNow(w, ref),
       objectsReadable: true,
     });
 
-    it('destroySegment with allowCleartext emits segment.destroy, and not segment.erase', async () => {
+    it('destroySegment with allowCleartext emits segment.tombstone, and not segment.erase', async () => {
       const w = world();
       await load(w, SEG, 1, true);
 
@@ -470,7 +618,7 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
       });
 
       expect(res).toMatchObject({ destroyed: true, cryptoShredded: false });
-      expect(w.audit.snapshot()).toEqual([await destroyEvent(w)]);
+      expect(w.audit.snapshot()).toEqual([await tombstoneEvent(w)]);
       expect(await present(w)).toEqual([0]);
     });
 
@@ -506,7 +654,7 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
 
       await destroySegment(SEG, w.deps, { ...CONFIRM, allowCleartext: true, audit: w.audit });
 
-      expect(w.audit.snapshot()).toEqual([await destroyEvent(w)]);
+      expect(w.audit.snapshot()).toEqual([await tombstoneEvent(w)]);
     });
 
     it('eraseNamespace with allowCleartext emits one per cleartext segment it tombstoned, counted in none of segmentsShredded', async () => {
@@ -522,8 +670,8 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
       });
 
       const events = w.audit.snapshot();
-      expect(events.filter((e) => e.kind === 'segment.destroy')).toEqual([
-        await destroyEvent(w, a),
+      expect(events.filter((e) => e.kind === 'segment.tombstone')).toEqual([
+        await tombstoneEvent(w, a),
       ]);
       expect(events.filter((e) => e.kind === 'segment.erase')).toHaveLength(1);
       expect(events.at(-1)).toEqual({

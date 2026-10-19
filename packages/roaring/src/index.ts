@@ -116,6 +116,11 @@ import type {
 import { OpenChargingStorage } from './open-charging-storage';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
+import {
+  destroySegment as coreDestroySegment,
+  eraseNamespace as coreEraseNamespace,
+} from '@cloudbitmaps/core';
+import type { DestroyResult, EraseDeps } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { runPreflight } from '@cloudbitmaps/core';
@@ -142,6 +147,47 @@ class SystemRng implements Rng {
   next(): number {
     return Math.random();
   }
+}
+
+/**
+ * What an erasure call waits with when its write gets no answer and it reads the row back: the caller's `clock` and
+ * `rng`, else the real ones, so a call made with `{ registry }` alone waits between its reads.
+ */
+function withWaits(deps: EraseDeps): EraseDeps {
+  return { ...deps, clock: deps.clock ?? new SystemClock(), rng: deps.rng ?? new SystemRng() };
+}
+
+/**
+ * Crypto-shred one segment. It cannot be undone through the library (a registry restore to a point before it can).
+ * `confirmSegment` must equal `ref.segment` (a guard against an accidental destroy). A non-encrypted segment is
+ * rejected unless you opt in via `allowCleartext`: it has no key to shred, its Storage bytes stay readable, and the
+ * call emits a `segment.tombstone` audit event instead of `segment.erase`. A write that gets no answer is settled by
+ * reading the row back, waiting between reads on `deps.clock` (the system clock by default).
+ */
+export function destroySegment(
+  ref: SegmentRef,
+  deps: EraseDeps,
+  options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
+): Promise<DestroyResult> {
+  return coreDestroySegment(ref, withWaits(deps), options);
+}
+
+/**
+ * Crypto-shred every segment in a namespace. It cannot be undone through the library. `confirmNamespace` must equal
+ * `namespace`. Returns a per-segment result, in the order the registry listed the segments, which is unspecified. A
+ * write that gets no answer is settled as {@link destroySegment}'s is.
+ */
+export function eraseNamespace(
+  namespace: string,
+  deps: EraseDeps,
+  options: {
+    confirmNamespace: string;
+    allowCleartext?: boolean;
+    audit?: IAuditSink;
+    maxScanSegments?: number;
+  },
+): Promise<{ destroyed: DestroyResult[] }> {
+  return coreEraseNamespace(namespace, withWaits(deps), options);
 }
 
 /** Validate a segment ref a caller passes to a store method; a bare name is the common slip, and the hint says so. */
@@ -4214,9 +4260,7 @@ export {
   // Backends
   MemoryStorage,
   LocalFsStorage,
-  // Crypto-shred and the retention policy helpers
-  destroySegment,
-  eraseNamespace,
+  // The retention policy helpers
   excludingReservedRows,
   readRetentionPolicy,
   // Encryption

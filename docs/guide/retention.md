@@ -150,8 +150,8 @@ deletion to feel.
 - A fleet scan is a billed `LIST` over the registry prefix plus one read per row it lists. The default `'fleet'` scan
   costs what the prefix holds: the live segments; every tombstone not purged yet (a retirement inside its grace, or one
   whose storage is not proven gone); [every tombstone a crypto-shred, a cleartext destroy or a hand-run `dropSegment`
-  left, which
-  the library never purges](correctness.md#tombstones-purged-narrowly); on an unscoped scan, every due-index pointer;
+  left, which the
+  library never purges](correctness.md#tombstones-purged-narrowly); on an unscoped scan, every due-index pointer;
   and, where the registry does not report
   `conditionalDelete` (GCS by default, an S3-compatible store), every row it ever deleted, kept as a marker the scan
   reads each cycle (see [what the purge removes](correctness.md#how-retention-stays-correct)).
@@ -231,7 +231,8 @@ ordinary namespace name here: passing it sweeps a namespace of that name, not th
 - **`failed: ...`**: that one segment's retirement threw, or, on a tombstone, its purge did, and a purge the registry
   refuses is also counted in `purgeFaults` (above). `dropSegment` writes the tombstone before the storage sweep,
   deliberately, so a fault there leaks bytes, not correctness. A fault after the tombstone landed is reported as
-  `retired` with a `fault`, because that segment really is retired, and its `generationsRemaining` lists what a
+  `retired` with a `fault`, because that segment really is retired (when the row cannot be read afterwards either, the
+  entry is `skipped` with a reason that says the tombstone may have landed), and its `generationsRemaining` lists what a
   listing of the bucket then found (the generations its row named when that listing failed too). A sweep's re-run does
   not collect them at once: it skips a tombstone until `tombstoneGraceMs` has passed, and its purge then collects the
   bytes with no `segment.dispose`. Run `store.dropSegment(ref, { confirmSegment })` on that segment, which sweeps at
