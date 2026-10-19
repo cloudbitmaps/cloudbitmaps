@@ -1176,9 +1176,6 @@ export class SegmentEngine {
     if (segs.length === 0) {
       throw new ValidationError(`${op} requires at least one segment`);
     }
-    if (op === 'andNot' && excludeSegs.length === 0) {
-      throw new ValidationError('andNot requires at least one segment to subtract');
-    }
     const limit = options?.concurrency ?? DEFAULT_INTERSECT_CONCURRENCY;
     requirePositiveInteger(limit, `${op}: concurrency`);
     // Per-op budget override (else the store budget); resolved before any I/O so a bad value fails fast. A

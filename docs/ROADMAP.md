@@ -479,6 +479,13 @@ None of these are committed and none have dates. If one matters to you,
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) and say so — that's the single best way to
 move it up.
 
+- **A fenced in-place update of a segment from its own content.** Today an `*Into` into one of its own sources, and a
+  `load` of ids read from the segment it writes, are refused, because a result built from a stale view must not replace
+  another writer's newer load; the way to update a segment is to write a new one and point readers at it. The planned
+  form reads the source at a pin and publishes only if the segment is still at the generation it read, a conflict
+  otherwise.
+- **A plain copy verb.** Copying a segment into another is `materializeMany` with the segment as its one operand today,
+  which reads once at one instant but is a batch call; a single verb would say it directly.
 - **`analyze` — try it on your own data before adopting anything.** Point a command at a file of your IDs and it
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the object size, the read cost and the monthly figure that follow — **offline, with no cloud account and

@@ -2348,6 +2348,18 @@ export class CloudRoaring {
   async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateRef(ref);
     checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty', 'sorted']);
+    if (typeof input === 'object' && input !== null) {
+      const reads = STREAM_SOURCES.get(input);
+      if (reads?.includes(segmentKey(ref)) === true) {
+        const named = ref.namespace === undefined ? ref.segment : `${ref.namespace}/${ref.segment}`;
+        throw new ValidationError(
+          `load: the ids come from a read of the segment "${named}" that is being loaded, and a load publishes over ` +
+            "whatever the segment is by then, so another process's newer load of it can be replaced by a result built " +
+            'from the one before, with no conflict reported. This release has no fenced in-place update: write the ' +
+            'result into a new segment and point readers at it',
+        );
+      }
+    }
     options ??= {};
     const deps = this.lifecycleDeps('load');
     try {
@@ -2767,7 +2779,7 @@ export class CloudRoaring {
           throw new ValidationError(
             `the same segment is in this combine twice, ${twoPins(before, at)}: one call reads a segment at one ` +
               'generation, so materialise one of them into a segment of its own first, with ' +
-              '`src.unionInto(dest, [src])`',
+              "`materializeMany` with that segment as its one operand (`expr: { or: ['src'] }`)",
           );
         }
       } else {
@@ -3156,21 +3168,37 @@ function segmentList(list: unknown, what: string): readonly Segment[] {
 
 type CombineVerb = 'intersect' | 'union' | 'andNot';
 
+/**
+ * The segments a stream of this library reads, by key, held by the stream object. `store.load` consults it so that ids
+ * read from a segment are not loaded back into that segment: the load publishes forward over whatever the segment is
+ * by then, so another process's newer load of it would be replaced by a result built from the one before. Only a
+ * stream handed over as it was returned is known; one wrapped in a generator of the caller's is not.
+ */
+const STREAM_SOURCES = new WeakMap<object, readonly string[]>();
+
+/** `stream`, remembered as reading the segments `keys`. */
+function readsFrom<T extends object>(stream: T, keys: readonly string[]): T {
+  STREAM_SOURCES.set(stream, keys);
+  return stream;
+}
+
 /** How a refused operand list is named: `andNot` takes `excludes`, the others take `others`. */
 function operandsLabel(verb: CombineVerb): string {
   return verb === 'andNot' ? 'andNot: `excludes`' : `${verb}: \`others\``;
 }
 
 /**
- * The refusal of an empty operand list on `intersect` and `union` (and their `*Into` forms), worded as `andNot`'s refusal
- * of an empty subtraction is: a list built in a loop that came out empty would otherwise read as no operands at all,
- * and a filter would become no filter. `verb` begins the message. `andNot` is not here: the engine refuses its empty
- * list itself.
+ * The refusal of an empty operand list on `intersect` and `intersectInto`: an intersection over nothing has no meaning,
+ * and a list built in a loop that came out empty would otherwise turn a filter into no filter. `union`, `andNot` and
+ * their `*Into` forms read an empty list as the receiver itself. `verb` begins the message; the `*Into` form points a
+ * caller who wanted a copy at the batch call, which reads a segment once at one instant.
  */
-function refuseNoOperands(verb: 'intersect' | 'union', named: string): void {
-  const what = verb === 'intersect' ? 'intersect with' : 'union with';
+function refuseNoOperands(verb: 'intersect' | 'intersectInto'): never {
   throw new ValidationError(
-    `${named} requires at least one segment to ${what}; to read every id of one segment, use iterate()`,
+    verb === 'intersect'
+      ? 'intersect requires at least one segment to intersect with; to read every id of one segment, use iterate()'
+      : 'intersectInto requires at least one segment to intersect with; to copy this segment into dest, call ' +
+          "materializeMany with this segment as its one operand and `expr: { or: ['src'] }`",
   );
 }
 
@@ -3451,7 +3479,7 @@ export class Segment {
    *
    * **One call reads a segment at one generation**, so a combine that holds this segment at two —
    * `snap0.andNot([snap1])`, or `live.intersect([snap])` — throws {@link ValidationError} when it is read, and an
-   * `*Into` of one throws before it reads anything. Materialise one side first, with `src.unionInto(dest, [src])`.
+   * `*Into` of one throws before it reads anything. Materialise one side first, with `materializeMany` and that segment as its one operand (`expr: { or: ['src'] }`).
    *
    * **A pin knows its object, not only its number.** A name purged and loaded again starts again at generation
    * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
@@ -3640,7 +3668,7 @@ export class Segment {
    * `at.generation` instead of the current one. Pass what the earlier pin recorded, `{ generation, fingerprint }`
    * from its {@link Segment.pinnedAt}. A generation number alone is not an identity, since a purged and re-created
    * name starts again at 0, so the fingerprint is required: a bare number, a malformed fingerprint or a key other
-   * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
+   * than `generation`, `fingerprint` and `version` is a {@link ValidationError}. Identify a pin by its `generation` and
    * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
    *
    * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
@@ -3677,7 +3705,7 @@ export class Segment {
     if (unknown.length > 0) {
       throw new ValidationError(
         `pinAt: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
-          'pinAt takes { generation, fingerprint } only',
+          "pinAt takes { generation, fingerprint } and a pin's `version`, which it does not read",
       );
     }
     if ((generation as unknown) === null) {
@@ -3685,8 +3713,12 @@ export class Segment {
         'pinAt: the pin named no generation (the segment had none when it was pinned), so there is nothing to reopen',
       );
     }
+    if (version !== undefined && typeof version !== 'string') {
+      throw new ValidationError(
+        'pinAt: `version`, when given, is the string a pin recorded in its pinnedAt; pinAt does not read it, so leave it out if you have none',
+      );
+    }
     if (
-      (version !== undefined && typeof version !== 'string') ||
       typeof generation !== 'number' ||
       !Number.isSafeInteger(generation) ||
       generation < 0 ||
@@ -3698,7 +3730,7 @@ export class Segment {
           'without the fingerprint of its object does not identify it',
       );
     }
-    // `at` takes `{ generation, fingerprint }` and nothing else; the lease goes in the options, the second argument.
+    // `at` takes `{ generation, fingerprint }` and a pin's `version`; the lease goes in the options, the second argument.
     const leaseUntil = this.leaseUntilOf('pinAt', options);
     return this.pinned(this.ref, leaseUntil, { generation, fingerprint });
   }
@@ -3714,9 +3746,11 @@ export class Segment {
   }
 
   /**
-   * Refuse an `*Into` whose handles cannot be used, before any request: anything that is not a segment or is a
-   * segment of another store ({@link ValidationError}), and a handle (this one, `dest`, an operand or an exclude) whose
-   * lease has ended or was released ({@link LeaseExpiredError}). Called by the three `*Into` verbs only.
+   * Refuse an `*Into` that cannot run, before any request, in this order: anything that is not a segment or is a
+   * segment of another store, an empty operand list for `intersectInto`, and a `dest` that is also a source (all
+   * {@link ValidationError}); then a handle (this one, `dest`, an operand or an exclude) whose lease has ended or was
+   * released ({@link LeaseExpiredError}). A call with both a lapsed lease and one of the first three refusals throws the
+   * first. Called by the three `*Into` verbs only.
    *
    * The verbs are `async` so this surfaces as a **rejected promise**, like every other validation in the facade —
    * a synchronous throw out of a promise-returning method escapes a caller who attached `.catch()` instead of
@@ -3732,7 +3766,7 @@ export class Segment {
     this.assertSegments(verb, verb === 'andNotInto' ? 'an exclude' : 'an operand', operands);
     this.assertSegments(verb, 'an exclude', excludes);
     const base = verb.slice(0, -'Into'.length) as CombineVerb;
-    if (base !== 'andNot' && operands.length === 0) refuseNoOperands(base, verb);
+    if (base === 'intersect' && operands.length === 0) refuseNoOperands('intersectInto');
     this.refuseSourceDestination(verb, dest, operands, excludes);
     this.assertLeases([this, dest, ...operands, ...excludes]);
   }
@@ -3767,7 +3801,7 @@ export class Segment {
     throw new ValidationError(
       `${verb}: the destination "${named}" is also ${role} of the call, and a call that reads a segment while it ` +
         'publishes to it can replace a newer load of it with a result built from an older one, with no conflict ' +
-        'reported. Combine into a new segment, then load or swap that into place',
+        'reported. This release has no fenced in-place update: combine into a new segment and point readers at it',
     );
   }
 
@@ -3886,7 +3920,10 @@ export class Segment {
     const stream = withBatches(engine.iterate(ref, bounds), () =>
       engine.iterateBatches(ref, bounds),
     );
-    return this.leaseHold === undefined ? stream : guardIds(stream, () => this.assertLease());
+    return readsFrom(
+      this.leaseHold === undefined ? stream : guardIds(stream, () => this.assertLease()),
+      [this.key()],
+    );
   }
 
   /**
@@ -3940,9 +3977,10 @@ export class Segment {
     );
     // A stream with no `.batches()`: guarded before its first pull, so a stream built live and pulled after the lease
     // ended throws even when no rank falls in its range, and at each chunk after that.
-    return this.leaseHold === undefined
-      ? stream
-      : guardIdIterable(stream, () => this.assertLease());
+    return readsFrom(
+      this.leaseHold === undefined ? stream : guardIdIterable(stream, () => this.assertLease()),
+      [this.key()],
+    );
   }
 
   /**
@@ -4024,8 +4062,10 @@ export class Segment {
    * So is a `dest` that is also `this`, an operand or an exclude (the same segment by name and namespace, however the
    * handle was made), and an empty `others`: each throws {@link ValidationError} before any request. A destination that
    * is also a source would publish a result built from the generation this store last resolved over a newer load by
-   * another process, with no conflict to report; combine into a new segment, then load or point readers at it. To
-   * copy `src` into `dest`, name it as its own operand: `src.unionInto(dest, [src])`.
+   * another process, with no conflict to report. This release has no fenced in-place update: write the result into a
+   * new segment and point readers at it; a single writer that knows nothing else writes the segment may load the result
+   * back, unfenced. To copy `src` into `dest`, call `materializeMany` with `src` as its one operand and
+   * `expr: { or: ['src'] }`, which reads each chunk once, at one instant.
    * It takes every field of {@link CombineOptions}, as `unionInto` does.
    */
   async intersectInto(
@@ -4132,7 +4172,7 @@ export class Segment {
     try {
       exclude = verb === 'andNot' ? NO_SEGMENTS : this.excludesOf(options);
       const others = segmentList(operands, operandsLabel(verb));
-      if (verb !== 'andNot' && others.length === 0) refuseNoOperands(verb, verb);
+      if (verb === 'intersect' && others.length === 0) refuseNoOperands('intersect');
       handles = [this, ...others, ...exclude];
       this.assertSegments(verb, verb === 'andNot' ? 'an exclude' : 'an operand', others);
       this.assertSegments(verb, 'an exclude', exclude);
@@ -4146,17 +4186,23 @@ export class Segment {
     } catch (err) {
       return out.failing(err);
     }
+    // A stream of ids remembers what it reads, for `store.load` ({@link STREAM_SOURCES}); a stream of chunks is not one.
+    const keys = handles.map((h) => h.key());
+    const known = (result: T): T =>
+      (out as unknown) === AS_IDS ? (readsFrom(result as object, keys) as T) : result;
     if (verb === 'andNot') {
       const refs = operands.map((o) => o.ref);
       const opts = options == null ? undefined : readOptions(options);
-      return this.guarded(out, handles, out.andNot(engine, this.ref, refs, opts));
+      return known(this.guarded(out, handles, out.andNot(engine, this.ref, refs, opts)));
     }
     const refs = [this.ref, ...operands.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
-    return this.guarded(
-      out,
-      handles,
-      verb === 'union' ? out.union(engine, refs, opts) : out.intersect(engine, refs, opts),
+    return known(
+      this.guarded(
+        out,
+        handles,
+        verb === 'union' ? out.union(engine, refs, opts) : out.intersect(engine, refs, opts),
+      ),
     );
   }
 

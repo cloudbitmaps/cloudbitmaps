@@ -44,10 +44,11 @@ copy of `@cloudbitmaps/roaring`, which always belongs to another store. A pin an
 own. The message names the verb and whether an operand, an exclude or the destination was refused, and never the
 segment, its namespace or a key. Open every operand with the `segment()` of the store that runs the call.
 
-**A combine names at least one operand.** `intersect([])` and `union([])`, and `intersectInto(dest, [])` and
-`unionInto(dest, [])`, are refused with a `ValidationError`, as `andNot([])` always was: an operand list built in a loop
-that came out empty would otherwise turn a filter into no filter and widen an audience without a word. To read every id
-of one segment, use `iterate()`.
+**An intersection names at least one operand.** `intersect([])` and `intersectInto(dest, [])` are refused with a
+`ValidationError`: an intersection over nothing has no meaning, and an operand list built in a loop that came out empty
+would otherwise turn a filter into no filter. To read every id of one segment, use `iterate()`. A union or an andNot of
+nothing is the segment itself, so `union([])`, `andNot([])` and their `*Into` forms read or publish its ids, and the head
+and tail of a list (`days[0].union(days.slice(1))`) works for a list of one.
 
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).

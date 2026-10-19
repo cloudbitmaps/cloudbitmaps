@@ -149,56 +149,199 @@ describe('an *Into whose destination is also one of its sources is refused', () 
     expect(await drain(store.segment('out').iterate())).toEqual([3, 4]);
   });
 
-  it('copies a segment, or a pin of it, into another with the segment as its own operand', async () => {
+  it('writes into the same name in another namespace, and into the default-namespace spelling _default', async () => {
+    const { store } = await world();
+    await store.load({ namespace: 'ns', segment: 'x' }, [9]);
+    await store.load({ namespace: '_default', segment: 'x' }, [8]);
+    const x = store.segment('x');
+    const y = store.segment('y');
+    for (const other of [
+      store.segment('x', { namespace: 'ns' }),
+      store.segment('x', { namespace: '_default' }),
+    ]) {
+      const res = await x.intersectInto(other, [y]);
+      expect(res.published).toBe(true);
+      expect(await drain(other.iterate())).toEqual([3, 4]);
+      expect(await drain(x.iterate())).toEqual([1, 2, 3, 4]);
+    }
+  });
+
+  it('copies a segment, or a pin of it, with materializeMany and one operand', async () => {
     const { store } = await world();
     const pinned = await store.segment('x').pin();
-    expect((await pinned.unionInto(store.segment('copy'), [pinned])).published).toBe(true);
+    await store.materializeMany({
+      operands: { src: pinned },
+      outputs: [{ dest: store.segment('copy'), expr: { or: ['src'] } }],
+      keep: 2,
+    });
     expect(await drain(store.segment('copy').iterate())).toEqual([1, 2, 3, 4]);
   });
 });
 
-describe('an empty operand list is refused', () => {
-  it.each(['intersect', 'union'] as const)(
-    '%s([]) throws when first read, as andNot([]) does',
-    async (verb) => {
-      const { store, c } = await world();
-      const what = verb === 'intersect' ? 'intersect with' : 'union with';
-      const expected = `${verb} requires at least one segment to ${what}; to read every id of one segment, use iterate()`;
-      const x = store.segment('x');
-      const stream = x[verb]([]);
-      await expect(drain(stream)).rejects.toThrow(expected);
-      await expect(drain(x[verb]([], { exclude: [store.segment('z')] }))).rejects.toThrow(expected);
-      await expect(drain(x[verb]([]).batches() as never)).rejects.toThrow(ValidationError);
-      expect(c.calls()).toEqual({ storage: {}, registry: {} });
-      await expect(drain(x.andNot([]))).rejects.toThrow(
-        'andNot requires at least one segment to subtract',
-      );
-    },
-  );
+describe('a copy of a live segment is of one generation', () => {
+  it('materializeMany with one operand reads one instant while a load lands mid-copy', async () => {
+    const CHUNKS = 400;
+    const gen0: number[] = [];
+    const gen1: number[] = [];
+    for (let c = 0; c < CHUNKS; c++)
+      for (let i = 0; i < 3000; i++) {
+        gen0.push(c * 65536 + i * 20);
+        gen1.push(c * 65536 + i * 20 + 1);
+      }
+    const mem = new MemoryStorage();
+    let hook: (() => Promise<void>) | undefined;
+    let ranges = 0;
+    const storage = new Proxy(mem.storage, {
+      get(target, key, receiver) {
+        const v = Reflect.get(target, key, receiver) as unknown;
+        if (typeof v !== 'function') return v;
+        if (key !== 'getRange') return (v as (...a: unknown[]) => unknown).bind(target);
+        return async (...a: unknown[]) => {
+          ranges++;
+          if (hook !== undefined && ranges === 2) {
+            const h = hook;
+            hook = undefined;
+            await h();
+          }
+          return (v as (...a: unknown[]) => unknown).apply(target, a);
+        };
+      },
+    });
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage: storage as IStorageDriver, registry: mem.registry }),
+    });
+    await store.load({ segment: 'src' }, gen0);
+    hook = async () => {
+      await store.load({ segment: 'src' }, gen1);
+    };
+    const src = store.segment('src');
+    await store.materializeMany({
+      operands: { src },
+      outputs: [{ dest: store.segment('dest'), expr: { or: ['src'] } }],
+      keep: 1,
+      concurrency: 1,
+    });
+    expect(hook, 'the load landed during the copy').toBeUndefined();
+    const out = await drain(new CloudRoaring({ storage: mem }).segment('dest').iterate());
+    const generation = (id: number) => ((id % 65536) % 20 === 0 ? 0 : 1);
+    expect(new Set(out.map(generation)).size).toBe(1);
+    expect(out).toHaveLength(gen0.length);
+  }, 60_000);
+});
 
-  it.each(['intersectInto', 'unionInto'] as const)(
-    '%s(dest, []) is refused before any request and leaves dest alone',
-    async (verb) => {
-      const { store, c } = await world();
-      const what = verb === 'intersectInto' ? 'intersect with' : 'union with';
-      const before = await generationsOf(store, 'y');
-      c.reset();
-      await expect(store.segment('x')[verb](store.segment('y'), [])).rejects.toThrow(
-        `${verb} requires at least one segment to ${what}; to read every id of one segment, use iterate()`,
-      );
-      await expect(
-        store.segment('x')[verb](store.segment('y'), [], { exclude: [store.segment('z')] }),
-      ).rejects.toThrow(ValidationError);
-      expect(c.calls()).toEqual({ storage: {}, registry: {} });
-      expect(await generationsOf(store, 'y')).toEqual(before);
-    },
-  );
-
-  it('andNotInto(dest, []) is refused as it was', async () => {
-    const { store } = await world();
-    await expect(store.segment('x').andNotInto(store.segment('y'), [])).rejects.toThrow(
-      'andNot requires at least one segment to subtract',
+describe('an empty operand list', () => {
+  it('is refused by intersect, when first read, with no request', async () => {
+    const { store, c } = await world();
+    const expected =
+      'intersect requires at least one segment to intersect with; to read every id of one segment, use iterate()';
+    const x = store.segment('x');
+    await expect(drain(x.intersect([]))).rejects.toThrow(expected);
+    await expect(drain(x.intersect([], { exclude: [store.segment('z')] }))).rejects.toThrow(
+      expected,
     );
+    await expect(drain(x.intersect([]).batches() as never)).rejects.toThrow(ValidationError);
+    expect(c.calls()).toEqual({ storage: {}, registry: {} });
+  });
+
+  it('is refused by intersectInto before any request, and the message points a copier at materializeMany', async () => {
+    const { store, c } = await world();
+    const before = await generationsOf(store, 'y');
+    c.reset();
+    await expect(store.segment('x').intersectInto(store.segment('y'), [])).rejects.toThrow(
+      /^intersectInto requires at least one segment to intersect with; to copy this segment into dest, call materializeMany /,
+    );
+    expect(c.calls()).toEqual({ storage: {}, registry: {} });
+    expect(await generationsOf(store, 'y')).toEqual(before);
+  });
+
+  it('reads the receiver itself for union and andNot, streamed and into a destination', async () => {
+    const { store } = await world();
+    const x = store.segment('x');
+    expect(await drain(x.union([]))).toEqual([1, 2, 3, 4]);
+    expect(await drain(x.andNot([]))).toEqual([1, 2, 3, 4]);
+    expect(await drain(x.union([], { exclude: [store.segment('z')] }))).toEqual([1, 2, 3]);
+    expect((await x.unionInto(store.segment('u'), [])).published).toBe(true);
+    expect(await drain(store.segment('u').iterate())).toEqual([1, 2, 3, 4]);
+    expect((await x.andNotInto(store.segment('a'), [])).published).toBe(true);
+    expect(await drain(store.segment('a').iterate())).toEqual([1, 2, 3, 4]);
+    // The destination still cannot be the receiver.
+    await expect(x.andNotInto(x, [])).rejects.toThrow(
+      /^andNotInto: the destination "x" is also this segment/,
+    );
+  });
+
+  it('keeps the retention guide’s head-and-tail union working for a window of one day', async () => {
+    const { store } = await world();
+    const days = ['x'].map((d) => store.segment(d));
+    expect(await drain(days[0]!.union(days.slice(1), { allowAbsentOperands: true }))).toEqual([
+      1, 2, 3, 4,
+    ]);
+    const window = store.segment('active-7d', { namespace: 'windows' });
+    expect(
+      (await days[0]!.unionInto(window, days.slice(1), { allowAbsentOperands: true })).published,
+    ).toBe(true);
+    expect(await drain(window.iterate())).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe('a load of ids read from the segment it writes is refused', () => {
+  async function twoStores() {
+    const backend = new MemoryStorage();
+    const a = new CloudRoaring({ storage: backend });
+    const b = new CloudRoaring({ storage: backend });
+    await a.load({ segment: 'x' }, [1, 2, 3, 4]);
+    await a.load({ segment: 'active' }, [1, 2, 3, 4, 5, 6, 7, 8]);
+    await a.load({ segment: 'extra' }, [100]);
+    await a.load({ segment: 'optout' }, [1]);
+    // `a` resolves x, then another store loads a newer generation within `genTtlMs`.
+    await drain(a.segment('x').iterate());
+    await b.load({ segment: 'x' }, [5, 6, 7, 8]);
+    return { backend, a };
+  }
+
+  const READS: readonly [string, (a: CloudRoaring) => AsyncIterable<number>][] = [
+    ['intersect', (a) => a.segment('x').intersect([a.segment('active')])],
+    ['union', (a) => a.segment('x').union([a.segment('extra')])],
+    ['andNot', (a) => a.segment('x').andNot([a.segment('optout')])],
+    ['iterate', (a) => a.segment('x').iterate()],
+    ['an operand', (a) => a.segment('active').intersect([a.segment('x')])],
+    [
+      'an exclude',
+      (a) => a.segment('active').intersect([a.segment('active')], { exclude: [a.segment('x')] }),
+    ],
+  ];
+
+  it.each(READS)(
+    'load(x, <%s of x>) is refused and the other store’s load stands',
+    async (_name, read) => {
+      const { backend, a } = await twoStores();
+      const outcome = await a.load({ segment: 'x' }, read(a)).then(
+        (r) => r,
+        (e: unknown) => e,
+      );
+      const fresh = new CloudRoaring({ storage: backend });
+      expect(await drain(fresh.segment('x').iterate())).toEqual([5, 6, 7, 8]);
+      expect(outcome).toBeInstanceOf(ValidationError);
+      expect((outcome as Error).message).toMatch(
+        /^load: the ids come from a read of the segment "x" that is being loaded/,
+      );
+      expect((outcome as Error).message).toContain('This release has no fenced in-place update');
+    },
+  );
+
+  it('refuses everyNth of a pin of x loaded into x', async () => {
+    const { a } = await twoStores();
+    const pinned = await a.segment('x').pin();
+    await expect(a.load({ segment: 'x' }, pinned.everyNth(1))).rejects.toThrow(ValidationError);
+  });
+
+  it('still loads ids read from another segment, or a stream the caller wrapped', async () => {
+    const { a } = await twoStores();
+    expect((await a.load({ segment: 'y' }, a.segment('active').iterate())).published).toBe(true);
+    async function* wrapped() {
+      yield* a.segment('x').iterate();
+    }
+    expect((await a.load({ segment: 'x' }, wrapped())).published).toBe(true);
   });
 });
 
@@ -295,16 +438,16 @@ describe('pinAt takes a pin’s record whole', () => {
     expect(again.pinnedAt).toEqual(at);
   });
 
-  it('refuses a version that is not a string, and says pinAt takes the three fields', async () => {
+  it('refuses a version that is not a string with a message of its own, and names version among the keys', async () => {
     const { store } = await world();
     const at = (await store.segment('x').pin()).pinnedAt!;
     await expect(store.segment('x').pinAt({ ...at, version: 7 } as never)).rejects.toThrow(
-      /^pinAt: pass \{ generation, fingerprint \}/,
+      /^pinAt: `version`, when given, is the string a pin recorded/,
     );
     await expect(
       store.segment('x').pinAt({ generation: 0, fingerprint: at.fingerprint!, extra: 1 } as never),
     ).rejects.toThrow(
-      'pinAt: unknown option "extra"; pinAt takes { generation, fingerprint } only',
+      'pinAt: unknown option "extra"; pinAt takes { generation, fingerprint } and a pin\'s `version`, which it does not read',
     );
   });
 
