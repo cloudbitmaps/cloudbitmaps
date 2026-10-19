@@ -213,6 +213,11 @@ makes the coordinated restore point easy to hit rather than something you have t
 1. **Pick one target timestamp** `T` from your coordinated backups.
 2. **Quiesce writers** for the affected segments (below) — loads, `*Into` materializations, `eraseSubject`, the
    retention sweep.
+
+   Then, before step 3 changes anything, **capture the live registry's tombstones**: list its `destroyed` rows
+   (`backend.registry.list()`, keeping those with `status: 'destroyed'`), and for each one whether
+   `store.generations(ref)` lists any object. Keep that list. Steps 3 and 4 overwrite what it shows, and step 8 needs
+   it for an erasure whose audit event is missing.
 3. **Restore storage** to `T` itself — not later: collection since `T` has deleted generations the restored
    registry names. For every storage key whose current version is not the one it held at `T` — deleted since `T`,
    or deleted and written again by a segment re-created under the same name — put the `T` version back (restore the
@@ -262,7 +267,7 @@ makes the coordinated restore point easy to hit rather than something you have t
      await destroySegment(ref, { registry: backend.registry }, { confirmSegment: ref.segment, audit });
    }
    for (const ref of cleartextDestroyedAfterT) {
-     // each segment with a `segment.destroy` event after T: a cleartext destroy, which no `segment.erase` records
+     // each segment with a `segment.tombstone` event after T: a cleartext destroy, which no `segment.erase` records
      await destroySegment(
        ref,
        { registry: backend.registry },
@@ -281,12 +286,17 @@ makes the coordinated restore point easy to hit rather than something you have t
    }
    ```
 
-   A cleartext destroy (`allowCleartext`) destroys no key, so it emits `segment.destroy` and not `segment.erase`: take
-   those segments from that event. A restore leaves them live and readable, so each is run again with
-   `allowCleartext: true`. When the audit trail was not kept, or may be missing events (a call that threw before it
-   could emit), list the `destroyed` rows on the current registry before the restore (`backend.registry.list()`,
-   keeping those with `status: 'destroyed'`): a row there that the restored registry shows active was destroyed after
-   `T`, by a destroy or a drop, and takes the verb that made it.
+   A cleartext destroy (`allowCleartext`) destroys no key, so it emits `segment.tombstone` and not `segment.erase`:
+   take those segments from that event. A restore leaves them live and readable, so each is run again with
+   `allowCleartext: true`. An erasure whose answer and read-back were both lost emits no event at all
+   ([observability](observability.md#audit-trail-security--compliance-events)), and an audit trail may not have been
+   kept. For those, use the list captured in step 2: each segment on it that the restored registry shows active was
+   tombstoned after `T`. Re-apply it by what the list says it left behind:
+
+   - **No object in the bucket** (a drop swept it): `store.dropSegment(ref, { confirmSegment: ref.segment })`.
+   - **Objects still there**, and the restored row holds a wrapped key (a crypto-shred): `destroySegment`.
+   - **Objects still there**, and the restored row holds no key (a cleartext destroy): `destroySegment` with
+     `allowCleartext: true`.
 
    `destroySegment` reports `reason: 'absent'` for a segment whose row did not exist at `T`, which step 4 already
    removed. It reports `reason: 'cleartext'` and leaves the row active for a row that held no key yet at `T` (its
@@ -375,18 +385,16 @@ A `SIGKILL` — or a `terminationGracePeriodSeconds` that expires, or a node tha
 the tombstone and before the stamp, a window that spans the storage sweep, leaves a tombstone with no stamp. The
 in-process `catch` that would re-stamp it cannot run.
 
-**Why the stamp is a separate write, and why we won't merge it.** The stamp is a *positive marker the sweep
-writes on its own work*. The alternative — inferring "this tombstone was a retirement because the row is
-`destroyed` and carries an expired policy" — is wrong in a way that matters: `destroySegment` never touches
-`retention`, so the ordinary sequence *(set a 30-day policy → a GDPR request arrives mid-window →
-`destroySegment`)* produces a **crypto-shred** tombstone (a cleartext destroy's is the same) carrying an expired
-policy. Auto-purging that row
-destroys your local attestation for a right-to-erasure execution and un-fences the name for every writer. The
-marker cannot be forged by that ordering; the inference can. One narrower ordering does put the marker on a
-crypto-shred's tombstone: a `destroySegment` that lands between the sweep's re-read of an expired row and its
-drop. The drop finds the tombstone, reports it dropped, and the sweep stamps it. The trail then holds a
-`segment.erase` and a `segment.dispose`, as a sweep's own retirement of an encrypted segment does; only the actors
-your sinks stamp on the two tell them apart.
+**Why the stamp is a separate write, and why we won't merge it.** The stamp is a *positive marker the sweep writes on
+its own work*. The alternative — inferring "this tombstone was a retirement because the row is `destroyed` and carries
+an expired policy" — is wrong in a way that matters: `destroySegment` never touches `retention`, so the ordinary
+sequence *(set a 30-day policy → a GDPR request arrives mid-window → `destroySegment`)* produces a **crypto-shred**
+tombstone (a cleartext destroy's is the same) carrying an expired policy. Auto-purging that row destroys your local
+attestation for a right-to-erasure execution and un-fences the name for every writer. The marker cannot be forged by
+that ordering; the inference can. One narrower ordering does put the marker on a crypto-shred's tombstone: a
+`destroySegment` that lands between the sweep's re-read of an expired row and its drop. The drop finds the tombstone,
+reports it dropped, and the sweep stamps it. The trail then holds a `segment.erase` and a `segment.dispose`, as a
+sweep's own retirement of an encrypted segment does; only the actors your sinks stamp on the two tell them apart.
 
 **Why nothing tells you.** The purge path reads the stamp and, finding none, returns without a ledger entry
 (pseudocode):
@@ -436,14 +444,14 @@ Deciding which is which is the part that needs a person:
 - **Check your audit sink** for that segment, and read its events together, because no event says who made the
   call: an event carries no origin, only what your sink stamps on it. A crypto-shred (`destroySegment`,
   `eraseNamespace`) emits `segment.erase` alone, and `eraseNamespace` adds one `namespace.erase` for the namespace. A
-  cleartext destroy (`allowCleartext`) destroys no key and emits `segment.destroy` instead of `segment.erase`.
+  cleartext destroy (`allowCleartext`) destroys no key and emits `segment.tombstone` instead of `segment.erase`.
   A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` that writes or
   finds a tombstone then emits `segment.dispose` once its storage sweep ends (a drop of a name with no row and no
   objects, and a dry run, emit nothing). The sweep's retirements are `dropSegment` calls, so they emit
   exactly what a manual drop does. One killed mid-sweep emits the `segment.erase` if the segment was encrypted,
   nothing if it was cleartext, and no `segment.dispose`; one killed after its sweep but before the stamp emits
   both. So a `segment.erase` with no `segment.dispose` is a crypto-shred or an interrupted drop of an encrypted
-  segment, a `segment.dispose` is a drop, the sweep's or anyone's, a `segment.destroy` is a cleartext destroy, and a
+  segment, a `segment.dispose` is a drop, the sweep's or anyone's, a `segment.tombstone` is a cleartext destroy, and a
   tombstone with no event at all is an interrupted drop of a cleartext segment, or a shred whose answer and read-back
   were both lost ([encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)). What tells the sweep's drops apart is the actor your
   sink stamps, when the process that runs the sweep passes a sink that names it. If the events cannot settle it,
@@ -671,10 +679,9 @@ await store.rollback(ref, 6, { audit, allowUnknown: true });  // or: move onto t
 The current generation is always known on a row whose list is usable, so `generations()` never marks it `known: false`.
 Otherwise: a generation the row does not know throws `ValidationError`, before any request to storage; a known
 generation whose object is another one than the row recorded throws `IntegrityError`; a generation not in the bucket
-throws `NotFoundError` and **names what is available**; a `destroyed` row (the tombstone of a crypto-shred, a
-cleartext destroy or a drop)
-throws `ValidationError`; and a row that another writer changed before the rollback's swap landed throws `WriteConflictError` and records no
-move.
+throws `NotFoundError` and **names what is available**; a `destroyed` row (the tombstone of a crypto-shred, a cleartext
+destroy or a drop) throws `ValidationError`; and a row that another writer changed before the rollback's swap landed
+throws `WriteConflictError` and records no move.
 A generation above the pointer that a rollback left is known, so undoing a rollback needs no flag; `store.rollback`
 invalidates its own store. It deletes nothing, so the rollback is itself reversible. It records the move as
 `segment.rollback` on the `audit` sink passed to the call, with `unknown: true` when the row did not vouch for the

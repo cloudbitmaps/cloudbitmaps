@@ -125,7 +125,7 @@ audit.snapshot();
 // [ { kind: 'segment.publish', segment: 'users', incarnation: '3f9c…', generation: 0 },
 //   { kind: 'segment.rewrite', namespace: 'eu', segment: '…', incarnation: 'a71e…', fromGeneration: 4, generation: 5 },
 //   { kind: 'segment.erase',   segment: 'users', incarnation: '3f9c…' } ]
-// (segment.erase fires only for an ENCRYPTED segment. A cleartext tombstone emits segment.destroy instead: the
+// (segment.erase fires only for an ENCRYPTED segment. A cleartext tombstone emits segment.tombstone instead: the
 // bytes stay readable.)
 ```
 
@@ -149,16 +149,23 @@ tokens in another form, and on a `segment.load-refused` from a load that found n
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
 | `segment.collect` | an erasure (`eraseSubject`) found the id only outside the current generation, in a retained older generation, above the pointer after a rollback, in an object left under a tombstone, or in a first load's object on a segment with no generation yet, and deleted the generations holding it without rewriting any; or deleted, whatever the id, only objects no read of the segment can open (a first load's sealed under a key the row does not hold, or encrypted under a cleartext row), which it cannot search and which the ledger then does not list; emitted once a listing of the bucket shows nothing left holding the id | `fromGeneration` (the newest generation that held it; absent when the call found it in none and deleted only objects it could not search), `collected` (every generation the call deleted, ascending) |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
-| `segment.destroy` | `destroySegment` or `eraseNamespace` with `allowCleartext` turned a segment with no key into a `destroyed` tombstone — not the idempotent re-run. Nothing was deleted and no key was destroyed, so this is not an erasure receipt: it records the tombstone, which a registry restore undoes | `objectsReadable` (always `true`) |
+| `segment.tombstone` | `destroySegment` or `eraseNamespace` with `allowCleartext` turned a segment with no key into a `destroyed` tombstone — not the idempotent re-run. Nothing was deleted and no key was destroyed, so this is not an erasure receipt: it records the tombstone, which a registry restore undoes | `objectsReadable` (always `true`). Not emitted when the write and its read-back both got no answer; see below |
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
 | `namespace.erase` | `eraseNamespace` runs, after every segment is done; also one `segment.erase` per segment actually shredded, emitted as each finishes (segments are shredded eight at a time, so those arrive in no fixed order) | `segmentsShredded` |
 
 **A write that got no answer is audited as one that was answered.** A write that tombstones a segment (a
 crypto-shred, a cleartext destroy or a drop) and lands but loses its response is settled by reading back the row, and
-emits the same events as if the answer had arrived. One case has no event: a crypto-shred whose answer and read-back
-were both lost throws `TransientError`. Its re-run finds the tombstone and answers `'already'` with no `segment.erase`,
-because the tombstone does not record that it was a crypto-shred. Record that segment yourself
-([encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)).
+emits the same events as if the answer had arrived. Two outcomes have no event, both after a write whose answer and
+read-back were both lost. The call throws `TransientError` (a retirement reports a `fault`), and the tombstone may
+already be there:
+
+- **A crypto-shred.** Its re-run finds the tombstone and answers `'already'` with no `segment.erase`, because the
+  tombstone does not record that it was a crypto-shred. A drop emits `segment.dispose` alone. Record that segment
+  yourself ([encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)).
+- **A cleartext destroy.** Its re-run answers `'already'` with no `segment.tombstone`, ever.
+
+A retention sweep that meets either emits nothing for the segment, then or when it purges the tombstone. The restore
+procedure's [list of tombstones](disaster-recovery.md#restore-procedure) is how to find them.
 
 The same two caveats as metrics apply. **`onEvent` runs synchronously** on the operation, so keep it cheap and offload
 network writes to your own queue. **`segment` and `namespace` are your own strings**, so treat them as potentially PII

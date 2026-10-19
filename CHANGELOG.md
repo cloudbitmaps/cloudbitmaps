@@ -53,7 +53,7 @@ so, and so do the module headers in the code.
 
 ### Added
 
-- **A cleartext `destroySegment` or `eraseNamespace` (`allowCleartext`) now emits a `segment.destroy` audit event.**
+- **A cleartext `destroySegment` or `eraseNamespace` (`allowCleartext`) now emits a `segment.tombstone` audit event.**
   It wrote a `destroyed` tombstone and emitted nothing, so no record said the row had been tombstoned, and the restore
   procedure could not find what a registry restore had brought back. The event carries the segment, its namespace and
   incarnation, and `objectsReadable: true`, because nothing was deleted and no key was destroyed: it is not an erasure
@@ -169,11 +169,14 @@ so, and so do the module headers in the code.
 
 - **A crypto-shred (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement) and a drop's tombstone
   for a segment with no row, whose write lands and loses its response, are now settled by the write token, and report
-  and audit the shred.** Before, they threw `TransientError`, or recorded `failed: …` with `destroyed: false`, and the
-  re-run answered `'already'` with no `segment.erase`, ever. A retirement reported `retired` with
-  `generationsRemaining: []` while every object was still in the bucket; it now lists what is left. A shred whose
-  answer and read-back are both lost still throws and cannot be told from another tombstone: the guides say what to
-  record.
+  and audit the shred.** A cleartext destroy (`allowCleartext`) whose answer is lost is settled the same way, and a
+  shred's read-back now waits between its reads, on the system clock when the call passes none. Before, they threw
+  `TransientError`, or recorded `failed: …` with `destroyed: false`, and the re-run answered `'already'` with no
+  `segment.erase`, ever. A retirement reported `retired` with `generationsRemaining: []` while every object was still
+  in the bucket; it now lists what is left. After a clean shred whose listing then faulted, its `cryptoShredded` said
+  `false` beside the `segment.erase` already emitted; it now says `true`. A shred whose answer and read-back are both
+  lost still throws and cannot be told from another tombstone: the guides say what to record. A retirement whose row
+  cannot be read afterwards is `skipped` with a reason that says the tombstone may have landed.
 
 - **Two erasures of different ids on one segment no longer report a raw storage error for the one that loses.** Both
   could take the same next generation number, and the second put was refused as `generation already exists

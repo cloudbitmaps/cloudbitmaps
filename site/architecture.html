@@ -634,7 +634,7 @@
               change are audit events beside it, on the sink the call was given: <span class="m">segment.publish</span>,
               <span class="m">segment.rollback</span>, <span class="m">segment.load-refused</span>,
               <span class="m">segment.rewrite</span>, <span class="m">segment.collect</span>, <span class="m">segment.erase</span>,
-              <span class="m">segment.destroy</span>, <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
+              <span class="m">segment.tombstone</span>, <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
               policy's write (<span class="m">setRetention</span>, <span class="m">clearRetention</span>), a
               collection pass and the retention sweep's purge of its own tombstones emit none. Each
               <span class="m">segment.*</span> event carries <span class="m">incarnation</span>, the id of the registry
