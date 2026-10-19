@@ -2,6 +2,7 @@ import { relative } from 'node:path';
 import fc from 'fast-check';
 import { beforeEach } from 'vitest';
 import { limitFor, seedLine, seedWriter } from './helpers/fast-check-run';
+import { FULL_STRENGTH } from './helpers/strength';
 
 /**
  * One fast-check configuration for the property suites, so a red run can be reproduced.
@@ -29,9 +30,12 @@ import { limitFor, seedLine, seedWriter } from './helpers/fast-check-run';
  *     property whose awaits all resolve as microtasks starves the event loop: vitest's test timeout (a
  *     `setTimeout`) cannot fire, vitest's console never sends its log, and fast-check prints a seed only on a
  *     failure. The line goes through anyway, so a hung run still names its seed.
- *   - Each test's properties are bounded to 0.8 of the test's own timeout (`interruptAfterTimeLimit`, with
- *     `markInterruptAsFailure`), checked between runs. A property that overruns fails with "Property interrupted
- *     … seed: <n>" before vitest's timeout, instead of running until the job is cancelled.
+ *   - Each `fc.assert` call is bounded to 0.8 of its test's own timeout, counted from that call's start
+ *     (`interruptAfterTimeLimit`, with `markInterruptAsFailure`). It is checked between runs, and an async run is
+ *     also cut mid-run when it yields to the event loop (its work goes on in the background). A property that
+ *     overruns fails with "Property interrupted … seed: <n>" before vitest's timeout, instead of running until the
+ *     job is cancelled. A test that spends more than a fifth of its timeout before its property, or holds two
+ *     properties, can still reach vitest's timeout first.
  *
  * The seed stays RANDOM by default, deliberately. Pinning one in CI would make every run identical and turn
  * property testing into a fixed table of cases — the exploration is the value, and a case it finds is a case
@@ -47,7 +51,8 @@ import { limitFor, seedLine, seedWriter } from './helpers/fast-check-run';
  * line but not ended. `fc.sample` is covered by neither the limit nor the seed line (none draws a random seed
  * today). Several `fc.assert` calls in one test share that test's seed (one replay line per test). A call that
  * pins its own `seed` or `interruptAfterTimeLimit` keeps it: per-call parameters win over the global ones, and
- * the line then says so ("unless a call pins its own").
+ * the line then says so ("unless a call pins its own"). A pinned limit still gets the global
+ * `markInterruptAsFailure`, so a limit pinned as a budget fails the property where it once passed.
  */
 const pinned = process.env.FC_SEED;
 
@@ -85,8 +90,14 @@ beforeEach((ctx) => {
       : { interruptAfterTimeLimit: limit, markInterruptAsFailure: true }),
   });
   pending = seedLine(
-    { fullName: ctx.task.fullName, file: relative(process.cwd(), ctx.task.file.filepath) },
+    {
+      name: ctx.task.name,
+      fullName: ctx.task.fullName,
+      file: relative(process.cwd(), ctx.task.file.filepath),
+      project: ctx.task.file.projectName,
+    },
     seed,
+    FULL_STRENGTH,
   );
 });
 

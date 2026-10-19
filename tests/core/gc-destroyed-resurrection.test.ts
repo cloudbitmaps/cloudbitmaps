@@ -181,7 +181,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const row = (await registry.get(SEG))!;
     expect(row.status).toBe('active');
     expect(row.currentGen).toBe(0); // the pointer regressed — a different segment wearing the same name
-    expect(yielded).toContain(0); // the listing really did enumerate the new incarnation's object
+    expect(yielded).toContain(0); // the listing enumerated generation 0, the number the new incarnation's object holds
     expect(deleted).not.toContain(0);
     expect(await generations(storage)).toContain(0);
   });

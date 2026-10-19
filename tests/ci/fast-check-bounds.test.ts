@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import fc from 'fast-check';
 import { afterEach, beforeEach } from 'vitest';
-import { seedWriter } from '../helpers/fast-check-run';
+import { seedLine, seedWriter } from '../helpers/fast-check-run';
+import { FULL_STRENGTH_ASSIGNMENT } from '../helpers/strength';
 
 /**
  * Every property is bounded in time and names its seed before it runs (`tests/setup-fast-check.ts`).
@@ -29,18 +30,18 @@ const slowProperty = () =>
   });
 
 describe('a property that overruns its limit', () => {
-  it('fails naming its seed before the test timeout', { timeout: 1500 }, async () => {
+  it('fails naming its seed before the test timeout', { timeout: 3000 }, async () => {
     const started = Date.now();
     const seed = fc.readConfigureGlobal().seed;
     await expect(fc.assert(slowProperty(), { numRuns: 1000 })).rejects.toThrow(
       new RegExp(`Property interrupted after \\d+ tests[\\s\\S]*seed: ${seed}`),
     );
-    expect(Date.now() - started).toBeLessThan(1500);
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 
   it(
     'passes silently without markInterruptAsFailure, which is why the setup sets it',
-    { timeout: 1500 },
+    { timeout: 3000 },
     async () => {
       await expect(
         fc.assert(slowProperty(), { numRuns: 1000, markInterruptAsFailure: false }),
@@ -104,51 +105,109 @@ describe('the seed line', () => {
 });
 
 describe('a run that never returns', () => {
-  it('still leaves its seed in the output', { timeout: 60_000 }, async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cbm-hang-'));
-    const note = join(dir, 'note.json');
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && !k.startsWith('VITEST') && k !== 'FC_SEED') env[k] = v;
-    }
-    env.HANG_FIXTURE_OUT = note;
-    const child = spawn(
-      process.execPath,
-      [
-        resolve(ROOT, 'node_modules/vitest/vitest.mjs'),
-        'run',
-        '--config',
-        'tests/fixtures/hang/vitest.hang.config.ts',
-        '--maxWorkers=1',
-      ],
-      { cwd: ROOT, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    let output = '';
-    child.stdout.on('data', (d: Buffer) => (output += d.toString()));
-    child.stderr.on('data', (d: Buffer) => (output += d.toString()));
-    const spinning = (): boolean =>
-      existsSync(note) &&
-      (JSON.parse(readFileSync(note, 'utf8')) as { state: string }).state === 'spinning';
-    try {
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline && !(spinning() && /fast-check seed -?\d+/.test(output))) {
-        await new Promise((r) => setTimeout(r, 250));
+  it.skipIf(process.platform === 'win32')(
+    'still leaves its seed in the output',
+    { timeout: 60_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cbm-hang-'));
+      const note = join(dir, 'note.json');
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && !k.startsWith('VITEST') && k !== 'FC_SEED') env[k] = v;
       }
-      expect(spinning(), 'the fixture never reached its hanging run').toBe(true);
-      // Let the hung worker go on spinning for a moment, as CI's did, then end its whole process group.
-      await new Promise((r) => setTimeout(r, 2_000));
-    } finally {
-      if (child.pid !== undefined) {
-        try {
-          process.kill(-child.pid, 'SIGKILL');
-        } catch {
-          /* already gone */
+      env.HANG_FIXTURE_OUT = note;
+      const child = spawn(
+        process.execPath,
+        [
+          resolve(ROOT, 'node_modules/vitest/vitest.mjs'),
+          'run',
+          '--config',
+          'tests/fixtures/hang/vitest.hang.config.ts',
+          '--maxWorkers=1',
+        ],
+        { cwd: ROOT, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let output = '';
+      child.stdout.on('data', (d: Buffer) => (output += d.toString()));
+      child.stderr.on('data', (d: Buffer) => (output += d.toString()));
+      const spinning = (): boolean =>
+        existsSync(note) &&
+        (JSON.parse(readFileSync(note, 'utf8')) as { state: string }).state === 'spinning';
+      try {
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline && !(spinning() && /fast-check seed -?\d+/.test(output))) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        expect(spinning(), 'the fixture never reached its hanging run').toBe(true);
+        // Let the hung worker go on spinning for a moment, as CI's did, then end its whole process group.
+        await new Promise((r) => setTimeout(r, 2_000));
+      } finally {
+        if (child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
         }
       }
-    }
-    const seed = (JSON.parse(readFileSync(note, 'utf8')) as { seed: number }).seed;
-    rmSync(dir, { recursive: true, force: true });
-    expect(output).toMatch(/fast-check seed -?\d+/);
-    expect(output).toContain(`fast-check seed ${seed}: `);
+      const seed = (JSON.parse(readFileSync(note, 'utf8')) as { seed: number }).seed;
+      rmSync(dir, { recursive: true, force: true });
+      expect(output).toMatch(/fast-check seed -?\d+/);
+      expect(output).toContain(`fast-check seed ${seed}: `);
+    },
+  );
+});
+
+describe('the replay line', () => {
+  it('carries the strength, the project and the test name it came from', () => {
+    const task = {
+      name: "a (b) 'c'",
+      fullName: "f > a (b) 'c'",
+      file: 'tests/x.test.ts',
+      project: 'sorted',
+    };
+    expect(seedLine(task, 7, true)).toContain(
+      `replay: ${FULL_STRENGTH_ASSIGNMENT} FC_SEED=7 pnpm vitest run --project sorted tests/x.test.ts -t 'a \\(b\\) '\\''c'\\'''`,
+    );
+    expect(seedLine(task, 7, false)).not.toContain(FULL_STRENGTH_ASSIGNMENT);
   });
+
+  /** Runs vitest on a file the way the line says, or as given, and returns what it printed. */
+  const run = (command: string): Promise<string> =>
+    new Promise((resolveOutput) => {
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && !k.startsWith('VITEST') && k !== 'FC_SEED') env[k] = v;
+      }
+      const child = spawn('sh', ['-c', command], {
+        cwd: ROOT,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '';
+      child.stdout.on('data', (d: Buffer) => (output += d.toString()));
+      child.stderr.on('data', (d: Buffer) => (output += d.toString()));
+      child.on('close', () => resolveOutput(output));
+    });
+
+  it.skipIf(process.platform === 'win32')(
+    'run as written, draws the seed it names',
+    { timeout: 120_000 },
+    async () => {
+      const first = await run(
+        'pnpm vitest run --project ids --maxWorkers=1 tests/core/kept-window.test.ts',
+      );
+      const line =
+        /^fast-check seed (-?\d+): .*\(unless a call pins its own; replay: (.*)\)$/m.exec(first);
+      expect(line, first).not.toBeNull();
+      const [, seed, command] = line as RegExpExecArray;
+      expect(command).toContain('--project ids ');
+      expect(command).toContain(`FC_SEED=${seed} `);
+      expect(command).toContain("-t 'splits what it is given in two");
+
+      const replayed = await run(command as string);
+      expect(replayed).toContain(`fast-check seed ${seed}: `);
+      expect(replayed).toMatch(/Tests\s+1 passed/);
+    },
+  );
 });

@@ -124,9 +124,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **`MemoryStorage`'s listing yields the keys that existed when it began.** A listing iterated the live store, so an
-  object written while a caller was still reading the listing could appear in it; it now snapshots the keys first, as a
-  real backend's listing answers for the moment it began.
+- **`MemoryStorage`'s generation and segment listings list what is present when they begin.** Both iterated the live
+  store, so an object or segment stored while a caller was still reading a listing was yielded, and a caller that
+  stored one for each key it was shown never finished. Each now takes its keys first, as the local-files driver's
+  directory read and a single page of an S3 or Azure listing do. An object or segment deleted during a listing is now
+  still yielded, as on those backends, where before it was skipped.
 - **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
   audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,
   `eraseNamespace` and `dropSegment`, the API reference, the encryption and retention guides and the roadmap said a

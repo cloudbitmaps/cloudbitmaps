@@ -1,4 +1,4 @@
-import { MemoryStorageDriver } from '@/drivers/memory';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 const REF = { namespace: 'n', segment: 's' };
 
@@ -23,5 +23,25 @@ describe('MemoryStorageDriver.list', () => {
     const after: number[] = [];
     for await (const key of driver.list(REF)) after.push(key.generation);
     expect(after).toEqual([1, 2, 3]);
+  });
+});
+
+describe('MemoryRegistryDriver.list', () => {
+  it('does not yield a row created after the listing began, and still yields one deleted during it', async () => {
+    const registry = new MemoryRegistryDriver();
+    const row = (segment: string) => ({ namespace: 'n', segment });
+    await registry.create(row('a'), { currentGen: 0, status: 'active' });
+    await registry.create(row('b'), { currentGen: 0, status: 'active' });
+
+    const seen: string[] = [];
+    for await (const record of registry.list('n')) {
+      seen.push(record.segment);
+      if (seen.length === 1) {
+        await registry.create(row('c'), { currentGen: 0, status: 'active' });
+        await registry.delete(row('b'));
+      }
+    }
+
+    expect(seen).toEqual(['a', 'b']);
   });
 });
