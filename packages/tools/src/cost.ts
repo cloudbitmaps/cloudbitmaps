@@ -476,13 +476,17 @@ export const RETENTION_SWEEP_REQUESTS = deepFreeze({
   },
 }) satisfies Readonly<Record<string, Readonly<Record<string, SweepRequests>>>>;
 
+/** A value as a refusal prints it: a string quoted, so `'5'` is not mistaken for `5`, and anything else as it reads. */
+const lit = (value: unknown): string =>
+  typeof value === 'string' ? JSON.stringify(value) : String(value);
+
 /** A count of requests for a note: at most two decimals, none when it is whole. */
 const shown = (n: number): string => String(Number(n.toFixed(2)));
 
 /** Fail-fast at the boundary: reject non-finite / negative inputs rather than leak NaN into the report. */
 function requireFiniteNonNeg(n: number | undefined, field: string): number {
   if (n === undefined || !Number.isFinite(n) || n < 0) {
-    throw new ValidationError(`${field} must be a finite number >= 0; got ${n}`);
+    throw new ValidationError(`${field} must be a finite number >= 0; got ${lit(n)}`);
   }
   return n;
 }
@@ -520,7 +524,7 @@ function validateSizing(sizing: RedisSizing | undefined): asserts sizing is Redi
   }
   if (!Number.isInteger(sizing.replicasPerShard) || sizing.replicasPerShard < 0) {
     throw new ValidationError(
-      `${at}.replicasPerShard must be an integer >= 0; got ${sizing.replicasPerShard}`,
+      `${at}.replicasPerShard must be an integer >= 0; got ${lit(sizing.replicasPerShard)}`,
     );
   }
   const reserved = requireFiniteNonNeg(
@@ -528,7 +532,7 @@ function validateSizing(sizing: RedisSizing | undefined): asserts sizing is Redi
     `${at}.reservedMemoryFraction`,
   );
   if (reserved >= 1) {
-    throw new ValidationError(`${at}.reservedMemoryFraction must be below 1; got ${reserved}`);
+    throw new ValidationError(`${at}.reservedMemoryFraction must be below 1; got ${lit(reserved)}`);
   }
   const names = new Set<string>();
   for (const n of sizing.nodeTypes) {
@@ -544,7 +548,9 @@ function validateSizing(sizing: RedisSizing | undefined): asserts sizing is Redi
     requireFiniteNonNeg(n.ssdGiB ?? 0, `${row}.ssdGiB`);
     requireFiniteNonNeg(n.hourlyUSD, `${row}.hourlyUSD`);
     if (n.maxShards !== undefined && (!Number.isInteger(n.maxShards) || n.maxShards < 1)) {
-      throw new ValidationError(`${row}.maxShards must be an integer >= 1; got ${n.maxShards}`);
+      throw new ValidationError(
+        `${row}.maxShards must be an integer >= 1; got ${lit(n.maxShards)}`,
+      );
     }
     // A memory so small that the reserve leaves nothing would size any data at infinite shards.
     if (!(usableGiB(sizing, n) > 0)) {
@@ -735,7 +741,7 @@ function buildReport(input: {
   // A fraction: 95 meant as 95% would otherwise read as 1, every read a hit.
   if ((input.workload.cacheHitRate ?? 0) > 1) {
     throw new ValidationError(
-      `cacheHitRate must be a fraction from 0 to 1; got ${String(input.workload.cacheHitRate)}`,
+      `cacheHitRate must be a fraction from 0 to 1; got ${lit(input.workload.cacheHitRate)}`,
     );
   }
   const cacheHitRate = clamp01(
@@ -761,7 +767,7 @@ function buildReport(input: {
   );
   if (operandsPerIntersect < 1) {
     throw new ValidationError(
-      `operandsPerIntersect must be at least 1, since an intersection reads its operands; got ${operandsPerIntersect}`,
+      `operandsPerIntersect must be at least 1, since an intersection reads its operands; got ${lit(operandsPerIntersect)}`,
     );
   }
   const hotSegments = requireFiniteNonNeg(input.workload.hotSegments ?? 0, 'hotSegments');
@@ -770,7 +776,7 @@ function buildReport(input: {
     'readerProcesses',
   );
   if (readerProcesses < 1) {
-    throw new ValidationError(`readerProcesses must be at least 1; got ${readerProcesses}`);
+    throw new ValidationError(`readerProcesses must be at least 1; got ${lit(readerProcesses)}`);
   }
   const genTtlMs = requireFiniteNonNeg(
     input.workload.genTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS,
@@ -783,7 +789,7 @@ function buildReport(input: {
   const purgesPerMonth = requireFiniteNonNeg(input.workload.purgesPerMonth ?? 0, 'purgesPerMonth');
   const conditionalDelete = input.workload.conditionalDelete ?? true;
   if (typeof conditionalDelete !== 'boolean') {
-    throw new ValidationError(`conditionalDelete must be a boolean; got ${conditionalDelete}`);
+    throw new ValidationError(`conditionalDelete must be a boolean; got ${lit(conditionalDelete)}`);
   }
 
   // Per-request unit costs (USD). Same-region egress is free; internet egress not modeled.
@@ -1182,6 +1188,9 @@ export function estimateCost(input: EstimateInput): CostReport {
         `estimateCost: segments[${i}] needs sizeBytes or cardinality (pass sizeBytes: 0 to price a segment with no storage)`,
       );
     }
+    // Both are checked when given, though `sizeBytes` wins over `cardinality`: a bad one is a mistake either way.
+    if (spec.cardinality !== undefined)
+      requireFiniteNonNeg(spec.cardinality, 'segment.cardinality');
     const count = requireFiniteNonNeg(spec.count ?? 1, 'segment.count');
     if (!Number.isInteger(count)) {
       throw new ValidationError(

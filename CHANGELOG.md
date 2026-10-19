@@ -112,7 +112,7 @@ so, and so do the module headers in the code.
     cleartext while loads, erasures and `*Into` writes still wrote it. The same check holds the core read source and the
     core write entries that take `requireEncryption`.
   - `retireExpired` refuses a `scan` that is not `'fleet'` or `'index'` (a misspelt `'index'` ran the fleet sweep), a
-    `lookbackBuckets` that is not an integer of at least 0 on either scan (it was checked only on `'index'`), a `null`
+    `lookbackBuckets` that is not an integer on either scan (it was checked only on `'index'`), a `null`
     `limit` or `tombstoneGraceMs` (read as the default), and `shards` that is empty or lists a number twice. All are
     refused before the registry is listed.
   - `retireExpired` refuses a `tombstoneGraceMs` below one hour (3,600,000 ms). A shorter grace let a first load's
@@ -125,8 +125,31 @@ so, and so do the module headers in the code.
   - `estimateCost` refuses a segment with neither `sizeBytes` nor `cardinality`, which it priced at $0 of storage. Pass
     `sizeBytes: 0` for a segment that stores nothing. A missing `workload` stays allowed.
   - `AzureBlobStorage` refuses a `connectionString` that is empty, not a string, or not one the SDK can parse, with a
-    message that never holds the string. `S3Storage` refuses a `region` that is not a non-empty string. The three cloud
-    backends refuse a `prefix` that is not a string (a number or `null` threw a `TypeError`).
+    message that never holds the string, and a `container` that is `null`, empty or not a string (`null` built a store
+    on a container named "null"). `S3Storage` refuses a `region` that is empty, only whitespace or not a string. The three
+    cloud backends refuse a `prefix` that is not a string (a number or `null` threw a `TypeError`).
+  - `S3Storage` and `GcsStorage` refuse an empty or non-string `endpoint` / `apiEndpoint`, which sent every request to AWS
+    or to the public GCS endpoint instead of the service you configured; they also refuse an `S3Storage` `pathStyle`
+    that is not a boolean, `credentials` that are not an object of non-empty `accessKeyId` and `secretAccessKey`
+    strings with an optional `sessionToken`, and a `GcsStorage` `projectId` that is empty or not a string. A message
+    never holds a value, since an endpoint or a credential can carry a secret.
+  - `destroySegment` and `eraseNamespace` refuse an option they do not take and an `allowCleartext` that is not a
+    boolean, before the registry is read. `{ confirmSegment, dryRun: true }` used to crypto-shred the segment, and on
+    `eraseNamespace` every segment of the namespace, because neither call checked its options; `allowCleartext:
+    'false'` was read as true.
+  - A `null` is no longer read as the default: `cache.genTtlMs`, `retry.maxAttempts`, `baseDelayMs`, `maxDelayMs`,
+    `backoffFactor` and `jitter`, `budget.maxRequests` (on the store and per call), `keep` on `load` and the `*Into`
+    verbs, `retireExpired`'s `now`, and a `seams.clock`, `seams.rng` or `encryption.keystore` of `null` (the keystore
+    one threw a `TypeError` at the first encrypted write) each throw `ValidationError`. A key whose value is
+    `undefined` still reads as absent.
+  - `retireExpired`'s `lookbackBuckets` has a ceiling of 3,660 (ten years of days): `1e9` threw a `RangeError`. A
+    `totalShards` that is not a positive integer is refused even without `shards`.
+  - `setRetention` refuses a policy key other than `expiresAt`. `new InProcessKeystore` with `keys` as a `Map` says so,
+    where it said there were no keys. `export-segments` refuses a `CR_EXPORT_` variable it does not read, naming it and
+    the four it takes: a misspelt `CR_EXPORT_NAMSPACE` exported every namespace. The cost model quotes a string it
+    refuses (`got "5"`), and checks `cardinality` even when `sizeBytes` wins.
+  - One export is added to `@cloudbitmaps/core/driver-kit` for backend authors, `requireNonEmptyString`, beside
+    `requireBool` and `refuseUnknownOptions`.
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an

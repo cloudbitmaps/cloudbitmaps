@@ -1081,10 +1081,10 @@ export class CloudRoaring {
       );
     }
     for (const [seam, name, needs] of seams) {
-      if (seam === undefined || seam === null) continue;
+      if (seam === undefined) continue;
       const has = (m: string): boolean =>
-        typeof (seam as Record<string, unknown>)[m] === 'function';
-      if (typeof seam !== 'object' || !needs.every(has)) {
+        seam !== null && typeof (seam as Record<string, unknown>)[m] === 'function';
+      if (seam === null || typeof seam !== 'object' || !needs.every(has)) {
         throw new ValidationError(
           `CloudRoaring's \`${name}\` must be an object with ${needs.map((m) => `\`${m}()\``).join(' and ')}`,
         );
@@ -1326,7 +1326,7 @@ export class CloudRoaring {
         // puts that call on the operator. Inheriting `load()`'s collection would silently delete the
         // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
-        keep: options?.keep ?? KEEP_EVERY_GENERATION,
+        keep: options?.keep === undefined ? KEEP_EVERY_GENERATION : options.keep,
         ...(options?.audit === undefined ? {} : { audit: options.audit }),
       };
       result =
@@ -2592,7 +2592,7 @@ export class CloudRoaring {
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
       { registry: deps.registry, storage: deps.storage, clock: this.clock, rng: this.rng },
-      { ...opts, now: opts.now ?? this.clock.now() },
+      { ...opts, now: opts.now === undefined ? this.clock.now() : opts.now },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
     // nothing, so it invalidates nothing.

@@ -218,6 +218,7 @@
     "@cloudbitmaps/core/driver-kit renewPointer": "function renewPointer(row: Pick<RegistryRecord, 'currentGen'>): RegistryPatch;",
     "@cloudbitmaps/core/driver-kit renewsPointer": "function renewsPointer(patch: RegistryPatch): boolean;",
     "@cloudbitmaps/core/driver-kit requireBool": "function requireBool(name: string, value: unknown): boolean | undefined;",
+    "@cloudbitmaps/core/driver-kit requireNonEmptyString": "function requireNonEmptyString(name: string, value: unknown): string | undefined;",
     "@cloudbitmaps/core/driver-kit requirePositiveInt": "function requirePositiveInt(name: string, value: unknown): number | undefined;",
     "@cloudbitmaps/core/driver-kit segmentObjectPrefix": "function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef): string;",
     "@cloudbitmaps/core/driver-kit storageObjectKey": "function storageObjectKey(prefix: string | undefined, key: GenKey): string;",

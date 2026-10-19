@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { CloudRoaring, InProcessKeystore, MemoryStorage, ValidationError } from '@/index';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { judgeLoad } from '@/core/load';
+import { eraseIdFromSegment } from '@/core/erase-id';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
+import { roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
@@ -134,7 +139,10 @@ describe('retireExpired refuses a bad option before it lists the registry', () =
   it.each([
     [{ scan: 'bogus' }, "`scan` must be 'fleet' or 'index'; got \"bogus\""],
     [{ scan: 'idnex' }, "`scan` must be 'fleet' or 'index'; got \"idnex\""],
-    [{ lookbackBuckets: -1 }, '`lookbackBuckets` must be an integer of at least 0; got -1'],
+    [
+      { lookbackBuckets: -1 },
+      "`lookbackBuckets` must be an integer from 0 to 3660 (days; older rows are the fleet scan's to find); got -1",
+    ],
     [{ limit: null }, '`limit` must be an integer'],
     [{ tombstoneGraceMs: 0 }, 'at least 3600000 (one hour'],
     [{ tombstoneGraceMs: null }, '`tombstoneGraceMs` must be a finite number'],
@@ -153,5 +161,138 @@ describe('retireExpired refuses a bad option before it lists the registry', () =
     expect(list).not.toHaveBeenCalled();
     // And nothing was retired.
     expect(await store.segment('a').has(1)).toBe(true);
+  });
+});
+
+describe('the core entries that take requireEncryption hold it to a boolean', () => {
+  const REF = { segment: 's' };
+  const coreDeps = () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    return { storage, registry, entropy: testEntropy, codec: roaringCodec };
+  };
+
+  it('judgeLoad refuses it', async () => {
+    const d = coreDeps();
+    await expect(judgeLoad(REF, 1, { ...d, requireEncryption: 'true' as never })).rejects.toThrow(
+      'requireEncryption must be a boolean; got "true"',
+    );
+  });
+
+  it('an erasure refuses it before it reads a cleartext segment as encrypted or not', async () => {
+    const d = coreDeps();
+    await bulkLoadCrbmGeneration(d.storage, { ...REF, generation: 0 }, [1, 2], {
+      registry: d.registry,
+    });
+    await expect(
+      eraseIdFromSegment(REF, 1, { ...d, requireEncryption: 'true' as never }),
+    ).rejects.toThrow('requireEncryption must be a boolean; got "true"');
+    expect((await d.registry.get(REF))?.currentGen).toBe(0);
+  });
+
+  it('a read source refuses it', () => {
+    expect(
+      () =>
+        new CrbmStorageChunkSource(new MemoryStorageDriver(), {
+          registry: new MemoryRegistryDriver(),
+          requireEncryption: 'true' as never,
+        }),
+    ).toThrow('requireEncryption must be a boolean; got "true"');
+  });
+});
+
+describe('null is not the default', () => {
+  const T = MIN_EXPIRES_AT_MS + 700 * 86_400_000;
+  const world = async () => {
+    const clock = { now: () => T, sleep: (): Promise<void> => Promise.resolve() };
+    const store = new CloudRoaring({
+      storage: new MemoryStorage(),
+      retry: false,
+      seams: { clock },
+    });
+    await store.load({ segment: 'a' }, [1, 2]);
+    return store;
+  };
+
+  it('keep on load and on an Into verb', async () => {
+    const store = await world();
+    await expect(store.load({ segment: 'a' }, [3], { keep: null as never })).rejects.toThrow(
+      'keep must be an integer of at least 0; got null',
+    );
+    await store.load({ segment: 'b' }, [2]);
+    await expect(
+      store.segment('a').intersectInto(store.segment('c'), [store.segment('b')], {
+        keep: null as never,
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('now on retireExpired, and maxRequests of a per-call budget', async () => {
+    const store = await world();
+    await expect(store.retireExpired({ now: null as never, dryRun: true })).rejects.toThrow(
+      'retireExpired: `now` must be a finite number',
+    );
+    await expect(
+      store.eraseSubject(9, { allNamespaces: true, budget: { maxRequests: null as never } }),
+    ).rejects.toThrow('budget.maxRequests must be an integer of at least 1; got null');
+  });
+
+  it('cache.genTtlMs, the retry fields and the store budget', () => {
+    const build = (o: object): CloudRoaring =>
+      new CloudRoaring({ storage: new MemoryStorage(), ...o } as never);
+    expect(() => build({ cache: { genTtlMs: null } })).toThrow(
+      'cache.genTtlMs must be a finite number',
+    );
+    expect(() => build({ retry: { maxAttempts: null } })).toThrow(
+      'retry.maxAttempts must be an integer',
+    );
+    expect(() => build({ retry: { jitter: null } })).toThrow('retry.jitter');
+    expect(() => build({ budget: { maxRequests: null } })).toThrow(
+      'budget.maxRequests must be an integer',
+    );
+    expect(() => build({ retry: { maxAttempts: undefined } })).not.toThrow();
+  });
+
+  it('a null seam or keystore, under required too', () => {
+    const build = (o: object): CloudRoaring =>
+      new CloudRoaring({ storage: new MemoryStorage(), ...o } as never);
+    expect(() => build({ encryption: { keystore: null } })).toThrow(ValidationError);
+    expect(() => build({ encryption: { keystore: null, required: true } })).toThrow(
+      "CloudRoaring's `encryption.keystore` must be an object with",
+    );
+    expect(() => build({ seams: { clock: null } })).toThrow(ValidationError);
+    expect(() => build({ seams: { rng: null } })).toThrow(ValidationError);
+  });
+});
+
+describe('retireExpired bounds lookbackBuckets and checks totalShards on its own', () => {
+  it('a lookback of 1e9 days is a ValidationError, not a RangeError', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    const sweep = store.retireExpired({ scan: 'index', lookbackBuckets: 1e9, dryRun: true });
+    await expect(sweep).rejects.toBeInstanceOf(ValidationError);
+    await expect(sweep).rejects.toThrow('`lookbackBuckets` must be an integer from 0 to 3660');
+    await expect(
+      store.retireExpired({ scan: 'index', lookbackBuckets: 3660, dryRun: true }),
+    ).resolves.toBeDefined();
+  });
+
+  it('totalShards of "x" with no shards', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await expect(store.retireExpired({ totalShards: 'x' as never })).rejects.toThrow(
+      '`totalShards` must be an integer of at least 1; got "x"',
+    );
+  });
+});
+
+describe('setRetention refuses a policy key it does not take', () => {
+  it('names the key and the one it takes, and writes nothing', async () => {
+    const storage = new MemoryStorage();
+    const store = new CloudRoaring({ storage });
+    await store.load({ segment: 'a' }, [1]);
+    const before = await storage.registry.get({ segment: 'a' });
+    await expect(
+      store.setRetention({ segment: 'a' }, { expiresAt: T0 + 1, extra: 1 } as never),
+    ).rejects.toThrow('setRetention policy does not take `extra`. It takes `expiresAt`.');
+    expect((await storage.registry.get({ segment: 'a' }))?.token).toBe(before?.token);
   });
 });

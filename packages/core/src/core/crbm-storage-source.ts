@@ -649,7 +649,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // `0` turns the timed refresh off on purpose. Anything else that is not a finite, non-negative number (`NaN` from an
     // unset variable, a negative, a string) would turn it off too, silently, so another process's load or erasure would
     // never reach a long-lived reader: refused instead.
-    if (currentGenTtlMs !== undefined && currentGenTtlMs !== null) {
+    if (currentGenTtlMs !== undefined) {
       requireFiniteNumber(currentGenTtlMs, {
         min: 0,
         what: 'cache.genTtlMs',

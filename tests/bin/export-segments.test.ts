@@ -60,16 +60,19 @@ describe('export-segments CLI', () => {
           .namespace,
       ).toBe('ns');
     });
-    it('ignores a variable it does not read, such as a segment list, rather than failing', () => {
-      // There is no variable naming segments to export: every loaded segment publishes a row, so the registry
-      // is complete by construction and the CLI enumerates it. A variable it does not read must not stop an
-      // operator's script.
+    it('refuses a variable it does not read, such as a segment list, rather than export everything', () => {
+      // There is no variable naming segments to export: every loaded segment publishes a row, so the CLI enumerates the
+      // registry. A script that sets one expects a narrower export than it would get, so it is stopped, naming the
+      // variable and the ones the command takes.
       expect(() =>
         parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_SEGMENTS: 'a,ns/b' }),
-      ).not.toThrow();
-      expect(
-        parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_SEGMENTS: 'a' }),
-      ).toEqual({ root: '/x', out: '/o', format: 'roaring', namespace: undefined });
+      ).toThrow('CR_EXPORT_SEGMENTS is not a setting export-segments takes.');
+      expect(parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', HOME: '/h' })).toEqual({
+        root: '/x',
+        out: '/o',
+        format: 'roaring',
+        namespace: undefined,
+      });
     });
   });
 

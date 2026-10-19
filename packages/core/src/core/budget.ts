@@ -42,8 +42,8 @@ export type BudgetOption = Partial<Budget> | false;
 /**
  * Resolve a budget option against a fallback to a concrete `Budget`, or `null` when disabled. Validates: anything but
  * `false`, an absent value or an object of `{ maxRequests }` is refused, since a cap of the wrong shape (`5`,
- * `{ maxRequest: 5 }`) would otherwise read as no override and leave the fallback in force. `null` and a key whose value
- * is `undefined` read as absent.
+ * `{ maxRequest: 5 }`) would otherwise read as no override and leave the fallback in force. A `null` budget and a key whose value
+ * is `undefined` read as absent; a `maxRequests` of `null` is refused.
  */
 export function resolveBudget(opt: BudgetOption | undefined, fallback: Budget): Budget | null {
   if (opt === false) return null; // explicitly disabled
@@ -62,7 +62,8 @@ export function resolveBudget(opt: BudgetOption | undefined, fallback: Budget): 
       );
     }
   }
-  const maxRequests = opt?.maxRequests ?? fallback.maxRequests;
+  // Only an absent `maxRequests` is the fallback: a `null` is refused below.
+  const maxRequests = opt?.maxRequests === undefined ? fallback.maxRequests : opt.maxRequests;
   requirePositiveInteger(maxRequests, 'budget.maxRequests');
   return { maxRequests };
 }

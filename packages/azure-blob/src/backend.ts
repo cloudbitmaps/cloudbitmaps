@@ -5,6 +5,7 @@ import {
   normalizeObjectPrefix,
   prefixPart,
   refuseUnknownOptions,
+  requireNonEmptyString,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
@@ -29,7 +30,7 @@ export interface AzureBlobStorageOptions {
    * can parse, else `ValidationError`, whose message never holds the string.
    */
   readonly connectionString?: string;
-  /** Container name, used with `connectionString` when `containerClient` is absent. */
+  /** Container name, used with `connectionString` when `containerClient` is absent: a non-empty string, else `ValidationError`. */
   readonly container?: string;
   /** Optional blob-name prefix under which everything lives — generations and the registry alike. A string, else `ValidationError`. */
   readonly prefix?: string;
@@ -130,7 +131,7 @@ export class AzureBlobStorage implements StorageBackend {
    * `now` that is not a function, `containerClient` beside `connectionString` or `container`, neither `containerClient`
    * nor both `connectionString` and `container`, a `blockBytes` or `maxObjectBytes` that is not a positive integer, a
    * `conditionalDelete` that is not a boolean, a `connectionString` that is empty, not a string or not a valid
-   * Azure Storage connection string, or an invalid `prefix` or `readTimeoutMs`.
+   * Azure Storage connection string, a `container` that is not a non-empty string, or an invalid `prefix` or `readTimeoutMs`.
    */
   constructor(options: AzureBlobStorageOptions) {
     refuseUnknownOptions(
@@ -156,6 +157,7 @@ export class AzureBlobStorage implements StorageBackend {
       }
       this.containerClient = options.containerClient;
     } else if (options.connectionString !== undefined && options.container !== undefined) {
+      requireNonEmptyString('AzureBlobStorage: `container`', options.container);
       this.containerClient = serviceClientFor(options.connectionString).getContainerClient(
         options.container,
       );

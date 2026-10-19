@@ -128,9 +128,15 @@ export class InProcessKeystore implements IKeystore {
   constructor(options: InProcessKeystoreOptions) {
     refuseUnknownOptions('InProcessKeystore', options, ['keys', 'activeKeyId', 'recoveryKeyId']);
     const keys: unknown = options.keys;
-    if (keys === null || typeof keys !== 'object' || Array.isArray(keys)) {
+    const proto: unknown =
+      keys === null || typeof keys !== 'object' ? null : Object.getPrototypeOf(keys);
+    if (
+      keys === null ||
+      typeof keys !== 'object' ||
+      (proto !== Object.prototype && proto !== null)
+    ) {
       throw new ValidationError(
-        'InProcessKeystore: `keys` must be an object of key id to 32-byte Uint8Array KEK',
+        'InProcessKeystore: `keys` must be a plain object of key id to 32-byte Uint8Array KEK, not a Map or an array',
       );
     }
     if (typeof options.activeKeyId !== 'string') {

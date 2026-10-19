@@ -157,6 +157,7 @@ export const ROUTED: readonly string[] = [
   'tests/roaring/store-load-binding.test.ts',
   'tests/roaring/warm-has.test.ts',
   'tests/roaring/config-refusals.test.ts',
+  'tests/roaring/option-refusals.test.ts',
 ];
 
 /** Run under ids only, each with the reason routing would change what the file tests. */

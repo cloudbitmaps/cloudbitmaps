@@ -5,6 +5,7 @@ import {
   normalizeObjectPrefix,
   prefixPart,
   refuseUnknownOptions,
+  requireNonEmptyString,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
@@ -44,9 +45,15 @@ export interface GcsStorageOptions {
    * built, other than an interceptor, is not carried to the twin.
    */
   readonly client?: GcsClient;
-  /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
+  /**
+   * Project id for the client built when `client` is absent (refused beside `client`): a non-empty string, else
+   * `ValidationError`. Falls back to the SDK's own resolution.
+   */
   readonly projectId?: string;
-  /** Endpoint override — point it at fake-gcs-server locally. Refused beside `client`, which carries its own. */
+  /**
+   * Endpoint override — point it at fake-gcs-server locally: a non-empty string, since an empty one would send
+   * requests to the public endpoint, else `ValidationError`. Refused beside `client`, which carries its own.
+   */
   readonly apiEndpoint?: string;
   /** Largest object the backend will write and advertise (default = GCS's 5 TiB max). Must be a positive safe integer. */
   readonly maxObjectBytes?: number;
@@ -132,8 +139,8 @@ export class GcsStorage implements StorageBackend {
    * Builds the GCS backend over one bucket, which `bucket` names. Pass `client`, or `projectId` and `apiEndpoint` to
    * have one built, not both. `prefix` puts every object under a name prefix. Throws `ValidationError` for an unknown
    * option, no bucket, a `now` that is not a function, a client setting beside `client`, a `maxObjectBytes` or
-   * `simpleUploadThresholdBytes` that is not a positive integer, a `conditionalDelete` that is not a boolean, or an
-   * invalid `prefix` or `readTimeoutMs`.
+   * `simpleUploadThresholdBytes` that is not a positive integer, a `conditionalDelete` that is not a boolean, an
+   * empty or non-string `apiEndpoint` or `projectId`, or an invalid `prefix` or `readTimeoutMs`.
    */
   constructor(options: GcsStorageOptions) {
     let readClient: GcsClient;
@@ -167,6 +174,9 @@ export class GcsStorage implements StorageBackend {
       this.client = options.client;
       readClient = downloadClient(options.client, true);
     } else {
+      // An empty `apiEndpoint` is no endpoint: the client would send to the public cloud, not the service meant.
+      requireNonEmptyString('GcsStorage: `apiEndpoint`', options.apiEndpoint);
+      requireNonEmptyString('GcsStorage: `projectId`', options.projectId);
       this.client = new GcsClient(
         defined({ projectId: options.projectId, apiEndpoint: options.apiEndpoint }),
       );

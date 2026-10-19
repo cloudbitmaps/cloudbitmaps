@@ -408,7 +408,7 @@ const VALIDATED_SEGMENTS =
 const LOAD_KEEPS = Number(
   sourceMatch(
     'packages/core/src/core/load.ts',
-    /options\.keep \?\? (\d+)/g,
+    /options\.keep === undefined \? (\d+) : options\.keep/g,
     "load()'s default keep",
   )[1],
 );

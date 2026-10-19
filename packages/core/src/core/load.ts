@@ -649,7 +649,7 @@ async function runLoad(
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   const codec = requireCodec(deps.codec, 'loadSegment');
   const entropy = requireEntropy(deps.entropy, 'a load');
-  const keep = options.keep ?? 1;
+  const keep = options.keep === undefined ? 1 : options.keep;
   requireInteger(keep, { min: 0, what: 'keep' });
   const guard = checkedGuard(options.guard, '');
   // The metadata as of this call, checked and copied before any round trip: what is stored is what the caller passed

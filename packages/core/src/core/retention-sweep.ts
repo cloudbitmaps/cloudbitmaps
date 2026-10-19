@@ -162,7 +162,7 @@ export interface RetireExpiredOptions {
    * A sweep that did not run — scaled to zero, a failed deploy, a paused
    * schedule — leaves its buckets behind, and this is how far back a later cycle reaches for them. Bounded so a
    * long outage costs a bounded number of list calls per cycle rather than one per day since the epoch;
-   * anything older is the `'fleet'` repair pass's job. An integer of at least 0 on either scan, else `ValidationError`.
+   * anything older is the `'fleet'` repair pass's job. An integer from 0 to 3660 on either scan, else `ValidationError`.
    */
   readonly lookbackBuckets?: number;
   /**
@@ -306,6 +306,9 @@ export interface RetireExpiredResult {
  * or a paused schedule recovers on its own, short enough that a cycle is eight list calls rather than hundreds.
  */
 export const DEFAULT_LOOKBACK_BUCKETS = 7;
+
+/** The most past buckets an index scan reads: ten years of days. A larger count is a list call per day, and is refused. */
+const MAX_LOOKBACK_BUCKETS = 3660;
 
 /** A due-index pointer as a scan found it: where it is, the segment it points at, and its token. */
 interface FoundPointer {
@@ -596,7 +599,16 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
   // Only an absent value means the default: a `null` or a malformed one is refused, on either scan.
   const lookbackBuckets =
     options.lookbackBuckets === undefined ? DEFAULT_LOOKBACK_BUCKETS : options.lookbackBuckets;
-  requireInteger(lookbackBuckets, { min: 0, what: 'retireExpired: `lookbackBuckets`' });
+  requireInteger(lookbackBuckets, {
+    min: 0,
+    max: MAX_LOOKBACK_BUCKETS,
+    what: 'retireExpired: `lookbackBuckets`',
+    note: "days; older rows are the fleet scan's to find",
+  });
+  // `totalShards` is ignored without `shards`, but a value that cannot be a shard count is still a mistake.
+  if (options.shards === undefined && options.totalShards !== undefined) {
+    requirePositiveInteger(options.totalShards, 'retireExpired: `totalShards`');
+  }
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const now = options.now;
   requireFiniteNumber(now, { what: 'retireExpired: `now`', note: 'epoch milliseconds' });

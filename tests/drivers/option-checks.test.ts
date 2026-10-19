@@ -209,7 +209,7 @@ describe.each(PREFIXED)('%s refuses a `prefix` that is not a string', (_backend,
 });
 
 describe('S3Storage refuses a `region` that is not a non-empty string', () => {
-  it.each([[''], [5], [null], [true], [{}]])('%j', (value) => {
+  it.each([[''], ['   '], [5], [null], [true], [{}]])('%j', (value) => {
     const make = (): S3Storage => new S3Storage({ bucket: 'b', region: value as string });
     expect(make).toThrow(ValidationError);
     expect(make).toThrow("S3Storage's `region` must be a non-empty string such as 'us-east-1'");
@@ -258,5 +258,97 @@ describe('AzureBlobStorage refuses a connection string it cannot use', () => {
 
   it('takes a valid connection string', () => {
     expect(() => make(AZURITE_CONN)).not.toThrow();
+  });
+});
+
+describe('an endpoint that is empty or not a string is refused, and no request is made', () => {
+  const s3 = (endpoint: unknown): S3Storage =>
+    new S3Storage({ bucket: 'b', region: 'us-east-1', endpoint: endpoint as string });
+  const gcs = (apiEndpoint: unknown): GcsStorage =>
+    new GcsStorage({ bucket: 'b', apiEndpoint: apiEndpoint as string });
+
+  it.each([[''], ['  '], [5], [null], [true]])('S3Storage endpoint %j', (v) => {
+    expect(() => s3(v)).toThrow(ValidationError);
+    expect(() => s3(v)).toThrow(/^S3Storage: `endpoint` must be a non-empty string/);
+  });
+  it.each([[''], ['  '], [5], [null], [true]])('GcsStorage apiEndpoint %j', (v) => {
+    expect(() => gcs(v)).toThrow(ValidationError);
+    expect(() => gcs(v)).toThrow(/^GcsStorage: `apiEndpoint` must be a non-empty string/);
+  });
+  it('takes a URL, and none', () => {
+    expect(() => s3('http://localhost:9000')).not.toThrow();
+    expect(() => s3(undefined)).not.toThrow();
+    expect(() => gcs('http://127.0.0.1:9')).not.toThrow();
+  });
+  it('takes a host with no scheme, as the clients do', () => {
+    expect(() => gcs('storage.googleapis.com')).not.toThrow();
+  });
+});
+
+describe('the other client settings are refused when they cannot be used', () => {
+  const s3 = (o: object): S3Storage =>
+    new S3Storage({ bucket: 'b', region: 'us-east-1', ...o } as never);
+
+  it.each([['true'], [1], [null]])('S3Storage pathStyle %j', (v) => {
+    expect(() => s3({ pathStyle: v })).toThrow('S3Storage: `pathStyle` must be a boolean');
+  });
+  it.each([
+    ['a string', 'x', /credentials needs an options object/],
+    ['an empty object', {}, /`credentials.accessKeyId` is required/],
+    ['no secret', { accessKeyId: 'a' }, /`credentials.secretAccessKey` is required/],
+    [
+      'a numeric id',
+      { accessKeyId: 5, secretAccessKey: 's' },
+      /`credentials.accessKeyId` must be a non-empty string/,
+    ],
+    [
+      'an empty secret',
+      { accessKeyId: 'a', secretAccessKey: '' },
+      /`credentials.secretAccessKey` must be a non-empty string/,
+    ],
+    [
+      'a misspelt key',
+      { accessKeyId: 'a', secretAccessKey: 's', sessionTkn: 't' },
+      /does not take `sessionTkn`/,
+    ],
+    [
+      'a numeric token',
+      { accessKeyId: 'a', secretAccessKey: 's', sessionToken: 5 },
+      /`credentials.sessionToken` must be a non-empty string/,
+    ],
+  ])('S3Storage credentials %s', (_label, credentials, message) => {
+    expect(() => s3({ credentials })).toThrow(ValidationError);
+    expect(() => s3({ credentials })).toThrow(message);
+  });
+  it('never puts a credential value in a message', () => {
+    expect(() => s3({ credentials: { accessKeyId: 'AKIAFAKEVALUE', secretAccessKey: 5 } })).toThrow(
+      /^(?!.*AKIAFAKEVALUE)/,
+    );
+  });
+  it('takes a credentials object the SDK has already stamped, or a provider returned', () => {
+    const used = { accessKeyId: 'a', secretAccessKey: 's' };
+    s3({ credentials: used });
+    s3({ credentials: used });
+    expect(() =>
+      s3({ credentials: { ...used, $source: 'x', accountId: '1', expiration: new Date() } }),
+    ).not.toThrow();
+  });
+  it('takes complete credentials', () => {
+    expect(() => s3({ credentials: { accessKeyId: 'a', secretAccessKey: 's' } })).not.toThrow();
+    expect(() =>
+      s3({ credentials: { accessKeyId: 'a', secretAccessKey: 's', sessionToken: 't' } }),
+    ).not.toThrow();
+  });
+  it.each([[''], ['  '], [5], [null]])('GcsStorage projectId %j', (v) => {
+    expect(
+      () =>
+        new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:9', projectId: v as string }),
+    ).toThrow('GcsStorage: `projectId` must be a non-empty string');
+  });
+  it.each([[null], [''], ['  '], [5], [{}]])('AzureBlobStorage container %j', (v) => {
+    const make = (): AzureBlobStorage =>
+      new AzureBlobStorage({ connectionString: AZURITE_CONN, container: v as string });
+    expect(make).toThrow(ValidationError);
+    expect(make).toThrow('AzureBlobStorage: `container` must be a non-empty string');
   });
 });

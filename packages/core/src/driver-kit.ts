@@ -186,7 +186,12 @@ export {
 } from './drivers/_shared/object-keys';
 
 // Option checks a backend or driver applies to its constructor's options, each refusing with `ValidationError`.
-export { refuseUnknownOptions, requireBool, requirePositiveInt } from './drivers/_shared/options';
+export {
+  refuseUnknownOptions,
+  requireBool,
+  requireNonEmptyString,
+  requirePositiveInt,
+} from './drivers/_shared/options';
 
 // A fault's classification: a connection Node reports as failed or cut off, and the hand-off of a transient fault as
 // `TransientError`. A driver's reading of its own service's statuses and codes stays the driver's.

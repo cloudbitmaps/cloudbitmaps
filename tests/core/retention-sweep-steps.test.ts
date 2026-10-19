@@ -77,7 +77,7 @@ describe('resolveRetireOptions', () => {
     [{ now: NOW, scan: null as never }, /`scan` must be 'fleet' or 'index'; got null/],
     [
       { now: NOW, lookbackBuckets: -1 },
-      /`lookbackBuckets` must be an integer of at least 0; got -1/,
+      /`lookbackBuckets` must be an integer from 0 to 3660 .*; got -1/,
     ],
     [{ now: NOW, lookbackBuckets: 'x' as never }, /`lookbackBuckets` must be an integer/],
     [{ now: NOW, lookbackBuckets: null as never }, /`lookbackBuckets` must be an integer/],

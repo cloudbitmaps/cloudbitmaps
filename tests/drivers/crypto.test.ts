@@ -248,9 +248,14 @@ describe('InProcessKeystore refuses what it does not take', () => {
   it.each([
     ['no options', undefined, /needs an options object/],
     ['null', null, /needs an options object/],
-    ['an empty bag', {}, /`keys` must be an object/],
-    ['null keys', { keys: null, activeKeyId: 'a' }, /`keys` must be an object/],
-    ['array keys', { keys: [], activeKeyId: 'a' }, /`keys` must be an object/],
+    ['an empty bag', {}, /`keys` must be a plain object/],
+    ['null keys', { keys: null, activeKeyId: 'a' }, /`keys` must be a plain object/],
+    ['array keys', { keys: [], activeKeyId: 'a' }, /`keys` must be a plain object/],
+    [
+      'a Map of keys',
+      { keys: new Map([['a', randomBytes(32)]]), activeKeyId: 'a' },
+      /not a Map or an array/,
+    ],
     ['no activeKeyId', { keys }, /`activeKeyId` must be a string/],
     ['a numeric activeKeyId', { keys, activeKeyId: 1 }, /`activeKeyId` must be a string/],
     [
