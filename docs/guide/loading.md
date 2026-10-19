@@ -792,6 +792,20 @@ the destination and decide; do not treat it as "the write did not happen". A cal
 lease is refused earlier and harder, with `LeaseExpiredError`. An `*Into` publishes with the fences a load does: see
 [which fence a publish carries](correctness.md#which-fence).
 
+**The destination cannot also be a source.** An `*Into` whose `dest` is the segment it is called on, one of its operands
+or one of its excludes is refused with `ValidationError`, before any request, and names the verb and the segment. The call
+reads its sources at the generation this store last resolved, which can be up to `cache.genTtlMs` old, and publishes
+fenced on the destination's row as it stands: with the destination also a source, another process's newer load of it
+would be replaced by a result built from the one before, and no conflict would be raised. A segment is the same segment
+however its handle was made: a second handle, a pin of it and the same name in the same namespace all count. To update a
+segment from itself, combine into a new segment and then point readers at it or load its ids back. `materializeMany` applies
+the same rule to each `dest`.
+
+**An `*Into` names at least one operand.** `intersectInto(dest, [])` and `unionInto(dest, [])` are refused with
+`ValidationError`, as `andNotInto(dest, [])` is: an empty list built in a loop would otherwise copy `this` and widen the
+audience without a word. To copy a segment, or a pin of it, into a segment of its own, name it as its own operand:
+`src.unionInto(dest, [src])`.
+
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
 then calling `andNotInto`. The suppression folds into the same chunk-aligned pass, and each exclude is read only where
 the intersection survived.

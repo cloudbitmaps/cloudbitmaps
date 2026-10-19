@@ -44,6 +44,11 @@ copy of `@cloudbitmaps/roaring`, which always belongs to another store. A pin an
 own. The message names the verb and whether an operand, an exclude or the destination was refused, and never the
 segment, its namespace or a key. Open every operand with the `segment()` of the store that runs the call.
 
+**A combine names at least one operand.** `intersect([])` and `union([])`, and `intersectInto(dest, [])` and
+`unionInto(dest, [])`, are refused with a `ValidationError`, as `andNot([])` always was: an operand list built in a loop
+that came out empty would otherwise turn a filter into no filter and widen an audience without a word. To read every id
+of one segment, use `iterate()`.
+
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).
 
@@ -361,14 +366,22 @@ in another task or another process, as the same kind of pinned handle `pin()` re
 
 ```ts
 const first = await store.segment('active-30d').pin();
-const { generation, fingerprint } = first.pinnedAt!;
-// … hand both to the next task, which reopens the same instant:
-const again = await store.segment('active-30d').pinAt({ generation, fingerprint });
+const at = first.pinnedAt!;
+if (at.generation === null) throw new Error('the segment had no generation to pin');
+// … hand `at` to the next task, which reopens the same instant:
+const again = await store.segment('active-30d').pinAt(at);
 ```
 
+`pinnedAt` is one of two shapes, told apart by `generation`: a pin of a generation holds a number, a `version` and a
+`fingerprint`, and a pin of a segment that had no generation holds `null` in all three. Narrowing on `generation`
+narrows the whole record, so `pinAt(at)` takes it as it is; `pinAt({ generation, fingerprint })` takes the two fields
+alone, and `pinAt` does not read the `version`.
+
+- **A pin of a segment with no generation has nothing to reopen.** Its `pinnedAt.generation` is `null`, it reads empty,
+  and `pinAt` of it throws `ValidationError`.
 - **The fingerprint is required.** A generation number is taken again once its object is deleted and the name is purged
   and loaded again, so a number alone does not name an object. A bare number, a fingerprint that is not one a pin
-  recorded, or a key other than `generation` and `fingerprint` throws `ValidationError`.
+  recorded, or a key other than `generation`, `fingerprint` and `version` throws `ValidationError`.
 - **A generation that is gone throws `NotFoundError`, and `pinAt` never reads empty.** Collected, purged, on a
   crypto-shredded segment, or another object than the fingerprint names: each is `NotFoundError`, at the call. A
   generation above the pointer after a rollback is refused too. A rollback deletes nothing, though, so once a later load

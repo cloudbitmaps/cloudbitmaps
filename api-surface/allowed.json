@@ -506,5 +506,9 @@
   {
     "entry": "@cloudbitmaps/roaring ReadonlyBitmap*",
     "reason": "a new type, agreed with the maintainer on 2026-10-18: the read-only bitmap deserializePortable returns, a PortableBitmap and an Iterable<number> with size and has(id); roaring's RoaringBitmap32 satisfies it as it is"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PinnedAt*",
+    "reason": "PinnedAt becomes a union of a pin of a generation ({ generation: number; version: string; fingerprint: string }) and a pin of none (all three null), agreed with the maintainer on 2026-10-19: the doc comment already promised that fingerprint is null only when generation is, and the union lets a check of generation narrow the record so pinAt takes it whole; code that reads the three fields compiles as before"
   }
 ]

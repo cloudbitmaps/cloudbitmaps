@@ -13,6 +13,28 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **An `*Into` whose destination is also one of its sources is refused with `ValidationError`, before any request.**
+  `intersectInto`, `unionInto` and `andNotInto` throw when `dest` is the segment they are called on, one of the
+  operands or one of the excludes (the same namespace and name, however the handle was made: a second handle or a pin
+  of it counts), naming the verb and the segment; `materializeMany` already refused it for each `dest`. Before, such a
+  call read its sources at the generation the store last resolved, up to `cache.genTtlMs` old, and published over the
+  destination's row as it then stood, so another process's newer load of the segment was replaced by a result built
+  from the one before it, with no `WriteConflictError`. To update a segment from itself, combine into a new segment
+  and then point readers at it or load its ids back.
+- **`intersect([])` and `union([])`, and `intersectInto(dest, [])` and `unionInto(dest, [])`, are refused with
+  `ValidationError`, as `andNot([])` always was.** They read as the segment alone, so an operand list built in a loop
+  that came out empty turned a filter into no filter. The error reads `intersect requires at least one segment to
+  intersect with; to read every id of one segment, use iterate()` (`union`, and the `*Into` verbs, in the same
+  words); a stream throws when it is first read. To read every id of one segment, call `iterate()`. To copy a segment
+  or a pin of it into another, name it as its own operand: `src.unionInto(dest, [src])`, where `intersectInto(dest, [])`
+  did it; `unionInto(dest, [], { exclude })` becomes `andNotInto(dest, [exclude])`, and `intersect([], { exclude })`
+  becomes `andNot([exclude])`.
+- **`PinnedAt`, the type of `seg.pinnedAt`, is a union of two shapes in place of three independent nullable fields:**
+  `{ generation: number; version: string; fingerprint: string }` for a pin of a generation and `{ generation: null;
+  version: null; fingerprint: null }` for a pin of a segment that had none, so a check of `generation` narrows all
+  three. Code that reads the fields compiles as it did; code that builds a `PinnedAt` from fields that are each
+  `number | null` or `string | null`, or that assigns one with a `null` in only some fields, no longer compiles: narrow
+  on `generation` first, or build the one shape or the other.
 - **`deserializePortable(bytes)` returns `ReadonlyBitmap`, a type of this library's own, in place of `roaring`'s
   `RoaringBitmap32`, and no public signature names a type of the `roaring` package.** A `ReadonlyBitmap` is a
   `PortableBitmap` and an `Iterable<number>` with `size`, `has(id)`, ascending iteration and `serialize('portable')`.
@@ -102,6 +124,15 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`pinAt` takes a pin's `pinnedAt` whole, and the errors of the range, count and absent-operand checks name their
+  verb.** Once `generation` is not `null`, `seg.pinAt(first.pinnedAt)` reopens that generation: the record's `version` is
+  a key `pinAt` accepts and does not read, where a third key was refused, and the sample in the reading guide
+  type-checks under `strict`. A pin of a segment with no generation, passed to `pinAt`, throws `pinAt: the pin named no
+  generation (the segment had none when it was pinned), so there is nothing to reopen`, and an unknown key's error says
+  "pinAt takes" where it said "this version takes". A bad `after`, `through`, `n` or `concurrency` begins with the verb
+  asked (`iterate`, `intersect`, `union`, `andNot`, `everyNth`, `materializeMany`: `intersect: through must be an
+  integer from 0 to 4294967295`), and an error naming absent operands says `operand "z1" names a segment` for one and
+  `operands "z1", "z2" name segments` for several.
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an

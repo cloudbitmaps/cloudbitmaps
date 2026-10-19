@@ -537,7 +537,7 @@ it can finish only after the rollback's move, so the call's next read of the row
 - <a id="one-generation-per-call"></a>**One call reads a segment at one generation.** A combine that holds the same segment at two generations is refused
   with `ValidationError` when it is read, as a combine's other errors are. That covers pins of two generations, pins of
   one generation number in two incarnations of its name, and a pin beside a live handle of the same segment.
-  Materialize one side first with `intersectInto(dest, [])`. Two pins of one object combine freely, and an `*Into` of a
+  Materialize one side first into a segment of its own, with `src.unionInto(dest, [src])`. Two pins of one object combine freely, and an `*Into` of a
   combine that is refused throws before it reads anything.
 - <a id="pin-safe-across-re-creation"></a>**A pin is safe across a re-creation.** `pin()` records the pinned object's size and footer checksum. If the segment
   is purged and loaded again, which starts the new segment at generation 0 again, the pin never reads the new
