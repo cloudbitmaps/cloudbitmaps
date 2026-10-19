@@ -247,6 +247,7 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   └───────────────────────────────────────────────────────────────────────┘
 ```
 
+<!-- typecheck-skip: a fragment: the page leaves `engagedFromWarehouse`, `idsFromWarehouse`, `retained` to the reader -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';

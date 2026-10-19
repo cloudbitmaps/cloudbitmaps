@@ -333,6 +333,7 @@ an id in a chunk it did not hold when the combine began is subtracted from there
 export, reconciliation or send then describes one instant instead of whichever generations happened to be current as
 it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not.
 
+<!-- typecheck: store -->
 ```ts
 const audience = await store.segment('active-30d').pin();
 for await (const id of audience.iterate()) {
@@ -398,6 +399,7 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
 A job with a known end, such as a send that runs for 72 hours while a refresh job keeps loading the segment, can ask
 for its generation to be kept instead of sizing `keep` for it:
 
+<!-- typecheck: store -->
 ```ts
 const snap = await store.segment('active-30d').pin({ leaseUntil: Date.now() + 72 * 3_600_000 });
 snap.lease;            // { holder, until }
@@ -479,7 +481,10 @@ correct](correctness.md#how-a-pin-stays-correct).
 `iterate`, `intersect`, `union` and `andNot` return an `IdStream`: `for await` it for one id at a time, or
 call `.batches()` on it for one `Uint32Array` per chunk.
 
+<!-- typecheck -->
 ```ts
+import type { Segment } from '@cloudbitmaps/roaring';
+
 // Your segments and functions.
 declare const audience: Segment;
 declare const optOut: Segment;
@@ -525,6 +530,7 @@ for await (const ids of audience.andNot([optOut]).batches()) await sendMany(ids)
 only the chunks the range overlaps. That is keyset paging: each page asks for the ids after the last one the page
 before it ended on, so no page walks from the first id. Give each page both bounds.
 
+<!-- typecheck: store -->
 ```ts
 // Your functions: each yields or consumes ids.
 declare const activeIds: Iterable<number>;
@@ -609,6 +615,7 @@ that retries a transient failure, its retries run to their limit after the calle
 `(after, through]` when you pass a range: `everyNth(1_000)` yields the 1,000th id, then the 2,000th. It is the boundary
 pass of [paging through a segment](#page-through-a-segment) without decoding every chunk.
 
+<!-- typecheck: store -->
 ```ts
 const audience = await store.segment('active-30d').pin();
 

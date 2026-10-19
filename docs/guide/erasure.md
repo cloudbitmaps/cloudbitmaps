@@ -10,6 +10,7 @@ Both calls need a scope. Ids live in one global 32-bit space shared across names
 would sweep every tenant. To keep that from happening by accident, pass either a `namespace` or an explicit
 `{ allNamespaces: true }`. A call with neither throws `ValidationError`.
 
+<!-- typecheck-skip: a fragment: the page leaves `userId` to the reader -->
 ```ts
 import { RecordingAuditSink } from '@cloudbitmaps/roaring';
 

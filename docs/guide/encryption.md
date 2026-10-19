@@ -39,6 +39,7 @@ Each segment gets its own random **DEK**, wrapped under your KEK and stored in t
 are AES-256-GCM-encrypted with the DEK, under associated data that binds each blob to its namespace, segment,
 generation and purpose (a chunk and its key, the index, the metadata or the summary).
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring, InProcessKeystore, LocalFsStorage } from '@cloudbitmaps/roaring';
 
@@ -85,6 +86,7 @@ wrapped key, or once every KEK that wrapped it is destroyed ([disaster recovery]
 Neither call can be undone through the library (a registry restore to a point before it can), so each makes you name
 the exact segment or namespace as confirmation.
 
+<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
 

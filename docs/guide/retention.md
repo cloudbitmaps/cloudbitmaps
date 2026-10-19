@@ -17,6 +17,7 @@ If you arrived here asking "does it support TTL?": for a segment, yes; for an id
 
 **The usual setup is two calls.** Record an expiry when you create each segment, and run the sweep on a schedule:
 
+<!-- typecheck: store -->
 ```ts
 // Your values: today's date as the segment name, and the ids seen today.
 declare const today: string;
@@ -40,6 +41,7 @@ retention rule in the sweeper: whoever writes the sweep has to know that `active
 `dedup-wave` keeps 3. **`store.setRetention` moves that decision to the writer**, who is the only one who knows what
 the segment means:
 
+<!-- typecheck: store -->
 ```ts
 // Your values: today is the segment name for this run, idsSeenToday yields the ids to load.
 declare const today: string;
@@ -79,6 +81,7 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
 
 Reading and cancelling:
 
+<!-- typecheck: store -->
 ```ts
 const ref = { namespace: 'active-daily', segment: '2026-08-05' };
 await store.getRetention(ref); // → { expiresAt } | null | 'invalid'
@@ -101,6 +104,7 @@ A handle carries no deadline of its own (`expiresAt` among `store.segment`'s opt
   pinned handle), so the cut-off is as exact as the schedule.
 - **One reader's cut-off:** check the deadline where you read, against the same clock you would hand the store:
 
+  <!-- typecheck-skip: a fragment: the page leaves `id` to the reader -->
   ```ts
   const deadline = Date.parse('2026-12-31T18:00:00Z');
   const promo = store.segment('promo');
@@ -116,6 +120,7 @@ A policy is inert until something acts on it. `retireExpired` lists the registry
 `expiresAt` has passed, and retires each one **through `dropSegment`**. The registry-then-storage order, the re-sweep
 for an object a load was still writing, and the `generationsRemaining` report all come from one implementation.
 
+<!-- typecheck: store -->
 ```ts
 const swept = await store.retireExpired({ namespace: 'active-daily' });
 // → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, purgeFaults, firstPurgeFault?, dryRun, entries }
@@ -161,6 +166,7 @@ deletion to feel.
 variable twice, so the sweep-level preview is the real safety net. A retention bug you can read in a log is worth more
 than one you find in a bucket:
 
+<!-- typecheck: store -->
 ```ts
 const preview = await store.retireExpired({ namespace: 'active-daily', dryRun: true });
 // `wouldRetire`, not `retired`: `retired` counts actual deletions and is 0 in a dry run, deliberately, so a
@@ -171,6 +177,7 @@ console.log(`would retire ${preview.wouldRetire} of ${preview.scanned} scanned`)
 **Read the ledger.** A per-segment fault is an entry, never an exception. A throw from the middle of a fleet sweep
 would leave you unable to say which segments were retired, having already retired some:
 
+<!-- typecheck: store -->
 ```ts
 // Your function: schedule another run of the sweep soon.
 declare function scheduleAnotherPassSoon(): void;
@@ -258,6 +265,7 @@ once.
 `store.dropSegment` needs a store built on a **backend**, because it has to list and delete generations, which a
 pre-built `StorageChunkSource` cannot do, and to update the registry row, which a bare `IStorageDriver` lacks. Without one you get an `UnsupportedError`.
 
+<!-- typecheck: store -->
 ```ts
 // Your value: the name of the daily segment you want to retire.
 declare const oldDay: string;
@@ -291,6 +299,7 @@ A whole retention job by hand is a loop. If the cutoff is a property of the segm
 [`setRetention` and `retireExpired`](#record-when-a-segment-expires-storesetretention) are this loop with the decision
 moved to the writer and the bounds, preview and ledger already built:
 
+<!-- typecheck: store -->
 ```ts
 // Your value: ISO dates before this one are retired.
 declare const cutoffDay: string;
@@ -365,6 +374,7 @@ aging is not deferred work. It is incompatible with the data model.
 Put time in the name instead of in the data, and let set algebra do the window. Use a **namespace per family and the
 date as the segment**, not one long name, and load one segment per day:
 
+<!-- typecheck: store -->
 ```ts
 // Your values: today's date as a string, the last seven dates, and the ids seen today.
 declare const today: string;
@@ -393,6 +403,7 @@ window with `unionInto`, into a dated target or into one rolling target. Either 
 supersedes its destination rather than adding to it, so a rolling `active-7d` re-materialized each day holds exactly
 that day's window:
 
+<!-- typecheck: store -->
 ```ts
 // last7Days and daily are as in the example above.
 declare const last7Days: string[];

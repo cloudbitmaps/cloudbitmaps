@@ -13,6 +13,7 @@ is refused, and how loads stay correct under crashes and races, each have a summ
 number, write one immutable object, move the pointer, and collect what the move superseded. The fourth is the one
 that gets left out when the sequence is composed by hand, so segments pile up old generations that everybody pays for.
 
+<!-- typecheck: store -->
 ```ts
 // Your function: yields the ids your warehouse query returns.
 declare function idsFromWarehouse(): AsyncIterable<number>;
@@ -63,6 +64,7 @@ answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer).
 **Any id source, in any order, with duplicates.** The input is a sync or async iterable, consumed lazily and
 deduplicated as it goes: an array, a `Set`, a generator, a file stream, a warehouse cursor. Or a whole bitmap, below.
 
+<!-- typecheck: store -->
 ```ts
 // Your function: pages through the warehouse and yields each user id.
 declare const warehouse: { paginate(query: string): AsyncIterable<Array<{ user_id: number }>> };
@@ -83,6 +85,7 @@ Pass the cursor itself. The one way to make a load expensive is to build the who
 chunk at a time and writes each chunk while the object uploads, so it holds one chunk and the writer's index of the
 chunks written, up to about 7 MiB, about 8 MiB for an encrypted segment (derived), whatever the segment's size.
 
+<!-- typecheck: store -->
 ```ts
 // Your function: yields the ids in ascending order, as `ORDER BY user_id` returns them.
 declare function idsInOrder(): AsyncIterable<number>;
@@ -129,6 +132,7 @@ is the version `@cloudbitmaps/roaring` uses, so the two share one copy and a bar
 version works, slower). Under pnpm a package your own
 `package.json` does not list cannot be imported.
 
+<!-- typecheck: store -->
 ```ts
 import roaring from 'roaring';
 const { RoaringBitmap32 } = roaring;
@@ -194,6 +198,7 @@ no id split (`tests/roaring/load-no-per-id.test.ts`).
 A refresh split by id range across several processes builds one part of the segment in each. A load writes one
 generation from one process, so the parts reach one process, which checks them, joins them and loads the union once.
 
+<!-- typecheck -->
 ```ts
 import roaring from 'roaring';
 import { CloudRoaring, ValidationError, deserializePortable } from '@cloudbitmaps/roaring';
@@ -259,6 +264,7 @@ export async function loadParts(
 computed from, when its data landed, the run that built it. It goes on `load`, on every `*Into` verb, and on a load of a
 bitmap.
 
+<!-- typecheck-skip: a fragment: the page leaves `ids` to the reader -->
 ```ts
 await store.load({ segment: 'audience:active' }, ids, {
   metadata: { definition: 'v41', landedAt: 1_790_000_000_000, run: 'r-2204' },
@@ -342,6 +348,7 @@ There is no `create`, so you can never collide with an existing segment: `store.
 does no I/O. A segment starts existing when something is first loaded into it. A load replaces whatever was there, so
 the question worth asking before one is usually "is there data here already?", not "will this fail?".
 
+<!-- typecheck: store -->
 ```ts
 // Reporting, and skipping work you do not need to do:
 if (await store.exists({ segment: 'users' })) {
@@ -359,6 +366,7 @@ two lines. That is usually fine for a batch job that owns its segment. When it i
 To see everything you have, ask the registry. **Do not keep your own list of segment names beside the store.** That
 list is a second source of truth, and it drifts from this one the first time a load fails halfway:
 
+<!-- typecheck: store -->
 ```ts
 for await (const s of store.segments({ namespace: 'active-daily' })) {
   console.log(s.segment, s.currentGen, s.status);
@@ -506,6 +514,7 @@ neither is this one. An `*Into` always lists when it is given a `keep`.
 
 An `*Into` that collects on the way through:
 
+<!-- typecheck: store -->
 ```ts
 // Deletes every generation below the new one but one, the one it superseded, kept as a grace window.
 // `collected` lists what it deleted.
@@ -539,6 +548,7 @@ footer checksum of each object, in the order they were made current. It holds th
 numbers above them. The checksum is in the object's footer, which is in the clear, so a rollback needs no key to check it.
 `generations` marks each generation `known` or not, so you can see which targets need no flag before you ask.
 
+<!-- typecheck: store -->
 ```ts
 import { RecordingAuditSink } from '@cloudbitmaps/roaring';
 
@@ -733,6 +743,7 @@ that listed to take a number counts instead of keeping only what the ledger name
 The three combines each have a twin that writes the result as a **new generation of a destination segment** instead
 of streaming it to you: `intersectInto`, `unionInto`, `andNotInto`.
 
+<!-- typecheck: store -->
 ```ts
 // Your functions: each yields ids.
 declare const shopperIds: Iterable<number>;
@@ -776,6 +787,7 @@ otherwise. Five properties follow from "a write is a load":
 - **An empty or implausible result is refused, not published.** A combine that comes out empty over a non-empty
   destination leaves it alone and reports it:
 
+  <!-- typecheck-skip: a fragment: the page leaves `audience`, `dest`, `eligible` to the reader -->
   ```ts
   const res = await audience.intersectInto(dest, [eligible]);
   if (!res.published) {
@@ -829,6 +841,7 @@ store the call runs on, as for `intersect`, `union`, `andNot` and the `*Into` ve
 second store object over the same backend, or of another installed copy of `@cloudbitmaps/roaring` is refused with a
 `ValidationError` before any request. Open each with this store's `segment()`.
 
+<!-- typecheck: store -->
 ```ts
 const run = await store.materializeMany({
   operands: {
@@ -1014,6 +1027,7 @@ output of the call.
 Conditions too many to hold or to store (tens of thousands of audience queries, say) can be **fed** to the call as records in
 chunk-key order, beside the stored operands. The call keeps one chunk key of them at a time.
 
+<!-- typecheck-skip: a fragment: the page leaves `countsFromTheWarehouse`, `records` to the reader -->
 ```ts
 await store.materializeMany({
   operands: { unsub: store.segment('global-unsub', { namespace: 'suppression' }) }, // stored, as above
@@ -1110,6 +1124,7 @@ A few conditions, or a suppression list the caller already holds as a bitmap, go
 one chunk key (`id >>> 16`) and the ids a name holds there, in ascending key order; a key may arrive as several records,
 each naming an operand once. This walks the sets you hold, by chunk key, and yields them in that order:
 
+<!-- typecheck-skip: a fragment: the page leaves `lapsed`, `vip` to the reader -->
 ```ts
 import type { RoaringBitmap32 } from 'roaring';
 
@@ -1179,6 +1194,7 @@ it as a stored operand: the call then reads only the chunks the two share, at th
 and writes nothing: no object, no pointer, no audit event. Use it to look at a whole refresh before any of it is live,
 for instance to hold a landing in which a third of the segments moved more than usual.
 
+<!-- typecheck-skip: a fragment: the page leaves `operands`, `outputs` to the reader -->
 ```ts
 const review = await store.materializeMany({ operands, outputs, keep: 12, dryRun: true });
 for (const [i, o] of review.outputs.entries()) {
@@ -1230,6 +1246,7 @@ is an ordinary one: every guard and every race check runs, judged against each `
 - **The overlap with what is live.** A key shift keeps the size, so compare members. One call cannot read its own
   destination, so count the overlap in a second dry run that reads each `dest` as an operand:
 
+  <!-- typecheck-skip: a fragment: the page leaves `operands`, `outputs` to the reader -->
   ```ts
   const overlap = await store.materializeMany({
     operands: { ...operands, ...Object.fromEntries(outputs.map((o, i) => [`live-${i}`, o.dest])) },

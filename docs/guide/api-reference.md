@@ -314,6 +314,7 @@ serialized to JSON either: `JSON.stringify(bitmap)` gives `"{}"`, so write `JSON
 Roaring library's API (set algebra, `toArray`, and so on) decode its portable bytes with that library, after the
 check:
 
+<!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32`, `bytes`, `deserializePortable` to the reader -->
 ```ts
 const checked = deserializePortable(bytes); // ValidationError if malformed
 const native = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
@@ -499,6 +500,7 @@ re-export them. Importing one makes `@cloudbitmaps/core` a direct dependency of 
 `@cloudbitmaps/roaring` you install, so one copy serves both. Or derive the type from what the flavor exports, with no
 dependency to add:
 
+<!-- typecheck -->
 ```ts
 import type { CloudRoaringOptions, EncryptionOptions, MemoryStorage } from '@cloudbitmaps/roaring';
 
@@ -666,6 +668,7 @@ backend built in your package is recognised in ours. It takes two lines that hav
 `declare` field** so the class satisfies `StorageBackend`, and a **runtime stamp** in the constructor, which
 `brandAsBackend` applies non-enumerably so a spread cannot carry it off.
 
+<!-- typecheck-skip: a fragment: the page leaves `MyRegistryDriver`, `MyStorageDriver`, `MyStorageOptions` to the reader -->
 ```ts
 import {
   STORAGE_BACKEND,
@@ -720,6 +723,7 @@ bucket and one prefix so they cannot disagree. A driver author who wants a backe
 backend's `.storage` wrapped for auditing, metrics or tenant scoping, or paired with a registry in a database you
 already run — brands a plain object with the ports:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `auditing`, `inner` to the reader -->
 ```ts
 import { brandAsBackend } from '@cloudbitmaps/core/driver-kit';
 

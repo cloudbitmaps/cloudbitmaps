@@ -28,6 +28,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/azure-blob
 
 ## Use
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';

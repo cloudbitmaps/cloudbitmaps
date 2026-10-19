@@ -11,6 +11,7 @@ CloudBitmaps can report storage GETs and bytes, cache hit rate, retries, interse
 through a **metrics sink**. It is off by default (a no-op: emission is skipped entirely when unused). Pass one and the
 library pushes typed events to it:
 
+<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
 ```ts
 import { CloudRoaring, CountingMetricsSink } from '@cloudbitmaps/roaring';
 
@@ -50,6 +51,7 @@ high-water mark), and its `audit` sink fires per output.
 
 A quick look in dev is one line:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `backend` to the reader -->
 ```ts
 const store = new CloudRoaring({ storage: backend, metrics: { onEvent: (e) => console.log(e) } });
 ```
@@ -57,6 +59,7 @@ const store = new CloudRoaring({ storage: backend, metrics: { onEvent: (e) => co
 **OpenTelemetry** (or Datadog, CloudWatch, ...) is a 12-line adapter you write. CloudBitmaps adds no telemetry
 dependency of its own:
 
+<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader; imports `@opentelemetry/api`, which this repository does not install -->
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
@@ -105,6 +108,7 @@ points, so you pass `audit` to each: a load (`store.load`), an `*Into` materiali
 an erasure (`store.eraseSubject`), a drop (`store.dropSegment`), a crypto-shred (`destroySegment`, `eraseNamespace`)
 and the retention sweep (`store.retireExpired`):
 
+<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
 ```ts
 import { RecordingAuditSink, destroySegment } from '@cloudbitmaps/roaring';
 

@@ -15,6 +15,7 @@ Two formats:
 A sink is an object with one method, `open(ref, ext)`, which returns a writer for one segment. This minimal sink writes
 one file per segment under `./dump`:
 
+<!-- typecheck: store -->
 ```ts
 import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -101,6 +102,7 @@ The manifest of a command run also carries a `generatedAt` timestamp.
 A `.roaring` file needs no CloudBitmaps: any Roaring library deserializes the portable format. This sample imports
 `roaring`, so add it to your own `package.json` first ([which version](loading.md#what-a-load-accepts)).
 
+<!-- typecheck -->
 ```ts
 import { readFileSync } from 'node:fs';
 import roaring from 'roaring';

@@ -253,6 +253,7 @@ makes the coordinated restore point easy to hit rather than something you have t
    from the events your audit sink stamped after `T`, and the subjects from your own record of erasure requests,
    since no event carries a subject id:
 
+   <!-- typecheck-skip: a fragment: the page leaves `audit`, `backend`, `disposedAfterT`, `shreddedAfterT`, `subjectsErasedAfterT` to the reader -->
    ```ts
    import { destroySegment } from '@cloudbitmaps/roaring';
 
@@ -375,6 +376,7 @@ your sinks stamp on the two tell them apart.
 **Why nothing tells you.** The purge path reads the stamp and, finding none, returns without a ledger entry
 (pseudocode):
 
+<!-- typecheck-skip: a fragment: the page leaves `rec`, `retirementStamp` to the reader; it is the body of a loop shown without the loop -->
 ```ts
 const retiredAt = retirementStamp(rec.retention);
 if (retiredAt === null) continue;   // not ours — a GDPR tombstone, or a manual drop
@@ -395,6 +397,7 @@ Use the backend's registry directly. The store does not expose it; the backend y
 carries `status` and `retention` in its projection, so this is one scan, no per-segment reads. It stops at the first
 row it cannot parse; see [a registry row the library did not write](#a-registry-row-the-library-did-not-write).
 
+<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
 ```ts
 // The floor the sweep holds an instant to: 1,000,000,000,000 epoch milliseconds (2001-09-09), as the retention guide
 // states. A smaller value is almost certainly epoch seconds.
@@ -448,6 +451,7 @@ reach it: that scan reads only the rows the due index points at, the retirement 
 expiry pointer before the kill, and the pointer that finds a tombstone for its purge is filed only after the stamp
 the kill prevented. A stamp you write by hand files none.
 
+<!-- typecheck-skip: a fragment: the page leaves `ref`, `registry` to the reader -->
 ```ts
 const EPOCH_MS_FLOOR = 1_000_000_000_000; // the sweep's floor on an instant, as in the audit above
 
@@ -468,6 +472,7 @@ controls when the grace window elapses.
 it. That precondition is not bureaucracy: deleting the row while storage objects remain strands them permanently
 (the collection reads the row to decide what to collect, and collects nothing when there is none).
 
+<!-- typecheck-skip: a fragment: the page leaves `ref`, `registry`, `storage` to the reader -->
 ```ts
 for await (const k of storage.list(ref)) throw new Error(`storage not empty: generation ${k.generation}`);
 await registry.delete(ref);
@@ -502,6 +507,7 @@ the [roadmap](../ROADMAP.md) and not shipped, so this section is the procedure.
 The store exposes a post-restore health check that verifies **every registered segment's `currentGen` `.crbm`
 actually exists in storage**:
 
+<!-- typecheck: store -->
 ```ts
 const report = await store.checkConsistency();
 // { checked: 1284, inconsistent: [], errored: [] }   ← healthy: every currentGen resolves to a real storage object
@@ -626,6 +632,7 @@ accepting the loss of the loads after that point, but restoring correctness. The
 
 Remedy (b) is a supported call rather than a manual registry edit:
 
+<!-- typecheck-skip: a fragment: the page leaves `audit`, `ref` to the reader -->
 ```ts
 await store.generations(ref);              // what is actually in the bucket, current one marked
 await store.rollback(ref, 4, { audit });   // put the pointer on one that exists, and record that you did
@@ -640,6 +647,7 @@ lists such a generation with `known: false`. A row whose pointer you moved by ha
 has no `knownGens`: a rollback below its pointer needs no flag and no key (the pointer alone decides), and its audit event says
 `unknown: true`. Until the next load writes a new list, such a row has none of the checks a list gives (a rollback writes none).
 
+<!-- typecheck-skip: a fragment: the page leaves `audit`, `ref` to the reader -->
 ```ts
 await store.generations(ref);
 // [{ generation: 4, current: false, known: true },
@@ -785,6 +793,7 @@ keystore, and the wrapped per-segment DEKs live in the segment's registry row. S
   unrecoverable ciphertext, not a torn restore — `checkConsistency()` verifies the *object* exists, not that you can
   decrypt it. The check reads only the registry, and asks the keystore to unwrap each segment's DEK:
 
+  <!-- typecheck-skip: a fragment: the page leaves `backend`, `keystore` to the reader -->
   ```ts
   import { KeyUnavailableError } from '@cloudbitmaps/roaring';
 

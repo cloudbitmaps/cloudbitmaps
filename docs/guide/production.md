@@ -24,6 +24,7 @@ checklist: work down the table, and follow each link for the detail.
 
 Run it once on a first run or at deploy time, before the first load, under the identity the store will run with:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `S3Storage` to the reader -->
 ```ts
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'cr' }) });
 const report = await store.preflight();
@@ -228,6 +229,7 @@ the store keeps. `checkLifecycle` is optional on a `StorageBackend`, so on a val
 `?.`; on every backend this library ships (`S3Storage`, `GcsStorage`, `AzureBlobStorage`, `MemoryStorage` and
 `LocalFsStorage`) it is always there:
 
+<!-- typecheck-skip: a fragment: the page leaves `S3Storage` to the reader -->
 ```ts
 const backend = new S3Storage({ bucket: 'bitmaps', prefix: 'cr' });
 const verdict = await backend.checkLifecycle();
@@ -324,6 +326,7 @@ query retries those transient faults with bounded exponential backoff and full j
 and the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` itself.
 It is on by default.
 
+<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
@@ -332,6 +335,7 @@ const store = new CloudRoaring({ storage: backend }); // reads already retry
 
 Tune the policy, or turn it off. The policy is partial, so name only what you change; `onRetry` goes in the same group:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `backend`, `log` to the reader -->
 ```ts
 const store = new CloudRoaring({
   storage: backend, // an S3Storage, GcsStorage, ...
@@ -372,6 +376,7 @@ client that has no such option. Measured against a local server that accepts a r
 a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s.
 **`readTimeoutMs` on `GcsStorage` does bound it, and it is off unless you set it:**
 
+<!-- typecheck -->
 ```ts
 import { GcsStorage } from '@cloudbitmaps/gcs';
 
@@ -440,6 +445,7 @@ and a throttled read throws the timeout rather than the 503. The store's read re
 stub answering two 503s and then the data, a read with `readTimeoutMs: 2_000` timed out after 2.0 s, and `has()` through
 the store returned after 4.0 s, as it did with the timeout off.
 
+<!-- typecheck-skip: a fragment: the page leaves `AzureBlobStorage`, `containerClient` to the reader -->
 ```ts
 const backend = new AzureBlobStorage({ containerClient, readTimeoutMs: 2_000 });
 ```
@@ -458,6 +464,7 @@ backoff, about 8.35 s, rather than hanging. That bound is derived, not measured:
 and 200 ms between them, and one timed-out request per attempt; any request earlier in the same attempt that did
 answer adds its own time.
 
+<!-- typecheck -->
 ```ts
 import { S3Storage } from '@cloudbitmaps/s3';
 
@@ -475,6 +482,7 @@ worst queueing your concurrency implies, which is about the concurrent reads div
 read takes (8,000 ÷ 50 × 50 ms is 8 s on a client with 50 sockets; derived), or raise `maxSockets`. A registry listing keeps up to 48 row reads open at once, so on a client you pass, at the SDK's 50 sockets, your own concurrent reads may wait for a socket while a listing runs, and that wait counts toward `readTimeoutMs`; the client the store builds has 128. The client the store builds takes it
 as an option; a client you pass is yours to set:
 
+<!-- typecheck-skip: a fragment: the page leaves `S3Storage` to the reader -->
 ```ts
 const backend = new S3Storage({ bucket: 'my-bitmaps', maxSockets: 256 });
 ```
@@ -487,6 +495,7 @@ the settings the SDK's defaults mode would have given it (the `connectionTimeout
 one): pass those yourself if you rely on them, or let `S3Storage` build the client and set `maxSockets` on it, which
 changes the limit and nothing else.
 
+<!-- typecheck-skip: imports `@smithy/node-http-handler`, which this repository does not install -->
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
@@ -550,6 +559,7 @@ times no write, because a write abandoned in flight can still land after it was 
 or listing, on any backend. On S3 a timeout on your client turns a hung write or listing into a transient fault,
 which for a write is yours to re-run. Build the client with the timeout and pass it to the backend:
 
+<!-- typecheck-skip: imports `@smithy/node-http-handler`, which this repository does not install -->
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
@@ -633,6 +643,7 @@ calls one operation may fan out to and throws `BudgetExceededError` instead of r
 at 1,000,000 units. Lower it on untrusted or multi-tenant surfaces. Raise it, or pass `budget: false`, for trusted
 bulk jobs.
 
+<!-- typecheck-skip: a fragment: the page leaves `backend`, `hugeIds`, `otherIds` to the reader -->
 ```ts
 import { CloudRoaring, BudgetExceededError } from '@cloudbitmaps/roaring';
 
@@ -656,6 +667,7 @@ try {
 The operations that take options (the combines, `subjectReport`, `eraseSubject`) accept a per-call override. A
 partial override inherits the store ceiling; it never resets it to the default:
 
+<!-- typecheck-skip: a fragment: the page leaves `userId` to the reader -->
 ```ts
 // tighten or lift the ceiling for one call:
 await store.subjectReport(userId, { namespace: 'eu', budget: { maxRequests: 5_000 } });
