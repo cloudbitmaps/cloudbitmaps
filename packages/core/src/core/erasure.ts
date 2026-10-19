@@ -2,11 +2,14 @@
  * Whole-segment erasure: crypto-shred (`destroySegment`, `eraseNamespace`) and disposal (`dropSegment`).
  *
  * GDPR "right to erasure" on immutable, backed-up storage: you can't delete a `.crbm` object from every
- * backup, but you can **delete its key**. `destroySegment` drops the segment's wrapped DEK(s) from the registry
- * (a CAS to a `destroyed` tombstone) — the encrypted Storage bytes are then permanently unreadable, everywhere,
- * forever. **Immediate + irreversible**, so it's gated behind an explicit confirmation (name the exact
- * segment/namespace). A `destroyed` segment reads as empty (its DEK is gone). Only works on an **encrypted**
- * segment; a cleartext segment has no key to shred.
+ * backup, but you can **delete its key**. `destroySegment` drops the segment's wrapped DEK(s) from its current
+ * registry row (a CAS to a `destroyed` tombstone). Every copy of the encrypted Storage bytes, backups and WORM copies
+ * included, is then unreadable once no retained copy of the row still holds the wrapped key (a noncurrent version, a
+ * backup or a point-in-time copy of the row), or once every KEK that wrapped it is destroyed; until then a registry
+ * restore to a point before the shred makes the segment readable again. **Immediate**, and it cannot be undone
+ * through the library (a registry restore to before it can), so it's gated behind an explicit confirmation (name the
+ * exact segment/namespace). A `destroyed` segment reads as empty (its current row holds no DEK). Only works on an
+ * **encrypted** segment; a cleartext segment has no key to shred.
  *
  * The tombstone is also the fence every writer respects: a load refuses
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
@@ -35,9 +38,10 @@ export interface DestroyResult {
   readonly destroyed: boolean;
   /**
    * True iff **this call** performed a genuine crypto-shred — an encrypted segment whose wrapped DEK(s) were
-   * dropped, so its Storage bytes are now permanently unreadable. False for a cleartext tombstone (bytes remain
-   * readable), for the idempotent already-destroyed case, and for an absent segment. This is what the
-   * `segment.erase` audit event keys off — a cleartext "erase" is not an irreversible destruction.
+   * dropped from its current registry row, so its Storage bytes, in any copy, are unreadable once no retained copy
+   * of the row holds the key, or every KEK that wrapped it is destroyed. False for a cleartext tombstone (bytes
+   * remain readable), for the idempotent already-destroyed case, and for an absent segment. This is what the
+   * `segment.erase` audit event keys off — a cleartext "erase" destroys no key.
    */
   readonly cryptoShredded: boolean;
   /**
@@ -71,10 +75,10 @@ const ERASE_CONCURRENCY = 8;
 const MAX_STORAGE_SWEEPS = 3;
 
 /**
- * Crypto-shred one segment. **Irreversible.** `confirmSegment` must equal `ref.segment` (a guard against an
- * accidental destroy — you must name the exact segment). A non-encrypted segment is rejected unless you opt in
- * via `allowCleartext` (there's no key to shred; its Storage bytes stay readable — the tombstone only stops the
- * segment resolving).
+ * Crypto-shred one segment. It cannot be undone through the library (a registry restore to a point before it can).
+ * `confirmSegment` must equal `ref.segment` (a guard against an accidental destroy — you must name the exact
+ * segment). A non-encrypted segment is rejected unless you opt in via `allowCleartext` (there's no key to shred; its
+ * Storage bytes stay readable — the tombstone only stops the segment resolving).
  */
 export async function destroySegment(
   ref: SegmentRef,
@@ -92,7 +96,7 @@ export async function destroySegment(
     allowCleartext: options.allowCleartext ?? false,
   });
   // Audit only a genuine crypto-shred — not the idempotent already-destroyed/absent no-ops, and not a
-  // cleartext tombstone (whose Storage bytes stay readable, so it is not an irreversible erasure).
+  // cleartext tombstone (whose Storage bytes stay readable, so it destroys no key).
   if (result.cryptoShredded) {
     safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
       kind: 'segment.erase',
@@ -105,8 +109,9 @@ export async function destroySegment(
 }
 
 /**
- * Crypto-shred every segment in a namespace. **Irreversible.** `confirmNamespace` must equal `namespace`.
- * Returns a per-segment result (skips cleartext segments unless `allowCleartext`).
+ * Crypto-shred every segment in a namespace. It cannot be undone through the library (a registry restore to a point
+ * before it can). `confirmNamespace` must equal `namespace`. Returns a per-segment result (skips cleartext segments
+ * unless `allowCleartext`).
  *
  * **Bounded.** It lists the whole namespace before it destroys anything, and holds the listing resident, so the
  * listing is capped at `maxScanSegments` (default 250,000), the ceiling every
@@ -135,7 +140,7 @@ export async function eraseNamespace(
     );
   }
   // The whole listing is drained, and bounded, before the first segment is destroyed: a namespace over the
-  // ceiling is refused with nothing erased, not abandoned part-way through an irreversible loop.
+  // ceiling is refused with nothing erased, not abandoned part-way through a loop the library cannot undo.
   const rows = await drainRegistry(deps.registry, {
     namespace,
     // Only an absent value means the default: a `null` or a malformed one is refused, as a malformed `budget` is.
@@ -247,14 +252,16 @@ export interface DropResult {
   readonly wouldDelete?: readonly number[];
   /**
    * On a dry run, whether the real drop would **also** crypto-shred (i.e. the segment is encrypted).
-   * `undefined` on a real run. This is the one fact in the preview that is irreversible *everywhere*, backups
-   * included — a dry run that did not surface it was previewing the recoverable half only.
+   * `undefined` on a real run. This is the one fact in the preview that reaches every copy of the objects, backups
+   * and WORM copies included (once no retained copy of the row holds the key, or every KEK that wrapped it is
+   * destroyed) — a dry run that did not surface it would preview the recoverable half only.
    */
   readonly wouldCryptoShred?: boolean;
   /**
-   * True iff the segment was encrypted and its wrapped DEK(s) were dropped as part of this call — so its bytes
-   * are unreadable *everywhere*, backups included, not merely deleted from the bucket. Deleting an object does
-   * not reach a noncurrent version, a replica, or a PITR snapshot; discarding the key does.
+   * True iff the segment was encrypted and its wrapped DEK(s) were dropped from its current registry row as part of
+   * this call — so its bytes are unreadable in every copy, backups included, once no retained copy of the row holds
+   * the key or every KEK that wrapped it is destroyed, not merely deleted from the bucket. Deleting an object does
+   * not reach a noncurrent version, a replica, or a PITR snapshot; removing the key does, on those terms.
    */
   readonly cryptoShredded: boolean;
   /**
@@ -270,14 +277,17 @@ export interface DropResult {
 }
 
 /**
- * **Dispose of a segment: tombstone it, then delete its Storage objects.** Irreversible.
+ * **Dispose of a segment: tombstone it, then delete its Storage objects.** It cannot be undone through the library
+ * (a restore from the registry's and the bucket's versions or backups can).
  *
  * WHY THIS EXISTS, given {@link destroySegment} already erases. Because `destroySegment` answers a *compliance*
  * question and this one answers an *operational* question, and they are not the same:
  *
- * - `destroySegment` **crypto-shreds** — it discards the key so the bytes are unreadable everywhere including
- *   immutable backups, which is the only erasure that survives WORM. But it **leaves the objects in the
- *   bucket**, still billed, and it *requires* encryption because a cleartext segment has no key to discard.
+ * - `destroySegment` **crypto-shreds** — it removes the key from the segment's current registry row, so the bytes
+ *   are unreadable everywhere, immutable backups included, once no retained copy of the row holds the key or every
+ *   KEK that wrapped it is destroyed: the only erasure that reaches WORM copies of the objects. But it **leaves the
+ *   objects in the bucket**, still billed, and it *requires* encryption because a cleartext segment has no key to
+ *   discard.
  * - `dropSegment` **removes the storage**. It works on a cleartext segment, and on an encrypted one it *also*
  *   drops the DEKs, so it is a strict superset there.
  *
@@ -435,17 +445,18 @@ export async function dropSegmentFor(
   //
   // Adding that disjunct would be wrong in a way that matters. Four documents — including
   // `docs/guide/dashboards.md`, which calls this event the compliance *receipt* — define `segment.erase` as
-  // proof of an irreversible crypto-shred: bytes unreadable everywhere, backups included. Deleting an object is
-  // a weaker guarantee, because a noncurrent version, a cross-region replica or a PITR snapshot still holds the
-  // cleartext. Emitting one event for both would make a compliance dashboard **over-attest**, which is the one
-  // failure an audit trail exists to prevent.
+  // proof of a crypto-shred: the key gone from the segment's current row, which reaches every copy of the objects,
+  // backups included, once no retained copy of the row holds it. Deleting an object is a weaker guarantee, because
+  // a noncurrent version, a cross-region replica or a PITR snapshot still holds the cleartext. Emitting one event
+  // for both would make a compliance dashboard **over-attest**, which is the one failure an audit trail exists to
+  // prevent.
   //
   // The cleartext case is NOT silent — it emits `segment.dispose` after the sweep (below). That kind exists
   // precisely so this one does not have to lie: disposal is attested as disposal, shredding as shredding, and an
   // encrypted drop emits both because both genuinely happened.
   //
-  // And it goes out BEFORE the Storage sweep, not after. A genuine crypto-shred is complete the moment
-  // `shredSegment` returns — the DEK wrappings are gone and the bytes are unreadable everywhere. If the sweep
+  // And it goes out BEFORE the Storage sweep, not after. The library's part of a genuine crypto-shred is done the
+  // moment `shredSegment` returns — the DEK wrappings are gone from the current row. If the sweep
   // then throws (a Storage driver that cannot list), emitting afterwards would mean **no receipt for a destruction
   // that really happened** — the exact mirror of the over-attestation above, and just as wrong. Both directions
   // of a false audit trail are defects; only one of them was obvious.
@@ -589,7 +600,9 @@ async function shredSegment(
       const unmarked = sweep === undefined ? withoutSweepMark(record.retention) : null;
       const tombstone = await deps.registry.compareAndSwap(ref, record.token, {
         status: 'destroyed',
-        wrappedDeks: undefined, // ← the crypto-shred: the only copy of the DEK wrappings is gone
+        // ← the crypto-shred: the current row's DEK wrappings are gone (earlier versions and backups of the row keep
+        // theirs)
+        wrappedDeks: undefined,
         keyId: undefined,
         // The current generation's cached count and metadata go with it: sealed, they cannot be opened without
         // the wrappings; clear, they would outlive the segment on its tombstone.
@@ -607,7 +620,7 @@ async function shredSegment(
             : { retention: unmarked }),
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
-      // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).
+      // Storage bytes readable, so it destroys no key (and does not emit `segment.erase`).
       return { ...base, destroyed: true, cryptoShredded: encrypted, token: tombstone.token };
     },
   );

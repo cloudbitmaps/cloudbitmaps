@@ -517,8 +517,9 @@ export interface RegistryRecord extends SegmentRef {
   readonly currentGen: number | null;
   /**
    * Per-segment data-key (DEK) wrappings for encryption-at-rest: the DEK envelope-wrapped under one or more KEKs
-   * (active + optional recovery). Reading unwraps with any held KEK; **crypto-shred deletes this whole list**,
-   * making the segment's at-rest bytes permanently unrecoverable. Absent ⇒ the segment is cleartext.
+   * (active + optional recovery). Reading unwraps with any held KEK; **crypto-shred deletes this whole list** from
+   * the current row, so the segment's at-rest bytes are unrecoverable once no retained copy of the row (a noncurrent
+   * version, a backup) still holds it, or every KEK that wrapped it is destroyed. Absent ⇒ the segment is cleartext.
    */
   readonly wrappedDeks?: readonly WrappedDek[];
   /**
@@ -661,6 +662,11 @@ export interface RegistryWriteOptions {
    * when the write lands, the row's {@link RegistryRecord.token} is it, and so is its {@link RegistryRecord.pointerId}
    * when the write names a resolved field. A write that does not land leaves no row carrying it. A call refused before
    * it has a token to send, on a conflict its own read finds, reports none.
+   *
+   * A publish relies on the report coming first, both ways. A write that faults after its report may have landed, and
+   * is settled by reading the row. A `TransientError` before any report is taken for a fault before sending, such as
+   * the driver's own read of the row: the publish throws it at once, with no read of the row and no fresh write. So
+   * nothing that can land is sent before the report, a client's own resend included.
    *
    * The token is unique to that write attempt, also against another writer racing the same version: two writers that
    * send a write against the same row version never carry the same token, so a version counter alone is not enough.
@@ -883,7 +889,7 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  * probability (ABA-safe across delete→recreate).
  *
  * **What a driver must do** — callers rely on each of these, and the registry conformance suite holds every
- * shipped driver to them:
+ * shipped driver to them, except the rule on `unsettledConflict`, which the suite does not test:
  *
  * - **`create` and `compareAndSwap` are atomic conditional writes.** A `create` over a live row, and a
  *   `compareAndSwap` whose token is not the stored one, throw {@link WriteConflictError} and change nothing.
@@ -913,6 +919,15 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   Either send each write once, with the backend client's retry off for that request, or recognise your own
  *   write when the precondition fails by reading an id you stored with it back. The shipped registries do
  *   one or the other.
+ * - **Raise a conflict that may follow your own write's landing with `unsettledConflict`** (from the driver kit). A
+ *   driver whose client may have sent the write more than once cannot say, after a conflict, that this write did not
+ *   land first: a row is overwritten, so another writer's write found on the read-back may have gone over this one, and
+ *   a row that is gone may have been removed after it landed. Raise every conflict it cannot rule that out for (another
+ *   writer's write on the read-back, a compare-and-swap that finds the row gone, a read-back that finds nothing) as
+ *   `unsettledConflict`, so a load refused after it reports `unanswered: true`. A conflict that proves the write did
+ *   not land (a write sent once, a check made before sending anything) is a plain {@link WriteConflictError}. A
+ *   registry that wraps another rethrows the conflict it was given, unchanged: the check that reads the mark is
+ *   internal, so a conflict built anew loses it.
  * - **Raise a transient fault as {@link TransientError}.**
  */
 export interface IRegistryDriver {
@@ -926,8 +941,15 @@ export interface IRegistryDriver {
    *
    * The flag may be a getter or a field. A registry that wraps or extends another and overrides `create` or
    * `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to
-   * `false`. One that does neither reads every write of its own that landed after an error or a lost answer as not its
-   * own (`superseded`), and deletes nothing.
+   * `false`. One that does neither reads a write of its own that landed and then met a conflict as not its own
+   * (`superseded`), and takes every `TransientError` of its writes, a throttle and a lost answer alike, for a fault
+   * before sending: the publish throws it at once, with no read of the row and no fresh write. Either way it deletes
+   * nothing.
+   *
+   * A publish relies on the report coming first, both ways. A write that faults after its report may have landed, and
+   * is settled by reading the row. A `TransientError` before any report is taken for a fault before sending, such as
+   * the driver's own read of the row: the publish throws it at once, with no read of the row and no fresh write. So
+   * nothing that can land is sent before the report, a client's own resend included.
    */
   readonly reportsWriteTokens?: boolean;
   /**

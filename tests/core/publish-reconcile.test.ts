@@ -1,10 +1,16 @@
 import { windowOf } from '@/core/known-generations';
 import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
+import { publishGenerationKept } from '@/core/publish';
 import { openGenerationReader } from '@/core/crbm-open';
 import { publishGeneration } from '../helpers/publish';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
+import {
+  IntegrityError,
+  TransientError,
+  WriteConflictError,
+  unsettledConflict,
+} from '@/core/errors';
 import type { AuditEvent } from '@/core/audit';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
@@ -53,7 +59,11 @@ type Fault =
   /** Apply the write, then fail as if its response were lost; `after` runs in between. */
   | { kind: 'land-then-transient'; after?: () => void }
   /** Apply the write, then report a conflict, as an Azure replay meeting its own row does. */
-  | { kind: 'land-then-conflict' }
+  | { kind: 'land-then-conflict'; after?: () => Promise<void> }
+  /** Apply the write, then report a conflict its registry marks as one that may follow its own landing. */
+  | { kind: 'land-then-unsettled'; after?: () => Promise<void> }
+  /** Report a marked conflict without applying anything; `meanwhile` is what another writer did first. */
+  | { kind: 'unsettled-unapplied'; meanwhile?: () => Promise<void> }
   /** Report a conflict without applying anything: another writer won; `meanwhile` is what it did first. */
   | { kind: 'conflict-unapplied'; meanwhile?: () => Promise<void> }
   /** Fail before applying it, keeping the call to land later; `meanwhile` runs before the failure is reported. */
@@ -99,6 +109,12 @@ function world(
           (base[p as Write] as (...a: unknown[]) => Promise<unknown>).apply(base, args);
         const f = faults.shift();
         if (f === undefined) return send();
+        // A write the registry sent reports its token first, as the real registries do; the kinds that apply it do so
+        // through `send`.
+        const sentUnapplied = (): void => {
+          const o = args.at(-1) as { onToken?: (t: string) => void } | undefined;
+          o?.onToken?.(`unapplied.${writes[p]}.${writes[p]}`);
+        };
         if (f.kind === 'land-then-transient') {
           await send();
           f.after?.();
@@ -106,12 +122,25 @@ function world(
         }
         if (f.kind === 'land-then-conflict') {
           await send();
+          await f.after?.();
           throw new WriteConflictError('the replay met its own row');
         }
+        if (f.kind === 'land-then-unsettled') {
+          await send();
+          await f.after?.();
+          throw unsettledConflict('the replay met a row over its own');
+        }
+        if (f.kind === 'unsettled-unapplied') {
+          sentUnapplied();
+          await f.meanwhile?.();
+          throw unsettledConflict('another writer is over the row');
+        }
         if (f.kind === 'conflict-unapplied') {
+          sentUnapplied();
           await f.meanwhile?.();
           throw new WriteConflictError('another writer won');
         }
+        sentUnapplied();
         held.push(send);
         await f.meanwhile?.();
         throw new TransientError('503 SlowDown; the request may still land');
@@ -784,6 +813,418 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(r).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
     expect(w.writes.compareAndSwap).toBe(1);
     expect(await idsOf(w.storage, 3)).toEqual([1, 3]);
+  });
+});
+
+describe('a conflict the registry marks as one that may follow the write itself landing', () => {
+  const moveOn = (w: ReturnType<typeof world>) => async () => {
+    // Another writer publishes generation 4 directly: the row moves past the version this write was made against.
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 4 }, [9], { registry: w.base });
+  };
+  const refusals = (seen: AuditEvent[]) => seen.filter((e) => e.kind === 'segment.load-refused');
+
+  it('landed, and the row shows it: published, written once, no refusal', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-unsettled' });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(1);
+    expect(refusals(seen)).toEqual([]);
+  });
+
+  it('landed, then another writer moved the row on: superseded, and the refusal says unanswered', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-unsettled', after: moveOn(w) });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(refusals(seen)).toEqual([
+      expect.objectContaining({ reason: 'superseded', unanswered: true }),
+    ]);
+    expect(w.deletes()).toBe(0);
+  });
+
+  it('the same conflict unmarked is an answer: superseded, and the refusal carries no unanswered', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-conflict', after: moveOn(w) });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(refusals(seen)).toHaveLength(1);
+    expect(refusals(seen)[0]).not.toHaveProperty('unanswered');
+  });
+
+  it('never applied, and another writer moved the row on: superseded, and the refusal says unanswered', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'unsettled-unapplied', meanwhile: moveOn(w) });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(w.writes.compareAndSwap).toBe(1);
+    expect(refusals(seen)).toEqual([
+      expect.objectContaining({ reason: 'superseded', unanswered: true }),
+    ]);
+  });
+
+  it('never applied, and the row unchanged: the next attempt publishes, and no refusal is audited', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'unsettled-unapplied' });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(2);
+    expect(refusals(seen)).toEqual([]);
+  });
+
+  it('the first create: refused by a row another writer made, the refusal says unanswered', async () => {
+    const w = world();
+    w.arm({
+      kind: 'unsettled-unapplied',
+      meanwhile: async () => {
+        await w.base.create(SEG, { currentGen: null });
+      },
+    });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [7, 8], w.deps, {
+      allowEmpty: true,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
+  });
+
+  it('attempts that run out on it, over a registry that reports no tokens and an object another writer put under the number: not published', async () => {
+    // The proof by the object runs only after a write whose answer was not definite. Without the mark, the last
+    // conflict reads as an answer and the call, over a registry with no tokens, takes the pointer at its number as its
+    // own.
+    const w = world(
+      () => 1_000,
+      (clock) => withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 4);
+    w.arm({
+      kind: 'unsettled-unapplied',
+      meanwhile: async () => {
+        await w.storage.delete({ ...SEG, generation: 3 });
+        await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [42, 43], {
+          registry: w.base,
+        });
+      },
+    });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+    expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
+    expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
+  });
+  it.each<[string, Fault['kind']]>([
+    ['a marked conflict', 'unsettled-unapplied'],
+    ['a transient fault', 'transient-unapplied'],
+  ])(
+    'that came first, and was followed by answered conflicts to the last attempt (%s): the flag is kept, and the object is proved',
+    async (_name, first) => {
+      const w = world(
+        () => 1_000,
+        (clock) => withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+      );
+      await threeLoads(w);
+      w.arm({ kind: first });
+      w.arm({ kind: 'conflict-unapplied' }, 3);
+      w.arm({
+        kind: 'conflict-unapplied',
+        meanwhile: async () => {
+          await w.storage.delete({ ...SEG, generation: 3 });
+          await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [42, 43], {
+            registry: w.base,
+          });
+        },
+      });
+      const seen: AuditEvent[] = [];
+      const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+        keep: 9,
+        audit: { onEvent: (e) => seen.push(e) },
+      });
+      expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+      expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
+      expect(refusals(seen)).toEqual([expect.objectContaining({ unanswered: true })]);
+    },
+  );
+  it.each<[string, Fault['kind'], number]>([
+    ['a marked conflict', 'unsettled-unapplied', 1],
+    ['a transient fault', 'transient-unapplied', 1],
+    ['a plain conflict', 'conflict-unapplied', 0],
+  ])(
+    'reports %s to onUnanswered once per write that did not settle',
+    async (_name, kind, calls) => {
+      const w = world();
+      await w.base.create(SEG, { currentGen: 0 });
+      w.arm({ kind });
+      let reported = 0;
+      const r = await publishGenerationKept(
+        w.registry,
+        { ...SEG, generation: 1 },
+        {
+          row: (await w.base.get(SEG))!,
+          footerCrc: 1,
+          clock: w.clock,
+          onUnanswered: () => void (reported += 1),
+        },
+      );
+      expect(r.published).toBe(true);
+      expect(reported).toBe(calls);
+    },
+  );
+});
+
+describe("a read fault on the lease churn's re-read is a read fault, not a write with no answer", () => {
+  it('a write answered with a plain conflict, then a fault on the re-read: no onUnanswered', async () => {
+    const ref = { namespace: 'ns', segment: 's' };
+    const inner = new MemoryRegistryDriver({ now: () => 1_000 });
+    let gets = 0;
+    const registry = new Proxy(inner, {
+      get(t, p, rx) {
+        if (p !== 'get') return Reflect.get(t, p, rx) as unknown;
+        return async (r: SegmentRef) => {
+          gets += 1;
+          // Read 1 is the second attempt's; read 2 is the churn's re-read; read 3 would be a write-fault's.
+          if (gets === 2) throw new TransientError('throttled read');
+          if (gets === 3) {
+            const cur = await inner.get(r);
+            await inner.compareAndSwap(r, cur!.token, { currentGen: 5 });
+          }
+          return inner.get(r);
+        };
+      },
+    }) as IRegistryDriver;
+    const { token } = await inner.create(ref, { currentGen: 0 });
+    const row = (await inner.get(ref))!;
+    // A reader's lease write lands before the publish: only the leases differ, so the first write meets a conflict.
+    await inner.compareAndSwap(ref, token, {
+      leases: [{ holder: '0123456789abcdef', generation: 0, until: 99_999 }],
+    });
+    let unanswered = 0;
+    const clock = { now: () => 1_000, sleep: async (): Promise<void> => {} };
+    let outcome: unknown;
+    try {
+      outcome = await publishGenerationKept(
+        registry,
+        { ...ref, generation: 1 },
+        {
+          row,
+          expectToken: row.token,
+          expectRow: row,
+          footerCrc: 1,
+          clock,
+          onUnanswered: () => void (unanswered += 1),
+        },
+      );
+    } catch (err) {
+      outcome = err;
+    }
+    expect(unanswered).toBe(0);
+    // The fault is the read's own, thrown as it is: the load neither re-sends nor settles a write it never sent.
+    expect(outcome).toBeInstanceOf(TransientError);
+    expect(gets).toBe(2);
+  });
+});
+
+describe('a read the registry makes inside a write is not a write with no answer', () => {
+  /**
+   * An object store over a map, with the version fence of a real one, that counts its reads and writes and can fail
+   * the nth read, or the nth write without applying it (a throttle that landed nothing).
+   */
+  function mapStore() {
+    const rows = new Map<string, { bytes: Uint8Array; version: string }>();
+    let version = 0;
+    const st = {
+      reads: 0,
+      writes: 0,
+      failRead: -1,
+      failWrite: -1,
+      label: 'map',
+      read(key: string) {
+        st.reads += 1;
+        if (st.reads === st.failRead) throw new TransientError('throttled read');
+        const row = rows.get(key);
+        return Promise.resolve(row === undefined ? null : { ...row });
+      },
+      write(key: string, body: Uint8Array, expect: 'absent' | { version: string }) {
+        st.writes += 1;
+        if (st.writes === st.failWrite) throw new TransientError('throttled write');
+        const cur = rows.get(key);
+        if (
+          expect === 'absent'
+            ? cur !== undefined
+            : cur === undefined || cur.version !== expect.version
+        ) {
+          throw new WriteConflictError('precondition failed');
+        }
+        rows.set(key, { bytes: body, version: String((version += 1)) });
+        return Promise.resolve();
+      },
+      async *listKeys(prefix: string) {
+        await Promise.resolve();
+        for (const k of rows.keys()) if (k.startsWith(prefix)) yield k;
+      },
+    };
+    return st;
+  }
+  const clock = { now: () => 1_000, sleep: async (): Promise<void> => {} };
+  const ref = { namespace: 'ns', segment: 's' };
+
+  it('a write sent after the lease churn is waited out reads nothing before it is sent', async () => {
+    const store = mapStore();
+    const registry = new ObjectStoreRegistry(store, 'p', () => 1_000);
+    const { token } = await registry.create(ref, { currentGen: 0 });
+    const row = (await registry.get(ref))!;
+    // A reader's lease write lands before the publish: the first write meets a conflict, then the churn is waited out.
+    await registry.compareAndSwap(ref, token, {
+      leases: [{ holder: '0123456789abcdef', generation: 0, until: 99_999 }],
+    });
+    const base = store.reads;
+    // Read 1 is the second attempt's, read 2 the churn's re-read; read 3 would be the write's own, inside the registry.
+    store.failRead = base + 3;
+    let unanswered = 0;
+    const r = await publishGenerationKept(
+      registry,
+      { ...ref, generation: 1 },
+      {
+        row,
+        expectToken: row.token,
+        expectRow: row,
+        footerCrc: 1,
+        clock,
+        onUnanswered: () => void (unanswered += 1),
+      },
+    );
+    expect(unanswered).toBe(0);
+    expect(r.published).toBe(true);
+    expect(store.reads - base).toBe(2);
+  });
+
+  it("a compare-and-swap sent again after a write with no answer: a fault on the registry's own read is that read's", async () => {
+    const store = mapStore();
+    const registry = new ObjectStoreRegistry(store, 'p', () => 1_000);
+    await registry.create(ref, { currentGen: 0 });
+    const row = (await registry.get(ref))!;
+    const writesBefore = store.writes;
+    const base = store.reads;
+    store.failWrite = store.writes + 1;
+    // Read 1 settles the first write; read 2 is the second write's own, inside the registry, before it sends anything.
+    store.failRead = base + 2;
+    let unanswered = 0;
+    const outcome = await publishGenerationKept(
+      registry,
+      { ...ref, generation: 1 },
+      { row, footerCrc: 1, clock, onUnanswered: () => void (unanswered += 1) },
+    ).catch((e: unknown) => e);
+    // The fault is that read's, thrown as it is: the one write sent is the only one with no answer.
+    expect(outcome).toBeInstanceOf(TransientError);
+    expect((outcome as Error).message).toBe('throttled read');
+    expect(unanswered).toBe(1);
+    expect(store.writes - writesBefore).toBe(1);
+  });
+
+  it("a create sent again after a write with no answer: a fault on the registry's own read is that read's", async () => {
+    const store = mapStore();
+    const registry = new ObjectStoreRegistry(store, 'p', () => 1_000);
+    store.failWrite = 1;
+    // Read 1 is the publish's, read 2 settles the first write; read 3 is the second create's own.
+    store.failRead = 3;
+    let unanswered = 0;
+    const outcome = await publishGenerationKept(
+      registry,
+      { ...ref, generation: 0 },
+      { footerCrc: 1, clock, onUnanswered: () => void (unanswered += 1) },
+    ).catch((e: unknown) => e);
+    expect(outcome).toBeInstanceOf(TransientError);
+    expect((outcome as Error).message).toBe('throttled read');
+    expect(unanswered).toBe(1);
+    expect(store.writes).toBe(1);
+  });
+
+  it('one error instance thrown by a churn read and later by a write: the write is still a write with no answer', async () => {
+    const shared = new TransientError('circuit open');
+    const inner = new MemoryRegistryDriver({ now: () => 1_000 });
+    let gets = 0;
+    let failGet = -1;
+    let landThenThrow = false;
+    const registry = new Proxy(inner, {
+      get(t, p, rx) {
+        if (p === 'get') {
+          return (r: SegmentRef) => {
+            gets += 1;
+            if (gets === failGet) return Promise.reject(shared);
+            return inner.get(r);
+          };
+        }
+        if (p === 'compareAndSwap') {
+          return async (...a: Parameters<IRegistryDriver['compareAndSwap']>) => {
+            if (!landThenThrow) return inner.compareAndSwap(...a);
+            landThenThrow = false;
+            await inner.compareAndSwap(...a);
+            throw shared;
+          };
+        }
+        return Reflect.get(t, p, rx) as unknown;
+      },
+    }) as IRegistryDriver;
+    // Publish 1: the churn's re-read throws the shared instance, which the publish throws as a read's.
+    const a = { namespace: 'ns', segment: 'a' };
+    const { token } = await inner.create(a, { currentGen: 0 });
+    const rowA = (await inner.get(a))!;
+    await inner.compareAndSwap(a, token, {
+      leases: [{ holder: '0123456789abcdef', generation: 0, until: 99_999 }],
+    });
+    gets = 0;
+    failGet = 2;
+    await expect(
+      publishGenerationKept(
+        registry,
+        { ...a, generation: 1 },
+        { row: rowA, expectToken: rowA.token, expectRow: rowA, footerCrc: 1, clock },
+      ),
+    ).rejects.toBe(shared);
+    failGet = -1;
+    // Publish 2, of another segment: its write lands, then the same instance is thrown as its lost answer. That is a
+    // write with no answer, settled by reading the row.
+    const b = { namespace: 'ns', segment: 'b' };
+    await inner.create(b, { currentGen: 0 });
+    const rowB = (await inner.get(b))!;
+    landThenThrow = true;
+    let unanswered = 0;
+    const r = await publishGenerationKept(
+      registry,
+      { ...b, generation: 1 },
+      { row: rowB, footerCrc: 1, clock, onUnanswered: () => void (unanswered += 1) },
+    );
+    expect(r.published).toBe(true);
+    expect(unanswered).toBe(1);
   });
 });
 

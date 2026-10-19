@@ -1,0 +1,1157 @@
+{
+  "//": "Restatements of a claim in docs/guide/correctness.md that were untied when scripts/summary-ties.cjs was written. Each row excuses one sentence (its hash) in one file for one claim, until it is tied or reworded. Rows only go: `pnpm docs:ties --update` drops the ones that excuse nothing, and the gate refuses one the merge base with origin/main does not have.",
+  "untied": [
+    {
+      "file": "CONTRIBUTING.md",
+      "claim": "publish-is-forward-only",
+      "sentence": "991cb9b03c4b",
+      "starts": "The engineering principles (SOLID/DRY/KISS/YAGNI, fail-fast, security-by-default, determinism, boy-scout)"
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "claim": "what-collection-does",
+      "sentence": "991cb9b03c4b",
+      "starts": "The engineering principles (SOLID/DRY/KISS/YAGNI, fail-fast, security-by-default, determinism, boy-scout)"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "which-fence",
+      "sentence": "07cefaea535a",
+      "starts": "Physical on return — the segment's current generation"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "every-holder-goes",
+      "sentence": "8afc07e8bb8d",
+      "starts": "So is every other generation still holding the"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "every-holder-goes",
+      "sentence": "ee5acbc25bfc",
+      "starts": "(When the current generation holds the id, the"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "erasure-results",
+      "sentence": "9ffbe81757c6",
+      "starts": "Before it says erased: true the call lists"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "erasure-racing-writers",
+      "sentence": "858daa967579",
+      "starts": "A writer that lands during the rewrite is"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "erasure-racing-writers",
+      "sentence": "0b255be11659",
+      "starts": "When two erasures of different ids race on"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "erasure-results",
+      "sentence": "568bda54c76f",
+      "starts": "If it occurred after the rewrite was published"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "a82d6084111c",
+      "starts": "Each delete names the object the erasure read:"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "erasure-results",
+      "sentence": "b2f5cfeeefca",
+      "starts": "On an encrypted segment, an object sealed under"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "exposure-window-is-the-ttl",
+      "sentence": "09d9625f9115",
+      "starts": "another store with no registry (a bare IStorageDriver),"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "pin-answers-from-what-it-holds",
+      "sentence": "7a5659b99a3c",
+      "starts": "no bound — until that store's reader cache"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "lease-write-refuses-no-writer",
+      "sentence": "8c4ee455a856",
+      "starts": "A lease write does not delay an erasure:"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "pointer-outlives-its-row",
+      "sentence": "3ac5bc976608",
+      "starts": "A pointer can outlive its row, and with"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "pointer-outlives-its-row",
+      "sentence": "683c8a8a2673",
+      "starts": "The next sweep that reads it removes it"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "pointer-outlives-its-row",
+      "sentence": "ba752d6f2f03",
+      "starts": "A deployment that scopes every sweep to a"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "239f8c5f0d58",
+      "starts": "A removed row stays recoverable wherever the storage"
+    },
+    {
+      "file": "PRIVACY.md",
+      "claim": "tombstones-purged-narrowly",
+      "sentence": "1559552aa000",
+      "starts": "A tombstone a hand-run dropSegment or a crypto-shred"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "refusal-is-reported-not-thrown",
+      "sentence": "bb4bce1b3003",
+      "starts": "A refusal is reported (published: false + reason),"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "orphan-collected-later",
+      "sentence": "bb4bce1b3003",
+      "starts": "A refusal is reported (published: false + reason),"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "crash-never-moves-the-pointer",
+      "sentence": "bb4bce1b3003",
+      "starts": "A refusal is reported (published: false + reason),"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "numbering-is-the-loads",
+      "sentence": "e26d0d5f5c98",
+      "starts": "shipped — a row carries an optional summary"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "object-write-resent",
+      "sentence": "4b35ddc65c14",
+      "starts": "A throttled write sent again, and a registry"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "row-write-settled",
+      "sentence": "4b35ddc65c14",
+      "starts": "A throttled write sent again, and a registry"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "rollback-settles-its-swap",
+      "sentence": "cb22daf058a8",
+      "starts": "Refuses a target the row's knownGens does not"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "which-fence",
+      "sentence": "99431312388c",
+      "starts": "A load that finds a row fences on"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "object-write-resent",
+      "sentence": "3b3d12167651",
+      "starts": "A throttled write is sent again, and never"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "object-write-resent",
+      "sentence": "47070d51bae7",
+      "starts": "On S3 and GCS a write-once object the"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "sdk-retry",
+      "sentence": "47070d51bae7",
+      "starts": "On S3 and GCS a write-once object the"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "sdk-retry",
+      "sentence": "25eee725e500",
+      "starts": "On S3 and GCS a registry row is"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "row-write-settled",
+      "sentence": "53fddb2f1daf",
+      "starts": "When its write gets no answer, the load"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "a5700e9d0390",
+      "starts": "A holder an erasure deletes by name, above"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "c29681241986",
+      "starts": "On a registry that can delete a row"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "numbering-is-the-loads",
+      "sentence": "d3d07e5112cb",
+      "starts": "The row is at schema 5: an optional"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "which-fence",
+      "sentence": "7ce7d85747d2",
+      "starts": "settling a rollback's undo by the write token:"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "rollback-during-erasure",
+      "sentence": "ddf2a8f32b03",
+      "starts": "a rollback with no key at hand (no"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "4a8864215b19",
+      "starts": "the one round trip between a tombstone collection's"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "7c54a354292b",
+      "starts": "On a registry whose tokens carry no incarnation"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "tagged-writes",
+      "sentence": "249835e61943",
+      "starts": "on Azure Blob a load that loses an"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "orphan-collected-later",
+      "sentence": "5a887f7ba19d",
+      "starts": "A ledger that tells a generation a load"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "orphan-collected-later",
+      "sentence": "db6597c547e5",
+      "starts": "A footer now names one write (it carries"
+    },
+    {
+      "file": "docs/ROADMAP.md",
+      "claim": "miss-is-a-re-read",
+      "sentence": "07cde95323b4",
+      "starts": "An ordinary read already heals forward: if the"
+    },
+    {
+      "file": "docs/format.md",
+      "claim": "orphan-collected-later",
+      "sentence": "6ff1dc0a7eaf",
+      "starts": "a number is taken again once its object"
+    },
+    {
+      "file": "docs/format.md",
+      "claim": "orphan-collected-later",
+      "sentence": "35a93577a666",
+      "starts": "A rollback moves onto a generation the row"
+    },
+    {
+      "file": "docs/format.md",
+      "claim": "numbering-is-the-loads",
+      "sentence": "62d94208b527",
+      "starts": "the token of the last write that named"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "bcbd87615375",
+      "starts": "An erasure's delete of a holder by name"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "70619a011b7b",
+      "starts": "true when the host the client resolves is"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "6ef8b067906a",
+      "starts": "The host is the one the SDK resolves"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "cd600a973fbc",
+      "starts": "false, on the public endpoint too; true removes"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "e54e0be2ea7a",
+      "starts": "Whether real GCS applies ifGenerationMatch to a delete"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "list-is-not-a-receipt",
+      "sentence": "28b4392cd60a",
+      "starts": "collected names what the pass deleted, and a"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "rollback-check-gets-time",
+      "sentence": "865e16af2dfa",
+      "starts": "A collection that deleted anything reads the row"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "what-throws-instead",
+      "sentence": "865e16af2dfa",
+      "starts": "A collection that deleted anything reads the row"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "two-ratio-bounds",
+      "sentence": "c92b19493c7c",
+      "starts": "guard? is { minCardinality?, minRetained?, maxGrowth? }: a"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "refusal-is-reported-not-thrown",
+      "sentence": "e646f8447b80",
+      "starts": "false is a normal outcome, not a throw,"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "orphan-collected-later",
+      "sentence": "81a6b5c21883",
+      "starts": "Once another write has otherwise changed the row,"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "orphan-collected-later",
+      "sentence": "a2827e509e70",
+      "starts": "Until it goes, rollback refuses it unless allowUnknown"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "sorted-load-reads-ids-last",
+      "sentence": "4657286ce8d2",
+      "starts": "An error the ids raise reaches the caller"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "pin-needs-a-crbm-reader",
+      "sentence": "e24ca5cf9d40",
+      "starts": "Needs a .crbm reader, which the store builds"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "ledger-loses-what-it-deletes",
+      "sentence": "8a5134bca6a3",
+      "starts": "A known generation needs no allowUnknown; an unknown"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "ledger-loses-what-it-deletes",
+      "sentence": "71e9ddc83131",
+      "starts": "Two cases are decided by the pointer alone:"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "rollback-settles-its-swap",
+      "sentence": "bce4bbb81d16",
+      "starts": "A swap that met a conflict or got"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-results",
+      "sentence": "ac873065eb0c",
+      "starts": "segment.collect is what eraseSubject emits when it deletes"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "sdk-retry",
+      "sentence": "ab0e452d85b5",
+      "starts": "It does not govern writes: a write is"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "row-write-settled",
+      "sentence": "1be353698c76",
+      "starts": "The footer's CRC32C covers it, so the object's"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "numbering-is-the-loads",
+      "sentence": "4ded8f294b21",
+      "starts": "a row's pointerId, the token of the last"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "sdk-retry",
+      "sentence": "4d2a1fbf8016",
+      "starts": "Send each write once, with the client's retry"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "row-write-settled",
+      "sentence": "4a7b89f2a19f",
+      "starts": "The store's publish reads the row after one"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "row-write-settled",
+      "sentence": "aca7e5b84de6",
+      "starts": "A driver that does not recognise the record"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "1f84fc51f8be",
+      "starts": "getTail reports a version for every object it"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-results",
+      "sentence": "d3384d5c25aa",
+      "starts": "An erasure passes the version of the read"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "a15182c7b365",
+      "starts": "A version names the object, not the key,"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "d24f77dc6457",
+      "starts": "A registry that sets the flag to false,"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "row-write-settled",
+      "sentence": "64997b2100ff",
+      "starts": "A load settles one outcome itself: when its"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-is-a-rewrite",
+      "sentence": "83d34fdef4ce",
+      "starts": "However many keys the stream is given, it"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "miss-is-a-re-read",
+      "sentence": "2709ee118c5a",
+      "starts": "usually the library handles it internally (a swept"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-results",
+      "sentence": "a88fe2390665",
+      "starts": "A load, an erasure or a collection also"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "what-throws-instead",
+      "sentence": "21c66828b9ef",
+      "starts": "Check store.generations(ref) or checkConsistency() first: a rollback that"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "object-write-resent",
+      "sentence": "3845ce3d43e7",
+      "starts": "From a write, it is a fault the"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "row-write-settled",
+      "sentence": "3845ce3d43e7",
+      "starts": "From a write, it is a fault the"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "object-write-resent",
+      "sentence": "988d40bdd9e0",
+      "starts": "A generation's object is sent again, at most"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "cf95e8f0fad0",
+      "starts": "The storage half's DeleteObject under If-Match, which with"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "object-write-resent",
+      "sentence": "36c9690c988b",
+      "starts": "Every object carries a random id in its"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "tagged-writes",
+      "sentence": "4336816844d9",
+      "starts": "Each conditional write carries a random id in"
+    },
+    {
+      "file": "docs/guide/api-reference.md",
+      "claim": "sdk-retry",
+      "sentence": "4bbf54fab827",
+      "starts": "A load's fresh compare-and-swap after an unanswered row"
+    },
+    {
+      "file": "docs/guide/cost.md",
+      "claim": "exposure-window-is-the-ttl",
+      "sentence": "688a61928628",
+      "starts": "Raising the TTL lowers it, at the price"
+    },
+    {
+      "file": "docs/guide/cost.md",
+      "claim": "erasure-results",
+      "sentence": "9788376250ad",
+      "starts": "Beside the reads that search a segment's generations,"
+    },
+    {
+      "file": "docs/guide/cost.md",
+      "claim": "ledger-loses-what-it-deletes",
+      "sentence": "3310c067c0f5",
+      "starts": "An erasure that finds the id only in"
+    },
+    {
+      "file": "docs/guide/dashboards.md",
+      "claim": "keep-every-tombstone",
+      "sentence": "d75e2e93fb91",
+      "starts": "It deletes one in two cases: the tombstone"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "numbering-is-the-loads",
+      "sentence": "801f4e1ad635",
+      "starts": "A restored row carries the token and the"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "which-fence",
+      "sentence": "c2859b640b64",
+      "starts": "A load publishes with a compare-and-swap fenced on"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "drop-registry-first",
+      "sentence": "a4a4a4029065",
+      "starts": "Re-loading that segment name never produces a readable"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "every-delete-reads-the-row",
+      "sentence": "505e6ad7b911",
+      "starts": "It moves the pointer and then reads the"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "erasure-results",
+      "sentence": "d7f17a08e582",
+      "starts": "An erasure entry that says erased: true means"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "every-holder-goes",
+      "sentence": "eb9f5d8b1598",
+      "starts": "If the generation the pointer names does not"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "pin-safe-across-re-creation",
+      "sentence": "5ecb649e698c",
+      "starts": "Once a restore puts the object back, it"
+    },
+    {
+      "file": "docs/guide/disaster-recovery.md",
+      "claim": "transient-error-leaves-its-object",
+      "sentence": "753a10817f89",
+      "starts": "A TransientError from a load whose registry writes"
+    },
+    {
+      "file": "docs/guide/encryption.md",
+      "claim": "never-half-encrypted",
+      "sentence": "ab69e0381bc2",
+      "starts": "Wiring a keystore does not encrypt a segment"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "e2deb6254369",
+      "starts": "An erasure that deletes an object a load"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "sdk-retry",
+      "sentence": "ad3cdc7a93bc",
+      "starts": "A renewal that gets no answer waits before"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "1c9ce12e0632",
+      "starts": "erased: true means the call listed the segment's"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "443a69efb658",
+      "starts": "That last read opens again every generation the"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "d99a05fab358",
+      "starts": "Each of those is skipped only while the"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "5900e618ef77",
+      "starts": "A generation number can be taken again once"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "704a2a3c2111",
+      "starts": "Only the current generation and the rewrite are"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "1f902c3d112e",
+      "starts": "Each of these needs a load of the"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "6ff0ebbcca35",
+      "starts": "A row that loses its pointer after the"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "row-write-settled",
+      "sentence": "e66a9abe3a2c",
+      "starts": "On a registry that reports write tokens, a"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "superseded-over-own-generation",
+      "sentence": "1402f77833e4",
+      "starts": "The same can happen to a rewrite whose"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "row-write-settled",
+      "sentence": "b04d197c9047",
+      "starts": "The storage failed under it, or a registry"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "deleting-call-detects",
+      "sentence": "173efc363787",
+      "starts": "A rollback landed between the erasure's read of"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "what-throws-instead",
+      "sentence": "00f0be836115",
+      "starts": "The pointer may then name a missing object,"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "rollback-race-what-to-do",
+      "sentence": "476e4b7bfa3a",
+      "starts": "store.generations(ref) marks the current generation and lists the"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "8d34103ae4bb",
+      "starts": "Examples are a storage delete fault, a collect"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "row-write-settled",
+      "sentence": "074297c0135c",
+      "starts": "A load still writing a generation above the"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "erasure-results",
+      "sentence": "1662f14a1f80",
+      "starts": "Once an erasure has found an object to"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "pin-answers-from-what-it-holds",
+      "sentence": "9124f5c9b17c",
+      "starts": "no bound: until that store's reader cache evicts"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "exposure-window-is-the-ttl",
+      "sentence": "3d487b191412",
+      "starts": "another store with no registry (built on a"
+    },
+    {
+      "file": "docs/guide/erasure.md",
+      "claim": "lease-write-refuses-no-writer",
+      "sentence": "08cd145a6269",
+      "starts": "A lease write moves the row's token, which"
+    },
+    {
+      "file": "docs/guide/getting-started.md",
+      "claim": "refusal-is-reported-not-thrown",
+      "sentence": "1a419fa58d68",
+      "starts": "A refusal is reported in the result, not"
+    },
+    {
+      "file": "docs/guide/getting-started.md",
+      "claim": "sdk-retry",
+      "sentence": "daa16e37fa6e",
+      "starts": "Reads retry by themselves, and a write is"
+    },
+    {
+      "file": "docs/guide/getting-started.md",
+      "claim": "numbering-is-the-loads",
+      "sentence": "0e74aa1b5d89",
+      "starts": "The token of the last write that named"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "refusal-is-reported-not-thrown",
+      "sentence": "6d24789061fc",
+      "starts": "A refusal is reported rather than thrown, so"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "exposure-window-is-the-ttl",
+      "sentence": "4c6e265bdd0c",
+      "starts": "ceil(genTtlMs ÷ gap between publishes)"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "what-collection-does",
+      "sentence": "97f065d9272e",
+      "starts": "It never touches the current generation or anything"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "orphan-collected-later",
+      "sentence": "86bfd5285080",
+      "starts": "A publish over a row that has no"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "row-records-the-window",
+      "sentence": "f8fe9efbb07f",
+      "starts": "A usable ledger is never started again, however"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "what-collection-does",
+      "sentence": "41d51369af61",
+      "starts": "The pass deletes every generation below the pointer"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "what-collection-does",
+      "sentence": "785c6c788f37",
+      "starts": "A keep above 64 lists on every load"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "what-collection-does",
+      "sentence": "ab2886629bb6",
+      "starts": "The first load over a row with no"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "list-is-not-a-receipt",
+      "sentence": "6e678c2753ea",
+      "starts": "A list is not a receipt, and neither"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "erasure-results",
+      "sentence": "6fd45a861fd7",
+      "starts": "Collection's range leaves out three kinds of object,"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "row-records-the-window",
+      "sentence": "5969b9f96f41",
+      "starts": "It holds the current generation, the ones a"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "which-fence",
+      "sentence": "caf365e1145e",
+      "starts": "It is fenced on the row it read,"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "ledger-loses-what-it-deletes",
+      "sentence": "f0c7e8057162",
+      "starts": "Every collection and the erasure takes what it"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "deleting-call-detects",
+      "sentence": "ff21a39483d2",
+      "starts": "What is left is a rollback that is"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "ledger-loses-what-it-deletes",
+      "sentence": "f86cdd7df362",
+      "starts": "Because an erasure takes a generation out of"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "erasure-results",
+      "sentence": "b86e7427d17b",
+      "starts": "Check store.generations(ref) before acting: while the pointer names"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "every-holder-goes",
+      "sentence": "26886ef1182e",
+      "starts": "Or an erasure deletes them: all of them"
+    },
+    {
+      "file": "docs/guide/loading.md",
+      "claim": "two-ratio-bounds",
+      "sentence": "b5fc7b12b56e",
+      "starts": "Math.max(1.5, 1 + 1000 / before) : 0"
+    },
+    {
+      "file": "docs/guide/observability.md",
+      "claim": "erasure-results",
+      "sentence": "0d8ccfcdfdd0",
+      "starts": "an erasure (eraseSubject) found the id only outside"
+    },
+    {
+      "file": "docs/guide/production.md",
+      "claim": "erasure-is-a-rewrite",
+      "sentence": "e1355b5c2dfd",
+      "starts": "eraseSubject has up to concurrency × 8 requests"
+    },
+    {
+      "file": "docs/guide/production.md",
+      "claim": "erasure-is-a-rewrite",
+      "sentence": "735372a37dca",
+      "starts": "Its 64 fit the client the store builds"
+    },
+    {
+      "file": "docs/guide/production.md",
+      "claim": "sdk-retry",
+      "sentence": "572bea27e97f",
+      "starts": "Reads retry by themselves; a write is retried"
+    },
+    {
+      "file": "docs/guide/production.md",
+      "claim": "object-write-resent",
+      "sentence": "bd1b064493af",
+      "starts": "Only where it is safe, and not by"
+    },
+    {
+      "file": "docs/guide/production.md",
+      "claim": "row-write-settled",
+      "sentence": "bd1b064493af",
+      "starts": "Only where it is safe, and not by"
+    },
+    {
+      "file": "docs/guide/production.md",
+      "claim": "publish-is-forward-only",
+      "sentence": "accdc1b8aefd",
+      "starts": "Re-running a load is safe."
+    },
+    {
+      "file": "docs/guide/reading.md",
+      "claim": "pin-answers-from-what-it-holds",
+      "sentence": "ad02eebe3591",
+      "starts": "That holds for every read of the segment"
+    },
+    {
+      "file": "docs/guide/reading.md",
+      "claim": "numbering-is-the-loads",
+      "sentence": "2c46b89c6604",
+      "starts": "The store caches each decoded chunk, and keeps"
+    },
+    {
+      "file": "docs/guide/reading.md",
+      "claim": "erasure-results",
+      "sentence": "c05a47f1c1be",
+      "starts": "The check is needed because a number can"
+    },
+    {
+      "file": "docs/guide/reading.md",
+      "claim": "lease-read-from-the-row",
+      "sentence": "d599ce323244",
+      "starts": "A leased generation the window leaves out takes"
+    },
+    {
+      "file": "docs/guide/reading.md",
+      "claim": "lease-write-refuses-no-writer",
+      "sentence": "8e6e45048bb2",
+      "starts": "None of them is refused by it: a"
+    },
+    {
+      "file": "docs/guide/retention.md",
+      "claim": "drop-registry-first",
+      "sentence": "6956d6e54192",
+      "starts": "dropSegment writes the tombstone before the storage sweep,"
+    },
+    {
+      "file": "docs/guide/retention.md",
+      "claim": "tombstones-purged-narrowly",
+      "sentence": "d3a5cb1468d6",
+      "starts": "A tombstone a hand-run dropSegment wrote is never"
+    },
+    {
+      "file": "packages/azure-blob/README.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "32b1d5dea635",
+      "starts": "whether the service applies ifMatch on a Delete"
+    },
+    {
+      "file": "packages/azure-blob/README.md",
+      "claim": "sdk-retry",
+      "sentence": "8003b9ffba99",
+      "starts": "A transient failure of a write throws TransientError,"
+    },
+    {
+      "file": "packages/azure-blob/README.md",
+      "claim": "tagged-writes",
+      "sentence": "58a613a255ed",
+      "starts": "Every write is tagged with a random id"
+    },
+    {
+      "file": "packages/azure-blob/README.md",
+      "claim": "tagged-writes",
+      "sentence": "c6f3c931dc8d",
+      "starts": "A registry row's read-back is not definitive, since"
+    },
+    {
+      "file": "packages/azure-blob/README.md",
+      "claim": "row-write-settled",
+      "sentence": "b69d241773ac",
+      "starts": "A load whose row write gets no answer"
+    },
+    {
+      "file": "packages/azure-blob/README.md",
+      "claim": "transient-error-leaves-its-object",
+      "sentence": "b69d241773ac",
+      "starts": "A load whose row write gets no answer"
+    },
+    {
+      "file": "packages/azure-blob/README.md",
+      "claim": "sdk-retry",
+      "sentence": "b69d241773ac",
+      "starts": "A load whose row write gets no answer"
+    },
+    {
+      "file": "packages/core/README.md",
+      "claim": "what-collection-does",
+      "sentence": "4587252c1c8b",
+      "starts": "A pass that keeps by a count (a"
+    },
+    {
+      "file": "packages/core/README.md",
+      "claim": "erasure-takes-out-of-the-ledger-first",
+      "sentence": "f4eeb2819fbb",
+      "starts": "An erasure that does not rewrite takes each"
+    },
+    {
+      "file": "packages/core/README.md",
+      "claim": "ledger-loses-what-it-deletes",
+      "sentence": "0eb94f02bfb1",
+      "starts": "A rollback reads it: it moves only onto"
+    },
+    {
+      "file": "packages/gcs/README.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "a4fe23105232",
+      "starts": "whether the service applies ifGenerationMatch on an object"
+    },
+    {
+      "file": "packages/gcs/README.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "72c2f8769e4a",
+      "starts": "Off by default, on the public endpoint too:"
+    },
+    {
+      "file": "packages/gcs/README.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "c223a5b23851",
+      "starts": "Set true to remove rows for good, and"
+    },
+    {
+      "file": "packages/gcs/README.md",
+      "claim": "object-write-resent",
+      "sentence": "71c332dccaa2",
+      "starts": "A generation's object of up to simpleUploadThresholdBytes is"
+    },
+    {
+      "file": "packages/gcs/README.md",
+      "claim": "transient-error-leaves-its-object",
+      "sentence": "bf238e257d39",
+      "starts": "A load whose row writes all go unanswered"
+    },
+    {
+      "file": "packages/gcs/README.md",
+      "claim": "tagged-writes",
+      "sentence": "bf238e257d39",
+      "starts": "A load whose row writes all go unanswered"
+    },
+    {
+      "file": "packages/s3/README.md",
+      "claim": "erasure-number-taken-again",
+      "sentence": "e55c3947a994",
+      "starts": "whether the store applies If-Match on a DeleteObject:"
+    },
+    {
+      "file": "packages/s3/README.md",
+      "claim": "what-the-purge-removes",
+      "sentence": "df1fcbb2d692",
+      "starts": "On by default when the host the client"
+    },
+    {
+      "file": "packages/s3/README.md",
+      "claim": "object-write-resent",
+      "sentence": "06af8f8ba684",
+      "starts": "A generation's object is sent again, up to"
+    },
+    {
+      "file": "packages/s3/README.md",
+      "claim": "transient-error-leaves-its-object",
+      "sentence": "bf238e257d39",
+      "starts": "A load whose row writes all go unanswered"
+    },
+    {
+      "file": "packages/s3/README.md",
+      "claim": "tagged-writes",
+      "sentence": "bf238e257d39",
+      "starts": "A load whose row writes all go unanswered"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "which-fence",
+      "sentence": "2fd059eee9ca",
+      "starts": "eraseSubject streams the current generation, clears one bit"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "every-holder-goes",
+      "sentence": "4fa7d975e855",
+      "starts": "There is no tombstone to honour on the"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "object-write-resent",
+      "sentence": "3417b3b10e44",
+      "starts": "A write — a load, an Into 's"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "row-write-settled",
+      "sentence": "3417b3b10e44",
+      "starts": "A write — a load, an Into 's"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "sdk-retry",
+      "sentence": "3417b3b10e44",
+      "starts": "A write — a load, an Into 's"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "which-fence",
+      "sentence": "cddcbcae28dc",
+      "starts": "Write conflicts are the one middle case, and"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "sdk-retry",
+      "sentence": "1b9d646e33f0",
+      "starts": "A conditional write that lands and then loses"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "object-write-resent",
+      "sentence": "e47847a92682",
+      "starts": "A write-once object is sent again after a"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "object-write-resent",
+      "sentence": "66c126bcc2b9",
+      "starts": "A write-once object is sent again after a"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "sdk-retry",
+      "sentence": "ba4a0255dc3a",
+      "starts": "A registry row is sent once on S3"
+    },
+    {
+      "file": "site/architecture.html",
+      "claim": "crash-never-moves-the-pointer",
+      "sentence": "de6fe68a51c9",
+      "starts": "The write protocol gets named tests of its"
+    },
+    {
+      "file": "site/index.html",
+      "claim": "what-collection-does",
+      "sentence": "80877f1bab0b",
+      "starts": "All four rest on a protocol written down"
+    },
+    {
+      "file": "site/llms.txt",
+      "claim": "what-collection-does",
+      "sentence": "f1623bc8e071",
+      "starts": "The only scheduled work is the retention sweep"
+    },
+    {
+      "file": "site/usage.html",
+      "claim": "which-fence",
+      "sentence": "3a773934a67b",
+      "starts": "Streams an unsorted id source into one immutable"
+    },
+    {
+      "file": "site/usage.html",
+      "claim": "every-holder-goes",
+      "sentence": "429709583bb6",
+      "starts": "So for each entry its ledger reports erased:"
+    },
+    {
+      "file": "site/usage.html",
+      "claim": "erasure-is-a-rewrite",
+      "sentence": "429709583bb6",
+      "starts": "So for each entry its ledger reports erased:"
+    }
+  ]
+}

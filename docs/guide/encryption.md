@@ -4,9 +4,12 @@ Encryption is opt-in: pass a keystore and segments are encrypted; omit it and ev
 covers turning it on, erasing a segment or a namespace by destroying its key, and why the rules are what they are.
 
 What it protects: the `.crbm` objects are encrypted (payloads, the chunk index and any metadata), and so is the
-registry row's summary of the current generation, so a leaked bucket reveals neither ids, cardinality nor your
-metadata. The segment name and generation are still visible in each object's key, and an object's
-byte size still implies a rough upper bound on the set's size, because there is no padding. It also supports
+registry row's summary of the current generation, so a leaked bucket reveals no ids and none of your metadata.
+Sizes still leak, because nothing is padded: an object's byte size bounds the set's size, and gives the exact id count
+of a set that fits one chunk stored as an array (up to 4,096 ids in one 65,536-id range); its chunk index's length,
+which the footer keeps in the clear, bounds the number of chunks it holds
+([the format, section 8](../format.md#8-encryption-at-rest)). The segment name and generation are still visible in each
+object's key. It also supports
 **crypto-shred**: GDPR "right to erasure" that works even on immutable or backed-up storage.
 
 ## Before you encrypt
@@ -76,8 +79,11 @@ or Vault adapter would implement; none ships, and encryption never forces a clou
 
 ## Erase a segment or a namespace (crypto-shred)
 
-Destroying a segment's wrapped key makes its encrypted objects permanently unreadable, everywhere, backups included.
-Both calls are irreversible, so each makes you name the exact segment or namespace as confirmation.
+Destroying a segment's wrapped key removes it from the segment's current registry row. Every copy of the encrypted
+objects, backups and WORM copies included, is then unreadable once no retained copy of that row still holds the
+wrapped key, or once every KEK that wrapped it is destroyed ([disaster recovery](disaster-recovery.md#encryption--dr)).
+Neither call can be undone through the library (a registry restore to a point before it can), so each makes you name
+the exact segment or namespace as confirmation.
 
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
@@ -93,8 +99,10 @@ const { destroyed } = await eraseNamespace('tenant-42', { registry: backend.regi
 for (const r of destroyed) if (!r.destroyed) console.warn(r.segment, r.reason); // still holds data
 ```
 
-What happens: the call deletes the segment's wrapped DEK from the registry and leaves a `destroyed` tombstone. The
-encrypted objects stay in the bucket but can no longer be read. The segment reads as empty to a store that opens it
+What happens: the call deletes the segment's wrapped DEK from its current registry row and leaves a `destroyed`
+tombstone. The encrypted objects stay in the bucket, and nothing that opens the segment through that row can read
+them; any retained earlier copy of the row (a noncurrent version, a backup) still holds the wrapped DEK until your
+storage expires it. The segment reads as empty to a store that opens it
 afresh, and a load refuses a destroyed segment, so a load racing an erasure cannot bring it back. To also reclaim the
 storage, use `dropSegment` ([retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt)): it
 crypto-shreds an encrypted segment and deletes its objects.
@@ -152,7 +160,7 @@ authenticated data, so a blob cannot be moved to another segment, another genera
 | What | Where | Encrypted segment |
 |---|---|---|
 | the ids: each chunk's payload | the generation's object | sealed |
-| the chunk index, and with it the id count and chunk count | the generation's object | sealed. The footer's count fields are zero |
+| the chunk index, and with it the id count and chunk count | the generation's object | sealed. The footer's count fields are zero, but the index's length is in the clear and bounds the chunk count (8 to 13 bytes an entry as written today), and the payload sizes still bound the id count |
 | your metadata for the generation | the object's extension block | sealed, bound to its own purpose |
 | the current generation's id count, object size, footer checksum, tail size and metadata | the registry row's summary | sealed: fixed-width numbers, then the metadata, so the length reveals only the metadata's size, never how many digits the count has |
 | the data key | the registry row, wrapped under each KEK | wrapped; removed by a crypto-shred |
@@ -185,9 +193,10 @@ messages as carrying what the seal hides.
 
 ## How it stays correct
 
-Each chunk is sealed with a fresh random 96-bit nonce, and a repeated nonce stays negligibly likely below about 2³²
-seals under one key, a limit nothing counts and far past any realistic workload. A segment's encryption is decided at
-its first generation, so a segment is never half-encrypted: a load onto a cleartext segment stays cleartext, or is
-refused with `encryption: { required: true }`, and an encrypted generation is never published onto a row with no key
-material. The seal count, and why a half-encrypted segment is refused either way round, are in
-[How encryption stays correct](correctness.md#how-encryption-stays-correct).
+[Each chunk is sealed with a fresh random 96-bit nonce](correctness.md#seal-count), and a repeated nonce stays
+negligibly likely below about 2³² seals under one key, a limit nothing counts and far past any realistic workload. A
+segment's encryption [is decided at its first generation, so a segment is never
+half-encrypted](correctness.md#never-half-encrypted): a load onto a cleartext segment stays cleartext, or is refused
+with `encryption: { required: true }`, and an encrypted generation is never published onto a row with no key material.
+The seal count, and why a half-encrypted segment is refused either way round, are in [How encryption stays
+correct](correctness.md#how-encryption-stays-correct).

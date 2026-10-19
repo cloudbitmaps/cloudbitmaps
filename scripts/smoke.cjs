@@ -631,6 +631,19 @@ function exerciseCrossBundleErrors(
   }
   console.log(`  cross-bundle errorKind OK: ${label}`);
 
+  // A registry driver's marked conflict is still a conflict to the flavor, and carries the registered mark a publish
+  // built from another copy of core reads.
+  const unsettled = driverKit.unsettledConflict('smoke');
+  if (
+    storeMod.errorKind(unsettled) !== 'WriteConflictError' ||
+    unsettled[Symbol.for('cloudbitmaps.error.unsettled-conflict')] !== true
+  ) {
+    throw new Error(
+      `${label}: unsettledConflict from driver-kit is not a marked WriteConflictError`,
+    );
+  }
+  console.log(`  cross-bundle unsettledConflict OK: ${label}`);
+
   // Same boundary, second brand. A backend built in the driver bundle must be recognised by the store —
   // the whole reason the brand is a registered `Symbol.for` and not a class check or a module-local symbol.
   // Nothing else pins it: switching it to a plain `Symbol()` leaves lint, typecheck and the full suite green

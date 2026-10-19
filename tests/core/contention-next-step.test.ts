@@ -106,7 +106,7 @@ describe('the next step in a contention error', () => {
     );
   });
 
-  it('a rollback that loses its race says the pointer did not move, and keeps the driver error as its cause', async () => {
+  it("a rollback that loses its race says it could not confirm its swap is the row's, and keeps the driver error as its cause", async () => {
     const { storage, registry } = await loaded(3);
     const racing = conflicting(registry, () => true);
     const err = await rollbackSegment(SEG, 1, { storage, registry: racing, clock }).catch(
@@ -114,8 +114,8 @@ describe('the next step in a contention error', () => {
     );
     expect(err).toBeInstanceOf(WriteConflictError);
     expect((err as Error).message).toBe(
-      "rollback: the segment's row changed while the rollback ran and the pointer was not moved; check " +
-        'store.generations(ref) and run it again',
+      "rollback: the segment's row changed while the rollback ran, and this rollback could not confirm that its swap " +
+        'is the one the row shows; check store.generations(ref) and run it again',
     );
     expect((err as Error).cause).toBeInstanceOf(WriteConflictError);
     expect(((err as Error).cause as Error).message).toBe('the driver lost the race');

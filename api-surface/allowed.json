@@ -492,6 +492,10 @@
     "reason": "one check in the answer of CloudRoaring.preflight, { name, status, detail }, with the seven names a literal union in the order a run lists them and a status of ok, problem or unchecked; a new type that only the new method returns"
   },
   {
+    "entry": "@cloudbitmaps/core/driver-kit unsettledConflict",
+    "reason": "a driver-kit addition: a registry driver marks a conflict that may follow its own landed write, so a load refused after one reports unanswered: true, as after a write with no answer"
+  },
+  {
     "entry": "@cloudbitmaps/roaring (referenced) RoaringBitmap32*",
     "reason": "no public signature names the roaring package's class any more, agreed with the maintainer on 2026-10-18: deserializePortable returns ReadonlyBitmap, the library's own type; a RoaringBitmap32 you hold still loads as { bitmap } and where ids go, and roaring's whole API is reached by decoding the bitmap's portable bytes with roaring"
   },

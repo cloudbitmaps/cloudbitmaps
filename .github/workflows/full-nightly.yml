@@ -21,7 +21,8 @@ on:
   workflow_dispatch:
   # A full-strength run (the whole unit suite, a few minutes a Node version) when this file, the switch or one of the
   # heavy tests changes, so the pull request that touches them has run them at their full size. Without it nothing on a
-  # pull request would run a line of this workflow.
+  # pull request would run a line of this workflow. `tests/ci/test-strength.test.ts` holds the list to the heavy tests
+  # `tests/helpers/strength.ts` names.
   pull_request:
     paths:
       - .github/workflows/full-nightly.yml
@@ -32,6 +33,7 @@ on:
       - tests/core/retention-hard-purge.test.ts
       - tests/core/erase-namespace-bounded.test.ts
       - tests/core/combine-ledger.test.ts
+      - tests/core/load-sorted-heap.test.ts
 
 permissions:
   contents: read

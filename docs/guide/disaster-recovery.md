@@ -420,8 +420,9 @@ Deciding which is which is the part that needs a person:
 - **Check your audit sink** for that segment, and read its events together, because no event says who made the
   call: an event carries no origin, only what your sink stamps on it. A crypto-shred (`destroySegment`,
   `eraseNamespace`) emits `segment.erase` alone, and `eraseNamespace` adds one `namespace.erase` for the namespace.
-  A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` then emits
-  `segment.dispose` once its storage sweep ends. The sweep's retirements are `dropSegment` calls, so they emit
+  A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` that writes or
+  finds a tombstone then emits `segment.dispose` once its storage sweep ends (a drop of a name with no row and no
+  objects, and a dry run, emit nothing). The sweep's retirements are `dropSegment` calls, so they emit
   exactly what a manual drop does. One killed mid-sweep emits the `segment.erase` if the segment was encrypted,
   nothing if it was cleartext, and no `segment.dispose`; one killed after its sweep but before the stamp emits
   both. So a `segment.erase` with no `segment.dispose` is a crypto-shred or an interrupted drop of an encrypted
@@ -652,7 +653,8 @@ The current generation is always known on a row whose list is usable, so `genera
 Otherwise: a generation the row does not know throws `ValidationError`, before any request to storage; a known
 generation whose object is another one than the row recorded throws `IntegrityError`; a generation not in the bucket
 throws `NotFoundError` and **names what is available**; a `destroyed` row (a crypto-shred's or a drop's tombstone)
-throws `ValidationError`; and a row that changed after `rollback` read it throws `WriteConflictError` and moves nothing.
+throws `ValidationError`; and a row that another writer changed before the rollback's swap landed throws `WriteConflictError` and records no
+move.
 A generation above the pointer that a rollback left is known, so undoing a rollback needs no flag; `store.rollback`
 invalidates its own store. It deletes nothing, so the rollback is itself reversible. It records the move as
 `segment.rollback` on the `audit` sink passed to the call, with `unknown: true` when the row did not vouch for the
@@ -671,9 +673,11 @@ number, it moves the pointer back and throws `NotFoundError` saying `the pointer
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
 response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
 or still on the missing generation, the torn state this section resolves. A move that gets no answer at all
-(`TransientError`) is settled by reading the row: one the row shows landed (the row is the one the move leaves) is
-checked as above, and otherwise the rollback throws the `TransientError`, and the pointer may still move, since the
-write may yet land.
+(`TransientError`), or one that meets a conflict, [is settled by reading the
+row](correctness.md#rollback-settles-its-swap): one the row shows landed (its pointer
+is at the target, over a write the rollback sent) is checked as above, and otherwise the rollback throws the
+`TransientError`, or after a conflict a `WriteConflictError`, and records no move; after no answer the pointer may
+still move, since the write may yet land.
 Check with `store.generations(ref)`, which marks the current generation, and `checkConsistency()`; roll back again
 to a generation it lists, or restore the object. Neither failure records `segment.rollback` — the event is emitted
 only once the pointer is on the target — so keep the error with your incident record.

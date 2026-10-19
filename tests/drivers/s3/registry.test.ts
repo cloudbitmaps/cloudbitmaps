@@ -2,7 +2,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { registryConformance, registryDeleteConformance } from '@/testing/conformance';
 import { S3RegistryDriver } from '@/s3/registry';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
-import { ValidationError, WriteConflictError } from '@/core/errors';
+import { ValidationError, WriteConflictError, isUnsettledConflict } from '@/core/errors';
 
 /**
  * A faithful in-memory fake of the slice of S3 the registry uses: `GetObject`, a **conditional** `PutObject`
@@ -311,5 +311,39 @@ describe('S3RegistryDriver — construction + S3 specifics', () => {
     const segs: string[] = [];
     for await (const rec of driver.list()) segs.push(rec.segment);
     expect(segs).toEqual(['real']);
+  });
+});
+
+describe('S3RegistryDriver — a conflict of its row write is a plain conflict', () => {
+  // Each conditional PUT is sent once, so a conflict proves the write did not land: it is never marked as one that may
+  // follow the write's own landing.
+  it('a create that loses to another create', async () => {
+    const shared = new FakeS3() as unknown as S3Client;
+    const a = new S3RegistryDriver({ client: shared, bucket: 'b', now: ticking() });
+    const b = new S3RegistryDriver({ client: shared, bucket: 'b', now: ticking() });
+    const ref = { segment: 'race' };
+    const results = await Promise.allSettled([
+      a.create(ref, { currentGen: 0 }),
+      b.create(ref, { currentGen: 0 }),
+    ]);
+    const lost = results.filter((r) => r.status === 'rejected').map((r) => r.reason as unknown);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toBeInstanceOf(WriteConflictError);
+    expect(isUnsettledConflict(lost[0])).toBe(false);
+  });
+
+  it('a compare-and-swap fenced on a row another writer has since swapped', async () => {
+    const shared = new FakeS3() as unknown as S3Client;
+    const a = new S3RegistryDriver({ client: shared, bucket: 'b', now: ticking() });
+    const b = new S3RegistryDriver({ client: shared, bucket: 'b', now: ticking() });
+    const ref = { segment: 's' };
+    await a.create(ref, { currentGen: 0 });
+    const held = (await a.get(ref))!;
+    await b.compareAndSwap(ref, held.token, { currentGen: 1 });
+    const err = await a
+      .compareAndSwap(ref, held.token, { currentGen: 2 }, { held })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WriteConflictError);
+    expect(isUnsettledConflict(err)).toBe(false);
   });
 });
