@@ -912,7 +912,10 @@ repaired. These limits hold on every driver:
   an erasure's are held to the row they worked from: a row purged and created again before the pass reads it, or while
   it lists, is refused and loses nothing, and so is one re-created before a delete, at the read before it. One
   re-created inside the round trip between that read and the delete can lose the generation under that number, which is
-  the rollback case above; and no read of the row follows the last delete, so the pass does not see it. `dropSegment`'s
+  the rollback case above; and no read of the row follows the last delete, so the pass does not see it. On a registry whose tokens carry no incarnation id (none this library ships), a name
+  purged, created again and itself destroyed, sharing one creation stamp, is accepted as the tombstone the pass was asked
+  for: its leftovers are deleted, which the collection rule allows, but an erasure's event names them as the asked-for
+  row's, since the event carries no incarnation to tell the two apart. `dropSegment`'s
   sweep never re-reads the row.
 
 **The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (an internal function of the engine) over every registered segment, and each ledger entry is that function's result.
@@ -1047,7 +1050,7 @@ in its metadata tells a first send that landed from another writer's object. A r
 by the load itself, which reads the row and sends a fresh compare-and-swap from it if nothing changed, at most three
 times
 ([a load's writes](#when-a-write-is-throttled-or-gets-no-answer)). The Azure Blob package, whose retry has
-no per-request switch, tags each write and settles a conflict by reading it back. The GCS package does the same for an
+no per-request switch, tags each write and, on a conflict, reads the stored blob back to see whose write it is. The GCS package does the same for an
 object above `simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
 you pass in included, and every other request it makes keeps the SDK's retry rules. The one exception is a GCS
 download on the client `GcsStorage` builds, which the SDK does not retry and the driver does
@@ -1059,7 +1062,7 @@ package stands:
 |---|---|
 | `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete, a `DeleteObject` under `If-Match` included, are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. A bare `429`, which AWS S3 does not send but some S3-compatible services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer of yours that keys on `TransientError` will not retry it. The object carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure, a `409` or an unknown upload on a re-send reads it back; with nothing stored, a `409` or an unknown upload is an unknown outcome (`TransientError`) |
 | `@cloudbitmaps/gcs` | the registry's writes are each one request, sent once. An object up to `simpleUploadThresholdBytes` (8 MiB by default) is one request, sent again, at most three more times with the same waits, after a `429` or `503` and nothing else, and carries a random id in its metadata. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it carries the same id, as every Azure Blob write does, as described below. The registry's delete under `ifGenerationMatch` goes through the SDK's retry, which a precondition makes safe: a second copy removes nothing the first could not |
-| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below. The policy runs under each fresh compare-and-swap a load sends for a row write that went unanswered, so a registry that never answers costs a load up to four times the policy's tries (sixteen requests at its default of four) before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry's delete under `ifMatch` is sent the same way, safe for the same reason as GCS's |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict reads the stored blob back to tell the write's own landing from another writer's, as described below. The policy runs under each fresh compare-and-swap a load sends for a row write that went unanswered, so a registry that never answers costs a load up to four times the policy's tries (sixteen requests at its default of four) before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry's delete under `ifMatch` is sent the same way, safe for the same reason as GCS's |
 | in-memory and local filesystem | nothing is throttled, so nothing is sent again |
 
 **Writes that are tagged.** Azure Blob's retry is a policy on the client's pipeline, a GCS resumable upload is a
@@ -1072,8 +1075,10 @@ only on a conflict, works with a client you pass, and adds no option. A read-bac
 `TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
 is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
 that write report `WriteConflictError`. The publish reads the row again on it, and after any registry write that ended
-without an answer, and recognises its own write there by its effect: the pointer at its generation, over its own
-object. No caller deletes a generation because of either, and a load whose row writes all go unanswered throws the
+without an answer, and recognises its own write there by its effect: the pointer at its generation and, on a registry that reports write
+tokens (Azure Blob's does), the row's `pointerId` the token of a write it sent, or, on one that does not, its own object
+under the number. A publish overtaken by a write that moved the pointer reports `superseded`, and its refusal event
+carries no `unanswered: true` on this path. No caller deletes a generation because of either, and a load whose row writes all go unanswered throws the
 registry's `TransientError` and keeps its object. A multipart upload whose completion ends ambiguously or exhausted is
 aborted: S3 completes an upload atomically, so a completion that had landed survives the abort and one that had not is
 cancelled.

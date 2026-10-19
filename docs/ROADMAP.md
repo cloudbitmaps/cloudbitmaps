@@ -120,7 +120,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
 - **A throttled write is sent again, and never lands twice**. On S3 and GCS a write-once object the service answers
   as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
-  the same, with the same id. A registry row is sent once by the driver. When its write gets no answer, the load reads
+  the same, with the same id. On S3 and GCS a registry row is sent once by the driver; on Azure Blob the client's retry can replay it, and a replay that meets a conflict is read back by its id, which is not definitive for a row. When its write gets no answer, the load reads
   the row and reports its own landed write as published (proved by the tokens the registry reported for the writes it
   sent, or, on a registry of your own that does not report tokens, by the object's footer); and when the row is as it
   was, the load sends a fresh compare-and-swap from the version it read, at most three times with backoff on the
@@ -407,7 +407,36 @@ between here and there:
      keys, so it can still move onto an object sealed under a key no row holds, which then fails every read and which
      `checkConsistency` does not flag. Every other target is held to the row's recorded footer checksum, or needs
      `allowUnknown` and the key;
-   - the parts stretch, under [Planned](#planned--exploring).
+   - the parts stretch, under [Planned](#planned--exploring);
+   - the lifecycle check's gaps. An abort-incomplete-upload rule on one namespace's keys silences that advice for every
+     namespace of the store. On GCS a `403` that is a billing or network-perimeter refusal gets the permission advice,
+     which would not fix it. With no `prefix` it judges every rule it can read as if it covered the store, with no match
+     against the key layout. S3's separate Intelligent-Tiering archive configuration is not read;
+   - `preflight()`'s accepted limits. Its cleanup delete after a failed write is unconditional, and a conflict whose
+     error cannot be read counts as a failure rather than another run's object, so a probe left at the same 48-bit
+     number by another run can be removed. A
+     listing pages through every leftover probe and names the first few. A `LocalFsStorage` host path can appear in an
+     `EACCES` detail. The steps that follow a failed write read `no object was written`, which a write that lost its response
+     could contradict;
+   - the one round trip between a tombstone collection's last re-proof of the row and its delete by number: a name
+     purged and created again inside it can lose a generation under that number, and the pass does not see it, since
+     no read of the row follows its last delete. Only a conditional delete from the listing's object
+     versions closes it. A read of the row after the last delete, held to the row's incarnation, would report the loss
+     rather than prevent it: today a loss after an earlier delete shows at the next re-proof as a changed row, a lost
+     race; after the last it is unseen, and if the re-created name still has objects the sweep counts a purge fault
+     (the tombstone's objects were still there after its collection), while with none left its row delete loses its
+     fence and is a lost race. On a registry whose tokens carry no incarnation id (none that this library ships), a
+     name purged, created again and itself destroyed, sharing one creation stamp, is accepted as the tombstone a pass was
+     asked for: its leftovers are deleted, which the collection rule allows, but the erasure's event names them as the
+     asked-for row's, since the event carries no incarnation to tell the two apart;
+   - a publish overtaken by a write that moved the pointer after its registry write landed but reported a conflict (Azure Blob's row
+     read-back is not definitive) answers `superseded`, and its `segment.load-refused` event does not carry
+     `unanswered: true`, although its generation was current for a moment;
+   - the erasure's own collections on an active row, which are not held to the row they worked from (one round trip,
+     and the collection spares what the row names): they should decline quietly when the row changed;
+   - the erasure's two passes over a tombstone: an erasure that finds the row tombstoned mid-call (the first pass
+     started on an active row) searches again under the tombstone and merges the two passes without checking that both
+     saw one incarnation of the name, so a purge and re-creation between them mixes `collected` and `fromGeneration` from two.
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
 10. **The cost model in a package of its own — ✅ Shipped.** `estimateCost`,
