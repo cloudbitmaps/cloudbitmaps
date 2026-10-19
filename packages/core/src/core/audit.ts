@@ -79,10 +79,13 @@ export type AuditEvent =
        * segment's registry row changed while the load was writing). `cardinality` is what the refused generation
        * would have contained, and `0` for a load that lost its generation number and wrote nothing.
        *
-       * `unanswered` is present, and `true`, on a `'superseded'` refusal whose registry write ended without an answer
-       * before the row was found to have moved on: that write may have landed, so the generation may have been the
-       * segment's current one for a while before another writer replaced it. The refusal says only that it is not
-       * current now. Absent when every write the load made was answered.
+       * `unanswered` is present, and `true`, on a `'superseded'` refusal after a registry write whose answer did not
+       * say whether it landed: one that ended without an answer, or a conflict its registry marked as one that may
+       * follow the write's own landing (Azure Blob marks every conflict of a row write, since its client may have sent
+       * the write twice). That write may have landed, so the generation may have been the segment's current one for a
+       * while before another write replaced it, or, where a write renewed the row's `pointerId` over it, may be current
+       * still. Absent when every write was answered and every conflict was one its registry vouches the write did not
+       * land.
        */
       readonly kind: 'segment.load-refused';
       readonly namespace?: string;
@@ -123,11 +126,12 @@ export type AuditEvent =
        * not hold, or an encrypted one under a cleartext row (a first load's that lost the race, or crashed). The one
        * emitter is `eraseIdFromSegment`, once a listing of the bucket shows nothing left holding the id, so the record
        * exists only for a finished erasure. A call that ends otherwise throws or reports `erased: false` with another
-       * reason and emits nothing, even when it had deleted a holder; its re-run emits when it finishes, and reports
-       * `'not-member'` with no event when another collection deleted the last holder meanwhile, as its ledger entry
-       * does. One finished erasure emits it and then throws `NotFoundError`: one that found, after its deletes, the
-       * segment's pointer on a generation it had deleted (a rollback moved it there meanwhile), so the deletion is on
-       * the record although the call cannot answer.
+       * reason and emits nothing, even when it had deleted a holder; its re-run emits when it finishes, and, when
+       * another collection deleted the last holder meanwhile, emits nothing and answers `'not-member'`, which
+       * `eraseSubject`'s ledger shows by listing nothing for the segment. One finished erasure emits it and then
+       * throws `NotFoundError`: one that found, after its deletes, the segment's pointer on a generation it had
+       * deleted (a rollback moved it there meanwhile), so the deletion is on the record although the call cannot
+       * answer.
        *
        * `fromGeneration` is the newest generation the call found holding the id, and is absent when it found the id in
        * none and deleted only objects it could not search: then the ledger lists no entry for the segment, and this
@@ -146,9 +150,15 @@ export type AuditEvent =
     }
   | {
       /**
-       * A segment was **crypto-shredded** — its wrapped DEK(s) are gone, so its at-rest Storage bytes are now
-       * permanently unreadable. Emitted only for a genuine key shred, never for a cleartext tombstone (which
-       * leaves the Storage bytes readable) or an idempotent re-run.
+       * A segment was **crypto-shredded**: its wrapped DEK(s) are gone from the segment's **current** registry row,
+       * so nothing that opens the segment through that row can decrypt its Storage bytes, in the bucket or in any
+       * backup, replica or WORM copy of its objects. It destroys no KEK: a noncurrent version, a backup or a
+       * point-in-time copy of the row still holds the wrapped DEK(s), and a registry restore to a point before the
+       * shred makes the segment readable again wherever its objects survive. The destruction is complete once no
+       * retained copy of the row holds them, or once every KEK that wrapped them is destroyed. A process that had
+       * already opened the segment keeps its unwrapped key in memory until told (`store.invalidate(ref)`). Emitted
+       * only for a genuine key shred, never for a cleartext tombstone (which leaves the Storage bytes readable) or
+       * an idempotent re-run.
        */
       readonly kind: 'segment.erase';
       readonly namespace?: string;
@@ -162,9 +172,10 @@ export type AuditEvent =
        * `dropSegment`, *without* a key shred.
        *
        * Deliberately a separate kind from {@link AuditEvent} `segment.erase`, and the distinction is the point.
-       * `segment.erase` attests that bytes are unreadable **everywhere, backups included** — the only claim that
-       * survives WORM. Deleting an object is strictly weaker: a noncurrent version, a cross-region replica or a
-       * PITR snapshot can still hold the cleartext. Emitting one kind for both would make a compliance dashboard
+       * `segment.erase` attests that the current row no longer holds the key, which is the one erasure claim that
+       * reaches WORM copies of the objects, once no retained copy of the row holds it. Deleting an object is
+       * strictly weaker: a noncurrent version, a cross-region replica or a PITR snapshot can still hold the
+       * cleartext. Emitting one kind for both would make a compliance dashboard
        * over-attest, so a cleartext drop gets this instead.
        *
        * An **encrypted** segment dropped via `dropSegment` emits **both** — `segment.erase` for the key shred and

@@ -9,7 +9,12 @@ import { GcsRegistryDriver, GcsRegistryStore } from '@/gcs/registry';
 import { GcsStorage } from '@/gcs/backend';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
-import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
+import {
+  IntegrityError,
+  ValidationError,
+  WriteConflictError,
+  isUnsettledConflict,
+} from '@/core/errors';
 
 /**
  * A faithful in-memory fake of the slice of GCS the registry uses: a single-GET `createReadStream` that
@@ -533,5 +538,37 @@ describe('GcsRegistryDriver: a missing bucket under a delete or a read', () => {
     await expect(d.delete(REF, token)).rejects.toBeInstanceOf(ValidationError);
     // The delete's own 404 asks about the bucket at once; without that it would read the row again to find out.
     expect(storage.reads - readsBefore).toBe(1);
+  });
+});
+
+describe('GcsRegistryDriver — a conflict of its row write is a plain conflict', () => {
+  const ref = { segment: 's' };
+
+  // Each write is sent once, so a conflict proves the write did not land: it is never marked as one that may follow
+  // the write's own landing.
+  it('a create that loses to another create', async () => {
+    const storage = new FakeGcs();
+    const [a, b] = [driverOver(storage), driverOver(storage)];
+    const results = await Promise.allSettled([
+      a.create(ref, { currentGen: 0 }),
+      b.create(ref, { currentGen: 0 }),
+    ]);
+    const lost = results.filter((r) => r.status === 'rejected').map((r) => r.reason as unknown);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toBeInstanceOf(WriteConflictError);
+    expect(isUnsettledConflict(lost[0])).toBe(false);
+  });
+
+  it('a compare-and-swap fenced on a row another writer has since swapped', async () => {
+    const storage = new FakeGcs();
+    const [a, b] = [driverOver(storage), driverOver(storage)];
+    await a.create(ref, { currentGen: 0 });
+    const held = (await a.get(ref))!;
+    await b.compareAndSwap(ref, held.token, { currentGen: 1 });
+    const err = await a
+      .compareAndSwap(ref, held.token, { currentGen: 2 }, { held })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WriteConflictError);
+    expect(isUnsettledConflict(err)).toBe(false);
   });
 });

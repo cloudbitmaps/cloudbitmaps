@@ -3,9 +3,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RecordingAuditSink } from '@/core/audit';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { TransientError, WriteConflictError } from '@/core/errors';
+import {
+  TransientError,
+  WriteConflictError,
+  isUnsettledConflict,
+  unsettledConflict,
+} from '@/core/errors';
 import { loadSegment, type LoadResult } from '@/core/load';
-import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
+import type {
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+  RegistryWriteOptions,
+  SegmentRef,
+} from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
@@ -128,12 +139,14 @@ function windowBelow(row: RegistryRecord | null): number[] {
   return (row.knownGens ?? []).map((e) => e.generation).filter((g) => g < row.currentGen!);
 }
 
-type Mode = 'send' | 'transient' | 'landThenConflict';
+type Mode = 'send' | 'transient' | 'landThenConflict' | 'landThenUnsettled';
 
 /**
  * `registry`, whose first create or compare-and-swap naming `currentGen: gen` waits at `g` before it is sent. Then:
- * `send` sends it; `transient` throws `TransientError` and never sends it; `landThenConflict` sends it, runs `between`,
- * and throws `WriteConflictError`, as a replay that met its own landed write does. It forwards `options`, and inherits
+ * `send` sends it; `transient` reports a token, as a registry does before it sends, then throws `TransientError`
+ * with nothing sent (a write with no answer); `landThenConflict` sends it, runs `between`,
+ * and throws `WriteConflictError`, as a replay that met its own landed write does; `landThenUnsettled` does the same
+ * and throws the conflict a registry marks with `unsettledConflict`. It forwards `options`, and inherits
  * the flag from `registry`. It wraps with `Object.create`, so it suits registries whose methods read no `#private`
  * field.
  */
@@ -146,24 +159,37 @@ function holdWrite(
 ): IRegistryDriver {
   const held = Object.create(registry) as IRegistryDriver;
   let done = false;
-  const wrap = async <T>(names: number | null | undefined, send: () => Promise<T>): Promise<T> => {
+  const wrap = async <T>(
+    names: number | null | undefined,
+    send: () => Promise<T>,
+    options?: RegistryWriteOptions,
+  ): Promise<T> => {
     if (done || names !== gen) return send();
     done = true;
     g.reach();
     await g.opened;
-    if (mode === 'transient') throw new TransientError('no answer, and never sent');
+    if (mode === 'transient') {
+      options?.onToken?.('unapplied.0.0');
+      throw new TransientError('no answer, and never sent');
+    }
     const out = await send();
     if (mode === 'landThenConflict') {
       await between?.();
       throw new WriteConflictError('a replay met its own landed write');
     }
+    if (mode === 'landThenUnsettled') {
+      await between?.();
+      throw unsettledConflict('a replay met a row over its own landed write');
+    }
     return out;
   };
   held.create = (ref, rec, options) =>
-    wrap(rec.currentGen, () => registry.create(ref, rec, options));
+    wrap(rec.currentGen, () => registry.create(ref, rec, options), options);
   held.compareAndSwap = (ref, token, patch, options) =>
-    wrap('currentGen' in patch ? patch.currentGen : undefined, () =>
-      registry.compareAndSwap(ref, token, patch, options),
+    wrap(
+      'currentGen' in patch ? patch.currentGen : undefined,
+      () => registry.compareAndSwap(ref, token, patch, options),
+      options,
     );
   return held;
 }
@@ -192,6 +218,47 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
 
   it('declares that it reports write tokens', () => {
     expect(registry.reportsWriteTokens).toBe(true);
+  });
+
+  describe("the registry's own conflicts are answers: none is marked as one that may follow a landing", () => {
+    const thrown = async (f: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await f();
+      } catch (err) {
+        return err;
+      }
+      return undefined;
+    };
+
+    it('a create over a row, and a compare-and-swap on a stale token, are plain conflicts', async () => {
+      const { token } = await registry.create(REF, { currentGen: 0 });
+      const second = await thrown(() => registry.create(REF, { currentGen: 0 }));
+      expect(second).toBeInstanceOf(WriteConflictError);
+      expect(isUnsettledConflict(second)).toBe(false);
+      await registry.compareAndSwap(REF, token, { currentGen: 1 });
+      const stale = await thrown(() => registry.compareAndSwap(REF, token, { currentGen: 2 }));
+      expect(stale).toBeInstanceOf(WriteConflictError);
+      expect(isUnsettledConflict(stale)).toBe(false);
+    });
+
+    it('a load that loses an ordinary race at the registry is superseded, and its refusal carries no unanswered', async () => {
+      await loadSegment(REF, [9], deps, { allowEmpty: true });
+      const g = gate();
+      const audit = new RecordingAuditSink();
+      const b = loadSegment(
+        REF,
+        [4, 8],
+        { ...deps, registry: holdWrite(registry, 1, g, 'send') },
+        { allowEmpty: true, keep: 1, audit },
+      );
+      await g.reached;
+      await loadSegment(REF, [9, 10], deps, { allowEmpty: true, keep: 1 });
+      g.open();
+      expect(outcome(await b)).toEqual({ published: false, reason: 'superseded' });
+      const refusals = audit.snapshot().filter((e) => e.kind === 'segment.load-refused');
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).not.toHaveProperty('unanswered');
+    });
   });
 
   /** After B's refusal: the generations C's row names are all still in the bucket, and the pointer is on an object. */
@@ -391,6 +458,61 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       await g.reached;
       g.open();
       expect(outcome(await b)).toEqual({ published: false, reason: 'superseded' });
+    });
+  });
+
+  describe('a conflict the registry marks as one that may follow the write itself landing', () => {
+    async function refusedAfter(mode: 'landThenConflict' | 'landThenUnsettled') {
+      await loadSegment(REF, [9], deps, { allowEmpty: true });
+      const g = gate();
+      const audit = new RecordingAuditSink();
+      const b = loadSegment(
+        REF,
+        [4, 8],
+        {
+          ...deps,
+          registry: holdWrite(registry, 1, g, mode, async () => {
+            await loadSegment(REF, [9, 10], deps, { allowEmpty: true, keep: 1 });
+          }),
+        },
+        { allowEmpty: true, keep: 1, audit },
+      );
+      await g.reached;
+      g.open();
+      const result = await b;
+      return {
+        result,
+        refusals: audit.snapshot().filter((e) => e.kind === 'segment.load-refused'),
+      };
+    }
+
+    it('landed and overtaken by another load: superseded, and the refusal says unanswered', async () => {
+      const { result, refusals } = await refusedAfter('landThenUnsettled');
+      expect(outcome(result)).toEqual({ published: false, reason: 'superseded' });
+      expect(refusals).toEqual([expect.objectContaining({ unanswered: true })]);
+    });
+
+    it('the plain conflict after the same landing is superseded with no unanswered', async () => {
+      const { result, refusals } = await refusedAfter('landThenConflict');
+      expect(outcome(result)).toEqual({ published: false, reason: 'superseded' });
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).not.toHaveProperty('unanswered');
+    });
+
+    it('landed and the row shows it: published, and no refusal audited', async () => {
+      await loadSegment(REF, [9], deps, { allowEmpty: true });
+      const g = gate();
+      const audit = new RecordingAuditSink();
+      const b = loadSegment(
+        REF,
+        [4, 8],
+        { ...deps, registry: holdWrite(registry, 1, g, 'landThenUnsettled') },
+        { allowEmpty: true, keep: 1, audit },
+      );
+      await g.reached;
+      g.open();
+      expect(outcome(await b)).toEqual({ published: true, reason: undefined });
+      expect(kinds(audit)).toEqual(['segment.publish']);
     });
   });
 
@@ -735,7 +857,10 @@ describe('a publish whose attempts run out on conflicts', () => {
     let attempts = 0;
     registry.compareAndSwap = async (ref, token, patch, options) => {
       attempts += 1;
-      if (unansweredFirst && attempts === 1) throw new TransientError('no answer, and never sent');
+      if (unansweredFirst && attempts === 1) {
+        options?.onToken?.('unapplied.0.0'); // a write sent and never answered: its token went out first
+        throw new TransientError('no answer, and never sent');
+      }
       if (attempts === 5) {
         await base.compareAndSwap(
           ref,

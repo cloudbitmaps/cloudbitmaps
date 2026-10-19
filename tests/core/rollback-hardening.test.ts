@@ -22,6 +22,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
+import { withoutTokenReports } from '../helpers/no-token-reports';
 
 /**
  * A rollback proves what it moves the pointer onto. Rolling to the generation already current is a no-op only over an
@@ -529,33 +530,40 @@ describe("a swap with no answer is not taken for another writer's publish of the
   });
 });
 
-describe('a swap with no answer is taken for this call only from the row the swap would leave', () => {
-  const after: [string, (w: World) => Promise<unknown>][] = [
+describe('a swap with no answer is taken for this call by the token it sent', () => {
+  const after: [string, (w: World) => Promise<unknown>, boolean][] = [
     [
       'a retention write',
       (w) =>
         setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: MIN_EXPIRES_AT_MS * 4 }),
+      true,
     ],
     [
       'a residency write',
       async (w) => w.registry.compareAndSwap(SEG, (await rowOf(w)).token, { residency: { r: 1 } }),
+      true,
     ],
     [
       'a status write',
       async (w) => w.registry.compareAndSwap(SEG, (await rowOf(w)).token, { status: 'destroyed' }),
+      false,
     ],
   ];
-  for (const [name, write] of after) {
-    it(`throws the TransientError when ${name} follows the landed swap`, async () => {
+  for (const [name, write, settles] of after) {
+    it(`${settles ? 'reports and audits the move' : 'throws the TransientError'} when ${name} follows the landed swap`, async () => {
       const w = world();
       await loads(w, 3);
       const audit = new RecordingAuditSink();
       const registry = noAnswer(w.registry, { meanwhile: () => write(w) });
-      await expect(
-        rollbackSegment(SEG, 0, { ...w.deps, registry }, { audit }),
-      ).rejects.toBeInstanceOf(TransientError);
+      const run = rollbackSegment(SEG, 0, { ...w.deps, registry }, { audit });
+      if (settles) {
+        await expect(run).resolves.toEqual({ fromGeneration: 2, generation: 0 });
+        expect(audit.snapshot()).toHaveLength(1);
+      } else {
+        await expect(run).rejects.toBeInstanceOf(TransientError);
+        expect(audit.snapshot()).toEqual([]);
+      }
       expect((await rowOf(w)).currentGen).toBe(0);
-      expect(audit.snapshot()).toEqual([]);
     });
   }
 
@@ -622,11 +630,28 @@ describe('a swap with no answer is taken for this call only from the row the swa
     expect(audit.snapshot()).toEqual([]);
   });
 
-  it('takes another rollback that made the same move from the same row for its own, and each call audits it', async () => {
-    // The stated limit: a cleartext rollback onto the same target from the same row leaves the very row this swap would
-    // (the same pointer, the same summary of the same object), so the two cannot be told apart. The pointer is where
-    // both asked for it, and the one move is recorded by both calls.
+  it('does not take another rollback that made the same move from the same row for its own', async () => {
+    // A cleartext rollback onto the same target from the same row leaves the very row this swap would, but the row's
+    // pointerId is that rollback's token, not one this call sent: the call throws, and only the other audits the move.
     const w = world();
+    await loads(w, 3);
+    const ours = new RecordingAuditSink();
+    const theirs = new RecordingAuditSink();
+    const registry = noAnswer(w.registry, {
+      lands: false,
+      meanwhile: () =>
+        rollbackSegment(SEG, 0, { storage: w.storage, registry: w.registry }, { audit: theirs }),
+    });
+    await expect(
+      rollbackSegment(SEG, 0, { ...w.deps, registry }, { audit: ours }),
+    ).rejects.toBeInstanceOf(TransientError);
+    expect(ours.snapshot()).toEqual([]);
+    expect(theirs.snapshot()).toHaveLength(1);
+  });
+
+  it('takes another rollback that made the same move from the same row for its own on a registry that reports no tokens, and each call audits it', async () => {
+    // The stated limit of the row-shape rule: the two cannot be told apart, so the one move is recorded by both calls.
+    const w = world(undefined, withoutTokenReports(new MemoryRegistryDriver()));
     await loads(w, 3);
     const ours = new RecordingAuditSink();
     const theirs = new RecordingAuditSink();

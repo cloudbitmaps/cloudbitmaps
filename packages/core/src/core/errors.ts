@@ -250,6 +250,44 @@ export function isWriteConflictError(err: unknown): err is WriteConflictError {
   return isCloudRoaringError(err) && err.name === 'WriteConflictError';
 }
 
+/**
+ * The mark {@link unsettledConflict} puts on a conflict: a registry write that may have landed before it met it.
+ * Registered, like the other brands, so a publish built from another copy of the package reads a driver's mark.
+ */
+const UNSETTLED_BRAND: unique symbol = Symbol.for('cloudbitmaps.error.unsettled-conflict');
+
+/**
+ * A {@link WriteConflictError} for a registry `create` or `compareAndSwap` that may have landed before it met the
+ * conflict, so the conflict does not prove the write was refused. Throw it for every conflict of a write your backend's
+ * client may have sent more than once and that you cannot prove did not land: the read-back finds another writer's
+ * write over the row (a row is overwritten, so that writer may have swapped in over this write after it landed), or
+ * finds the row gone, or the compare-and-swap itself is answered that the row is gone. Throw a plain
+ * `WriteConflictError` for a conflict that does prove it: a write sent once, or a check your driver made before sending
+ * anything. A registry that wraps another rethrows the conflict it was given, not a new one, which would lose the mark.
+ *
+ * It is a `WriteConflictError` in every other way: `errorKind` names it `'WriteConflictError'`, `instanceof` holds on
+ * the same copy of the package, and every caller that handles a conflict handles it. A load's publish reads the row
+ * again, as after any conflict, and takes the write as its own when the row shows it there. Otherwise the write is
+ * reported to the load, as a write with no answer is, so a load refused after it carries `unanswered: true` on its
+ * `segment.load-refused` audit event. The mark is a registered `Symbol.for` brand, read
+ * across copies of the package. It is lost when the error is cloned or copied into a new one, and a conflict raised
+ * anywhere but a registry write is read as the plain conflict it also is.
+ */
+export function unsettledConflict(message: string): WriteConflictError {
+  const err = new WriteConflictError(message);
+  Object.defineProperty(err, UNSETTLED_BRAND, { value: true });
+  return err;
+}
+
+/**
+ * Whether `err` is a conflict a driver raised with {@link unsettledConflict}: a {@link WriteConflictError}, by brand
+ * and name as {@link isWriteConflictError} reads it, that carries the unsettled mark. It reads the registered brand,
+ * so it holds for an error from another copy of the package. Like the other predicates, no entry exports it.
+ */
+export function isUnsettledConflict(err: unknown): boolean {
+  return isWriteConflictError(err) && hasBrand(err, UNSETTLED_BRAND);
+}
+
 /** A retryable transient infrastructure fault. The retry layer keys on this. */
 export function isTransientError(err: unknown): err is TransientError {
   return hasBrand(err, TRANSIENT_BRAND);

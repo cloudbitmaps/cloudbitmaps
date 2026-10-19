@@ -112,7 +112,10 @@ export interface RetireExpiredOptions {
   readonly dryRun?: boolean;
   /** Forwarded to each `dropSegment`, so every retirement lands in the audit trail as `segment.dispose`. */
   readonly audit?: IAuditSink;
-  /** Ceiling on rows enumerated (default 250,000); exceeding it throws. */
+  /**
+   * Ceiling on rows enumerated (default 250,000); exceeding it throws. On an `'index'` scan the check runs before
+   * each pointer's row is read, so live rows equal to the ceiling followed by a pointer whose row is gone throw too.
+   */
   readonly maxScanSegments?: number;
   /**
    * **Where the candidates come from.**
@@ -210,7 +213,8 @@ export type RetireEntry =
        * `'invalid-policy'` — the row has an `expiresAt` that is not usable (hand-edited, or restored from another
        * schema). Reported rather than ignored: reading as "never expires" on a segment someone believes is
        * expiring is the silence that costs a retention commitment.
-       * `'limit'` — eligible, but this cycle's `limit` was already spent. Re-run to continue.
+       * `'limit'` — never written: a segment the cycle's `limit` deferred gets no entry, and
+       * {@link RetireExpiredResult.limited} is what says the cap cut the pass short. Re-run to continue.
        * `'tombstone-not-empty'` — a tombstone whose Storage generations are not gone even after a GC
        * attempt, so its row is kept, and, unless the collection lost a race to a write of the row, a refused purge
        * (see {@link RetireExpiredResult.purgeFaults}): the row is what keeps the segment reachable by the generation collection and
@@ -251,8 +255,9 @@ export interface RetireExpiredResult {
   /** Tombstone rows actually deleted. Zero under `dryRun`; the `would-purge-tombstone` entries carry the preview. */
   readonly tombstonesPurged: number;
   /**
-   * True when `limit` cut the cycle short — **more segments are still eligible**. Re-run. The cap on removing pointers
-   * of tombstones this sweep did not write leaves it false.
+   * True when `limit` cut the pass short — **more work remains**: retirements, or purges of this sweep's tombstones,
+   * which the same `limit` counts. Re-run. The cap on removing pointers of tombstones this sweep did not write leaves
+   * it false.
    */
   readonly limited: boolean;
   /**
@@ -796,7 +801,7 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     // expiry is exactly the operator's recovery action for the bad-backfill case `limit` exists to survive, and
     // it did not work if a sweep was already running: the segment was retired from the stale copy. One strong
     // read per *eligible* segment, so the fleet enumeration stays a single `list()`. (`consistency.ts` takes the
-    // same care for a read-only check; an irreversible deletion deserves at least as much.)
+    // same care for a read-only check; a deletion deserves at least as much.)
     const live = await deps.registry.get(ref);
     const livePolicy = live === null ? null : readRetentionPolicy(live.retention);
     if (
@@ -959,7 +964,7 @@ export async function retireExpired(
   // Drain the enumeration first, bounded. The sweep mutates rows as it goes (a tombstone CAS, a row delete), and
   // iterating a live listing while doing so is driver-dependent — a paged listing may or may not observe its own
   // writes. Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on
-  // it, because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
+  // it, because deciding a deletion from a minutes-old copy is not the same as enumerating from one.
   const scanned =
     opts.scan === 'index'
       ? await rowsFromDueIndex(deps.registry, {

@@ -40,7 +40,8 @@ the failure the test exists to catch (run the failure case at the reduced size a
 `ci/test-strength.test.ts`, which fails until it has one. That test holds each full size to the literal the test carried
 before its reduction, checks that each named file asks for its size, that the helper hands out the full sizes when the
 variable is `full` and throws on any other value, that the nightly workflow sets the variable on every step that runs
-`pnpm test`, and that no other test file names the variable.
+`pnpm test`, that its pull-request paths are exactly the workflow, the switch and every file the table names, and that
+no other test file names the variable.
 
 What a reduced size keeps: for each, the failure its test exists to catch still fails at it, for the failures tried. For
 the four property run counts that is not a promise about a bug only the deepest or widest shapes show, which a smaller
@@ -135,6 +136,7 @@ reader.
 | `sdk-floor-claims.test.ts` | A driver package's cloud-SDK range differs between its manifest, its README and `site/usage.html` — or the S3 range admits a version below the one its correctness depends on. |
 | `specifiers.test.ts` | A user-facing file tells a reader to install or import `cloud-roaring`, an unscoped name that is only an empty placeholder on npm. |
 | `superseded-behaviour-claims.test.ts` | A page repeats one of the listed phrases, each a claim about behaviour this library does not have, with what to say instead. |
+| `summary-ties.test.ts` | A sentence restates a claim of `docs/guide/correctness.md`, by matching that claim's signature or by copying a run of about 11 words from it, in a paragraph, list item or table row that does not link that claim; a summary region in a guide ties nothing, names no section of `correctness.md`, or another than its heading's, or a section has no summary region, or two; a claim in `correctness.md` opens with no anchor of its own, a section's opening text included; a link into it names neither a claim nor a heading; a row of `summary-ties.json`, the baseline of restatements untied when the gate was written, excuses nothing or is not in the baseline at the merge base with `origin/main`; a signature names no claim, or a pattern of it matches nothing. It reads every tracked page but the ones `scripts/summary-ties.cjs` excludes by name, each with its reason, and needs the history and `origin/main`, as the changelog gates do. Each signature is held to a real sentence it must match and a real look-alike it must not, and the cases that must fail and must not are planted, a CRLF copy of the tree among them; the baseline against the merge base, `--update`, `--changed` and a shallow clone run on scratch repositories. It holds the link, not the words: whether a tied summary says what its claim says is the docs-fidelity review's. |
 | `version-claims.test.ts` | A version stated on the site, in the READMEs or in the docs — the badge included — differs from the packages'. |
 | `vocabulary-damage.test.ts` | Wording only a mechanical find-and-replace produces appears — phrasing no one would write, such as the GCP permission `storage.objects.*` with its first word doubled. The gate lists each damaged shape, with what it should have said. |
 

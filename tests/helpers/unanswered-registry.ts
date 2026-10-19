@@ -31,6 +31,8 @@ export function unansweredRegistry(
     const step = plan[nth] ?? 'pass';
     if (step === 'pass') return registry.compareAndSwap(ref, expected, patch, opts);
     if (step === 'land-then-throw') await registry.compareAndSwap(ref, expected, patch, opts);
+    // A write that was sent and never answered has reported its token first, as a registry does before it sends.
+    else opts?.onToken?.(`unapplied.${nth}.${nth}`);
     await options.between?.(nth);
     throw new TransientError('the registry write timed out');
   };

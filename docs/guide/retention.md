@@ -52,8 +52,9 @@ await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // before o
 await store.load(ref, idsSeenToday);
 ```
 
-That is one registry write, and nothing else happens. Nothing is deleted and no timer starts. Call it once, when you first
-record the segment, not on every load. It is idempotent, so re-running is harmless, but it is a write.
+That is one policy write, plus a best-effort write of its due-index pointer (and removal of the old pointer when the
+expiry day moves). No data is deleted and no timer starts. Call it once, when you first record the segment, not on
+every load. It is idempotent, so re-running is harmless, but it is a write.
 
 - **`expiresAt` is an absolute instant in epoch milliseconds**, which you compute. A duration would have to be measured
   from something, and every anchor the library could use is wrong. `updatedAt` and `currentGen` are rewritten by every
@@ -144,8 +145,12 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you want the
 deletion to feel.
 
-- A fleet scan is a billed `LIST` over the registry prefix. The default `'fleet'` scan costs what the fleet holds: its
-  live segments, and the retired ones still inside their grace (see [what the purge removes](correctness.md#how-retention-stays-correct)).
+- A fleet scan is a billed `LIST` over the registry prefix plus one read per row it lists. The default `'fleet'` scan
+  costs what the prefix holds: the live segments; every tombstone not purged yet (a retirement inside its grace, or one
+  whose storage is not proven gone); every tombstone a crypto-shred or a hand-run `dropSegment` left, which the library
+  never purges; on an unscoped scan, every due-index pointer; and, where the registry does not report
+  `conditionalDelete` (GCS by default, an S3-compatible store), every row it ever deleted, kept as a marker the scan
+  reads each cycle (see [what the purge removes](correctness.md#how-retention-stays-correct)).
 - `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
@@ -177,7 +182,7 @@ for (const e of swept.entries) {
     console.warn(`${e.segment}: storage not fully reclaimed, re-run`);
   }
 }
-if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
+if (swept.limited) scheduleAnotherPassSoon(); // more work (retirements or purges) remains
 if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaults} delete(s): ${swept.firstPurgeFault}`);
 ```
 
@@ -196,22 +201,21 @@ it is charged to `limit`, and the purges go on.
 
 **Two bounds to set deliberately.**
 
-- `limit` (default 100; a whole number of at least 1, and `Number.MAX_SAFE_INTEGER` for no practical cap). Retirements
-  are sequential, with several round trips each, so the default is comfortably inside a Lambda. `limit` is a time knob
+- `limit` (default 100; a whole number of at least 1, and `Number.MAX_SAFE_INTEGER` for no practical cap) caps the
+  retirements and tombstone purges one call attempts, together, and `limited: true` means the cap cut the pass short
+  and more work (retirements or purges) remains: re-run. Retirements are sequential, with several round trips each, so the default is comfortably inside a Lambda. `limit` is a time knob
   as much as a safety one. Raising it by orders of magnitude after a backlog will time out mid-sweep, harmlessly:
   re-run.
 - `maxScanSegments` (default 250,000; a whole number of at least 1) caps how many registry rows one sweep holds
   resident. Past it the call throws `BudgetExceededError` instead of half-sweeping, because a scan that cannot fit is
-  not a partial result to be mistaken for a complete one. Narrow with `namespace` before raising it.
+  not a partial result to be mistaken for a complete one. On `scan: 'index'` the check runs before each pointer's row
+  is read, so live indexed rows equal to the cap followed by a pointer whose row is gone are refused too: size it above
+  the live rows. Narrow with `namespace` (and, for an index scan, a smaller `lookbackBuckets`) before raising it.
 
 **Every `skipped` reason is worth an alert, for a different reason:**
 
 - **`invalid-policy`**: the row's `expiresAt` cannot be used. That segment is not expiring, and someone probably
   believes it is.
-- **`limit`**: eligible, but this cycle's cap was spent, and `limited: true` says the same at the top level. That cap
-  is what stands between a bad `expiresAt` backfill (or clock skew) and a retired fleet, so it defers instead of
-  dropping: re-run to continue. The cap is charged on attempts, not successes, so a partial storage outage cannot march
-  through the fleet with the cap never engaging.
 - **`policy-changed`**: the live row no longer says "expired": a `clearRetention`, a new `expiresAt`, or someone else's
   drop landed between the listing and this segment's turn. This is not an error. The sweep re-reads the authoritative
   row immediately before every deletion, precisely so cancelling an expiry works on a sweep that is already running.
@@ -220,6 +224,11 @@ it is charged to `limit`, and the purges go on.
   refuses is also counted in `purgeFaults` (above). `dropSegment` writes the tombstone before the storage sweep,
   deliberately, so a fault there leaks bytes, not correctness. A fault after the tombstone landed is reported as
   `retired` with a `fault`, because that segment really is retired. Re-running collects the bytes.
+
+**A segment the cap deferred gets no ledger entry**: the cap shows only as `limited: true`, which is what to alert on.
+That cap is what stands between a bad `expiresAt` backfill (or clock skew) and a retired fleet, so it defers instead
+of dropping: re-run to continue. The cap is charged on attempts, not successes, so a partial storage outage cannot
+march through the fleet with the cap never engaging.
 
 ## Retire a segment by hand: `store.dropSegment`
 
@@ -230,11 +239,12 @@ a policy. Four levers exist, and they answer different questions:
 |---|---|---|
 | **`store.retireExpired({ … })`** | lists the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window**: the usual answer, [above](#run-the-sweep-storeretireexpired) |
 | **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, then deletes its storage generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it also discards the key, so it is a strict superset there. Afterwards the segment **reads as empty** | **retiring a bucket and reclaiming the storage** |
-| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: discards the key so the storage bytes are unreadable everywhere, backups and WORM included, but leaves the objects in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies |
+| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: removes the key from the segment's current registry row, so the storage bytes, backups and WORM copies included, are unreadable once no retained copy of that row holds it, or once every KEK that wrapped it is destroyed; the objects stay in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies of the objects |
 | `store.load(ref, ids, { keep })`, or an `*Into` given `keep` | the write's own collection: deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([generations and `keep`](loading.md#generations-and-keep)), not live data |
 
-Deleting an object does not reach a noncurrent version, a cross-region replica, or a point-in-time snapshot. Discarding
-the key does. So if your requirement is "the data must become unreadable" rather than "stop paying for it",
+Deleting an object does not reach a noncurrent version, a cross-region replica, or a point-in-time snapshot. Removing
+the key reaches them, once no retained copy of the registry row holds it
+([disaster recovery](disaster-recovery.md#encryption--dr)). So if your requirement is "the data must become unreadable" rather than "stop paying for it",
 [encryption at rest](encryption.md) is a prerequisite, and `dropSegment` on an encrypted segment gives you both at
 once.
 
@@ -396,9 +406,12 @@ legal. There is no character allowlist, because each storage layer escapes what 
 library's problem rather than yours. The refusals are:
 
 - an empty name;
+- a name with an unpaired surrogate, which has no UTF-8 encoding;
 - a name that is too long: the limit is 256 characters once encoded, measured on the longer of the object-key form and
   the filesystem-path form. Letters, digits, `.`, `_` and `-` are kept as they are (a leading `_` excepted), so a name
-  of those gets all 256. Every other character, ASCII included (a space, `/`, `@`, `%`), is escaped to three characters
+  of those gets all 256, except that the filesystem-path form also escapes a trailing `.` and the first character of a
+  Windows device name (`con`, `nul`, `com1`), each to three characters, so such a name gets two fewer for each. Every
+  other character, ASCII included (a space, `/`, `@`, `%`), is escaped to three characters
   per byte, and so is `:`, which a filesystem path escapes though an object key does not. One emoji is twelve encoded
   characters, so such names reach the limit sooner;
 - a namespace that starts with `cbm.due.`, which the library keeps its own bookkeeping rows in.
@@ -416,10 +429,10 @@ exactly that family's daily segments, and `eraseNamespace` can retire the whole 
 
 ## How it stays correct
 
-`dropSegment` writes the tombstone first and sweeps storage second, so no reader can reach bytes about to disappear and
-no load can publish onto the segment, and a failure part-way through leaks bytes, not correctness: check
-`generationsRemaining`, and drop again while it is not empty. The sweep purges a tombstone only when the row carries the
-sweep's own retirement stamp, its grace period has passed, and storage is provably empty for it, so a tombstone a
-crypto-shred or a hand-run drop wrote is never purged. What a purge removes on each backend, the due index's pointers
-and the race the fleet scan repairs, what each step costs, and `purgeTombstones: false` are in
-[How retention stays correct](correctness.md#how-retention-stays-correct).
+[`dropSegment` writes the tombstone first and sweeps storage second](correctness.md#drop-registry-first), so no reader
+can reach bytes about to disappear and no load can publish onto the segment, and a failure part-way through leaks bytes,
+not correctness: check `generationsRemaining`, and drop again while it is not empty. The sweep [purges a tombstone only
+when the row carries the sweep's own retirement stamp](correctness.md#tombstones-purged-narrowly), its grace period has
+passed, and storage is provably empty for it, so a tombstone a crypto-shred or a hand-run drop wrote is never purged.
+What a purge removes on each backend, the due index's pointers and the race the fleet scan repairs, what each step
+costs, and `purgeTombstones: false` are in [How retention stays correct](correctness.md#how-retention-stays-correct).
