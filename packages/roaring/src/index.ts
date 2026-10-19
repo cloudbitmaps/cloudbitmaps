@@ -1129,6 +1129,7 @@ export class CloudRoaring {
     // since a read is safe to repeat and one fault there would otherwise fail the whole write.
     this.storageDriver = wired.driver;
     this.registry = wired.registry;
+    if (this.registry !== undefined) REGISTRY_OF.set(this.origin, this.registry);
     this.backend = wired.backend;
     this.keystore = options.encryption?.keystore;
     this.requireEncryption = options.encryption?.required ?? false;
@@ -2323,6 +2324,13 @@ export class CloudRoaring {
    * does the first load of a row that records none, which then records it. {@link LoadResult.collected} then names
    * what the pass deleted by name, and one name may have been gone already.
    *
+   * `input` cannot be a stream of this library (`iterate`, `everyNth`, `intersect`, `union`, `andNot`, as returned) that
+   * read the segment being loaded, from this store or one built over the same registry driver: a load publishes over
+   * whatever the segment is by then, so it would replace another writer's newer load with a result built from an older
+   * one, and it throws {@link ValidationError}. Ids read from another store over another backend load as any ids do.
+   * Two separate store instances over one bucket cannot be told apart, so this does not cover them; this release has no
+   * fenced in-place update, so write the result into a new segment and point readers at it.
+   *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard has to read its size, which it does only when the row has no usable summary of it
@@ -2350,7 +2358,13 @@ export class CloudRoaring {
     checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty', 'sorted']);
     if (typeof input === 'object' && input !== null) {
       const reads = STREAM_SOURCES.get(input);
-      if (reads?.includes(segmentKey(ref)) === true) {
+      // The same store, or one built over the same registry driver object. Two stores over two backends copy freely;
+      // two separate store instances over one bucket cannot be told apart by their registry driver and are not covered.
+      const sameBackend =
+        reads !== undefined &&
+        (reads.origin === this.origin ||
+          (this.registry !== undefined && REGISTRY_OF.get(reads.origin) === this.registry));
+      if (sameBackend && reads.keys.includes(segmentKey(ref))) {
         const named = ref.namespace === undefined ? ref.segment : `${ref.namespace}/${ref.segment}`;
         throw new ValidationError(
           `load: the ids come from a read of the segment "${named}" that is being loaded, and a load publishes over ` +
@@ -2779,7 +2793,7 @@ export class CloudRoaring {
           throw new ValidationError(
             `the same segment is in this combine twice, ${twoPins(before, at)}: one call reads a segment at one ` +
               'generation, so materialise one of them into a segment of its own first, with ' +
-              "`materializeMany` with that segment as its one operand (`expr: { or: ['src'] }`)",
+              "`materializeMany({ operands: { src: seg }, outputs: [{ dest, expr: { or: ['src'] } }], keep })`",
           );
         }
       } else {
@@ -3174,11 +3188,14 @@ type CombineVerb = 'intersect' | 'union' | 'andNot';
  * by then, so another process's newer load of it would be replaced by a result built from the one before. Only a
  * stream handed over as it was returned is known; one wrapped in a generator of the caller's is not.
  */
-const STREAM_SOURCES = new WeakMap<object, readonly string[]>();
+const STREAM_SOURCES = new WeakMap<object, { origin: object; keys: readonly string[] }>();
 
-/** `stream`, remembered as reading the segments `keys`. */
-function readsFrom<T extends object>(stream: T, keys: readonly string[]): T {
-  STREAM_SOURCES.set(stream, keys);
+/** The registry driver each store was built over, by the store's origin: two stores over one backend instance share one. */
+const REGISTRY_OF = new WeakMap<object, object>();
+
+/** `stream`, remembered as reading the segments `keys` of the store `origin`. */
+function readsFrom<T extends object>(stream: T, origin: object, keys: readonly string[]): T {
+  STREAM_SOURCES.set(stream, { origin, keys });
   return stream;
 }
 
@@ -3198,7 +3215,7 @@ function refuseNoOperands(verb: 'intersect' | 'intersectInto'): never {
     verb === 'intersect'
       ? 'intersect requires at least one segment to intersect with; to read every id of one segment, use iterate()'
       : 'intersectInto requires at least one segment to intersect with; to copy this segment into dest, call ' +
-          "materializeMany with this segment as its one operand and `expr: { or: ['src'] }`",
+          "materializeMany({ operands: { src: thisSegment }, outputs: [{ dest, expr: { or: ['src'] } }], keep })",
   );
 }
 
@@ -3249,9 +3266,9 @@ class CombineChunks {
 const AS_CHUNKS: CombineOutput<ChunkStream> = {
   guard: guardItems,
   failing: (err) => refusing(err)(),
-  intersect: (engine, refs, opts) => engine.intersectChunks(refs, opts),
-  union: (engine, refs, opts) => engine.unionChunks(refs, opts),
-  andNot: (engine, base, refs, opts) => engine.andNotChunks(base, refs, opts),
+  intersect: (engine, refs, opts) => engine.intersectChunks(refs, opts, 'intersectInto'),
+  union: (engine, refs, opts) => engine.unionChunks(refs, opts, 'unionInto'),
+  andNot: (engine, base, refs, opts) => engine.andNotChunks(base, refs, opts, 'andNotInto'),
 };
 
 /**
@@ -3479,7 +3496,7 @@ export class Segment {
    *
    * **One call reads a segment at one generation**, so a combine that holds this segment at two —
    * `snap0.andNot([snap1])`, or `live.intersect([snap])` — throws {@link ValidationError} when it is read, and an
-   * `*Into` of one throws before it reads anything. Materialise one side first, with `materializeMany` and that segment as its one operand (`expr: { or: ['src'] }`).
+   * `*Into` of one throws before it reads anything. Materialise one side first, with `materializeMany({ operands: { src: seg }, outputs: [{ dest, expr: { or: ['src'] } }], keep })`.
    *
    * **A pin knows its object, not only its number.** A name purged and loaded again starts again at generation
    * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
@@ -3922,6 +3939,7 @@ export class Segment {
     );
     return readsFrom(
       this.leaseHold === undefined ? stream : guardIds(stream, () => this.assertLease()),
+      this.origin,
       [this.key()],
     );
   }
@@ -3979,6 +3997,7 @@ export class Segment {
     // ended throws even when no rank falls in its range, and at each chunk after that.
     return readsFrom(
       this.leaseHold === undefined ? stream : guardIdIterable(stream, () => this.assertLease()),
+      this.origin,
       [this.key()],
     );
   }
@@ -4025,8 +4044,8 @@ export class Segment {
    *
    * Of {@link CombineOptions} it takes the range, `concurrency`, `budget`, `allowAbsentOperands` and `exclude`; a write
    * option (`audit`, `allowEmpty`, `guard`, `metadata`, `keep`) fails the stream with {@link ValidationError} when it is
-   * first read, before any request. So does an empty `others`, as it does for `andNot`: to read every id of one
-   * segment, use {@link iterate}.
+   * first read, before any request. So does an empty `others`: an intersection over nothing has no meaning, and
+   * to read every id of one segment, use {@link iterate}. (`union` and `andNot` read an empty list as `this`.)
    */
   intersect(others: Segment[], options?: CombineOptions): IdStream {
     const bad = optionsError(
@@ -4060,12 +4079,14 @@ export class Segment {
    *
    * A call involving a handle whose lease has ended, or anything that is not a segment, is refused before any of this.
    * So is a `dest` that is also `this`, an operand or an exclude (the same segment by name and namespace, however the
-   * handle was made), and an empty `others`: each throws {@link ValidationError} before any request. A destination that
+   * handle was made), and, for `intersectInto` alone, an empty `others` (`unionInto` and `andNotInto` publish `this` for an
+   * empty list): each throws {@link ValidationError} before any request. A destination that
    * is also a source would publish a result built from the generation this store last resolved over a newer load by
    * another process, with no conflict to report. This release has no fenced in-place update: write the result into a
    * new segment and point readers at it; a single writer that knows nothing else writes the segment may load the result
-   * back, unfenced. To copy `src` into `dest`, call `materializeMany` with `src` as its one operand and
-   * `expr: { or: ['src'] }`, which reads each chunk once, at one instant.
+   * back, unfenced. To copy `src` into `dest`, call
+   * `materializeMany({ operands: { src }, outputs: [{ dest, expr: { or: ['src'] } }], keep })`, which reads each chunk
+   * once, at one instant.
    * It takes every field of {@link CombineOptions}, as `unionInto` does.
    */
   async intersectInto(
@@ -4086,7 +4107,7 @@ export class Segment {
    * same per-op budget, so a wide union is refused rather than quietly billed — pass `budget` to raise it
    * deliberately. If you find yourself unioning the same segments on every read, materializing the combined
    * segment once (`unionInto`, or a load) is the cheaper shape. It takes the options {@link intersect} takes, and an
-   * empty `others` fails the stream as it does there.
+   * empty `others` reads `this` itself.
    */
   union(others: Segment[], options?: CombineOptions): IdStream {
     const bad = optionsError(
@@ -4189,7 +4210,7 @@ export class Segment {
     // A stream of ids remembers what it reads, for `store.load` ({@link STREAM_SOURCES}); a stream of chunks is not one.
     const keys = handles.map((h) => h.key());
     const known = (result: T): T =>
-      (out as unknown) === AS_IDS ? (readsFrom(result as object, keys) as T) : result;
+      (out as unknown) === AS_IDS ? (readsFrom(result as object, this.origin, keys) as T) : result;
     if (verb === 'andNot') {
       const refs = operands.map((o) => o.ref);
       const opts = options == null ? undefined : readOptions(options);

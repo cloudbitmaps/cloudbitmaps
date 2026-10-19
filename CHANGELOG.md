@@ -18,7 +18,9 @@ so, and so do the module headers in the code.
   operands or one of the excludes (the same namespace and name, however the handle was made: a second handle or a pin
   of it counts), naming the verb and the segment; `materializeMany` already refused it for each `dest`. A `load` throws
   when its input is the result of `iterate`, `everyNth`, `intersect`, `union` or `andNot` (as returned) over a segment
-  that includes the one it loads. Before, such a call read its sources at the generation the store last resolved, up
+  that includes the one it loads, in the same store or one built over the same registry driver (a copy between stores
+  over different backends loads as before; two separate store instances over one bucket cannot be told apart, so the
+  refusal does not cover them). Before, such a call read its sources at the generation the store last resolved, up
   to `cache.genTtlMs` old, and published over the destination's row as it then stood, so another process's newer load
   of the segment was replaced by a result built from the one before it, with no `WriteConflictError`. This release has
   no fenced in-place update. To change a segment from its own content, write the result into a new segment and point

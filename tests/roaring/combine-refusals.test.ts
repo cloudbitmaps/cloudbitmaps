@@ -248,7 +248,7 @@ describe('an empty operand list', () => {
     const before = await generationsOf(store, 'y');
     c.reset();
     await expect(store.segment('x').intersectInto(store.segment('y'), [])).rejects.toThrow(
-      /^intersectInto requires at least one segment to intersect with; to copy this segment into dest, call materializeMany /,
+      /^intersectInto requires at least one segment to intersect with; to copy this segment into dest, call materializeMany\(\{ operands: \{ src: thisSegment \}/,
     );
     expect(c.calls()).toEqual({ storage: {}, registry: {} });
     expect(await generationsOf(store, 'y')).toEqual(before);
@@ -335,6 +335,34 @@ describe('a load of ids read from the segment it writes is refused', () => {
     await expect(a.load({ segment: 'x' }, pinned.everyNth(1))).rejects.toThrow(ValidationError);
   });
 
+  it('loads a copy of the same-named segment from a store over another backend, and refuses a store over the same backend instance', async () => {
+    const { backend, a } = await twoStores();
+    const other = new CloudRoaring({ storage: new MemoryStorage() });
+    await other.load({ segment: 'x' }, [40, 41]);
+    expect((await a.load({ segment: 'x' }, other.segment('x').iterate())).published).toBe(true);
+    expect(
+      (await a.load({ segment: 'x' }, other.segment('x').intersect([other.segment('x')])))
+        .published,
+    ).toBe(true);
+    const sibling = new CloudRoaring({ storage: backend });
+    await expect(a.load({ segment: 'x' }, sibling.segment('x').iterate())).rejects.toThrow(
+      ValidationError,
+    );
+  });
+
+  it('an *Into range error names the *Into verb', async () => {
+    const { store } = await world();
+    const x = store.segment('x');
+    for (const verb of ['intersectInto', 'unionInto', 'andNotInto'] as const) {
+      await expect(
+        x[verb](store.segment('out'), [store.segment('y')], { after: -1 }),
+      ).rejects.toThrow(`${verb}: after must be an integer from 0 to 4294967295`);
+    }
+    await expect(
+      x.intersectInto(store.segment('out'), [store.segment('y')], { concurrency: 0 }),
+    ).rejects.toThrow('intersectInto: concurrency must be an integer of at least 1; got 0');
+  });
+
   it('still loads ids read from another segment, or a stream the caller wrapped', async () => {
     const { a } = await twoStores();
     expect((await a.load({ segment: 'y' }, a.segment('active').iterate())).published).toBe(true);
@@ -363,7 +391,7 @@ describe('a bad range or count names the verb that was asked', () => {
         ['union', () => drain(x.union([y], opts))],
         ['andNot', () => drain(x.andNot([y], opts))],
         ['everyNth', () => drain(pinned.everyNth(2, opts))],
-        ['intersect', () => x.intersectInto(store.segment('out'), [y], opts)],
+        ['intersectInto', () => x.intersectInto(store.segment('out'), [y], opts)],
         [
           'materializeMany',
           () =>

@@ -799,7 +799,10 @@ fenced on the destination's row as it stands: with the destination also a source
 would be replaced by a result built from the one before, and no conflict would be raised. A segment is the same segment
 however its handle was made: a second handle, a pin of it and the same name in the same namespace all count. `materializeMany` applies
 the same rule to each `dest`, and `store.load` refuses ids that a stream of this library read from the segment it is
-loading (`store.load(x, x.intersect([y]))`), for the same reason.
+loading (`store.load(x, x.intersect([y]))`), for the same reason. That check covers a stream of the same store, or of a
+store built over the same registry driver object; a copy between two stores over different backends loads as it always
+did. Two separate store instances built over the same bucket cannot be told apart, so it does not cover them, and the
+advice below applies there.
 
 **This release has no fenced in-place update of a segment from its own content.** Write the result into a new segment and
 point readers at it, for example a dated target or a pair of segments you alternate between. A load of ids derived from

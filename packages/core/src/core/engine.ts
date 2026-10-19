@@ -1134,16 +1134,18 @@ export class SegmentEngine {
   intersectChunks(
     segs: readonly SegmentRef[],
     options?: CombineOptions,
+    label?: string,
   ): AsyncGenerator<CombinedChunk> {
-    return this.combineChunks(segs, options?.exclude ?? [], 'all', 'intersect', options);
+    return this.combineChunks(segs, options?.exclude ?? [], 'all', 'intersect', options, label);
   }
 
   /** {@link union}, as chunks: see {@link intersectChunks}. */
   unionChunks(
     segs: readonly SegmentRef[],
     options?: CombineOptions,
+    label?: string,
   ): AsyncGenerator<CombinedChunk> {
-    return this.combineChunks(segs, options?.exclude ?? [], 'any', 'union', options);
+    return this.combineChunks(segs, options?.exclude ?? [], 'any', 'union', options, label);
   }
 
   /** {@link andNot}, as chunks: see {@link intersectChunks}. */
@@ -1151,8 +1153,9 @@ export class SegmentEngine {
     seg: SegmentRef,
     excludes: readonly SegmentRef[],
     options?: Omit<CombineOptions, 'exclude'>,
+    label?: string,
   ): AsyncGenerator<CombinedChunk> {
-    return this.combineChunks([seg], excludes, 'all', 'andNot', options);
+    return this.combineChunks([seg], excludes, 'all', 'andNot', options, label);
   }
 
   /**
@@ -1166,6 +1169,7 @@ export class SegmentEngine {
     mode: 'all' | 'any',
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
+    label: string = op,
   ): Promise<CombineRun | null> {
     // Validated HERE rather than in the public wrappers, deliberately. `combine` is an async generator, so a
     // throw surfaces when the caller first iterates — which is the behaviour `intersect` has always had, and
@@ -1177,13 +1181,13 @@ export class SegmentEngine {
       throw new ValidationError(`${op} requires at least one segment`);
     }
     const limit = options?.concurrency ?? DEFAULT_INTERSECT_CONCURRENCY;
-    requirePositiveInteger(limit, `${op}: concurrency`);
+    requirePositiveInteger(limit, `${label}: concurrency`);
     // Per-op budget override (else the store budget); resolved before any I/O so a bad value fails fast. A
     // partial override inherits the store's tightening (not the generous default) — see resolvePerOpBudget.
     const budget = resolvePerOpBudget(options?.budget, this.budget);
     // The range, if any, cuts every operand's keys once, here, so what follows — alignment, the budget, the
     // metrics, the fan-out — sees only chunks inside it. Only the two edge chunks are cut again, where ids leave.
-    const w = windowOf(options, op);
+    const w = windowOf(options, label);
     if (w === 'empty') return null;
 
     // ① Index-map extraction: each operand's chunk-key set + its current generation, resolved ONCE here (not
@@ -1433,8 +1437,9 @@ export class SegmentEngine {
     mode: 'all' | 'any',
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
+    label?: string,
   ): AsyncGenerator<CombinedChunk> {
-    const run = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    const run = await this.combinePlan(segs, excludeSegs, mode, op, options, label);
     if (run === null) return;
     const { w } = run;
     try {
