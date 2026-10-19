@@ -31,12 +31,15 @@ so, and so do the module headers in the code.
   `JSON.stringify(bitmap)` gives `"{}"` where it gave the ids, because the bitmap has no `toJSON`, so write
   `JSON.stringify([...bitmap])`; an `instanceof RoaringBitmap32` check goes.
 
-- **The six `@cloudbitmaps/*` packages depend on each other at an exact version, not a `^` range, so an install that mixed versions of them now holds two copies of `core`.** A published
+- **The six `@cloudbitmaps/*` packages depend on each other at an exact version, not a `^` range, so an install that mixes patch versions of them now holds two copies of `core`.** A published
   `@cloudbitmaps/roaring` names the exact `@cloudbitmaps/core` it was built with, and so do the driver packages and
   `@cloudbitmaps/tools`, so a later `core` release never reaches an older flavor. What you do: install the same version
   of every `@cloudbitmaps/*` package (`pnpm add @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z`, or let one
-  install resolve both to the latest). Mixing versions installs a second copy of `core`: nothing fails at install,
-  `instanceof` does not hold across the two copies, and `errorKind(err)` still classifies.
+  install resolve both to the latest). A mix installs with no warning and holds two copies of `core`: a TypeScript
+  build refuses `storage: new S3Storage(...)` with `TS2322` (`[STORAGE_BACKEND_BRAND]` is missing), and `instanceof` does
+  not hold across the copies (`errorKind(err)` still classifies). `npm ls @cloudbitmaps/core` shows the copies, and
+  `pnpm up --latest '@cloudbitmaps/*'` aligns them. Mixed minors already did this; what changed is that mixed patch
+  versions do too.
 
 ### Added
 
@@ -138,7 +141,9 @@ so, and so do the module headers in the code.
 - **The S3 driver counts a bare `429` as a throttle.** An S3-compatible service that answers a request with `429` (AWS
   S3 does not) was neither sent again nor a `TransientError`: the SDK's own error reached your code, past a layer that keys on
   `TransientError`. A `429` now behaves as a `503` does: a generation's object is sent again, a registry write that
-  meets one is settled by reading the row, and a call that ends on one throws `TransientError`.
+  meets one is settled by reading the row, the store's read retry runs a read again after one (at most 12 requests
+  before `TransientError`, where it failed after the SDK's 3), a reader's pointer refresh rides one out on the cached
+  generation, and a call that ends on one throws `TransientError`.
 
 - **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
   audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,

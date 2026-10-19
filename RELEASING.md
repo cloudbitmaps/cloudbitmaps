@@ -105,9 +105,10 @@ Pre-`1.0`, a breaking change is a **minor** bump. Choose the bump for the family
 `@cloudbitmaps/core`'s main entry is internal and outside the stability promise, so a change to it gets no CHANGELOG
 Breaking entry. All six packages publish at one version and pin each other exactly (`workspace:*` in the source, which
 pnpm publishes as `X.Y.Z`), so a published `roaring` never resolves a later `core` than the one it was built with, and
-core's internal entry may change freely between releases. A user who mixes versions of the family (a `roaring` of one
-release with an `s3` of another) gets two copies of `core`: it installs, `instanceof` does not hold across the copies,
-and `errorKind` still classifies. Read the diff of `api-surface/internal.json` since the last tag anyway. `scripts/smoke.cjs`
+core's internal entry may change freely between releases. A user who mixes versions of the family (a `roaring` of one release with an `s3` of another) gets two copies of `core` and no
+install warning: a TypeScript build refuses `storage: new S3Storage(...)` with `TS2322 ... [STORAGE_BACKEND_BRAND]`, and
+`instanceof` does not hold across the copies (`errorKind` still classifies). `npm ls @cloudbitmaps/core` shows the copies,
+and `pnpm up --latest '@cloudbitmaps/*'` aligns them. Mixed minors always did this; mixed patch versions now do too. Read the diff of `api-surface/internal.json` since the last tag anyway. `scripts/smoke.cjs`
 fails if a source manifest ranges another `@cloudbitmaps/*` package, and `scripts/leak-scan-tarballs.cjs` fails if a
 packed one does.
 

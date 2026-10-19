@@ -118,7 +118,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   never id by id, into chunks holding what the same ids write. A byte array passed as ids is refused rather than loaded byte
   by byte.
 - **A throttled write is sent again, and never lands twice**. On S3 and GCS a write-once object the service answers
-  as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
+  as throttled (`503` or a bare `429` on S3; `429` or `503` on GCS) is sent again, up to three more times with backoff ([why that is safe](guide/correctness.md#object-write-resent); [the SDK's own retry](guide/correctness.md#sdk-retry)), and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
   the same, with the same id. On S3 and GCS a registry row is sent once by the driver; on Azure Blob the client's retry can replay it, and a replay that meets a conflict is read back by its id, which is not definitive for a row. When its write gets no answer, the load reads
   the row and reports its own landed write as published (proved by the tokens the registry reported for the writes it
@@ -479,6 +479,7 @@ None of these are committed and none have dates. If one matters to you,
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) and say so — that's the single best way to
 move it up.
 
+- **A construction-time check that refuses mixed `@cloudbitmaps/*` versions.** Today a flavor beside a driver of another version installs with no warning and fails to compile (two copies of `core`). A check when the store is built could refuse it at run time with a message naming both versions, or an exact `peerDependencies` entry could make the install itself refuse. Considered in a later release.
 - **`analyze` — try it on your own data before adopting anything.** Point a command at a file of your IDs and it
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the object size, the read cost and the monthly figure that follow — **offline, with no cloud account and

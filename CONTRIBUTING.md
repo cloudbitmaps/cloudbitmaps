@@ -75,7 +75,7 @@ Every change must pass these locally, and CI runs each of them on every pull req
   `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
   internal is itself a change the gate asks for: a row `{"entry": "<specifier> (internal)", "reason": …}`. Because
   all six packages publish at one version and pin each other exactly (`workspace:*`), **core's main entry may change
-  freely between releases**: no install holds two versions of it side by side, and the release reviewer still reads the
+  freely between releases**: each package resolves the exact core it was built with, so a flavor never meets an internal entry other than its own, and the release reviewer still reads the
   `api-surface/internal.json` diff. Its known limits, the ones the
   [api-surface README](api-surface/README.md) lists:
 

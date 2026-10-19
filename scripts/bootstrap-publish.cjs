@@ -272,7 +272,7 @@ console.log(`bootstrap-publish: publishing under --tag ${effectiveTag} (expect a
 // RELEASING.md), and keeping provenance out of the manifests is what lets it run.
 //
 // This stays `pnpm publish` rather than a per-package `npm publish`: every other package depends on core via
-// `workspace:*`, and pnpm is what rewrites that to a exact version on the way out. npm would publish the
+// `workspace:*`, and pnpm is what rewrites that to an exact version on the way out. npm would publish the
 // protocol string verbatim and ship packages nobody can install. `pnpm -r` also walks the workspace in
 // topological order, so core goes up before the packages that name it.
 //

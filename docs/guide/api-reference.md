@@ -684,9 +684,7 @@ export class MyStorage implements StorageBackend {
 }
 ```
 
-**How to depend on core.** The drivers in this repository depend on it as a plain dependency, on a caret range of
-the version they release with — the range `@cloudbitmaps/roaring` declares too, because all six packages release
-in lockstep, so a consumer's tree resolves one copy. A driver released on its own schedule has no such guarantee:
+**How to depend on core.** The drivers in this repository depend on it at the exact version they release with (`workspace:*` in the source, published as `X.Y.Z`), as `@cloudbitmaps/roaring` does, so a consumer who installs one version of every `@cloudbitmaps/*` package resolves one copy; a tree holds two when the versions differ. A driver released on its own schedule has no such guarantee:
 a plain range of its own can resolve to a second copy beside the consumer's, which is the case described under
 [Errors](#errors-typed--you-catch-these) where `instanceof` stops holding. A peer dependency, with a dev dependency
 to build against, makes the consumer's copy the only one:

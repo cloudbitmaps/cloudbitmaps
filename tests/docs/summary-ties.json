@@ -165,30 +165,6 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "object-write-resent",
-      "sentence": "3b3d12167651",
-      "starts": "A throttled write is sent again, and never"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "object-write-resent",
-      "sentence": "47070d51bae7",
-      "starts": "On S3 and GCS a write-once object the"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "sdk-retry",
-      "sentence": "47070d51bae7",
-      "starts": "On S3 and GCS a write-once object the"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "sdk-retry",
-      "sentence": "25eee725e500",
-      "starts": "On S3 and GCS a registry row is"
-    },
-    {
-      "file": "docs/ROADMAP.md",
       "claim": "row-write-settled",
       "sentence": "53fddb2f1daf",
       "starts": "When its write gets no answer, the load"
