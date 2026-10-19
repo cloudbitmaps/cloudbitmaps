@@ -13,6 +13,21 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
+  exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
+  `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it
+  `'WriteConflictError'`, `instanceof` and every handler of a conflict hold) and a publish built from another copy of
+  the package reads the mark. A load's publish reads the row again after any conflict; after a marked one that does not
+  show the write there, a load refused for it carries `unanswered: true` on its `segment.load-refused` event, as after a
+  write that got no answer, and a registry without tokens proves its own object before it takes a pointer at its number.
+  The Azure Blob registry raises every conflict of a row write this way, the read-back's and the 404 of a
+  compare-and-swap whose row was deleted: its client's retry may have sent the write twice, and the read-back of the
+  write id cannot tell a landed write from one a later writer swapped in over. So on Azure Blob a load that lost an
+  ordinary race at the registry carries `unanswered: true` too. The S3 and GCS registries send each row write once and
+  raise a plain conflict, as do the memory and local-file registries. A conflict the registry itself raises before it
+  sends anything, and a registry delete's, stay plain. The predicate that reads the mark is internal. The
+  `segment.load-refused` event's `unanswered` doc comment, the driver-kit and port docs, the guides and the Azure Blob
+  README say so.
 - **`store.preflight()` checks a new store's storage and registry before its first load.** It resolves to `{ ok, checks }`
   and always lists seven checks, in this order: `registry` (one read of a probe row that must be absent, and a registry
   that can write), `write` (one small probe object), `write-once` (a second write to the same key must be refused),
@@ -67,6 +82,13 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A registry that reports write tokens must report each one before it sends the write.** One that reports late has a
+  write's fault read as a read's: a load, an erasure or a bulk load throws the `TransientError` at once, without
+  reading the row to see whether the write landed, and does not settle it. A registry that wraps or extends one that
+  reports tokens and overrides `create` or `compareAndSwap` without passing `options` through, or without setting
+  `reportsWriteTokens` to `false`, reports no token, so every `TransientError` of its writes, a throttle included, is
+  thrown at once where it used to be read back and sent again. Report the token before sending, pass `options`
+  through, or set the flag to `false`.
 - **A load's footer no longer builds a temporary array of numbers to encode the chunk index.** The index is now
   written into one buffer sized to it, so the bytes are the same and the footer no longer holds an array beside the
   index. Every load gains it, sorted or not: at the 65,536 chunks a segment can have, the array it dropped held about
@@ -77,6 +99,78 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
+  audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,
+  `eraseNamespace` and `dropSegment`, the API reference, the encryption and retention guides and the roadmap said a
+  crypto-shred leaves the bytes unreadable everywhere, backups included, and is irreversible. A shred is one
+  compare-and-swap that removes the wrapped key from the segment's current registry row and destroys no KEK: a
+  retained copy of the row (a noncurrent version, a backup, a point-in-time copy) still holds the key, and a registry
+  restore to a point before the shred makes the segment readable again. It is complete once no retained copy of the
+  row holds the key, or once every KEK that wrapped it is destroyed, as `PRIVACY.md` and the disaster-recovery guide's
+  *Encryption & DR* section already said. `eraseSubject`'s "gone from the bucket on return" holds for each segment its
+  ledger reports `erased: true`, and a noncurrent version, a replica or a backup keeps the old object until its own
+  lifecycle removes it; a ledger entry carries `note`, never `reason`, and the engine's `'absent'`, `'destroyed'`,
+  `'no-generation'` and `'not-member'` results list no entry (`docs/guide/correctness.md`, *The result of erasing one
+  segment*). The privacy notes add that a retired segment that held no generation loses its row in the same pass (with `purgeTombstones` on, the default), and
+  that removing `setRetention`'s due-index pointer, on a registry that does not report `conditionalDelete`, leaves a
+  marker whose key names the segment. The encryption guide says what an encrypted object leaks: the footer's count
+  fields are zero and the index is sealed, but its length is in the clear and bounds the chunk count, and the payload
+  sizes bound the id count (exactly, for a set that fits one chunk stored as an array), because nothing is padded. The
+  hover doc of `SegmentInfo.status` (what `store.segments()` returns) no longer says a destroyed segment's generations
+  are gone: a `dropSegment` deletes them, and a crypto-shred leaves them in the bucket with the wrapped key removed
+  from the row.
+- **Other docs state what the code and the calibration runs show.** A cache miss on a segment the store has not opened
+  is three requests on S3, a pointer read, a tail read and the chunk's (measured), and four on Azure Blob, whose tail
+  read is two; `LocalFsStorage` creates files at most `0600` and
+  directories at most `0700`; a rollback refuses a generation its row does not know, below the pointer as well as
+  above, unless `allowUnknown`, outside the two cases the pointer alone decides (a row with no usable `knownGens`, and
+  a target below a full ledger's bound); $11.20 per million is a segment's first single-part `store.load()`, and a multipart one
+  made 5 PUT-class + 3 GET, $26.20; a combine refuses an absent operand unless `allowAbsentOperands`; `limit` caps a
+  sweep's retirements and tombstone purges together, a segment it defers gets no ledger entry, and an index scan's
+  `maxScanSegments` check runs before each pointer's row is read; `setRetention` also writes its due-index pointer; a
+  fleet scan reads every tombstone and, where deletes leave markers, every marker; `segment.dispose` follows only a
+  drop that writes or finds a tombstone; the metrics' `op` event also times `materializeMany`; the S3 object ceiling
+  is 78 GiB at the default part size, raised by `maxObjectBytes`; an encrypted metadata body is 35 to 1,052 bytes; and
+  the calibration harness's README states its current projections (28,973 GET-class for the large suite, about 94,900
+  GET-class and 567 PUT-class for the default run).
+
+- **A fault on a read inside a load's, an erasure's or a bulk load's registry write no longer reads as a write with no
+  answer.** A throttled or failed read of the row, made while the publish waited out a lease write, inside the registry
+  before it sent anything (on the local-file registry too, whose read of the row is under its lock), or inside the
+  registry after a first load's create-only write lost a race, used to count as a registry write that got no answer. A
+  load refused after it then carried `unanswered: true` on its `segment.load-refused` event although every write it sent
+  had been answered, and the publish read the row back and could send its write again. That read's own `TransientError`
+  is now thrown at once for a load, an erasure and a bulk load, and the object they wrote is kept; for a first load
+  that lost its create-only write, the refusal is the conflict itself, flagged only where the registry marks it (Azure
+  Blob). After a lease write the publish also passes the row it just re-read to the registry with its write, so the
+  object-store registries (S3, GCS and Azure Blob) send it without reading the row a second time: one request fewer.
+- **A rollback settles a swap that met a conflict or got no answer by its write token, as a load's publish does.** On a
+  registry that reports its writes' tokens (the in-memory, local-file, S3, GCS and Azure Blob registries), a rollback's
+  swap that landed and then met a conflict, or got no answer, is its own when the row's pointer is at the target over a
+  token the call sent, whatever else was written to the row since (a lease, a retention or residency write, a write of
+  the ledger alone). It is then checked, audited as `segment.rollback` and reported, as if it had answered. Before, a
+  lease or retention write that overtook a swap that met a conflict made the call throw "the pointer was not moved" with
+  the move landed and unrecorded, and a retention or residency write that overtook one that got no answer made it throw
+  the `TransientError` the same way (a lease alone was already settled there); a re-run then found nothing to do and
+  recorded nothing either. Three outcomes change the other way, from a reported and audited success to the
+  `TransientError` after no answer: another rollback's identical move, which was taken for this one's and audited a
+  second time; a write that renewed the row's `pointerId` over the landed swap before the row was read back, which
+  cannot be told from another writer's and leaves a move unaudited (run the rollback again: it finds the pointer where it
+  is and reports a no-op); and, on a registry that sets `reportsWriteTokens` but drops the options of a write, a
+  swap that landed, which is not taken for its own. A swap the pointer has moved past by another write throws
+  `WriteConflictError` after a conflict and `TransientError` after no answer, records no move and deletes nothing. The
+  conflict's message now says that this rollback could not confirm its swap is the one the row shows, which holds on
+  every registry, with or without tokens. A registry that reports no tokens settles a swap that got no answer by the row
+  the swap would leave, as before, and never settles a conflict as landed.
+- **The guides no longer say a tagged write's random id "settles" a conflict.** The id tells a write's own landing from
+  another writer's object when a conditional write reports a conflict, and the backend reads the stored object back to
+  see it. For a generation's write-once object that answer is definitive. For a registry row it is not: a writer that
+  swaps in over a write that landed, before the read-back, makes it report `WriteConflictError`. The publish then reads
+  the row again and finds its write only while the pointer still names its generation and the row's `pointerId` is its
+  own write's; overtaken by a newer load, it answers `published: false, reason: 'superseded'`. The production and
+  correctness guides, the Azure Blob README and the architecture page now say so. The erasure guide and the
+  `eraseSubject` doc comment also say that a generation costs its budget unit at its first open only, so a retry of a
+  failed read costs nothing more. No behaviour changed.
 - **A collection under a tombstone only collects the row it was asked to.** An erasure that found a tombstone's
   leftover objects, and the retention sweep's collection of a tombstone it was purging, read the row afresh before
   deleting. If the tombstone had been purged and the name loaded again in between, they treated the new row's

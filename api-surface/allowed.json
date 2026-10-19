@@ -490,5 +490,9 @@
   {
     "entry": "@cloudbitmaps/roaring PreflightCheck*",
     "reason": "one check in the answer of CloudRoaring.preflight, { name, status, detail }, with the seven names a literal union in the order a run lists them and a status of ok, problem or unchecked; a new type that only the new method returns"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit unsettledConflict",
+    "reason": "a driver-kit addition: a registry driver marks a conflict that may follow its own landed write, so a load refused after one reports unanswered: true, as after a write with no answer"
   }
 ]

@@ -358,6 +358,35 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g('does not yet cover these verbs'), 'i'), // read in plain text, its bold gone
     why: 'the load guard covers the *Into verbs',
   },
+  // A registry marks a conflict that may follow its own write's landing with `unsettledConflict`, and a load refused
+  // after one carries `unanswered: true`. No page may say the driver cannot tell the publish, or that such a refusal
+  // carries no flag. Of a registry that sends each row write once (S3, GCS), the true sentence is that its conflicts
+  // carry none: say "a conflict from the S3 or GCS registry carries none".
+  {
+    claim: new RegExp(g('no way to tell the publish that a conflict may follow'), 'i'),
+    why: 'a registry marks such a conflict with `unsettledConflict`, and the publish reports it',
+  },
+  // This entry has no tail, so it also refuses a true sentence of the same shape: a guard's refusal comes before any
+  // write. A true sentence names the case: "a guard's refusal is never marked", or "a conflict on S3 or GCS, each row
+  // write sent once, carries none".
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?:event does not carry|(?:refusal )?event carries no|refusal carries no|does not set) \`?unanswered: true\`?`,
+      ),
+      'i',
+    ),
+    why: 'on Azure Blob a refusal after a conflict of a row write carries `unanswered: true`',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\`?unanswered: true\`? marks a refusal that follows a registry write that got no answer`,
+      ),
+      'i',
+    ),
+    why: 'a refusal after a conflict its registry marks carries `unanswered: true` too, not only one after a write with no answer',
+  },
   // No page (the guide, the privacy notes, a shipped doc-comment, a test) may call a store with no timed refresh a
   // pin ("pin forever", "pins the generation for its lifetime"), because such a store still moves on: its reader
   // cache evicting the segment, a read finding the generation it holds swept, and an invalidation (its own `load`,
@@ -638,6 +667,19 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       'i',
     ),
     why: 'a registry write that gets no answer is settled by reading the row, and sent again as a bounded fresh compare-and-swap when it is unchanged; only a fault that read does not settle is reported',
+  },
+  {
+    claim: new RegExp(g('and the pointer was not moved'), 'i'),
+    why: "a rollback's swap that met a conflict may have landed, and the conflict says this rollback could not confirm its swap is the one the row shows, not that it was not moved",
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`row that changed after \`?rollback\`? read it throws \`?WriteConflictError\`? and moves nothing`,
+      ),
+      'i',
+    ),
+    why: "a rollback's swap that met a conflict may have landed: say that it records no move, not that it moves nothing",
   },
   {
     claim: new RegExp(

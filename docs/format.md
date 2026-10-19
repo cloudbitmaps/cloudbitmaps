@@ -260,7 +260,8 @@ as its **canonical JSON** in UTF-8.
 - The rules: at most 1,024 bytes of canonical JSON, braces and quotes included; keys non-empty, well-formed UTF-16, at
   most 128 UTF-8 bytes each, and not `__proto__`; values strings (well-formed UTF-16) or finite numbers; no nesting.
 - Encrypted, the body is `nonce(12) ‖ ciphertext ‖ tag(16)` under the segment's key with the metadata scope of the
-  associated data ([section 8](#8-encryption-at-rest)): between 29 and 1,052 bytes.
+  associated data ([section 8](#8-encryption-at-rest)): between 35 and 1,052 bytes (a reader's framing check admits
+  29 and up, and the canonical-form check refuses the rest once the body is opened).
 
 ## 5. The index
 
@@ -823,7 +824,7 @@ fails after a code change, the format changed, which needs a new format version,
 The three `basic`/`metadata` files use payload bytes that are not a Roaring bitmap on purpose: they pin the container
 (preamble, index, footer, block, sealing), and `v1.0-load.crbm` pins the payload codec.
 
-**The write identity in the corpus.** The four original cleartext files are unchanged since before the write identity
+**The write identity in the corpus.** The three original cleartext files are unchanged since before the write identity
 existed: their footer `indexNonce` is 12 zero bytes, which this release's writer reproduces byte for byte when its random
 source returns zeros. A reader accepts them like any other object. The three `-write-identity` files show the field as
 a writer draws it: each is its original with the 12 bytes at footer offset 40 set to `c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 ca cb`

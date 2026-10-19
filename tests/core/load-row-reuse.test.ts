@@ -381,6 +381,7 @@ describe('a load reuses the row it read, and every fence on that row still holds
         if (p !== 'compareAndSwap') return value;
         return (...args: Parameters<MemoryRegistryDriver['compareAndSwap']>) => {
           late = args;
+          args[3]?.onToken?.('unapplied.0.0'); // a write that was sent: its token went out first
           return Promise.reject(new TransientError('timed out; the request may still land'));
         };
       },

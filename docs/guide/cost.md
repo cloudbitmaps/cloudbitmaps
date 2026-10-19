@@ -321,7 +321,7 @@ with this function, term by term, and says where a standing cache still wins.
 
 ### Many small segments, refreshed often
 
-**Every load is a whole new generation, so every refresh pays the same requests, however small the segment.** A steady
+**Every load is a whole new generation, so every refresh pays the same requests, however small the segment.** A steady single-part
 `store.load()` of a segment on S3 makes 2 PUT-class requests (the object and the pointer's write), 5 GET-class
 requests and one delete, 8 requests, with the delete free (the counts are in the [load term](#what-each-term-counts)
 above and are **measured** at `keep: 12` in [the in-region run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d)).

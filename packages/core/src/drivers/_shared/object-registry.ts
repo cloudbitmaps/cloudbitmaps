@@ -67,7 +67,10 @@ import {
   TransientError,
   ValidationError,
   WriteConflictError,
+  isTransientError,
+  isUnsettledConflict,
   isWriteConflictError,
+  unsettledConflict,
 } from '@/core/errors';
 import type {
   IRegistryDriver,
@@ -171,6 +174,12 @@ export interface ObjectRegistryStore {
    * the row it just wrote and its precondition fails, which would read as a lost race. Send it once, or store a
    * write id with the row and treat a conflict whose stored row carries it as success. Retryable faults throw
    * {@link TransientError}.
+   *
+   * A store whose client may have sent the write more than once throws every conflict it cannot prove the write did not
+   * land before as `unsettledConflict` (from the driver kit), not a plain {@link WriteConflictError}: the read-back can
+   * find another writer's write over a row this write landed on, or the row gone after it landed. The registry passes
+   * the mark through, and a load refused after it reports `unanswered: true`. A store that sends the write once throws
+   * the plain conflict.
    */
   write(key: string, body: Uint8Array, expect: 'absent' | { version: string }): Promise<void>;
   /** Every object key under `prefix`, paginated internally. */
@@ -246,6 +255,11 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     return row.env.record;
   }
 
+  /**
+   * Write a new row, create-only over none or over a tombstone. `held: null` is the publish's contract: its caller read
+   * the row absent. A direct caller that passes it over a tombstone may see a conflict when the read-back after the
+   * lost create faults, though no live row exists.
+   */
   async create(
     ref: SegmentRef,
     record: NewRegistryRecord,
@@ -264,9 +278,21 @@ export class ObjectStoreRegistry implements IRegistryDriver {
         lost = err;
       }
     }
-    const current = await this.readRow(key);
+    let current: ReadRow | null;
+    try {
+      current = await this.readRow(key);
+    } catch (err) {
+      // The read only tells a live row from a tombstone. A fault on it leaves the write's own answer standing: the
+      // conflict, as it was, with its mark if it has one. The publish reads the row again at its next attempt.
+      if (lost !== undefined && isTransientError(err)) throw lost;
+      throw err;
+    }
     if (current !== null && !current.env.deleted) {
-      throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
+      // The create-only write's own conflict, if it was one that may have landed, keeps that mark over this message.
+      const message = `registry row already exists for segment ${ref.segment}`;
+      throw isUnsettledConflict(lost)
+        ? unsettledConflict(message)
+        : new WriteConflictError(message);
     }
     // No row at all now: the create-only write lost to something that has gone since, and it is not sent again.
     if (lost !== undefined && current === null) throw lost;

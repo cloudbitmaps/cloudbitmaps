@@ -230,7 +230,8 @@ npm audit signatures</code></pre>
                     the bounds you set in <span class="m">guard: { minCardinality, minRetained, maxGrowth }</span>,
                     so branch on <span class="m">published</span>. Grouped by chunk first, so it bills
                     <strong>per object, not per id</strong>.
-                    On S3, a segment's first load makes 2 PUT-class and 3 GET requests, measured; it lists the
+                    On S3, a segment's first single-part load makes 2 PUT-class
+                    and 3 GET requests, measured, and a multipart load made 5 PUT-class and 3 GET; it lists the
                     segment only every 16th generation (at any <span class="m">keep</span> up to 64), and S3 bills a listing at the PUT rate.
                   </td>
                   <td class="num">2 PUT + 3 GET</td>
@@ -356,12 +357,15 @@ npm audit signatures</code></pre>
                 <tr>
                   <td><span class="m">store.rollback(ref, generation)</span></td>
                   <td class="from">
-                    Moves the pointer <strong>back</strong> to a generation still in the bucket —
-                    <span class="m">store.generations(ref)</span> lists them. The one pointer move that is not
-                    forward, and only an operator makes it: it deletes nothing, refuses a generation that is
-                    gone, refuses one above the current pointer, which may
-                    never have been published, and records <span class="m">segment.rollback</span> on the audit
-                    sink you pass it.
+                    Moves the pointer to a generation still in the bucket that its row knows it published —
+                    back, or forward again onto one an earlier rollback left
+                    (<span class="m">store.generations(ref)</span> lists them). The one pointer move that is not
+                    forward-only, and only an operator makes it: it deletes nothing, refuses a generation that is
+                    gone, refuses one its row does not know it published (such as a load that wrote its object
+                    and died before the publish), outside the two cases the pointer alone decides, with a
+                    <span class="m">ValidationError</span> unless you pass
+                    <span class="m">allowUnknown: true</span>,
+                    and records <span class="m">segment.rollback</span> on the audit sink you pass it.
                   </td>
                   <td class="num">registry + two listings</td>
                 </tr>

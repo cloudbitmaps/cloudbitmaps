@@ -270,8 +270,14 @@ describe('a refused load keeps its object under a row another load changed', () 
     await loadSegment(REF, [1, 2, 3], w.deps);
     let lost = false;
     const lossy = Object.create(w.registry) as IRegistryDriver;
-    lossy.compareAndSwap = async (ref, expected, patch) => {
-      const written = await w.registry.compareAndSwap(ref, expected, patch);
+    lossy.compareAndSwap = async (ref, expected, patch, options) => {
+      // The write is sent, so it reports its token first, as a registry does; its answer is what is lost.
+      const written = await w.registry.compareAndSwap(
+        ref,
+        expected,
+        patch,
+        lost ? undefined : options,
+      );
       if (lost) return written;
       lost = true;
       // Another load publishes 2 and keeps nothing; a reader holds a lease on this load's generation, 1.

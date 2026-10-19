@@ -152,8 +152,8 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
 
 - **Lambda.** A function's cold start and initialisation need a run from inside one.
 - **Other shapes**: more operands, other combine shapes, the `*Into` verbs.
-- **Chunks that lie far apart.** A layout whose shared chunks are more than 1 MiB apart in an object makes more than
-  one range request; the run's layouts, packed and spread, were one range.
+- **Chunks that lie far apart.** Shared chunks with more than 256 KiB between them, or spread over more than 1 MiB, make
+  more than one range request; the run's layouts, packed and spread, were one range.
 - **Bytes outside the region.** Inside the region S3 Standard does not bill the bytes read. Across regions and to the
   internet it does, and the transfer can cost more than the requests saved
   ([production](guide/production.md#reading-ranges-the-bytes-between-chunks)). The spread layout's ranges read

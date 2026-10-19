@@ -249,8 +249,8 @@ describe('a registry row with no Storage generation (currentGen: null)', () => {
 
     it('refuses to bulk-load a CLEARTEXT generation onto a row that claims encryption', async () => {
       // Writing cleartext bytes under a row that still advertises `wrappedDeks` is not merely untidy: it makes
-      // `destroySegment` emit `segment.erase` — the audit event defined as "unreadable everywhere, backups
-      // included" — for plaintext that stays readable from any copy. An audit trail that over-attests is the one
+      // `destroySegment` emit `segment.erase` — the audit event that attests a key shred, which leaves the objects unreadable
+      // once no retained copy of the row holds the key — for plaintext that stays readable from any copy. An audit trail that over-attests is the one
       // failure it exists to prevent, so the state is refused rather than created. The null pointer is what makes
       // this its own case: a writer that only checked the row when the pointer was non-null would take the
       // first-publish path here and skip the check entirely.
