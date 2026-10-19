@@ -145,7 +145,9 @@ the pointer is over this load's write if and only if the `pointerId` is one of t
 part, so another load of the same cleartext ids, which takes the number once an erasure has freed it, is not mistaken for
 this one: this load reports `superseded`, audits no `segment.publish` and deletes nothing. The
 same check runs after a write the registry refused as a conflict, since a client that re-sends a write can meet its own
-landed copy, and after a write that went unanswered. A registry of your own that does not report tokens is settled by
+landed copy, and after a write that went unanswered. A fault that comes before the write reports its token, such as
+the registry's own read of the row, was never a write with no answer: on a registry that reports tokens the load throws
+it at once as that read's fault, with no read of the row and no fresh write. A registry of your own that does not report tokens is settled by
 the object instead: the load reads the footer of the object under the pointer and takes a match as its own. The footer
 carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index
 nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum: another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On

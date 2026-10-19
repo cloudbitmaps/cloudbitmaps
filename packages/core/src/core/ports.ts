@@ -662,6 +662,11 @@ export interface RegistryWriteOptions {
    * when the write names a resolved field. A write that does not land leaves no row carrying it. A call refused before
    * it has a token to send, on a conflict its own read finds, reports none.
    *
+   * A publish relies on the report coming first, both ways. A write that faults after its report may have landed, and
+   * is settled by reading the row. A `TransientError` before any report is taken for a fault before sending, such as
+   * the driver's own read of the row: the publish throws it at once, with no read of the row and no fresh write. So
+   * nothing that can land is sent before the report, a client's own resend included.
+   *
    * The token is unique to that write attempt, also against another writer racing the same version: two writers that
    * send a write against the same row version never carry the same token, so a version counter alone is not enough.
    * Otherwise a loser's write would pass for the winner's.
@@ -935,8 +940,15 @@ export interface IRegistryDriver {
    *
    * The flag may be a getter or a field. A registry that wraps or extends another and overrides `create` or
    * `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to
-   * `false`. One that does neither reads every write of its own that landed after an error or a lost answer as not its
-   * own (`superseded`), and deletes nothing.
+   * `false`. One that does neither reads a write of its own that landed and then met a conflict as not its own
+   * (`superseded`), and takes every `TransientError` of its writes, a throttle and a lost answer alike, for a fault
+   * before sending: the publish throws it at once, with no read of the row and no fresh write. Either way it deletes
+   * nothing.
+   *
+   * A publish relies on the report coming first, both ways. A write that faults after its report may have landed, and
+   * is settled by reading the row. A `TransientError` before any report is taken for a fault before sending, such as
+   * the driver's own read of the row: the publish throws it at once, with no read of the row and no fresh write. So
+   * nothing that can land is sent before the report, a client's own resend included.
    */
   readonly reportsWriteTokens?: boolean;
   /**

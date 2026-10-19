@@ -82,6 +82,13 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A registry that reports write tokens must report each one before it sends the write.** One that reports late has a
+  write's fault read as a read's: a load, an erasure or a bulk load throws the `TransientError` at once, without
+  reading the row to see whether the write landed, and does not settle it. A registry that wraps or extends one that
+  reports tokens and overrides `create` or `compareAndSwap` without passing `options` through, or without setting
+  `reportsWriteTokens` to `false`, reports no token, so every `TransientError` of its writes, a throttle included, is
+  thrown at once where it used to be read back and sent again. Report the token before sending, pass `options`
+  through, or set the flag to `false`.
 - **A load's footer no longer builds a temporary array of numbers to encode the chunk index.** The index is now
   written into one buffer sized to it, so the bytes are the same and the footer no longer holds an array beside the
   index. Every load gains it, sorted or not: at the 65,536 chunks a segment can have, the array it dropped held about

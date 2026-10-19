@@ -44,8 +44,14 @@
  *    takes a write as its own when the row's `pointerId`, which names the writer of the write that last set the
  *    pointer, is a token it was told. A registry that wraps or extends another and overrides `create` or
  *    `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to
- *    `false`. One that does neither reads every write of its own that landed after an error or a lost answer as not its
- *    own (`superseded`), and deletes nothing.
+ *    `false`. One that does neither reads a write of its own that landed and then met a conflict as not its own
+ *    (`superseded`), and takes every `TransientError` of its writes, a throttle and a lost answer alike, for a fault
+ *    before sending: the publish throws it at once, with no read of the row and no fresh write. Either way it deletes
+ *    nothing.
+ *    A publish relies on the report coming first, both ways. A write that faults after its report may have landed, and
+ *    is settled by reading the row. A `TransientError` before any report is taken for a fault before sending, such as
+ *    the driver's own read of the row: the publish throws it at once, with no read of the row and no fresh write. So
+ *    nothing that can land is sent before the report, a client's own resend included.
  *    A driver whose client may have sent a write more than once raises every conflict it cannot prove the write did not
  *    land before (another writer's write found on the read-back, a compare-and-swap that finds the row gone, a
  *    read-back that finds nothing) with `unsettledConflict`, so a load refused after it reports `unanswered: true`; a

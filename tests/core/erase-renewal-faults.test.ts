@@ -50,8 +50,9 @@ describe("an erasure's renewal of the row, and its deletes", () => {
     const { storage, registry } = await setup();
     const reg = Object.create(registry) as IRegistryDriver;
     let silent = false;
-    reg.compareAndSwap = async (_ref, _expected, patch) => {
+    reg.compareAndSwap = async (_ref, _expected, patch, opts) => {
       if (!isRenewal(patch)) throw new Error('unexpected write');
+      opts?.onToken?.('unapplied.0.0'); // a write that was sent and never answered: its token went out first
       silent = true;
       throw new TransientError('timed out');
     };
