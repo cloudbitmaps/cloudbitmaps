@@ -374,9 +374,13 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     max: MAX_BATCH_PARALLELISM,
     what: 'publishConcurrency',
   });
-  requireInteger(request.concurrency, { min: 1, max: MAX_BATCH_PARALLELISM, what: 'concurrency' });
-  assertIdBound('after', request.after);
-  assertIdBound('through', request.through);
+  requireInteger(request.concurrency, {
+    min: 1,
+    max: MAX_BATCH_PARALLELISM,
+    what: 'materializeMany: concurrency',
+  });
+  assertIdBound('after', request.after, 'materializeMany');
+  assertIdBound('through', request.through, 'materializeMany');
   const index = new Map<string, number>();
   operands.forEach((op, i) => index.set(op.name, i));
   const feed =
@@ -841,7 +845,7 @@ class Run<R> {
   }
 
   async execute(): Promise<CombineManyRun<R>> {
-    this.window = windowOf(this.req);
+    this.window = windowOf(this.req, 'materializeMany');
     if (this.checkedFeed !== undefined) this.feed = this.openFeed(this.checkedFeed);
     await this.readIndexes();
     await this.refuseAbsentOperands();

@@ -744,7 +744,7 @@ export class SegmentEngine {
   }
 
   private async *iterateRange(seg: SegmentRef, range: IdRange): AsyncGenerator<number> {
-    const w = windowOf(range) ?? WHOLE_ID_SPACE;
+    const w = windowOf(range, 'iterate') ?? WHOLE_ID_SPACE;
     if (w === 'empty') return;
     const run = await this.planIterate(seg, w);
     try {
@@ -773,7 +773,7 @@ export class SegmentEngine {
    * 65,536 ids (256 KiB) and is the caller's to keep.
    */
   async *iterateBatches(seg: SegmentRef, range?: IdRange): AsyncGenerator<Uint32Array> {
-    const w = windowOf(range);
+    const w = windowOf(range, 'iterate');
     if (w === 'empty') return;
     const run = await this.planIterate(seg, w);
     try {
@@ -938,9 +938,9 @@ export class SegmentEngine {
    * `after` turn out to be fewer than `n`, and one that cuts its last chunk may read it and yield nothing.
    */
   async *everyNth(seg: SegmentRef, n: number, range?: IdRange): AsyncGenerator<number> {
-    requirePositiveInteger(n, 'n');
+    requirePositiveInteger(n, 'everyNth: n');
     const epoch = this.scope.epoch;
-    const w = windowOf(range);
+    const w = windowOf(range, 'everyNth');
     if (w === 'empty') return;
     const span = w ?? WHOLE_ID_SPACE;
     const { loKey, loRem, hiKey, hiRem } = span;
@@ -1180,13 +1180,13 @@ export class SegmentEngine {
       throw new ValidationError('andNot requires at least one segment to subtract');
     }
     const limit = options?.concurrency ?? DEFAULT_INTERSECT_CONCURRENCY;
-    requirePositiveInteger(limit, 'concurrency');
+    requirePositiveInteger(limit, `${op}: concurrency`);
     // Per-op budget override (else the store budget); resolved before any I/O so a bad value fails fast. A
     // partial override inherits the store's tightening (not the generous default) — see resolvePerOpBudget.
     const budget = resolvePerOpBudget(options?.budget, this.budget);
     // The range, if any, cuts every operand's keys once, here, so what follows — alignment, the budget, the
     // metrics, the fan-out — sees only chunks inside it. Only the two edge chunks are cut again, where ids leave.
-    const w = windowOf(options);
+    const w = windowOf(options, op);
     if (w === 'empty') return null;
 
     // ① Index-map extraction: each operand's chunk-key set + its current generation, resolved ONCE here (not

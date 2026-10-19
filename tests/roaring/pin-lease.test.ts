@@ -266,7 +266,6 @@ const SITES: Array<[string, (leased: Segment, h: H) => Promise<unknown>]> = [
   ['union (receiver)', (l, h) => collect(l.union([plain(h)]))],
   ['union (operand)', (l, h) => collect(plain(h).union([l]))],
   ['union (exclude)', (l, h) => collect(plain(h).union([plain(h, THIRD)], { exclude: [l] }))],
-  ['union of nothing but an exclude', (l, h) => collect(plain(h).union([], { exclude: [l] }))],
   ['andNot (receiver)', (l, h) => collect(l.andNot([plain(h)]))],
   ['andNot (exclude)', (l, h) => collect(plain(h).andNot([l]))],
   ['intersect batches (operand)', async (l, h) => collect(flat(plain(h).intersect([l]).batches()))],

@@ -39,24 +39,40 @@ import { segmentKey } from './keys';
  * What a pin holds for one segment: the generation, the version identifying those exact bytes, and the pinned
  * object's fingerprint, so a read can tell that the generation it opens is still that object.
  *
- * `fingerprint` is required for a pin of a generation (`null` only when `generation` is `null`): without it a read
- * could not tell a name purged and loaded again from the segment it pinned. `seg.pin()` always records it, and a
- * pin of a generation without a string `version` and `fingerprint` is refused with a `ValidationError`.
+ * It is one of two shapes, told apart by `generation`: a pin of a generation holds all three fields, and a pin of a
+ * segment that had no generation holds `null` in all three. Narrowing on `generation` (or on either other field)
+ * narrows the record whole, so a numbered pin passes to `pinAt` as it is:
+ *
+ * ```ts
+ * const at = first.pinnedAt;
+ * if (at !== undefined && at.generation !== null) await store.segment('active-30d').pinAt(at);
+ * ```
+ *
+ * `fingerprint` is never `null` for a pin of a generation: without it a read could not tell a name purged and loaded
+ * again from the segment it pinned. `seg.pin()` always records it, and a pin of a generation without a string
+ * `version` and `fingerprint` is refused with a `ValidationError`.
  */
-export interface PinnedAt {
-  /** The pinned generation, or `null` when the segment had none when it was pinned. */
-  readonly generation: number | null;
-  /** The version of that generation's object, or `null` when `generation` is. */
-  readonly version: string | null;
-  /** The fingerprint of that generation's object, or `null` when `generation` is. */
-  readonly fingerprint: string | null;
-}
+export type PinnedAt =
+  | {
+      /** The pinned generation. */
+      readonly generation: number;
+      /** The version of that generation's object. */
+      readonly version: string;
+      /** The fingerprint of that generation's object. */
+      readonly fingerprint: string;
+    }
+  | {
+      /** `null`: the segment had no generation when it was pinned. */
+      readonly generation: null;
+      /** `null`, as `generation` is. */
+      readonly version: null;
+      /** `null`, as `generation` is. */
+      readonly fingerprint: null;
+    };
 
 /** The part of a pin a pinned read checks the object against; none for a pin of no generation. */
 const heldBy = (pin: PinnedAt): PinnedObject | undefined => {
-  return pin.version === null
-    ? undefined
-    : { version: pin.version, fingerprint: pin.fingerprint as string };
+  return pin.version === null ? undefined : { version: pin.version, fingerprint: pin.fingerprint };
 };
 
 export class PinnedStorageChunkSource implements StorageChunkSource {
@@ -71,12 +87,15 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     private readonly pins: ReadonlyMap<string, PinnedAt>,
   ) {
     for (const [key, pin] of pins) {
+      // Read as loosely as a caller's JavaScript can build it: the type promises both strings, a record made by hand
+      // may not.
+      const held: { generation: number | null; version: unknown; fingerprint: unknown } = pin;
       if (
-        pin.generation !== null &&
-        (typeof pin.version !== 'string' || typeof pin.fingerprint !== 'string')
+        held.generation !== null &&
+        (typeof held.version !== 'string' || typeof held.fingerprint !== 'string')
       )
         throw new ValidationError(
-          `pin for "${key}" names generation ${pin.generation} without its version and object fingerprint`,
+          `pin for "${key}" names generation ${held.generation} without its version and object fingerprint`,
         );
     }
   }

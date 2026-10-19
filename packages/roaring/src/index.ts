@@ -2680,11 +2680,10 @@ export class CloudRoaring {
       if (hold !== undefined) await hold.release().catch(() => undefined);
       throw err;
     }
-    const pinnedAt: PinnedAt = {
-      generation: at?.generation ?? null,
-      version: at?.version ?? null,
-      fingerprint: at?.fingerprint ?? null,
-    };
+    const pinnedAt: PinnedAt =
+      at === null
+        ? { generation: null, version: null, fingerprint: null }
+        : { generation: at.generation, version: at.version, fingerprint: at.fingerprint };
     const pins = new Map([[segmentKey(ref), pinnedAt]]);
     return makeSegment({
       engine: this.engineWithPins(pins),
@@ -2768,7 +2767,7 @@ export class CloudRoaring {
           throw new ValidationError(
             `the same segment is in this combine twice, ${twoPins(before, at)}: one call reads a segment at one ` +
               'generation, so materialise one of them into a segment of its own first, with ' +
-              '`intersectInto(dest, [])`',
+              '`src.unionInto(dest, [src])`',
           );
         }
       } else {
@@ -3162,6 +3161,19 @@ function operandsLabel(verb: CombineVerb): string {
   return verb === 'andNot' ? 'andNot: `excludes`' : `${verb}: \`others\``;
 }
 
+/**
+ * The refusal of an empty operand list on `intersect` and `union` (and their `*Into` forms), worded as `andNot`'s refusal
+ * of an empty subtraction is: a list built in a loop that came out empty would otherwise read as no operands at all,
+ * and a filter would become no filter. `verb` begins the message. `andNot` is not here: the engine refuses its empty
+ * list itself.
+ */
+function refuseNoOperands(verb: 'intersect' | 'union', named: string): void {
+  const what = verb === 'intersect' ? 'intersect with' : 'union with';
+  throw new ValidationError(
+    `${named} requires at least one segment to ${what}; to read every id of one segment, use iterate()`,
+  );
+}
+
 type EngineCombine = Parameters<SegmentEngine['intersect']>[1];
 type EngineAndNot = Parameters<SegmentEngine['andNot']>[2];
 
@@ -3439,7 +3451,7 @@ export class Segment {
    *
    * **One call reads a segment at one generation**, so a combine that holds this segment at two —
    * `snap0.andNot([snap1])`, or `live.intersect([snap])` — throws {@link ValidationError} when it is read, and an
-   * `*Into` of one throws before it reads anything. Materialise one side first, with `intersectInto(dest, [])`.
+   * `*Into` of one throws before it reads anything. Materialise one side first, with `src.unionInto(dest, [src])`.
    *
    * **A pin knows its object, not only its number.** A name purged and loaded again starts again at generation
    * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
@@ -3644,23 +3656,37 @@ export class Segment {
    * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
    * swept. Works for an encrypted segment. The first argument is an object so that fields can join it later; the lease
    * is in `options`, the second.
+   *
+   * It takes what {@link Segment.pinnedAt} holds: once `generation` is not `null`, the record passes as it is (its
+   * `version` is not read), and `{ generation, fingerprint }` does as well. A pin of a segment that had no generation
+   * has nothing to reopen and throws {@link ValidationError}.
    */
   async pinAt(at: PinAt, options?: PinOptions): Promise<Segment> {
     // A leased handle past its lease pins nothing, as for `pin()`.
     this.assertLease();
-    const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
+    // A pin's `pinnedAt` is handed back whole, so its `version` is a key `pinAt` knows: the fingerprint is what
+    // identifies the object, and the version is not read.
+    const { generation, fingerprint, version } = (at ?? {}) as Partial<PinAt> & {
+      version?: unknown;
+    };
     // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
     const unknown =
       typeof at === 'object' && at !== null
-        ? Object.keys(at).filter((k) => k !== 'generation' && k !== 'fingerprint')
+        ? Object.keys(at).filter((k) => !['generation', 'fingerprint', 'version'].includes(k))
         : [];
     if (unknown.length > 0) {
       throw new ValidationError(
         `pinAt: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
-          'this version takes { generation, fingerprint } only',
+          'pinAt takes { generation, fingerprint } only',
+      );
+    }
+    if ((generation as unknown) === null) {
+      throw new ValidationError(
+        'pinAt: the pin named no generation (the segment had none when it was pinned), so there is nothing to reopen',
       );
     }
     if (
+      (version !== undefined && typeof version !== 'string') ||
       typeof generation !== 'number' ||
       !Number.isSafeInteger(generation) ||
       generation < 0 ||
@@ -3705,7 +3731,44 @@ export class Segment {
     this.assertSegments(verb, 'the destination', [dest]);
     this.assertSegments(verb, verb === 'andNotInto' ? 'an exclude' : 'an operand', operands);
     this.assertSegments(verb, 'an exclude', excludes);
+    const base = verb.slice(0, -'Into'.length) as CombineVerb;
+    if (base !== 'andNot' && operands.length === 0) refuseNoOperands(base, verb);
+    this.refuseSourceDestination(verb, dest, operands, excludes);
     this.assertLeases([this, dest, ...operands, ...excludes]);
+  }
+
+  /**
+   * Refuse an `*Into` whose destination is also one of its sources (this segment, an operand or an exclude, by the key
+   * a handle gives, so a pin of the source and a ref spelled with the default namespace count), before any request, as
+   * `materializeMany` refuses it. The combine would read the destination at the generation this store last resolved,
+   * up to `cache.genTtlMs` old, while the publish is fenced on the row as it stands: another process's newer load of
+   * the destination would be overwritten by a result built from the one before it, with no conflict to report.
+   */
+  private refuseSourceDestination(
+    verb: `${CombineVerb}Into`,
+    dest: Segment,
+    operands: readonly Segment[],
+    excludes: readonly Segment[],
+  ): void {
+    const key = dest.key();
+    const role =
+      this.key() === key
+        ? 'this segment'
+        : operands.some((o) => o.key() === key)
+          ? verb === 'andNotInto'
+            ? 'an exclude'
+            : 'an operand'
+          : excludes.some((o) => o.key() === key)
+            ? 'an exclude'
+            : undefined;
+    if (role === undefined) return;
+    const { namespace, segment } = dest.ref;
+    const named = namespace === undefined ? segment : `${namespace}/${segment}`;
+    throw new ValidationError(
+      `${verb}: the destination "${named}" is also ${role} of the call, and a call that reads a segment while it ` +
+        'publishes to it can replace a newer load of it with a result built from an older one, with no conflict ' +
+        'reported. Combine into a new segment, then load or swap that into place',
+    );
   }
 
   /** `result` as is, or, when a handle of the call holds a lease, checking that lease each time it reads a chunk. */
@@ -3924,7 +3987,8 @@ export class Segment {
    *
    * Of {@link CombineOptions} it takes the range, `concurrency`, `budget`, `allowAbsentOperands` and `exclude`; a write
    * option (`audit`, `allowEmpty`, `guard`, `metadata`, `keep`) fails the stream with {@link ValidationError} when it is
-   * first read, before any request.
+   * first read, before any request. So does an empty `others`, as it does for `andNot`: to read every id of one
+   * segment, use {@link iterate}.
    */
   intersect(others: Segment[], options?: CombineOptions): IdStream {
     const bad = optionsError(
@@ -3957,6 +4021,11 @@ export class Segment {
    * materialisation that silently did not take effect is the one thing a caller cannot detect on its own.
    *
    * A call involving a handle whose lease has ended, or anything that is not a segment, is refused before any of this.
+   * So is a `dest` that is also `this`, an operand or an exclude (the same segment by name and namespace, however the
+   * handle was made), and an empty `others`: each throws {@link ValidationError} before any request. A destination that
+   * is also a source would publish a result built from the generation this store last resolved over a newer load by
+   * another process, with no conflict to report; combine into a new segment, then load or point readers at it. To
+   * copy `src` into `dest`, name it as its own operand: `src.unionInto(dest, [src])`.
    * It takes every field of {@link CombineOptions}, as `unionInto` does.
    */
   async intersectInto(
@@ -3976,7 +4045,8 @@ export class Segment {
    * `intersect` prunes any key missing from any operand; union has nothing to prune. It is charged against the
    * same per-op budget, so a wide union is refused rather than quietly billed — pass `budget` to raise it
    * deliberately. If you find yourself unioning the same segments on every read, materializing the combined
-   * segment once (`unionInto`, or a load) is the cheaper shape. It takes the options {@link intersect} takes.
+   * segment once (`unionInto`, or a load) is the cheaper shape. It takes the options {@link intersect} takes, and an
+   * empty `others` fails the stream as it does there.
    */
   union(others: Segment[], options?: CombineOptions): IdStream {
     const bad = optionsError(
@@ -4062,6 +4132,7 @@ export class Segment {
     try {
       exclude = verb === 'andNot' ? NO_SEGMENTS : this.excludesOf(options);
       const others = segmentList(operands, operandsLabel(verb));
+      if (verb !== 'andNot' && others.length === 0) refuseNoOperands(verb, verb);
       handles = [this, ...others, ...exclude];
       this.assertSegments(verb, verb === 'andNot' ? 'an exclude' : 'an operand', others);
       this.assertSegments(verb, 'an exclude', exclude);
