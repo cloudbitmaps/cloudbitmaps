@@ -141,8 +141,8 @@ class SystemRng implements Rng {
   }
 }
 
-/** Validate a segment ref a caller passes to a store method; a bare name is the common slip, and the hint says so. */
-function validateRef(ref: SegmentRef, verb: string): void {
+/** Validate a segment ref a caller passes to a store method, and return its address alone; a bare name is the common slip, and the hint says so. */
+function validateRef(ref: SegmentRef, verb: string): SegmentRef {
   if (typeof ref !== 'object' || ref === null) {
     throw new ValidationError(
       "a segment ref is an object such as { segment: 'name' }; store.segment() takes the bare name",
@@ -150,6 +150,8 @@ function validateRef(ref: SegmentRef, verb: string): void {
   }
   refuseUnknownRefKeys(ref, verb);
   validateSegmentRef(ref);
+  // Only the address goes on: a passed-back listing row's other fields are read for nothing.
+  return { segment: ref.segment, namespace: ref.namespace };
 }
 
 const DEFAULT_CACHE_MAX_CHUNKS = 1024;
@@ -2097,7 +2099,7 @@ export class CloudRoaring {
    * Needs a backend.
    */
   async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
-    validateRef(ref, 'generations');
+    ref = validateRef(ref, 'generations');
     return listGenerations(ref, this.lifecycleDeps('generations'));
   }
 
@@ -2128,7 +2130,7 @@ export class CloudRoaring {
    * ```
    */
   async exists(ref: SegmentRef): Promise<boolean> {
-    validateRef(ref, 'exists');
+    ref = validateRef(ref, 'exists');
     return segmentExists(ref, this.requireRegistry('exists'));
   }
 
@@ -2238,7 +2240,7 @@ export class CloudRoaring {
     toGeneration: number,
     options: { audit?: IAuditSink; allowUnknown?: boolean } = {},
   ): Promise<RollbackResult> {
-    validateRef(ref, 'rollback');
+    ref = validateRef(ref, 'rollback');
     checkOptions(options, 'rollback', CALL_KEYS.rollback, ['allowUnknown']);
     options ??= {};
     const deps = this.lifecycleDeps('rollback');
@@ -2347,7 +2349,7 @@ export class CloudRoaring {
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
   async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
-    validateRef(ref, 'load');
+    ref = validateRef(ref, 'load');
     checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty', 'sorted']);
     options ??= {};
     const deps = this.lifecycleDeps('load');
@@ -2413,7 +2415,7 @@ export class CloudRoaring {
     ref: SegmentRef,
     options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
   ): Promise<DropResult> {
-    validateRef(ref, 'dropSegment');
+    ref = validateRef(ref, 'dropSegment');
     if (options === undefined || options === null) {
       throw new ValidationError('dropSegment: options { confirmSegment } are required');
     }
@@ -2458,7 +2460,7 @@ export class CloudRoaring {
    * backend (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
-    validateRef(ref, 'setRetention');
+    ref = validateRef(ref, 'setRetention');
     return setSegmentRetention(
       ref,
       { registry: this.requireRegistry('setRetention'), clock: this.clock, rng: this.rng },
@@ -2473,7 +2475,7 @@ export class CloudRoaring {
    * "never expires" on a segment someone believes is expiring.
    */
   async getRetention(ref: SegmentRef): Promise<RetentionPolicy | null | 'invalid'> {
-    validateRef(ref, 'getRetention');
+    ref = validateRef(ref, 'getRetention');
     return getSegmentRetention(ref, { registry: this.requireRegistry('getRetention') });
   }
 
@@ -2483,7 +2485,7 @@ export class CloudRoaring {
    * to the setter is how a typo becomes a deletion.
    */
   async clearRetention(ref: SegmentRef): Promise<boolean> {
-    validateRef(ref, 'clearRetention');
+    ref = validateRef(ref, 'clearRetention');
     return clearSegmentRetention(ref, {
       registry: this.requireRegistry('clearRetention'),
       clock: this.clock,
@@ -2609,7 +2611,7 @@ export class CloudRoaring {
    * ```
    */
   invalidate(ref: SegmentRef): void {
-    validateRef(ref, 'invalidate');
+    ref = validateRef(ref, 'invalidate');
     refuseReservedNamespace(ref.namespace);
     this.engine.invalidate(ref);
   }

@@ -29,6 +29,12 @@ export type Token = string;
  * segment in such a namespace would be invisible to an erasure, a consistency check, an export and a retention sweep.
  * A driver takes the prefix, since the due index's own rows go through it. Only that exact prefix is reserved:
  * `cbm.dueX` and `cbmdue.eu` are ordinary namespaces, and a segment name is never restricted.
+ *
+ * **A key other than `segment` and `namespace` throws `ValidationError`**, in every call of the store and of the free
+ * functions behind it that takes a ref, and at a driver port (which also takes a `generation` or a `chunkKey`): a
+ * misspelt `namespace` would otherwise address the segment of that name in the default namespace. A `segments()` row
+ * is the one exception: its `currentGen` and `status` are taken and read for nothing. A segment handle, and a result
+ * row such as a consistency issue, a ledger entry or an audit event, is not a ref: pass `{ segment, namespace }`.
  */
 export interface SegmentRef {
   /** The segment's namespace, or `undefined` for the default one. */

@@ -36,6 +36,7 @@ import {
   concatBytes,
   normalizeObjectPrefix,
   parseGenerationFromKey,
+  checkDeleteOptions,
   requireBool,
   requirePositiveInt,
   segmentObjectPrefix,
@@ -432,7 +433,7 @@ export class GcsStorageDriver implements IStorageDriver {
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
     const objectName = storageObjectKey(this.prefix, key);
-    const ifVersion = options?.ifVersion;
+    const ifVersion = checkDeleteOptions(options);
     const conditional = ifVersion !== undefined && this.conditionalDelete;
     // Idempotent: a racing/retried GC sweep of an absent object is a no-op. Not the SDK's `ignoreNotFound`, which takes
     // every 404 and so would report a delete in a missing bucket as done.

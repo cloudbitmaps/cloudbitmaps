@@ -37,6 +37,7 @@ import {
   concatBytes,
   normalizeObjectPrefix,
   parseGenerationFromKey,
+  checkDeleteOptions,
   requireBool,
   requirePositiveInt,
   segmentObjectPrefix,
@@ -306,7 +307,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
     const blob = this.blob(storageObjectKey(this.prefix, key));
-    const ifVersion = options?.ifVersion;
+    const ifVersion = checkDeleteOptions(options);
     if (ifVersion === undefined || !this.conditionalDelete) {
       // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
       try {

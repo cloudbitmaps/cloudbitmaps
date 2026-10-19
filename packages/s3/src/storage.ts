@@ -49,6 +49,7 @@ import {
   concatBytes,
   normalizeObjectPrefix,
   parseGenerationFromKey,
+  checkDeleteOptions,
   requireBool,
   requirePositiveInt,
   segmentObjectPrefix,
@@ -439,7 +440,7 @@ export class S3StorageDriver implements IStorageDriver {
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
     const objectKey = storageObjectKey(this.prefix, key);
-    const ifVersion = options?.ifVersion;
+    const ifVersion = checkDeleteOptions(options);
     if (ifVersion !== undefined && this.explicitConditionalDelete !== false) await this.settle();
     const conditional =
       ifVersion !== undefined && appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts);

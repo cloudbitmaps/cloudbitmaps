@@ -33,6 +33,7 @@ import { KeptSegmentKeys, segmentKey } from './keys';
 import { aadFor, sameKeys } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import {
+  PORT_KEYS,
   validateChunkKey,
   validateChunkKeyOrder,
   validateChunkRef,
@@ -389,9 +390,9 @@ function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promi
 
 /** The checks every chunk read starts with: a user's segment, chunk keys that are valid and in ascending order (a key may repeat). */
 function validateRead(ref: SegmentRef, keys: readonly number[]): void {
-  validateUserRef(ref);
+  validateUserRef(ref, 'read', PORT_KEYS);
   // A chunk ref is a copy of this ref, so it carries only the ref's own enumerable names: checked once, not once a key.
-  if (keys.length > 0) validateSegmentRef({ ...ref });
+  if (keys.length > 0) validateSegmentRef({ ...ref }, PORT_KEYS);
   for (const chunkKey of keys) validateChunkKey(chunkKey);
   validateChunkKeyOrder(keys);
 }
@@ -1035,7 +1036,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     lease?: PinLease,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     for (let moved = 0; ; moved++) {
       try {
         try {
@@ -1073,7 +1074,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     at: { readonly generation: number; readonly fingerprint: string },
     lease?: PinLease,
   ): Promise<{ generation: number } & Required<PinnedObject>> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     if (typeof (at as Partial<typeof at> | undefined)?.fingerprint !== 'string')
       throw new ValidationError(
         `a pin of segment "${ref.segment}" needs the fingerprint of the object it names`,
@@ -1386,7 +1387,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<Uint8Array | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     if (reader === null) return null;
     if (
@@ -1468,7 +1469,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<number[]> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? [] : reader.chunkKeys();
   }
@@ -1482,7 +1483,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<ReadonlyMap<number, number> | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : reader.cardinalities();
   }
@@ -1493,7 +1494,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<SegmentSize | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
@@ -1508,7 +1509,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * tell apart.
    */
   async exists(ref: SegmentRef): Promise<boolean> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     // A `destroyed` row is a segment that was dropped, retired or shredded: it holds nothing, so a combine that names it
     // is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
     // nobody. A row with no generation yet (a retention policy set first) still exists.
@@ -1932,12 +1933,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   async listChunkKeys(ref: SegmentRef): Promise<number[]> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.withFreshSnapshot(ref, (reader) => reader.chunkKeys(), []);
   }
 
   async sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.withFreshSnapshot<SegmentSize | null>(
       ref,
       (reader) => ({ sizeBytes: reader.sizeBytes }),
@@ -1946,7 +1947,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   async cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.withFreshSnapshot<ReadonlyMap<number, number> | null>(
       ref,
       (reader) => reader.cardinalities(),
@@ -1968,7 +1969,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * believed until the next time the object is opened, which holds it against the summary.
    */
   async summary(ref: SegmentRef): Promise<GenerationSummary | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.described(
       ref,
       (generation, row) => summaryOfGeneration(generation, row),
@@ -2019,7 +2020,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<GenerationSummary | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : summaryOfGeneration(reader.generation, describe(reader));
   }
@@ -2034,7 +2035,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * are the generation's the row names, and `checkConsistency` is what finds such a row.
    */
   async stat(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.described<GenerationSummary & SegmentSize>(
       ref,
       (generation, row) => ({
@@ -2051,7 +2052,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<(GenerationSummary & SegmentSize) | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : sizedSummary(reader);
   }

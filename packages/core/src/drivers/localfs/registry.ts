@@ -10,6 +10,7 @@
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
  */
+import { checkRegistryWriteOptions } from '../_shared/options';
 import { constants as FS } from 'node:fs';
 import { open, opendir, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
@@ -143,6 +144,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     record: NewRegistryRecord,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
     assertRegistryNamesFit(ref);
@@ -169,6 +171,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     patch: RegistryPatch,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
     assertRegistryNamesFit(ref);

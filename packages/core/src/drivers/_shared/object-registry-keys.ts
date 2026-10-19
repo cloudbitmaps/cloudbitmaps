@@ -11,7 +11,7 @@
  * is a segment that quietly cannot be found by a store pointed at the same bucket.
  */
 import { ValidationError } from '@/core/errors';
-import { validateSegmentRef } from '@/core/validate';
+import { PORT_KEYS, validateSegmentRef } from '@/core/validate';
 import type { SegmentRef } from '@/core/ports';
 import { DEFAULT_NAMESPACE, decodeNameFromKey, encodeNameForKey, namespaceKeyPart } from './keys';
 
@@ -81,7 +81,7 @@ function registryPrefix(prefix: string | undefined): string {
 
 /** The full key of one segment's registry object: `<prefix>registry/<ns>/<segment>.reg`. */
 export function registryObjectKey(prefix: string | undefined, ref: SegmentRef): string {
-  validateSegmentRef(ref);
+  validateSegmentRef(ref, PORT_KEYS);
   return `${registryPrefix(prefix)}${namespaceKeyPart(ref.namespace)}/${encodeNameForKey(ref.segment)}${REGISTRY_SUFFIX}`;
 }
 
@@ -114,7 +114,7 @@ export function parseRegistryKey(prefix: string | undefined, objectKey: string):
   if (namespace !== undefined && encodeNameForKey(namespace) !== nsPart) return null;
   const ref: SegmentRef = { segment, namespace };
   try {
-    validateSegmentRef(ref); // reject a hostile/foreign key that isn't a valid ref
+    validateSegmentRef(ref, PORT_KEYS); // reject a hostile/foreign key that isn't a valid ref
   } catch {
     return null;
   }

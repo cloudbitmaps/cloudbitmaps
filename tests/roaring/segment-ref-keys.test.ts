@@ -6,6 +6,8 @@ import { judgeLoad, loadSegment } from '@/core/load';
 import { clearSegmentRetention, getSegmentRetention, setSegmentRetention } from '@/core/retention';
 import { listGenerations, rollbackSegment } from '@/core/rollback';
 import type { SegmentRef } from '@/index';
+import type { SegmentInfo } from '@/core/discover';
+import { REF_KEYS } from '@/core/validate';
 
 /**
  * A segment ref that holds a key it does not take is refused. Read as `{ segment: 'x' }`, `{ segment: 'x', namspace:
@@ -79,6 +81,25 @@ describe('every public call that takes a segment ref refuses a key it does not t
     await expect(Promise.resolve().then(call)).rejects.toThrow(`${verb}: `);
   });
 
+  it('a segment handle, a pinned handle and an array are told what a ref is', async () => {
+    const { store } = await world();
+    const seg = store.segment('a');
+    const handle = /a segment handle is not a ref; pass \{ segment, namespace \}/;
+    await expect(store.generations(seg as never)).rejects.toThrow(handle);
+    await expect(store.exists((await seg.pin()) as never)).rejects.toThrow(handle);
+    await expect(store.dropSegment(seg as never, { confirmSegment: 'a' })).rejects.toThrow(handle);
+    await expect(
+      destroySegment(seg as never, {} as never, { confirmSegment: 'a' }),
+    ).rejects.toThrow(handle);
+    await expect(store.exists(['a'] as never)).rejects.toThrow('not an array');
+  });
+
+  it('a result row of another call is not a ref', async () => {
+    const { store } = await world();
+    const issue = { segment: 'a', currentGen: 0, issue: 'x', generation: 1 } as never;
+    await expect(store.rollback(issue, 0)).rejects.toThrow('unknown keys "issue", "generation"');
+  });
+
   it('names every unknown key the caller wrote', async () => {
     const { store } = await world();
     const ref = { segment: 'a', namspace: 'eu', foo: 1 } as unknown as SegmentRef;
@@ -133,5 +154,17 @@ describe('a ref that is a listing row, or carries no namespace, is still taken',
   it('a ref with an undefined namespace is the default namespace', async () => {
     const { store } = await world();
     expect(await store.exists({ segment: 'a', namespace: undefined })).toBe(true);
+  });
+});
+
+describe('the keys a ref takes follow a listing row', () => {
+  it('are exactly the fields of SegmentInfo, so a field added there is listed or this fails', () => {
+    const fields: Record<keyof SegmentInfo, true> = {
+      segment: true,
+      namespace: true,
+      currentGen: true,
+      status: true,
+    };
+    expect([...REF_KEYS].sort()).toEqual(Object.keys(fields).sort());
   });
 });

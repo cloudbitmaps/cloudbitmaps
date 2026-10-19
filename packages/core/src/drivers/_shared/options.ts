@@ -60,6 +60,46 @@ export function requireBool(name: string, value: unknown): boolean | undefined {
   return value;
 }
 
+const DELETE_OPTION_KEYS: readonly string[] = ['ifVersion'];
+const WRITE_OPTION_KEYS: readonly string[] = ['held', 'onToken'];
+
+/**
+ * The per-call options of a storage port's `delete`, checked: absent, or an object holding only `ifVersion`, a string.
+ * A misspelt key would otherwise read as no condition and delete whatever is under the key. Returns the `ifVersion`.
+ */
+export function checkDeleteOptions(options: unknown): string | undefined {
+  if (options === undefined) return undefined;
+  refuseUnknownOptions('delete options', options, DELETE_OPTION_KEYS);
+  const { ifVersion } = options as { ifVersion?: unknown };
+  if (ifVersion !== undefined && typeof ifVersion !== 'string') {
+    throw new ValidationError(
+      `delete options: \`ifVersion\` must be a string; got ${shown(ifVersion)}`,
+    );
+  }
+  return ifVersion;
+}
+
+/**
+ * The per-call options of a registry port's `create` and `compareAndSwap`, checked: absent, or an object holding only
+ * `held` (a record or `null`) and `onToken` (a function). A misspelt key would otherwise drop the hint or the token report
+ * a publish relies on.
+ */
+export function checkRegistryWriteOptions(options: unknown): void {
+  if (options === undefined) return;
+  refuseUnknownOptions('write options', options, WRITE_OPTION_KEYS);
+  const { held, onToken } = options as { held?: unknown; onToken?: unknown };
+  if (held !== undefined && held !== null && typeof held !== 'object') {
+    throw new ValidationError(
+      `write options: \`held\` must be a registry record or null; got ${shown(held)}`,
+    );
+  }
+  if (onToken !== undefined && typeof onToken !== 'function') {
+    throw new ValidationError(
+      `write options: \`onToken\` must be a function; got ${shown(onToken)}`,
+    );
+  }
+}
+
 /** A value as a message shows it: a string quoted, so `'200'` is not mistaken for `200`, and never a throw. */
 function shown(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value);

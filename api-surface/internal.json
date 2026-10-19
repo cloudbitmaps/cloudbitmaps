@@ -619,7 +619,7 @@
     "@cloudbitmaps/core mapWithConcurrency": "function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]>;",
     "@cloudbitmaps/core readRetentionPolicy": "function readRetentionPolicy(meta: GovernanceMeta | undefined): RetentionPolicy | null | 'invalid';",
     "@cloudbitmaps/core rebindCombineMany": "function rebindCombineMany<R>(compiled: CompiledCombineMany<R>, operands: readonly CombineManyOperand[]): CompiledCombineMany<R>;",
-    "@cloudbitmaps/core refuseUnknownRefKeys": "function refuseUnknownRefKeys(ref: object, verb: string): void;",
+    "@cloudbitmaps/core refuseUnknownRefKeys": "function refuseUnknownRefKeys(ref: object, verb: string, extraKeys?: readonly string[]): void;",
     "@cloudbitmaps/core releaseLease": "function releaseLease(ref: SegmentRef, deps: LeaseDeps, holder: string): Promise<void>;",
     "@cloudbitmaps/core resolveBudget": "function resolveBudget(opt: BudgetOption | undefined, fallback: Budget): Budget | null;",
     "@cloudbitmaps/core resolvePerOpBudget": "function resolvePerOpBudget(opt: BudgetOption | undefined, storeBudget: Budget | null): Budget | null;",

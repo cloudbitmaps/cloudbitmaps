@@ -5,13 +5,15 @@
  *
  * Not in `core/` (this is a driver), so it may hold concrete state.
  */
+import { checkDeleteOptions } from './_shared/options';
+import { checkRegistryWriteOptions } from './_shared/options';
 import { createHash } from 'node:crypto';
 import { BufferSink, checkTailLength } from '../core/blob';
 import type { BlobSink } from '../core/blob';
 import type { Entropy } from '../core/determinism';
 import { NotFoundError, ValidationError, WriteConflictError } from '../core/errors';
 import { segmentKey } from '../core/keys';
-import { validateSegmentRef } from '../core/validate';
+import { PORT_KEYS, validateSegmentRef } from '../core/validate';
 import type {
   StorageCaps,
   StorageDeleteOptions,
@@ -81,7 +83,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
-    validateSegmentRef(ref);
+    validateSegmentRef(ref, PORT_KEYS);
     const row = this.rows.get(segmentKey(ref));
     return row ? structuredClone(row) : null; // clone out: callers can't mutate stored (nested) state
   }
@@ -91,7 +93,8 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     record: NewRegistryRecord,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
-    validateSegmentRef(ref);
+    checkRegistryWriteOptions(options);
+    validateSegmentRef(ref, PORT_KEYS);
     const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
     if (this.rows.has(key)) {
@@ -115,7 +118,8 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     patch: RegistryPatch,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
-    validateSegmentRef(ref);
+    checkRegistryWriteOptions(options);
+    validateSegmentRef(ref, PORT_KEYS);
     const checked = validateRegistryPatch(patch);
     const key = segmentKey(ref);
     const existing = this.rows.get(key);
@@ -138,7 +142,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
   }
 
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
-    validateSegmentRef(ref);
+    validateSegmentRef(ref, PORT_KEYS);
     const key = segmentKey(ref);
     if (expected !== undefined && this.rows.get(key)?.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
@@ -210,8 +214,8 @@ export class MemoryStorageDriver implements IStorageDriver {
   }
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const ifVersion = checkDeleteOptions(options);
     const k = genObjectKey(key);
-    const ifVersion = options?.ifVersion;
     const stored = this.objects.get(k);
     // The check and the removal in one step: nothing can store another object under the key between them.
     if (ifVersion !== undefined && stored !== undefined && stored.version !== ifVersion) {
@@ -223,7 +227,7 @@ export class MemoryStorageDriver implements IStorageDriver {
   }
 
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
-    validateSegmentRef(ref);
+    validateSegmentRef(ref, PORT_KEYS);
     const prefix = `${segmentKey(ref)} `;
     for (const k of this.objects.keys()) {
       if (k.startsWith(prefix)) {
@@ -247,7 +251,7 @@ export class MemoryStorageDriver implements IStorageDriver {
 
 /** Collision-proof object key for a generation: `<segmentKey> <generation>` (the name parts are encoded, so a space cannot appear inside one). */
 function genObjectKey(key: GenKey): string {
-  validateSegmentRef(key);
+  validateSegmentRef(key, PORT_KEYS);
   requireInteger(key.generation, { min: 0, what: 'generation' });
   return `${segmentKey(key)} ${key.generation}`;
 }

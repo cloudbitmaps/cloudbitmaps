@@ -11,7 +11,7 @@
  * `%5Fdefault` while the sentinel is emitted literally.
  */
 import { requireInteger } from '@/core/check';
-import { validateSegmentRef } from '@/core/validate';
+import { PORT_KEYS, validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
 import { encodeNameForKey, namespaceKeyPart } from './keys';
 import { prefixPart } from './object-registry-keys';
@@ -23,7 +23,7 @@ const SUFFIX = '.crbm';
  * the segment's generations asks for, and the string {@link parseGenerationFromKey} strips.
  */
 export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef): string {
-  validateSegmentRef(ref);
+  validateSegmentRef(ref, PORT_KEYS);
   return `${prefixPart(prefix)}${namespaceKeyPart(ref.namespace)}/segments/${encodeNameForKey(ref.segment)}.`;
 }
 
@@ -32,8 +32,10 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
  * is refused, so every key built here is one {@link parseGenerationFromKey} reads back.
  */
 export function storageObjectKey(prefix: string | undefined, key: GenKey): string {
+  validateSegmentRef(key, PORT_KEYS);
   requireInteger(key.generation, { min: 0, what: 'generation' });
-  return `${segmentObjectPrefix(prefix, key)}${key.generation}${SUFFIX}`;
+  const ref: SegmentRef = { segment: key.segment, namespace: key.namespace };
+  return `${segmentObjectPrefix(prefix, ref)}${key.generation}${SUFFIX}`;
 }
 
 /**
