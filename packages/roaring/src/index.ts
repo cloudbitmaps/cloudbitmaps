@@ -2597,8 +2597,9 @@ export class CloudRoaring {
   }
 
   /**
-   * **Cancel a segment's expiry** so no sweep retires it. Returns whether a policy was actually removed (`false`
-   * when there was none). A separate verb from `setRetention` on purpose: "never expire" as a magic value passed
+   * **Cancel a segment's expiry** so no sweep retires it. Returns whether this call removed a policy (`false`
+   * when there was none, and also when a write that got no answer cannot be shown to be this call's: the expiry is gone
+   * either way, and its due-index pointer is removed). A separate verb from `setRetention` on purpose: "never expire" as a magic value passed
    * to the setter is how a typo becomes a deletion.
    */
   async clearRetention(ref: SegmentRef): Promise<boolean> {

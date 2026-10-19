@@ -74,7 +74,7 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
 - **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
   policy is committed, and the fleet scan still retires the segment.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
-  `createdRow: true`) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
+  `createdRow: true`, or `false` when another write followed this call's create before it could read the row back) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
   sweep can already see the segment, and the first load publishes onto that row. A load already running when
   `setRetention` creates the row found none, so it is refused `superseded`, guarded or not: re-run it, and it
   publishes onto that row. Reads are unaffected: a pointer-less row resolves exactly like a segment with no row.
@@ -84,13 +84,19 @@ Reading and cancelling:
 ```ts
 const ref = { namespace: 'active-daily', segment: '2026-08-05' };
 await store.getRetention(ref); // → { expiresAt } | null | 'invalid'
-await store.clearRetention(ref); // → true if a policy was actually removed
+await store.clearRetention(ref); // → true if this call removed a policy
 ```
 
 `getRetention` returns the string `'invalid'` for a row whose `expiresAt` is present but unusable, such as a
 hand-edited one. That is deliberately not folded into `null`: a malformed policy reading as "never expires" on a
 segment someone believes is expiring is the kind of silence that costs a compliance commitment. Cancelling is its own
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
+
+**`clearRetention` answers `false` when it cannot show it removed the policy.** A clear whose write gets no answer
+reads the row back and answers `true` when the row shows its write. When another write has followed it first (on Azure
+Blob, a write that met a conflict), the row cannot say whose write removed the expiry. The call then answers `false`,
+and the expiry is gone either way. The due-index pointer of the expiry it read goes in both cases, and a
+`setRetention` that moves an expiry removes the old day's pointer the same way, whether its write was answered or not.
 
 ### A deadline on a set
 
