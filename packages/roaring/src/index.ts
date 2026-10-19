@@ -552,9 +552,11 @@ export interface SubjectReport {
   readonly segments: SubjectSegmentRef[];
   /**
    * The destroyed segments whose leftover objects still hold the id in the clear: one destroyed with `allowCleartext`,
-   * or dropped while a load wrote an object its sweep did not catch. No read resolves them, so the id is a member of
-   * none, but its bytes are in the bucket, and `eraseSubject` deletes them. A crypto-shredded segment is never listed
-   * (its objects are sealed under a key no row holds), nor a destroyed one with no object left. `[]` when none.
+   * dropped while a load wrote an object its sweep did not catch, or crypto-shredded over an object a cleartext writer
+   * left. No read resolves them, so the id is a member of none, but its bytes are in the bucket, and `eraseSubject`
+   * deletes them. A crypto-shredded segment's own objects are sealed under a key no row holds and are never a holder,
+   * so it is listed only when an object left under it in the clear holds the id; nor is a destroyed segment with no
+   * object left. `[]` when none.
    */
   readonly tombstones: SubjectSegmentRef[];
   /** How many registered segments were scanned (the completeness denominator). */
@@ -1851,12 +1853,15 @@ export class CloudRoaring {
    * tombstone, so the id is a member of none, but a cleartext `destroySegment` (`allowCleartext`), or a `dropSegment`
    * whose sweep missed an object a load was still writing, leaves objects anyone with bucket access can read. Each
    * object left under the tombstone is opened newest first until one holds the id, and the segment is then listed in
-   * `tombstones`, never in `segments`. A crypto-shredded segment is never listed: its objects are sealed under a key no
-   * row holds. The cost is one listing per destroyed segment in scope (1 request when nothing is left), and for each
+   * `tombstones`, never in `segments`. A crypto-shredded segment's own objects are sealed under a key no row holds and are
+   * never a holder: it is listed only when an object left under it in the clear holds the id. The cost is one listing per destroyed segment in scope (1 request when nothing is left), and for each
    * object opened a tail read and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted
    * object, which never holds the id): 7 requests for a cleartext destroy with 3 objects, 21 for 10. The budget is
-   * charged one unit for each object opened past the one the row names, as `eraseSubject` charges, and a report that
-   * runs out, or whose read fails after the store's retry, rejects rather than under-reporting.
+   * charged one unit for each object opened past the one the row names, as `eraseSubject` charges. A report that runs
+   * out, or whose listing or read fails after the store's retry, rejects rather than under-reporting, so one leftover
+   * object that cannot be opened makes every report over its scope reject until it is removed (`generations(ref)` lists
+   * what is left, `dropSegment` deletes it). A report refused for budget while it searches a destroyed segment reports
+   * `spent` as `limit + 1`, a lower bound.
    */
   async subjectReport(
     id: number,
@@ -1890,7 +1895,11 @@ export class CloudRoaring {
     let opens = 0;
     const charge = (): void => {
       opens += 1;
-      checkBudget(budget, recs.length + opens, 'subjectReport');
+      // A refusal part-way through the search does not know what the whole search needs, so it reports the bound
+      // plus one, a lower bound, as an enumeration stopped at its bound does.
+      if (budget !== null && recs.length + opens > budget.maxRequests) {
+        checkBudget(budget, budget.maxRequests + 1, 'subjectReport');
+      }
     };
     // Bounded fan-out of `has()` across registered segments. Order-preserving ⇒ deterministic result. A has()
     // fault propagates (a report that can't read a segment must fail loud, not silently under-report).

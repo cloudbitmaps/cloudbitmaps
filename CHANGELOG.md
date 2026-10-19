@@ -38,11 +38,14 @@ so, and so do the module headers in the code.
   was still writing, leave the id readable in the bucket though no read resolves the segment. `eraseSubject` already
   searched and deleted those objects; the report now finds the same ones by the same search, so an Art. 15 answer
   names what an Art. 17 erasure would delete. `SubjectReport` gains the required `tombstones: SubjectSegmentRef[]`,
-  `[]` when none, and `segments` is unchanged. A crypto-shredded segment is never listed: its objects are sealed under
-  a key no row holds. Each destroyed segment in scope costs one more listing, and each object searched a tail read
+  `[]` when none, and `segments` is unchanged. A crypto-shredded segment's own objects are sealed under a key no row holds and are never a holder, so it is listed
+  only when an object left under it in the clear holds the id. Each destroyed segment in scope costs one more listing, and each object searched a tail read
   and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted object); the budget is
   charged one unit for each object opened past the one the row names, as `eraseSubject` charges, and a report that
-  runs out throws `BudgetExceededError`.
+  runs out throws `BudgetExceededError` (with `spent` at `limit + 1`, a lower bound). A fault reading a destroyed
+  segment's leftover objects, or a budget that runs out, rejects the whole report rather than leaving the segment out, so
+  one leftover object that cannot be opened makes every report over its scope reject until it is removed:
+  `store.generations(ref)` lists what is left under it, and `dropSegment` deletes it.
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
   exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
   `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it

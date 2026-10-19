@@ -479,6 +479,11 @@ None of these are committed and none have dates. If one matters to you,
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) and say so — that's the single best way to
 move it up.
 
+- **Answer an encrypted leftover object from its first tail read.** The search `subjectReport` and `eraseSubject` make
+  under a destroyed segment reads an encrypted object's tail twice (the open, then the footer that says it is
+  encrypted), 20 reads for a crypto-shred that left 10 objects, paid by every report that scopes it for as long as the
+  objects stay. The footer is already in the first tail read, so one read would halve it in the report and the erasure
+  alike.
 - **`analyze` — try it on your own data before adopting anything.** Point a command at a file of your IDs and it
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the object size, the read cost and the monthly figure that follow — **offline, with no cloud account and

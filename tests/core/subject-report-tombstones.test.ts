@@ -188,6 +188,55 @@ describe('subjectReport lists a cleartext tombstone whose leftover object holds 
     expect(await present(w.backend, 'sealed')).toEqual([0, 1, 2]);
   });
 
+  it('lists a crypto-shredded segment over a cleartext object a writer left under the tombstone', async () => {
+    const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    const w = await loadedStore({}, { retry: false, encryption: { keystore } });
+    for (let i = 0; i < 2; i++) await w.load(ref('sealed'), [ID, i]);
+    const shred = await destroySegment(
+      ref('sealed'),
+      { registry: w.backend.registry },
+      { confirmSegment: 'sealed' },
+    );
+    expect(shred.cryptoShredded).toBe(true);
+    // A cleartext object under the tombstone, with no registry write, as a cleartext writer that lost a race leaves.
+    await bulkLoadCrbmGeneration(w.backend.storage, { ...ref('sealed'), generation: 5 }, [ID, 3]);
+
+    // A store with a keystore still searches the tombstone: the objects decide, not the store's encryption settings.
+    const strict = new CloudRoaring({
+      storage: w.backend,
+      retry: false,
+      encryption: { keystore, required: true },
+    });
+    const report = await strict.subjectReport(ID, { namespace: NS });
+    expect(report.tombstones).toEqual([ref('sealed')]);
+    expect(report.segments).toEqual([]);
+
+    const ledger = await strict.eraseSubject(ID, { namespace: NS });
+    expect(ledger.erasedFrom).toEqual([
+      expect.objectContaining({ segment: 'sealed', erased: true, fromGeneration: 5 }),
+    ]);
+    expect(await present(w.backend, 'sealed')).toEqual([]); // every object under a tombstone is garbage
+    expect((await strict.subjectReport(ID, { namespace: NS })).tombstones).toEqual([]);
+  });
+
+  it('lists a tombstone whose row names no generation, over an object a first load left', async () => {
+    const backend = new MemoryStorage();
+    const { store } = storeOver(backend);
+    await store.setRetention(ref('early'), { expiresAt: 2_000_000_000_000 }); // a row minted ahead of its first load
+    await store.dropSegment(ref('early'), { confirmSegment: 'early' });
+    const row = await backend.registry.get(ref('early'));
+    expect(row?.status).toBe('destroyed');
+    expect(row?.currentGen).toBeNull();
+    await bulkLoadCrbmGeneration(backend.storage, { ...ref('early'), generation: 0 }, [ID, 3]);
+
+    expect((await store.subjectReport(ID, { namespace: NS })).tombstones).toEqual([ref('early')]);
+    const ledger = await store.eraseSubject(ID, { namespace: NS });
+    expect(ledger.erasedFrom).toEqual([
+      expect.objectContaining({ segment: 'early', erased: true }),
+    ]);
+    expect(await present(backend, 'early')).toEqual([]);
+  });
+
   it('does not list a dropped segment that deleted every generation, and opens nothing', async () => {
     const backend = new MemoryStorage();
     await history(backend, 'dropped', [[ID], [ID, 1]]);
@@ -238,7 +287,14 @@ describe('subjectReport lists a cleartext tombstone whose leftover object holds 
 
       const short = store.subjectReport(ID, { namespace: NS, budget: { maxRequests: 9 } });
       await expect(short).rejects.toBeInstanceOf(BudgetExceededError);
-      await expect(short).rejects.toMatchObject({ option: 'budget.maxRequests' });
+      // Refused part-way through the search, it reports the bound plus one, a lower bound.
+      await expect(short).rejects.toMatchObject({
+        option: 'budget.maxRequests',
+        limit: 9,
+        spent: 10,
+      });
+      const tight = store.subjectReport(ID, { namespace: NS, budget: { maxRequests: 5 } });
+      await expect(tight).rejects.toMatchObject({ limit: 5, spent: 6 });
       await expect(short).rejects.toThrow(/subjectReport would fan out to \d+ units/);
 
       const free = await store.subjectReport(ID, { namespace: NS, budget: false });
@@ -250,6 +306,62 @@ describe('subjectReport lists a cleartext tombstone whose leftover object holds 
       expect(await present(backend, 'long')).toHaveLength(10);
       const done = await store.eraseSubject(ID, { namespace: NS, budget: { maxRequests: 10 } });
       expect(done.erasedFrom[0]).toMatchObject({ erased: true });
+    });
+  });
+
+  describe('a fault on the listing', () => {
+    const policy = {
+      maxAttempts: 3,
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+      backoffFactor: 1,
+      jitter: 'none',
+    } as const;
+    const failingList = (base: IStorageDriver, failures: () => boolean): IStorageDriver =>
+      new Proxy(base, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target) as unknown;
+          if (typeof value !== 'function') return value;
+          if (prop === 'list') {
+            return (r: SegmentRef) =>
+              failures()
+                ? {
+                    [Symbol.asyncIterator]: () => ({
+                      next: () => Promise.reject(new TransientError('injected list fault')),
+                    }),
+                  }
+                : (value as (r: SegmentRef) => unknown).call(target, r);
+          }
+          return (value as (...a: unknown[]) => unknown).bind(target);
+        },
+      });
+
+    it('is retried under the store retry, and the segment is listed', async () => {
+      const backend = new MemoryStorage();
+      await history(backend, 'flaky', [[ID]]);
+      await cleartextDestroy(backend, 'flaky');
+      let injected = 0;
+      const storage = failingList(backend.storage, () => injected++ === 0);
+      const store = new CloudRoaring({
+        storage: brandAsBackend({ storage, registry: backend.registry }),
+        retry: policy,
+      });
+      expect((await store.subjectReport(ID, { namespace: NS })).tombstones).toEqual([ref('flaky')]);
+      expect(injected).toBeGreaterThan(1);
+    });
+
+    it('that outlasts the retry rejects the report', async () => {
+      const backend = new MemoryStorage();
+      await history(backend, 'flaky', [[ID]]);
+      await cleartextDestroy(backend, 'flaky');
+      const storage = failingList(backend.storage, () => true);
+      const store = new CloudRoaring({
+        storage: brandAsBackend({ storage, registry: backend.registry }),
+        retry: policy,
+      });
+      await expect(store.subjectReport(ID, { namespace: NS })).rejects.toBeInstanceOf(
+        TransientError,
+      );
     });
   });
 

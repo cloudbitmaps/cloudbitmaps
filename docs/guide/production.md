@@ -670,7 +670,7 @@ scan), `limit` is the bound that was in force and `spent` is what the call had r
 on the option:
 
 - `'budget.maxRequests'`: the requests a plan needs. Raising the budget to it lets the call through, except for an
-  enumeration stopped at its bound (`subjectReport`, `eraseSubject`'s scan), which reports `limit + 1`, a lower bound:
+  enumeration stopped at its bound (`subjectReport`, `eraseSubject`'s scan), and a `subjectReport` refused while it searches a destroyed segment, which report `limit + 1`, a lower bound:
   raising the budget to it can be refused again, so raise it with room to spare.
 - `'maxBufferedBytes'`: a **lower bound** on the memory the call needs, namely what it held plus what it asked for at the
   moment it was refused. Raising the limit to `spent` can be refused again further on, because the call had not finished
@@ -697,7 +697,7 @@ payload: it answers from the row's summary, or from the index when the row has n
 object it opens under it beyond the one the row names (a segment's own listing and that open are in its unit). A drop
 that deleted everything costs 1 listing; a cleartext destroy with 3 objects, 7 requests; 10 objects, 21, of which 10 are
 budget units when the id is only in the oldest. A report that runs out throws `BudgetExceededError`, never a short
-answer.
+answer, with `spent` at `limit + 1`, a lower bound: raise the budget with room to spare.
 
 `eraseSubject` charges one unit per registered segment, and one for each generation it opens beyond the one the
 row names. Only the enumeration can refuse the whole call. A segment that runs the budget out during the scan is
