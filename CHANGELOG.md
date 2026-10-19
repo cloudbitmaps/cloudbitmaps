@@ -13,14 +13,25 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-- **A segment ref with a key it does not take is refused with `ValidationError`.** `{ segment: 'x', namspace: 'eu' }`
-  used to read as `{ segment: 'x' }` and act on the segment of that name in the default namespace, which for
-  `dropSegment`, `rollback` and `destroySegment` meant acting on the wrong segment. `load`, `exists`, `generations`,
-  `rollback`, `dropSegment`, `setRetention`, `getRetention`, `clearRetention`, `invalidate` and `destroySegment` now
-  name the key the caller wrote and the keys a ref takes (`segment`, `namespace`, and the `currentGen` and `status` of a
-  `store.segments()` row, so a listing row can still be passed back).
-  To migrate: fix the key's spelling; a ref takes only `segment`, `namespace` and, from a listing row, `currentGen` and
-  `status`, so build the ref from only those keys (pick `segment` and `namespace` out of a config object).
+- **A segment ref, a driver port's key and a driver port's per-call options with a key they do not take are refused
+  with `ValidationError`.** `{ segment: 'x', namspace: 'eu' }` used to read as `{ segment: 'x' }` and act on the
+  segment of that name in the default namespace, which for `dropSegment`, `rollback` and `destroySegment` meant acting
+  on the wrong segment, and `backend.registry.delete`, `backend.storage.delete` and the other port calls did the same.
+  `load`, `exists`, `generations`, `rollback`, `dropSegment`, `setRetention`, `getRetention`, `clearRetention`,
+  `invalidate` and `destroySegment` now name the key the caller wrote and the keys a ref takes (`segment`, `namespace`,
+  and the `currentGen` and `status` of a `store.segments()` row, which are read for nothing, so a listing row can still
+  be passed back). The registry and storage ports of every shipped driver refuse the same way, naming the keys they take
+  (a ref, a `generation`, a `chunkKey`). Their per-call options are checked too: a storage `delete` takes `{ ifVersion }`
+  only, a string, so a misspelt `ifVersion` is no longer an unconditional delete, and a registry `create` and
+  `compareAndSwap` take `{ held, onToken }` only. A driver of your own that calls `validateSegmentRef` gets the check;
+  `checkDeleteOptions` and `checkRegistryWriteOptions` in the driver kit do the options.
+  Also refused now, though each type-checks as a ref when passed as a variable: a row of any other result (a
+  `checkConsistency` issue, an `eraseSubject` or `retireExpired` ledger entry, an export manifest entry, an audit
+  event), a segment handle and an array. To migrate: fix the key's spelling, and build the ref as a typed
+  `{ segment, namespace }` from the row's two fields. Do not pick the keys out of a config object, as in
+  `{ segment: cfg.segment, namespace: cfg.namespace }`: a misspelt key in `cfg` leaves `namespace` undefined, which is
+  the default namespace, and no check can see it. Validate the config's keys, or pass `cfg` itself so the ref check sees
+  the typo. The confirmation of `destroySegment` and `dropSegment` repeats the segment's name only, not its namespace.
 
 - **`deserializePortable(bytes)` returns `ReadonlyBitmap`, a type of this library's own, in place of `roaring`'s
   `RoaringBitmap32`, and no public signature names a type of the `roaring` package.** A `ReadonlyBitmap` is a
