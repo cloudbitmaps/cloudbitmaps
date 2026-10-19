@@ -67,7 +67,7 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
   an `expiresAt` below it, and `retireExpired` for a `now` below it.
 - **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto segments that already
   exist is a normal migration.
-- **A tombstone is refused.** A crypto-shredded, dropped or retired segment throws `ValidationError`: there is nothing
+- **A tombstone is refused.** A crypto-shredded, cleartext-destroyed, dropped or retired segment throws `ValidationError`: there is nothing
   left to retire, so use a new segment name.
 - **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
   policy is committed, and the fleet scan still retires the segment.

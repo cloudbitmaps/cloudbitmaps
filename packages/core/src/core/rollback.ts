@@ -77,7 +77,10 @@ export interface GenerationListDeps extends ChurnDeps {
 export interface GenerationEntry {
   /** The generation's number. */
   readonly generation: number;
-  /** Whether the registry pointer currently names this generation. */
+  /**
+   * Whether the registry pointer currently names this generation. `false` for every generation of a destroyed
+   * segment: a destroyed row keeps the pointer it had, but no read resolves a generation through it.
+   */
   readonly current: boolean;
   /**
    * Whether the row's record of the generations it published, `knownGens`, names this generation. A rollback onto a known
@@ -116,7 +119,8 @@ export async function listGenerations(
 ): Promise<GenerationEntry[]> {
   validateUserRef(ref);
   const record = await deps.registry.get(ref);
-  const current = record?.currentGen ?? null;
+  // A destroyed row keeps the pointer it had, but no read resolves through it, so no generation is current.
+  const current = record?.status === 'destroyed' ? null : (record?.currentGen ?? null);
   const seen = await generationsOf(deps.storage, ref);
   const described = record === null ? undefined : await currentDescription(ref, record, deps);
   const known = new Set((usableKnownGens(record) ?? []).map((e) => e.generation));
@@ -184,8 +188,8 @@ export interface RollbackResult {
  * - a generation whose object is **not in the bucket** — collected, or never written — is refused with
  *   `NotFoundError` rather than pointed at, because a pointer naming a missing object is the one state the whole
  *   design exists to avoid;
- * - a **crypto-shredded** segment is refused: every generation of it is unreadable, so a rollback would produce a
- *   segment that resolves and then fails;
+ * - a **destroyed** segment (crypto-shredded, destroyed in the clear or dropped) is refused: no generation resolves
+ *   through a destroyed row, so moving its pointer would change nothing a reader sees;
  * - a target that is **not what the row says the segment is** is refused with `IntegrityError`: a cleartext object
  *   under a row with keys, or an encrypted one under a row with none, either of which every read would then refuse.
  *   One tail read of the target decides it, as does a footer that fails its own checks;
@@ -261,7 +265,7 @@ export async function rollbackSegment(
   }
   if (record.status === 'destroyed') {
     throw new ValidationError(
-      `rollback: segment "${ref.segment}" is destroyed (crypto-shredded) — every generation of it is unreadable`,
+      `rollback: segment "${ref.segment}" is destroyed — no generation resolves through a destroyed row`,
     );
   }
   const known = usableKnownGens(record);

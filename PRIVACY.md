@@ -227,7 +227,7 @@ registry row is a random holder id, a generation number and an instant, with no 
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,
 { format })` (and the `export-segments` CLI) dumps the current generation of every registered segment that is not
-destroyed (crypto-shredded or dropped) to a portable
+destroyed (crypto-shredded, destroyed in the clear or dropped) to a portable
 file — `roaring` (loadable by any roaring library) or `ndjson` (newline ids) — readable without CloudBitmaps. A destroyed segment resolves no generation, so it is not exported: the manifest's `skipped` lists it, and `segments`, `failed` and `skipped` together account for every segment row the registry listed.
 It's a **controller-side bulk dump** (all segments, opaque ids), not a per-subject deliverable — the per-subject
 rights are `subjectReport` (Art. 15) / `eraseSubject` (Art. 17). Encrypted segments are decrypted transparently

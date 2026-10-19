@@ -2074,7 +2074,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    *
    * A *second* NotFound is pathological (GC outrunning resolution) and propagates rather than fabricating an
    * absent answer — never return a wrong result. `ifGone` is returned when the segment has no committed
-   * generation to serve: storage is empty, or the row was dropped or crypto-shredded, in which case reading empty
+   * generation to serve: storage is empty, or the row is destroyed (crypto-shredded, destroyed in the clear or dropped), in which case reading empty
    * is the documented outcome rather than a failure.
    *
    * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry

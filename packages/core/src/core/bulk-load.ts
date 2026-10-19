@@ -501,7 +501,8 @@ async function rowForWrite(
         : null;
   if (existing?.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+      `segment "${ref.segment}" is destroyed — refusing to write: no generation resolves through a destroyed row; ` +
+        `use a new segment`,
     );
   }
 

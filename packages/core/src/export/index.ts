@@ -92,8 +92,8 @@ export interface ExportFailure {
 }
 
 /**
- * A registered segment the export did not read, and why. `'destroyed'` is a tombstone: the segment was crypto-shredded
- * or dropped, so it resolves no generation and has nothing to export.
+ * A registered segment the export did not read, and why. `'destroyed'` is a tombstone: the segment was crypto-shredded,
+ * destroyed in the clear or dropped, so it resolves no generation and has nothing to export.
  */
 export interface ExportSkipped {
   /** The name of the segment that was skipped. */

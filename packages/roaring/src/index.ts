@@ -2092,6 +2092,7 @@ export class CloudRoaring {
    * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
    * Each entry says whether the row knows the generation (`known`): a known generation needs no `allowUnknown`; an unknown
    * one does, except below a row's pointer when the row has no usable record or the target is older than a full one reaches.
+   * No entry is `current` on a destroyed segment: its row keeps the pointer it had, but no read resolves through it.
    *
    * Needs a backend.
    */
@@ -2188,7 +2189,8 @@ export class CloudRoaring {
    * {@link ValidationError} before any request to storage, and a known one whose object carries another checksum than
    * the recorded one throws {@link IntegrityError}, with or without a keystore, since the footer is in the clear. A
    * generation not in the bucket (collected, or never written) throws `NotFoundError` naming what *is* available, a
-   * crypto-shredded segment throws {@link ValidationError} because every generation of it is unreadable, and a target
+   * destroyed segment (crypto-shredded, destroyed in the clear or dropped) throws {@link ValidationError}, because no
+   * generation resolves through a destroyed row, and a target
    * that is cleartext under an encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from
    * one tail read of it, because every read would refuse it. Rolling to the generation already current is a no-op that
    * reports itself, once one footer read finds its object in the bucket (and the one the row recorded); when the object is
@@ -2804,7 +2806,7 @@ export class CloudRoaring {
    * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent,
    * errored }` — `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object
    * store, or roll the registry back to a coherent point). Needs the store built with a **backend**
-   * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
+   * (throws {@link UnsupportedError} otherwise). `destroyed` segments (crypto-shredded, destroyed in the clear or dropped) are skipped. Pair it with
    * the DR runbook (docs/guide/disaster-recovery.md).
    *
    * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still

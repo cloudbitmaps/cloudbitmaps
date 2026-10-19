@@ -7,8 +7,8 @@
  * the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
- * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
- * gone/unreadable, not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
+ * Read-only; bounded fan-out. `destroyed` segments are skipped: no generation resolves through one, so a missing
+ * object under it is not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
  * `errored` (never aborts the scan). One segment can add several entries to `inconsistent` (its current object, and with
  * `generations` one per known generation whose object is not the one recorded) and can also be in `errored`, when a
  * read failed after those were found; with `generations` a segment costs up to one read per entry of its ledger.

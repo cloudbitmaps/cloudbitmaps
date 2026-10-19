@@ -891,6 +891,16 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     ),
     why: '`segment.collect` is also emitted, with no `fromGeneration` and no ledger entry, by an erasure that found the id in nothing it could search and deleted only objects no read of the segment can open: define the event so it covers that case, and count only one that names a `fromGeneration` as a per-subject receipt',
   },
+  // A destroyed row is written by three routes: a crypto-shred, a cleartext destroy (its objects stay readable in the
+  // bucket) and a drop. No page may equate "destroyed" with "crypto-shredded", or call every generation of one unreadable.
+  {
+    claim: new RegExp(g(String.raw`destroyed\`? \(crypto-shredded\)`), 'i'),
+    why: 'a destroyed row is a crypto-shred, a cleartext destroy or a drop: say "destroyed", or name all three (crypto-shredded, destroyed in the clear or dropped)',
+  },
+  {
+    claim: new RegExp(g('every generation of it is unreadable'), 'i'),
+    why: 'a cleartext destroy leaves its objects readable from the bucket: say that no generation resolves through a destroyed row',
+  },
 ];
 
 /**
@@ -1448,6 +1458,14 @@ describe('no document claims behaviour this library does not have', () => {
     '`segment.collect` (a subject erasure that found the id only outside the\ncurrent generation and deleted the generations holding it, rewriting none)',
     '| `segment.collect` | No generation in the bucket holds the erased id, and nothing was rewritten: the id was only in generations no reader resolves |',
     '`segment.rewrite` or `segment.collect` (with its ledger) for a per-subject\nerasure',
+    // A destroyed row equated with a crypto-shred, and its generations called unreadable.
+    'segment "x" is destroyed (crypto-shredded) — refusing to write',
+    'a `destroyed` (crypto-shredded) row, where advancing the pointer',
+    'a destroyed\n   * (crypto-shredded) segment is skipped',
+    '`destroyed`\n// (crypto-shredded) segments are skipped',
+    'every generation of it is unreadable',
+    'refused: every generation of\n   * it is unreadable, so a rollback',
+    'since every generation\n> of it is unreadable',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1645,6 +1663,11 @@ describe('no document claims behaviour this library does not have', () => {
     '`segment.collect` (a subject erasure that rewrote nothing and deleted objects no reader resolves: the generations holding the id, when it found the id only outside the current generation)',
     'No generation in the bucket holds the erased id, and nothing was rewritten. With a `fromGeneration`, the id was only in generations no reader resolves.',
     '`segment.rewrite`, or a `segment.collect` that names a `fromGeneration`, with its ledger entry, for a per-subject erasure',
+    // A destroyed row as it is: three routes, and what is true of all of them.
+    'a destroyed segment (crypto-shredded, destroyed in the clear or dropped)',
+    'segment "x" is destroyed — no generation resolves through a destroyed row',
+    'the objects are unreadable once no retained copy of the row holds the key',
+    'A crypto-shredded segment (encrypted) is destroyed; its objects are unreadable without the key.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
@@ -1948,8 +1971,23 @@ describe('no document claims behaviour this library does not have', () => {
     expect(isHistory(join('bench', 'calibration', '2026-09-14-12345.json.md'))).toBe(false);
   });
 
+  // The operating manual's fourth invariant still equates a destroyed row with a crypto-shred, and its edit waits for
+  // the maintainer's approval. Until it lands, that one phrase on that one line is the only hit the gate lets through;
+  // the second test fails the moment the manual stops saying it, so this exemption cannot outlive the edit.
+  const AWAITING_EDIT =
+    /^(?:AGENTS|CLAUDE)\.md:\d+ — "destroyed \(crypto-shredded\)" is not true\./;
   it.each(files)('%s', (rel) => {
-    expect(hitsIn(rel, readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
+    const hits = hitsIn(rel, readFileSync(join(ROOT, rel), 'utf8'));
+    expect(
+      rel === 'AGENTS.md' || rel === 'CLAUDE.md'
+        ? hits.filter((h) => !AWAITING_EDIT.test(h))
+        : hits,
+    ).toEqual([]);
+  });
+
+  it('exempts the operating manual only while it still says the refused phrase', () => {
+    const manual = hitsIn('AGENTS.md', readFileSync(join(ROOT, 'AGENTS.md'), 'utf8'));
+    expect(manual.filter((h) => AWAITING_EDIT.test(h)).length).toBeGreaterThan(0);
   });
 });
 

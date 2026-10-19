@@ -343,7 +343,7 @@ export async function clearSegmentRetention(
 function assertNotDestroyed(record: RegistryRecord, ref: SegmentRef): void {
   if (record.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to set a retention policy on a ` +
+      `segment "${ref.segment}" is destroyed — refusing to set a retention policy on a ` +
         `tombstone; there is nothing left to retire. Use a new segment.`,
     );
   }

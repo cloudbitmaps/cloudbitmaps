@@ -499,7 +499,7 @@ describe('an object sealed under a key no row holds', () => {
   });
 });
 
-describe('a destroyed (crypto-shredded) row', () => {
+describe('a destroyed row', () => {
   it('is a ValidationError, whatever the target (before: the same)', async () => {
     const w = world(true);
     await loads(w, 2);

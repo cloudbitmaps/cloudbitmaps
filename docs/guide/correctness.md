@@ -317,7 +317,7 @@ checksum-verified chunks from it.
 the fetch and the reopen, which are separate round trips. The call then serves the newer, committed generation: a move
 forward within that segment's lifetime, never a torn object. A second miss is pathological (collection outrunning
 resolution) and propagates instead of fabricating an absent answer. The one case that answers empty instead of
-throwing is a segment with no generation left to serve at all, dropped or crypto-shredded, where reading empty is the
+throwing is a segment with no generation left to serve at all, destroyed (crypto-shredded, destroyed in the clear or dropped), where reading empty is the
 documented outcome.
 
 <a id="exposure-window-is-the-ttl"></a>**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so at

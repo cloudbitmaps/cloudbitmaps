@@ -256,7 +256,7 @@ the result (`'empty'`, `'min-cardinality'`, `'min-retained'` or `'max-growth'`),
 There are two ways to get there first. Another load may have taken the same generation number, so this one wrote
 nothing (`size: 0`). Or the segment's registry row changed while the load was writing: another load published, a
 retention change, a rollback or an erasure wrote the row, or the row was deleted. A refused load deletes the object
-it wrote while the row is unchanged, changed only in its leases, dropped or crypto-shredded, and, once one read of the
+it wrote while the row is unchanged, changed only in its leases, or destroyed (crypto-shredded, destroyed in the clear or dropped), and, once one read of the
 object's footer matches what the load wrote, when the row is gone or, for a cleartext object, has key material. Once
 another write has otherwise changed the row, it leaves the object in the bucket, an orphan: a load's listing deletes
 it once a generation above it is current, unless the row's window names it, and can keep it in its window where the
