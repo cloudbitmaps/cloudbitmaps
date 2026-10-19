@@ -136,6 +136,7 @@ describe('retireExpired refuses a bad option before it lists the registry', () =
     [{ scan: 'idnex' }, "`scan` must be 'fleet' or 'index'; got \"idnex\""],
     [{ lookbackBuckets: -1 }, '`lookbackBuckets` must be an integer of at least 0; got -1'],
     [{ limit: null }, '`limit` must be an integer'],
+    [{ tombstoneGraceMs: 0 }, 'at least 3600000 (one hour'],
     [{ tombstoneGraceMs: null }, '`tombstoneGraceMs` must be a finite number'],
     [{ shards: [], totalShards: 2 }, 'shards is empty'],
     [{ shards: [1, 1], totalShards: 2 }, 'shard 1 is listed twice'],

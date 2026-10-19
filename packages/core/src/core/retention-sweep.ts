@@ -89,6 +89,13 @@ const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
 const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
 
 /**
+ * The shortest `tombstoneGraceMs` a sweep takes: one hour. A first load whose create got no answer is sent again, and a
+ * tombstone purged before that copy arrives lets it create the row again over the purged name, wrapped key included.
+ * A grace of seconds is for a test, which advances an injected clock.
+ */
+export const MIN_TOMBSTONE_GRACE_MS = 3_600_000;
+
+/**
  * Options of a retention sweep: the instant to judge policies at (`now`), which segments it considers, how many it
  * retires in one call, how it finds them, whether it only reports (`dryRun`), where retirements are audited (`audit`),
  * and whether and when it purges the tombstones of earlier retirements.
@@ -175,7 +182,12 @@ export interface RetireExpiredOptions {
    * zero is the opposite of another's is a reading hazard for whoever tunes both.
    */
   readonly purgeTombstones?: boolean;
-  /** How long a retirement's tombstone must age before this sweep deletes it (default 24 h). */
+  /**
+   * How long a retirement's tombstone must age before this sweep deletes it: at least one hour (`ValidationError`
+   * below), 24 h by default. The floor keeps the tombstone in place longer than a first load's create can take to be
+   * sent again after it got no answer, which would otherwise create the row again over the purged name, wrapped key
+   * included. `null` is refused.
+   */
   readonly tombstoneGraceMs?: number;
 }
 
@@ -603,7 +615,11 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
   const purgeTombstones = options.purgeTombstones ?? true;
   const grace =
     options.tombstoneGraceMs === undefined ? DEFAULT_TOMBSTONE_GRACE_MS : options.tombstoneGraceMs;
-  requireFiniteNumber(grace, { min: 0, what: 'retireExpired: `tombstoneGraceMs`' });
+  requireFiniteNumber(grace, {
+    min: MIN_TOMBSTONE_GRACE_MS,
+    what: 'retireExpired: `tombstoneGraceMs`',
+    note: 'one hour: the tombstone must outlast a create sent again after it got no answer',
+  });
   // Only an absent value means the default: a `null` or a malformed one is refused, as a malformed `budget` is.
   const maxScanSegments =
     options.maxScanSegments === undefined ? DEFAULT_MAX_SCAN_SEGMENTS : options.maxScanSegments;

@@ -2567,7 +2567,7 @@ export class CloudRoaring {
    * charged to `limit`, so it never holds the retirements behind it, and purging stops for the rest of the call after
    * three refused purges in a row (a purge that succeeds starts the count again).
    *
-   * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
+   * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h; at least one hour, else `ValidationError`)
    * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself
    * first, since nothing else ever would for a tombstoned segment. Attribution is a **positive marker the sweep
    * stamps on its own retirements**, not an inference from "destroyed + an expired policy": a crypto-shred leaves

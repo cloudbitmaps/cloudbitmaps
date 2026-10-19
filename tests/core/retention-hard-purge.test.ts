@@ -33,6 +33,7 @@ import { tokenParts } from '../helpers/tokens';
 import { testEntropy } from '../helpers/entropy';
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
 const T0 = 1_790_000_000_000;
 /**
  * A two-day retention, and a ten-day grace before a tombstone is purged. The grace must stay longer than a day, the
@@ -413,8 +414,9 @@ describe('races and faults: the purge removes only the row it judged', () => {
             straddled = true;
             // While this load writes, the segment expires, is retired, purged, and loaded anew by someone else.
             w.advance(RETENTION + 1);
-            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
-            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
+            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
+            w.advance(HOUR);
+            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
             expect(await w.registry.get(ref)).toBeNull();
             await store.load(ref, [7]);
           }
@@ -1322,9 +1324,10 @@ describe('a load that collects by name meets a row the purge removed', () => {
     await atFour(w, T0 + RETENTION);
     w.advance(RETENTION + 1);
     const registry = afterPublish(w, async () => {
-      // A retirement drops the segment (tombstone, then every object), and with no grace the next sweep purges the row.
-      await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
-      const purged = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
+      // A retirement drops the segment (tombstone, then every object), and with the shortest grace the sweep an hour later purges the row.
+      await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
+      w.advance(HOUR);
+      const purged = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
       expect(purged.tombstonesPurged).toBe(1);
       expect(await w.registry.get(ref)).toBeNull();
     });

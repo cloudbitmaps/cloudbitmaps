@@ -115,6 +115,9 @@ so, and so do the module headers in the code.
     `lookbackBuckets` that is not an integer of at least 0 on either scan (it was checked only on `'index'`), a `null`
     `limit` or `tombstoneGraceMs` (read as the default), and `shards` that is empty or lists a number twice. All are
     refused before the registry is listed.
+  - `retireExpired` refuses a `tombstoneGraceMs` below one hour (3,600,000 ms). A shorter grace let a first load's
+    create that got no answer, sent again after a sweep purged its row, create the row again with the wrapped key the
+    retirement removed. A test that needs a short grace advances an injected clock instead.
   - A `cache` size is refused under the name you wrote: `cache.maxChunks`, `cache.readerMax` and `cache.readerMaxBytes`
     must be integers of at least 1 and `cache.ttlMs` a finite number above 0. The errors named `maxEntries`, `maxBytes`
     or `ttlMs`, and `readerMaxBytes: 1.5` was accepted. A source built by hand refuses `maxOpenSegments` and
