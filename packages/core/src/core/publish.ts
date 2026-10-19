@@ -244,8 +244,8 @@ interface PublishOptions {
  *
  * **Throws** rather than returning, in two cases, because each would otherwise create a state no reader can
  * recover from: a `destroyed` row, where advancing the pointer would name an object no read resolves (one encrypted
- * under a shredded key, after a crypto-shred); and an advance carrying **new** `wrappedDeks`, which would either strand that key or make
- * the row advertise encryption over cleartext generations. Contention that never clears throws
+ * under a shredded key, after a crypto-shred); and an advance carrying **new** `wrappedDeks`, which would either strand
+ * that key or make the row advertise encryption over cleartext generations. Contention that never clears throws
  * {@link WriteConflictError} after the retries.
  *
  * **`expectFrom` turns forward-only into read-modify-write.** Forward-only is the right rule for a writer whose

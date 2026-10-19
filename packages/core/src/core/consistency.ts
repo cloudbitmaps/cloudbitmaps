@@ -450,7 +450,7 @@ export async function runConsistencyCheck(
     recs,
     concurrency,
     async (rec): Promise<SegmentResult> => {
-      if (rec.status === 'destroyed') return NOTHING; // Storage intentionally gone — not a torn restore
+      if (rec.status === 'destroyed') return NOTHING; // no generation resolves through it — not a torn restore
       const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
       let live: RegistryRecord | null;
       let current: Outcome;
@@ -459,7 +459,7 @@ export async function runConsistencyCheck(
         // enumeration may have read eventually-consistently and can lag the live pointer. `rec` is used only to
         // enumerate + skip destroyed segments.
         live = await deps.registry.get(ref);
-        if (!live || live.status === 'destroyed') return NOTHING; // vanished/shredded — no live pointer
+        if (!live || live.status === 'destroyed') return NOTHING; // vanished or destroyed — no live pointer
         // A row with no Storage generation is *deliberately* Storage-less — a retention policy recorded before the first
         // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing
         // can be missing. Reporting it

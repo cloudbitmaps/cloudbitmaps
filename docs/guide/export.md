@@ -126,8 +126,8 @@ And a store loads one straight back, with no per-id work:
   segment has a registry row (the publish writes it), so the registry is complete by construction. Build the store on
   the backend the loads used.
 - **Encrypted segments are decrypted** transparently if the store has the keystore, so the export is **cleartext**.
-  Protect it. A destroyed segment (crypto-shredded, destroyed in the clear or dropped) resolves no generation, so it is skipped and listed in
-  the manifest's `skipped[]`: with `segments` and `failed`, the manifest accounts for every segment row the registry
+  Protect it. A destroyed segment (crypto-shredded, destroyed in the clear or dropped) resolves no
+  generation, so it is skipped and listed in the manifest's `skipped[]`: with `segments` and `failed`, the manifest accounts for every segment row the registry
   listed. (The registry's internal due-index rows are not segments, and are in none of the three.) A segment
   destroyed after the listing named it and before its export began is skipped the same way: when a segment yields no
   ids, its row is read again, and a row now destroyed or gone is recorded in `skipped[]` and no file is committed.
@@ -149,8 +149,8 @@ And a store loads one straight back, with no per-id work:
   backend.registry.get(ref)`) and write back the ones the old row had with `backend.registry.compareAndSwap(ref,
   row.token, { retention, residency })`, since `store.setRetention` writes `expiresAt` alone; then, for a policy with an
   `expiresAt`, call `store.setRetention(ref, { expiresAt })` as well, which keeps your other keys and files the segment
-  in the retention sweep's due index. A destroyed segment (crypto-shredded, destroyed in the clear or dropped) is skipped (`manifest.skipped`),
-  and the registry row that records its destruction stays in the prefix you export from, so keep your own record of it.
+  in the retention sweep's due index. A destroyed segment (crypto-shredded, destroyed in the clear or dropped) is skipped
+  (`manifest.skipped`), and the registry row that records its destruction stays in the prefix you export from, so keep your own record of it.
   A file also holds what the segment held when it was read, so run again every erasure processed since the export
   began.
 - **Moving a store to a release that reads a newer registry schema.** A store refuses a row stamped with an older schema

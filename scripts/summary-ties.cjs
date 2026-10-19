@@ -450,8 +450,7 @@ const SIGNATURES = [
   {
     claim: 'tombstones-purged-narrowly',
     patterns: [/retirement stamp/i, /tombstone[^.]{0,60}never purged/i],
-    summary:
-      'A tombstone a hand-run dropSegment or a crypto-shred left is never purged by the library.',
+    summary: 'A tombstone a hand-run dropSegment or a destroy left is never purged by the library.',
     lookAlike:
       'A retired segment leaves a destroyed row behind, and one dead row per retired daily segment would accumulate forever.',
   },

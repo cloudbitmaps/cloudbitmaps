@@ -901,6 +901,23 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g('every generation of it is unreadable'), 'i'),
     why: 'a cleartext destroy leaves its objects readable from the bucket: say that no generation resolves through a destroyed row',
   },
+  // The tombstone, its mark and the two ends of a route list that name only some of the three routes that write a
+  // destroyed row. A true sentence names all three: "left by a crypto-shred, a cleartext destroy or a drop".
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\btombstone left by a crypto-shred\b(?!,)` +
+          String.raw`|\bthe mark a crypto-shred leaves\b` +
+          String.raw`|\bpost-crypto-shred tombstone\b` +
+          String.raw`|\bcrypto-shredded or dropped\b` +
+          String.raw`|\bdropped or crypto-shredded\b` +
+          String.raw`|\bcrypto-shred(?:'s)? or a drop's tombstone\b` +
+          String.raw`|\btombstone a hand-run \`?dropSegment\`? or a crypto-shred\b`,
+      ),
+      'i',
+    ),
+    why: 'a destroyed row is also written by a cleartext destroy (its objects stay readable): name all three, "crypto-shredded, destroyed in the clear or dropped"',
+  },
 ];
 
 /**
@@ -1466,6 +1483,13 @@ describe('no document claims behaviour this library does not have', () => {
     'every generation of it is unreadable',
     'refused: every generation of\n   * it is unreadable, so a rollback',
     'since every generation\n> of it is unreadable',
+    '`destroyed` is the tombstone left by a crypto-shred; the segment reads as empty',
+    'a record\'s `status: "destroyed"`, the mark a crypto-shred leaves)',
+    'the post-crypto-shred tombstone',
+    'a segment that was crypto-shredded or dropped',
+    'A crypto-shredded\n   * or dropped segment is skipped',
+    "a `destroyed` row (a crypto-shred's or a drop's tombstone)",
+    'A tombstone a hand-run `dropSegment` or a crypto-shred left is never purged',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1668,6 +1692,10 @@ describe('no document claims behaviour this library does not have', () => {
     'segment "x" is destroyed — no generation resolves through a destroyed row',
     'the objects are unreadable once no retained copy of the row holds the key',
     'A crypto-shredded segment (encrypted) is destroyed; its objects are unreadable without the key.',
+    '`destroyed` is the tombstone left by a crypto-shred, a cleartext destroy or a drop',
+    'the mark a crypto-shred, a cleartext destroy or a drop leaves',
+    'a segment that was crypto-shredded, destroyed in the clear or dropped',
+    'a crypto-shred or a drop clears it with the key material',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
@@ -1971,23 +1999,46 @@ describe('no document claims behaviour this library does not have', () => {
     expect(isHistory(join('bench', 'calibration', '2026-09-14-12345.json.md'))).toBe(false);
   });
 
-  // The operating manual's fourth invariant still equates a destroyed row with a crypto-shred, and its edit waits for
-  // the maintainer's approval. Until it lands, that one phrase on that one line is the only hit the gate lets through;
-  // the second test fails the moment the manual stops saying it, so this exemption cannot outlive the edit.
+  // The operating manual's fourth invariant still says the refused parenthetical. This lets through that one
+  // sentence, once, in the manual (`CLAUDE.md` is the same file); the next test fails once the sentence is gone, so
+  // the exemption is removed with it. A second copy anywhere, or the other refused claim, is a hit.
+  const MANUAL = new Set(['AGENTS.md', 'CLAUDE.md']);
+  const MANUAL_SENTENCE =
+    'the sole exception is a `destroyed` (crypto-shredded) segment, where every generation is garbage because no reader can resolve it.';
   const AWAITING_EDIT =
     /^(?:AGENTS|CLAUDE)\.md:\d+ — "destroyed \(crypto-shredded\)" is not true\./;
+  const saysTheSentence = (text: string): boolean =>
+    text.replace(/\s+/g, ' ').includes(MANUAL_SENTENCE);
+  const afterExemption = (rel: string, text: string): string[] => {
+    const hits = hitsIn(rel, text);
+    if (!MANUAL.has(rel)) return hits;
+    let spare = saysTheSentence(text) ? 1 : 0;
+    return hits.filter((h) => !(AWAITING_EDIT.test(h) && spare-- > 0));
+  };
   it.each(files)('%s', (rel) => {
-    const hits = hitsIn(rel, readFileSync(join(ROOT, rel), 'utf8'));
-    expect(
-      rel === 'AGENTS.md' || rel === 'CLAUDE.md'
-        ? hits.filter((h) => !AWAITING_EDIT.test(h))
-        : hits,
-    ).toEqual([]);
+    expect(afterExemption(rel, readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
   });
 
-  it('exempts the operating manual only while it still says the refused phrase', () => {
-    const manual = hitsIn('AGENTS.md', readFileSync(join(ROOT, 'AGENTS.md'), 'utf8'));
-    expect(manual.filter((h) => AWAITING_EDIT.test(h)).length).toBeGreaterThan(0);
+  it('exempts the operating manual only while it still says the refused sentence, once', () => {
+    const manual = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
+    expect(saysTheSentence(manual)).toBe(true);
+    expect(hitsIn('AGENTS.md', manual).filter((h) => AWAITING_EDIT.test(h))).toHaveLength(1);
+  });
+
+  it('refuses a second copy of the phrase in the manual, and any copy once the sentence is gone', () => {
+    const manual = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
+    const second = `${manual}\nA \`destroyed\` (crypto-shredded) segment holds nothing anyone can read.\n`;
+    expect(afterExemption('AGENTS.md', second)).toHaveLength(1);
+    expect(afterExemption('CLAUDE.md', second)).toHaveLength(1);
+    const reworded = manual.replace(
+      MANUAL_SENTENCE,
+      'the sole exception is a `destroyed` segment.',
+    );
+    expect(afterExemption('AGENTS.md', reworded)).toEqual([]);
+    expect(
+      afterExemption('AGENTS.md', `${reworded}\nA \`destroyed\` (crypto-shredded) row.\n`),
+    ).toHaveLength(1);
+    expect(afterExemption('docs/guide/x.md', manual)).toHaveLength(1);
   });
 });
 
