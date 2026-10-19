@@ -128,6 +128,13 @@ export class GcsStorage implements StorageBackend {
   private readonly keyPrefix: string;
   private readonly readTimeoutMs: number;
 
+  /**
+   * Builds the GCS backend over one bucket, which `bucket` names. Pass `client`, or `projectId` and `apiEndpoint` to
+   * have one built, not both. `prefix` puts every object under a name prefix. Throws `ValidationError` for an unknown
+   * option, no bucket, a `now` that is not a function, a client setting beside `client`, a `maxObjectBytes` or
+   * `simpleUploadThresholdBytes` that is not a positive integer, a `conditionalDelete` that is not a boolean, or an
+   * invalid `prefix` or `readTimeoutMs`.
+   */
   constructor(options: GcsStorageOptions) {
     let readClient: GcsClient;
     refuseUnknownOptions(

@@ -72,8 +72,14 @@ export interface RetentionDeps extends ChurnDeps {
   readonly registry: IRegistryDriver;
 }
 
+/**
+ * What setting a segment's retention policy did: the policy now stored, and whether it created the row and wrote the
+ * due-index pointer.
+ */
 export interface SetRetentionResult {
+  /** The segment's name. */
   readonly segment: string;
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
   /** The policy now stored on the row. */
   readonly expiresAt: number;

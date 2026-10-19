@@ -88,6 +88,11 @@ const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
  */
 const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
 
+/**
+ * Options of a retention sweep: the instant to judge policies at (`now`), which segments it considers, how many it
+ * retires in one call, how it finds them, whether it only reports (`dryRun`), where retirements are audited (`audit`),
+ * and whether and when it purges the tombstones of earlier retirements.
+ */
 export interface RetireExpiredOptions {
   /** Scope the sweep to one namespace. Omit to sweep every namespace the registry knows. */
   readonly namespace?: string;
@@ -227,6 +232,10 @@ export type RetireEntry =
         'invalid-policy' | 'limit' | 'tombstone-not-empty' | 'policy-changed' | `failed: ${string}`;
     };
 
+/**
+ * What a retention sweep did: the rows it read, what it retired, and a ledger entry for each segment it acted on or
+ * skipped.
+ */
 export interface RetireExpiredResult {
   /** Registry rows enumerated. */
   readonly scanned: number;
@@ -269,6 +278,7 @@ export interface RetireExpiredResult {
   readonly purgeFaults: number;
   /** The first of those faults, as a ledger reason (`failed: …` with the provider's message). Absent when there were none. */
   readonly firstPurgeFault?: `failed: ${string}`;
+  /** Whether the sweep was a dry run, which changes nothing. */
   readonly dryRun: boolean;
   /** Per-segment ledger. Inspect it: a `skipped` or failed entry is a segment that still holds data. */
   readonly entries: readonly RetireEntry[];

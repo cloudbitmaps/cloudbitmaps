@@ -102,6 +102,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
+  them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
+  editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an
+  entry passes with its own doc comment, or one inherited from the member it implements or overrides, and a key the
+  test cannot resolve fails by name. No signature changes.
 - **A registry that reports write tokens must report each one before it sends the write.** One that reports late has a
   write's fault read as a read's: a load, an erasure or a bulk load throws the `TransientError` at once, without
   reading the row to see whether the write landed, and does not settle it. A registry that wraps or extends one that

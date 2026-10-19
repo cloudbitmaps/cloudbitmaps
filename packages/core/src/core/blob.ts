@@ -13,6 +13,10 @@ import { ValidationError } from './errors';
  * the write resolves, so a sink that holds bytes past that copies them.
  */
 export interface BlobSink {
+  /**
+   * Appends `bytes` to the object. Once it resolves the caller may reuse the buffer, so a sink that keeps the bytes
+   * copies them.
+   */
   write(bytes: Uint8Array): Promise<void>;
 }
 

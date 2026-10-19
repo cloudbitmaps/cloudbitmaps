@@ -9,8 +9,11 @@
 
 /** One AEAD result: a fresh per-message nonce, the ciphertext, and the authentication tag. */
 export interface AeadSealed {
+  /** The fresh per-message nonce. */
   readonly nonce: Uint8Array;
+  /** The encrypted bytes. */
   readonly ciphertext: Uint8Array;
+  /** The authentication tag. */
   readonly tag: Uint8Array;
 }
 
@@ -39,7 +42,9 @@ export interface Aead {
  * plaintext key material — safe to store in the registry next to the (encrypted) data.
  */
 export interface WrappedDek {
+  /** The id of the key-encryption key (KEK) this wrapping is under. */
   readonly keyId: string;
+  /** The wrapped data key, an opaque base64 string. */
   readonly wrapped: string;
 }
 

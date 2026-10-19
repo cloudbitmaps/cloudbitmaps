@@ -88,7 +88,9 @@ export function liveLeases(record: RegistryRecord | null, now: number): readonly
  * Both are optional; without a sleep a retry follows at once.
  */
 export interface ChurnDeps {
+  /** The clock whose `sleep` waits out lease churn. Without a `sleep`, a retry follows at once. */
   readonly clock?: { readonly sleep?: (ms: number) => Promise<void> } | undefined;
+  /** The source that spreads each wait over a share of its bound. Without one, each wait is its whole bound. */
   readonly rng?: Rng | undefined;
 }
 

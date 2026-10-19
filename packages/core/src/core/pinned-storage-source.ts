@@ -44,8 +44,11 @@ import { segmentKey } from './keys';
  * pin of a generation without a string `version` and `fingerprint` is refused with a `ValidationError`.
  */
 export interface PinnedAt {
+  /** The pinned generation, or `null` when the segment had none when it was pinned. */
   readonly generation: number | null;
+  /** The version of that generation's object, or `null` when `generation` is. */
   readonly version: string | null;
+  /** The fingerprint of that generation's object, or `null` when `generation` is. */
   readonly fingerprint: string | null;
 }
 

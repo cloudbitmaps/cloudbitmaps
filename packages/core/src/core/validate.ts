@@ -106,6 +106,10 @@ function requireRefObject(ref: unknown, hint = ''): void {
   }
 }
 
+/**
+ * Throws `ValidationError` unless `ref` is an object whose `segment` and, when given, `namespace` are valid names. It
+ * does not refuse a reserved namespace, which a driver must be able to store.
+ */
 export function validateSegmentRef(ref: SegmentRef): void {
   requireRefObject(ref);
   validatePart(ref.segment, 'segment');

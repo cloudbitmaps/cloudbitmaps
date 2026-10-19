@@ -31,16 +31,21 @@ export type Token = string;
  * `cbm.dueX` and `cbmdue.eu` are ordinary namespaces, and a segment name is never restricted.
  */
 export interface SegmentRef {
+  /** The segment's namespace, or `undefined` for the default one. */
   readonly namespace?: string;
+  /** The segment's name. */
   readonly segment: string;
 }
 
+/** One chunk of a segment: the segment, and the chunk's key. */
 export interface ChunkRef extends SegmentRef {
+  /** The chunk's key: an integer from 0 to 65,535, the high 16 bits of the ids the chunk holds. */
   readonly chunkKey: number;
 }
 
 /** Identifies one immutable `.crbm` object — a single generation of a segment. */
 export interface GenKey extends SegmentRef {
+  /** The generation number of the object. */
   readonly generation: number;
 }
 
@@ -50,6 +55,7 @@ export interface GenKey extends SegmentRef {
  * holds for an operand's stream.
  */
 export interface SegmentSize {
+  /** The size of the current generation's object, in bytes. */
   readonly sizeBytes: number;
 }
 
@@ -60,8 +66,11 @@ export interface SegmentSize {
  * can key what it keeps by the generation the bytes came from rather than the one it resolved earlier.
  */
 export interface ChunkRead {
+  /** The chunk key that was asked for. */
   readonly key: number;
+  /** The chunk's bytes, or `null` where the generation holds none. */
   readonly bytes: Uint8Array | null;
+  /** The version of the generation the bytes were read from, or `null` when the segment has no generation. */
   readonly version: string | null;
 }
 
@@ -98,6 +107,7 @@ export interface ReadChunksOptions {
 export interface StorageChunkSource {
   /** Read-only bytes for the chunk, or `null` if absent. Callers must not mutate the buffer. */
   getChunk(ref: ChunkRef): Promise<Uint8Array | null>;
+  /** The chunk keys the segment's current generation holds, or an empty list when it has none. */
   listChunkKeys(ref: SegmentRef): Promise<number[]>;
   /**
    * Optional: several chunks of one segment as a stream, read **from one generation** with fewer storage requests than
@@ -345,6 +355,7 @@ export interface StorageDeleteOptions {
  *   retry can ride it out and a write's caller can tell it from a deterministic failure.
  */
 export interface IStorageDriver {
+  /** What this driver can do. Range reads and `maxObjectBytes` are required; the other capabilities are optional. */
   capabilities(): StorageCaps;
   /**
    * Stream a new immutable generation. The driver opens a destination, hands `write` a {@link BlobSink},
@@ -430,7 +441,9 @@ export type GenerationMetadata = Readonly<Record<string, string | number>>;
 
 /** What a generation is, as one read answers it: its number, its id count and the metadata it was written with. */
 export interface GenerationSummary {
+  /** The generation's number. */
   readonly generation: number;
+  /** The number of ids the generation holds. */
   readonly cardinality: number;
   /** Absent when the generation has none. */
   readonly metadata?: GenerationMetadata;
@@ -528,6 +541,7 @@ export interface RegistryRecord extends SegmentRef {
    * keystore. Clearable on crypto-shred.
    */
   readonly keyId?: string;
+  /** `'active'`, or `'destroyed'` for the tombstone of a segment that was crypto-shredded or dropped. */
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`
@@ -535,6 +549,7 @@ export interface RegistryRecord extends SegmentRef {
    * `list()` projection — a fleet sweep reads the policy from the enumeration rather than per-segment.
    */
   readonly retention?: GovernanceMeta;
+  /** Residency metadata, a plain object. It is stored and returned as given; nothing reads it yet. */
   readonly residency?: GovernanceMeta;
   /**
    * A cached description of the current generation (see {@link RegistrySummary}). Optional: a row without one is
@@ -571,6 +586,7 @@ export interface RegistryRecord extends SegmentRef {
   readonly leases?: readonly LeaseEntry[];
   /** Epoch-ms of creation / last mutation (from the driver's injected clock). */
   readonly createdAt: number;
+  /** Epoch-ms of the row's last write, from the driver's clock. */
   readonly updatedAt: number;
   /**
    * Opaque OCC token — compare-by-equality, ABA-safe. A shipped registry gives no two writes under one name the same
@@ -599,11 +615,15 @@ export interface RegistryRecord extends SegmentRef {
 export interface NewRegistryRecord {
   /** `null` ⇒ the segment has no Storage generation yet — see {@link RegistryRecord.currentGen}. */
   readonly currentGen: number | null;
+  /** The segment's wrapped data keys, which make it an encrypted segment. Absent for a cleartext one. */
   readonly wrappedDeks?: readonly WrappedDek[];
+  /** An external key reference. Reserved: the in-process keystore does not use it. */
   readonly keyId?: string;
   /** Defaults to `'active'`. */
   readonly status?: RegistryStatus;
+  /** The retention policy, a plain object; its `expiresAt` is what the retention sweep reads. */
   readonly retention?: GovernanceMeta;
+  /** Residency metadata, a plain object. It is stored and returned as given; nothing reads it yet. */
   readonly residency?: GovernanceMeta;
   /** Must name `currentGen` when given. */
   readonly summary?: RegistrySummary;
@@ -791,6 +811,10 @@ export interface StorageBackend {
  *   rules are out of the data plane's reach). `detail` says what to grant or how to check by hand.
  */
 export interface LifecycleVerdict {
+  /**
+   * `'ok'` when no rule would delete or archive the store's objects, `'problem'` when one would or may, `'unchecked'`
+   * when the check could not be made.
+   */
   readonly status: 'ok' | 'problem' | 'unchecked';
   /** A sentence or two for a person. Never a credential. */
   readonly detail: string;
@@ -931,6 +955,7 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  * - **Raise a transient fault as {@link TransientError}.**
  */
 export interface IRegistryDriver {
+  /** What this registry can do. Strongly consistent reads are required; the other capabilities are optional. */
   capabilities(): RegCaps;
   /**
    * `true` when every `create` and `compareAndSwap` of this registry reports the token its write carries to
