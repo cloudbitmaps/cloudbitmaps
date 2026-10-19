@@ -20,6 +20,8 @@ import {
  * (`<!-- typecheck -->`, invisible when rendered, see `tests/helpers/doc-samples.ts`), compiled here against the
  * package sources, and fails this test when it stops compiling. A sample that is deliberately partial carries
  * `<!-- typecheck-skip: why -->`, so leaving one out is a decision with a reason.
+ * The two samples inside generated regions of the sizing and cost guides get their marker from `bench/sizing.cjs`,
+ * which writes them; a marker typed into a region is rewritten on the next generation.
  *
  * WHAT IT DOES NOT CLAIM. A fence with no marker is neither compiled nor said to compile. A sample is compiled, not
  * run, so what it prints is not held here. The sample is a module compiled alone: a name it uses and does not declare
@@ -112,49 +114,54 @@ describe('the marker scan', () => {
 });
 
 describe('the compile step', () => {
-  const sample = (code: string, preludes: string[] = []): DocSample => ({
-    file: 'probe.md',
+  // Compiling takes seconds, so every probe is compiled once, together, each under its own file name, and the
+  // problems are read back by file.
+  const probe = (name: string, code: string, preludes: string[] = []): DocSample => ({
+    file: name,
     line: 10,
     code,
     mark: 'check',
     preludes,
     reason: '',
   });
+  const probes = [
+    probe('good.md', "import { CloudRoaring } from '@cloudbitmaps/roaring';\nvoid CloudRoaring;"),
+    probe('wrong-type.md', 'const ok = 1;\nconst n: number = "text";\nvoid ok;'),
+    probe('undeclared.md', 'void undeclaredName;'),
+    probe('any.md', 'const v: any = 1;\nvoid v;'),
+    probe(
+      'missing-key.md',
+      "import { CloudRoaring } from '@cloudbitmaps/roaring';\nnew CloudRoaring({});",
+    ),
+    probe('store-not-asked.md', 'await store.segment("a").count();'),
+    probe('store-asked.md', 'await store.segment("a").count();', ['store']),
+    probe(
+      'own-store.md',
+      "import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';\nconst store = new CloudRoaring({ storage: new MemoryStorage() });\nvoid store;",
+    ),
+  ];
+  let problems: ReturnType<typeof compileSamples> = [];
+  beforeAll(() => {
+    problems = compileSamples(probes);
+  }, 300_000);
+  const of = (file: string): string[] =>
+    problems.filter((p) => p.where.startsWith(`${file}:`)).map((p) => `${p.where} ${p.message}`);
 
   it('accepts a sample that compiles, and names the line of one that does not', () => {
-    expect(
-      compileSamples([
-        sample("import { CloudRoaring } from '@cloudbitmaps/roaring';\nvoid CloudRoaring;"),
-      ]),
-    ).toEqual([]);
-    const bad = compileSamples([sample('const ok = 1;\nconst n: number = "text";\nvoid ok;')]);
-    expect(bad.map((p) => p.where)).toEqual(['probe.md:11']);
-    expect(bad[0]?.message).toContain('TS2322');
+    expect(of('good.md')).toEqual([]);
+    expect(of('wrong-type.md')).toEqual([expect.stringMatching(/^wrong-type\.md:11 TS2322/)]);
   });
 
   it('refuses a name the sample never declared, an explicit any, and a missing option', () => {
-    expect(compileSamples([sample('void undeclaredName;')]).map((p) => p.message)[0]).toContain(
-      'TS2304',
-    );
-    expect(
-      compileSamples([sample('const v: any = 1;\nvoid v;')]).map((p) => p.message)[0],
-    ).toContain('any');
-    const noKeys = compileSamples([
-      sample("import { CloudRoaring } from '@cloudbitmaps/roaring';\nnew CloudRoaring({});"),
-    ]);
-    expect(noKeys.length).toBeGreaterThan(0);
+    expect(of('undeclared.md')).toEqual([expect.stringContaining('TS2304')]);
+    expect(of('any.md')).toEqual([expect.stringContaining('explicit `any`')]);
+    expect(of('missing-key.md').length).toBeGreaterThan(0);
   });
 
   it('gives a sample the elided store only when it asks, and lets a sample with its own `store` stand', () => {
-    expect(compileSamples([sample('await store.segment("a").count();')]).length).toBeGreaterThan(0);
-    expect(compileSamples([sample('await store.segment("a").count();', ['store'])])).toEqual([]);
-    expect(
-      compileSamples([
-        sample(
-          "import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';\nconst store = new CloudRoaring({ storage: new MemoryStorage() });\nvoid store;",
-        ),
-      ]),
-    ).toEqual([]);
+    expect(of('store-not-asked.md').length).toBeGreaterThan(0);
+    expect(of('store-asked.md')).toEqual([]);
+    expect(of('own-store.md')).toEqual([]);
   });
 });
 
@@ -165,5 +172,16 @@ describe('the documents it reads', () => {
     expect(files).toContain('docs/guide/loading.md');
     expect(files).toContain('packages/roaring/README.md');
     for (const f of files) expect(readFileSync(join(ROOT, f), 'utf8').length).toBeGreaterThan(0);
+  });
+});
+
+describe('a marker beside a generated region', () => {
+  it('reaches the fence past the region start comment', () => {
+    const { samples: s, orphans: o } = markedSamples(
+      'x.md',
+      '<!-- typecheck -->\n<!-- SIZING:SAMPLE:START -->\n```ts\nvoid 1;\n```\n<!-- SIZING:SAMPLE:END -->',
+    );
+    expect(o).toEqual([]);
+    expect(s.map((x) => x.code)).toEqual(['void 1;']);
   });
 });

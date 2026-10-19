@@ -7,6 +7,8 @@
  *     <!-- typecheck: store -->
  *     <!-- typecheck-skip: a fragment, it uses names the page above declares -->
  *
+ * A marker applies to the next fence, past blank lines and other one-line HTML comments (a generated region's own
+ * start marker sits between them, and the generator would rewrite a marker placed inside the region).
  * `typecheck` marks a sample the gate compiles. After the colon it may name a prelude, a declaration the docs elide by
  * convention and the sample relies on (see {@link PRELUDES}). `typecheck-skip` marks a sample that is deliberately
  * partial and says why; the reason is required, so a skip is a decision and not a gap. A fence with neither is not
@@ -53,7 +55,7 @@ const MARKER = /^[ \t]*<!--[ \t]*typecheck(-skip)?[ \t]*(?::[ \t]*([^>]*?))?[ \t
 const FENCE = /^([ \t]*)```(?:ts|typescript)(?:[ \t]+[^\n]*)?[ \t]*$/;
 
 /**
- * Every marked TypeScript fence of `text`. A marker applies to the next fence when only blank lines lie between; a
+ * Every marked TypeScript fence of `text`. A marker applies to the next fence when only blank lines and one-line HTML comments lie between; a
  * marker with no fence after it, or on a fence that is not TypeScript, is returned in `orphans`, so a marker that
  * guards nothing fails the gate instead of passing silently.
  */
@@ -68,7 +70,8 @@ export function markedSamples(
     const m = MARKER.exec(lines[i] as string);
     if (m === null) continue;
     let j = i + 1;
-    while (j < lines.length && (lines[j] as string).trim() === '') j += 1;
+    while (j < lines.length && /^(?:[ \t]*|[ \t]*<!--.*-->[ \t]*)$/.test(lines[j] as string))
+      j += 1;
     const fence = FENCE.exec(lines[j] ?? '');
     if (fence === null) {
       orphans.push(`${file}:${i + 1} — a typecheck marker with no TypeScript fence after it`);
