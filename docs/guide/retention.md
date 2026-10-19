@@ -93,7 +93,7 @@ segment someone believes is expiring is the kind of silence that costs a complia
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
 
 **`clearRetention` answers `false` when it cannot show it removed the policy.** A clear whose write gets no answer
-reads the row back and answers `true` when the row shows its write. When another write has followed it first (on Azure
+[is settled by reading the row back](correctness.md#row-write-settled): `true` when the row shows its write. When another write has followed it first (on Azure
 Blob, a write that met a conflict), the row cannot say whose write removed the expiry. The call then answers `false`,
 and the expiry is gone either way. The due-index pointer of the expiry it read goes in both cases, and a
 `setRetention` that moves an expiry removes the old day's pointer the same way, whether its write was answered or not.
