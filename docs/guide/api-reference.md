@@ -304,7 +304,7 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 
 | Call | Does |
 |---|---|
-| `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk |
+| `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk, once the segment's pointer and index are read (a first read of the segment makes those two first) |
 | `seg.count()` → `Promise<number>` | cardinality of the generation the handle reads: **one registry read when cold, none when warm, and no read of the object**, since the row records the generation's id count. A row with no summary it can use sends it to the `.crbm` index instead, with **zero payload reads**. It trusts the row's summary, or the index: neither is confirmed against the payloads, and a summary is held against the object whenever the object is opened ([What `count()` trusts](reading.md#what-count-trusts)). A segment whose pointer names a missing object counts the row's number, and a read of the object throws |
 | `seg.stat()` → `Promise<SegmentStat>` | `{ generation, cardinality, metadata?, sizeBytes }`, all four from one resolution of the generation the handle reads: its number, its id count, the metadata it was loaded with (absent when it has none), and `sizeBytes`, the bytes of its object in storage. They come from the row's summary, whose fingerprint carries the object's size: one registry read when cold, as a `count()` makes, and none while the segment is resolved; on an encrypted segment the key is unwrapped to open the summary, as for a count. A row with no summary it can use is answered from the object's footer and index instead (no payload read): a tail read more when cold, and a range read too for an index longer than the tail. A pinned handle answers from the object it pinned, which is open. `{ generation: null, cardinality: 0, sizeBytes: null }` for a segment with no generation; `sizeBytes: null` on a store whose source cannot report one. Answered from the row, a `stat()` reports the row's figures even when the object under its number is missing or another one, which every read of the object refuses and `checkConsistency` finds. `sizeBytes` is what [`groundedReport`](#offline-tools--cloudbitmapstools) prices storage from ([details](reading.md#stat-the-generation-its-count-its-metadata-and-its-size)) |
 | `seg.iterate({ after?, through? }?)` → `IdStream` | stream all ids, ascending, reading ahead as ranges of the object (the window opens 1, 2, 4 and on up to 32 range requests wide). With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
@@ -985,7 +985,7 @@ before writing an object. A registry of your own may report `canWrite: false` th
 `currentGen: null` says *this segment exists and has no Storage generation yet*: the row `setRetention` mints when a
 policy is recorded **before the first load**, so fleet-wide operations — `checkConsistency`, `eraseNamespace`,
 the retention sweep — can see the segment at all. Resolution maps it onto the same path a segment with no row
-takes (every read answers empty), and the first publish advances the pointer onto it. An `IRegistryDriver` must
+takes (a direct read answers empty), and the first publish advances the pointer onto it. An `IRegistryDriver` must
 therefore:
 
 - round-trip `null` through `create`, `compareAndSwap`, `get` **and** `list` — serialization is where it gets

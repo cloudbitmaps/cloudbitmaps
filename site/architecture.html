@@ -301,9 +301,11 @@
               into one immutable object, then the publish moves the pointer to it
               by compare-and-swap.
               There is no per-id write, so there is nothing to fold back in later and
-              <strong>no background job on the read path</strong>. On S3 a segment's first <span class="m">store.load()</span> costs
+              <strong>no background job on the read path</strong>. On S3 a segment's first single-part
+              <span class="m">store.load()</span> costs
               <strong>$11.20 per million loads</strong>, pointer included — measured requests on S3, priced at list
-              prices — so batch the refresh.
+              prices — so batch the refresh. A multipart <span class="m">store.load()</span>, measured the same way,
+              made 5 PUT-class + 3 GET, $26.20 per million.
             </p>
           </div>
           <div class="limit">
@@ -438,8 +440,9 @@
             <span class="rl-what">The object ceiling is reachable</span>
             <span class="rl-fig is-live">78 GiB</span>
             <span class="rl-note">
-              S3 allows 10,000 multipart parts, and at an 8 MiB part that is the real ceiling. Exceeding it
-              raises a typed <span class="m">ValidationError</span> — never a raw S3 400, and never silent
+              S3 allows 10,000 multipart parts, so at the default 8 MiB part the ceiling is 78 GiB;
+              <span class="m">maxObjectBytes</span> raises it, up to S3's 5 TiB, and grows the part to match.
+              Exceeding the ceiling raises a typed <span class="m">ValidationError</span> — never a raw S3 400, and never silent
               truncation.
             </span>
           </li>
@@ -606,8 +609,8 @@
             <span class="rl-note">
               Every chunk a read fetches reports its payload bytes and its duration — 0 bytes, with no request
               behind it, for a chunk the index does not hold — the cache reports hit or miss, and
-              <span class="m">op</span> times <span class="m">has</span>, <span class="m">count</span> and the
-              <span class="m">*Into</span> verbs on the injected clock. Pointer and index reads emit no
+              <span class="m">op</span> times <span class="m">has</span>, <span class="m">count</span>, the
+              <span class="m">*Into</span> verbs and <span class="m">materializeMany</span> on the injected clock. Pointer and index reads emit no
               <span class="m">storage.get</span>, nor do an erasure's reads, which go through the raw drivers,
               and a PUT emits nothing, so a bill needs the backend's own request counts. Events carry raw observations rather
               than dollars — turning bytes into money is the cost model's job, so rates stay yours to change.

@@ -35,7 +35,7 @@
     <meta property="og:title" content="CloudBitmaps — set operations at object-storage prices" />
     <meta
       property="og:description"
-      content="Roaring Bitmaps over object storage — a bounded RAM cache over write-once .crbm generations in your own bucket, and Redis has no Roaring type at all. 1.2 GiB of ID sets at rest costs $0.03/mo against $346 standing for reserved RAM; past 329.15 reads/s, use a standing cluster."
+      content="Roaring Bitmaps over object storage — a bounded RAM cache over write-once .crbm generations in your own bucket, and Redis has no built-in Roaring type. 1.2 GiB of ID sets at rest costs $0.03/mo against $346 standing for reserved RAM; past 329.15 reads/s, use a standing cluster."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -213,7 +213,7 @@
               cheaper
             </p>
             <p class="panel-row is-pair">
-              <span>A segment's first <span class="m">store.load()</span> and pointer · requests measured, list price</span><span>$11.20&nbsp;per&nbsp;1M</span>
+              <span>A segment's first single-part <span class="m">store.load()</span> and pointer · requests measured, list price</span><span>$11.20&nbsp;per&nbsp;1M</span>
             </p>
             <p class="link-row"><a href="benchmarks.html">Method, the crossover and caveats →</a></p>
           </aside>
@@ -383,7 +383,8 @@
               Not just on hits. Our cache tier is in-process RAM, but a miss is a ranged
               <span class="m">GET</span> against object storage, where a resident set is a memory read.
               A sub-millisecond tail needs the whole set resident, which is a different machine — and an
-              S3 read from inside the region took about 26 ms at the median in the most recent run that timed it.
+              ranged chunk GET from inside the region took about 29 ms at the median in the most recent run that
+              timed it.
             </p>
             <p class="trade-title">The set changes one id at a time.</p>
             <p class="trade-body">

@@ -117,12 +117,6 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "write-goes-out-on-the-row-read",
-      "sentence": "5173ef10e078",
-      "starts": "shipped — a publish passes the row it"
-    },
-    {
-      "file": "docs/ROADMAP.md",
       "claim": "refusal-is-reported-not-thrown",
       "sentence": "bb4bce1b3003",
       "starts": "A refusal is reported (published: false + reason),"

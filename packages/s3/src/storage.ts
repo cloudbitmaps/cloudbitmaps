@@ -101,7 +101,10 @@ import { appliesDeleteIfMatch, probeClient, type ClientFacts } from './client-pr
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
  * conditional PUT instead (no multipart overhead, strongest write-once). Peak write memory ≈ one part. */
 const S3_PART_BYTES = 8 * 1024 * 1024;
-/** S3 hard limit: a multipart upload has at most 10,000 parts. This × the part size is the real object ceiling. */
+/**
+ * S3 hard limit: a multipart upload has at most 10,000 parts. This × the part size is the object ceiling at that part
+ * size.
+ */
 const S3_MAX_PARTS = 10_000;
 /** S3 hard limits on one object (5 TiB) and one part (5 GiB). */
 const S3_MAX_OBJECT_BYTES = 5 * 1024 ** 4;
