@@ -292,8 +292,9 @@ so an entry for a generation it deleted stays in the list until the entry's own 
 write prunes it: it spares nothing, since the object is gone, and it counts toward the 64 places until then. A
 `dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone. A `destroySegment`
 deletes no generation: it clears the row's leases with its keys, so the tombstone holds no lease, and the objects stay
-in the bucket, unreadable after a crypto-shred and readable after a cleartext destroy (`allowCleartext`). So erasure, shred, drop and retention always win, and a lease never holds an erased subject's data past the bounds in
-the table above.
+in the bucket. After a crypto-shred they are unreadable once no retained copy of the row holds the key (or every KEK
+that wrapped it is destroyed); after a cleartext destroy (`allowCleartext`) they are readable. So erasure, shred, drop
+and retention always win, and a lease never holds an erased subject's data past the bounds in the table above.
 
 A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
 rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on

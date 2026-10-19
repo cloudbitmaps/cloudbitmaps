@@ -82,7 +82,7 @@ the outputs of a `materializeMany` call, count it with a dry run ([in the loadin
 
 <a id="what-throws-instead"></a>**What throws instead.** A refusal is an outcome. A throw is a fault:
 
-- invalid options or ids, or a crypto-shredded segment: `ValidationError`, an id lower than the one before it under
+- invalid options or ids, or a destroyed segment: `ValidationError`, an id lower than the one before it under
   `sorted: true` included;
 - an error your id source throws, as it threw it, this library's own `WriteConflictError` included: under
   `sorted: true` too, where the ids are read during the upload, and the storage driver never sees it; and, under
@@ -204,13 +204,13 @@ that finds another object under the number re-reads the segment rather than serv
 segment's key, are sent before the ids are bucketed and encoded, and the write waits for their answers only when it
 needs them. The keystore is asked for the key once per load, and that one key serves both the guard's read of the
 current generation and the write; it is used only if the row the write reads after the ids still carries the same
-wrappings, and a load of a crypto-shredded row never asks for it. What a fence rests on keeps its order: the row the
+wrappings, and a load of a destroyed row never asks for it. What a fence rests on keeps its order: the row the
 guard judges is read first, a first load or an encrypted segment reads the row again after the ids, and the publish is
 fenced on the row the guard judged.
 
 What changes is the order in which a failure surfaces, never whether anything is written. A failed existence check
 (and the listing it falls back to) is raised after the ids have been consumed, so the encoding's error, or the refusal
-of the second row read (a crypto-shredded segment), can be raised instead of it; either way nothing is written or
+of the second row read (a destroyed segment), can be raised instead of it; either way nothing is written or
 published. A load that fails or is refused after its first row read may already have made its one keystore call for an
 existing encrypted segment, which a load that failed earlier did not.
 
@@ -247,7 +247,7 @@ the ones a live lease holds and the ones a rollback left above its own, and noth
 usable ledger starts one from the bucket: the window a listing keeps, which can name the number a refused load took,
 and later publishes keep naming it until the window pushes it out (see the paragraph on orphans below). A purge and
 re-create leaves the row with no ledger, which only makes the next load start one; a write that leaves the pointer where
-it is (`setRetention`, a crypto-shred aside) keeps it. A `rollback` carries the ledger it found, moving the target to its
+it is (`setRetention`, a destroy aside) keeps it. A `rollback` carries the ledger it found, moving the target to its
 end, so the next load draws its window from the order generations were made current, and starts none over a row that
 had none.
 
@@ -317,8 +317,9 @@ checksum-verified chunks from it.
 the fetch and the reopen, which are separate round trips. The call then serves the newer, committed generation: a move
 forward within that segment's lifetime, never a torn object. A second miss is pathological (collection outrunning
 resolution) and propagates instead of fabricating an absent answer. The one case that answers empty instead of
-throwing is a segment with no generation left to serve at all, destroyed (crypto-shredded, destroyed in the clear or dropped), where reading empty is the
-documented outcome.
+throwing is a segment with no generation to serve: its bucket holds none, or its row is destroyed (crypto-shredded,
+destroyed in the clear or dropped) and no generation resolves through it. There, reading empty is the documented
+outcome.
 
 <a id="exposure-window-is-the-ttl"></a>**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so at
 most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses: one, at the
@@ -333,8 +334,8 @@ generation is noticed there at the next refresh, within `cache.genTtlMs`, and no
 <a id="what-collection-does"></a>**What collection does, precisely.** A listing pass deletes generations strictly below `currentGen`, keeping the most
 recent `keep` of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It
 deletes nothing while `currentGen` is `null`, because an object under a pointer-less row is either a load about to
-publish or an orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or
-crypto-shred tombstone) every generation is garbage and all are collected, because no reader can resolve a tombstoned
+publish or an orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (the
+tombstone of a drop, a crypto-shred or a cleartext destroy) every generation is garbage and all are collected, because no reader can resolve a tombstoned
 segment.
 
 A by-name pass takes the generations the load's publish pushed out of the row's window, which it learned from the
@@ -589,7 +590,8 @@ it can finish only after the rollback's move, so the call's next read of the row
    tombstone landed still finishes the write. Its publish is then refused, but the object survives and holds the
    complete set. **Check `generationsRemaining`**: non-empty means bytes are still there and the drop should be
    repeated, since a re-drop of a tombstone re-sweeps its storage. The retention sweep collects them only for a
-   tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` wrote is left to you.
+   tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` or a `destroySegment` wrote is left to
+   you.
 
 <a id="tombstones-purged-narrowly"></a>**Tombstones are purged, narrowly.** A retired segment leaves a `destroyed` row behind, and one dead row per retired
 daily segment would accumulate forever. The sweep deletes those rows too, but only when all three of these hold,
@@ -597,7 +599,7 @@ because deleting the row is what makes the name writable again:
 
 1. **The row carries the sweep's own retirement stamp.** This is a positive marker `retireExpired` writes on the
    tombstones it creates. It is not an inference from "destroyed plus an expired policy", which would be wrong, and
-   dangerously so. A crypto-shred leaves `retention` untouched, so the ordinary ordering (set a 30-day policy, then a
+   dangerously so. A crypto-shred or a cleartext destroy leaves `retention` untouched, so the ordinary ordering (set a 30-day policy, then a
    right-to-erasure request arrives mid-window and you call `destroySegment`) produces a GDPR tombstone that carries an
    expired policy. Deleting that row would destroy the local attestation for an Art. 17 execution and un-fence the
    name. A marker cannot be forged that way, so a `destroyed` row the sweep did not create is never touched.
@@ -653,8 +655,8 @@ a pointer would only add a row for every scan to read, and the fleet scan purges
 longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
 `lookbackBuckets`, the fleet scan purges the row.
 
-<a id="pointer-to-foreign-tombstone"></a>**A pointer to a tombstone the sweep did not write is removed.** A segment given a policy and then crypto-shredded or
-dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
+<a id="pointer-to-foreign-tombstone"></a>**A pointer to a tombstone the sweep did not write is removed.** A segment given a policy and then crypto-shredded, destroyed
+in the clear or dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
 nothing for ever. A sweep that reads such a pointer reads the segment's row again, and if it is still a tombstone
 without the sweep's stamp removes the pointer, fenced on the pointer's token, and leaves the tombstone as it was. It
 works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds; those past the

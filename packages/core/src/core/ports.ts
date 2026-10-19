@@ -542,7 +542,10 @@ export interface RegistryRecord extends SegmentRef {
    * keystore. Clearable on crypto-shred.
    */
   readonly keyId?: string;
-  /** `'active'`, or `'destroyed'` for the tombstone of a segment that was crypto-shredded, destroyed in the clear or dropped. */
+  /**
+   * `'active'`, or `'destroyed'` for the tombstone of a segment that was crypto-shredded, destroyed in the clear or
+   * dropped.
+   */
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`
