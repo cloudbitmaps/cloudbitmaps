@@ -238,6 +238,29 @@ describe('null is not the default', () => {
     ).rejects.toThrow('budget.maxRequests must be an integer of at least 1; got null');
   });
 
+  it('a per-call budget, and concurrency, on the reads and the admin scans', async () => {
+    const store = await world();
+    await store.load({ segment: 'b' }, [2]);
+    const a = store.segment('a');
+    const b = store.segment('b');
+    await expect(
+      (async () => {
+        for await (const id of a.intersect([b], { budget: null as never })) void id;
+      })(),
+    ).rejects.toThrow('budget must be { maxRequests } or false; got null');
+    await expect(
+      (async () => {
+        for await (const id of a.intersect([b], { concurrency: null as never })) void id;
+      })(),
+    ).rejects.toThrow('concurrency must be an integer of at least 1; got null');
+    await expect(
+      store.subjectReport(1, { allNamespaces: true, budget: null as never }),
+    ).rejects.toThrow('budget must be { maxRequests } or false; got null');
+    await expect(store.checkConsistency({ concurrency: null as never })).rejects.toThrow(
+      'concurrency must be an integer of at least 1; got null',
+    );
+  });
+
   it('cache.genTtlMs, the retry fields and the store budget', () => {
     const build = (o: object): CloudRoaring =>
       new CloudRoaring({ storage: new MemoryStorage(), ...o } as never);
