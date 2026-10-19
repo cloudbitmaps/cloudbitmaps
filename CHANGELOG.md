@@ -31,6 +31,13 @@ so, and so do the module headers in the code.
   `JSON.stringify(bitmap)` gives `"{}"` where it gave the ids, because the bitmap has no `toJSON`, so write
   `JSON.stringify([...bitmap])`; an `instanceof RoaringBitmap32` check goes.
 
+- **The six `@cloudbitmaps/*` packages depend on each other at an exact version, not a `^` range, so an install that mixed versions of them now holds two copies of `core`.** A published
+  `@cloudbitmaps/roaring` names the exact `@cloudbitmaps/core` it was built with, and so do the driver packages and
+  `@cloudbitmaps/tools`, so a later `core` release never reaches an older flavor. What you do: install the same version
+  of every `@cloudbitmaps/*` package (`pnpm add @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z`, or let one
+  install resolve both to the latest). Mixing versions installs a second copy of `core`: nothing fails at install,
+  `instanceof` does not hold across the two copies, and `errorKind(err)` still classifies.
+
 ### Added
 
 - **Every package exports its own `package.json`** (`"./package.json": "./package.json"`), so
@@ -105,13 +112,6 @@ so, and so do the module headers in the code.
   [ids that already ascend](docs/guide/loading.md#what-a-load-accepts).
 
 ### Changed
-
-- **The six `@cloudbitmaps/*` packages depend on each other at an exact version, not a `^` range.** A published
-  `@cloudbitmaps/roaring` names the exact `@cloudbitmaps/core` it was built with, and so do the driver packages and
-  `@cloudbitmaps/tools`, so a later `core` release never reaches an older flavor. What you do: install the same version
-  of every `@cloudbitmaps/*` package (`pnpm add @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z`, or let one
-  install resolve both to the latest). Mixing versions installs a second copy of `core`: nothing fails at install,
-  `instanceof` does not hold across the two copies, and `errorKind(err)` still classifies.
 
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
