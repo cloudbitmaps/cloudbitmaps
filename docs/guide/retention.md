@@ -158,7 +158,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
 > disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
 > without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
-> same slice across restarts.
+> same slice across restarts. Two sweeps that overlap each count a purge they both saw happen, so `tombstonesPurged` is
+> what this sweep saw gone, not a total across sweeps.
 
 **Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans
 the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you want the
@@ -212,8 +213,10 @@ if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaul
 **Check `purgeFaults`: a delete the registry refuses holds nothing else up, and says so only there.** A purge or a pointer
 removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
 snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
-one's reason in `firstPurgeFault`. A delete whose response was lost, or whose resend met its own landing, is not a refusal: the sweep reads the row, and a row that is gone is a delete that happened, reported as the purge it was. So is a tombstone whose objects are still there after a collection that raised
-nothing, such as a store that acknowledges a delete it did not make. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+one's reason in `firstPurgeFault`. So is a tombstone whose objects are still there after a collection that raised
+nothing, such as a store that acknowledges a delete it did not make. A delete whose response was lost, or whose resend
+met its own landing, is not a refusal: the sweep reads the row, and a row that is gone is a delete that happened,
+reported as the purge it was. A refused purge is `skipped` in the ledger, with the provider's message, and is not
 charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
 the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
 row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three
