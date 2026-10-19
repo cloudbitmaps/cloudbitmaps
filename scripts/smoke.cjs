@@ -831,16 +831,16 @@ function assertEntrySdkFree(pkgDir) {
     if (hits.length > 0) {
       throw new Error(
         `@cloudbitmaps/${pkgDir}: dist/${file} names a cloud SDK (${hits.join(', ')}).\n` +
-          `  The main entry must stay SDK-free so \`npm i\` pulls only the backends a consumer actually uses.\n` +
+          `  An entry outside a driver package must stay SDK-free so \`npm i\` pulls only the backends a consumer actually uses.\n` +
           `  A driver is reached ONLY through its own package (@cloudbitmaps/s3, /gcs, /azure-blob), and the\n` +
-          `  main entry must not name the SDK at all — not statically, not via \`import()\`, not in a type.\n` +
-          `  If a main-entry module needs driver behaviour, put the behaviour behind a port in core/ports and\n` +
+          `  no such entry may name the SDK at all — not statically, not via \`import()\`, not in a type.\n` +
+          `  If a module of such an entry needs driver behaviour, put the behaviour behind a port in core/ports and\n` +
           `  let the caller inject a driver they imported themselves.`,
       );
     }
   }
   console.log(
-    `  main entry SDK-free: @cloudbitmaps/${pkgDir} ` +
+    `  entries SDK-free: @cloudbitmaps/${pkgDir} ` +
       `(${entryGraph.length} reachable module(s), ${declarationFiles(dist).length} .d.ts)`,
   );
 }

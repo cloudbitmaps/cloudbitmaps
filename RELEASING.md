@@ -103,8 +103,8 @@ Pre-`1.0`, a breaking change is a **minor** bump. Choose the bump for the family
 
 `@cloudbitmaps/core`'s main entry and `/node` are internal and outside the stability promise, so a change to either gets
 no CHANGELOG Breaking entry. Siblings can still be installed at different patch versions (`workspace:^` publishes as
-`^X.Y.Z`), so within a minor those entries change only additively: a removal or a changed signature waits for the next minor. Before
-a release, read the diff of `api-surface/internal.json` since the last tag for any removed or changed line.
+`^X.Y.Z`), so within a minor those entries change only additively: a removal or a changed signature waits for the
+next minor. Before a release, read the diff of `api-surface/internal.json` since the last tag for any removed or changed line.
 
 ## What the automation does
 

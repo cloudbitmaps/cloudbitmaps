@@ -151,8 +151,8 @@ A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the 
 (`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both, and is
 installed directly only to name a driver port's type from `@cloudbitmaps/core/driver-kit`
 ([the storage interfaces](docs/guide/api-reference.md#the-storage-interfaces-used-to-type-storage--registry)). `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
-core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
-entry outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
+core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built entry
+(every `exports` entry) outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
 core's but its main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a
 cloud SDK or a node builtin. `pnpm lint:arch` proves each of those lint rules fires.
 
