@@ -80,7 +80,10 @@ describe('resolveRetireOptions', () => {
     ],
     [{ now: NOW, lookbackBuckets: 'x' as never }, /`lookbackBuckets` must be an integer/],
     [{ now: NOW, lookbackBuckets: null as never }, /`lookbackBuckets` must be an integer/],
-    [{ now: NOW, scan: 'index', lookbackBuckets: 1.5 }, /`lookbackBuckets` must be an integer/],
+    [
+      { now: NOW, scan: 'index' as const, lookbackBuckets: 1.5 },
+      /`lookbackBuckets` must be an integer/,
+    ],
     [{ now: NOW, limit: null as never }, /`limit` must be an integer/],
     [{ now: NOW, tombstoneGraceMs: null as never }, /`tombstoneGraceMs` must be a finite number/],
     [{ now: NOW, shards: [], totalShards: 2 }, /shards is empty/],
