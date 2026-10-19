@@ -356,8 +356,7 @@ export async function publishGenerationKept(
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
     const write = writeOptions(holdsRow ? { held: record } : {}, report);
-    // Whether an earlier write of this call got no answer, and whether this attempt's write has reported a token yet.
-    const afterUnanswered = sawUnanswered;
+    // Whether this attempt's write has reported a token yet.
     tokenReported = false;
     fresh = undefined;
     unanswered = undefined;
@@ -557,9 +556,9 @@ export async function publishGenerationKept(
       // Only the write itself raises a transient fault in here that is not a read's, and it is the one outcome that is
       // not an answer: the lease churn's re-read is a read, whose fault is thrown as it is.
       if (!isTransientError(err) || err === readFault) throw err;
-      // A write that faulted before it reported its token, after one that got no answer, was never sent: the registry's
-      // own read of the row faulted, and the earlier write's missing answer is already on record.
-      if (afterUnanswered && sent !== undefined && !tokenReported) throw err;
+      // A write that faulted before it reported its token was never sent: a registry reports the token before it sends
+      // anything, a resend included, so the fault is the registry's own read of the row, a read's fault.
+      if (sent !== undefined && !tokenReported) throw err;
       sawUnanswered = noteUnsettled(options);
       let now: RegistryRecord | null;
       try {

@@ -67,6 +67,7 @@ import {
   TransientError,
   ValidationError,
   WriteConflictError,
+  isTransientError,
   isUnsettledConflict,
   isWriteConflictError,
   unsettledConflict,
@@ -272,7 +273,15 @@ export class ObjectStoreRegistry implements IRegistryDriver {
         lost = err;
       }
     }
-    const current = await this.readRow(key);
+    let current: ReadRow | null;
+    try {
+      current = await this.readRow(key);
+    } catch (err) {
+      // The read only tells a live row from a tombstone. A fault on it leaves the write's own answer standing: the
+      // conflict, as it was, with its mark if it has one. The publish reads the row again at its next attempt.
+      if (lost !== undefined && isTransientError(err)) throw lost;
+      throw err;
+    }
     if (current !== null && !current.env.deleted) {
       // The create-only write's own conflict, if it was one that may have landed, keeps that mark over this message.
       const message = `registry row already exists for segment ${ref.segment}`;

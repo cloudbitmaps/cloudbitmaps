@@ -367,8 +367,8 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     why: 'a registry marks such a conflict with `unsettledConflict`, and the publish reports it',
   },
   // This entry has no tail, so it also refuses a true sentence of the same shape: a guard's refusal comes before any
-  // write, and a refusal on S3 or GCS follows a registry that sends each row write once. A true sentence names the
-  // case: "a guard's refusal is never marked", or "a conflict from the S3 or GCS registry carries none".
+  // write. A true sentence names the case: "a guard's refusal is never marked", or "a conflict on S3 or GCS, each row
+  // write sent once, carries none".
   {
     claim: new RegExp(
       g(

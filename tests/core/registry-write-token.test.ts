@@ -10,7 +10,13 @@ import {
   unsettledConflict,
 } from '@/core/errors';
 import { loadSegment, type LoadResult } from '@/core/load';
-import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
+import type {
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+  RegistryWriteOptions,
+  SegmentRef,
+} from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
@@ -137,7 +143,8 @@ type Mode = 'send' | 'transient' | 'landThenConflict' | 'landThenUnsettled';
 
 /**
  * `registry`, whose first create or compare-and-swap naming `currentGen: gen` waits at `g` before it is sent. Then:
- * `send` sends it; `transient` throws `TransientError` and never sends it; `landThenConflict` sends it, runs `between`,
+ * `send` sends it; `transient` reports a token, as a registry does before it sends, then throws `TransientError`
+ * with nothing sent (a write with no answer); `landThenConflict` sends it, runs `between`,
  * and throws `WriteConflictError`, as a replay that met its own landed write does; `landThenUnsettled` does the same
  * and throws the conflict a registry marks with `unsettledConflict`. It forwards `options`, and inherits
  * the flag from `registry`. It wraps with `Object.create`, so it suits registries whose methods read no `#private`
@@ -152,12 +159,19 @@ function holdWrite(
 ): IRegistryDriver {
   const held = Object.create(registry) as IRegistryDriver;
   let done = false;
-  const wrap = async <T>(names: number | null | undefined, send: () => Promise<T>): Promise<T> => {
+  const wrap = async <T>(
+    names: number | null | undefined,
+    send: () => Promise<T>,
+    options?: RegistryWriteOptions,
+  ): Promise<T> => {
     if (done || names !== gen) return send();
     done = true;
     g.reach();
     await g.opened;
-    if (mode === 'transient') throw new TransientError('no answer, and never sent');
+    if (mode === 'transient') {
+      options?.onToken?.('unapplied.0.0');
+      throw new TransientError('no answer, and never sent');
+    }
     const out = await send();
     if (mode === 'landThenConflict') {
       await between?.();
@@ -170,10 +184,12 @@ function holdWrite(
     return out;
   };
   held.create = (ref, rec, options) =>
-    wrap(rec.currentGen, () => registry.create(ref, rec, options));
+    wrap(rec.currentGen, () => registry.create(ref, rec, options), options);
   held.compareAndSwap = (ref, token, patch, options) =>
-    wrap('currentGen' in patch ? patch.currentGen : undefined, () =>
-      registry.compareAndSwap(ref, token, patch, options),
+    wrap(
+      'currentGen' in patch ? patch.currentGen : undefined,
+      () => registry.compareAndSwap(ref, token, patch, options),
+      options,
     );
   return held;
 }
@@ -841,7 +857,10 @@ describe('a publish whose attempts run out on conflicts', () => {
     let attempts = 0;
     registry.compareAndSwap = async (ref, token, patch, options) => {
       attempts += 1;
-      if (unansweredFirst && attempts === 1) throw new TransientError('no answer, and never sent');
+      if (unansweredFirst && attempts === 1) {
+        options?.onToken?.('unapplied.0.0'); // a write sent and never answered: its token went out first
+        throw new TransientError('no answer, and never sent');
+      }
       if (attempts === 5) {
         await base.compareAndSwap(
           ref,
