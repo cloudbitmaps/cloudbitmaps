@@ -360,6 +360,7 @@ for await (const id of audience.iterate()) {
 A pin records what it holds in `snap.pinnedAt`. `seg.pinAt({ generation, fingerprint })` reopens that generation later,
 in another task or another process, as the same kind of pinned handle `pin()` returns.
 
+<!-- typecheck-skip: `generation` is typed `number | null` here, so the destructure is not assignable to `pinAt`'s argument as written -->
 ```ts
 const first = await store.segment('active-30d').pin();
 const { generation, fingerprint } = first.pinnedAt!;

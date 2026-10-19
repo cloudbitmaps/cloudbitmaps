@@ -224,7 +224,7 @@ it is charged to `limit`, and the purges go on.
   ([the Azure driver](../../packages/azure-blob/README.md)). A first load whose create landed and lost its answer sends
   it again when it finds no row, so a purge inside that window lets the create make the segment again, pointing at a
   generation the retirement deleted and, on an encrypted segment, holding the key it removed. An hour or more is far
-  above both; the default is, and a grace of seconds is not safe whatever the option accepts.
+  above both, and so is the default; a grace of seconds is not safe, whatever the option accepts.
 
 **Every `skipped` reason is worth an alert, for a different reason:**
 

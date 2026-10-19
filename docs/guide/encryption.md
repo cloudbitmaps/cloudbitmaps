@@ -86,7 +86,7 @@ wrapped key, or once every KEK that wrapped it is destroyed ([disaster recovery]
 Neither call can be undone through the library (a registry restore to a point before it can), so each makes you name
 the exact segment or namespace as confirmation.
 
-<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
+<!-- typecheck: backend -->
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
 

@@ -229,8 +229,8 @@ export const roaringCodec: CodecInterface = {
  * it is iterated, which is a promise. It is a `PortableBitmap`, so a load takes it as `{ bitmap }`, and the library
  * keeps no reference to it. What {@link deserializePortable} returns has these members only: a call to any other
  * throws `TypeError`, it has no `getSerializationSizeInBytes`, and `serialize` takes exactly `'portable'`. Its class
- * is not part of the contract: do not cast it and do not test it with `instanceof`. Passed to a `roaring` method in
- * place of a `RoaringBitmap32`, it answers wrongly: decode its bytes first. `JSON.stringify` of one gives `"{}"`; write
+ * is not part of the contract: do not cast it and do not test it with `instanceof`. Passed to a method of the `roaring`
+ * package from npm in place of a `RoaringBitmap32`, it answers wrongly: decode its bytes first. `JSON.stringify` of one gives `"{}"`; write
  * `JSON.stringify([...bitmap])`. For the rest of a Roaring library's API, decode its portable bytes with that library.
  */
 export interface ReadonlyBitmap extends PortableBitmap, Iterable<number> {

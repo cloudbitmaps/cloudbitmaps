@@ -26,6 +26,8 @@ export const ROOT = join(__dirname, '..', '..');
 export const PRELUDES: Readonly<Record<string, string>> = {
   store:
     "import type { CloudRoaring as DocsCloudRoaring } from '@cloudbitmaps/roaring'; declare const store: DocsCloudRoaring;",
+  backend:
+    "import { LocalFsStorage as DocsBackend } from '@cloudbitmaps/roaring'; const backend = new DocsBackend('./docs-backend');",
 };
 
 export interface DocSample {
@@ -97,6 +99,32 @@ export function markedSamples(
     i = k;
   }
   return { samples, orphans };
+}
+
+/**
+ * The module names the packages publish: each package's name, and `name/sub` for each subpath its `exports` lists. The
+ * root `tsconfig.json` maps every source file of core, and the `@/` aliases too, because the sources import through
+ * them, so the compiler would resolve a sample's import of an unexported subpath. The compile step checks each
+ * sample's specifiers against this list instead.
+ */
+function publishedModules(): Set<string> {
+  const out = new Set<string>();
+  const files = execFileSync('git', ['ls-files', 'packages/*/package.json'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter(Boolean);
+  for (const file of files) {
+    const pkg = JSON.parse(readFileSync(join(ROOT, file), 'utf8')) as {
+      name: string;
+      exports?: Record<string, unknown>;
+    };
+    for (const sub of Object.keys(pkg.exports ?? {})) {
+      out.add(sub === '.' ? pkg.name : `${pkg.name}/${sub.slice(2)}`);
+    }
+  }
+  return out;
 }
 
 /** One compiler complaint about one sample, or about a declaration file the program reads. */
@@ -180,10 +208,32 @@ export function compileSamples(samples: readonly DocSample[]): SampleProblem[] {
       problems.push({ where: f?.fileName ?? '(program)', message: `TS${d.code}: ${flatten(d)}` });
     }
   }
+  const published = publishedModules();
   for (const [name, v] of virtual) {
     const source = program.getSourceFile(name);
     if (source === undefined) continue;
     const visit = (node: ts.Node): void => {
+      const specifier =
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
+          ? node.moduleSpecifier
+          : ts.isCallExpression(node) &&
+              node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+              node.arguments[0] !== undefined
+            ? node.arguments[0]
+            : ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
+              ? node.argument.literal
+              : undefined;
+      if (specifier !== undefined && ts.isStringLiteral(specifier)) {
+        const name = specifier.text;
+        if ((name.startsWith('@cloudbitmaps/') || name.startsWith('@/')) && !published.has(name)) {
+          const line =
+            source.getLineAndCharacterOfPosition(specifier.getStart(source)).line + 1 - v.offset;
+          problems.push({
+            where: `${v.sample.file}:${v.sample.line + line - 1}`,
+            message: `\`${name}\` is not a module the packages publish`,
+          });
+        }
+      }
       if (node.kind === ts.SyntaxKind.AnyKeyword) {
         const line =
           source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 - v.offset;

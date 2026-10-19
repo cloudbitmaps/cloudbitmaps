@@ -326,7 +326,7 @@ query retries those transient faults with bounded exponential backoff and full j
 and the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` itself.
 It is on by default.
 
-<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
+<!-- typecheck: backend -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 

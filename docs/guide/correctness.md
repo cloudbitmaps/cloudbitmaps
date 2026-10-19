@@ -605,8 +605,8 @@ because deleting the row is what makes the name writable again:
 2. **A grace period has passed since that stamp** (default 24 h). While the row exists every writer refuses the
    segment, and that is what stops an in-flight load from resurrecting it. So the grace (`tombstoneGraceMs`) must
    outlast the longest time a load's write can still reach the registry: a first load's create that got no answer is
-   sent again for up to about 3.5 s, and on Azure Blob the client's own retry sends each write again for about 16 s
-   more. The default 24 h is far above it; a grace of seconds is not.
+   sent again for up to about 3.5 s, and on Azure Blob the client's own retry replays each of those sends for about 16 s,
+   over a minute in all. The default 24 h is far above it; a grace of seconds is not.
 3. **Storage is provably empty for it.** If storage still holds a straggler generation, such as a load that was writing
    when the tombstone landed, the sweep collects it first, then purges. (The collection takes every generation of a
    destroyed row, and nothing else would ever run it for a tombstoned segment.) Only if storage still cannot be proven
@@ -1048,8 +1048,9 @@ first encrypted generation, and every write seals under it: a load, an `*Into` o
 erasure rewrite each seal every chunk of the generation they write, its index, its summary and its metadata when it
 has any. Each seal draws a fresh random 96-bit nonce, and two seals under one key sharing a nonce stays negligibly
 likely below about 2³² seals (about one in 10¹⁰ at 2³², and growing with the square of the count); 2³² is also NIST
-SP 800-38D's limit for random nonces. Nothing counts seals or enforces that limit. A segment of a few thousand chunks
-never approaches it. A segment at the 65,536-chunk maximum (ids spread over the whole 32-bit range, such as hashed
+SP 800-38D's limit for random nonces. Nothing counts seals or enforces that limit. A segment of N chunks reaches it after
+about 2³² / (N + 3) writes (each `LoadResult` reports `chunkCount`): decades at hourly loads for a few thousand chunks.
+A segment at the 65,536-chunk maximum (ids spread over the whole 32-bit range, such as hashed
 ids) reaches it after about 65,500 writes: about 7.5 years of hourly loads, 230 days of loads every 5 minutes, or two
 months of hourly loads with 1,000 erasure rewrites a day. Past it a repeated nonce, still unlikely, would give whoever
 can read both objects the XOR of two chunks, and whoever can write the bucket a way to forge objects under that key.

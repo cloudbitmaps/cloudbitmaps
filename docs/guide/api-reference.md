@@ -306,7 +306,7 @@ promise. The bitmap `deserializePortable` returned has only these members: its `
 `'portable'` and throws `ValidationError` for any other argument (a `RoaringBitmap32` also satisfies the type and takes
 other formats), and a call to any other member throws `TypeError`. A load takes it as `{ bitmap }`, and the bitmap
 `deserializePortable` returned also loads bare where ids go; the library keeps no reference to it. Its class is not part
-of the contract: do not cast it and do not test it with `instanceof`. Do not pass it to a `roaring` method either: it is not a
+of the contract: do not cast it and do not test it with `instanceof`. Do not pass it to a method of the `roaring` package from npm either: it is not a
 `RoaringBitmap32`, so the predicates and counts (`intersects`, `andCardinality`, `isSubset` and the like) answer wrongly
 without throwing in JavaScript (TypeScript refuses the call), the static `RoaringBitmap32.and`, `or` and `orMany` throw,
 and the constructor and the in-place operations (`orInPlace`, `addMany` and the like) read it as ids. It is not

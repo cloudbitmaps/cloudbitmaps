@@ -140,7 +140,7 @@ const FOREIGN_VERSIONS = new Map<string, string>([
     '2.7.0',
     "the version of the `roaring` package @cloudbitmaps/roaring pins, in the loading guide's `pnpm add roaring@2.7.0` " +
       'for the samples that import it. A third-party version, not a claim about our release; ' +
-      '`usage-sweep-claims.test.ts` holds it to the pin',
+      '`docs-claims.test.ts` holds it to the pin',
   ],
   [
     '24.18.1',

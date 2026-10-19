@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Claims a usage sweep found missing or false in the docs, held where a rewrite cannot quietly undo them: the
- * `roaring` install line names the version the flavor pins, the seal bound no longer calls itself unreachable, a
- * `ReadonlyBitmap` is not offered to a native `roaring` method or to `JSON.stringify` as it is, and the retention
- * grace names the window it must outlast.
+ * Install, cache, `ReadonlyBitmap`, retention-grace and seal-bound claims, held where a rewrite cannot quietly undo
+ * them: the install line for the `roaring` package from npm names the version the flavor pins, the seal bound does
+ * not call itself unreachable, a `ReadonlyBitmap` is not offered to a method of that package or to `JSON.stringify`
+ * as it is, and the retention grace names the window it must outlast.
  *
  * Each reads its file whole with line breaks, a comment's leading `*` and runs of spaces folded to one space, so a sentence the formatter
  * wrapped differently still matches.
@@ -25,7 +25,7 @@ const roaringPin = (
   }
 ).dependencies['roaring'];
 
-describe('claims the usage sweep found missing', () => {
+describe('install, cache, ReadonlyBitmap and grace claims', () => {
   it('tells a reader of the samples that import roaring to install the version the flavor pins', () => {
     expect(roaringPin).toMatch(/^\d+\.\d+\.\d+$/);
     expect(read('docs/guide/loading.md')).toContain(`pnpm add roaring@${roaringPin}`);
@@ -34,7 +34,7 @@ describe('claims the usage sweep found missing', () => {
 
   it('says the TS2550 report starts when the code imports roaring itself', () => {
     expect(read('docs/guide/getting-started.md')).toContain(
-      'reports `TS2550` as soon as your code imports `roaring` itself',
+      'reports `TS2550` in its `index.d.ts` as soon as your code imports it',
     );
   });
 
@@ -48,10 +48,10 @@ describe('claims the usage sweep found missing', () => {
     for (const file of ['docs/guide/api-reference.md', 'docs/guide/loading.md']) {
       const text = read(file);
       expect(text, file).toContain('`JSON.stringify([...bitmap])`');
-      expect(text, file).toMatch(/to a `roaring` method/);
+      expect(text, file).toMatch(/to a method of the `roaring` package from npm/);
     }
     expect(read('packages/roaring/src/roaring-codec.ts')).toContain(
-      'Passed to a `roaring` method in place of a `RoaringBitmap32`, it answers wrongly',
+      'Passed to a method of the `roaring` package from npm in place of a `RoaringBitmap32`, it answers wrongly',
     );
   });
 

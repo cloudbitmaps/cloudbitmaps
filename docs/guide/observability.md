@@ -11,7 +11,7 @@ CloudBitmaps can report storage GETs and bytes, cache hit rate, retries, interse
 through a **metrics sink**. It is off by default (a no-op: emission is skipped entirely when unused). Pass one and the
 library pushes typed events to it:
 
-<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
+<!-- typecheck: backend -->
 ```ts
 import { CloudRoaring, CountingMetricsSink } from '@cloudbitmaps/roaring';
 
@@ -108,7 +108,7 @@ points, so you pass `audit` to each: a load (`store.load`), an `*Into` materiali
 an erasure (`store.eraseSubject`), a drop (`store.dropSegment`), a crypto-shred (`destroySegment`, `eraseNamespace`)
 and the retention sweep (`store.retireExpired`):
 
-<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
+<!-- typecheck: store, backend -->
 ```ts
 import { RecordingAuditSink, destroySegment } from '@cloudbitmaps/roaring';
 

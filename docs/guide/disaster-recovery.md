@@ -397,7 +397,7 @@ Use the backend's registry directly. The store does not expose it; the backend y
 carries `status` and `retention` in its projection, so this is one scan, no per-segment reads. It stops at the first
 row it cannot parse; see [a registry row the library did not write](#a-registry-row-the-library-did-not-write).
 
-<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader -->
+<!-- typecheck: backend -->
 ```ts
 // The floor the sweep holds an instant to: 1,000,000,000,000 epoch milliseconds (2001-09-09), as the retention guide
 // states. A smaller value is almost certainly epoch seconds.

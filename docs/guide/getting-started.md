@@ -453,8 +453,8 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
   when it is an ES module: `"type": "module"` in `package.json` (which `pnpm init` and `npm init -y` do not set) or the
   `.mts` extension; otherwise TypeScript reports `TS1309`. A `tsconfig.json` that typechecks them, with `@types/node`
   installed: `{ "compilerOptions": { "strict": true, "module": "nodenext", "target": "es2022", "types": ["node"] } }`.
-  `roaring`'s own types use `Symbol.dispose`, which `@types/node` declares. Without `@types/node`, take one of two
-  setups instead, or `roaring`'s `index.d.ts` reports `TS2550` as soon as your code imports `roaring` itself (the `{ bitmap }` samples do): set `"skipLibCheck": true`, or set `"lib"` to
+  the `roaring` package's own types use `Symbol.dispose`, which `@types/node` declares. Without `@types/node`, take one of two
+  setups instead, or the `roaring` package from npm reports `TS2550` in its `index.d.ts` as soon as your code imports it (the `{ bitmap }` samples do): set `"skipLibCheck": true`, or set `"lib"` to
   `["es2022", "esnext.disposable", "dom"]` (an explicit `lib` replaces the default, so keep `dom` for `console`).
   A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`; `node16` and `node18` report `TS1479`
   on the import. A project on `moduleResolution: bundler` is unaffected. Code that reads `process.env`, as the Azure

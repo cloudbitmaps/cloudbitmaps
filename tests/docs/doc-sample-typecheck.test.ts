@@ -23,6 +23,10 @@ import {
  * The two samples inside generated regions of the sizing and cost guides get their marker from `bench/sizing.cjs`,
  * which writes them; a marker typed into a region is rewritten on the next generation.
  *
+ * EVERY TYPESCRIPT FENCE DECIDES. A `ts` fence in the scanned files with neither marker fails the test, so a sample added
+ * later is compiled or skipped on purpose, never by omission. `js` fences are out of this gate's scope: it compiles
+ * TypeScript only.
+ *
  * WHAT IT DOES NOT CLAIM. A fence with no marker is neither compiled nor said to compile. A sample is compiled, not
  * run, so what it prints is not held here. The sample is a module compiled alone: a name it uses and does not declare
  * is an error, except `store`, which the docs elide by convention and a marker may ask for
@@ -36,6 +40,23 @@ describe('type-checked documentation samples', () => {
   it('finds marked samples (the scan itself must not silently match nothing)', () => {
     expect(checked.length).toBeGreaterThan(30);
     expect(samples.filter((s) => s.mark === 'skip').length).toBeGreaterThan(10);
+  });
+
+  it('has a marker on every TypeScript fence', () => {
+    const marked = new Set(samples.map((s) => `${s.file}:${s.line}`));
+    const bare: string[] = [];
+    for (const file of sampleFiles()) {
+      const lines = readFileSync(join(ROOT, file), 'utf8').split('\n');
+      lines.forEach((l, i) => {
+        if (
+          /^[ \t]*```(?:ts|typescript)(?:[ \t]+[^\n]*)?[ \t]*$/.test(l) &&
+          !marked.has(`${file}:${i + 2}`)
+        ) {
+          bare.push(`${file}:${i + 1} — a TypeScript fence with no typecheck marker above it`);
+        }
+      });
+    }
+    expect(bare).toEqual([]);
   });
 
   it('has no marker that guards nothing', () => {
@@ -128,6 +149,10 @@ describe('the compile step', () => {
     probe('good.md', "import { CloudRoaring } from '@cloudbitmaps/roaring';\nvoid CloudRoaring;"),
     probe('wrong-type.md', 'const ok = 1;\nconst n: number = "text";\nvoid ok;'),
     probe('undeclared.md', 'void undeclaredName;'),
+    probe(
+      'unexported.md',
+      "import { BoundedLru } from '@cloudbitmaps/core/core/lru';\nvoid BoundedLru;",
+    ),
     probe('any.md', 'const v: any = 1;\nvoid v;'),
     probe(
       'missing-key.md',
@@ -156,6 +181,9 @@ describe('the compile step', () => {
     expect(of('undeclared.md')).toEqual([expect.stringContaining('TS2304')]);
     expect(of('any.md')).toEqual([expect.stringContaining('explicit `any`')]);
     expect(of('missing-key.md').length).toBeGreaterThan(0);
+    expect(of('unexported.md')).toEqual([
+      expect.stringContaining('is not a module the packages publish'),
+    ]);
   });
 
   it('gives a sample the elided store only when it asks, and lets a sample with its own `store` stand', () => {

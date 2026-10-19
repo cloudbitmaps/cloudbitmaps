@@ -100,7 +100,8 @@ The manifest of a command run also carries a `generatedAt` timestamp.
 ## Read an export back
 
 A `.roaring` file needs no CloudBitmaps: any Roaring library deserializes the portable format. This sample imports
-`roaring`, so add it to your own `package.json` first ([which version](loading.md#what-a-load-accepts)).
+the `roaring` package from npm (the native bitmap library, not `@cloudbitmaps/roaring`), so add it to your own
+`package.json` first ([which version](loading.md#what-a-load-accepts)).
 
 <!-- typecheck -->
 ```ts
