@@ -207,7 +207,12 @@ describe.each<Kind>(['memory', 'localfs'])('a shred whose answer was lost (%s)',
 
         const { destroyed } = await eraseNamespace('ns', w.deps, options(w));
 
-        expect(destroyed.map((d) => [d.segment, d.destroyed, d.cryptoShredded, d.reason])).toEqual([
+        // The listing's order is the registry's, which is unspecified: compare by segment.
+        expect(
+          [...destroyed]
+            .sort((x, y) => x.segment.localeCompare(y.segment))
+            .map((d) => [d.segment, d.destroyed, d.cryptoShredded, d.reason]),
+        ).toEqual([
           ['a', true, true, undefined],
           ['b', true, true, undefined],
         ]);
