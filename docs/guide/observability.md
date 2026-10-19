@@ -153,11 +153,12 @@ tokens in another form, and on a `segment.load-refused` from a load that found n
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
 | `namespace.erase` | `eraseNamespace` runs, after every segment is done; also one `segment.erase` per segment actually shredded, emitted as each finishes (segments are shredded eight at a time, so those arrive in no fixed order) | `segmentsShredded` |
 
-**A write that got no answer is audited as one that was answered.** A crypto-shred or a drop's tombstone that
-lands and loses its response is settled by reading back the row, and emits the same events as if the answer had
-arrived. One case has no event: a crypto-shred whose answer and read-back were both lost throws `TransientError`. Its
-re-run finds the tombstone and answers `'already'` with no `segment.erase`, because the tombstone does not record that
-it was a crypto-shred. Record that segment yourself ([encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)).
+**A write that got no answer is audited as one that was answered.** A write that tombstones a segment (a
+crypto-shred, a cleartext destroy or a drop) and lands but loses its response is settled by reading back the row, and
+emits the same events as if the answer had arrived. One case has no event: a crypto-shred whose answer and read-back
+were both lost throws `TransientError`. Its re-run finds the tombstone and answers `'already'` with no `segment.erase`,
+because the tombstone does not record that it was a crypto-shred. Record that segment yourself
+([encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)).
 
 The same two caveats as metrics apply. **`onEvent` runs synchronously** on the operation, so keep it cheap and offload
 network writes to your own queue. **`segment` and `namespace` are your own strings**, so treat them as potentially PII
