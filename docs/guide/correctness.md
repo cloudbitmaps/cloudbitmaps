@@ -515,7 +515,7 @@ new generation. The erasure also needs a re-run, as its ledger entry says
 ([reading the ledger](erasure.md#reading-the-ledger)).
 
 <a id="rollback-race-cost"></a>**What it costs.** One registry read after a loop's last delete, when no read followed it, and none for a loop that
-deleted nothing: a steady load makes one more GET than it would without it. On S3 a load that deletes by name costs
+deleted nothing: a steady load makes one more GET than it would without it. On S3 a single-part load that deletes by name costs
 $12.00 per million at the default prices, for 2 PUT-class requests, 5 GET-class and a delete
 ([the cost guide](cost.md#what-each-term-counts)). The rest is made only when a read finds the row naming a deleted
 number, which a call where nothing raced never sees: one zero-byte read of that object, and when it is gone, up to four
@@ -729,7 +729,8 @@ member of, it streams the current generation through, with every chunk decoded a
 id with that bit cleared. It verifies the new object, publishes it fenced on the generation it streamed, and then
 deletes the generation that held the bit (a collection with `keep: 0`). For every segment its ledger reports
 `erased: true`, the bit is physically gone from the bucket when the call returns; a noncurrent version, a replica or a
-backup keeps the old object until its own lifecycle removes it. It reads the generation through the reader's coalesced chunk stream, in key order: chunks that sit within 256 KiB of
+backup keeps the old object until its own lifecycle removes it, and the uploaded part of a write that failed or was
+killed, which no listing shows, is not reached. It reads the generation through the reader's coalesced chunk stream, in key order: chunks that sit within 256 KiB of
 each other are fetched in one range request of at most 1 MiB, so a segment of 2,000 chunks of about 8 KiB takes about
 16 range requests rather than 2,000 (expected, from the test that counts them), and the ranges go out 4 at a time. Every
 chunk is checked exactly as a read of it alone is checked: its CRC32C, its AEAD on an encrypted segment, and the

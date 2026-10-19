@@ -154,9 +154,11 @@ export type AuditEvent =
        * so nothing that opens the segment through that row can decrypt its Storage bytes, in the bucket or in any
        * backup, replica or WORM copy of its objects. It destroys no KEK: a noncurrent version, a backup or a
        * point-in-time copy of the row still holds the wrapped DEK(s), and a registry restore to a point before the
-       * shred makes the segment readable again. The destruction is complete once no retained copy of the row holds
-       * them, or once every KEK that wrapped them is destroyed. Emitted only for a genuine key shred, never for a
-       * cleartext tombstone (which leaves the Storage bytes readable) or an idempotent re-run.
+       * shred makes the segment readable again wherever its objects survive. The destruction is complete once no
+       * retained copy of the row holds them, or once every KEK that wrapped them is destroyed. A process that had
+       * already opened the segment keeps its unwrapped key in memory until told (`store.invalidate(ref)`). Emitted
+       * only for a genuine key shred, never for a cleartext tombstone (which leaves the Storage bytes readable) or
+       * an idempotent re-run.
        */
       readonly kind: 'segment.erase';
       readonly namespace?: string;

@@ -111,14 +111,20 @@ so, and so do the module headers in the code.
   ledger reports `erased: true`, and a noncurrent version, a replica or a backup keeps the old object until its own
   lifecycle removes it; a ledger entry carries `note`, never `reason`, and the engine's `'absent'`, `'destroyed'`,
   `'no-generation'` and `'not-member'` results list no entry (`docs/guide/correctness.md`, *The result of erasing one
-  segment*). The privacy notes add that a retired segment that held no generation loses its row in the same pass, and
+  segment*). The privacy notes add that a retired segment that held no generation loses its row in the same pass (with `purgeTombstones` on, the default), and
   that removing `setRetention`'s due-index pointer, on a registry that does not report `conditionalDelete`, leaves a
   marker whose key names the segment. The encryption guide says what an encrypted object leaks: the footer's count
-  fields are zero, but the index's length is in the clear and bounds the chunk count.
+  fields are zero and the index is sealed, but its length is in the clear and bounds the chunk count, and the payload
+  sizes bound the id count (exactly, for a set that fits one chunk stored as an array), because nothing is padded. The
+  hover doc of `SegmentInfo.status` (what `store.segments()` returns) no longer says a destroyed segment's generations
+  are gone: a `dropSegment` deletes them, and a crypto-shred leaves them in the bucket with the wrapped key removed
+  from the row.
 - **Other docs state what the code and the calibration runs show.** A cache miss on a segment the store has not opened
-  is three requests, a pointer read, a tail read and the chunk's; `LocalFsStorage` creates files at most `0600` and
+  is three requests on S3, a pointer read, a tail read and the chunk's (measured), and four on Azure Blob, whose tail
+  read is two; `LocalFsStorage` creates files at most `0600` and
   directories at most `0700`; a rollback refuses a generation its row does not know, below the pointer as well as
-  above, unless `allowUnknown`; $11.20 per million is a segment's first single-part `store.load()`, and a multipart one
+  above, unless `allowUnknown`, outside the two cases the pointer alone decides (a row with no usable `knownGens`, and
+  a target below a full ledger's bound); $11.20 per million is a segment's first single-part `store.load()`, and a multipart one
   made 5 PUT-class + 3 GET, $26.20; a combine refuses an absent operand unless `allowAbsentOperands`; `limit` caps a
   sweep's retirements and tombstone purges together, a segment it defers gets no ledger entry, and an index scan's
   `maxScanSegments` check runs before each pointer's row is read; `setRetention` also writes its due-index pointer; a

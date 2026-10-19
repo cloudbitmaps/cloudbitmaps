@@ -362,8 +362,9 @@ npm audit signatures</code></pre>
                     (<span class="m">store.generations(ref)</span> lists them). The one pointer move that is not
                     forward-only, and only an operator makes it: it deletes nothing, refuses a generation that is
                     gone, refuses one its row does not know it published (such as a load that wrote its object
-                    and died before the publish) with a <span class="m">ValidationError</span> unless you pass
-                    <span class="m">allowUnknown: true</span>, outside the two cases the pointer alone decides,
+                    and died before the publish), outside the two cases the pointer alone decides, with a
+                    <span class="m">ValidationError</span> unless you pass
+                    <span class="m">allowUnknown: true</span>,
                     and records <span class="m">segment.rollback</span> on the audit sink you pass it.
                   </td>
                   <td class="num">registry + two listings</td>

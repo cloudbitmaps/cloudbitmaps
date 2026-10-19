@@ -4,9 +4,10 @@ Encryption is opt-in: pass a keystore and segments are encrypted; omit it and ev
 covers turning it on, erasing a segment or a namespace by destroying its key, and why the rules are what they are.
 
 What it protects: the `.crbm` objects are encrypted (payloads, the chunk index and any metadata), and so is the
-registry row's summary of the current generation, so a leaked bucket reveals no ids, none of your metadata and no exact
-count. Sizes still leak, because nothing is padded: an object's byte size bounds the set's size, and its chunk index's
-length, which the footer keeps in the clear, bounds the number of chunks it holds
+registry row's summary of the current generation, so a leaked bucket reveals no ids and none of your metadata.
+Sizes still leak, because nothing is padded: an object's byte size bounds the set's size, and gives the exact id count
+of a set that fits one chunk stored as an array (up to 4,096 ids in one 65,536-id range); its chunk index's length,
+which the footer keeps in the clear, bounds the number of chunks it holds
 ([the format, section 8](../format.md#8-encryption-at-rest)). The segment name and generation are still visible in each
 object's key. It also supports
 **crypto-shred**: GDPR "right to erasure" that works even on immutable or backed-up storage.
@@ -159,7 +160,7 @@ authenticated data, so a blob cannot be moved to another segment, another genera
 | What | Where | Encrypted segment |
 |---|---|---|
 | the ids: each chunk's payload | the generation's object | sealed |
-| the chunk index, and with it the id count and chunk count | the generation's object | sealed. The footer's count fields are zero, but the index's length is in the clear and bounds the chunk count (8 to 13 bytes an entry as written today) |
+| the chunk index, and with it the id count and chunk count | the generation's object | sealed. The footer's count fields are zero, but the index's length is in the clear and bounds the chunk count (8 to 13 bytes an entry as written today), and the payload sizes still bound the id count |
 | your metadata for the generation | the object's extension block | sealed, bound to its own purpose |
 | the current generation's id count, object size, footer checksum, tail size and metadata | the registry row's summary | sealed: fixed-width numbers, then the metadata, so the length reveals only the metadata's size, never how many digits the count has |
 | the data key | the registry row, wrapped under each KEK | wrapped; removed by a crypto-shred |

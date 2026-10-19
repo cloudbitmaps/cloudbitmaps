@@ -427,7 +427,7 @@ numbered above the new one (a load takes a free number under them), and the new 
 deletes **by name** each generation that fell out of the window, after re-reading the row before each delete, and reads the row once more after the last
 delete, which sees a rollback that landed between the read before it and the delete
 ([below](#a-rollback-that-races-a-collection)). It lists nothing. A segment that loads cleanly therefore pays two pointer
-reads and one delete for collection at any `keep` up to 64, not a listing: on S3 a steady load that deletes by name makes
+reads and one delete for collection at any `keep` up to 64, not a listing: on S3 a steady load of a single-part segment that deletes by name makes
 2 PUT-class requests, 5 GET-class and a delete, 8 requests, with the delete free ([what each term
 counts](cost.md#what-each-term-counts)). The window is drawn from the order in the ledger, so the generation the
 publish superseded, which was current, comes first, then the ones made current before it. A publish over a row that has

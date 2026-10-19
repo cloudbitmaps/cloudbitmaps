@@ -791,7 +791,7 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     // expiry is exactly the operator's recovery action for the bad-backfill case `limit` exists to survive, and
     // it did not work if a sweep was already running: the segment was retired from the stale copy. One strong
     // read per *eligible* segment, so the fleet enumeration stays a single `list()`. (`consistency.ts` takes the
-    // same care for a read-only check; an irreversible deletion deserves at least as much.)
+    // same care for a read-only check; a deletion deserves at least as much.)
     const live = await deps.registry.get(ref);
     const livePolicy = live === null ? null : readRetentionPolicy(live.retention);
     if (
@@ -954,7 +954,7 @@ export async function retireExpired(
   // Drain the enumeration first, bounded. The sweep mutates rows as it goes (a tombstone CAS, a row delete), and
   // iterating a live listing while doing so is driver-dependent — a paged listing may or may not observe its own
   // writes. Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on
-  // it, because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
+  // it, because deciding a deletion from a minutes-old copy is not the same as enumerating from one.
   const scanned =
     opts.scan === 'index'
       ? await rowsFromDueIndex(deps.registry, {

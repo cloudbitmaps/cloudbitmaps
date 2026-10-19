@@ -140,7 +140,7 @@ interface S3StorageDriverOptions {
   /** Optional key prefix under which all objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /**
-   * Largest object this driver will write/advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
+   * Largest object this driver will write/advertise. Default = `partBytes × 10,000` (≈ 78 GiB at the default
    * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
    * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
    */

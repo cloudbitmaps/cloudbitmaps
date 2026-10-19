@@ -140,7 +140,7 @@ export async function eraseNamespace(
     );
   }
   // The whole listing is drained, and bounded, before the first segment is destroyed: a namespace over the
-  // ceiling is refused with nothing erased, not abandoned part-way through an irreversible loop.
+  // ceiling is refused with nothing erased, not abandoned part-way through a loop the library cannot undo.
   const rows = await drainRegistry(deps.registry, {
     namespace,
     // Only an absent value means the default: a `null` or a malformed one is refused, as a malformed `budget` is.

@@ -181,7 +181,7 @@ export class CrbmWriter {
     }
 
     const indexPlain = this.encodeIndex();
-    // Encrypt the index too (its nonce/tag go in the footer); a leaked object then reveals no chunk metadata.
+    // Encrypt the index too (its nonce/tag go in the footer); a leaked object then hides the index's contents (its length still bounds the chunk count).
     let indexRegion = indexPlain;
     let indexNonce: Uint8Array | undefined;
     let indexTag: Uint8Array | undefined;

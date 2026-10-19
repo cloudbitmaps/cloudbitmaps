@@ -3,7 +3,7 @@ import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from '@/core/registry-scan';
 import type { IRegistryDriver, RegistryRecord } from '@/core/ports';
 import { FULL_STRENGTH, heavy } from '../helpers/strength';
 
-// `eraseNamespace` lists its namespace resident and then destroys each segment, irreversibly. Its listing is held
+// `eraseNamespace` lists its namespace resident and then destroys each segment's key. Its listing is held
 // to the same ceiling as every other fleet scan, and the refusal has to come before the first destroy: a namespace
 // that is too large is refused whole, never erased part-way.
 

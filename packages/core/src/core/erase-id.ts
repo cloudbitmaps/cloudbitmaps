@@ -244,8 +244,8 @@ export interface EraseIdResult {
    */
   readonly erased: boolean;
   /**
-   * Why the id was not erased, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a crypto-shred
-   * tombstone — already unreadable), `'no-generation'` (a row with no generation yet when the call read it, its first
+   * Why the id was not erased, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a tombstone; its
+   * objects are searched first), `'no-generation'` (a row with no generation yet when the call read it, its first
    * read: its bucket can hold first loads' objects, none of them found to hold the id, and `collected` names any this
    * call deleted unsearched, see below),
    * `'not-member'` (no

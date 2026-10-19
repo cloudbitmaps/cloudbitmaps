@@ -62,8 +62,8 @@ async function members(store: CloudRoaring, ref: SegmentRef = SEG): Promise<numb
  * erasure rewrite. That is what makes crypto-shred a single, total act: one key covers every generation the
  * segment has ever had, so discarding it makes all of them unreadable at once. If a write ever minted a second
  * DEK instead, shredding would leave whichever generations used the other key perfectly readable, and
- * `destroySegment`'s attestation (the `segment.erase` receipt of a key shred, which reaches every copy of the
- * objects) would be false.
+ * `destroySegment`'s attestation (the `segment.erase` receipt of a key shred, which leaves the objects unreadable once
+ * no retained copy of the row holds the key) would be false.
  *
  * These cases therefore assert the same thing from three directions: the wrapped-DEK list on the row never
  * changes, every generation still decrypts with the one key, and a reader without the keystore can read none
@@ -118,7 +118,7 @@ describe('encryption lifecycle — one DEK per segment, across every generation'
 
     // The trap this closes: writing a CLEARTEXT generation onto a row that still advertises wrapped DEKs.
     // `destroySegment` keys `cryptoShredded` off the presence of those wrappings, so shredding that segment
-    // would emit `segment.erase` — the receipt of a key shred, which reaches every copy of the objects — over bytes
+    // would emit `segment.erase` — the receipt of a key shred, which leaves the objects unreadable once no retained copy of the row holds the key — over bytes
     // that stay readable from any copy. Over-attestation is the one failure an audit trail exists to prevent.
     await expect(
       bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [9], { registry: w.registry }),
@@ -256,7 +256,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
 
     const again = await destroySegment(SEG, w.deps, { confirmSegment: 's' });
     // `destroyed: true` (the state is what was asked for) but NOT a fresh crypto-shred — there was no key left
-    // to discard, and an audit trail that recorded a second irreversible destruction would be lying.
+    // to discard, and an audit trail that recorded a second key destruction would be lying.
     expect(again).toMatchObject({ destroyed: true, cryptoShredded: false, reason: 'already' });
   });
 
@@ -332,7 +332,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
     expect((await w.registry.get(SEG))!.status).toBe('active');
 
     // Opting in writes the tombstone, but is honest that no key was discarded: the bytes stay readable from
-    // any copy, so this is not the irreversible erasure `cryptoShredded` attests to.
+    // any copy, so this is not the key shred `cryptoShredded` attests to.
     const opted = await destroySegment(SEG, w.deps, { confirmSegment: 's', allowCleartext: true });
     expect(opted).toMatchObject({ destroyed: true, cryptoShredded: false });
   });

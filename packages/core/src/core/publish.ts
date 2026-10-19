@@ -462,7 +462,7 @@ export async function publishGenerationKept(
         // spends a KMS call plus a whole object write before getting here — seconds to minutes on a large load.
         // A check of `currentGen` alone cannot see a `destroySegment` landing inside that window: it would
         // advance the pointer on a destroyed record, leaving an object encrypted with the DEK that destroy had
-        // just shredded — permanently unreadable, still paid for, and attached to a segment the registry says
+        // just shredded from the current row, so no read through it decrypts it, still paid for, and attached to a segment the registry says
         // was erased.
         //
         // Checking here rather than at the caller is what makes it a fence instead of a second guess: this

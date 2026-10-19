@@ -362,7 +362,7 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 them included), its timestamps and its token. It holds no id, and on an encrypted segment no wrapped key, since the
 drop shreds it. The due index holds a pointer to it whose name spells out the same namespace and name. Both stay
 for `tombstoneGraceMs` (24 h by default) after the retirement, and for as long as the segment's storage cannot be
-proven gone, except a segment that held no generation, whose row the same pass deletes (from the bucket where the
+proven gone, except a segment that held no generation, whose row the same pass deletes (with `purgeTombstones` on, the default; from the bucket where the
 registry reports `conditionalDelete`; elsewhere as a deleted marker that keeps the same fields), so it never waits out
 the grace. Then the sweep's purge removes the row, and the pointers it read to it, from the bucket, where the registry
 reports `conditionalDelete`: the default for S3 when its client sends to an AWS S3 host,
