@@ -221,7 +221,16 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
     });
 
     await expect(
-      destroySegment(SEG, { ...w.deps, registry: contended }, { confirmSegment: 's' }),
+      destroySegment(
+        SEG,
+        // A clock that does not wait: the documented call waits out lease churn on the system clock by default.
+        {
+          ...w.deps,
+          registry: contended,
+          clock: { now: () => 0, sleep: (): Promise<void> => Promise.resolve() },
+        },
+        { confirmSegment: 's' },
+      ),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     const rec = (await w.registry.get(SEG))!;
@@ -294,7 +303,11 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
       },
     });
 
-    const { destroyed } = await eraseNamespace('ns', { registry }, { confirmNamespace: 'ns' });
+    const { destroyed } = await eraseNamespace(
+      'ns',
+      { registry, clock: { now: () => 0, sleep: (): Promise<void> => Promise.resolve() } },
+      { confirmNamespace: 'ns' },
+    );
 
     // The ledger is COMPLETE — every segment appears, including the one that failed.
     expect(destroyed.map((d) => d.segment).sort()).toEqual(['a', 'b', 'c']);
