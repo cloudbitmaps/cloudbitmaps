@@ -34,6 +34,7 @@ import {
   ValidationError,
   WriteConflictError,
   isTransientError,
+  isUnsettledConflict,
   isWriteConflictError,
 } from './errors';
 import { canIndex, dueBucket, dueIndexRef } from './due-index';
@@ -89,7 +90,8 @@ export interface SetRetentionResult {
    * True iff this call **minted the registry row** — a policy recorded before the segment's first load. The
    * segment is now enumerable by `registry.list()` and therefore by every fleet-wide operation; the row claims no
    * Storage generation (`currentGen: null`), so reads answer empty until the first load publishes onto it. A create
-   * that got no answer is read back and counts when the row carries this call's write token, whatever write followed.
+   * that got no answer is read back and counts when the row carries this call's write token: a later policy or lease
+   * write does not hide it, and a later load's publish does (the call then decides again, and answers `false`).
    */
   readonly createdRow: boolean;
   /**
@@ -258,7 +260,7 @@ async function reindex(
  * on it means the write landed, and the caller goes on; the row as it was read means the write did not land, and the
  * error is thrown; any other row means another writer moved it on, and the caller decides again from it (a
  * {@link WriteConflictError} carrying the fault). A registry that reports no write tokens cannot be settled by a mark,
- * so the fault is thrown as it is.
+ * so the fault is thrown as it is. Returns the row the read-back found when the write landed unanswered, else `null`.
  */
 async function settledWrite(
   ref: SegmentRef,
@@ -266,13 +268,14 @@ async function settledWrite(
   tokens: ReturnType<typeof writeTokens>,
   before: RegistryRecord | null,
   send: () => Promise<unknown>,
-): Promise<void> {
+): Promise<RegistryRecord | null> {
   try {
     await send();
+    return null;
   } catch (err) {
     if (!isTransientError(err) || tokens.sent === undefined) throw err;
     const now = await readBack(() => deps.registry.get(ref), err, deps);
-    if (tokens.wrote(now)) return;
+    if (tokens.wrote(now)) return now;
     if (now === null ? before === null : now.token === before?.token) throw err;
     const moved = new WriteConflictError(
       `the row of segment "${ref.segment}" changed while its retention write got no answer`,
@@ -309,11 +312,16 @@ export async function setSegmentRetention(
     if (creating) created.add(token);
   });
   const previous = new Set<number>();
-  const done = async (createdRow: boolean): Promise<SetRetentionResult> => ({
+  // `held` is the expiry whose pointer is written: this call's, unless a later write changed it, which then owns the
+  // index.
+  const done = async (
+    createdRow: boolean,
+    held: number | undefined = policy.expiresAt,
+  ): Promise<SetRetentionResult> => ({
     ...base,
     expiresAt: policy.expiresAt,
     createdRow,
-    indexed: await reindex(ref, deps, policy.expiresAt, previous),
+    indexed: await reindex(ref, deps, held, previous),
   });
   // `casRetry` waits out a race lost to a lease write without using an attempt, up to the churn bound.
   return casRetry(
@@ -329,14 +337,17 @@ export async function setSegmentRetention(
     async (record) => {
       // A write of this call that landed without an answer, or met a conflict that followed its own landing: the row
       // shows it, before anything else is asked of the row.
-      if (record !== null && tokens.wrote(record)) return done(created.has(record.pointerId));
+      if (record !== null && tokens.wrote(record)) {
+        return done(created.has(record.pointerId), readExpiresAt(record));
+      }
       if (record === null) {
         // A policy ahead of the first load. `currentGen: null` is what makes this safe: the row exists purely so
         // the segment is enumerable, and it claims no Storage generation, so generation resolution takes the same
         // path it takes for a segment with no row at all — and the first publish advances it.
         creating = true;
+        let landed: RegistryRecord | null;
         try {
-          await settledWrite(ref, deps, tokens, null, () =>
+          landed = await settledWrite(ref, deps, tokens, null, () =>
             deps.registry.create(
               ref,
               { currentGen: null, retention: { [EXPIRES_AT]: policy.expiresAt } },
@@ -346,12 +357,12 @@ export async function setSegmentRetention(
         } finally {
           creating = false;
         }
-        return done(true);
+        return done(true, landed === null ? policy.expiresAt : readExpiresAt(landed));
       }
       assertNotDestroyed(record, ref);
       const was = readExpiresAt(record);
       if (was !== undefined) previous.add(was);
-      await settledWrite(ref, deps, tokens, record, () =>
+      const landed = await settledWrite(ref, deps, tokens, record, () =>
         deps.registry.compareAndSwap(
           ref,
           record.token,
@@ -359,16 +370,17 @@ export async function setSegmentRetention(
           tokens.options,
         ),
       );
-      return done(false);
+      return done(false, landed === null ? policy.expiresAt : readExpiresAt(landed));
     },
   );
 }
 
 /**
- * Remove a segment's expiry so no sweep will retire it. Returns whether this call removed a policy (`false`
- * for a segment with no row, or one that had no policy, and also when a write that got no answer cannot be shown to be
- * this call's: the expiry is gone either way, and its due-index pointer is removed) — a separate verb from setting one, because "cancel the
- * expiry" and "expire at time T" are different intents and a magic sentinel value for the first is how a typo
+ * Remove a segment's expiry so no sweep will retire it. Returns whether this call removed a policy (`false` for a
+ * segment with no row, or one that had no policy, and also when a write that got no answer cannot be shown to be this
+ * call's and the row holds no expiry: the expiry is gone either way, and its due-index pointer is removed. A later
+ * write that set an expiry is cleared too, and the answer is `true`). A separate verb from setting one, because "cancel
+ * the expiry" and "expire at time T" are different intents and a magic sentinel value for the first is how a typo
  * becomes a deletion.
  *
  * Other `retention` keys are left in place; if removing the expiry empties the metadata, the field is cleared.
@@ -381,6 +393,8 @@ export async function clearSegmentRetention(
   const tokens = writeTokens(deps.registry);
   // Every expiry an attempt read before it sent a write: its pointer goes, whatever the row shows by then.
   const previous = new Set<number>();
+  // Whether a write of this call may have landed without the call learning it.
+  let unanswered = false;
   return casRetry(
     deps,
     ref,
@@ -405,7 +419,7 @@ export async function clearSegmentRetention(
         // This call sent a write against the expiry it read and the row now holds none, yet shows no write of this
         // call's (another write followed it): the expiry is gone, so its pointer names nothing, and whose write
         // removed it cannot be told.
-        if (previous.size > 0) await reindex(ref, deps, undefined, previous);
+        if (unanswered) await reindex(ref, deps, undefined, previous);
         return false;
       }
       if (expiresAt !== undefined) previous.add(expiresAt);
@@ -413,14 +427,27 @@ export async function clearSegmentRetention(
       delete rest[EXPIRES_AT];
       // `retention: undefined` CLEARS the field (a patch clears by mentioning), which is what an emptied policy
       // object should become — a row carrying `{}` reads as "has retention metadata" to anything inspecting it.
-      await settledWrite(ref, deps, tokens, record, () =>
-        deps.registry.compareAndSwap(
-          ref,
-          record.token,
-          { retention: Object.keys(rest).length === 0 ? undefined : rest },
-          tokens.options,
-        ),
-      );
+      try {
+        await settledWrite(ref, deps, tokens, record, () =>
+          deps.registry.compareAndSwap(
+            ref,
+            record.token,
+            { retention: Object.keys(rest).length === 0 ? undefined : rest },
+            tokens.options,
+          ),
+        );
+      } catch (err) {
+        // A swap that got no answer (settled as moved on, carrying the fault) or met a conflict that may follow its
+        // own landing may have landed; a plain refusal did not.
+        if (
+          isTransientError(err) ||
+          isUnsettledConflict(err) ||
+          (isWriteConflictError(err) && isTransientError(err.cause))
+        ) {
+          unanswered = true;
+        }
+        throw err;
+      }
       await reindex(ref, deps, undefined, previous);
       return true;
     },
