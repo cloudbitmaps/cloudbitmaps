@@ -132,8 +132,8 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   past the fresh one) and, for the objects, against MinIO and fake-gcs-server with the throttle injected at the client.
   **Not yet captured** from the real services: whether S3, GCS and Azure apply a request they answered as throttled is
   not documented, so correctness rests on the write id, the write's token and the registry's fence, never on that, and
-  the in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an
-  S3-compatible service is not retried and not classified transient on S3.
+  the in-region calibration is where real throttle answers are measured. A bare `429` from an
+  S3-compatible service counts as a throttle on S3, as a `503` does.
 - **Metadata on a generation, and a row that describes its current generation**. `load` and the `*Into` verbs take a
   small record of your own (`metadata`: string keys, string or finite-number values, at most 1,024 bytes as canonical
   JSON), checked before the first request and stored in the generation's object. The write that moves the pointer also

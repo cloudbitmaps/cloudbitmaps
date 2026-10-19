@@ -7,6 +7,8 @@ when you install the two packages you want. Install those instead:
 pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the store, and the storage you have (or /gcs, or /azure-blob)
 ```
 
+Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
+
 `roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if you allow it. Allow it before you install:
 
 - **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.

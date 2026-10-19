@@ -272,7 +272,7 @@ console.log(`bootstrap-publish: publishing under --tag ${effectiveTag} (expect a
 // RELEASING.md), and keeping provenance out of the manifests is what lets it run.
 //
 // This stays `pnpm publish` rather than a per-package `npm publish`: every other package depends on core via
-// `workspace:^`, and pnpm is what rewrites that to a real version range on the way out. npm would publish the
+// `workspace:*`, and pnpm is what rewrites that to a exact version on the way out. npm would publish the
 // protocol string verbatim and ship packages nobody can install. `pnpm -r` also walks the workspace in
 // topological order, so core goes up before the packages that name it.
 //
@@ -448,8 +448,8 @@ if (latestOnPrerelease) {
 }
 // The rc tarballs are NAME PLACEHOLDERS, not installable packages, and saying so here is cheaper than
 // letting someone discover it by trying. Only the missing manifests are rewritten to the rc version, so
-// `packages/core/package.json` keeps the real one and pnpm resolves each `workspace:^` against THAT — the rc
-// tarballs therefore declare `@cloudbitmaps/core@^<real version>`, which the registry does not have yet.
+// `packages/core/package.json` keeps the real one and pnpm resolves each `workspace:*` against THAT — the rc
+// tarballs therefore declare `@cloudbitmaps/core@<real version>`, which the registry does not have yet.
 // That is correct for the job they do (exist, so a Trusted Publisher can bind) and broken for any other use.
 console.log(
   '\nbootstrap-publish: NOTE — these rc tarballs are not installable. They depend on the real version of\n' +

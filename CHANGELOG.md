@@ -33,6 +33,10 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **Every package exports its own `package.json`** (`"./package.json": "./package.json"`), so
+  `require.resolve('@cloudbitmaps/<package>/package.json')` finds a package's root or version instead of throwing
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
   exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
   `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it
@@ -102,6 +106,13 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The six `@cloudbitmaps/*` packages depend on each other at an exact version, not a `^` range.** A published
+  `@cloudbitmaps/roaring` names the exact `@cloudbitmaps/core` it was built with, and so do the driver packages and
+  `@cloudbitmaps/tools`, so a later `core` release never reaches an older flavor. What you do: install the same version
+  of every `@cloudbitmaps/*` package (`pnpm add @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z`, or let one
+  install resolve both to the latest). Mixing versions installs a second copy of `core`: nothing fails at install,
+  `instanceof` does not hold across the two copies, and `errorKind(err)` still classifies.
+
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an
@@ -123,6 +134,11 @@ so, and so do the module headers in the code.
   writer's index, and its ceiling is now about 7 MiB at that size, about 8 MiB for an encrypted segment (derived).
 
 ### Fixed
+
+- **The S3 driver counts a bare `429` as a throttle.** An S3-compatible service that answers a request with `429` (AWS
+  S3 does not) was neither sent again nor a `TransientError`: the SDK's own error reached your code, past a layer that keys on
+  `TransientError`. A `429` now behaves as a `503` does: a generation's object is sent again, a registry write that
+  meets one is settled by reading the row, and a call that ends on one throws `TransientError`.
 
 - **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
   audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,

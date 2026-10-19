@@ -16,6 +16,8 @@ always-on Redis that would hold the same data, with a verdict that says where Re
 pnpm add @cloudbitmaps/tools
 ```
 
+Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
+
 It reads and writes no store, and runs with nothing else installed: plan a deployment before you have one. Its one
 dependency is `@cloudbitmaps/core`, for the `ValidationError` every refusal throws, so a caller that also installs
 `@cloudbitmaps/roaring` classifies a refusal with its `errorKind(err) === 'ValidationError'` or `instanceof ValidationError`,

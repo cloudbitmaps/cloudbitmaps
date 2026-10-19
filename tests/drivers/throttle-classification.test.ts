@@ -60,13 +60,12 @@ describe('S3: the answers a write-once object is sent again after', () => {
       sends: 2,
       outcome: 'transient',
     },
-    // AWS S3 does not send a 429, but some S3-compatible services do. The S3 driver classifies a throttle by the code
-    // `SlowDown` or the status 503 alone, so a 429 is neither sent again nor a `TransientError`: the SDK's raw error.
+    // AWS S3 does not send a 429, but some S3-compatible services do, and a bare 429 is a throttle like a 503.
     {
       answer: '429 TooManyRequests',
       kind: { status: 429, code: 'TooManyRequests' },
-      sends: 1,
-      outcome: 'raw',
+      sends: 2,
+      outcome: 'transient',
     },
     {
       answer: '500 InternalError',

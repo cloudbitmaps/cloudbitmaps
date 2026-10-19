@@ -97,6 +97,14 @@ describe('S3: which answers are a throttle, on the error the real SDK raises', (
     expect(isThrottle(err)).toBe(true);
   });
 
+  it('a bare 429 is a throttle too, and transient', async () => {
+    const err = await capture({ status: 429, code: 'TooManyRequests' });
+    expect((err as { name?: string }).name).toBe('TooManyRequests');
+    expect(isThrottle(err)).toBe(true);
+    expect(isTransient(err)).toBe(true);
+    expect(isConditionalConflict(err)).toBe(false);
+  });
+
   it.each<[string, FaultKind]>([
     ['500 InternalError', { status: 500, code: 'InternalError' }],
     ['a lost response', 'lose-response'],
@@ -399,6 +407,17 @@ describe('S3: a registry row is sent once, whatever the answer', () => {
     ).rejects.toBeInstanceOf(TransientError);
     expect(bucket.count('PutObject', isRow)).toBe(2); // the create, then the swap once
   });
+
+  it('a compare-and-swap answered with a bare 429 is the same: sent once, then TransientError', async () => {
+    const bucket = new StubS3Bucket();
+    const registry = new S3RegistryDriver({ client: bucket.client(), bucket: STUB_BUCKET });
+    const { token } = await registry.create({ segment: 's' }, { currentGen: 0 });
+    bucket.arm('PutObject', { status: 429, code: 'TooManyRequests' }, isRow);
+    await expect(
+      registry.compareAndSwap({ segment: 's' }, token, { currentGen: 1 }),
+    ).rejects.toBeInstanceOf(TransientError);
+    expect(bucket.count('PutObject', isRow)).toBe(2);
+  });
 });
 
 describe('S3: a load whose writes are throttled, through the real SDK', () => {
@@ -426,6 +445,25 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
     const r = await loadSegment(SEG, [1, 2], deps);
     expect(r).toMatchObject({ generation: 1, published: true });
     expect(bucket.count('PutObject', isObject)).toBe(3); // the first load's, then this one's twice
+  });
+
+  it('an object answered once with a bare 429 is sent again, and the load publishes', async () => {
+    const { bucket, deps } = store();
+    await loadSegment(SEG, [1], deps);
+    bucket.arm('PutObject', { status: 429, code: 'TooManyRequests' }, isObject);
+    const r = await loadSegment(SEG, [1, 2], deps);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    expect(bucket.count('PutObject', isObject)).toBe(3);
+  });
+
+  it('a row answered once with a bare 429 is settled by the publish, and the load publishes', async () => {
+    const { bucket, deps } = store();
+    await loadSegment(SEG, [1], deps);
+    bucket.arm('PutObject', { status: 429, code: 'TooManyRequests' }, isRow);
+    const r = await loadSegment(SEG, [1, 2], deps);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    expect(bucket.count('DeleteObject')).toBe(0);
+    expect((await deps.registry.get(SEG))!.currentGen).toBe(1);
   });
 
   it('an object throttled on every send throws TransientError, deletes nothing, and leaves the row where it was', async () => {

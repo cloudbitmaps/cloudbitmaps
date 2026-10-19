@@ -489,12 +489,6 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "object-write-resent",
-      "sentence": "988d40bdd9e0",
-      "starts": "A generation's object is sent again, at most"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
       "claim": "erasure-number-taken-again",
       "sentence": "cf95e8f0fad0",
       "starts": "The storage half's DeleteObject under If-Match, which with"
@@ -1038,12 +1032,6 @@
       "claim": "what-the-purge-removes",
       "sentence": "df1fcbb2d692",
       "starts": "On by default when the host the client"
-    },
-    {
-      "file": "packages/s3/README.md",
-      "claim": "object-write-resent",
-      "sentence": "06af8f8ba684",
-      "starts": "A generation's object is sent again, up to"
     },
     {
       "file": "packages/s3/README.md",

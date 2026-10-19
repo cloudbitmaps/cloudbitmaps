@@ -53,7 +53,8 @@
     "./driver-kit": {
       "types": "./dist/driver-kit.d.ts",
       "default": "./dist/driver-kit.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",

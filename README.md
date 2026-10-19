@@ -42,6 +42,8 @@ pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk bac
 pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
+Install the same version of every `@cloudbitmaps/*` package. The six release together at one version, and each one pins the exact version of `@cloudbitmaps/core` it was built with, so a flavor and a driver of different versions make your package manager install two copies of `core`. Nothing breaks at install, but `instanceof` does not hold across the two copies (a `WriteConflictError` thrown by one is not an instance of the class the other exports); classify with `errorKind(err)`, which holds across copies.
+
 Installed before allowing it? The package throws at `import` (the install exited 0, or 1 on pnpm 11 and later). Add the
 setting, then run `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
 [Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
