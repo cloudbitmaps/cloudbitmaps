@@ -700,7 +700,8 @@ so until it goes the name is in the bucket, in a key. It lingers when the purge 
 - the purge ran with another `tombstoneGraceMs` than the sweep that filed the pointer, so the day it computes holds
   none (a purge removes the pointers its scan read, whatever day they are under, but a scan limited to a `namespace`
   reads none);
-- a delete landed and lost its response, and the read of the row that would show it gone failed too, so the sweep never learned the row was gone and kept the pointer, as it must;
+- a delete landed and lost its response, and the read of the row that would show it gone failed too, so the sweep
+  never learned the row was gone and kept the pointer, as it must;
 - the registry refused the pointer's removal (`purgeFaults` counts it);
 - the pointer's day has passed out of `lookbackBuckets`, where no index scan reads it.
 

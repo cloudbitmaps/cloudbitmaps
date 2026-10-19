@@ -177,11 +177,11 @@ so, and so do the module headers in the code.
   that reports no write tokens).
 - **The retention sweep reports a purge or a pointer delete whose response was lost as the delete it was.** Before, a
   purge that landed and lost its answer was `skipped` with `failed: ...` and counted in `purgeFaults`, and no later call
-  reported the purge; on Azure Blob, whose client resends a delete after a lost response, the resend met the row it had
+  reported the purge; on Azure Blob, and on GCS with `conditionalDelete: true`, whose clients resend a delete after a lost response, the resend met the row it had
   already removed and the purge showed as `failed: contended`, the default outcome of any purge whose response is lost.
-  Three such reports in a row stopped purging for the rest of the call. An empty segment's row delete and the due-index
+  Three such `failed:` reports in a row stopped purging for the rest of the call. An empty segment's row delete and the due-index
   pointer deletes (a retirement's, a foreign tombstone's, the litter pass's and a purge's) were counted as faults the
-  same way. A delete that failed or met a conflict is now settled by reading the row: a row that is gone is a delete
+  same way. A delete that got no answer or met a conflict is now settled by reading the row: a row that is gone is a delete
   that happened. A row still there stays a refusal or a lost race, as it was.
 
 - **`setRetention` and `clearRetention` whose write lands and loses its response are now settled by the write token,
@@ -190,8 +190,9 @@ so, and so do the module headers in the code.
   for the row it made, and a `setRetention` that moved an expiry to another day left the old day's pointer in the due
   index until the segment was retired and purged, one more row read on every scan that reached that day. A write that
   got no answer is now read back: a row carrying this call's own write token counts as landed, and a pointer create
-  that got no answer is read back too, so `indexed` is true when the pointer is there. When another write followed the
-  clear before the read-back, `clearRetention` answers `false` with the expiry gone, and says so in the guide. A
+  that got no answer is read back too, so `indexed` is true when the pointer is there. When a later write hides the clear's
+  token before the read-back, the call decides again from the row: it answers `false` with the expiry gone when the row
+  holds none, and removes the expiry and answers `true` when the later write set one. A
   registry that does not report write tokens keeps throwing `TransientError`.
 
 - **An erasure's, a drop's and a load's collection storage deletes that land and lose their response are now settled by

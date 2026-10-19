@@ -74,7 +74,10 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
 - **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
   policy is committed, and the fleet scan still retires the segment.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
-  `createdRow: true`, or `false` when another write followed this call's create before it could read the row back) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
+  `createdRow: true`) with no storage generation (`currentGen: null`). A create that gets no answer is read back, and
+  `createdRow` stays `true` when the row carries the call's own write, even after a later policy or lease write. It
+  turns `false` only when a later load's publish moved the row's pointer before the read-back, since the call then
+  decides again from the row and sets the policy on it. with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
   sweep can already see the segment, and the first load publishes onto that row. A load already running when
   `setRetention` creates the row found none, so it is refused `superseded`, guarded or not: re-run it, and it
   publishes onto that row. Reads are unaffected: a pointer-less row resolves exactly like a segment with no row.
@@ -92,11 +95,19 @@ hand-edited one. That is deliberately not folded into `null`: a malformed policy
 segment someone believes is expiring is the kind of silence that costs a compliance commitment. Cancelling is its own
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
 
-**`clearRetention` answers `false` when it cannot show it removed the policy.** A clear whose write gets no answer
-[is settled by reading the row back](correctness.md#row-write-settled): `true` when the row shows its write. When another write has followed it first (on Azure
-Blob, a write that met a conflict), the row cannot say whose write removed the expiry. The call then answers `false`,
-and the expiry is gone either way. The due-index pointer of the expiry it read goes in both cases, and a
-`setRetention` that moves an expiry removes the old day's pointer the same way, whether its write was answered or not.
+### When `clearRetention` answers `false`
+
+A clear whose write gets no answer [reads the row back](correctness.md#row-write-settled) and counts the clear as landed when the row carries its own
+write token: it answers `true` and removes the pointer of the expiry it read. When a later write hides that token
+(a lease write, or another writer's), the row cannot say whose write removed the expiry. The call then decides again
+from the row, on every backend:
+
+- The row holds no expiry: the call answers `false`. The expiry is gone, and the pointer of the expiry it read is
+  removed.
+- The later write set an expiry: the call removes that one too, and answers `true`.
+
+A `setRetention` that moves an expiry removes the old day's pointer the same way. On a registry that does not report
+write tokens, a write that gets no answer throws `TransientError`, and the pointer stays until the call is run again.
 
 ### A deadline on a set
 
@@ -147,7 +158,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
 > disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
 > without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
-> same slice across restarts.
+> same slice across restarts. Two sweeps that overlap each count a purge they both saw happen, so `tombstonesPurged` is
+> what this sweep saw gone, not a total across sweeps.
 
 **Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans
 the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you want the
@@ -164,7 +176,9 @@ deletion to feel.
 - `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
-  pass. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
+  pass. Two stores writing the retention of one segment within a few round trips can remove each other's pointer (a
+  call that decides again removes the pointer of every expiry it read): the sweep with `scan: 'index'` then does not
+  see that segment, and it is retired by the next `'fleet'` scan. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
   nothing stranded.
 
 **Start with `dryRun`.** `dropSegment`'s `confirmSegment` guard protects nothing in a loop, because it is the same
@@ -199,8 +213,10 @@ if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaul
 **Check `purgeFaults`: a delete the registry refuses holds nothing else up, and says so only there.** A purge or a pointer
 removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
 snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
-one's reason in `firstPurgeFault`. A delete whose response was lost, or whose resend met its own landing, is not a refusal: the sweep reads the row, and a row that is gone is a delete that happened, reported as the purge it was. So is a tombstone whose objects are still there after a collection that raised
-nothing, such as a store that acknowledges a delete it did not make. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+one's reason in `firstPurgeFault`. So is a tombstone whose objects are still there after a collection that raised
+nothing, such as a store that acknowledges a delete it did not make. A delete whose response was lost, or whose resend
+met its own landing, is not a refusal: the sweep reads the row, and a row that is gone is a delete that happened,
+reported as the purge it was. A refused purge is `skipped` in the ledger, with the provider's message, and is not
 charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
 the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
 row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three

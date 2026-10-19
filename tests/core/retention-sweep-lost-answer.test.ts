@@ -65,7 +65,7 @@ describe.each<Kind>(['memory', 'localfs'])('a sweep delete whose answer was lost
       retry: false,
       seams: { clock: waits.clock, rng: waits.rng },
     });
-    return { raw, registry, store };
+    return { raw, registry, store, waits };
   }
   type World = ReturnType<typeof world>;
 
@@ -115,6 +115,65 @@ describe.each<Kind>(['memory', 'localfs'])('a sweep delete whose answer was lost
       expect(res.tombstonesPurged).toBe(0);
       expect(res.purgeFaults).toBe(0);
       expect(await w.raw.get(SEG)).not.toBeNull();
+    });
+
+    it('whose read-back fails too is a fault that keeps the pointer, and the next sweep removes it', async () => {
+      const w = world();
+      await w.raw.create(SEG, staleTombstone);
+      await w.raw.create(pointerOf(SEG, T0 - DAY), { currentGen: null });
+      w.registry.arm('delete', 'a', (ref) => isRow(ref));
+      w.registry.failReads(3);
+
+      const res = await w.store.retireExpired({ now: T0 });
+
+      expect(res.entries).toMatchObject([{ segment: 's', action: 'skipped' }]);
+      expect(res.purgeFaults).toBe(1);
+      expect(await w.raw.get(SEG)).toBeNull();
+      expect(await dueRows(w)).toHaveLength(1);
+
+      const next = await w.store.retireExpired({ now: T0 });
+      expect(next.purgeFaults).toBe(0);
+      expect(await dueRows(w)).toEqual([]);
+    });
+
+    it('reads the row back again after a wait when the first read fails', async () => {
+      const w = world();
+      await w.raw.create(SEG, staleTombstone);
+      w.registry.arm('delete', 'a', (ref) => isRow(ref));
+      w.registry.failReads(2);
+
+      const res = await w.store.retireExpired({ now: T0 });
+
+      expect(res).toMatchObject({ tombstonesPurged: 1, purgeFaults: 0 });
+      expect(w.waits.sleeps).toEqual([250, 500]);
+    });
+
+    it.each(['a', 'b'] as const)(
+      'removes its pointer although that delete lost its answer (%s)',
+      async (fault) => {
+        const w = world();
+        await w.raw.create(SEG, staleTombstone);
+        await w.raw.create(pointerOf(SEG, T0 - DAY), { currentGen: null });
+        w.registry.arm('delete', fault, isDue);
+
+        const res = await w.store.retireExpired({ now: T0 });
+
+        expect(res).toMatchObject({ tombstonesPurged: 1, purgeFaults: 0 });
+        expect(await dueRows(w)).toEqual([]);
+      },
+    );
+
+    it('waits between the reads that settle a pointer delete', async () => {
+      const w = world();
+      await w.raw.create(SEG, staleTombstone);
+      await w.raw.create(pointerOf(SEG, T0 - DAY), { currentGen: null });
+      w.registry.arm('delete', 'a', isDue);
+      w.registry.failReads(2);
+
+      const res = await w.store.retireExpired({ now: T0 });
+
+      expect(res.purgeFaults).toBe(0);
+      expect(w.waits.sleeps).toEqual([250, 500]);
     });
 
     it('does not stop purging after three lost answers in a row', async () => {

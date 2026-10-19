@@ -39,7 +39,7 @@
  * a pointer in the due index under the day its tombstone's grace ends, so `scan: 'index'` purges as well as retires;
  * nothing on the row records that day, which the purge derives from the stamp. The purge removes every pointer it read
  * to the row, and a pointer that outlives its row anyway (a purge that ran with another grace, a delete that landed and
- * lost its response, a pointer older than an index scan's lookback) is removed by the next scan that reads it: an index
+ * lost its response and could not be read back, a pointer older than an index scan's lookback) is removed by the next scan that reads it: an index
  * scan in its buckets, and an unscoped fleet scan, which reads every pointer, in all of them. Where a delete only
  * rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would only add a row
  * for every scan to read. The pointers a scan reads to a tombstone this sweep did not write (a crypto-shred, a
@@ -263,7 +263,10 @@ export interface RetireExpiredResult {
   readonly retired: number;
   /** Segments a real sweep **would** have retired. Only ever non-zero under `dryRun`. */
   readonly wouldRetire: number;
-  /** Tombstone rows actually deleted. Zero under `dryRun`; the `would-purge-tombstone` entries carry the preview. */
+  /**
+   * Tombstone rows this sweep saw deleted. Zero under `dryRun`; the `would-purge-tombstone` entries carry the preview.
+   * A purge another sweep made at the same moment is counted by both.
+   */
   readonly tombstonesPurged: number;
   /**
    * True when `limit` cut the pass short — **more work remains**: retirements, or purges of this sweep's tombstones,
@@ -401,7 +404,7 @@ async function rowsFromDueIndex(
  * Candidates from the whole registry, as `registry.list()` yields them, and the due-index pointers it yielded on the
  * way. An unscoped listing reads every pointer (the listing pays a read for each before the scan skips it), and a
  * pointer whose segment is not among the rows is litter, as it is to an index scan: whatever left it (a purge that
- * ran with another grace than the one that filed it, a delete that landed and lost its response, a pointer older than
+ * ran with another grace than the one that filed it, a delete that landed and lost its response and could not be read back, a pointer older than
  * an index scan's lookback) the fleet scan, which reads every row, is the one that can see it. A scan limited to a
  * `namespace` lists no pointers, and finds none.
  *
@@ -449,14 +452,14 @@ async function rowsFromFleet(
  * `null`) — never a wrong retirement, so it must not turn a successful retirement into a fault.
  */
 async function forgetDuePointer(
-  registry: IRegistryDriver,
+  deps: DropDeps,
   ref: SegmentRef,
   expiresAt: number,
   onFault: (err: unknown) => void,
 ): Promise<void> {
   if (!canIndex(ref)) return;
   try {
-    await rowDeleteSettled(registry, dueIndexRef(dueBucket(expiresAt), ref));
+    await rowDeleteSettled(deps.registry, dueIndexRef(dueBucket(expiresAt), ref), undefined, deps);
   } catch (err) {
     // See above: litter, not a wrong retirement. The caller is told, though: a delete the registry refuses is counted.
     onFault(err);
@@ -488,13 +491,13 @@ async function filePurgePointer(
  * with. Best-effort: a pointer left behind is read again by the next scan, which removes it then.
  */
 async function forgetFoundPointers(
-  registry: IRegistryDriver,
+  deps: DropDeps,
   found: readonly FoundPointer[],
   onFault: (err: unknown) => void,
 ): Promise<void> {
   for (const pointer of found) {
     try {
-      await rowDeleteSettled(registry, pointer.ref, pointer.token);
+      await rowDeleteSettled(deps.registry, pointer.ref, pointer.token, deps);
     } catch (err) {
       // A lost race is the pointer changing under the delete, and is no fault; anything else is counted.
       onFault(err);
@@ -511,7 +514,7 @@ async function forgetFoundPointers(
  * from a tombstone that no longer needs finding.
  */
 async function forgetPurgePointers(
-  registry: IRegistryDriver,
+  deps: DropDeps,
   ref: SegmentRef,
   purgeAt: number,
   found: readonly FoundPointer[],
@@ -524,7 +527,7 @@ async function forgetPurgePointers(
     : [...found, { ref: filed, target: ref }];
   for (const pointer of all) {
     try {
-      await rowDeleteSettled(registry, pointer.ref, pointer.token);
+      await rowDeleteSettled(deps.registry, pointer.ref, pointer.token, deps);
     } catch (err) {
       // See above: litter, not a wrong purge. A lost race is the pointer changing under the delete, and is no fault.
       onFault(err);
@@ -696,7 +699,7 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
       try {
         const live = await deps.registry.get(ref);
         if (live?.status === 'destroyed' && retirementStamp(live.retention) === null) {
-          await forgetFoundPointers(deps.registry, found, tally.noteFault);
+          await forgetFoundPointers(deps, found, tally.noteFault);
         }
       } catch (err) {
         tally.noteFault(err);
@@ -764,7 +767,7 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
       tally.purgeRun = 0;
       if (removesRows) {
         await forgetPurgePointers(
-          deps.registry,
+          deps,
           ref,
           retiredAt + grace,
           pointers.get(segmentKey(ref)) ?? [],
@@ -878,7 +881,7 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     // lookback re-reads forever — the index would otherwise grow monotonically and slowly undo its own
     // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
     // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
-    await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt, tally.noteFault);
+    await forgetDuePointer(deps, ref, livePolicy.expiresAt, tally.noteFault);
     if (
       opts.purgeTombstones &&
       result.generationsDeleted.length === 0 &&

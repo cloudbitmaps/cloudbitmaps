@@ -1060,21 +1060,6 @@ describe('a purge pointer that outlives its row is removed by the unscoped fleet
     expect(registryObjects(w)).toBe(0);
   });
 
-  it('a delete that landed and lost its response is reported as the purge it was, and its pointer goes with it', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'day' };
-    const filedUnder = await retired(w, ref, GRACE);
-    w.advance(GRACE);
-    w.store.landThenFailDelete = new TransientError('connection reset after the delete');
-    const first = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    expect(first.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
-    expect(await w.registry.get(ref)).toBeNull();
-    expect(await bucketRows(w, filedUnder)).toEqual([]);
-    expect(registryObjects(w)).toBe(0);
-    const after = await readsOf(w, () => retireExpired(w.deps, { now: w.now() }));
-    expect(after.reads).toBe(0);
-  });
-
   it('a pointer older than the lookback, which no index scan reaches, is removed by the unscoped fleet scan', async () => {
     const w = world();
     const ref = { namespace: 'n', segment: 'day' };
