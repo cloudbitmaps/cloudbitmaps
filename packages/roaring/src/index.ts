@@ -36,6 +36,7 @@ import {
   RetryingStorageChunkSource,
   SegmentEngine,
   LEASE_SKEW_MS,
+  BudgetExceededError,
   LeaseExpiredError,
   MAX_LEASE_MS,
   NotFoundError,
@@ -375,7 +376,8 @@ export interface CloudRoaringOptions {
    * attempt, capped at 2 s, with full jitter): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
-   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
+   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id, and
+   * the search `subjectReport` and `eraseSubject` make under a destroyed segment (its listing of the bucket included).
    * This option does not govern writes, nor the calls that read the registry or list the bucket directly (`exists`,
    * `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`, `exportSegments` and
    * `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that
@@ -555,8 +557,8 @@ export interface SubjectReport {
    * dropped while a load wrote an object its sweep did not catch, or crypto-shredded over an object a cleartext writer
    * left. No read resolves them, so the id is a member of none, but its bytes are in the bucket, and `eraseSubject`
    * deletes them. A crypto-shredded segment's own objects are sealed under a key no row holds and are never a holder,
-   * so it is listed only when an object left under it in the clear holds the id; nor is a destroyed segment with no
-   * object left. `[]` when none.
+   * so it is listed only when an object left under it in the clear holds the id. A destroyed segment with no
+   * object left is not listed either. `[]` when none.
    */
   readonly tombstones: SubjectSegmentRef[];
   /** How many registered segments were scanned (the completeness denominator). */
@@ -1895,10 +1897,19 @@ export class CloudRoaring {
     let opens = 0;
     const charge = (): void => {
       opens += 1;
-      // A refusal part-way through the search does not know what the whole search needs, so it reports the bound
-      // plus one, a lower bound, as an enumeration stopped at its bound does.
+      // A refusal part-way through the search does not know what the whole search needs, so it says "more than"
+      // and reports the bound plus one, a lower bound, as an enumeration stopped at its bound does.
       if (budget !== null && recs.length + opens > budget.maxRequests) {
-        checkBudget(budget, budget.maxRequests + 1, 'subjectReport');
+        throw new BudgetExceededError(
+          `subjectReport would fan out to more than ${budget.maxRequests} units, over the per-op budget: the search ` +
+            `under a destroyed segment was abandoned at that point, so no exact total is available. Raise ` +
+            `\`budget.maxRequests\`, override it per-op, or set \`budget: false\``,
+          {
+            option: 'budget.maxRequests',
+            limit: budget.maxRequests,
+            spent: budget.maxRequests + 1,
+          },
+        );
       }
     };
     // Bounded fan-out of `has()` across registered segments. Order-preserving ⇒ deterministic result. A has()

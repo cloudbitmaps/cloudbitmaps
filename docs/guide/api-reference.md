@@ -1062,7 +1062,7 @@ read's attempts. A call of your own is yours to retry: loop over it, and back of
 |---|---|
 | `RetryPolicy` | from `@cloudbitmaps/roaring`: the five fields the store's `retry` option overrides a field at a time. The defaults are 4 attempts, a 50 ms base delay, ×2, a 2 s cap and full jitter. The retry primitive, `withRetry`, the default policy and the read-source wrapper the store builds, `RetryingStorageChunkSource`, are internal to the engine |
 
-No write goes through the read retry. A conditional put or compare-and-swap that lands and then loses its response
+The search `subjectReport` and `eraseSubject` make under a destroyed segment, its listing included, is under the read retry. No write goes through the read retry. A conditional put or compare-and-swap that lands and then loses its response
 would, replayed blindly, find its own write already there and report it as a conflict, so a fault the drivers and the
 publish do not settle reaches the caller as a `TransientError`. So does a fault on the store's direct registry and
 bucket reads (`exists`, `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`,
