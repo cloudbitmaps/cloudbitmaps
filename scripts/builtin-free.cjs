@@ -110,7 +110,9 @@ async function loadWithoutNode(entryFile, { tsconfig } = {}) {
       format: 'iife',
       globalName: '__entry',
       logLevel: 'silent',
-      ...(tsconfig ? { tsconfig } : {}),
+      // Without one, ignore the tsconfig esbuild would find: its path aliases would bundle a package's source in
+      // place of the built files this check is about.
+      ...(tsconfig ? { tsconfig } : { tsconfigRaw: '{}' }),
     });
     code = result.outputFiles[0].text;
   } catch (e) {
