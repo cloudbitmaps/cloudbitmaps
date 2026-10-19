@@ -171,7 +171,7 @@ describe('the tree: every restatement of a guarantee ties the claim it restates'
     expect(result.regions.map((r) => r.section).sort()).toEqual(
       result.page.sections.map((s) => s.slug).sort(),
     );
-    expect(result.page.claims.size).toBe(68);
+    expect(result.page.claims.size).toBe(75);
     // A key names its claim, never a heading: the three section intros carry keys of their own.
     for (const key of [
       'refusal-is-reported-not-thrown',

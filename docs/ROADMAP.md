@@ -400,15 +400,16 @@ between here and there:
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
    - an `op` metric for `store.load`, which the metrics sink does not time;
-   - sending a lifecycle write again when the row shows it did not land. Every write settles a write that got no answer by
-     reading back its row or its object, and goes on from one that landed. Only the publish of a load, an `*Into` or an
-     erasure's rewrite, and an erasure's write to the row, send one again. The others throw the `TransientError`, and a
-     re-run is safe: a crypto-shred, a drop's tombstone, `setRetention`, `clearRetention`, a rollback's move and move
-     back, a sweep's deletes, and a storage delete;
+   - sending a lifecycle write again when the row shows it did not land. Every write reads back its row or its object
+     when it gets no answer ([how a row write is settled](guide/correctness.md#row-write-settled),
+     [what each helper settles](guide/correctness.md#a-write-that-gets-no-answer)) and goes on from one that landed.
+     Only the publish of a load, an `*Into` or an erasure's rewrite, and an erasure's write to the row, send one again
+     ([publish is forward-only](guide/correctness.md#publish-is-forward-only)). The others throw the `TransientError`,
+     and a re-run is safe: a crypto-shred, a drop's tombstone, `setRetention`, `clearRetention`, a rollback's move and
+     move back, a sweep's deletes, and a storage delete;
    - a record of a crypto-shred whose answer and read-back were both lost. The tombstone does not say which call wrote it
      or that it was a crypto-shred, so the re-run answers `'already'` and emits no `segment.erase`;
-   - a delete that lands after the read that checked it, and a registry that reports no write tokens, which cannot show a
-     write by its token: both leave the call reporting the fault, and a re-run is safe;
+   - a delete that lands after the read that checked it, and a registry that reports no write tokens. Both end as the fault the call reports; running the call again is safe;
    - a rollback's move back restores the ledger the row had before the move, so a ledger-only write made in between (a
      prune) is undone with it;
    - a `rollback` with no key at hand (no keystore, or one that cannot open the key) below the pointer of an encrypted

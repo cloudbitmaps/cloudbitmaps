@@ -434,26 +434,24 @@ names the generation it asked to delete whether or not it was there.
 higher than the one a purge and re-creation or a rollback leaves behind, which is why the ordinary branch above takes
 the lower of the two.
 
-### A write that gets no answer
-
 <a id="a-write-that-gets-no-answer"></a>Every write below that gets no answer reads back its row or its object and takes the write as landed only when what it
 reads carries the call's own mark. Over a registry that reports write tokens the mark is the token the call sent before the
 write; no other writer's write carries it. Only a load, an `*Into` verb and an erasure's rewrite send the write again when
-the read-back shows it did not land; the others throw `TransientError`, and a re-run is safe.
+the read-back shows it did not land; the others throw `TransientError`, and a re-run is safe. A read-back waits between its reads by default, at every site (under half a second, then under a second, with jitter), and gives up after three.
 
-- **A crypto-shred** (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement): settled by the tombstone's
+- <a id="settle-shred"></a>**A crypto-shred** (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement): settled by the tombstone's
   `pointerId`, the token of the shred's own write. When the read-back fails too, the call throws `TransientError` and the
   segment may be destroyed. Its re-run answers `'already'`, with no `segment.erase`.
-- **A drop's tombstone for a segment with no row**: settled the same way. A re-run answers `'already'` and sweeps the bucket.
-- **`setRetention`, `clearRetention`**: settled by the row's token. When another write has followed this call's write
+- <a id="settle-tombstone"></a>**A drop's tombstone for a segment with no row**: settled the same way. A re-run answers `'already'` and sweeps the bucket.
+- <a id="settle-retention"></a>**`setRetention`, `clearRetention`**: settled by the row's token. When another write has followed this call's write
   before the read-back, the row cannot say whose write it shows, and the call decides again from the row.
-- **A `rollback`'s move and its move back**: settled by the row's `pointerId` being the token of a write the call sent. A
+- <a id="settle-rollback"></a>**A `rollback`'s move and its move back**: settled by the row's `pointerId` being the token of a write the call sent. A
   move back that landed is reported as "the pointer was put back". One that never landed, or whose read-back failed too,
   says the pointer may still name the target. A registry that reports no tokens settles the move onto the target by the
   row it would leave, and cannot settle the move back: that message stays.
-- **A sweep's purge and its pointer removals**: settled by reading the row. A row that is gone counts as removed, whichever
+- <a id="settle-sweep"></a>**A sweep's purge and its pointer removals**: settled by reading the row. A row that is gone counts as removed, whichever
   request removed it, so two sweeps over the same rows at once can both count one purge.
-- **A storage delete** (a load's collection, an erasure's deletes, a drop's sweep): settled by one zero-byte read of the
+- <a id="settle-storage-delete"></a>**A storage delete** (a load's collection, an erasure's deletes, a drop's sweep): settled by one zero-byte read of the
   object. Gone, it counts as deleted. For an erasure's delete of a holder, another object under the number is the refusal a
   conditional delete gives. When the read fails too, or the delete lands after it, the call reports the fault, and a re-run
   finds the object gone: an erasure's re-run then lists nothing for the segment.
