@@ -507,7 +507,7 @@ async function eraseOnce(
   options: { audit?: IAuditSink },
   seen: Pass,
 ): Promise<EraseIdResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'eraseIdFromSegment');
   checkedAuditSink(options.audit, 'eraseIdFromSegment');
   const { chunkKey, remainder } = splitId(id); // validates the u32 range
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');

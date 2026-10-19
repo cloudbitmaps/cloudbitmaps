@@ -97,7 +97,7 @@ export async function destroySegment(
   deps: EraseDeps,
   options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
 ): Promise<DestroyResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'destroySegment');
   checkedAuditSink(options.audit, 'destroySegment');
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
@@ -375,7 +375,7 @@ export async function dropSegmentFor(
   options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
   sweep: SweepDrop | undefined,
 ): Promise<DropResult | null> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'dropSegment');
   checkedAuditSink(options.audit, 'dropSegment');
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(

@@ -102,6 +102,13 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A segment ref with a key it does not take is refused with `ValidationError`.** `{ segment: 'x', namspace: 'eu' }`
+  used to read as `{ segment: 'x' }` and act on the segment of that name in the default namespace, which for
+  `dropSegment`, `rollback` and `destroySegment` meant acting on the wrong segment. `load`, `exists`, `generations`,
+  `rollback`, `dropSegment`, `setRetention`, `getRetention`, `clearRetention`, `invalidate` and `destroySegment` now
+  name the key the caller wrote and the keys a ref takes (`segment`, `namespace`, and the `currentGen` and `status` of a
+  `store.segments()` row, so a listing row can still be passed back).
+
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an

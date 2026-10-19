@@ -360,6 +360,12 @@ segment mid-call and how the timed refresh behaves.
 
 ### Store methods
 
+A segment ref (the `ref` of `load`, `exists`, `generations`, `rollback`, `dropSegment`, `setRetention`, `getRetention`,
+`clearRetention`, `invalidate` and the standalone `destroySegment`) is an object holding `{ segment, namespace? }`. Any
+other own key throws `ValidationError`, naming it and the keys a ref takes, so a misspelt `namespace` never addresses
+the segment of that name in the default namespace. The one exception is a row from `store.segments()`, whose
+`currentGen` and `status` a ref also takes, so a listing row can be passed straight back.
+
 | Call | Does |
 |---|---|
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `Promise<SubjectReport>` | GDPR Art. 15 — which registered segments is this id in? Needs an explicit `namespace` or an `allNamespaces: true` ack, and throws `ValidationError` with neither. `concurrency` (default 8) is how many segments are scanned at once. Needs a backend |

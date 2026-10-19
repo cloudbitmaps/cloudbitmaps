@@ -83,7 +83,8 @@ Destroying a segment's wrapped key removes it from the segment's current registr
 objects, backups and WORM copies included, is then unreadable once no retained copy of that row still holds the
 wrapped key, or once every KEK that wrapped it is destroyed ([disaster recovery](disaster-recovery.md#encryption--dr)).
 Neither call can be undone through the library (a registry restore to a point before it can), so each makes you name
-the exact segment or namespace as confirmation.
+the exact segment or namespace as confirmation. A ref is exact too: a key it does not take, such as a misspelt
+`namespace`, throws `ValidationError` instead of addressing the segment of that name in the default namespace.
 
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';

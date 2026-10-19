@@ -33,6 +33,8 @@ export { splitId } from './core/bit-route';
 export { mapWithConcurrency } from './core/concurrency';
 export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
 export { segmentExists, listSegments } from './core/discover';
+// The ref check the flavor's store runs before any call that takes a segment ref.
+export { refuseUnknownRefKeys } from './core/validate';
 export type { SegmentInfo } from './core/discover';
 // The key helper the conformance fakes use.
 export { segmentKey } from './core/keys';

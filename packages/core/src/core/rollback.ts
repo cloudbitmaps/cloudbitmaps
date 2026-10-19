@@ -114,7 +114,7 @@ export async function listGenerations(
   ref: SegmentRef,
   deps: GenerationListDeps,
 ): Promise<GenerationEntry[]> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'generations');
   const record = await deps.registry.get(ref);
   const current = record?.currentGen ?? null;
   const seen = await generationsOf(deps.storage, ref);
@@ -251,7 +251,7 @@ export async function rollbackSegment(
   deps: GenerationListDeps,
   options: { audit?: IAuditSink; allowUnknown?: boolean } = {},
 ): Promise<RollbackResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'rollback');
   checkedAuditSink(options.audit, 'rollback');
   requireInteger(toGeneration, { min: 0, what: 'rollback: generation' });
 

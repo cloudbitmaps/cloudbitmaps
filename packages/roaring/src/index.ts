@@ -113,7 +113,7 @@ import type {
 import { OpenChargingStorage } from './open-charging-storage';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
-import { listSegments, segmentExists } from '@cloudbitmaps/core';
+import { listSegments, refuseUnknownRefKeys, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { runPreflight } from '@cloudbitmaps/core';
 import type { PreflightResult } from '@cloudbitmaps/core';
@@ -142,12 +142,13 @@ class SystemRng implements Rng {
 }
 
 /** Validate a segment ref a caller passes to a store method; a bare name is the common slip, and the hint says so. */
-function validateRef(ref: SegmentRef): void {
+function validateRef(ref: SegmentRef, verb: string): void {
   if (typeof ref !== 'object' || ref === null) {
     throw new ValidationError(
       "a segment ref is an object such as { segment: 'name' }; store.segment() takes the bare name",
     );
   }
+  refuseUnknownRefKeys(ref, verb);
   validateSegmentRef(ref);
 }
 
@@ -2096,7 +2097,7 @@ export class CloudRoaring {
    * Needs a backend.
    */
   async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
-    validateRef(ref);
+    validateRef(ref, 'generations');
     return listGenerations(ref, this.lifecycleDeps('generations'));
   }
 
@@ -2127,7 +2128,7 @@ export class CloudRoaring {
    * ```
    */
   async exists(ref: SegmentRef): Promise<boolean> {
-    validateRef(ref);
+    validateRef(ref, 'exists');
     return segmentExists(ref, this.requireRegistry('exists'));
   }
 
@@ -2237,7 +2238,7 @@ export class CloudRoaring {
     toGeneration: number,
     options: { audit?: IAuditSink; allowUnknown?: boolean } = {},
   ): Promise<RollbackResult> {
-    validateRef(ref);
+    validateRef(ref, 'rollback');
     checkOptions(options, 'rollback', CALL_KEYS.rollback, ['allowUnknown']);
     options ??= {};
     const deps = this.lifecycleDeps('rollback');
@@ -2346,7 +2347,7 @@ export class CloudRoaring {
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
   async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
-    validateRef(ref);
+    validateRef(ref, 'load');
     checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty', 'sorted']);
     options ??= {};
     const deps = this.lifecycleDeps('load');
@@ -2412,7 +2413,7 @@ export class CloudRoaring {
     ref: SegmentRef,
     options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
   ): Promise<DropResult> {
-    validateRef(ref);
+    validateRef(ref, 'dropSegment');
     if (options === undefined || options === null) {
       throw new ValidationError('dropSegment: options { confirmSegment } are required');
     }
@@ -2457,7 +2458,7 @@ export class CloudRoaring {
    * backend (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
-    validateRef(ref);
+    validateRef(ref, 'setRetention');
     return setSegmentRetention(
       ref,
       { registry: this.requireRegistry('setRetention'), clock: this.clock, rng: this.rng },
@@ -2472,7 +2473,7 @@ export class CloudRoaring {
    * "never expires" on a segment someone believes is expiring.
    */
   async getRetention(ref: SegmentRef): Promise<RetentionPolicy | null | 'invalid'> {
-    validateRef(ref);
+    validateRef(ref, 'getRetention');
     return getSegmentRetention(ref, { registry: this.requireRegistry('getRetention') });
   }
 
@@ -2482,7 +2483,7 @@ export class CloudRoaring {
    * to the setter is how a typo becomes a deletion.
    */
   async clearRetention(ref: SegmentRef): Promise<boolean> {
-    validateRef(ref);
+    validateRef(ref, 'clearRetention');
     return clearSegmentRetention(ref, {
       registry: this.requireRegistry('clearRetention'),
       clock: this.clock,
@@ -2608,7 +2609,7 @@ export class CloudRoaring {
    * ```
    */
   invalidate(ref: SegmentRef): void {
-    validateRef(ref);
+    validateRef(ref, 'invalidate');
     refuseReservedNamespace(ref.namespace);
     this.engine.invalidate(ref);
   }

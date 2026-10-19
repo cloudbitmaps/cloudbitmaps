@@ -182,7 +182,7 @@ export async function getSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
 ): Promise<RetentionPolicy | null | 'invalid'> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'getRetention');
   const record = await deps.registry.get(ref);
   if (record === null || record.status === 'destroyed') return null;
   return readRetentionPolicy(record.retention);
@@ -254,7 +254,7 @@ export async function setSegmentRetention(
   deps: RetentionDeps,
   policy: RetentionPolicy,
 ): Promise<SetRetentionResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'setRetention');
   validateRetentionPolicy(policy);
   const base = { segment: ref.segment, namespace: ref.namespace };
   // `casRetry` waits out a race lost to a lease write without using an attempt, up to the churn bound.
@@ -312,7 +312,7 @@ export async function clearSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
 ): Promise<boolean> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'clearRetention');
   return casRetry(
     deps,
     ref,

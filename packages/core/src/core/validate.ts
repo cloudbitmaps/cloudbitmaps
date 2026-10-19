@@ -153,9 +153,32 @@ export function validateUserNamespace(namespace: string): void {
   }
 }
 
-/** Validate a segment ref an application hands in: the name rules, and a namespace outside the reserved prefix. */
-export function validateUserRef(ref: SegmentRef): void {
+/** The keys a segment ref takes from a caller: its address, and the two a `segments()` listing row also carries. */
+const REF_KEYS: readonly string[] = ['segment', 'namespace', 'currentGen', 'status'];
+
+/**
+ * Refuse a segment ref that holds a key it does not take, naming each such key. A misspelt `namespace` would
+ * otherwise address the segment of that name in the default namespace, and a drop, a rollback or a crypto-shred would
+ * act on the wrong segment. Only the ref's own enumerable string keys are read. `verb` names the call in the message.
+ */
+export function refuseUnknownRefKeys(ref: object, verb: string): void {
+  const unknown = Object.keys(ref).filter((k) => !REF_KEYS.includes(k));
+  if (unknown.length === 0) return;
+  const list = unknown.map((k) => `"${k}"`).join(', ');
+  throw new ValidationError(
+    `${verb}: unknown ${unknown.length === 1 ? 'key' : 'keys'} ${list} in the segment ref; a ref takes ` +
+      `{ segment, namespace } (a segment addressed without its namespace is a different segment)`,
+  );
+}
+
+/**
+ * Validate a segment ref an application hands in: the name rules, and a namespace outside the reserved prefix. With
+ * `verb`, the call a caller made, it also refuses a key a ref does not take; leave it out only for an internal key
+ * that extends a ref with keys of its own.
+ */
+export function validateUserRef(ref: SegmentRef, verb?: string): void {
   requireRefObject(ref, '; store.segment() takes the bare name');
+  if (verb !== undefined) refuseUnknownRefKeys(ref, verb);
   validatePart(ref.segment, 'segment');
   if (ref.namespace !== undefined) validateUserNamespace(ref.namespace);
 }
