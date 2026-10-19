@@ -850,7 +850,7 @@ describe('the shred an erasure runs: its options and the command it names', () =
     const deps = {
       storage: w.storage as IStorageDriver,
       registry: contended(w.registry),
-      clock: { now: () => 0, sleep: (): Promise<void> => Promise.resolve() },
+      clock: { sleep: (): Promise<void> => Promise.resolve() },
     };
     await expect(
       destroySegment(SHRED_SEG, deps, { confirmSegment: 'seg', allowCleartext: true }),

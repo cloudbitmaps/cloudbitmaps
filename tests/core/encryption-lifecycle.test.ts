@@ -227,7 +227,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
         {
           ...w.deps,
           registry: contended,
-          clock: { now: () => 0, sleep: (): Promise<void> => Promise.resolve() },
+          clock: { sleep: (): Promise<void> => Promise.resolve() },
         },
         { confirmSegment: 's' },
       ),
@@ -305,7 +305,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
 
     const { destroyed } = await eraseNamespace(
       'ns',
-      { registry, clock: { now: () => 0, sleep: (): Promise<void> => Promise.resolve() } },
+      { registry, clock: { sleep: (): Promise<void> => Promise.resolve() } },
       { confirmNamespace: 'ns' },
     );
 
