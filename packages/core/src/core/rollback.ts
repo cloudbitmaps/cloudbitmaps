@@ -20,6 +20,7 @@ import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { pointerSetBy } from './pointer-id';
+import { readBack, writeTokens } from './settle';
 import { footerCrcUnder, openRollbackTargetFrom, readRollbackTargetFooter } from './crbm-open';
 import {
   describingKnown,
@@ -52,7 +53,6 @@ import type {
   KnownGeneration,
   RegistryRecord,
   RegistrySummary,
-  RegistryWriteOptions,
   SegmentRef,
   Token,
 } from './ports';
@@ -437,17 +437,30 @@ export async function rollbackSegment(
   if (!stillThere || replaced) {
     let undone = false;
     let undoAgainst = swapped.token;
+    // The tokens of the undo's own writes: a move back that got no answer, or met a conflict, is settled by the row's
+    // pointerId carrying one of them.
+    const undo = writeTokens(deps.registry);
+    const undoLanded = (row: RegistryRecord | null): boolean =>
+      row !== null &&
+      undo.sent !== undefined &&
+      record.currentGen !== null &&
+      pointerSetBy(row, record, record.currentGen, undo.sent);
     for (;;) {
       try {
         // The target the rollback just found gone, or replaced, is not a generation the row knows any more.
         const restored = describingKnown(record, toGeneration)?.filter(
           (e) => e.generation !== toGeneration || e.generation === record.currentGen,
         );
-        await deps.registry.compareAndSwap(ref, undoAgainst, {
-          currentGen: record.currentGen,
-          summary: describingSummary(record),
-          ...(restored === undefined ? {} : { knownGens: restored }),
-        });
+        await deps.registry.compareAndSwap(
+          ref,
+          undoAgainst,
+          {
+            currentGen: record.currentGen,
+            summary: describingSummary(record),
+            ...(restored === undefined ? {} : { knownGens: restored }),
+          },
+          undo.options,
+        );
         undone = true;
         break;
       } catch (err) {
@@ -458,10 +471,24 @@ export async function rollbackSegment(
         // at the target, the row's pointerId is the one the swap set (its own token, so no other writer has renewed
         // what the row resolves to since), and every other field is the row's from before the swap, bar what the swap
         // itself moved.
+        if (isTransientError(err)) {
+          // A move back that got no answer: the row says whether it landed.
+          try {
+            const row = await readBack(() => deps.registry.get(ref), err);
+            if (undoLanded(row)) undone = true;
+          } catch {
+            // unknown: reported as may-still-name below
+          }
+          break;
+        }
         if (!isWriteConflictError(err)) break;
         let now: RegistryRecord | null;
         try {
           const seen = await deps.registry.get(ref);
+          if (undoLanded(seen)) {
+            undone = true;
+            break;
+          }
           if (seen === null || seen.currentGen !== toGeneration) break;
           const settled = await churn.settle(
             record,
@@ -651,10 +678,7 @@ async function swapPointer(
   // The tokens of every swap this call sent, as a registry that reports them says before it sends each one (a resend
   // reports a new one); absent for a registry that does not, whose swap that got no answer is then settled by the row
   // it leaves, and whose conflict is never settled as landed.
-  const sent: Set<Token> | undefined =
-    registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
-  const writeOptions: RegistryWriteOptions | undefined =
-    sent === undefined ? undefined : { onToken: (token) => void sent.add(token) };
+  const { sent, options: writeOptions } = writeTokens(registry);
   for (;;) {
     try {
       const { token } = await registry.compareAndSwap(
