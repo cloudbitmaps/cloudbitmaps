@@ -162,7 +162,9 @@ publish's own waits (derived from that schedule, not measured).
 deleted: the write may still reach the registry after the load has returned, and a pointer that lands over a deleted
 object is the one state no reader can recover from. Re-run the load. It numbers its generation past the orphan, publishes
 whether or not the first attempt landed, and collection removes the orphan once a generation above it is current. To know
-whether the first attempt landed, check `store.generations(ref)` rather than replaying the request. A collection delete that gets no answer is settled by reading the object: gone, the load returns as if the delete had answered.
+whether the first attempt landed, check `store.generations(ref)` rather than replaying the request.
+A collection delete that gets no answer is settled by reading the object: gone, the load returns as if the delete had
+answered.
 
 <a id="unanswered-refusal-is-flagged"></a>A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
 been current for a while before another writer moved on: its `segment.load-refused` audit event carries `unanswered:

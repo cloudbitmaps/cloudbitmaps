@@ -561,7 +561,7 @@ export async function dropSegmentFor(
   return {
     ...base,
     dropped: shred.destroyed,
-    generationsDeleted,
+    generationsDeleted: generationsDeleted.sort((a, b) => a - b),
     generationsRemaining,
     cryptoShredded: shred.cryptoShredded,
     reason: shred.reason,

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,8 +8,9 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { brandAsBackend } from '@/core/ports';
-import type { GenKey, IRegistryDriver, IStorageDriver, RegistryPatch } from '@/core/ports';
+import type { GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { roaringCodec } from '@/roaring-codec';
+import { InProcessKeystore } from '@/drivers/crypto';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -152,6 +154,39 @@ describe.each<Kind>(['memory', 'localfs'])(
         expect(await present(w)).toEqual([]);
       });
 
+      it('receipts an object no read can open (sealed-only) whose delete lost its answer', async () => {
+        const keystore = new InProcessKeystore({
+          keys: { k1: randomBytes(32) },
+          activeKeyId: 'k1',
+        });
+        const w = world();
+        await bulkLoadCrbmGeneration(w.raw, { ...SEG, generation: 0 }, [6, 7], {
+          registry: w.registry,
+          keystore,
+        });
+        // A first load's object sealed under a key it made and never stored.
+        await bulkLoadCrbmGeneration(w.raw, { ...SEG, generation: 1 }, [8], {
+          registry: new MemoryRegistryDriver(),
+          keystore,
+          publish: false,
+        });
+        const store = new CloudRoaring({
+          storage: brandAsBackend({ storage: w.storage, registry: w.registry }),
+          encryption: { keystore },
+          retry: false,
+          seams: { clock: w.waits.clock, rng: w.waits.rng },
+        });
+        w.storage.armDelete('a', at(1));
+
+        const res = await store.eraseSubject(99, { namespace: 'ns', audit: w.audit });
+
+        expect(res.erasedFrom).toEqual([]);
+        expect(collects(w)).toHaveLength(1);
+        expect(collects(w)[0]).toMatchObject({ collected: [1] });
+        expect(collects(w)[0]).not.toHaveProperty('fromGeneration');
+        expect(await present(w)).toEqual([0]);
+      });
+
       it.each(['collect-only', 'rewrite', 'above the pointer'] as const)(
         'a delete that never landed is an error and the re-run receipts it (%s)',
         async (shape) => {
@@ -224,13 +259,31 @@ describe.each<Kind>(['memory', 'localfs'])(
       expect(collects(w)).toMatchObject([{ collected: [] }]);
     });
 
+    it('a holder replaced by an object that also holds the id is not receipted', async () => {
+      if (kind === 'localfs') return; // the file driver reports no object version, so it cannot tell
+      const w = world();
+      await put(w, 0, [6]);
+      await put(w, 1, [X], false);
+      w.storage.armDelete('a', at(1));
+      w.storage.between(async () => {
+        await bulkLoadCrbmGeneration(w.raw, { ...SEG, generation: 1 }, [X, 9], {
+          registry: new MemoryRegistryDriver(),
+          publish: false,
+        });
+      });
+
+      const res = await erase(w);
+
+      expect(res.erasedFrom).toMatchObject([{ erased: false, note: 'superseded' }]);
+      expect(await present(w)).toEqual([0, 1]);
+      expect(events(w)).toEqual([]);
+    });
+
     describe('a refused rewrite discard', () => {
       const REF: SegmentRef = { segment: 's' };
-      const isRewritePublish = (patch: RegistryPatch): boolean =>
-        'currentGen' in patch && patch.currentGen === 2;
 
       /** The refusal 'before verify' arranged as the discard fault test does, with the discard's delete faulted. */
-      async function refused(fault: 'a' | 'c') {
+      async function refused(fault: 'a' | 'c', how: 'superseded' | 'destroyed' = 'superseded') {
         const storage = new MemoryStorageDriver();
         const registry: IRegistryDriver = new MemoryRegistryDriver();
         const faulty = faultyStorage(storage);
@@ -251,21 +304,32 @@ describe.each<Kind>(['memory', 'localfs'])(
           }
           return registry.compareAndSwap(ref, expected, patch, options);
         };
-        const l1 = loadSegment(REF, [5, 6], { ...deps, registry: l1Registry });
-        await atPublish.reached;
+        const l1 =
+          how === 'superseded'
+            ? loadSegment(REF, [5, 6], { ...deps, registry: l1Registry })
+            : Promise.resolve();
+        if (how === 'superseded') await atPublish.reached;
         let released = false;
+        const own = how === 'destroyed' ? 1 : 2;
         const first = Object.create(faulty) as IStorageDriver;
         first.putImmutable = async (key, write) => {
           const out = await storage.putImmutable(key, write);
-          if (key.generation === 2 && !released) {
+          if (key.generation === own && !released) {
             released = true;
-            atPublish.open();
-            await l1;
+            if (how === 'destroyed') {
+              await destroySegment(
+                REF,
+                { registry },
+                { confirmSegment: 's', allowCleartext: true },
+              );
+            } else {
+              atPublish.open();
+              await l1;
+            }
           }
           return out;
         };
-        faulty.armDelete(fault, (k) => k.generation === 2);
-        void isRewritePublish;
+        faulty.armDelete(fault, (k) => k.generation === own);
         return {
           storage,
           registry,
@@ -280,6 +344,24 @@ describe.each<Kind>(['memory', 'localfs'])(
         const left: number[] = [];
         for await (const k of w.storage.list(REF)) left.push(k.generation);
         expect(left.sort()).toEqual([0, 1]);
+      });
+
+      it('settles the discard under a tombstone that landed and lost its answer', async () => {
+        const w = await refused('a', 'destroyed');
+        // The rewrite's object is discarded, then the erasure searches what the tombstone left, as it does for any
+        // tombstoned row, and erases the id from it.
+        expect(await w.run()).toMatchObject({ erased: true, fromGeneration: 0 });
+        const left: number[] = [];
+        for await (const k of w.storage.list(REF)) left.push(k.generation);
+        expect(left).toEqual([]);
+      });
+
+      it('throws when the discard under a tombstone never landed, and the object stays', async () => {
+        const w = await refused('c', 'destroyed');
+        await expect(w.run()).rejects.toBeInstanceOf(TransientError);
+        const left: number[] = [];
+        for await (const k of w.storage.list(REF)) left.push(k.generation);
+        expect(left).toContain(1);
       });
 
       it('throws when the discard never landed, and the object stays', async () => {
@@ -314,7 +396,7 @@ describe.each<Kind>(['memory', 'localfs'])(
 
         const res = await w.store.dropSegment(SEG, { confirmSegment: 's', audit: w.audit });
 
-        expect(res.generationsDeleted).toEqual([1, 0]);
+        expect(res.generationsDeleted).toEqual([0, 1]);
         expect(await present(w)).toEqual([]);
       });
     });

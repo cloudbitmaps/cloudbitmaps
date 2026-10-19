@@ -311,8 +311,9 @@ export interface EraseIdResult {
    * `TransientError`, and that object is not deleted.
    *
    * A delete that gets no answer is settled by reading its key: gone, it counts as deleted and is listed in
-   * `collected`; another object under the number, for a delete conditioned on the version searched, is the refusal that
-   * condition gives. When that read fails too, or the delete lands after it, the call reports the fault, and a re-run
+   * `collected`. Another object under the number, for a delete conditioned on the version searched, is not counted as
+   * deleted: the receipt then rests on the listing of the bucket, and says `erased: true` only when that object does
+   * not hold the id. When that read fails too, or the delete lands after it, the call reports the fault, and a re-run
    * finds the object gone and lists nothing for the segment: keep the error with the ledger as the record of the
    * deletion.
    *
@@ -1173,6 +1174,7 @@ async function deleteFenced(
         { ...base, generation },
         { ifVersion: versions.get(generation) },
         c.read,
+        { clock: deps.clock, rng: deps.rng },
       );
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
@@ -1731,7 +1733,10 @@ async function discardRefused(
   let row = await deps.registry.get(ref);
   for (let attempts = 1; ; attempts++) {
     if (row !== null && row.status === 'destroyed') {
-      await deleteSettled(deps.storage, key, undefined, c.read);
+      await deleteSettled(deps.storage, key, undefined, c.read, {
+        clock: deps.clock,
+        rng: deps.rng,
+      });
       return row;
     }
     if (row === null || row.status !== 'active' || row.currentGen === null) return row;
@@ -1744,7 +1749,10 @@ async function discardRefused(
     const renewed = await renewal.renew(row);
     if ('row' in renewed) {
       try {
-        await deleteSettled(deps.storage, key, { ifVersion: proven.version }, c.read);
+        await deleteSettled(deps.storage, key, { ifVersion: proven.version }, c.read, {
+          clock: deps.clock,
+          rng: deps.rng,
+        });
       } catch (err) {
         if (!isWriteConflictError(err)) throw err;
       }

@@ -129,7 +129,7 @@ same one, a generation still holding the id — can also come from the collect-o
 only outside the current generation and nothing was published; there the pointer has not moved, and a re-run
 simply repeats the attempt.) **Read what the re-run says.** Usually it reports `erased: true` against the
 generation it found the id in, which is the receipt the failed call could not give you. If a racing collector took
-that generation first it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so
+that generation first, or this call's own delete of it landed after a fault the call could not settle, it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so
 keep the failed call's error alongside your ledger. And if the segment's registry row has since been purged, it is
 not a segment any more and `eraseSubject` does not scan it at all — anything left in its bucket is an **orphan**,
 which neither `store.checkConsistency()` (it visits registry rows only) nor the collection a load and the retention

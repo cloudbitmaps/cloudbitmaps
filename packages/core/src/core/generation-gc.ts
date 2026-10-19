@@ -14,6 +14,7 @@
  * randomness of its own.
  */
 import { requireInteger } from './check';
+import type { Rng } from './determinism';
 import { deleteSettled } from './settle';
 import {
   IntegrityError,
@@ -43,7 +44,10 @@ function deleteGeneration(
   generation: number,
 ): Promise<void> {
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
-  return deleteSettled(deps.storage, key, undefined, undefined, { clock: deps.clock });
+  return deleteSettled(deps.storage, key, undefined, undefined, {
+    clock: deps.clock,
+    rng: deps.rng,
+  });
 }
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
@@ -52,6 +56,8 @@ interface GenerationDeps {
   readonly registry: IRegistryDriver;
   /** What a delete loop waits on before it reads the row again ({@link watchDeletes}). Absent, it does not wait. */
   readonly clock?: { readonly sleep?: (ms: number) => Promise<void> };
+  /** Spreads the waits of a delete's read-back ({@link deleteSettled}). Absent, each wait is its whole bound. */
+  readonly rng?: Rng;
 }
 
 /**
