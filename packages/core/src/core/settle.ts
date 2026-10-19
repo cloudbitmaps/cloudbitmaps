@@ -7,7 +7,7 @@
  * I/O of its own.
  */
 import type { Rng } from './determinism';
-import { isIntegrityError, type TransientError } from './errors';
+import { isTransientError } from './errors';
 import { UNANSWERED_BASE_MS } from './leases';
 import type { IRegistryDriver, RegistryRecord, RegistryWriteOptions, Token } from './ports';
 import { type Sleeper, jitteredWait } from './retry';
@@ -67,23 +67,28 @@ const READ_BACK_TRIES = 3;
 /**
  * Read back what a write that got no answer wrote: up to three reads, waiting under half a second and then under a
  * second between them (full jitter, on the clock's `sleep`, when there is one). The first read that answers is
- * returned. A row that is not one the library wrote ({@link IntegrityError}) is thrown as it is, since it says more than
- * the lost answer does. When every read fails, `unanswered`, the write's own error, is thrown: the outcome is unknown.
+ * returned. A read that fails for a reason that is not transient (a refusal, a row that is not one the library wrote)
+ * is thrown as it is: it says more than the lost answer does, and reading again will not change it. When every read
+ * fails transiently, `unanswered`, the write's own error, is thrown with the last read's error as its `cause` (unless it
+ * has one): the outcome is unknown.
  */
 export async function readBack<T>(
   read: () => Promise<T>,
-  unanswered: TransientError,
+  unanswered: Error,
   waits: ReadBackWaits = {},
 ): Promise<T> {
+  let last: unknown;
   for (let attempt = 0; attempt < READ_BACK_TRIES; attempt++) {
     try {
       return await read();
     } catch (err) {
-      if (isIntegrityError(err)) throw err;
+      if (!isTransientError(err)) throw err;
+      last = err;
     }
     if (attempt < READ_BACK_TRIES - 1) {
       await jitteredWait(waits.clock, waits.rng, UNANSWERED_BASE_MS * 2 ** attempt);
     }
   }
+  if (unanswered.cause === undefined) unanswered.cause = last;
   throw unanswered;
 }

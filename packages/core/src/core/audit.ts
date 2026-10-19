@@ -180,7 +180,7 @@ export type AuditEvent =
        * tombstone this call wrote, not for the idempotent re-run, and not for a segment that was encrypted
        * (`segment.erase`), or dropped (`segment.dispose`).
        */
-      readonly kind: 'segment.destroy';
+      readonly kind: 'segment.tombstone';
       readonly namespace?: string;
       readonly segment: string;
       /** The incarnation of the row the call turned into a tombstone. */
