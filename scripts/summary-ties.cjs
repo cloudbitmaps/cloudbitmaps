@@ -106,8 +106,9 @@ const ABSOLUTE = 'https://github.com/cloudbitmaps/cloudbitmaps/blob/main/';
 const SUMMARY_HEADING = 'How it stays correct';
 /**
  * R3b: a sentence sharing this many word 4-grams with one claim (a run of about 11 words, or a few shorter ones) copies
- * it. Measured on the baseline the gate was written with: 9 of 10 sampled hits at 10 or more are copies of mechanism
- * text, and 20 of 22 between 8 and 9; the misses there were an option's default and a wait schedule two mechanisms share.
+ * it. Measured on 30 sampled hits between 8 and 9 (a true copy restates a claim's mechanism): 27 are copies (90%; 87%
+ * counting one borderline), and the misses were an option's default, a wait schedule and shared phrases two mechanisms
+ * share.
  */
 const MIN_SHARED = 8;
 
@@ -208,7 +209,7 @@ const SIGNATURES = [
   {
     claim: 'row-write-settled',
     patterns: [
-      /settle[sd]? (?:an unanswered registry write )?by reading the row/i,
+      /(?<!\b(?:swap|move)\b[^.]{0,120})settle[sd]? (?:an unanswered registry write )?by reading the row/i,
       /(?<![\w-])reads? the row (?:again )?and (?:decides|sends a fresh compare-and-swap)/i,
       /write (?:that )?(?:ends|ended|got|gets) (?:without|no) (?:an )?answer[^.]{0,80}(?:reads?|settled|may still land)/i,
     ],
@@ -216,6 +217,13 @@ const SIGNATURES = [
       'A registry row write that ends without an answer may still land, so the load reads the row again and decides from what it holds, deleting nothing until it has.',
     lookAlike:
       "After no answer it sends no fresh swap; after a conflict that changed only the row's leases it does send one.",
+  },
+  {
+    claim: 'rollback-settles-its-swap',
+    patterns: [/\b(?:swap|move)\b[^.]{0,120}\bsettled by reading the row/i],
+    summary:
+      'A swap of the pointer that gets no answer, or that meets a conflict, is settled by reading the row.',
+    lookAlike: 'A registry write that gets no answer is settled by reading the row.',
   },
   {
     claim: 'transient-error-leaves-its-object',

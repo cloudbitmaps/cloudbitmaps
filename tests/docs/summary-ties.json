@@ -171,12 +171,6 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "row-write-settled",
-      "sentence": "cb22daf058a8",
-      "starts": "Refuses a target the row's knownGens does not"
-    },
-    {
-      "file": "docs/ROADMAP.md",
       "claim": "rollback-settles-its-swap",
       "sentence": "cb22daf058a8",
       "starts": "Refuses a target the row's knownGens does not"
@@ -537,63 +531,15 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "585bfe5a0ba0",
-      "starts": "Each conditional request the backend makes — the"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "644cf9a4118f",
-      "starts": "The registry's writes are sent once."
-    },
-    {
-      "file": "docs/guide/api-reference.md",
       "claim": "object-write-resent",
       "sentence": "988d40bdd9e0",
       "starts": "A generation's object is sent again, at most"
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "988d40bdd9e0",
-      "starts": "A generation's object is sent again, at most"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "2a92ade4e846",
-      "starts": "A bare 429, which AWS S3 does not"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "e930a7609dc1",
-      "starts": "A transient failure of a conditional write throws"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
       "claim": "erasure-number-taken-again",
       "sentence": "cf95e8f0fad0",
       "starts": "The storage half's DeleteObject under If-Match, which with"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "2198a033383a",
-      "starts": "The registry's writes, and an object up to"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "8130ffd04559",
-      "starts": "The object is sent again, at most three"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "sdk-retry",
-      "sentence": "4f72348151a3",
-      "starts": "A larger object is a resumable upload, a"
     },
     {
       "file": "docs/guide/api-reference.md",
@@ -660,12 +606,6 @@
       "claim": "every-delete-reads-the-row",
       "sentence": "505e6ad7b911",
       "starts": "It moves the pointer and then reads the"
-    },
-    {
-      "file": "docs/guide/disaster-recovery.md",
-      "claim": "row-write-settled",
-      "sentence": "37bda4d47513",
-      "starts": "A move that gets no answer at all"
     },
     {
       "file": "docs/guide/disaster-recovery.md",
@@ -921,19 +861,7 @@
     },
     {
       "file": "docs/guide/loading.md",
-      "claim": "every-delete-reads-the-row",
-      "sentence": "f0c7e8057162",
-      "starts": "Every collection and the erasure takes what it"
-    },
-    {
-      "file": "docs/guide/loading.md",
       "claim": "deleting-call-detects",
-      "sentence": "ff21a39483d2",
-      "starts": "What is left is a rollback that is"
-    },
-    {
-      "file": "docs/guide/loading.md",
-      "claim": "every-delete-reads-the-row",
       "sentence": "ff21a39483d2",
       "starts": "What is left is a rollback that is"
     },
@@ -948,12 +876,6 @@
       "claim": "erasure-results",
       "sentence": "b86e7427d17b",
       "starts": "Check store.generations(ref) before acting: while the pointer names"
-    },
-    {
-      "file": "docs/guide/loading.md",
-      "claim": "row-write-settled",
-      "sentence": "79e9eb9e5917",
-      "starts": "A swap of the pointer that gets no"
     },
     {
       "file": "docs/guide/loading.md",

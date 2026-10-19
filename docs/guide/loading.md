@@ -552,8 +552,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
   meanwhile is never undone: the rollback throws `WriteConflictError`, or, when its own swap got no answer, that
   `TransientError` (below), and records no move. A load that evicts the target from the row's record between the rollback's read and its
-  swap is such a write. Every collection and the erasure takes what it will delete out of the record before it deletes, or never deletes what
-  the row names, so none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
+  swap is such a write. [Every collection and the erasure takes what it will delete out of the record before it deletes, or never deletes what
+  the row names](correctness.md#every-delete-reads-the-row), so none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
   its pass that keeps by count skips every generation the row names when it re-reads the row, an erasure's rewrite leaves
   only the rewrite in it, and an erasure that rewrites nothing removes each generation it will delete from it in a write
   made before its first delete. A rollback that read the row before such a write loses its swap with

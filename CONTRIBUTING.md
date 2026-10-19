@@ -394,7 +394,8 @@ and no other section's, and each claim it restates is linked from its paragraph.
   adversarial review's docs-fidelity lens reads the same list.
 - **A failure names a claim**: link it only if the claim states what your sentence says. A run of copied words can
   come from a claim's neighbour, so the message quotes the run and, where it comes from another claim than the one
-  named, names that one too; a tie to either passes. If neither states your sentence, reword it.
+  named, names that one too; a tie to either passes. If the claim (or, for a run of copied words, neither claim) does
+  not state your sentence, reword it.
 - **CI-enforced** by [`tests/docs/summary-ties.test.ts`](tests/docs/summary-ties.test.ts), and `pnpm docs:ties` runs the
   same check by hand: it reads every tracked page, finds a restatement by its claim's signature or by a run of words
   copied from the claim, and fails on one whose block does not link that claim. The restatements untied when the gate

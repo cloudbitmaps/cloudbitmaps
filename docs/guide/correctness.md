@@ -33,7 +33,7 @@ bucket, an orphan that a later load's collection takes, and until it goes a roll
 `allowUnknown`, since the row never recorded it ([why, and the exceptions](#how-a-load-stays-correct)). Nothing a reader sees changes. To judge the outputs of a `materializeMany` call without writing anything, use a
 [dry run](loading.md#look-before-you-publish-a-dry-run).
 
-<a id="what-each-reason-means"></a>Each `reason`, what it means, and what to do:
+<a id="what-each-reason-means"></a>Each `reason`, what it means, and what to do (a refused load also emits `segment.load-refused`, below the table):
 
 | `reason` | Means | What to do |
 |---|---|---|
@@ -1059,9 +1059,9 @@ the store's retry. For a conditional write that retry gives the wrong answer. A 
 response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
 won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a tombstone
 write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone,
-but for two GCS writes that keep it: an object above `simpleUploadThresholdBytes`, a resumable upload the SDK retries
-within its session, and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to send
-twice. With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
+but for two GCS writes that keep it: an object above `simpleUploadThresholdBytes` (a resumable upload, which the SDK
+retries within its session), and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to
+send twice (a copy that meets the first's landed delete reads as a lost race, and a re-read settles it). With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
 after a throttle, when a random id in its metadata tells a first send that landed from another writer's object. A row
 write that gets no answer is settled by the load itself, which reads the row and sends a fresh compare-and-swap from
 it if nothing changed, at most three times

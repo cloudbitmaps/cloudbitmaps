@@ -582,7 +582,8 @@ would find itself already there and report a conflict. So [the S3 and GCS driver
 once](correctness.md#sdk-retry), and again only where an id it carries tells a replay apart (a throttled object), and [a
 load or a rollback settles an unanswered registry write by reading the row](correctness.md#row-write-settled). Two GCS
 writes keep the SDK's retry: a resumable upload (an object above `simpleUploadThresholdBytes`), which carries the same
-id, and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to send twice. Azure Blob's
+id, and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to send twice (a copy that meets
+the first's landed delete reads as a lost race, and a re-read settles it). Azure Blob's
 client retry can replay any write, a registry row included: [the id tells a replay from another writer's
 object](correctness.md#tagged-writes), and for a row that read-back is not definitive ([how retries stay
 correct](correctness.md#how-retries-stay-correct)). A fault those do not settle reaches you as `TransientError`, and

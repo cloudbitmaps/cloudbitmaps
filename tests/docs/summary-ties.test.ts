@@ -877,6 +877,47 @@ describe('what a page is read as: line endings, comments, emphasis, hyphens, lin
       ).toContain('R3 never-half-encrypted');
   });
 
+  it("a rollback's swap settled by reading the row asks for its own claim, not the load's", () => {
+    const swap =
+      'A swap of the pointer that gets no answer (`TransientError`), or that meets a conflict, is settled by reading the row the rollback just swapped.';
+    const own = 'correctness.md#rollback-settles-its-swap';
+    expect(on(run({ [page]: `${swap}\n` }), page)).toEqual(['R3 rollback-settles-its-swap']);
+    expect(
+      on(
+        run({
+          [page]: `${swap.replace('is settled by reading the row', `[is settled by reading the row](${own})`)}\n`,
+        }),
+        page,
+      ),
+    ).toEqual([]);
+    for (const subject of ['A move', 'A swap'])
+      expect(
+        on(
+          run({ [page]: `${subject} that gets no answer is settled by reading the row.\n` }),
+          page,
+        ),
+        subject,
+      ).not.toContain('R3 row-write-settled');
+    expect(
+      on(
+        run({ [page]: 'A registry write that gets no answer is settled by reading the row.\n' }),
+        page,
+      ),
+    ).toEqual(['R3 row-write-settled']);
+  });
+
+  it('a soft hyphen inside a word does not hide a phrase', () => {
+    expect(
+      on(run({ [page]: 'So a cra\u00ADsh never moves the poin\u00ADter.\n' }), page),
+    ).toContain('R3 crash-never-moves-the-pointer');
+  });
+
+  it('the text after a --> that closes a multi-line comment is read', () => {
+    const closed =
+      'Before.\n\n<!--\na hidden line\n--> So a crash never moves the pointer.\n\nAfter.\n';
+    expect(on(run({ [page]: closed }), page)).toContain('R3 crash-never-moves-the-pointer');
+  });
+
   it('a shortcut reference link and an unquoted href tie, as a reader follows them', () => {
     const claim = 'correctness.md#crash-never-moves-the-pointer';
     const shortcut = `So [a crash never moves the pointer].\n\n[a crash never moves the pointer]: ${claim}\n`;

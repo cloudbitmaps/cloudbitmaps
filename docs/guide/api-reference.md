@@ -1218,10 +1218,10 @@ Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `CloudRoaring
 
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
-Each conditional request the backend makes — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`,
+Each of these conditional requests — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`,
 the registry's create, compare-and-swap and tombstone, and with `conditionalDelete` the registry's `DeleteObject` under
-`If-Match` — is sent with the SDK's retry off for that request alone, whether
-the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. The registry's
+`If-Match` — is [sent with the SDK's retry off for that request alone](correctness.md#sdk-retry), whether
+the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry, the storage half's conditional `DeleteObject` (below) included. The registry's
 writes are sent once. A generation's object is sent again, at most three more times, after `503 SlowDown` (or any `503`)
 and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s: it carries a random id in its user metadata
 (`x-amz-meta-cbwid`), and a precondition failure on a re-send, or an upload S3 no longer knows, reads it back, so an
@@ -1290,7 +1290,7 @@ retry options. Every object carries a random id in its metadata, and a `412` on 
 meeting itself (a resumable upload's, or a single request's after a re-send) reads the stored object back, so an
 object that carries its own id is a success and any other a `WriteConflictError`
 ([why](production.md#reliability-retries-backoff--timeouts)). With `conditionalDelete`, the registry removes a row with
-a delete under `ifGenerationMatch`, which the SDK retries as it does any request with a precondition: a second copy can
+a delete under `ifGenerationMatch`, which [the SDK retries as it does any request with a precondition](correctness.md#sdk-retry): a second copy can
 remove nothing the first could not, and one that meets the first's landed delete is a 404, which the registry reads as
 a lost race and re-reads. With it the storage half deletes an erasure's holder under `ifGenerationMatch` too, the
 generation its tail read reported, and there a `404` is an absent object, a no-op, and a `412` is a conflict only while
