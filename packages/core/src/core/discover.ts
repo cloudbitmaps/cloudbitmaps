@@ -23,9 +23,11 @@ export interface SegmentInfo extends SegmentRef {
    */
   readonly currentGen: number | null;
   /**
-   * `destroyed` is a tombstone: the row stays so sweeps can still find it, and the generations are gone — on an
-   * encrypted segment the DEK wrappings went with them, which is what makes the bytes unrecoverable rather than
-   * merely deleted.
+   * `destroyed` is a tombstone: the row stays so sweeps can still find it, and no generation resolves through it. A
+   * `dropSegment` deletes the generations (check its `generationsRemaining`); a crypto-shred leaves them in the bucket
+   * and removes the DEK wrappings from the row, which makes every copy of the bytes unreadable once no retained copy of
+   * the row still holds them, or every KEK that wrapped them is destroyed. A cleartext segment destroyed with
+   * `allowCleartext` has no key to remove: its objects stay in the bucket and stay readable.
    */
   readonly status: RegistryRecord['status'];
 }

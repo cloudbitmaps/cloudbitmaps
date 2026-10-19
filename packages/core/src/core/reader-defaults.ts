@@ -22,9 +22,9 @@ export const DEFAULT_MAX_OPEN_INDEX_BYTES = 64 * 1024 * 1024;
 
 /**
  * How many segments' resolutions a store keeps per reader it keeps open: the resolution cache's count bound is this
- * times `cache.readerMax` (8,192 by default). A resolution is the few hundred bytes of a row a read resolves through,
- * kept for `cache.genTtlMs` whether or not the segment's reader is still open, so a store reading more segments at once
- * than its readers hold keeps more of them than it keeps readers.
+ * times `cache.readerMax`, so 8 x 1,024 = 8,192 by default. A resolution is the few hundred bytes of a row a read
+ * resolves through, kept for `cache.genTtlMs` whether or not the segment's reader is still open, so a store reading
+ * more segments at once than its readers hold keeps more of them than it keeps readers.
  */
 export const RESOLUTIONS_PER_OPEN_SEGMENT = 8;
 

@@ -812,8 +812,8 @@ async function runLoad(
     return now === null ? undefined : watch.settle(now);
   };
 
-  // Set when a registry write of this load's publish ended without an answer: a refusal after that cannot say whether
-  // the write landed first.
+  // Set when a registry write of this load's publish ended without an answer, or in a conflict its registry marked as
+  // one that may follow the write's own landing: a refusal after that cannot say whether the write landed first.
   let unanswered = false;
 
   // Best-effort, where it is called: the refusal or the publish's own error is the answer, and a fault in the cleanup

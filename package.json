@@ -29,6 +29,7 @@
     "site:replay:check": "node scripts/site-replay.cjs --check",
     "site:figures": "node scripts/site-figures.cjs",
     "site:check": "python3 scripts/site-classes.py && python3 scripts/site-links.py && node scripts/site-figures.cjs",
+    "docs:ties": "node scripts/summary-ties.cjs",
     "lint": "eslint . && pnpm run lint:fn-length",
     "lint:fn-length": "node scripts/function-length.cjs",
     "lint:fix": "eslint . --fix",

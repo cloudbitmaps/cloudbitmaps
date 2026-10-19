@@ -55,7 +55,7 @@ describe('CrbmWriter/CrbmReader — encryption', () => {
     for (const c of CHUNKS) {
       expect(Buffer.from(bytes).includes(Buffer.from(c.payload))).toBe(false);
     }
-    // Footer metadata is zeroed (a leaked object reveals neither chunk count nor cardinality).
+    // Footer counts are zeroed, so neither is stored (sizes still bound both).
     const footer = bytes.subarray(bytes.length - 104);
     const view = new DataView(footer.buffer, footer.byteOffset, footer.byteLength);
     expect(view.getUint32(FOOTER.chunkCount, true)).toBe(0);

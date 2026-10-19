@@ -140,7 +140,7 @@ usually because read volume outgrew the cache hit rate. Price the store, not eac
 whole store's Redis would fire only when one segment alone cost more than all of it.
 
 `r.monthlyUSD.byOp` breaks each segment's total into `reads` / `intersects` / `storage` / `loads` /
-`pointerRefresh`, so you can see *what* pushed the store over. `r.redisCrossover.readsPerSec` is the read rate at
+`pointerRefresh` / `retention`, so you can see *what* pushed the store over. `r.redisCrossover.readsPerSec` is the read rate at
 which one segment's economics flip against its own Redis, *at this report's cache-hit rate* (with the cache off,
 against one $346 cluster it is about 329 reads/s; every cache hit moves it further out, and every hot segment's
 pointer refresh moves it in). Loads are modelled only when you pass `loadsPerMonth` (and `requestsPerLoad` for a
@@ -196,7 +196,8 @@ that matters, and emitted only on the sink passed to that `rollback` call),
 `segment.load-refused` (a load that did not publish, with its `reason` and the refused generation's
 `cardinality`: its guard refused the generation it wrote, the segment's row changed while it was writing, or
 another load took its generation number first, in which case it wrote nothing and `cardinality` is 0;
-`unanswered: true` marks a refusal that follows a registry write that got no answer, which may have landed first.
+`unanswered: true` marks a refusal after a registry write that may have landed: one that got no answer, or, on
+Azure Blob, one that met a conflict. The refused generation may have been current for a while, or may be current still.
 Without this event the absence of a `segment.publish` is not otherwise distinguishable from a job that never ran),
 `segment.rewrite` (a
 generation derived from the segment itself replaced it — `fromGeneration` → `generation`; today the one
@@ -206,7 +207,8 @@ accompanies it), `segment.collect` (a subject erasure that rewrote nothing and d
 generations holding the id, when it found the id only outside the current generation, or, with no `fromGeneration`, only
 objects no read of the segment can open, which it cannot search and deletes whatever id it erases), and the erasure
 trail: `segment.erase` fires per segment on a **genuine crypto-shred** (not a
-cleartext tombstone, whose bytes stay readable), `segment.dispose` fires per `dropSegment`, and
+cleartext tombstone, whose bytes stay readable), `segment.dispose` fires per `dropSegment` that tombstones a segment
+or finds its tombstone, and
 `eraseNamespace` adds one `namespace.erase` carrying `segmentsShredded` (the honest count actually destroyed,
 which may be 0).
 
@@ -229,7 +231,9 @@ which may be 0).
   record of that deletion. Keep the events and the ledger both. A call whose entry says `erased: false` emits nothing,
   even when it deleted a generation
   holding the id; its re-run emits when it finishes. If another collection deleted the last holder meanwhile, the re-run
-  reports `'not-member'` and no event, so for that segment the failed call's ledger entry is the only record.
+  [lists nothing for that segment](correctness.md#erasure-results) (the engine's result is `'not-member'`) and emits no
+  event, so for that segment the
+  failed call's ledger entry is the only record.
 - A `segment.publish` is not a receipt for anything: it says a set was loaded, not what was removed from it.
 
 **`segment.erase`, `segment.rewrite`, `segment.collect` and `segment.dispose` are deliberately different receipts,

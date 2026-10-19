@@ -138,8 +138,9 @@ means being an early user.
   by loading a new generation. If events arrive one at a time, collect them where they arrive (Redis is good at that)
   and load the set on a schedule. Removing one id everywhere is a compliance operation (`eraseSubject`), not a
   hot-path call.
-- You need sub-millisecond answers on a small working set. A read that misses the cache makes at most one ranged GET against
-  object storage.
+- You need sub-millisecond answers on a small working set. A read that misses the cache makes one ranged GET for its
+  chunk, plus a pointer read and a ranged read of the object's tail when the segment is not open yet (three requests,
+  measured).
 - You want an addressable bit buffer. `BITPOS`, `BITFIELD` and `BITOP NOT` have no equivalent, and the stored bytes
   are not a flat bit array.
 
@@ -189,8 +190,8 @@ bucket as the data.
 | Operation | Cost | Kind |
 |---|---|---|
 | Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 6 GETs | **$2.40 / million** | measured requests at list prices |
-| A segment's first `store.load()`: 2 PUT + 3 GET, pointer included | **$11.20 / million** | measured requests at list prices |
-| A steady `store.load()` at `keep: 12`, deleting a generation by name: 2 PUT + 5 GET and a free delete | **$12.00 / million** | measured requests at list prices |
+| A segment's first single-part `store.load()`: 2 PUT + 3 GET, pointer included | **$11.20 / million** | measured requests at list prices |
+| A steady single-part `store.load()` at `keep: 12`, deleting a generation by name: 2 PUT + 5 GET and a free delete | **$12.00 / million** | measured requests at list prices |
 
 Run from inside the region with a client of 128 sockets, a cold `count()` is one request at
 26.98 ms, a single-part load ran at 5,729,675 bytes a second, and an `andNot` against ten excludes made 33 GETs in 297.13 ms. The

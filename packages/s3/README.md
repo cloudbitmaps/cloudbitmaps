@@ -49,7 +49,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 | `client` | your own `S3Client`; it carries its own region, endpoint and credentials |
 | `region`, `endpoint`, `pathStyle`, `credentials` | build a client for you, such as one for MinIO; refused beside `client` |
 | `maxSockets` | most sockets the client you do not pass opens at once, for `https` and plain `http` alike; a positive integer, default 128 (the SDK's own is 50; if a future SDK changes its handler, the built client keeps the SDK's own limit); refused beside `client` |
-| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time and copies it into one body to send it, so it holds up to about twice the part size at a flush, 16 MiB at the default, derived from the driver's code) and the largest object (about 80 GiB by default, up to S3's 5 TiB). A cap above 5 TiB, or a part above S3's 5 GiB part limit, is a `ValidationError` |
+| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time and copies it into one body to send it, so it holds up to about twice the part size at a flush, 16 MiB at the default, derived from the driver's code) and the largest object (about 78 GiB by default, up to S3's 5 TiB). A cap above 5 TiB, or a part above S3's 5 GiB part limit, is a `ValidationError` |
 | `readTimeoutMs` | how long one read (a `GetObject` or `HeadObject`, its body included) may take before it throws `TransientError` and the store retries it; `0`, the default, sets no timeout. Writes are not timed |
 | `conditionalDelete` | whether the store applies `If-Match` on a `DeleteObject`: the registry then removes a deleted row rather than leaving a tombstone, and the storage half deletes an erasure's holder only while it is the object the erasure read, by its ETag. On by default when the host the client resolves is an AWS S3 host, however its endpoint was set (`endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file); off for any other host: set it for an S3-compatible store only once you know it applies the header (MinIO ignores it) |
 
@@ -85,18 +85,20 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   `store.preflight()`'s lifecycle step does: without it the answer is `unchecked`, naming the permission. A missing abort-incomplete-upload rule is
   advice in `detail`, never a `problem`
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
-- **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
-  call, or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed
-  is not reported as a conflict. The driver sends each registry write once; a load that gets no answer reads the row and
-  sends a fresh compare-and-swap from it, at most three times. A generation's object is sent again, up to three more
-  times, only after a `503` (`SlowDown` is the usual one); it carries a random id in its user metadata
-  (`x-amz-meta-cbwid`), so a first send that landed is told from another writer's object. A load whose row writes all go
-  unanswered throws `TransientError` and keeps its object. The waits before an object's re-sends use real timers: the
-  store's injected clock does not reach them, and `S3Storage` takes no clock, so a test that throttles one object
-  write three times waits about 3.5 s at most (the publish's waits before a fresh row write do use the store's
-  clock). **A bare `429`** (AWS S3 does not send one; some
-  S3-compatible services do) **is not retried and is not classified transient**: it surfaces as the SDK's own error, so a
-  layer of yours that keys on `TransientError` will not retry it.
+- **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the call,
+  or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed is not
+  reported as a conflict. The driver [sends each registry write
+  once](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#sdk-retry); a load that gets no
+  answer [reads the row and sends a fresh compare-and-swap from
+  it](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#row-write-settled), at most three
+  times. A generation's object is sent again, up to three more times, only after a `503` (`SlowDown` is the usual one);
+  it carries a random id in its user metadata (`x-amz-meta-cbwid`), so a first send that landed is told from another
+  writer's object. A load whose row writes all go unanswered throws `TransientError` and keeps its object. The waits
+  before an object's re-sends use real timers: the store's injected clock does not reach them, and `S3Storage` takes no
+  clock, so a test that throttles one object write three times waits about 3.5 s at most (the publish's waits before a
+  fresh row write do use the store's clock). **A bare `429`** (AWS S3 does not send one; some S3-compatible services do)
+  **is not retried and is not classified transient**: it surfaces as the SDK's own error, so a layer of yours that keys
+  on `TransientError` will not retry it.
 - **Reads can be timed, and writes are not.** Nothing is timed unless you set `readTimeoutMs`. Set, a read that has
   not finished in that many ms throws `TransientError`, and the store runs it again; AWS's guidance is to retry a GET
   of under 512 KB after about 2 seconds. The timer covers the body as well, so a connection that sends its headers and
