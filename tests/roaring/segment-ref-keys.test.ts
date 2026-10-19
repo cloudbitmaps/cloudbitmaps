@@ -8,10 +8,9 @@ import { listGenerations, rollbackSegment } from '@/core/rollback';
 import type { SegmentRef } from '@/index';
 
 /**
- * A segment ref that holds a key it does not take is refused. `{ segment: 'x', namspace: 'eu' }` used to read as
- * `{ segment: 'x' }` and act on the segment of that name in the default namespace: a drop, a rollback or a
- * crypto-shred of the wrong segment, which TypeScript catches only in an object literal. Every public call that takes
- * a ref refuses it, naming the key the caller wrote and the keys a ref takes.
+ * A segment ref that holds a key it does not take is refused. Read as `{ segment: 'x' }`, `{ segment: 'x', namspace:
+ * 'eu' }` would act on the segment of that name in the default namespace: a drop, a rollback or a crypto-shred of the
+ * wrong segment, which TypeScript catches only in an object literal. Every public call that takes a ref refuses it, naming the key the caller wrote and the keys a ref takes.
  */
 
 const TYPO = { segment: 'a', namspace: 'eu' } as unknown as SegmentRef;
