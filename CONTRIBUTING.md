@@ -70,7 +70,8 @@ Every change must pass these locally, and CI runs each of them on every pull req
   with `constructor();` when its chain declares none, and a private constructor is recorded as declared, so declaring
   one of another shape, a private one included, reads as a change. An empty allowlist is the normal state. A package
   can list an entry in `cloudbitmaps.internalEntries` in its `package.json`:
-  that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry and `@cloudbitmaps/core/node`). It is not in `surface.json`,
+  that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry and
+  `@cloudbitmaps/core/node`). It is not in `surface.json`,
   a type only it exported is recorded as `(referenced)` when a public signature names it, and its own lines are in
   `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
   internal is itself a change the gate asks for: a row `{"entry": "<specifier> (internal)", "reason": …}`. Because
@@ -139,7 +140,7 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 
 | Path | Package | Holds |
 |---|---|---|
-| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers (exported from `node`, the internal subpath for what needs a Node builtin), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
+| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers (exported from `@cloudbitmaps/core/node`, the internal subpath for what needs a Node builtin), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit`, and from core's main entry the S3 and GCS drivers take only the types `Clock` and `Rng`, type-only imports the build erases — never a flavor, never a sibling |
 | `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
@@ -158,9 +159,11 @@ cloud SDK or a node builtin. `pnpm lint:arch` proves each of those lint rules fi
 `core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core` (a dynamic `import()` is refused there
 whatever its source), and
 on the `fetch` and `crypto` globals there, and on the global object that would reach them (`globalThis`, `self`,
-`window`, `global`) and on `eval` and the `Function` constructor, so the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). `pnpm smoke` fails if a built entry of core other than `/node`, or `@cloudbitmaps/tools`, reaches a `node:*` specifier or does not load in a context without Node's builtins. Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
+`window`, `global`) and on `eval` and the `Function` constructor, so the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). `pnpm smoke` fails if a built entry of core other than `/node`, or
+`@cloudbitmaps/tools`, reaches a `node:*` specifier or does not load in a context without Node's builtins. Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
 driver ports — which is what makes that enforceable rather than aspirational. **Anything needing a builtin belongs
-in a driver** — either one of the driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live, and is exported from `@cloudbitmaps/core/node`, never from the main entry.
+in a driver** — either one of the driver packages, or `packages/core/src/drivers/` where the SDK-free memory and
+local-filesystem drivers live; a driver in core is exported from `@cloudbitmaps/core/node`, never from the main entry.
 
 ## Adding a storage driver package
 

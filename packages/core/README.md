@@ -18,7 +18,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the store, and the storage y
 
 Depend on `@cloudbitmaps/core` directly only to write a driver, through `@cloudbitmaps/core/driver-kit`.
 
-> **The main entry of this package, and `@cloudbitmaps/core/node`, are internal.** It is the engine `@cloudbitmaps/roaring` and the driver packages are built on, and it is outside the stability promise: it can change in any minor release, and a change to either gets no CHANGELOG Breaking entry. Install `@cloudbitmaps/roaring` and a driver. The public entry here is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
+> **The main entry of this package, and `@cloudbitmaps/core/node`, are internal.** The main entry is the engine `@cloudbitmaps/roaring` and the driver packages are built on, and `/node` holds the backends and keystore that need a Node builtin. Both are outside the stability promise: they can change in any minor release, and a change to either gets no CHANGELOG Breaking entry. Install `@cloudbitmaps/roaring` and a driver. The public entry here is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
 
 > **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
 > [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).

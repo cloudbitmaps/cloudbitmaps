@@ -102,8 +102,8 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **The main entry of `@cloudbitmaps/core` imports no Node builtin, so it loads where none exists, as the roadmap
-  said it did.** It reached `node:fs`, `node:fs/promises`, `node:path` and `node:crypto` through the in-memory and
+- **The main entry of `@cloudbitmaps/core` imports no Node builtin, so it loads in a context with none, which the
+  roadmap said it already did.** It reached `node:fs`, `node:fs/promises`, `node:path` and `node:crypto` through the in-memory and
   local-filesystem backends and the in-process cipher and keystore, which are now exported by
   `@cloudbitmaps/core/node`, an internal subpath like the main entry. `@cloudbitmaps/roaring` exports
   `MemoryStorage`, `LocalFsStorage` and `InProcessKeystore` from the same import as before, so an application changes

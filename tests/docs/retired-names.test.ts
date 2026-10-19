@@ -657,6 +657,7 @@ describe('a removed export is named nowhere a reader looks', () => {
   it('neither package exports one at runtime', () => {
     for (const { name } of RETIRED) {
       expect(name in core, `@cloudbitmaps/core exports ${name}`).toBe(false);
+      expect(name in coreNode, `@cloudbitmaps/core/node exports ${name}`).toBe(false);
       expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
     }
     for (const name of OFF_THE_MAIN_ENTRIES) {
@@ -666,17 +667,22 @@ describe('a removed export is named nowhere a reader looks', () => {
     // The halves left every package that had exported them, and `createBackend` with them.
     const packages: Record<string, object> = {
       '@cloudbitmaps/core': core,
+      '@cloudbitmaps/core/node': coreNode,
       '@cloudbitmaps/s3': s3,
       '@cloudbitmaps/gcs': gcs,
       '@cloudbitmaps/azure-blob': azureBlob,
     };
     for (const [pkg, names] of Object.entries(HALVES)) {
-      for (const name of names)
-        expect(name in (packages[pkg] ?? {}), `${pkg} exports ${name}`).toBe(false);
+      // The `/node` barrel is held to the same list as the main entry it was split from.
+      const barrels = pkg === '@cloudbitmaps/core' ? [pkg, `${pkg}/node`] : [pkg];
+      for (const barrel of barrels)
+        for (const name of names)
+          expect(name in (packages[barrel] ?? {}), `${barrel} exports ${name}`).toBe(false);
     }
     // What replaces them is there, so the check above cannot pass on a barrel that failed to load.
     expect(typeof core.loadSegment).toBe('function');
     expect(typeof coreNode.MemoryStorage).toBe('function');
+    expect(typeof coreNode.LocalFsStorage).toBe('function');
     expect(typeof s3.S3Storage).toBe('function');
     expect(typeof driverKit.brandAsBackend).toBe('function');
     expect(typeof core.RetryingStorageChunkSource).toBe('function');

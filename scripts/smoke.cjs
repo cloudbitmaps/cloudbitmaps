@@ -780,6 +780,20 @@ function reachableFrom(dist, entryFile) {
   return [...seen];
 }
 
+/** The built file of each `exports` entry of a package, relative to `dist` and with forward slashes. */
+function distEntryFilesOf(pkgDir) {
+  const manifest = JSON.parse(
+    require('node:fs').readFileSync(
+      path.join(__dirname, '..', 'packages', pkgDir, 'package.json'),
+      'utf8',
+    ),
+  );
+  return Object.entries(manifest.exports ?? {}).map(([key, target]) => ({
+    key,
+    file: path.posix.normalize(target.default).replace(/^dist\//, ''),
+  }));
+}
+
 function assertEntrySdkFree(pkgDir) {
   const { readFileSync } = require('node:fs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
@@ -787,7 +801,14 @@ function assertEntrySdkFree(pkgDir) {
 
   // Scoping is a package boundary rather than a chunk boundary: an SDK lives in a driver PACKAGE, which this
   // walk never enters, so there is no driver-only chunk inside core or the flavor for it to have to avoid.
-  const entryGraph = reachableFrom(dist, 'index.js');
+  const indexGraph = reachableFrom(dist, 'index.js');
+  // Every entry, not `index.js` alone: a subpath such as core's `/node` holds code the flavor loads at run time.
+  const entryGraph = [
+    ...new Set([
+      ...indexGraph,
+      ...distEntryFilesOf(pkgDir).flatMap((e) => reachableFrom(dist, e.file)),
+    ]),
+  ];
 
   // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal below.
   // Rename it there and this walk would quietly cover less, so make that loud instead.
@@ -797,7 +818,7 @@ function assertEntrySdkFree(pkgDir) {
   // file already covers the whole reachable graph. Requiring a chunk unconditionally would turn every
   // single-entry package — the flavor is one — into a false alarm saying the build had stopped splitting.
   const entryCount = entriesOf(pkgDir).length;
-  if (entryCount > 1 && !entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
+  if (entryCount > 1 && !indexGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
     throw new Error(
       `@cloudbitmaps/${pkgDir}: dist/index.js reaches no ./chunk-* file although the package declares ` +
         `${entryCount} entries, so the chunk walk covers nothing. Either the build stopped splitting, or ` +
@@ -856,8 +877,10 @@ async function assertEntryBuiltinFree(pkgDir, entryFile) {
     if (hits.length > 0) {
       throw new Error(
         `${specifier}: dist/${file} imports a Node builtin (${hits.join(', ')}).\n` +
-          `  A module the main entry reaches imports a Node builtin; export it from @cloudbitmaps/core/node (or put\n` +
-          `  it behind a port), never from the main entry, so the entry loads where no builtin exists.`,
+          `  A module ${specifier} reaches imports a Node builtin, so it does not load where no builtin exists.\n` +
+          (pkgDir === 'core'
+            ? `  Export it from @cloudbitmaps/core/node (or put it behind a port), never from this entry.`
+            : `  Use an injected seam instead; @cloudbitmaps/${pkgDir} may not import a builtin or core's /node.`),
       );
     }
   }
@@ -870,32 +893,31 @@ async function assertEntryBuiltinFree(pkgDir, entryFile) {
     );
   }
   console.log(
-    `  main entry builtin-free: ${specifier} (${graph.length} reachable module(s), ` +
+    `  entry builtin-free: ${specifier} (${graph.length} reachable module(s), ` +
       `loads with no Node builtin, ${loaded.length} exports)`,
   );
 }
 
-/** Every `exports` key of core's manifest but `./node` is on the list, so a new subpath cannot skip the gate. */
-function assertRuntimeNeutralCoversCore() {
-  const manifest = JSON.parse(
-    require('node:fs').readFileSync(
-      path.join(__dirname, '..', 'packages', 'core', 'package.json'),
-      'utf8',
-    ),
-  );
-  const wanted = Object.entries(manifest.exports)
-    .filter(([key]) => key !== './node')
-    .map(([, target]) => path.posix.normalize(target.default).replace(/^dist\//, ''))
-    .sort();
-  const listed = RUNTIME_NEUTRAL_ENTRIES.filter(([pkg]) => pkg === 'core')
-    .map(([, file]) => file)
-    .sort();
-  if (JSON.stringify(wanted) !== JSON.stringify(listed)) {
-    throw new Error(
-      `RUNTIME_NEUTRAL_ENTRIES lists core entries [${listed.join(', ')}] but core's manifest exports ` +
-        `[${wanted.join(', ')}] besides ./node. Add the new entry to the list, so it is checked to load with no ` +
-        `Node builtin, or make it ./node-style on purpose and say why.`,
-    );
+/**
+ * Every `exports` entry of a gated package is on the list, but core's `./node`, so a new subpath cannot skip the gate
+ * unnoticed.
+ */
+function assertRuntimeNeutralCoversGatedPackages() {
+  for (const pkgDir of [...new Set(RUNTIME_NEUTRAL_ENTRIES.map(([pkg]) => pkg))]) {
+    const wanted = distEntryFilesOf(pkgDir)
+      .filter(({ key }) => !(pkgDir === 'core' && key === './node'))
+      .map(({ file }) => file)
+      .sort();
+    const listed = RUNTIME_NEUTRAL_ENTRIES.filter(([pkg]) => pkg === pkgDir)
+      .map(([, file]) => file)
+      .sort();
+    if (JSON.stringify(wanted) !== JSON.stringify(listed)) {
+      throw new Error(
+        `RUNTIME_NEUTRAL_ENTRIES lists @cloudbitmaps/${pkgDir} entries [${listed.join(', ')}] but its manifest ` +
+          `exports [${wanted.join(', ')}] (core's ./node aside). Add the new entry to the list, so it is checked to ` +
+          `load with no Node builtin.`,
+      );
+    }
   }
 }
 
@@ -1047,7 +1069,7 @@ async function main() {
     assertDtsSpecifiers(pkgDir);
     assertSubpathsResolveWithoutExports(pkgDir);
   }
-  assertRuntimeNeutralCoversCore();
+  assertRuntimeNeutralCoversGatedPackages();
   for (const [pkgDir, entryFile] of RUNTIME_NEUTRAL_ENTRIES) {
     await assertEntryBuiltinFree(pkgDir, entryFile);
   }

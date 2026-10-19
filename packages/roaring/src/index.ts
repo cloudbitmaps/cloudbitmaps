@@ -4119,9 +4119,9 @@ export class Segment {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// What `@cloudbitmaps/roaring` re-exports from `@cloudbitmaps/core` and `@cloudbitmaps/core/node`, by name: the types the store's signatures name,
-// the backends, the errors and their classifier, and the helpers an application calls. An application installs this
-// package and imports from it alone. Nothing else of core's is re-exported: its main entry is internal. The driver
+// What `@cloudbitmaps/roaring` re-exports from `@cloudbitmaps/core` and `@cloudbitmaps/core/node`, by name: the
+// types the store's signatures name, the backends, the errors and their classifier, and the helpers an
+// application calls. An application installs this package and imports from it alone. Nothing else of core's is re-exported: its main entry is internal. The driver
 // contracts the store's signatures stop at (`IStorageDriver`, `IRegistryDriver`, `StorageBackend`,
 // `StorageChunkSource`, `IKeystore` and the registry's record types) are exported by `@cloudbitmaps/core/driver-kit`,
 // their one home, and not here: an application that has to name one imports it from there, or derives it
