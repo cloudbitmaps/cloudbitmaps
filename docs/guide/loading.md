@@ -677,7 +677,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
 nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an
 operator who has looked at the segment and knows which generation they want. So rollback refuses rather than guesses.
 A destroyed segment (crypto-shredded, destroyed in the clear or dropped) throws `ValidationError`, since no
-generation resolves through a destroyed row, and rolling to the generation already current is a reported no-op once one footer read finds its object in the bucket, and, when the row
+generation resolves through a destroyed row, and rolling to the generation already current is a reported no-op once
+one footer read finds its object in the bucket, and, when the row
 knows it, with the checksum it recorded (another footer under the number throws `IntegrityError`, and so does a footer that fails its own checks: a no-op
 reports no segment as fine over a corrupt current footer). When the object
 is gone (a collection raced an earlier move), it throws `NotFoundError` naming the generations that are there, so
@@ -804,7 +805,8 @@ while a mistyped exclude removes a safeguard and you do not. Both throw a `Valid
 segment with a registry row that is not a tombstone is accepted even when it holds no ids, because somebody created it
 deliberately: a row minted by `setRetention` before its first load, or a segment loaded empty. A name with no registry
 row is refused, and so is a `destroyed` tombstone (a segment dropped, retired, crypto-shredded or destroyed in
-the clear). `store.exists()` answers `false` for a row minted ahead of its first load, which a combine still accepts. Pass
+the clear). `store.exists()` answers `false` for a row minted ahead of its first load, which a combine still accepts.
+Pass
 `allowAbsentOperands: true` to combine against a name that may not exist yet; it then reads as empty.
 
 To write many results over the same operands, see [many outputs from one pass](#many-outputs-from-one-pass-materializemany).

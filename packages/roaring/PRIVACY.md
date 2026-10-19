@@ -381,7 +381,8 @@ row stays recoverable wherever the storage keeps a copy of it: with object versi
 a noncurrent-version rule expires them, as an overwritten row's do; with soft delete on, it stays for the retention
 window (GCS: on by default for a new bucket, 7 days; Azure Blob: where enabled, for the days set), whatever the registry
 did. A [tombstone a hand-run `dropSegment`, a
-crypto-shred or a cleartext destroy left is never purged by the library](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#tombstones-purged-narrowly).
+crypto-shred or a cleartext destroy left is never purged by the
+library](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/correctness.md#tombstones-purged-narrowly).
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
 [retention guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/retention.md).

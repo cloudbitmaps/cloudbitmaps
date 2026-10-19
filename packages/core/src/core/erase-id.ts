@@ -1264,8 +1264,10 @@ async function unpublished(c: EraseCall): Promise<EraseIdResult> {
 
 /**
  * The row is a tombstone, so no generation is the segment's any more and every object left is garbage (invariant 4's
- * one exception). A crypto-shred leaves objects no key opens, but a cleartext destroy, a drop whose sweep left
- * something, or a write that landed after it leaves objects anyone can read. Each is searched; when one holds the id,
+ * one exception). A crypto-shred leaves objects no read through the library can open (the row holds no key), but a
+ * cleartext
+ * destroy, a drop whose sweep left something, or a write that landed after it leaves objects anyone can read. Each is
+ * searched; when one holds the id,
  * the collection's tombstone pass deletes them all, re-proving the row's token before each delete, and what is left
  * is read again. One listing for a tombstone with nothing left.
  */

@@ -68,8 +68,9 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
 - **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto segments that already
   exist is a normal migration.
 - **A tombstone is refused.** A crypto-shredded, cleartext-destroyed, dropped or retired segment throws
-  `ValidationError`, so use a new segment name. A drop or a retirement left nothing to retire. A destroy left its
-  objects in the bucket (readable after a cleartext destroy), and `dropSegment` on the tombstone deletes them.
+  `ValidationError`, so use a new segment name. A drop or a retirement deleted its objects (drop again
+  while `generationsRemaining` is not empty). A destroy left its objects in the bucket (readable after a cleartext
+  destroy), and `dropSegment` on the tombstone deletes them.
 - **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
   policy is committed, and the fleet scan still retires the segment.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
@@ -148,8 +149,10 @@ deletion to feel.
 
 - A fleet scan is a billed `LIST` over the registry prefix plus one read per row it lists. The default `'fleet'` scan
   costs what the prefix holds: the live segments; every tombstone not purged yet (a retirement inside its grace, or one
-  whose storage is not proven gone); every tombstone a crypto-shred, a cleartext destroy or a hand-run `dropSegment` left, which
-  the library never purges; on an unscoped scan, every due-index pointer; and, where the registry does not report
+  whose storage is not proven gone); [every tombstone a crypto-shred, a cleartext destroy or a hand-run `dropSegment`
+  left, which
+  the library never purges](correctness.md#tombstones-purged-narrowly); on an unscoped scan, every due-index pointer;
+  and, where the registry does not report
   `conditionalDelete` (GCS by default, an S3-compatible store), every row it ever deleted, kept as a marker the scan
   reads each cycle (see [what the purge removes](correctness.md#how-retention-stays-correct)).
 - `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
@@ -434,6 +437,7 @@ exactly that family's daily segments, and `eraseNamespace` can retire the whole 
 can reach bytes about to disappear and no load can publish onto the segment, and a failure part-way through leaks bytes,
 not correctness: check `generationsRemaining`, and drop again while it is not empty. The sweep [purges a tombstone only
 when the row carries the sweep's own retirement stamp](correctness.md#tombstones-purged-narrowly), its grace period has
-passed, and storage is provably empty for it, so a tombstone a crypto-shred, a cleartext destroy or a hand-run drop wrote is never purged.
+passed, and storage is provably empty for it, so a tombstone a crypto-shred, a cleartext destroy or a hand-run drop
+wrote is never purged.
 What a purge removes on each backend, the due index's pointers and the race the fleet scan repairs, what each step
 costs, and `purgeTombstones: false` are in [How retention stays correct](correctness.md#how-retention-stays-correct).
