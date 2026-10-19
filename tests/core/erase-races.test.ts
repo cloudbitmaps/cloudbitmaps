@@ -675,6 +675,31 @@ describe('two erasures of different ids on one segment', () => {
   });
 });
 
+describe('two erasures racing for a number, when the row is dropped meanwhile', () => {
+  it('reports the row as destroyed, not superseded, when it is dropped while the number is taken', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3, X, Y], w.deps);
+    const racing = {
+      ...w.deps,
+      storage: overStorage(w.storage, {
+        putImmutable: async () => {
+          await dropSegment(
+            SEG,
+            { storage: w.storage, registry: w.registry },
+            { confirmSegment: 's' },
+          );
+          throw new WriteConflictError('generation already exists (write-once)');
+        },
+      }),
+    };
+    expect(await eraseIdFromSegment(SEG, X, racing)).toMatchObject({
+      erased: false,
+      reason: 'destroyed',
+      collected: [],
+    });
+  });
+});
+
 describe('a generation the erasure found clean, whose number another object takes', () => {
   it.each(['published', 'unpublished'] as const)(
     'reads it again when the name is dropped, purged and created again and a first load of the id takes that number (%s)',

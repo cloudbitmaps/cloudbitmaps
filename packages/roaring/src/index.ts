@@ -498,7 +498,7 @@ export interface EncryptionOptions {
    *
    * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both
    * carry it into their write path, so on a cleartext segment a materialisation throws and an erasure records
-   * `note: 'error: ValidationError: requireEncryption: …'` in its ledger rather than erasing, whatever id it erases and
+   * `note: 'error: KeyUnavailableError: requireEncryption: …'` in its ledger rather than erasing, whatever id it erases and
    * whether or not the id is in the segment: it does not read the segment. And since a segment's encryption is
    * decided at its **first** generation, this cannot be switched on for a segment that already has one — load
    * into a new encrypted segment and drop the old one.
@@ -1855,8 +1855,8 @@ export class CloudRoaring {
    *
    * **Scope: one `namespace`, or `{ allNamespaces: true }`, never both** (both throws `ValidationError`, as does
    * neither). A segment loaded with no `namespace` is in no namespace you can name: only `{ allNamespaces: true }`
-   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print for such a segment,
-   * is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
+   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's
+   * object keys use, for such a segment, is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
    *
    * **Current as of the registry row, not as of the reader's cache.** Each segment's resolved generation is
    * compared with the row the scan listed, and a segment whose cached generation differs is re-resolved before the
@@ -1961,8 +1961,8 @@ export class CloudRoaring {
    *
    * **Scope: one `namespace`, or `{ allNamespaces: true }`, never both** (both throws `ValidationError`, as does
    * neither). A segment loaded with no `namespace` is in no namespace you can name: only `{ allNamespaces: true }`
-   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print for such a segment,
-   * is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
+   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's
+   * object keys use, for such a segment, is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
    *
    * For each **registered** segment the id is a member of, `eraseIdFromSegment` rewrites the current generation
    * without the id — every chunk streamed through, one bit cleared — publishes the rewrite **fenced on the

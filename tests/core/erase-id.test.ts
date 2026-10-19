@@ -292,7 +292,7 @@ describe('eraseIdFromSegment — encryption', () => {
     await w.load(SEG, [1, 2, 3]);
     await expect(
       eraseIdFromSegment(SEG, 2, { ...w.deps, requireEncryption: true }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    ).rejects.toBeInstanceOf(KeyUnavailableError);
     expect(await generations(w.storage, SEG)).toEqual([0]);
   });
 });

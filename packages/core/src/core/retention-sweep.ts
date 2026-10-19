@@ -96,8 +96,9 @@ const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
 export interface RetireExpiredOptions {
   /**
    * Scope the sweep to one namespace. Omit to sweep every namespace the registry knows, segments loaded with no
-   * namespace included: `'_default'` is an ordinary namespace name here, not those segments, and scopes the sweep
-   * to a namespace of that name.
+   * namespace included. `'_default'`, the label the export tool and the disaster-recovery samples print, and the
+   * bucket's object keys use, for those segments, is an ordinary namespace name here: it scopes the sweep to a
+   * namespace of that name, not to them.
    */
   readonly namespace?: string;
   /**

@@ -267,7 +267,7 @@ describe('a segment the call cannot search', () => {
     const res = await strict.eraseSubject(99, { namespace: NS });
     expect(res.erasedFrom).toHaveLength(1);
     expect(res.erasedFrom[0]).toMatchObject({ segment: 'plain', erased: false });
-    expect(res.erasedFrom[0]!.note).toMatch(/^error: ValidationError: requireEncryption/);
+    expect(res.erasedFrom[0]!.note).toMatch(/^error: KeyUnavailableError: requireEncryption/);
     await expect(strict.subjectReport(1, { namespace: NS })).rejects.toBeInstanceOf(
       KeyUnavailableError,
     );
@@ -568,7 +568,7 @@ describe('eraseSubject', () => {
 
     expect(res.erasedFrom).toHaveLength(1);
     expect(res.erasedFrom[0]).toMatchObject({ segment: 'plain', erased: false });
-    expect(res.erasedFrom[0]!.note).toMatch(/^error: ValidationError: requireEncryption/);
+    expect(res.erasedFrom[0]!.note).toMatch(/^error: KeyUnavailableError: requireEncryption/);
     expect(await members(w.reader(), 'plain')).toEqual([1, 2]);
     expect(await generations(w.storage, { namespace: NS, segment: 'plain' })).toEqual([0]);
   });

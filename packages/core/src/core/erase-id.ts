@@ -134,7 +134,6 @@ import {
   IntegrityError,
   KeyUnavailableError,
   type NotFoundError,
-  ValidationError,
   WriteConflictError,
   isIntegrityError,
   isNotFoundError,
@@ -1868,7 +1867,9 @@ async function resolveDek(
   }
   // A row with no pointer holds no key because it holds no data yet, so it is not a cleartext segment.
   if (!row.pointerless && deps.requireEncryption === true) {
-    throw new ValidationError(`requireEncryption: segment "${ref.segment}" is cleartext`);
+    throw new KeyUnavailableError(
+      `requireEncryption: segment "${ref.segment}" is cleartext but encryption is required`,
+    );
   }
   return undefined;
 }

@@ -490,7 +490,7 @@ move it up.
   nothing created**. Today's cost tooling can only answer that once you're already a user, which is backwards. It
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
-- **A scope of its own for un-namespaced segments, after the next release.** A segment loaded with no `namespace` is reached by
+- **A scope of its own for un-namespaced segments.** A segment loaded with no `namespace` is reached by
   `subjectReport`, `eraseSubject` and `retireExpired` only when the call covers every namespace (`allNamespaces: true`,
   or no `namespace` on a sweep), because the registry port cannot list the absent namespace alone, and `'_default'`
   names an ordinary namespace. A scope for just those segments needs a filter on the registry port.

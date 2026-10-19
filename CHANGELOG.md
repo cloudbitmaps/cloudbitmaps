@@ -13,6 +13,26 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **`subjectReport` and `eraseSubject` refuse a `namespace` given together with `{ allNamespaces: true }`, take their
+  scope in a type that refuses the pair, and begin an `error:` note with the error's class.** With both, the call
+  honoured `namespace` and ignored `allNamespaces`, so a caller who meant every tenant erased one, and its ledger read
+  complete while the others kept the id. Both now throw `ValidationError` before they list the registry. Each call's
+  `options` is now required and a union: a `namespace` (with `allNamespaces` absent or `false`), or
+  `allNamespaces: true` (with no `namespace`). A call with no options has always thrown `ValidationError`, so the type
+  now says what the code did. TypeScript now refuses: a call that passes both; `allNamespaces` as a `boolean`
+  variable; a `namespace` typed `string | undefined`, such as a tenant read from configuration; and an options object
+  typed with the old shape `{ namespace?: string; allNamespaces?: boolean }`, such as a wrapper that forwards its
+  options. To migrate: narrow first and refuse a missing tenant (`if (tenant === undefined) throw ...`), then pass
+  `{ namespace: tenant }`; type a stored scope as `{ namespace: string } | { allNamespaces: true }`. Do not turn a
+  missing tenant into `{ allNamespaces: true }`: that erases the id from every tenant, the mistake the scope exists to
+  stop. Separately, an `eraseSubject` ledger note that begins `error: ` now continues with the error's class
+  (`error: KeyUnavailableError: ...`), so it can be matched to a row of the guide's table; a matcher on the text after
+  `error: ` now matches after the class. The `requireEncryption` note is a `KeyUnavailableError`, as `subjectReport`
+  throws for the same cause, where it was a `ValidationError`. The guides, the API reference and the privacy note also
+  say what the scope reaches: a segment loaded with no `namespace` only under `allNamespaces: true`, `'_default'` being
+  an ordinary namespace name and not those segments, and what `encryption: { required: true }` means for an erasure
+  over cleartext segments.
+
 - **`deserializePortable(bytes)` returns `ReadonlyBitmap`, a type of this library's own, in place of `roaring`'s
   `RoaringBitmap32`, and no public signature names a type of the `roaring` package.** A `ReadonlyBitmap` is a
   `PortableBitmap` and an `Iterable<number>` with `size`, `has(id)`, ascending iteration and `serialize('portable')`.
@@ -115,17 +135,6 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **`subjectReport` and `eraseSubject` refuse a `namespace` given together with `{ allNamespaces: true }`, and their
-  types no longer accept the pair.** With both, the call honoured `namespace` and ignored `allNamespaces`, so a
-  caller who meant every tenant erased one, and its ledger read complete while the others kept the id. Both now throw
-  `ValidationError` before they list the registry. The `options` argument of each is now required, and a union: a
-  `namespace` (with `allNamespaces` absent or `false`), or `allNamespaces: true` (with no `namespace`), as the guides
-  already described. A call that passed `allNamespaces` as a `boolean` variable, or passed no options, no longer
-  compiles (no options already threw at run time). The guides, the API reference and the privacy note also say what the
-  scope reaches: a segment loaded with no `namespace` only under `allNamespaces: true`, `'_default'` being an ordinary
-  namespace name and not those segments, and what `encryption: { required: true }` means for an erasure over cleartext
-  segments (each is an `error:` entry, as `required` refuses a cleartext read).
-
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an
@@ -151,8 +160,7 @@ so, and so do the module headers in the code.
 - **Two erasures of different ids on one segment no longer report a raw storage error for the one that loses.** Both
   could take the same next generation number, and the second put was refused as `generation already exists
   (write-once)`. The loser now reports `'superseded'`, with nothing written or deleted, as a lost load race does, and
-  its re-run erases its id. An erasure ledger's `error:` note now names the error's class
-  (`error: KeyUnavailableError: ...`), so it can be matched to a row of the guide's table. The missing-keystore note no
+  its re-run erases its id. The missing-keystore note no
   longer names `eraseIdFromSegment`, a function an `eraseSubject` caller never called: it says the erasure has no
   keystore to open the segment's key (`encryption.keystore` on the store).
 
