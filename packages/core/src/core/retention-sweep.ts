@@ -52,6 +52,8 @@ import { BudgetExceededError, ValidationError, isWriteConflictError } from './er
 import { gcOrphanGenerations } from './generation-gc';
 import { drainRegistry } from './registry-scan';
 import { dropSegmentFor } from './erasure';
+import { generationsOf } from './generation-list';
+import { sameIncarnation } from './token';
 import type { DropDeps, DropResult } from './erasure';
 import { MIN_EXPIRES_AT_MS, SWEEP_MARK, readRetentionPolicy } from './retention';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
@@ -800,6 +802,8 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     return null;
   }
 
+  // The row the retirement judged, kept for the catch below: what the segment held when the shred went to write.
+  let live: RegistryRecord | null = null;
   try {
     // Re-read the AUTHORITATIVE row before deleting anything. The enumeration is a snapshot, and on a large
     // fleet the gap between drawing it and reaching this segment is the whole sweep — minutes. Cancelling an
@@ -807,7 +811,7 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     // it did not work if a sweep was already running: the segment was retired from the stale copy. One strong
     // read per *eligible* segment, so the fleet enumeration stays a single `list()`. (`consistency.ts` takes the
     // same care for a read-only check; a deletion deserves at least as much.)
-    const live = await deps.registry.get(ref);
+    live = await deps.registry.get(ref);
     const livePolicy = live === null ? null : readRetentionPolicy(live.retention);
     if (
       live === null ||
@@ -929,27 +933,57 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
     // drop) is not a retirement of this sweep, and claiming it would let a later sweep purge an attestation.
     if (
       after?.status === 'destroyed' &&
-      (after.retention as Record<string, unknown> | undefined)?.[SWEEP_MARK] === now
+      (after.retention as Record<string, unknown> | undefined)?.[SWEEP_MARK] === now &&
+      live !== null &&
+      sameIncarnation(live, after)
     ) {
-      if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
-      tally.retired += 1;
-      return {
-        ...base,
-        action: 'retired',
-        expiresAt: policy.expiresAt,
-        result: {
-          ...base,
-          dropped: true,
-          generationsDeleted: [],
-          generationsRemaining: [],
-          cryptoShredded: false,
-          reason: undefined,
-        },
-        fault: failureReason(err),
-      };
+      return retiredAfterFault(live, policy.expiresAt, err, ctx);
     }
     return { ...base, action: 'skipped', reason: failureReason(err) };
   }
+}
+
+/**
+ * The ledger entry of a retirement whose drop threw after its tombstone landed: `live`, the row the retirement judged,
+ * is now this sweep's own tombstone. The segment is retired, so the entry says so, with the fault.
+ *
+ * What is left in the bucket is not known to have been swept, so it is listed. A listing that fails too names the
+ * generations the row held, which may over-report: an operator re-runs the drop, where the other way round would hide a
+ * copy. `cryptoShredded` is whether `live` held wrappings, which the tombstone replaced.
+ */
+async function retiredAfterFault(
+  live: RegistryRecord,
+  expiresAt: number,
+  err: unknown,
+  ctx: SweepContext,
+): Promise<RetireEntry> {
+  const { deps, opts, removesRows, tally } = ctx;
+  const ref: SegmentRef = { namespace: live.namespace, segment: live.segment };
+  const base = { segment: live.segment, namespace: live.namespace };
+  if (removesRows) await filePurgePointer(deps.registry, ref, opts.now + opts.grace);
+  tally.retired += 1;
+  const remaining = await generationsOf(deps.storage, ref).catch(() => namedBy(live));
+  return {
+    ...base,
+    action: 'retired',
+    expiresAt,
+    result: {
+      ...base,
+      dropped: true,
+      generationsDeleted: [],
+      generationsRemaining: remaining,
+      cryptoShredded: live.wrappedDeks !== undefined && live.wrappedDeks.length > 0,
+      reason: undefined,
+    },
+    fault: failureReason(err),
+  };
+}
+
+/** The generations a row names: its pointer's and its ledger's, ascending. */
+function namedBy(row: RegistryRecord): number[] {
+  const names = new Set<number>((row.knownGens ?? []).map((k) => k.generation));
+  if (row.currentGen !== null) names.add(row.currentGen);
+  return [...names].sort((a, b) => a - b);
 }
 
 /**

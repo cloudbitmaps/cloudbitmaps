@@ -261,6 +261,14 @@ makes the coordinated restore point easy to hit rather than something you have t
      // each segment with a `segment.erase` event after T
      await destroySegment(ref, { registry: backend.registry }, { confirmSegment: ref.segment, audit });
    }
+   for (const ref of destroyedAfterT) {
+     // each segment with a `segment.destroy` event after T: a cleartext destroy, which no `segment.erase` records
+     await destroySegment(
+       ref,
+       { registry: backend.registry },
+       { confirmSegment: ref.segment, allowCleartext: true, audit },
+     );
+   }
    for (const ref of disposedAfterT) {
      // each segment with a `segment.dispose` event after T (a drop re-shreds an encrypted segment too)
      const r = await store.dropSegment(ref, { confirmSegment: ref.segment, audit });
@@ -420,15 +428,16 @@ Deciding which is which is the part that needs a person:
 - **Check your audit sink** for that segment, and read its events together, because no event says who made the
   call: an event carries no origin, only what your sink stamps on it. A crypto-shred (`destroySegment`,
   `eraseNamespace`) emits `segment.erase` alone, and `eraseNamespace` adds one `namespace.erase` for the namespace. A
-  cleartext destroy (`allowCleartext`) destroys no key and emits no `segment.erase`.
+  cleartext destroy (`allowCleartext`) destroys no key and emits `segment.destroy` instead of `segment.erase`.
   A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` that writes or
   finds a tombstone then emits `segment.dispose` once its storage sweep ends (a drop of a name with no row and no
   objects, and a dry run, emit nothing). The sweep's retirements are `dropSegment` calls, so they emit
   exactly what a manual drop does. One killed mid-sweep emits the `segment.erase` if the segment was encrypted,
   nothing if it was cleartext, and no `segment.dispose`; one killed after its sweep but before the stamp emits
   both. So a `segment.erase` with no `segment.dispose` is a crypto-shred or an interrupted drop of an encrypted
-  segment, a `segment.dispose` is a drop, the sweep's or anyone's, and a tombstone with no event at all is a cleartext
-  destroy or an interrupted drop of a cleartext segment. What tells the sweep's drops apart is the actor your
+  segment, a `segment.dispose` is a drop, the sweep's or anyone's, a `segment.destroy` is a cleartext destroy, and a
+  tombstone with no event at all is an interrupted drop of a cleartext segment, or a shred whose answer and read-back
+  were both lost ([encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)). What tells the sweep's drops apart is the actor your
   sink stamps, when the process that runs the sweep passes a sink that names it. If the events cannot settle it,
   leave the row alone: a tombstone kept costs a fenced name and a few bytes, and a crypto-shred's tombstone deleted
   is a lost attestation.

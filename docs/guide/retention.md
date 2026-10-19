@@ -179,8 +179,8 @@ declare function scheduleAnotherPassSoon(): void;
 const swept = await store.retireExpired({ namespace: 'active-daily' });
 for (const e of swept.entries) {
   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`);
-  if (e.action === 'retired' && e.result.generationsRemaining.length > 0) {
-    console.warn(`${e.segment}: storage not fully reclaimed, re-run`);
+  if (e.action === 'retired' && (e.fault !== undefined || e.result.generationsRemaining.length > 0)) {
+    console.warn(`${e.segment}: storage not fully reclaimed, re-run dropSegment`);
   }
 }
 if (swept.limited) scheduleAnotherPassSoon(); // more work (retirements or purges) remains
@@ -228,7 +228,11 @@ ordinary namespace name here: passing it sweeps a namespace of that name, not th
 - **`failed: ...`**: that one segment's retirement threw, or, on a tombstone, its purge did, and a purge the registry
   refuses is also counted in `purgeFaults` (above). `dropSegment` writes the tombstone before the storage sweep,
   deliberately, so a fault there leaks bytes, not correctness. A fault after the tombstone landed is reported as
-  `retired` with a `fault`, because that segment really is retired. Re-running collects the bytes.
+  `retired` with a `fault`, because that segment really is retired, and its `generationsRemaining` lists what a
+  listing of the bucket then found (the generations its row named when that listing failed too). A sweep's re-run does
+  not collect them at once: it skips a tombstone until `tombstoneGraceMs` has passed, and its purge then collects the
+  bytes with no `segment.dispose`. Run `store.dropSegment(ref, { confirmSegment })` on that segment, which sweeps at
+  once and emits `segment.dispose`.
 
 **A segment the cap deferred gets no ledger entry**: the cap shows only as `limited: true`, which is what to alert on.
 That cap is what stands between a bad `expiresAt` backfill (or clock skew) and a retired fleet, so it defers instead

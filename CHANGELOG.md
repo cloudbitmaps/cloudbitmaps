@@ -53,6 +53,14 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A cleartext `destroySegment` or `eraseNamespace` (`allowCleartext`) now emits a `segment.destroy` audit event.**
+  It wrote a `destroyed` tombstone and emitted nothing, so no record said the row had been tombstoned, and the restore
+  procedure could not find what a registry restore had brought back. The event carries the segment, its namespace and
+  incarnation, and `objectsReadable: true`, because nothing was deleted and no key was destroyed: it is not an erasure
+  receipt, and `segment.erase` keeps meaning a crypto-shred. It is emitted once per tombstone the call wrote, not for a
+  re-run. `AuditEvent` gains a member, so a `switch` over `event.kind` that is exhaustive (a `never` check) needs a
+  case for it. The disaster-recovery procedure's step that re-applies erasures re-applies these too.
+
 - **`subjectReport` lists a destroyed segment whose leftover objects still hold the id, in a new `tombstones`
   field.** A cleartext `destroySegment` (`allowCleartext`), and a `dropSegment` whose sweep missed an object a load
   was still writing, leave the id readable in the bucket though no read resolves the segment. `eraseSubject` already
@@ -156,6 +164,14 @@ so, and so do the module headers in the code.
   writer's index, and its ceiling is now about 7 MiB at that size, about 8 MiB for an encrypted segment (derived).
 
 ### Fixed
+
+- **A crypto-shred (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement) and a drop's tombstone
+  for a segment with no row, whose write lands and loses its response, are now settled by the write token, and report
+  and audit the shred.** Before, they threw `TransientError`, or recorded `failed: …` with `destroyed: false`, and the
+  re-run answered `'already'` with no `segment.erase`, ever. A retirement reported `retired` with
+  `generationsRemaining: []` while every object was still in the bucket; it now lists what is left. A shred whose
+  answer and read-back are both lost still throws and cannot be told from another tombstone: the guides say what to
+  record.
 
 - **Two erasures of different ids on one segment no longer report a raw storage error for the one that loses.** Both
   could take the same next generation number, and the second put was refused as `generation already exists

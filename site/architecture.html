@@ -630,11 +630,11 @@
               A registry row is sent once on S3 and GCS, and on Azure Blob the client's retry can replay it, and a replay that meets a
               conflict is read back by its id, which is not definitive for a row. Either way it is reconciled by its effect: a publish that gets no answer, or loses its
               compare-and-swap, re-reads the row and advances only if its fences still hold, and otherwise says so to
-              its caller. Eight kinds of
+              its caller. Nine kinds of
               change are audit events beside it, on the sink the call was given: <span class="m">segment.publish</span>,
               <span class="m">segment.rollback</span>, <span class="m">segment.load-refused</span>,
               <span class="m">segment.rewrite</span>, <span class="m">segment.collect</span>, <span class="m">segment.erase</span>,
-              <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
+              <span class="m">segment.destroy</span>, <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
               policy's write (<span class="m">setRetention</span>, <span class="m">clearRetention</span>), a
               collection pass and the retention sweep's purge of its own tombstones emit none. Each
               <span class="m">segment.*</span> event carries <span class="m">incarnation</span>, the id of the registry

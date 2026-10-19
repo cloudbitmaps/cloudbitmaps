@@ -428,7 +428,7 @@ rewrite: `fromGeneration` → `generation`), `segment.collect` (a subject erasur
 no reader resolves: the generations holding the id, when it found the id only outside the current generation, or, with
 no `fromGeneration`, only objects no read of the segment can open, which it deletes whatever the id), `segment.erase`
 (a genuine
-crypto-shred), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
+crypto-shred), `segment.destroy` (a cleartext tombstone from `allowCleartext`, which deletes nothing), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
 `namespace.erase` — for your audit log / SIEM. Each `segment.*` event names the segment's `incarnation` when its
 registry token carries one, so a segment created again under the same name is told apart from the one before.
 It is off by default and exception-safe. See the [dashboards guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/dashboards.md), which also says

@@ -16,14 +16,27 @@
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
  * operation — `eraseIdFromSegment` rewrites the generation without it.
  */
-import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
+import { type AuditEvent, type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
-import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
+import {
+  ValidationError,
+  WriteConflictError,
+  isTransientError,
+  isWriteConflictError,
+} from './errors';
 import { casRetry } from './cas-retry';
+import { readBack, writeTokens } from './settle';
 import type { ChurnDeps } from './leases';
-import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
+import type {
+  IStorageDriver,
+  IRegistryDriver,
+  RegistryPatch,
+  RegistryRecord,
+  SegmentRef,
+  Token,
+} from './ports';
 import { validateUserNamespace, validateUserRef } from './validate';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import { withoutSweepMark } from './retention';
@@ -54,7 +67,8 @@ export interface DestroyResult {
    * dropped from its current registry row, so its Storage bytes, in any copy, are unreadable once no retained copy
    * of the row holds the key, or every KEK that wrapped it is destroyed. False for a cleartext tombstone (bytes
    * remain readable), for the idempotent already-destroyed case, and for an absent segment. This is what the
-   * `segment.erase` audit event keys off — a cleartext "erase" destroys no key.
+   * `segment.erase` audit event keys off — a cleartext "erase" destroys no key. A shred that throws `TransientError`
+   * after its read-back also failed may have landed; its re-run answers `'already'` with `cryptoShredded: false`.
    */
   readonly cryptoShredded: boolean;
   /**
@@ -65,6 +79,9 @@ export interface DestroyResult {
    *
    * The last two come with `destroyed: false` and mean **the segment still holds data**. A namespace erase
    * returns them rather than throwing, so its entries have to be inspected — see {@link eraseNamespace}.
+   *
+   * A shred that throws `TransientError` after its read-back also failed may have landed; its re-run answers
+   * `'already'` with `cryptoShredded: false`.
    */
   readonly reason?: string;
 }
@@ -117,8 +134,26 @@ export async function destroySegment(
       segment: ref.segment,
       ...incarnationField(token),
     });
+  } else if (isCleartextTombstone(result)) {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent(destroyEvent(ref, token));
   }
   return result;
+}
+
+/** Whether a shred's result is a cleartext tombstone this call wrote: destroyed, no key shredded, no reason it was not fresh. */
+function isCleartextTombstone(result: DestroyResult): boolean {
+  return result.destroyed && !result.cryptoShredded && result.reason === undefined;
+}
+
+/** The event for a tombstone written over a segment that held no key: it is recorded, and it is not an erasure receipt. */
+function destroyEvent(ref: SegmentRef, token: Token | undefined): AuditEvent {
+  return {
+    kind: 'segment.destroy',
+    namespace: ref.namespace,
+    segment: ref.segment,
+    ...incarnationField(token),
+    objectsReadable: true,
+  };
 }
 
 /**
@@ -213,6 +248,8 @@ export async function eraseNamespace(
         segment: ref.segment,
         ...incarnationField(token),
       });
+    } else if (isCleartextTombstone(result)) {
+      audit.onEvent(destroyEvent(ref, token));
     }
     return result;
   });
@@ -440,20 +477,7 @@ export async function dropSegmentFor(
         reason: 'absent',
       };
     }
-    try {
-      const tombstone = await deps.registry.create(ref, {
-        // The max listed generation, so the row is consistent with what is on disk if anything reads it before
-        // the sweep finishes. It is a tombstone, so no reader resolves through it either way.
-        currentGen: orphans[orphans.length - 1]!,
-        status: 'destroyed',
-      });
-      shred = { ...shred, destroyed: true, reason: undefined, token: tombstone.token };
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-      // A row appeared between our `get` and our `create` — that is the racing writer we were trying to fence,
-      // and it won. Fall back into the normal path, which now has a row to CAS into a tombstone.
-      shred = await shredSegment(ref, deps, { allowCleartext: true, op: 'dropSegment' });
-    }
+    shred = await claimIdentity(ref, deps, orphans[orphans.length - 1]!, shred);
   }
 
   // `segment.erase` ONLY on a genuine crypto-shred — exactly the condition `destroySegment` uses, and
@@ -544,6 +568,50 @@ export async function dropSegmentFor(
   };
 }
 
+/**
+ * Write the tombstone of a segment that has objects and no row, so a writer racing the drop is fenced before anything is
+ * deleted; `shred` is the absent result it turns into a destroyed one.
+ *
+ * A create that got no answer, or met a conflict that may follow its own landing, is settled by the row: a tombstone
+ * carrying a token this call sent is this call's own. Without tokens (a registry that does not report them) nothing can
+ * be told: a conflict goes on as below and a fault is thrown as it is.
+ */
+async function claimIdentity(
+  ref: SegmentRef,
+  deps: DropDeps,
+  newestGeneration: number,
+  shred: Shred,
+): Promise<Shred> {
+  const createTokens = writeTokens(deps.registry);
+  try {
+    const tombstone = await deps.registry.create(
+      ref,
+      {
+        // The max listed generation, so the row is consistent with what is on disk if anything reads it before
+        // the sweep finishes. It is a tombstone, so no reader resolves through it either way.
+        currentGen: newestGeneration,
+        status: 'destroyed',
+      },
+      createTokens.options,
+    );
+    return { ...shred, destroyed: true, reason: undefined, token: tombstone.token };
+  } catch (err) {
+    if (!isWriteConflictError(err) && !isTransientError(err)) throw err;
+    if (createTokens.sent === undefined && isTransientError(err)) throw err;
+    const now = isTransientError(err)
+      ? await readBack(() => deps.registry.get(ref), err, deps)
+      : await deps.registry.get(ref);
+    if (now?.status === 'destroyed' && createTokens.wrote(now)) {
+      return { ...shred, destroyed: true, reason: undefined, token: now.token };
+    }
+    // Nothing landed: a re-run is safe.
+    if (isTransientError(err) && now === null) throw err;
+    // A row appeared between our `get` and our `create` — that is the racing writer we were trying to fence,
+    // and it won. Fall back into the normal path, which now has a row to CAS into a tombstone.
+    return shredSegment(ref, deps, { allowCleartext: true, op: 'dropSegment' });
+  }
+}
+
 /** What a shred is told: whether a cleartext segment may be tombstoned, which command's name its errors carry, and the sweep it serves. */
 interface ShredOptions {
   readonly allowCleartext: boolean;
@@ -577,6 +645,19 @@ async function shredSegment(
 ): Promise<Shred | null> {
   const { allowCleartext, op = 'destroySegment', sweep } = options;
   const base = { segment: ref.segment, namespace: ref.namespace };
+  // Whether the row each swap of this call was sent against held wrappings, by the token the swap carries: the
+  // tombstone it leaves has that token as its `pointerId`, so a tombstone found with one of them is this call's own
+  // shred, and says whether it was a crypto-shred, which the tombstone itself does not.
+  const encryptedBy = new Map<Token, boolean>();
+  let sentEncrypted = false;
+  const tokens = writeTokens(deps.registry, (token) => void encryptedBy.set(token, sentEncrypted));
+  const ownShred = (row: RegistryRecord | null): Shred | null => {
+    if (row === null || row.status !== 'destroyed') return null;
+    const encrypted = encryptedBy.get(row.pointerId);
+    return encrypted === undefined
+      ? null
+      : { ...base, destroyed: true, cryptoShredded: encrypted, token: row.token };
+  };
   // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: `casRetry`
   // waits out a race lost to a lease write without using an attempt, up to the churn bound.
   return casRetry(
@@ -588,6 +669,11 @@ async function shredSegment(
         new WriteConflictError(`${op}: contention shredding "${ref.segment}" — retry`),
     },
     async (record) => {
+      // A swap of this call that landed and came back as a conflict (a client's replay that met another writer's write
+      // over the tombstone, or a registry's conflict that follows its own write): the row shows it, before anything
+      // else is asked of the row.
+      const own = ownShred(record);
+      if (own !== null) return own;
       // A sweep retires only the row it judged expired: one purged or destroyed meanwhile is not its to claim, and one
       // whose policy changed is not expired any more.
       if (
@@ -614,30 +700,65 @@ async function shredSegment(
         return { ...base, destroyed: false, cryptoShredded: false, reason: 'cleartext' };
       }
       const unmarked = sweep === undefined ? withoutSweepMark(record.retention) : null;
-      const tombstone = await deps.registry.compareAndSwap(ref, record.token, {
-        status: 'destroyed',
-        // ← the crypto-shred: the current row's DEK wrappings are gone (earlier versions and backups of the row keep
-        // theirs)
-        wrappedDeks: undefined,
-        keyId: undefined,
-        // The current generation's cached count and metadata go with it: sealed, they cannot be opened without
-        // the wrappings; clear, they would outlive the segment on its tombstone.
-        summary: undefined,
-        // A tombstone holds nothing: a lease names a generation of a segment that now resolves none, and the ledger
-        // vouches for objects of a segment no read resolves, which the pointer staying put would otherwise keep.
-        knownGens: undefined,
-        leases: undefined,
-        // A sweep's mark, in this same write, so no other tombstone ever carries it: any other tombstone write removes
-        // one a restored or hand-edited row carried.
-        ...(sweep !== undefined
-          ? { retention: sweep.stamp(record.retention) }
-          : unmarked === null
-            ? {}
-            : { retention: unmarked }),
-      });
+      sentEncrypted = encrypted;
+      let tombstone: { readonly token: Token };
+      try {
+        tombstone = await deps.registry.compareAndSwap(
+          ref,
+          record.token,
+          tombstonePatch(record, sweep, unmarked),
+          tokens.options,
+        );
+      } catch (err) {
+        // A swap that got no answer may have landed, and what the caller is told, and what the audit trail records,
+        // has to follow what the row says. Without tokens (a registry that does not report them) nothing can be
+        // told, and the fault is thrown as it is.
+        if (!isTransientError(err) || tokens.sent === undefined) throw err;
+        const now = await readBack(() => deps.registry.get(ref), err, deps);
+        const landed = ownShred(now);
+        if (landed !== null) return landed;
+        // The row is as it was read: the swap did not land (or is still on its way, which the fence settles). A re-run
+        // is safe.
+        if (now !== null && now.token === record.token) throw err;
+        // Another writer moved the row on, so the swap can never land: decide again from the row as it is now.
+        const moved = new WriteConflictError(
+          `${op}: the row of "${ref.segment}" changed while its shred got no answer`,
+        );
+        moved.cause = err;
+        throw moved;
+      }
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it destroys no key (and does not emit `segment.erase`).
       return { ...base, destroyed: true, cryptoShredded: encrypted, token: tombstone.token };
     },
   );
+}
+
+/** The patch that turns a row into a tombstone: the one shred write. */
+function tombstonePatch(
+  record: RegistryRecord,
+  sweep: SweepDrop | undefined,
+  unmarked: RegistryRecord['retention'] | null,
+): RegistryPatch {
+  return {
+    status: 'destroyed',
+    // ← the crypto-shred: the current row's DEK wrappings are gone (earlier versions and backups of the row keep
+    // theirs)
+    wrappedDeks: undefined,
+    keyId: undefined,
+    // The current generation's cached count and metadata go with it: sealed, they cannot be opened without
+    // the wrappings; clear, they would outlive the segment on its tombstone.
+    summary: undefined,
+    // A tombstone holds nothing: a lease names a generation of a segment that now resolves none, and the ledger
+    // vouches for objects of a segment no read resolves, which the pointer staying put would otherwise keep.
+    knownGens: undefined,
+    leases: undefined,
+    // A sweep's mark, in this same write, so no other tombstone ever carries it: any other tombstone write removes
+    // one a restored or hand-edited row carried.
+    ...(sweep !== undefined
+      ? { retention: sweep.stamp(record.retention) }
+      : unmarked === null
+        ? {}
+        : { retention: unmarked }),
+  };
 }
