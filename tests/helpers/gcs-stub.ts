@@ -30,7 +30,9 @@ export interface UploadFault {
   readonly afterApplying?: boolean;
   /** Answer without applying the upload, and keep it for the test to apply later (`landHeld`): a request in flight. */
   readonly hold?: boolean;
-  /** Only uploads of a name this accepts. */
+  /** The operation it answers: `'upload'` unless it says `'delete'`. */
+  readonly op?: 'upload' | 'delete';
+  /** Only requests of a name this accepts. */
   readonly name?: (name: string) => boolean;
 }
 
@@ -177,8 +179,10 @@ export class StubGcsService {
             : 'metadata';
     this.sent.push({ op, name });
     let fault: UploadFault | undefined;
-    if (op === 'upload') {
-      const at = this.faults.findIndex((f) => f.name === undefined || f.name(name));
+    if (op === 'upload' || op === 'delete') {
+      const at = this.faults.findIndex(
+        (f) => (f.op ?? 'upload') === op && (f.name === undefined || f.name(name)),
+      );
       if (at !== -1) fault = this.faults.splice(at, 1)[0];
     }
     if (fault?.hold === true) {

@@ -52,7 +52,7 @@ import { gcOrphanGenerations } from './generation-gc';
 import { drainRegistry } from './registry-scan';
 import { dropSegmentFor } from './erasure';
 import { generationsOf } from './generation-list';
-import { readBack } from './settle';
+import { readBack, rowDeleteSettled } from './settle';
 import { sameIncarnation } from './token';
 import type { DropDeps, DropResult } from './erasure';
 import { MIN_EXPIRES_AT_MS, SWEEP_MARK, readRetentionPolicy } from './retention';
@@ -456,7 +456,7 @@ async function forgetDuePointer(
 ): Promise<void> {
   if (!canIndex(ref)) return;
   try {
-    await registry.delete(dueIndexRef(dueBucket(expiresAt), ref));
+    await rowDeleteSettled(registry, dueIndexRef(dueBucket(expiresAt), ref));
   } catch (err) {
     // See above: litter, not a wrong retirement. The caller is told, though: a delete the registry refuses is counted.
     onFault(err);
@@ -494,7 +494,7 @@ async function forgetFoundPointers(
 ): Promise<void> {
   for (const pointer of found) {
     try {
-      await registry.delete(pointer.ref, pointer.token);
+      await rowDeleteSettled(registry, pointer.ref, pointer.token);
     } catch (err) {
       // A lost race is the pointer changing under the delete, and is no fault; anything else is counted.
       onFault(err);
@@ -524,7 +524,7 @@ async function forgetPurgePointers(
     : [...found, { ref: filed, target: ref }];
   for (const pointer of all) {
     try {
-      await registry.delete(pointer.ref, pointer.token);
+      await rowDeleteSettled(registry, pointer.ref, pointer.token);
     } catch (err) {
       // See above: litter, not a wrong purge. A lost race is the pointer changing under the delete, and is no fault.
       onFault(err);
@@ -759,7 +759,7 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
     // reads, which carries that token; elsewhere it is tombstoned. Its pointers go only once it is gone: a
     // delete that threw, its outcome unknown, removes nothing more, and the next scan reads the row again.
     if (!dryRun) {
-      await deps.registry.delete(ref, rec.token);
+      await rowDeleteSettled(deps.registry, ref, rec.token, deps);
       tally.tombstonesPurged += 1;
       tally.purgeRun = 0;
       if (removesRows) {
@@ -918,7 +918,7 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
       // stamp itself only touches a `destroyed` row, so a name that was re-created meanwhile is left alone.
       const tombstone = await deps.registry.get(ref).catch(() => null);
       if (tombstone?.status === 'destroyed') {
-        const deleted = await deps.registry.delete(ref, tombstone.token).then(
+        const deleted = await rowDeleteSettled(deps.registry, ref, tombstone.token, deps).then(
           () => true,
           (err: unknown) => {
             tally.noteFault(err);
@@ -1090,7 +1090,7 @@ export async function retireExpired(
       attemptedLitter += 1;
       try {
         if ((await deps.registry.get(pointer.target)) !== null) continue;
-        await deps.registry.delete(pointer.ref, pointer.token);
+        await rowDeleteSettled(deps.registry, pointer.ref, pointer.token, deps);
       } catch (err) {
         // Left for a later scan: litter, not a wrong sweep. A delete the registry refuses is counted.
         tally.noteFault(err);

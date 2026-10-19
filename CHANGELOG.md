@@ -167,6 +167,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The retention sweep reports a purge or a pointer delete whose response was lost as the delete it was.** Before, a
+  purge that landed and lost its answer was `skipped` with `failed: ...` and counted in `purgeFaults`, and no later call
+  reported the purge; on Azure Blob, whose client resends a delete after a lost response, the resend met the row it had
+  already removed and the purge showed as `failed: contended`, the default outcome of any purge whose response is lost.
+  Three such reports in a row stopped purging for the rest of the call. An empty segment's row delete and the due-index
+  pointer deletes (a retirement's, a foreign tombstone's, the litter pass's and a purge's) were counted as faults the
+  same way. A delete that failed or met a conflict is now settled by reading the row: a row that is gone is a delete
+  that happened. A row still there stays a refusal or a lost race, as it was.
+
 - **`setRetention` and `clearRetention` whose write lands and loses its response are now settled by the write token,
   and remove the old due-index pointer.** Before, `clearRetention` answered `false` for an expiry it removed (or threw
   `TransientError` with the expiry already gone), `setRetention` ahead of the first load reported `createdRow: false`
