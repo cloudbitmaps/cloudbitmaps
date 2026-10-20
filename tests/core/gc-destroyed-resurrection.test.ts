@@ -36,15 +36,15 @@ async function generations(storage: IStorageDriver): Promise<number[]> {
 }
 
 /**
- * A storage driver whose `list()` runs `during` after yielding its first key — the window under test.
+ * A storage driver whose `list()` runs `during` after yielding its first key, then lists again and yields what the
+ * first listing had not — the window under test, as a paginated listing shows it: a later page sees an object that
+ * landed after the first.
  *
  * `yielded` records what the listing actually enumerated. Every test here races an object into the bucket
- * mid-listing and then asserts what GC did with it, which is only meaningful if the listing SAW it — and
- * whether it does is a property of the driver, not of the test: `MemoryStorageDriver.list` walks a live `Map`
- * iterator, so a key inserted mid-iteration is still yielded. Snapshot that iterator (a defensible change, and
- * arguably the more S3-like behaviour for a single page) and these tests would go green against code with no
- * fence at all. Asserting `yielded` keeps the precondition owned by the test instead of inherited from a driver
- * it does not control.
+ * mid-listing and then asserts what GC did with it, which is only meaningful if the listing SAW it. The memory
+ * driver's own listing is a snapshot of the keys when it began, so this wrapper does the second page itself.
+ * Asserting `yielded` keeps the precondition owned by the test instead of inherited from a driver it does not
+ * control.
  */
 function storageWithRaceDuringList(
   inner: MemoryStorageDriver,
@@ -55,14 +55,19 @@ function storageWithRaceDuringList(
     get(target, prop, rx) {
       if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
       return async function* (ref: SegmentRef): AsyncIterable<GenKey> {
-        let fired = false;
+        let first: GenKey | undefined;
         for await (const key of inner.list(ref)) {
+          first = key;
+          break;
+        }
+        if (first === undefined) return;
+        yielded.push(first.generation);
+        yield first;
+        await during();
+        for await (const key of inner.list(ref)) {
+          if (key.generation === first.generation) continue;
           yielded.push(key.generation);
           yield key;
-          if (!fired) {
-            fired = true;
-            await during();
-          }
         }
       };
     },
@@ -176,7 +181,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const row = (await registry.get(SEG))!;
     expect(row.status).toBe('active');
     expect(row.currentGen).toBe(0); // the pointer regressed — a different segment wearing the same name
-    expect(yielded).toContain(0); // the listing really did enumerate the new incarnation's object
+    expect(yielded).toContain(0); // the listing enumerated generation 0, the number the new incarnation's object holds
     expect(deleted).not.toContain(0);
     expect(await generations(storage)).toContain(0);
   });

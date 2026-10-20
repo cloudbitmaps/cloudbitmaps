@@ -167,15 +167,16 @@ describe('the tree: every restatement of a guarantee ties the claim it restates'
     ])
       expect(result.scope, page).not.toContain(page);
     expect(of('scope'), ties.report(of('scope'))).toEqual([]);
-    expect(result.page.sections.map((s) => s.slug)).toHaveLength(9);
+    expect(result.page.sections.map((s) => s.slug)).toHaveLength(10);
     expect(result.regions.map((r) => r.section).sort()).toEqual(
       result.page.sections.map((s) => s.slug).sort(),
     );
-    expect(result.page.claims.size).toBe(68);
-    // A key names its claim, never a heading: the three section intros carry keys of their own.
+    expect(result.page.claims.size).toBe(75);
+    // A key names its claim, never a heading: the section intros carry keys of their own.
     for (const key of [
       'refusal-is-reported-not-thrown',
       'a-load-makes-two-writes',
+      'settle-by-read-back',
       'every-delete-reads-the-row',
     ])
       expect(result.page.claims.has(key), key).toBe(true);
@@ -286,6 +287,11 @@ function summaries(omit: readonly string[] = []): string {
       'when-a-write-is-throttled-or-gets-no-answer',
       'A load makes two writes.',
     ],
+    [
+      'A write that gets no answer',
+      'a-write-that-gets-no-answer',
+      'A write that gets no answer is read back.',
+    ],
     ['How it stays correct', 'how-a-load-stays-correct', "Generation numbering is the load's."],
     [
       'A rollback that races a collection',
@@ -309,6 +315,7 @@ function summaries(omit: readonly string[] = []): string {
   const claimOf: Record<string, string> = {
     'when-a-load-is-refused': 'refusal-is-reported-not-thrown',
     'when-a-write-is-throttled-or-gets-no-answer': 'a-load-makes-two-writes',
+    'a-write-that-gets-no-answer': 'settle-by-read-back',
     'a-rollback-that-races-a-collection': 'every-delete-reads-the-row',
     'how-a-load-stays-correct': 'numbering-is-the-loads',
     'how-a-pin-stays-correct': 'pin-safe-across-re-creation',
@@ -731,7 +738,7 @@ describe('a section intro is keyed like every claim, and a link to its heading i
   it('R4: under each summary heading of the tree, a block that ties no claim fails', () => {
     const page = 'docs/guide/fixture.md';
     const regions = TREE.regions;
-    expect(regions).toHaveLength(9);
+    expect(regions).toHaveLength(10);
     for (const r of regions) {
       const slug = r.section ?? '';
       const untied = `## ${r.heading}\n\nA plain sentence, in [the section](correctness.md#${slug}).\n`;

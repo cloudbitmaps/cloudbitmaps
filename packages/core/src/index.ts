@@ -106,8 +106,8 @@ export { decodeSerialized } from './core/load-input';
 // and the one no automatic path performs — forward-only is right for a writer and wrong for an operator.
 export { listGenerations, rollbackSegment } from './core/rollback';
 export type { GenerationListDeps, GenerationEntry, RollbackResult } from './core/rollback';
-export { eraseIdFromSegment } from './core/erase-id';
-export type { EraseIdDeps, EraseIdResult } from './core/erase-id';
+export { eraseIdFromSegment, findIdUnderTombstone } from './core/erase-id';
+export type { EraseIdDeps, EraseIdResult, SearchDeps } from './core/erase-id';
 // The bitmap-codec seam — the engine is codec-agnostic behind these; roaring is the flagship.
 export type { CodecInterface, CodecBitmap, EncodedChunk } from './core/codec';
 export type { Clock, Entropy, Rng } from './core/determinism';

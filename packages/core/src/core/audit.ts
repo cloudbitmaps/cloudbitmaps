@@ -168,6 +168,28 @@ export type AuditEvent =
     }
   | {
       /**
+       * A segment was tombstoned **without a key shred**: `destroySegment` or `eraseNamespace` with `allowCleartext`
+       * turned the row of a segment that holds no wrapped key into a `destroyed` tombstone. No read resolves the
+       * segment any more, but nothing was deleted and no key was destroyed, so its objects stay readable in the
+       * bucket, in any backup and through any copy of the row from before the tombstone.
+       *
+       * Deliberately not {@link AuditEvent} `segment.erase`, which attests a key shred, nor `segment.dispose`, which
+       * attests that a drop swept the storage: this one is the record that the row was tombstoned, which is what a
+       * registry restore undoes and what the restore procedure looks for. `objectsReadable` is always `true`; it
+       * is a field so a consumer that forwards events cannot read this one as an erasure receipt. Emitted once per
+       * tombstone this call wrote, not for the idempotent re-run, and not for a segment that was encrypted
+       * (`segment.erase`), or dropped (`segment.dispose`).
+       */
+      readonly kind: 'segment.tombstone';
+      readonly namespace?: string;
+      readonly segment: string;
+      /** The incarnation of the row the call turned into a tombstone. */
+      readonly incarnation?: string;
+      /** Always `true`: the segment's objects were not deleted and no key was destroyed. */
+      readonly objectsReadable: true;
+    }
+  | {
+      /**
        * A segment was **disposed of** — tombstoned and its storage reclaimed (its Storage generations deleted) by
        * `dropSegment`, *without* a key shred.
        *
