@@ -67,7 +67,9 @@ describe('eraseSubject charges the generations it opens', () => {
     const short = await store.eraseSubject(ID, { namespace: NS, budget: { maxRequests: 4 } });
     expect(short.erasedFrom).toHaveLength(1);
     expect(short.erasedFrom[0]).toMatchObject({ segment: 'audience', erased: false });
-    expect(short.erasedFrom[0]!.note).toMatch(/^error: eraseSubject would fan out to \d+ units/);
+    expect(short.erasedFrom[0]!.note).toMatch(
+      /^error: BudgetExceededError: eraseSubject would fan out to \d+ units/,
+    );
     expect(await present(backend, 'audience')).toEqual([0, 1, 2, 3, 4]); // nothing was touched
   });
 
@@ -218,7 +220,9 @@ describe('eraseSubject charges the generations it opens', () => {
         budget: { maxRequests: 2 },
       });
       expect(refused.erasedFrom[0]).toMatchObject({ erased: false });
-      expect(refused.erasedFrom[0]!.note).toMatch(/^error: eraseSubject would fan out/);
+      expect(refused.erasedFrom[0]!.note).toMatch(
+        /^error: BudgetExceededError: eraseSubject would fan out/,
+      );
       expect(await present(short, 'audience')).toEqual(before);
 
       const backend = await holderBesideClean(shape);

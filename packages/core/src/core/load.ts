@@ -353,7 +353,8 @@ export async function judgeLoad(
   const row = await deps.registry.get(ref);
   if (row?.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+      `segment "${ref.segment}" is destroyed — refusing to write: no generation resolves through a destroyed row; ` +
+        `use a new segment`,
     );
   }
   const cleartext = row?.wrappedDeks === undefined || row.wrappedDeks.length === 0;
@@ -408,8 +409,9 @@ export type LoadRefusal =
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
    * deleted, or a row appeared where the load found none. Once another write has changed the row, the object stays in
    * the bucket, still billed, until a later load's collection deletes it or the segment is dropped, because its
-   * generation number may by then name another writer's object; until it goes, a rollback onto it needs `allowUnknown`, as onto any generation the row does not know. Once the row is
-   * `destroyed` (dropped or crypto-shredded), the object is deleted; once the row is gone, so is an object whose footer
+   * generation number may by then name another writer's object; until it goes, a rollback onto it needs
+   * `allowUnknown`, as onto any generation the row does not know. Once the row is `destroyed` (crypto-shredded,
+   * destroyed in the clear or dropped), the object is deleted; once the row is gone, so is an object whose footer
    * matches what this load wrote (another load's object of the same ids is not a match: the footer carries each write's
    * own identity), and so is a cleartext one under a row with key material.
    */

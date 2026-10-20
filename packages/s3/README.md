@@ -30,6 +30,7 @@ Install the same version of every `@cloudbitmaps/*` package: they release togeth
 
 ## Use
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';

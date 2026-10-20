@@ -21,18 +21,6 @@
     },
     {
       "file": "PRIVACY.md",
-      "claim": "every-holder-goes",
-      "sentence": "8afc07e8bb8d",
-      "starts": "So is every other generation still holding the"
-    },
-    {
-      "file": "PRIVACY.md",
-      "claim": "every-holder-goes",
-      "sentence": "ee5acbc25bfc",
-      "starts": "(When the current generation holds the id, the"
-    },
-    {
-      "file": "PRIVACY.md",
       "claim": "erasure-results",
       "sentence": "9ffbe81757c6",
       "starts": "Before it says erased: true the call lists"
@@ -110,12 +98,6 @@
       "starts": "A removed row stays recoverable wherever the storage"
     },
     {
-      "file": "PRIVACY.md",
-      "claim": "tombstones-purged-narrowly",
-      "sentence": "1559552aa000",
-      "starts": "A tombstone a hand-run dropSegment or a crypto-shred"
-    },
-    {
       "file": "docs/ROADMAP.md",
       "claim": "refusal-is-reported-not-thrown",
       "sentence": "bb4bce1b3003",
@@ -153,12 +135,6 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "rollback-settles-its-swap",
-      "sentence": "cb22daf058a8",
-      "starts": "Refuses a target the row's knownGens does not"
-    },
-    {
-      "file": "docs/ROADMAP.md",
       "claim": "which-fence",
       "sentence": "99431312388c",
       "starts": "A load that finds a row fences on"
@@ -186,12 +162,6 @@
       "claim": "numbering-is-the-loads",
       "sentence": "d3d07e5112cb",
       "starts": "The row is at schema 5: an optional"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "which-fence",
-      "sentence": "7ce7d85747d2",
-      "starts": "settling a rollback's undo by the write token:"
     },
     {
       "file": "docs/ROADMAP.md",
@@ -351,12 +321,6 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "rollback-settles-its-swap",
-      "sentence": "bce4bbb81d16",
-      "starts": "A swap that met a conflict or got"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
       "claim": "erasure-results",
       "sentence": "ac873065eb0c",
       "starts": "segment.collect is what eraseSubject emits when it deletes"
@@ -453,18 +417,6 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "object-write-resent",
-      "sentence": "3845ce3d43e7",
-      "starts": "From a write, it is a fault the"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "row-write-settled",
-      "sentence": "3845ce3d43e7",
-      "starts": "From a write, it is a fault the"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
       "claim": "erasure-number-taken-again",
       "sentence": "cf95e8f0fad0",
       "starts": "The storage half's DeleteObject under If-Match, which with"
@@ -540,12 +492,6 @@
       "claim": "erasure-results",
       "sentence": "d7f17a08e582",
       "starts": "An erasure entry that says erased: true means"
-    },
-    {
-      "file": "docs/guide/disaster-recovery.md",
-      "claim": "every-holder-goes",
-      "sentence": "eb9f5d8b1598",
-      "starts": "If the generation the pointer names does not"
     },
     {
       "file": "docs/guide/disaster-recovery.md",
@@ -630,12 +576,6 @@
       "claim": "superseded-over-own-generation",
       "sentence": "1402f77833e4",
       "starts": "The same can happen to a rewrite whose"
-    },
-    {
-      "file": "docs/guide/erasure.md",
-      "claim": "row-write-settled",
-      "sentence": "b04d197c9047",
-      "starts": "The storage failed under it, or a registry"
     },
     {
       "file": "docs/guide/erasure.md",
@@ -818,12 +758,6 @@
       "starts": "Math.max(1.5, 1 + 1000 / before) : 0"
     },
     {
-      "file": "docs/guide/observability.md",
-      "claim": "erasure-results",
-      "sentence": "0d8ccfcdfdd0",
-      "starts": "an erasure (eraseSubject) found the id only outside"
-    },
-    {
       "file": "docs/guide/production.md",
       "claim": "erasure-is-a-rewrite",
       "sentence": "e1355b5c2dfd",
@@ -840,18 +774,6 @@
       "claim": "sdk-retry",
       "sentence": "572bea27e97f",
       "starts": "Reads retry by themselves; a write is retried"
-    },
-    {
-      "file": "docs/guide/production.md",
-      "claim": "object-write-resent",
-      "sentence": "bd1b064493af",
-      "starts": "Only where it is safe, and not by"
-    },
-    {
-      "file": "docs/guide/production.md",
-      "claim": "row-write-settled",
-      "sentence": "bd1b064493af",
-      "starts": "Only where it is safe, and not by"
     },
     {
       "file": "docs/guide/production.md",
@@ -894,12 +816,6 @@
       "claim": "drop-registry-first",
       "sentence": "6956d6e54192",
       "starts": "dropSegment writes the tombstone before the storage sweep,"
-    },
-    {
-      "file": "docs/guide/retention.md",
-      "claim": "tombstones-purged-narrowly",
-      "sentence": "d3a5cb1468d6",
-      "starts": "A tombstone a hand-run dropSegment wrote is never"
     },
     {
       "file": "packages/azure-blob/README.md",

@@ -34,6 +34,7 @@ Each request count is one the engine is tested to make.
 **Planning** (pure, no instance needed — sizing, sales, what-if):
 
 <!-- SIZING:GUIDE_EXAMPLE:START -->
+<!-- typecheck -->
 ```ts
 import { estimateCost } from '@cloudbitmaps/tools';
 
@@ -61,6 +62,7 @@ Both functions refuse input they cannot price, with a `ValidationError`: a key t
 **Grounded** (a segment's real size, which `stat()` reports from the registry row's summary, which records the size of
 the generation's object, or from its `.crbm` footer when the row has no summary to use — exact, no payload reads):
 
+<!-- typecheck: store -->
 ```ts
 import { groundedReport } from '@cloudbitmaps/tools';
 

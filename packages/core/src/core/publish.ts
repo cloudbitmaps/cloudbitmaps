@@ -243,9 +243,10 @@ interface PublishOptions {
  * after the immutable object is durable (write-then-publish).
  *
  * **Throws** rather than returning, in two cases, because each would otherwise create a state no reader can
- * recover from: a `destroyed` (crypto-shredded) row, where advancing the pointer would name an object encrypted
- * under a shredded key; and an advance carrying **new** `wrappedDeks`, which would either strand that key or make
- * the row advertise encryption over cleartext generations. Contention that never clears throws
+ * recover from: a `destroyed` row, where advancing the pointer would name an object no read resolves (one encrypted
+ * under a shredded key, after a crypto-shred); and an advance carrying **new** `wrappedDeks`, which would either
+ * strand
+ * that key or make the row advertise encryption over cleartext generations. Contention that never clears throws
  * {@link WriteConflictError} after the retries.
  *
  * **`expectFrom` turns forward-only into read-modify-write.** Forward-only is the right rule for a writer whose
@@ -469,8 +470,8 @@ export async function publishGenerationKept(
         // record was re-read moments ago inside the retry loop, so the check and the CAS that follows it see the
         // same state. This is the publish step's half of coupling the write path to destruction.
         throw new ValidationError(
-          `segment "${key.segment}" was destroyed (crypto-shredded) while generation ${key.generation} was ` +
-            `being written — refusing to publish it; the written object is unreadable. Use a new segment.`,
+          `segment "${key.segment}" was destroyed while generation ${key.generation} was being written — ` +
+            `refusing to publish it: no generation resolves through a destroyed row. Use a new segment.`,
         );
       } else if (record.currentGen === null) {
         // The row exists with no Storage generation yet (a retention policy recorded ahead of the first load). There

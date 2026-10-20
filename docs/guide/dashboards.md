@@ -36,6 +36,7 @@ reports the same `op` event and the same `storage.get` per range request, and em
 
 Map the handful you chart to counters/histograms:
 
+<!-- typecheck-skip: a fragment: the page leaves `storage` to the reader; imports `@opentelemetry/api`, which this repository does not install -->
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
@@ -104,6 +105,7 @@ gauge. Because the library owns the objects, `stat()` reports each segment's **r
 `groundedReport()` from `@cloudbitmaps/tools` prices it. Each sample of a segment the store has not opened is one registry read, since the
 row's summary records the object's size; a row with no summary it can use adds a tail read of the object, for two requests in all on S3 and GCS and three on Azure Blob.
 
+<!-- typecheck-skip: imports `@opentelemetry/api`, which this repository does not install -->
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 import { groundedReport } from '@cloudbitmaps/tools';
@@ -155,6 +157,7 @@ Audit events are low-volume, high-value, and must be **durable and tamper-eviden
 append-only store (CloudWatch Logs, an S3 object-lock bucket, your SIEM), never to the same mutable place as
 metrics. The sink adds the timestamp and actor (the library keeps its core free of ambient time/identity):
 
+<!-- typecheck-skip: a fragment: the page leaves `auditLog`, `ids`, `registry`, `subjectId` to the reader -->
 ```ts
 import { destroySegment } from '@cloudbitmaps/roaring';
 import type { IAuditSink } from '@cloudbitmaps/roaring';
@@ -183,7 +186,7 @@ await store.retireExpired({ audit }); // one segment.dispose per retirement
 await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'users', audit }); // crypto-shred
 ```
 
-**What lands in the log** — eight kinds, each `segment.*` one naming the segment's `incarnation` (the id of its
+**What lands in the log** — nine kinds, each `segment.*` one naming the segment's `incarnation` (the id of its
 registry row, kept by every write of it and new when the name is created again, so the records of two lives of one
 name are told apart). `segment.publish` (a loaded generation became current),
 `segment.rollback` (an operator moved the pointer to a generation they named: backwards, or forward onto a generation
@@ -207,7 +210,7 @@ accompanies it), `segment.collect` (a subject erasure that rewrote nothing and d
 generations holding the id, when it found the id only outside the current generation, or, with no `fromGeneration`, only
 objects no read of the segment can open, which it cannot search and deletes whatever id it erases), and the erasure
 trail: `segment.erase` fires per segment on a **genuine crypto-shred** (not a
-cleartext tombstone, whose bytes stay readable), `segment.dispose` fires per `dropSegment` that tombstones a segment
+cleartext tombstone, whose bytes stay readable: that one is a `segment.tombstone`), `segment.dispose` fires per `dropSegment` that tombstones a segment
 or finds its tombstone, and
 `eraseNamespace` adds one `namespace.erase` carrying `segmentsShredded` (the honest count actually destroyed,
 which may be 0).
@@ -236,14 +239,15 @@ which may be 0).
   failed call's ledger entry is the only record.
 - A `segment.publish` is not a receipt for anything: it says a set was loaded, not what was removed from it.
 
-**`segment.erase`, `segment.rewrite`, `segment.collect` and `segment.dispose` are deliberately different receipts,
-and conflating them would make your dashboard over-attest.**
+**`segment.erase`, `segment.rewrite`, `segment.collect` and `segment.dispose` are deliberately different receipts, and `segment.tombstone` is none of them: it records a tombstone that destroyed no key and deleted nothing.
+Conflating them would make your dashboard over-attest.**
 
 | Event | What it proves | What it does NOT prove |
 |---|---|---|
 | `segment.erase` | The wrapped DEK(s) are gone from the segment's **current** registry row, so nothing that opens the segment through that row from then on can decrypt its bytes — in the bucket, or in any backup, replica, PITR snapshot or WORM copy of its objects. The one erasure event whose claim reaches immutable copies of the objects | **Not** that no copy of the wrapped key survives. A shred is one compare-and-swap on the row and destroys no KEK: a noncurrent version, a backup or a PITR copy of the registry row still holds the wrapped DEK(s), which decrypt the segment with a KEK that wrapped them, and a registry restore to a point before the event makes the segment readable again. The destruction is complete once no retained copy of the row holds them, or once every KEK that wrapped them is destroyed |
 | `segment.rewrite` | A generation without the erased id is now current, derived from `fromGeneration`. With the ledger entry it came with, the object that held the bit is gone from the bucket | **Not** that every copy is gone. A noncurrent object version, a cross-region replica or a backup can still hold `fromGeneration` until its own lifecycle removes it — for a claim that reaches those, the segment has to be encrypted and the receipt is `segment.erase`, on the terms in its row |
 | `segment.collect` | No generation in the bucket holds the erased id, and nothing was rewritten. With a `fromGeneration`, the id was only in generations no reader resolves, and the call deleted what it found holding it (`collected`, which is empty when another collection got there first). With none, the call found the id in nothing it could search, and `collected` lists the objects no read of the segment can open that it deleted | The same as `segment.rewrite`: **not** that a noncurrent object version, a replica or a backup of a deleted generation is gone. With no `fromGeneration`, **not** that the segment held the subject at all: the ledger has no entry for it |
+| `segment.tombstone` | The segment's row was turned into a `destroyed` tombstone, by `destroySegment` or `eraseNamespace` with `allowCleartext`, and no read resolves the segment any more. It is the record of the tombstone, which a registry restore undoes | **Not** an erasure: no key was destroyed and no object was deleted, so every copy of the bytes stays readable (`objectsReadable: true`). Never count it as a destruction claim |
 | `segment.dispose` | The segment was tombstoned and its storage reclaimed (`generationsDeleted` Storage generations). Emitted by `dropSegment` — including **every retirement a `retireExpired` sweep performs**, since the sweep forwards its `audit` sink through. A retention-driven fleet will therefore emit these in batches on whatever schedule you gave the sweep | **Not** that the bytes are unreadable. A noncurrent object version, a cross-region replica or a PITR snapshot can still hold the cleartext. Also not that reclamation is *complete* — check `DropResult.generationsRemaining` |
 
 > **One gap worth knowing:** when a sweep deletes a retired segment's tombstone **row**, **no audit event is
@@ -259,7 +263,8 @@ A **cleartext** `dropSegment` emits only `segment.dispose`. An **encrypted** one
 things genuinely happened. So: count `segment.erase` for an Art. 17 destruction claim (on the terms in its row
 above), `segment.rewrite`, or a `segment.collect` that names a `fromGeneration`, with its ledger entry, for a
 per-subject
-erasure, and `segment.dispose` for a retention/lifecycle trail. Never substitute one for another.
+erasure, and `segment.dispose` for a retention/lifecycle trail. `segment.tombstone` is for neither: it is the list
+[a restore re-applies](disaster-recovery.md#restore-procedure) (a cleartext destroy). Never substitute one for another.
 
 > **KEK rotation is not in this stream** — rotating the key-encryption key is operator-side keystore
 > reconfiguration (no library call to hook). Audit it at your KMS/keystore layer. See the audit section of

@@ -174,7 +174,9 @@ describe('tenancy guard (global-scope admin scans)', () => {
     const w = await world();
     await w.seed('a', [1]);
     // No `namespace` and no `allNamespaces` ack ⇒ a fleet-wide sweep is refused fail-fast.
+    // @ts-expect-error a call with no scope is refused by the type as well as at run time
     await expect(w.reader().subjectReport(1)).rejects.toBeInstanceOf(ValidationError);
+    // @ts-expect-error a call with no scope is refused by the type as well as at run time
     await expect(w.reader().eraseSubject(1)).rejects.toBeInstanceOf(ValidationError);
     expect(await members(w.reader(), 'a')).toEqual([1]); // and nothing was erased
   });
@@ -188,6 +190,87 @@ describe('tenancy guard (global-scope admin scans)', () => {
     await expect(w.reader().subjectReport(1, { allNamespaces: true })).resolves.toMatchObject({
       scannedSegments: 1,
     });
+  });
+});
+
+describe('the scope of subjectReport and eraseSubject', () => {
+  it('refuses a namespace together with { allNamespaces: true } before it lists the registry, and erases nothing', async () => {
+    const w = await world();
+    await w.seed('a', [1], 'eu');
+    await w.seed('c', [1], 'us');
+    const list = vi.spyOn(w.registry, 'list');
+    const both = { namespace: 'eu', allNamespaces: true };
+    // The type refuses the pair too; the cast is what a plain JS caller, or a spread of two configs, sends.
+    const store = w.reader();
+    await expect(store.eraseSubject(1, both as never)).rejects.toThrow(
+      /eraseSubject: pass a namespace or \{ allNamespaces: true \}, not both/,
+    );
+    await expect(store.subjectReport(1, both as never)).rejects.toThrow(
+      /subjectReport: pass a namespace or \{ allNamespaces: true \}, not both/,
+    );
+    await expect(store.eraseSubject(1, both as never)).rejects.toBeInstanceOf(ValidationError);
+    expect(list).not.toHaveBeenCalled();
+    expect(await members(w.reader(), 'a', 'eu')).toEqual([1]);
+    expect(await members(w.reader(), 'c', 'us')).toEqual([1]);
+  });
+
+  it('still takes { namespace, allNamespaces: false } as the one namespace', async () => {
+    const w = await world();
+    await w.seed('a', [1], 'eu');
+    await w.seed('c', [1], 'us');
+    const res = await w.reader().eraseSubject(1, { namespace: 'eu', allNamespaces: false });
+    expect(res.erasedFrom.map((e) => e.namespace)).toEqual(['eu']);
+    expect(await members(w.reader(), 'c', 'us')).toEqual([1]);
+  });
+
+  it('reaches a segment loaded with no namespace only under allNamespaces: the label _default scans a namespace of that name', async () => {
+    const w = await world();
+    await w.load({ segment: 'bare' }, [1, 2]);
+    const store = w.reader();
+    expect(await store.subjectReport(1, { namespace: '_default' })).toMatchObject({
+      segments: [],
+      scannedSegments: 0,
+    });
+    const all = await store.subjectReport(1, { allNamespaces: true });
+    expect(all.segments).toEqual([{ segment: 'bare', namespace: undefined }]);
+    const res = await store.eraseSubject(1, { namespace: '_default' });
+    expect(res).toMatchObject({ erasedFrom: [], scannedSegments: 0 });
+    expect(await collect(w.reader().segment('bare').iterate())).toEqual([1, 2]);
+  });
+});
+
+describe('a segment the call cannot search', () => {
+  it('is an error entry whatever id is erased, on a store with no keystore, named by its error class', async () => {
+    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
+    const w = await world(keystore);
+    await w.seed('enc', [1, 2]);
+    const bare = new CloudRoaring({ storage: w.backend, retry: false });
+    const res = await bare.eraseSubject(99, { namespace: NS }); // an id in no segment
+    expect(res.erasedFrom).toHaveLength(1);
+    expect(res.erasedFrom[0]).toMatchObject({ segment: 'enc', erased: false });
+    expect(res.erasedFrom[0]!.note).toMatch(/^error: KeyUnavailableError: /);
+    expect(res.erasedFrom[0]!.note).toMatch(/encryption\.keystore/);
+    expect(res.erasedFrom[0]!.note).not.toMatch(/eraseIdFromSegment/);
+    await expect(bare.subjectReport(1, { namespace: NS })).rejects.toBeInstanceOf(
+      KeyUnavailableError,
+    );
+  });
+
+  it('is an error entry whatever id is erased, for a cleartext segment on a store that requires encryption', async () => {
+    const w = await world();
+    await w.seed('plain', [1, 2]);
+    const strict = new CloudRoaring({
+      storage: w.backend,
+      retry: false,
+      encryption: { required: true },
+    });
+    const res = await strict.eraseSubject(99, { namespace: NS });
+    expect(res.erasedFrom).toHaveLength(1);
+    expect(res.erasedFrom[0]).toMatchObject({ segment: 'plain', erased: false });
+    expect(res.erasedFrom[0]!.note).toMatch(/^error: KeyUnavailableError: requireEncryption/);
+    await expect(strict.subjectReport(1, { namespace: NS })).rejects.toBeInstanceOf(
+      KeyUnavailableError,
+    );
   });
 });
 
@@ -417,7 +500,7 @@ describe('eraseSubject', () => {
       segment: 'poison',
       namespace: NS,
       erased: false,
-      note: 'error: poison storage read',
+      note: 'error: Error: poison storage read',
     });
     // …and it still holds the id, which is what `erased: false` promises.
     expect(await members(w.reader(), 'poison')).toEqual([1, 2]);
@@ -442,7 +525,7 @@ describe('eraseSubject', () => {
     expect(res.erasedFrom).toHaveLength(2); // both member segments recorded, not lost to the first throw
     for (const e of res.erasedFrom) {
       expect(e.erased).toBe(false);
-      expect(e.note).toBe('error: injected storage-write fault');
+      expect(e.note).toBe('error: TransientError: injected storage-write fault');
       expect(e.generation).toBeUndefined();
     }
     // The pointer never moved, so a fresh reader still sees the id — a failed erasure is not a partial one.
@@ -485,7 +568,7 @@ describe('eraseSubject', () => {
 
     expect(res.erasedFrom).toHaveLength(1);
     expect(res.erasedFrom[0]).toMatchObject({ segment: 'plain', erased: false });
-    expect(res.erasedFrom[0]!.note).toMatch(/^error: requireEncryption/);
+    expect(res.erasedFrom[0]!.note).toMatch(/^error: KeyUnavailableError: requireEncryption/);
     expect(await members(w.reader(), 'plain')).toEqual([1, 2]);
     expect(await generations(w.storage, { namespace: NS, segment: 'plain' })).toEqual([0]);
   });
@@ -536,6 +619,7 @@ describe('lifecycle helpers require a backend', () => {
     await expect(store.eraseSubject(1, { allNamespaces: true })).rejects.toThrow(
       /eraseSubject needs the store built with a storage backend/,
     );
+    // @ts-expect-error a call with no scope is refused by the type as well as at run time
     await expect(store.subjectReport(1)).rejects.toThrow(/subjectReport.*registry/);
   });
 
@@ -544,6 +628,7 @@ describe('lifecycle helpers require a backend', () => {
     await expect(store.eraseSubject(1, { allNamespaces: true })).rejects.toThrow(
       /eraseSubject.*registry/,
     );
+    // @ts-expect-error a call with no scope is refused by the type as well as at run time
     await expect(store.subjectReport(1)).rejects.toBeInstanceOf(UnsupportedError);
   });
 });

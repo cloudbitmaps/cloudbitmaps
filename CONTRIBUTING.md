@@ -70,11 +70,12 @@ Every change must pass these locally, and CI runs each of them on every pull req
   with `constructor();` when its chain declares none, and a private constructor is recorded as declared, so declaring
   one of another shape, a private one included, reads as a change. An empty allowlist is the normal state. A package
   can list an entry in `cloudbitmaps.internalEntries` in its `package.json`:
-  that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry). It is not in `surface.json`,
+  that entry is outside the stability promise (today, `@cloudbitmaps/core`'s main entry and
+  `@cloudbitmaps/core/node`). It is not in `surface.json`,
   a type only it exported is recorded as `(referenced)` when a public signature names it, and its own lines are in
   `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
   internal is itself a change the gate asks for: a row `{"entry": "<specifier> (internal)", "reason": …}`. Because
-  all six packages publish at one version and pin each other exactly (`workspace:*`), **core's main entry may change
+  all six packages publish at one version and pin each other exactly (`workspace:*`), **core's main entry and `/node` may change
   freely between releases**: each package resolves the exact core it was built with, so a flavor never meets an internal entry other than its own, and the release reviewer still reads the
   `api-surface/internal.json` diff. Its known limits, the ones the
   [api-surface README](api-surface/README.md) lists:
@@ -139,7 +140,7 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 
 | Path | Package | Holds |
 |---|---|---|
-| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers, the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
+| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers (exported from `@cloudbitmaps/core/node`, the internal subpath for what needs a Node builtin), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit`, and from core's main entry the S3 and GCS drivers take only the types `Clock` and `Rng`, type-only imports the build erases — never a flavor, never a sibling |
 | `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
@@ -150,17 +151,19 @@ A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the 
 (`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both, and is
 installed directly only to name a driver port's type from `@cloudbitmaps/core/driver-kit`
 ([the storage interfaces](docs/guide/api-reference.md#the-storage-interfaces-used-to-type-storage--registry)). `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
-core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
-entry outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
+core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built entry
+(every `exports` entry) outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
 core's but its main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a
 cloud SDK or a node builtin. `pnpm lint:arch` proves each of those lint rules fires.
 
 `core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core` (a dynamic `import()` is refused there
 whatever its source), and
 on the `fetch` and `crypto` globals there, and on the global object that would reach them (`globalThis`, `self`,
-`window`, `global`) and on `eval` and the `Function` constructor, so the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
+`window`, `global`) and on `eval` and the `Function` constructor, so the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). `pnpm smoke` fails if a built entry of core other than `/node`, or
+`@cloudbitmaps/tools`, reaches a `node:*` specifier or does not load in a context without Node's builtins. Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
 driver ports — which is what makes that enforceable rather than aspirational. **Anything needing a builtin belongs
-in a driver** — either one of the driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.
+in a driver** — either one of the driver packages, or `packages/core/src/drivers/` where the SDK-free memory and
+local-filesystem drivers live; a driver in core is exported from `@cloudbitmaps/core/node`, never from the main entry.
 
 ## Adding a storage driver package
 

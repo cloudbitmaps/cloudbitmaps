@@ -997,7 +997,8 @@ describe.each(registries)('the known-generations ledger against its model, over 
             Math.max(3, Math.round(runs * reg.scale)) * Number(process.env.PROP_RUNS_FACTOR ?? 1),
           // Seeded so the coverage floors below are deterministic: the same histories on every pull-request run. Set
           // PROP_SEED to explore other ones. A full-strength run draws a random seed unless PROP_SEED is set, and does
-          // not assert the floors (the model check still runs, and fast-check prints the seed of a failure).
+          // not assert the floors (the model check still runs). The test prints its seed before the first run, and a
+          // property that overruns 0.8 of the test's timeout fails naming it.
           ...(FULL_STRENGTH && process.env.PROP_SEED === undefined
             ? {}
             : { seed: Number(process.env.PROP_SEED ?? 1) }),

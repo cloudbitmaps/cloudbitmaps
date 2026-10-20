@@ -28,6 +28,7 @@ native addon.
 
 Price segments you describe, under the workload you expect:
 
+<!-- typecheck -->
 ```ts
 import { estimateCost } from '@cloudbitmaps/tools';
 
@@ -54,6 +55,7 @@ Both functions refuse input they cannot price, with a `ValidationError`: a key t
 Price a store you run, from what it really holds. A segment handle's `stat()` reports `sizeBytes`, the bytes of its
 current generation's object, read from the object's footer and index with no payload read:
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';
