@@ -36,7 +36,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -52,7 +53,7 @@
     "build": "node ../../scripts/build.mjs"
   },
   "dependencies": {
-    "@cloudbitmaps/core": "workspace:^",
+    "@cloudbitmaps/core": "workspace:*",
     "@google-cloud/storage": "^7 || ^8"
   },
   "devDependencies": {

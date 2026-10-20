@@ -14,6 +14,8 @@
  * randomness of its own.
  */
 import { requireInteger } from './check';
+import type { Rng } from './determinism';
+import { deleteSettled } from './settle';
 import {
   IntegrityError,
   NotFoundError,
@@ -35,12 +37,27 @@ import type {
 } from './ports';
 import { type Incarnation, sameIncarnation } from './token';
 
+/** Delete one generation's object, settling a delete that got no answer by reading the object ({@link deleteSettled}). */
+function deleteGeneration(
+  deps: GenerationDeps,
+  ref: SegmentRef,
+  generation: number,
+): Promise<void> {
+  const key = { namespace: ref.namespace, segment: ref.segment, generation };
+  return deleteSettled(deps.storage, key, undefined, undefined, {
+    clock: deps.clock,
+    rng: deps.rng,
+  });
+}
+
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
 interface GenerationDeps {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /** What a delete loop waits on before it reads the row again ({@link watchDeletes}). Absent, it does not wait. */
   readonly clock?: { readonly sleep?: (ms: number) => Promise<void> };
+  /** Spreads the waits of a delete's read-back ({@link deleteSettled}). Absent, each wait is its whole bound. */
+  readonly rng?: Rng;
 }
 
 /**
@@ -684,7 +701,7 @@ export async function listingPass(
       leasedSpared.add(generation);
       continue;
     }
-    await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
+    await deleteGeneration(deps, ref, generation);
     done.push(generation);
     watch.deleted(generation);
   }
@@ -762,7 +779,8 @@ export interface PublishedKept {
  * below it. A load onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after
  * the publish leaves this pass collecting the tombstone's generations, and the drop's own sweep takes the rest.
  *
- * Any fault of the collection is raised, as every fault of a collection after a landed publish is.
+ * Any fault of the collection is raised, as every fault of a collection after a landed publish is. A delete that gets
+ * no answer is not one while reading its object shows it gone: it counts as deleted.
  *
  * So is a rollback onto a generation the pass deleted, which the pass finds by holding every read of the row it makes
  * after a delete to what it deleted, and by reading the row once more after its last delete
@@ -915,7 +933,7 @@ export async function deleteEvicted(
       continue;
     }
     held ??= still;
-    await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
+    await deleteGeneration(deps, ref, generation);
     deleted.push(generation);
     watch.deleted(generation);
   }

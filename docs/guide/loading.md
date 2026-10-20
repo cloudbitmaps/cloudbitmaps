@@ -13,6 +13,7 @@ is refused, and how loads stay correct under crashes and races, each have a summ
 number, write one immutable object, move the pointer, and collect what the move superseded. The fourth is the one
 that gets left out when the sequence is composed by hand, so segments pile up old generations that everybody pays for.
 
+<!-- typecheck: store -->
 ```ts
 // Your function: yields the ids your warehouse query returns.
 declare function idsFromWarehouse(): AsyncIterable<number>;
@@ -63,6 +64,7 @@ answer](correctness.md#when-a-write-is-throttled-or-gets-no-answer).
 **Any id source, in any order, with duplicates.** The input is a sync or async iterable, consumed lazily and
 deduplicated as it goes: an array, a `Set`, a generator, a file stream, a warehouse cursor. Or a whole bitmap, below.
 
+<!-- typecheck: store -->
 ```ts
 // Your function: pages through the warehouse and yields each user id.
 declare const warehouse: { paginate(query: string): AsyncIterable<Array<{ user_id: number }>> };
@@ -83,6 +85,7 @@ Pass the cursor itself. The one way to make a load expensive is to build the who
 chunk at a time and writes each chunk while the object uploads, so it holds one chunk and the writer's index of the
 chunks written, up to about 7 MiB, about 8 MiB for an encrypted segment (derived), whatever the segment's size.
 
+<!-- typecheck: store -->
 ```ts
 // Your function: yields the ids in ascending order, as `ORDER BY user_id` returns them.
 declare function idsInOrder(): AsyncIterable<number>;
@@ -116,7 +119,7 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
   object. The drivers this project ships run it once.
 - **A long stream is a long load.** The row is read before the stream and fenced at the publish after it, as for an
   unsorted load, so a write to the row while your ids stream (another load, a `setRetention`) makes the load
-  `superseded`. A segment crypto-shredded while they stream is caught the same way, and the object the load wrote is
+  `superseded`. A segment destroyed while they stream is caught the same way, and the object the load wrote is
   deleted under the `destroyed` row ([how a load stays correct](correctness.md#how-a-load-stays-correct)).
 
 **A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
@@ -124,6 +127,13 @@ rather than its ids. `{ bitmap }` takes anything with `serialize('portable')`, s
 `{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
 export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
 
+The samples that build a bitmap import the `roaring` package from npm, the native bitmap library (not
+`@cloudbitmaps/roaring`), so add it to your own `package.json`: `pnpm add roaring@2.7.0` is the version
+`@cloudbitmaps/roaring` uses, so the two share one copy and a bare bitmap takes the fast path (another
+version works, slower). Under pnpm a package your own
+`package.json` does not list cannot be imported.
+
+<!-- typecheck: store -->
 ```ts
 import roaring from 'roaring';
 const { RoaringBitmap32 } = roaring;
@@ -189,6 +199,7 @@ no id split (`tests/roaring/load-no-per-id.test.ts`).
 A refresh split by id range across several processes builds one part of the segment in each. A load writes one
 generation from one process, so the parts reach one process, which checks them, joins them and loads the union once.
 
+<!-- typecheck -->
 ```ts
 import roaring from 'roaring';
 import { CloudRoaring, ValidationError, deserializePortable } from '@cloudbitmaps/roaring';
@@ -225,7 +236,9 @@ export async function loadParts(
   size cap, the structural check, exactly one bitmap) and throws `ValidationError` for bytes that fail it. It takes a
   `Uint8Array`, which a Node `Buffer` is. What it returns is a `ReadonlyBitmap`, with `size`, `has(id)`, ascending
   iteration and `serialize('portable')`; the rest of `roaring`'s API (the union here) is reached by decoding its bytes
-  with `roaring`, which is the second line of the map.
+  with `roaring`, which is the second line of the map. Passing the `ReadonlyBitmap` itself to a method of the `roaring` package from npm answers
+  wrongly, and `JSON.stringify` of one gives `"{}"`: write `JSON.stringify([...bitmap])`
+  ([why](api-reference.md#decode-portable-bytes--deserializeportablebytes)).
 - **The recipe costs about four passes over a part where a native decode makes one.** Each part's bytes are checked,
   decoded twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the
   bytes you were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library
@@ -252,6 +265,7 @@ export async function loadParts(
 computed from, when its data landed, the run that built it. It goes on `load`, on every `*Into` verb, and on a load of a
 bitmap.
 
+<!-- typecheck-skip: a fragment: the page leaves `ids` to the reader -->
 ```ts
 await store.load({ segment: 'audience:active' }, ids, {
   metadata: { definition: 'v41', landedAt: 1_790_000_000_000, run: 'r-2204' },
@@ -335,6 +349,7 @@ There is no `create`, so you can never collide with an existing segment: `store.
 does no I/O. A segment starts existing when something is first loaded into it. A load replaces whatever was there, so
 the question worth asking before one is usually "is there data here already?", not "will this fail?".
 
+<!-- typecheck: store -->
 ```ts
 // Reporting, and skipping work you do not need to do:
 if (await store.exists({ segment: 'users' })) {
@@ -352,6 +367,7 @@ two lines. That is usually fine for a batch job that owns its segment. When it i
 To see everything you have, ask the registry. **Do not keep your own list of segment names beside the store.** That
 list is a second source of truth, and it drifts from this one the first time a load fails halfway:
 
+<!-- typecheck: store -->
 ```ts
 for await (const s of store.segments({ namespace: 'active-daily' })) {
   console.log(s.segment, s.currentGen, s.status);
@@ -494,11 +510,12 @@ neither is this one. An `*Into` always lists when it is given a `keep`.
 | `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1): by name at any `keep` up to 64, by listing on every 16th generation and in the cases above. |
 | an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination lists twice when its number was free (once to seed the ledger, once to collect; it sends no separate write), collects everything below its pointer beyond its `keep`, and records the window it kept. This is the step `store.load` exists to stop you forgetting. |
 | `eraseSubject` | **Yes**, with `keep: 0`: the generation holding the bit must not survive the call. Collection's range leaves out three kinds of object, so the erasure deletes each itself, by name: a holder above the pointer, which a `rollback` leaves there; a first load's object that holds the id on a segment with no generation yet; and an object no read of the segment can open, which it cannot search and deletes whatever the id. |
-| `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched. |
+| `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment`, a crypto-shred or a cleartext destroy left is never touched. |
 | `dropSegment` | Deletes every generation of the segment it drops, and reports any it could not in `generationsRemaining`. |
 
 An `*Into` that collects on the way through:
 
+<!-- typecheck: store -->
 ```ts
 // Deletes every generation below the new one but one, the one it superseded, kept as a grace window.
 // `collected` lists what it deleted.
@@ -532,6 +549,7 @@ footer checksum of each object, in the order they were made current. It holds th
 numbers above them. The checksum is in the object's footer, which is in the clear, so a rollback needs no key to check it.
 `generations` marks each generation `known` or not, so you can see which targets need no flag before you ask.
 
+<!-- typecheck: store -->
 ```ts
 import { RecordingAuditSink } from '@cloudbitmaps/roaring';
 
@@ -676,8 +694,9 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
 **Why rollback is not forward-only.** Forward-only is right for a writer: a load whose ids came from upstream loses
 nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an
 operator who has looked at the segment and knows which generation they want. So rollback refuses rather than guesses.
-A crypto-shredded segment throws `ValidationError`, since every generation of it is unreadable, and rolling to the
-generation already current is a reported no-op once one footer read finds its object in the bucket, and, when the row
+A destroyed segment (crypto-shredded, destroyed in the clear or dropped) throws `ValidationError`, since no
+generation resolves through a destroyed row, and rolling to the generation already current is a reported no-op once
+one footer read finds its object in the bucket, and, when the row
 knows it, with the checksum it recorded (another footer under the number throws `IntegrityError`, and so does a footer that fails its own checks: a no-op
 reports no segment as fine over a corrupt current footer). When the object
 is gone (a collection raced an earlier move), it throws `NotFoundError` naming the generations that are there, so
@@ -726,6 +745,7 @@ that listed to take a number counts instead of keeping only what the ledger name
 The three combines each have a twin that writes the result as a **new generation of a destination segment** instead
 of streaming it to you: `intersectInto`, `unionInto`, `andNotInto`.
 
+<!-- typecheck: store -->
 ```ts
 // Your functions: each yields ids.
 declare const shopperIds: Iterable<number>;
@@ -769,6 +789,7 @@ otherwise. Five properties follow from "a write is a load":
 - **An empty or implausible result is refused, not published.** A combine that comes out empty over a non-empty
   destination leaves it alone and reports it:
 
+  <!-- typecheck-skip: a fragment: the page leaves `audience`, `dest`, `eligible` to the reader -->
   ```ts
   const res = await audience.intersectInto(dest, [eligible]);
   if (!res.published) {
@@ -817,6 +838,7 @@ segment of its own, use `materializeMany` with the segment as its one operand. I
 where a combine that names the segment twice reads it twice and, on a live segment, can write a chunk that holds two
 generations:
 
+<!-- typecheck-skip: a fragment, `src` and `dest` are segments the reader already holds -->
 ```ts
 // src and dest are segments of this store. `keep` is how many earlier generations of dest the call keeps.
 await store.materializeMany({
@@ -837,8 +859,9 @@ error. The dangerous direction is the quiet one: a mistyped include collapses an
 while a mistyped exclude removes a safeguard and you do not. Both throw a `ValidationError` naming the segment. A
 segment with a registry row that is not a tombstone is accepted even when it holds no ids, because somebody created it
 deliberately: a row minted by `setRetention` before its first load, or a segment loaded empty. A name with no registry
-row is refused, and so is a `destroyed` tombstone (a segment dropped, retired or crypto-shredded). `store.exists()`
-answers `false` for a row minted ahead of its first load, which a combine still accepts. Pass
+row is refused, and so is a `destroyed` tombstone (a segment dropped, retired, crypto-shredded or destroyed in
+the clear). `store.exists()` answers `false` for a row minted ahead of its first load, which a combine still accepts.
+Pass
 `allowAbsentOperands: true` to combine against a name that may not exist yet; it then reads as empty.
 
 To write many results over the same operands, see [many outputs from one pass](#many-outputs-from-one-pass-materializemany).
@@ -856,6 +879,7 @@ store the call runs on, as for `intersect`, `union`, `andNot` and the `*Into` ve
 second store object over the same backend, or of another installed copy of `@cloudbitmaps/roaring` is refused with a
 `ValidationError` before any request. Open each with this store's `segment()`.
 
+<!-- typecheck: store -->
 ```ts
 const run = await store.materializeMany({
   operands: {
@@ -1041,6 +1065,7 @@ output of the call.
 Conditions too many to hold or to store (tens of thousands of audience queries, say) can be **fed** to the call as records in
 chunk-key order, beside the stored operands. The call keeps one chunk key of them at a time.
 
+<!-- typecheck-skip: a fragment: the page leaves `countsFromTheWarehouse`, `records` to the reader -->
 ```ts
 await store.materializeMany({
   operands: { unsub: store.segment('global-unsub', { namespace: 'suppression' }) }, // stored, as above
@@ -1137,6 +1162,7 @@ A few conditions, or a suppression list the caller already holds as a bitmap, go
 one chunk key (`id >>> 16`) and the ids a name holds there, in ascending key order; a key may arrive as several records,
 each naming an operand once. This walks the sets you hold, by chunk key, and yields them in that order:
 
+<!-- typecheck-skip: a fragment: the page leaves `lapsed`, `vip` to the reader -->
 ```ts
 import type { RoaringBitmap32 } from 'roaring';
 
@@ -1206,6 +1232,7 @@ it as a stored operand: the call then reads only the chunks the two share, at th
 and writes nothing: no object, no pointer, no audit event. Use it to look at a whole refresh before any of it is live,
 for instance to hold a landing in which a third of the segments moved more than usual.
 
+<!-- typecheck-skip: a fragment: the page leaves `operands`, `outputs` to the reader -->
 ```ts
 const review = await store.materializeMany({ operands, outputs, keep: 12, dryRun: true });
 for (const [i, o] of review.outputs.entries()) {
@@ -1257,6 +1284,7 @@ is an ordinary one: every guard and every race check runs, judged against each `
 - **The overlap with what is live.** A key shift keeps the size, so compare members. One call cannot read its own
   destination, so count the overlap in a second dry run that reads each `dest` as an operand:
 
+  <!-- typecheck-skip: a fragment: the page leaves `operands`, `outputs` to the reader -->
   ```ts
   const overlap = await store.materializeMany({
     operands: { ...operands, ...Object.fromEntries(outputs.map((o, i) => [`live-${i}`, o.dest])) },

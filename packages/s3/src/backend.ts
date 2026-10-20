@@ -5,6 +5,8 @@ import {
   normalizeObjectPrefix,
   prefixPart,
   refuseUnknownOptions,
+  requireBool,
+  requireNonEmptyString,
   requirePositiveInt,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
@@ -23,13 +25,66 @@ import { SocketAdvisory, type PooledHandler } from './socket-advisory';
 import type { IMetricsSink } from '@cloudbitmaps/core/driver-kit';
 
 /**
+ * Refuse `credentials` that are present and not an object of non-empty `accessKeyId` and `secretAccessKey` strings and
+ * an optional `sessionToken`, naming the key and never its value.
+ */
+function checkCredentials(credentials: unknown): void {
+  if (credentials === undefined) return;
+  if (typeof credentials === 'function') {
+    throw new ValidationError(
+      'S3Storage: `credentials` must be an object of `accessKeyId` and `secretAccessKey`, not a provider function; ' +
+        'pass a provider on an S3Client given as `client`',
+    );
+  }
+  // The SDK stamps `$source` on the object it is given, and a credential provider's result carries the identity fields
+  // below, so a bag that was used before, or came from a provider, still takes. Those four are tolerated, not read.
+  const keys = [
+    'accessKeyId',
+    'secretAccessKey',
+    'sessionToken',
+    '$source',
+    'credentialScope',
+    'accountId',
+    'expiration',
+  ] as const;
+  refuseUnknownOptions('S3Storage credentials', credentials, keys);
+  const given = credentials as Record<string, unknown>;
+  // Only the field and the type of a wrong value are named, never the value: it may be a secret.
+  const needText = (key: string, value: unknown): void => {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new ValidationError(
+        `S3Storage: \`credentials.${key}\` must be a non-empty string; got ${typeof value === 'string' ? 'an empty string' : value === null || value === undefined ? String(value) : `a ${typeof value}`}`,
+      );
+    }
+  };
+  needText('accessKeyId', given.accessKeyId);
+  needText('secretAccessKey', given.secretAccessKey);
+  if (given.sessionToken !== undefined) needText('sessionToken', given.sessionToken);
+}
+
+/** Refuse an endpoint the SDK would fail on at its first request: it needs a scheme, as `http://localhost:9000`. */
+function checkEndpointUrl(endpoint: string): void {
+  let url: URL | undefined;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    url = undefined;
+  }
+  if (url === undefined || !/^https?:$/.test(url.protocol) || url.hostname.length === 0) {
+    throw new ValidationError(
+      'S3Storage: `endpoint` must be an http or https URL such as "http://localhost:9000"',
+    );
+  }
+}
+
+/**
  * What {@link S3Storage} takes: a `bucket`, and either a `client` or the five settings that build one (`region`,
  * `endpoint`, `pathStyle`, `credentials`, `maxSockets`), never both.
  */
 export interface S3StorageOptions {
   /** Target bucket (must already exist). */
   readonly bucket: string;
-  /** Optional key prefix under which everything lives — generations and the registry alike. */
+  /** Optional key prefix under which everything lives — generations and the registry alike. A string, else `ValidationError`. */
   readonly prefix?: string;
   /**
    * A constructed client. Supply one for a credential chain the SDK cannot infer; otherwise one is built. Its retry
@@ -37,14 +92,27 @@ export interface S3StorageOptions {
    * configured to do: a registry row once, and a generation's object again only after a throttle, under its own backoff.
    */
   readonly client?: S3Client;
-  /** Region for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
+  /**
+   * Region for the client built when `client` is absent (refused beside `client`): a non-empty string, else
+   * `ValidationError`. Falls back to the SDK's own resolution.
+   */
   readonly region?: string;
-  /** Endpoint for an S3-compatible store (MinIO, Ceph, R2). Refused beside `client`, which carries its own. */
+  /**
+   * Endpoint for an S3-compatible store (MinIO, Ceph, R2): an http or https URL, since an empty one would send
+   * requests to AWS, else `ValidationError`. Refused beside `client`, which carries its own.
+   */
   readonly endpoint?: string;
-  /** Path-style addressing, which most S3-compatible stores require. Refused beside `client`, which carries its own. */
+  /**
+   * Path-style addressing, which most S3-compatible stores require: a boolean, else `ValidationError`. Refused beside
+   * `client`, which carries its own.
+   */
   readonly pathStyle?: boolean;
   /**
-   * Static credentials, for the S3-compatible stores that issue them (MinIO, Ceph, R2).
+   * Static credentials, for the S3-compatible stores that issue them (MinIO, Ceph, R2): non-empty `accessKeyId` and
+   * `secretAccessKey` strings and an optional `sessionToken`, else `ValidationError`, which never prints a value. No other
+   * key is taken except `$source`, `credentialScope`, `accountId` and `expiration`, which are tolerated and not read:
+   * the SDK stamps `$source` on a credentials object it is given, so one used for two stores carries it, and a credential
+   * provider's result carries the others. A provider function is not taken here; put it on an `S3Client` given as `client`.
    *
    * On AWS itself, leave this unset — the SDK's own chain (instance role, SSO, environment, profile) is what
    * you want, and hard-coding keys to reach it would be a downgrade. It exists because the alternative for a
@@ -209,7 +277,8 @@ export class S3Storage implements StorageBackend {
    * `credentials` and `maxSockets` to have one built, not both. `prefix` puts every object under a key prefix. Throws
    * `ValidationError` for an unknown option, no bucket, a `now` that is not a function, a client setting beside
    * `client`, a `maxSockets` (with no `client`) that is not a positive integer, a `partBytes` or `maxObjectBytes` that
-   * is not a positive integer, a `conditionalDelete` that is not a boolean, or an invalid `prefix` or `readTimeoutMs`.
+   * is not a positive integer, a `conditionalDelete` that is not a boolean, a `region` or `endpoint` that is empty or not a string, a `pathStyle` that
+   * is not a boolean, `credentials` that are not complete, or an invalid `prefix` or `readTimeoutMs`.
    */
   constructor(options: S3StorageOptions) {
     refuseUnknownOptions(
@@ -218,7 +287,7 @@ export class S3Storage implements StorageBackend {
       S3_STORAGE_OPTION_KEYS,
       'an S3 client goes in `client`',
     );
-    if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
+    if (typeof options.bucket !== 'string' || options.bucket.trim().length === 0) {
       throw new ValidationError('S3Storage needs a `bucket`: the name of one, a non-empty string');
     }
     if (options.now !== undefined && typeof options.now !== 'function') {
@@ -239,10 +308,28 @@ export class S3Storage implements StorageBackend {
             'the `client` already carries them, so configure them on the client, or drop `client`',
         );
       }
+      // Only an S3Client has `send`; a bare object would build a store that fails at its first read with a TypeError.
+      if (typeof (options.client as { send?: unknown }).send !== 'function') {
+        throw new ValidationError(
+          'S3Storage: `client` must be an S3Client from @aws-sdk/client-s3 (an object with `send`)',
+        );
+      }
       this.client = options.client;
     } else {
       const maxSockets =
         requirePositiveInt('maxSockets', options.maxSockets) ?? DEFAULT_MAX_SOCKETS;
+      // The SDK refuses an empty region only when the first request is built, with an untyped error, and takes a number.
+      const region: unknown = options.region;
+      if (region !== undefined && (typeof region !== 'string' || region.trim().length === 0)) {
+        throw new ValidationError(
+          "S3Storage's `region` must be a non-empty string such as 'us-east-1'",
+        );
+      }
+      // An empty `endpoint` is no endpoint: the client would send to AWS, not the service meant.
+      const endpoint = requireNonEmptyString('S3Storage: `endpoint`', options.endpoint);
+      if (endpoint !== undefined) checkEndpointUrl(endpoint);
+      requireBool('S3Storage: `pathStyle`', options.pathStyle);
+      checkCredentials(options.credentials);
       // `credentials` is not the last member: the leak scan reads a property read that ends a built line as a
       // possible secret, and the bundler drops the trailing comma after the last one.
       this.client = new S3Client(

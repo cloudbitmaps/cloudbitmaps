@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 // is public API with the same documentation obligation as anything else — and being a surface nobody imports
 // by accident, it is exactly the kind that rots undocumented.
 //
-// An entry a package lists in its manifest's `cloudbitmaps.internalEntries` (core's main entry) is outside the
+// An entry a package lists in its manifest's `cloudbitmaps.internalEntries` (core's main entry and `/node`) is outside the
 // stability promise and is not documented in the index, so it is skipped: the same field `scripts/api-surface.cjs`
 // reads, so there is one list.
 const BARRELS: readonly string[] = (() => {

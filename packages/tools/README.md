@@ -16,6 +16,8 @@ always-on Redis that would hold the same data, with a verdict that says where Re
 pnpm add @cloudbitmaps/tools
 ```
 
+Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
+
 It reads and writes no store, and runs with nothing else installed: plan a deployment before you have one. Its one
 dependency is `@cloudbitmaps/core`, for the `ValidationError` every refusal throws, so a caller that also installs
 `@cloudbitmaps/roaring` classifies a refusal with its `errorKind(err) === 'ValidationError'` or `instanceof ValidationError`,
@@ -26,6 +28,7 @@ native addon.
 
 Price segments you describe, under the workload you expect:
 
+<!-- typecheck -->
 ```ts
 import { estimateCost } from '@cloudbitmaps/tools';
 
@@ -45,13 +48,14 @@ report.verdict; // 'win-big' | 'win' | 'lose-zone' — never hides the lose case
 report.assumptions.notes; // what it modeled, and what it did not
 ```
 
-Both functions refuse input they cannot price, with a `ValidationError`: a key they do not take, at any level (a misspelt `segments[0].size`, `workload.readsPerSecond` or `pricing.storage.getPerMilion`; the message names the key and where it sits), and a workload or rate card so large that a cost is not a finite number of dollars. `estimateCost` also refuses a segment `count` that is not a whole number.
+Both functions refuse input they cannot price, with a `ValidationError`: a key they do not take, at any level (a misspelt `segments[0].size`, `workload.readsPerSecond` or `pricing.storage.getPerMilion`; the message names the key and where it sits), and a workload or rate card so large that a cost is not a finite number of dollars. `estimateCost` also refuses a segment `count` that is not a whole number, and a segment with neither `sizeBytes` nor `cardinality` (pass `sizeBytes: 0` for one that stores nothing), which it would otherwise price at $0.
 
 ## Ground: `groundedReport` from `stat().sizeBytes`
 
 Price a store you run, from what it really holds. A segment handle's `stat()` reports `sizeBytes`, the bytes of its
 current generation's object, read from the object's footer and index with no payload read:
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';

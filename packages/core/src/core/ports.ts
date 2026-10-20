@@ -29,6 +29,14 @@ export type Token = string;
  * segment in such a namespace would be invisible to an erasure, a consistency check, an export and a retention sweep.
  * A driver takes the prefix, since the due index's own rows go through it. Only that exact prefix is reserved:
  * `cbm.dueX` and `cbmdue.eu` are ordinary namespaces, and a segment name is never restricted.
+ *
+ * **A key other than `segment` and `namespace` throws `ValidationError`**, in every call of the store and of the free
+ * functions behind it that takes a ref, and at a driver port (which also takes a `generation`, a `chunkKey` and a
+ * registry row's own fields): a misspelt `namespace` would otherwise address the segment of that name in the default
+ * namespace. A `segments()` row is the one exception at the store: its `currentGen` and `status` are taken and read for
+ * nothing. A segment handle, a registry row from `registry.get()` or `list()` (a driver port takes one, a store call does
+ * not), and a result row such as a consistency issue, a ledger entry, an export manifest entry or an audit event, is not
+ * a ref at the store: pass `{ segment, namespace }`.
  */
 export interface SegmentRef {
   /** The segment's namespace, or `undefined` for the default one. */
@@ -401,8 +409,9 @@ export interface IStorageDriver {
 }
 
 /**
- * Lifecycle status of a segment. `active` is the steady state; `destroyed` is the post-crypto-shred tombstone
- * (the row is kept for audit but the segment is logically gone).
+ * Lifecycle status of a segment. `active` is the steady state; `destroyed` is the tombstone left by a crypto-shred, a
+ * cleartext destroy or a drop (the row is kept for audit but the segment is logically gone: no read resolves a
+ * generation through it).
  */
 export type RegistryStatus = 'active' | 'destroyed';
 
@@ -541,7 +550,10 @@ export interface RegistryRecord extends SegmentRef {
    * keystore. Clearable on crypto-shred.
    */
   readonly keyId?: string;
-  /** `'active'`, or `'destroyed'` for the tombstone of a segment that was crypto-shredded or dropped. */
+  /**
+   * `'active'`, or `'destroyed'` for the tombstone of a segment that was crypto-shredded, destroyed in the clear or
+   * dropped.
+   */
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`

@@ -5,6 +5,7 @@ import {
   normalizeObjectPrefix,
   prefixPart,
   refuseUnknownOptions,
+  requireNonEmptyString,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
@@ -24,11 +25,14 @@ import { AzureBlobRegistryDriver } from './registry';
 export interface AzureBlobStorageOptions {
   /** A container-scoped client. Supply this, or `connectionString` + `container`. */
   readonly containerClient?: ContainerClient;
-  /** Account connection string, used with `container` when `containerClient` is absent. */
+  /**
+   * Account connection string, used with `container` when `containerClient` is absent: a non-empty string the Azure SDK
+   * can parse, else `ValidationError`, whose message never holds the string.
+   */
   readonly connectionString?: string;
-  /** Container name, used with `connectionString` when `containerClient` is absent. */
+  /** Container name, used with `connectionString` when `containerClient` is absent: a non-empty string, else `ValidationError`. */
   readonly container?: string;
-  /** Optional blob-name prefix under which everything lives — generations and the registry alike. */
+  /** Optional blob-name prefix under which everything lives — generations and the registry alike. A string, else `ValidationError`. */
   readonly prefix?: string;
   /**
    * Largest blob the backend will write and advertise. Default = `blockBytes × 50,000` (≈ 390 GiB at the default
@@ -75,6 +79,34 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
 ] as const;
 
 /**
+ * The service client a connection string names, or a `ValidationError` for a string that is empty, not text, or not one
+ * the Azure SDK can parse. The string holds the account key, so neither it nor an error `cause` that could carry part of
+ * it is put in the message; the SDK's own message is, unless it quotes the string.
+ */
+function serviceClientFor(connectionString: unknown): BlobServiceClient {
+  if (typeof connectionString !== 'string' || connectionString.trim().length === 0) {
+    throw new ValidationError(
+      `AzureBlobStorage: \`connectionString\` must be a non-empty string; got ${
+        typeof connectionString === 'string'
+          ? 'an empty string'
+          : connectionString === null
+            ? 'null'
+            : typeof connectionString
+      }`,
+    );
+  }
+  try {
+    return BlobServiceClient.fromConnectionString(connectionString);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : '';
+    const detail = reason.length > 0 && !reason.includes(connectionString) ? ` (${reason})` : '';
+    throw new ValidationError(
+      `AzureBlobStorage: \`connectionString\` is not a valid Azure Storage connection string${detail}`,
+    );
+  }
+}
+
+/**
  * `AzureBlobStorage` — the Azure Blob backend as one object: generations and pointer, one container, stated once.
  *
  * See {@link StorageBackend} for why the two halves are configured together rather than separately.
@@ -98,7 +130,8 @@ export class AzureBlobStorage implements StorageBackend {
    * not both. `prefix` puts every object under a blob-name prefix. Throws `ValidationError` for an unknown option, a
    * `now` that is not a function, `containerClient` beside `connectionString` or `container`, neither `containerClient`
    * nor both `connectionString` and `container`, a `blockBytes` or `maxObjectBytes` that is not a positive integer, a
-   * `conditionalDelete` that is not a boolean, or an invalid `prefix` or `readTimeoutMs`.
+   * `conditionalDelete` that is not a boolean, a `connectionString` that is empty, not a string or not a valid
+   * Azure Storage connection string, a `container` that is not a non-empty string, or an invalid `prefix` or `readTimeoutMs`.
    */
   constructor(options: AzureBlobStorageOptions) {
     refuseUnknownOptions(
@@ -122,11 +155,21 @@ export class AzureBlobStorage implements StorageBackend {
             'the `containerClient` already determines the account and container',
         );
       }
+      // A BlobServiceClient has no `getBlockBlobClient`: it is the one a connection string makes first, a call before this one.
+      if (
+        typeof (options.containerClient as { getBlockBlobClient?: unknown }).getBlockBlobClient !==
+        'function'
+      ) {
+        throw new ValidationError(
+          'AzureBlobStorage: `containerClient` must be a ContainerClient; a BlobServiceClient goes through `.getContainerClient(name)`',
+        );
+      }
       this.containerClient = options.containerClient;
     } else if (options.connectionString !== undefined && options.container !== undefined) {
-      this.containerClient = BlobServiceClient.fromConnectionString(
-        options.connectionString,
-      ).getContainerClient(options.container);
+      requireNonEmptyString('AzureBlobStorage: `container`', options.container);
+      this.containerClient = serviceClientFor(options.connectionString).getContainerClient(
+        options.container,
+      );
     } else {
       // Fail here rather than at the first read: a half-specified backend is a wiring mistake, and the
       // alternative is a store that constructs fine and then cannot say why it has nothing in it.

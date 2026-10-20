@@ -152,7 +152,7 @@ describe('store.exportSegments', () => {
     expect(roaringIds(files.get('ns/a.roaring')!.bytes)).toEqual([1]);
   });
 
-  it('skips crypto-shredded (destroyed) segments, and names each one in the manifest', async () => {
+  it('skips destroyed segments, and names each one in the manifest', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'live', generation: 0 }, [1, 2], { registry });

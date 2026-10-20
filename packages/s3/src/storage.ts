@@ -18,7 +18,7 @@
  * (default `partBytes × 10,000` — S3's per-upload part limit). **Each conditional request is sent with the SDK's retry
  * off for it** ({@link sendOnce}): a replay of a write that landed and lost its response would find its own object and
  * read as a lost race. A lost response or a timeout throws {@link TransientError}, and the object may or may not exist.
- * A `503 SlowDown` is the one answer the driver sends the commit again after, at most {@link THROTTLE_RESENDS} times with
+ * A throttle (`503 SlowDown`, any other `503`, or a bare `429`) is the one answer the driver sends the commit again after, at most {@link THROTTLE_RESENDS} times with
  * backoff: every object carries a random write id in its user metadata (`x-amz-meta-cbwid`), and once the commit has
  * been sent again, a precondition failure reads the object's metadata back, so a first send that landed after all is
  * this write's own and any other object is the conflict it reads as. The unconditional requests — the reads, the
@@ -49,6 +49,7 @@ import {
   concatBytes,
   normalizeObjectPrefix,
   parseGenerationFromKey,
+  checkDeleteOptions,
   requireBool,
   requirePositiveInt,
   segmentObjectPrefix,
@@ -439,7 +440,7 @@ export class S3StorageDriver implements IStorageDriver {
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
     const objectKey = storageObjectKey(this.prefix, key);
-    const ifVersion = options?.ifVersion;
+    const ifVersion = checkDeleteOptions(options);
     if (ifVersion !== undefined && this.explicitConditionalDelete !== false) await this.settle();
     const conditional =
       ifVersion !== undefined && appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts);

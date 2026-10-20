@@ -41,6 +41,120 @@ so, and so do the module headers in the code.
   on `generation` first, or build the one shape or the other. An interface that extends it (TS2312) or a class that
   implements it (TS2422) does not compile either, since neither can name a union: intersect it with the shape you need
   instead.
+- **Config objects refuse an option they do not take, a value of the wrong type, an empty name or endpoint, and a
+  `null` where a value is taken, each with a `ValidationError` that names the option.** Each was accepted, or threw an
+  untyped error, and did something other than what was asked. Code that passed one of them and worked now throws when
+  the object is built or the call is made, before it reads or writes. A key whose value is `undefined` still reads as
+  absent, so a spread of options keeps working. What to do about each:
+  - **`destroySegment` and `eraseNamespace`** refuse an option they do not take and an `allowCleartext` that is not a
+    boolean, before the registry is read. `{ confirmSegment, dryRun: true }` used to crypto-shred the segment, and on
+    `eraseNamespace` every segment of the namespace, because neither call checked its options; `allowCleartext:
+    'false'` was read as true. Remove the option the call does not take (there is no dry run for these two); pass a real
+    boolean.
+  - **Round 2 additions.** `concurrency` of `null` on `checkConsistency`, `intersect`, `union`, `andNot` and the `*Into`
+    verbs, and a per-call `budget` of `null` (as the store's already was), are refused instead of read as the default.
+    `S3Storage` refuses a `client` that has no `send` and `AzureBlobStorage` a `containerClient` that is not a container
+    client (a `BlobServiceClient` is the likely slip: pass `.getContainerClient(name)`); `S3Storage` refuses an `endpoint`
+    that is not an http or https URL, and `GcsStorage` an `apiEndpoint` that names no host; a `bucket` or a local-files
+    root of only spaces is refused. S3 `credentials` never print a value in a message, say a credential provider goes on
+    an `S3Client` given as `client`, and take only the keys documented plus the four the SDK stamps. `destroySegment` and
+    `eraseNamespace` refuse `deps` that are not `{ registry }` (with an optional `clock` and `rng`), before any read.
+    Core's own `dropSegment` refuses a `dryRun` that is not a boolean.
+  - **`new InProcessKeystore(options)`** refuses an option it does not take (a misspelt `recoveryKeyID` used to build a
+    keystore with no recovery wrapping, so every segment it wrote had one wrapping and losing the active key made it
+    unreadable), no options, a `keys` that is not a plain object (a `Map` included), and an `activeKeyId` or
+    `recoveryKeyId` that is not a string. Spell the options `keys`, `activeKeyId`, `recoveryKeyId`, and pass `keys` as
+    an object of key id to 32-byte `Uint8Array`. To check a recovery key is in force, read a new segment's row: its
+    `wrappedDeks` lists both ids.
+  - **`encryption.required`** must be exactly `true` or `false`. A truthy string such as `'true'` used to make reads
+    refuse cleartext while loads, erasures and `*Into` writes still wrote it. Compare the variable yourself
+    (`process.env.REQUIRE_ENCRYPTION === 'true'`). The same check holds the core read source and the core write entries
+    that take `requireEncryption`.
+  - **`retireExpired`** refuses a `scan` that is not `'fleet'` or `'index'` (a misspelt `'index'` ran the fleet sweep), a
+    `lookbackBuckets` that is not an integer from 0 to 3,660 on either scan (it was checked only on `'index'`, and
+    `1e9` threw a `RangeError`), a `null` `limit`, `tombstoneGraceMs` or `now` (read as the default), a `totalShards`
+    that is not a positive integer even without `shards`, and `shards` that is empty or lists a number twice. All are
+    refused before the registry is listed. Pass the value you mean, or leave the option out.
+  - **`retireExpired` refuses a `tombstoneGraceMs` below one hour (3,600,000 ms).** A shorter grace let a first load's
+    create that got no answer, sent again after a sweep purged its row, create the row again with the wrapped key the
+    retirement removed. Pass at least an hour; a test that needs a short grace advances an injected clock instead.
+  - **A `cache` size is refused under the name you wrote:** `cache.maxChunks`, `cache.readerMax` and
+    `cache.readerMaxBytes` must be integers of at least 1 and `cache.ttlMs` a finite number above 0. The errors named
+    `maxEntries`, `maxBytes` or `ttlMs`, and `readerMaxBytes: 1.5` was accepted. A source built by hand refuses
+    `maxOpenSegments` and `maxOpenIndexBytes` the same way. Pass whole numbers.
+  - **`null` is not read as the default** for `cache.genTtlMs`, `retry.maxAttempts`, `baseDelayMs`, `maxDelayMs`,
+    `backoffFactor` and `jitter`, `budget.maxRequests` (on the store and per call), `keep` on `load` and the `*Into`
+    verbs, and the `cache` sizes above. A `seams.clock`, `seams.rng` or `encryption.keystore` of `null` is refused too
+    (the keystore one built a store that threw a `TypeError` at its first encrypted write). Leave the option out, or
+    pass `undefined`, for the default.
+  - **`estimateCost`** refuses a segment with neither `sizeBytes` nor `cardinality`, which it priced at $0 of storage
+    (pass `sizeBytes: 0` for a segment that stores nothing; a missing `workload` stays allowed), and checks
+    `cardinality` even when `sizeBytes` wins. The cost model's refusals quote a string they print (`got "5"`).
+  - **`AzureBlobStorage`** refuses a `connectionString` that is empty, not a string, or not one the SDK can parse, with a
+    message that never holds the string, and a `container` that is `null`, empty or not a string (`null` built a store
+    on a container named "null"). **`S3Storage`** refuses a `region` that is empty, only whitespace or not a string, a
+    `pathStyle` that is not a boolean, and `credentials` that are not an object of non-empty `accessKeyId` and
+    `secretAccessKey` strings with an optional `sessionToken`. **`S3Storage` and `GcsStorage`** refuse an empty or
+    non-string `endpoint` / `apiEndpoint`, which sent every request to AWS or to the public GCS endpoint instead of the
+    service you configured, and `GcsStorage` an empty or non-string `projectId`. **All three cloud backends** refuse a
+    `prefix` that is not a string (a number or `null` threw a `TypeError`). No message holds a value, since an endpoint or
+    a credential can carry a secret. Leave an option out rather than pass an empty string for it.
+  - **`setRetention`** refuses a policy key other than `expiresAt`; drop the key.
+  - **`export-segments`** refuses a `CR_EXPORT_` variable it does not read, naming it and the four it takes: a misspelt
+    `CR_EXPORT_NAMSPACE` exported every namespace, and a script that still sets the removed `CR_EXPORT_SEGMENTS` exported
+    every segment. Unset or correct the variable.
+  - **One export is added to `@cloudbitmaps/core/driver-kit`** for backend authors, `requireNonEmptyString`, beside
+    `requireBool` and `refuseUnknownOptions`.
+
+- **A rollback whose swap met a conflict and whose every read of the row then failed now throws `WriteConflictError`,
+  where 0.22.0 threw `TransientError`.** The error is the rollback's own, saying it could not confirm that its swap is
+  the one the row shows, with the read's `TransientError` as its `cause`; the pointer may be on the target. A caller
+  that caught `TransientError` around `store.rollback` to run it again now misses this one: catch `WriteConflictError`
+  as well, and run the rollback again after checking `store.generations(ref)`, which finds the pointer where it is.
+
+- **`subjectReport` and `eraseSubject` refuse a `namespace` given together with `{ allNamespaces: true }`, take their
+  scope in a type that refuses the pair, and begin an `error:` note with the error's class.** With both, the call
+  honoured `namespace` and ignored `allNamespaces`, so a caller who meant every tenant erased one, and its ledger read
+  complete while the others kept the id. Both now throw `ValidationError` before they list the registry. Each call's
+  `options` is now required and a union: a `namespace` (with `allNamespaces` absent or `false`), or
+  `allNamespaces: true` (with no `namespace`). A call with no options has always thrown `ValidationError`, so the type
+  now says what the code did. TypeScript now refuses: a call that passes both; `allNamespaces` as a `boolean`
+  variable; a `namespace` typed `string | undefined`, such as a tenant read from configuration; and an options object
+  typed with the old shape `{ namespace?: string; allNamespaces?: boolean }`, such as a wrapper that forwards its
+  options. To migrate: narrow first and refuse a missing tenant (`if (tenant === undefined) throw ...`), then pass
+  `{ namespace: tenant }`; type a stored scope as `{ namespace: string } | { allNamespaces: true }`. Do not turn a
+  missing tenant into `{ allNamespaces: true }`: that erases the id from every tenant, the mistake the scope exists to
+  stop. Separately, an `eraseSubject` ledger note that begins `error: ` now continues with the error's class
+  (`error: KeyUnavailableError: ...`), so it can be matched to a row of the guide's table; a matcher on the text after
+  `error: ` now matches after the class. The `requireEncryption` note is a `KeyUnavailableError`, as `subjectReport`
+  throws for the same cause, where it was a `ValidationError`. The guides, the API reference and the privacy note also
+  say what the scope reaches: a segment loaded with no `namespace` only under `allNamespaces: true`, `'_default'` being
+  an ordinary namespace name and not those segments, and what `encryption: { required: true }` means for an erasure
+  over cleartext segments.
+
+- **A segment ref, a driver port's key and a driver port's per-call options with a key they do not take are refused
+  with `ValidationError`.** `{ segment: 'x', namspace: 'eu' }` used to read as `{ segment: 'x' }` and act on the
+  segment of that name in the default namespace, which for `dropSegment`, `rollback` and `destroySegment` meant acting
+  on the wrong segment, and `backend.registry.delete`, `backend.storage.delete` and the other port calls did the same.
+  `load`, `exists`, `generations`, `rollback`, `dropSegment`, `setRetention`, `getRetention`, `clearRetention`,
+  `invalidate` and `destroySegment` now name the key the caller wrote and the keys a ref takes (`segment`, `namespace`,
+  and the `currentGen` and `status` of a `store.segments()` row, which are read for nothing, so a listing row can still
+  be passed back). The registry and storage ports of every shipped driver refuse the same way, naming the keys they take
+  (a ref, a `generation`, a `chunkKey`). Their per-call options are checked too: a storage `delete` takes `{ ifVersion }`
+  only, a string, so a misspelt `ifVersion` is no longer an unconditional delete, and a registry `create` and
+  `compareAndSwap` take `{ held, onToken }` only. A driver of your own that calls `validateSegmentRef(ref)` now also
+  refuses any key beyond `segment`, `namespace`, a generation key's `generation`, a chunk ref's `chunkKey`, a
+  `segments()` row's `currentGen` and `status`, and a registry row's own fields (the call takes no second argument), and
+  nothing else changes for it. `checkDeleteOptions` and `checkRegistryWriteOptions` in the driver kit do the options.
+  Also refused now, though each type-checks as a ref when passed as a variable: a row of any other result (a
+  `checkConsistency` issue, an `eraseSubject` or `retireExpired` ledger entry, an export manifest entry, an audit
+  event), a registry row from `registry.get` or `list` handed to a store call (the ports take one), a segment handle
+  and an array. To migrate: fix the key's spelling, and build the ref as a typed
+  `{ segment, namespace }` from the row's two fields. Do not pick the keys out of a config object, as in
+  `{ segment: cfg.segment, namespace: cfg.namespace }`: a misspelt key in `cfg` leaves `namespace` undefined, which is
+  the default namespace, and no check can see it. Validate the config's keys, or pass `cfg` itself so the ref check sees
+  the typo. The confirmation of `destroySegment` and `dropSegment` repeats the segment's name only, not its namespace.
+
 - **`deserializePortable(bytes)` returns `ReadonlyBitmap`, a type of this library's own, in place of `roaring`'s
   `RoaringBitmap32`, and no public signature names a type of the `roaring` package.** A `ReadonlyBitmap` is a
   `PortableBitmap` and an `Iterable<number>` with `size`, `has(id)`, ascending iteration and `serialize('portable')`.
@@ -59,8 +173,45 @@ so, and so do the module headers in the code.
   `JSON.stringify(bitmap)` gives `"{}"` where it gave the ids, because the bitmap has no `toJSON`, so write
   `JSON.stringify([...bitmap])`; an `instanceof RoaringBitmap32` check goes.
 
+- **The six `@cloudbitmaps/*` packages depend on each other at an exact version, not a `^` range, so an install that mixes patch versions of them now holds two copies of `core`.** A published
+  `@cloudbitmaps/roaring` names the exact `@cloudbitmaps/core` it was built with, and so do the driver packages and
+  `@cloudbitmaps/tools`, so a later `core` release never reaches an older flavor. What you do: install the same version
+  of every `@cloudbitmaps/*` package (`pnpm add @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z`, or let one
+  install resolve both to the latest). A mix installs with no warning and holds two copies of `core`: a TypeScript
+  build refuses `storage: new S3Storage(...)` with `TS2322` (`[STORAGE_BACKEND_BRAND]` is missing), and `instanceof` does
+  not hold across the copies (`errorKind(err)` still classifies). `npm ls @cloudbitmaps/core` shows the copies, and
+  `pnpm up --latest '@cloudbitmaps/*'` aligns them. Mixed minors already did this; what changed is that mixed patch
+  versions do too.
+
 ### Added
 
+- **Every package exports its own `package.json`** (`"./package.json": "./package.json"`), so
+  `require.resolve('@cloudbitmaps/<package>/package.json')` finds a package's root or version instead of throwing
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
+- **A cleartext `destroySegment` or `eraseNamespace` (`allowCleartext`) now emits a `segment.tombstone` audit event.**
+  It wrote a `destroyed` tombstone and emitted nothing, so no record said the row had been tombstoned, and the restore
+  procedure could not find what a registry restore had brought back. The event carries the segment, its namespace and
+  incarnation, and `objectsReadable: true`, because nothing was deleted and no key was destroyed: it is not an erasure
+  receipt, and `segment.erase` keeps meaning a crypto-shred. It is emitted once per tombstone the call wrote, not for a
+  re-run. `AuditEvent` gains a member, so a `switch` over `event.kind` that is exhaustive (a `never` check) needs a
+  case for it. The disaster-recovery procedure's step that re-applies erasures re-applies these too.
+
+- **`subjectReport` lists a destroyed segment whose leftover objects still hold the id, in a new `tombstones`
+  field.** A cleartext `destroySegment` (`allowCleartext`), and a `dropSegment` whose sweep missed an object a load
+  was still writing, leave the id readable in the bucket though no read resolves the segment. `eraseSubject` already
+  searched and deleted those objects; the report now finds the same ones by the same search, so an Art. 15 answer
+  names what an Art. 17 erasure would delete. `SubjectReport` gains the required `tombstones: SubjectSegmentRef[]`,
+  `[]` when none, and `segments` is unchanged. A crypto-shredded segment's own objects are sealed under a key no row holds and are never a holder, so it is listed
+  only when an object left under it in the clear holds the id. Each destroyed segment in scope costs one more listing, and each object searched a tail read
+  and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted object); the budget is
+  charged one unit for each object opened past the one the row names, as `eraseSubject` charges, and a report that
+  runs out throws `BudgetExceededError` (with `spent` at `limit + 1`, a lower bound). A fault reading a destroyed
+  segment's leftover objects, or a budget that runs out, rejects the whole report rather than leaving the segment out, so
+  one leftover object that cannot be opened makes every report over its scope reject until it is removed:
+  `store.generations(ref)` lists what is left under it, and `dropSegment` deletes it. The listing of the bucket under a
+  destroyed segment, which `eraseSubject` makes too, is now retried under the store's read retry like the object reads,
+  so a transient fault on it no longer fails the report or puts an `error:` note in the ledger.
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
   exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
   `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it
@@ -143,6 +294,14 @@ so, and so do the module headers in the code.
   asked (`iterate`, `intersect`, `union`, `andNot`, `everyNth`, `materializeMany`: `intersect: through must be an
   integer from 0 to 4294967295`), and an error naming absent operands says `operand "z1" names a segment` for one and
   `operands "z1", "z2" name segments` for several.
+- **The main entry of `@cloudbitmaps/core` imports no Node builtin, so it loads in a context with none, which the
+  roadmap said it already did.** It reached `node:fs`, `node:fs/promises`, `node:path` and `node:crypto` through the
+  in-memory and local-filesystem backends and the in-process cipher and keystore, which are now exported by
+  `@cloudbitmaps/core/node`, an internal subpath like the main entry. `@cloudbitmaps/roaring` exports
+  `MemoryStorage`, `LocalFsStorage` and `InProcessKeystore` from the same import as before, so an application changes
+  nothing. `pnpm smoke` fails if a built entry of core other than `/node` reaches a `node:*` specifier or does not
+  load in a context without Node's builtins.
+
 - **Every public entry now shows hover text.** The 144 entries of the published surface that had no doc comment, among
   them constructors, option and result fields, the driver-kit types and the cost model's fields, now carry one, so the
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an
@@ -165,6 +324,84 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The S3 driver counts a bare `429` as a throttle.** An S3-compatible service that answers a request with `429` (AWS
+  S3 does not) was neither sent again nor a `TransientError`: the SDK's own error reached your code, past a layer that keys on
+  `TransientError`. A `429` now behaves as a `503` does: a generation's object is sent again, a registry write that
+  meets one is settled by reading the row, the store's read retry runs a read again after one (at most 12 requests
+  before `TransientError`, where it failed after the SDK's 3), a reader's pointer refresh rides one out on the cached
+  generation, and a call that ends on one throws `TransientError`.
+
+- **`MemoryStorage`'s generation and segment listings list what is present when they begin.** Both iterated the live
+  store, so an object or segment stored while a caller was still reading a listing was yielded, and a caller that
+  stored one for each key it was shown never finished. Each now takes its keys first, as the local-files driver's
+  directory read and a single page of an S3 or Azure listing do. An object or segment deleted during a listing is now
+  still yielded, as on those backends, where before it was skipped.
+
+- **A rollback whose target went while the pointer was moving reports the pointer as put back when the move back landed
+  and lost its answer.** Before, the move back sent no write token and any failure ended the loop, so a move back that
+  landed read as "the pointer may still name" the target while the pointer was back. The call now reads the row and takes
+  the move back as landed when the row's `pointerId` is a token it sent; one that never landed still says the pointer
+  may be on the target. The rollback's read-backs (of its swap and its move back) now make up to three reads and wait
+  between them on the clock the call passes, as every other lifecycle read-back does. The production guide's and the API reference's account of what each lifecycle helper settles, and
+  the roadmap's deferral list, now state what the code does: a write token, the row gone, or the object gone, and what
+  still throws `TransientError` (both the answer and the read-back lost, a delete that lands after its check, a registry
+  that reports no write tokens).
+- **The retention sweep reports a purge or a pointer delete whose response was lost as the delete it was.** Before, a
+  purge that landed and lost its answer was `skipped` with `failed: ...` and counted in `purgeFaults`, and no later call
+  reported the purge; on Azure Blob, and on GCS with `conditionalDelete: true`, whose clients resend a delete after a lost response, the resend met the row it had
+  already removed and the purge showed as `failed: contended`, the default outcome of any purge whose response is lost.
+  Three such `failed:` reports in a row stopped purging for the rest of the call. An empty segment's row delete and the due-index
+  pointer deletes (a retirement's, a foreign tombstone's, the litter pass's and a purge's) were counted as faults the
+  same way. A delete that got no answer or met a conflict is now settled by reading the row: a row that is gone is a delete
+  that happened. A row still there stays a refusal or a lost race, as it was.
+
+- **`setRetention` and `clearRetention` whose write lands and loses its response are now settled by the write token,
+  and remove the old due-index pointer.** Before, `clearRetention` answered `false` for an expiry it removed (or threw
+  `TransientError` with the expiry already gone), `setRetention` ahead of the first load reported `createdRow: false`
+  for the row it made, and a `setRetention` that moved an expiry to another day left the old day's pointer in the due
+  index until the segment was retired and purged, one more row read on every scan that reached that day. A write that
+  got no answer is now read back: a row carrying this call's own write token counts as landed, and a pointer create
+  that got no answer is read back too, so `indexed` is true when the pointer is there. When a later write hides the clear's
+  token before the read-back, the call decides again from the row: it answers `false` with the expiry gone when the row
+  holds none, and removes the expiry and answers `true` when the later write set one. A
+  registry that does not report write tokens keeps throwing `TransientError`.
+
+- **An erasure's, a drop's and a load's collection storage deletes that land and lose their response are now settled by
+  reading the object back.** Before, an `eraseSubject` whose delete of a generation holding the id landed and lost its
+  answer recorded `erased: false` with an `error:` note and no `segment.collect`, and its re-run found nothing, so
+  nothing recorded the deletion; a `dropSegment` undercounted `generationsDeleted` in its result and in
+  `segment.dispose`; a load threw `TransientError` after `segment.publish`. A delete whose object a read then finds gone
+  now counts as deleted. When that read fails too, or the delete lands after it, the call still reports the fault, and
+  the guides say to keep the error as the record. A default GCS store sends every storage delete once, so it had the
+  most exposure.
+
+- **A crypto-shred (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement) and a drop's tombstone
+  for a segment with no row, whose write lands and loses its response, are now settled by the write token, and report
+  and audit the shred.** A cleartext destroy (`allowCleartext`) whose answer is lost is settled the same way, and a
+  shred's read-back now waits between its reads, through `@cloudbitmaps/roaring`, on the system clock when the call passes none. Before, they threw
+  `TransientError`, or recorded `failed: …` with `destroyed: false`, and the re-run answered `'already'` with no
+  `segment.erase`, ever. A retirement reported `retired` with `generationsRemaining: []` while every object was still
+  in the bucket; it now lists what is left. After a clean shred whose listing then faulted, its `cryptoShredded` said
+  `false` beside the `segment.erase` already emitted; it now says `true`. A shred whose answer and read-back are both
+  lost still throws and cannot be told from another tombstone: the guides say what to record. A retirement whose row
+  cannot be read afterwards is `skipped` with a reason that says the tombstone may have landed.
+
+- **Two erasures of different ids on one segment no longer report a raw storage error for the one that loses.** Both
+  could take the same next generation number, and the second put was refused as `generation already exists
+  (write-once)`. The loser now reports `'superseded'`, with nothing written or deleted, as a lost load race does, and
+  its re-run erases its id. The missing-keystore note no
+  longer names `eraseIdFromSegment`, a function an `eraseSubject` caller never called: it says the erasure has no
+  keystore to open the segment's key (`encryption.keystore` on the store).
+
+- **An error about a destroyed segment no longer says it was crypto-shredded.** A `dropSegment`, a retention retirement
+  and a cleartext `destroySegment` leave a destroyed row too, and a cleartext destroy leaves its objects readable in the
+  bucket. `rollback`, a load and a publish that races a destroy now say the segment is destroyed and that no
+  generation resolves through a destroyed row, and `setRetention` says it refuses a tombstone and that `dropSegment`
+  deletes what a destroy left in the bucket. Each is the same `ValidationError` as before. The guides, the format
+  reference and the doc-comments that called every destroyed row crypto-shredded, or its generations unreadable, say
+  the same, and the erasure guide no longer says a `destroySegment` deletes every generation.
+- **`generations()` marks no generation `current` on a destroyed segment.** The tombstone keeps the pointer it had, but
+  no read resolves a generation through it, so the entry that pointer named was listed as current.
 - **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
   audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,
   `eraseNamespace` and `dropSegment`, the API reference, the encryption and retention guides and the roadmap said a

@@ -5,6 +5,8 @@
  *
  * Not in `core/` (this is a driver), so it may hold concrete state.
  */
+import { checkDeleteOptions } from './_shared/options';
+import { checkRegistryWriteOptions } from './_shared/options';
 import { createHash } from 'node:crypto';
 import { BufferSink, checkTailLength } from '../core/blob';
 import type { BlobSink } from '../core/blob';
@@ -91,6 +93,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     record: NewRegistryRecord,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     validateSegmentRef(ref);
     const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
@@ -115,6 +118,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     patch: RegistryPatch,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     validateSegmentRef(ref);
     const checked = validateRegistryPatch(patch);
     const key = segmentKey(ref);
@@ -132,7 +136,9 @@ export class MemoryRegistryDriver implements IRegistryDriver {
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
     // A namespace that is given is checked as every other name is: `''` names none, and reads as an error, not as empty.
     if (namespace !== undefined) validateSegmentRef({ segment: 'x', namespace });
-    for (const row of this.rows.values()) {
+    // The rows as they stand now, as the generation listing takes its keys: a row created or deleted during the
+    // listing does not change what it yields.
+    for (const row of [...this.rows.values()]) {
       if (namespace === undefined || row.namespace === namespace) yield structuredClone(row);
     }
   }
@@ -210,8 +216,8 @@ export class MemoryStorageDriver implements IStorageDriver {
   }
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const ifVersion = checkDeleteOptions(options);
     const k = genObjectKey(key);
-    const ifVersion = options?.ifVersion;
     const stored = this.objects.get(k);
     // The check and the removal in one step: nothing can store another object under the key between them.
     if (ifVersion !== undefined && stored !== undefined && stored.version !== ifVersion) {
@@ -225,7 +231,9 @@ export class MemoryStorageDriver implements IStorageDriver {
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
     validateSegmentRef(ref);
     const prefix = `${segmentKey(ref)} `;
-    for (const k of this.objects.keys()) {
+    // The keys as they stand now: an object written during the listing is not yielded, and one deleted during it
+    // still is, as the local-files driver's directory read and a single page of an S3 or Azure listing answer.
+    for (const k of [...this.objects.keys()]) {
       if (k.startsWith(prefix)) {
         yield {
           namespace: ref.namespace,

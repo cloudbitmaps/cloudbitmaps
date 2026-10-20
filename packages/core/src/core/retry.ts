@@ -82,7 +82,7 @@ export function applyJitter(policy: RetryPolicy, delayMs: number, rng: Rng): num
 }
 
 /** A clock that can wait: the one member {@link jitteredWait} uses. */
-interface Sleeper {
+export interface Sleeper {
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 

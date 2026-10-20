@@ -1180,7 +1180,8 @@ export class SegmentEngine {
     if (segs.length === 0) {
       throw new ValidationError(`${op} requires at least one segment`);
     }
-    const limit = options?.concurrency ?? DEFAULT_INTERSECT_CONCURRENCY;
+    const limit =
+      options?.concurrency === undefined ? DEFAULT_INTERSECT_CONCURRENCY : options.concurrency;
     requirePositiveInteger(limit, `${label}: concurrency`);
     // Per-op budget override (else the store budget); resolved before any I/O so a bad value fails fast. A
     // partial override inherits the store's tightening (not the generous default) — see resolvePerOpBudget.
@@ -2023,7 +2024,7 @@ export class SegmentEngine {
    * the read listed the segment's keys: the read then lists them again, and caches as a read begun after the call.
    *
    * The decoded-chunk cache is keyed by generation, which handles a *publish* (the new generation misses) but
-   * not a *destruction*: a segment that was erased from, dropped, shredded or retired has no newer generation
+   * not a *destruction*: a segment that was erased from, dropped, destroyed or retired has no newer generation
    * whose key would miss, so its decoded chunks stay resident and keep answering. That is why the erasing
    * process itself could report `erased: true` and then still answer `true` for the same id, out of RAM, with
    * no storage read to intercept.

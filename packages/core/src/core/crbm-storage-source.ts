@@ -6,7 +6,7 @@
  * per-chunk payloads. The write path lives beside it, in `crbm-write.ts`, `publish.ts` and `bulk-load.ts`, and the
  * opening of a stored generation in `crbm-open.ts`.
  */
-import { requireFiniteNumber, requirePositiveInteger } from './check';
+import { checkRequireEncryption, requireFiniteNumber, requirePositiveInteger } from './check';
 import {
   DEFAULT_CURRENT_GEN_TTL_MS,
   DEFAULT_MAX_OPEN_INDEX_BYTES,
@@ -33,6 +33,7 @@ import { KeptSegmentKeys, segmentKey } from './keys';
 import { aadFor, sameKeys } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import {
+  PORT_KEYS,
   validateChunkKey,
   validateChunkKeyOrder,
   validateChunkRef,
@@ -173,8 +174,9 @@ interface Resolution {
 }
 
 /**
- * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a crypto-shredded
- * one, whose DEK is gone from the row, so no read through it can decrypt its Storage bytes; and a row with no Storage
+ * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a destroyed
+ * one, through which no read resolves a generation (after a crypto-shred its DEK is gone from the row too); and a row
+ * with no Storage
  * generation yet (minted by `setSegmentRetention` ahead of the first load, so admin tools can see the segment), which
  * resolves exactly like a segment with no row. Returning `null` for that last one rather than a generation is the whole reason such a row is safe
  * to create: the alternative, pointing at a generation that does not exist, is the `missing-storage-generation` state.
@@ -389,7 +391,7 @@ function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promi
 
 /** The checks every chunk read starts with: a user's segment, chunk keys that are valid and in ascending order (a key may repeat). */
 function validateRead(ref: SegmentRef, keys: readonly number[]): void {
-  validateUserRef(ref);
+  validateUserRef(ref, 'read', PORT_KEYS);
   // A chunk ref is a copy of this ref, so it carries only the ref's own enumerable names: checked once, not once a key.
   if (keys.length > 0) validateSegmentRef({ ...ref });
   for (const chunkKey of keys) validateChunkKey(chunkKey);
@@ -626,6 +628,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       maxOpenIndexBytes,
       ...readerOptions
     } = options;
+    // Exactly a boolean: a truthy string read as `true` here, and not by the write paths, which compare with `=== true`.
+    checkRequireEncryption(requireEncryption);
+    if (maxOpenSegments !== undefined) requirePositiveInteger(maxOpenSegments, 'maxOpenSegments');
+    if (maxOpenIndexBytes !== undefined) {
+      requirePositiveInteger(maxOpenIndexBytes, 'maxOpenIndexBytes');
+    }
     if (keystore !== undefined && registry === undefined) {
       throw new CapabilityError(
         'a keystore needs a storage backend — that is where the wrapped DEKs live. A bare IStorageDriver has no registry to hold them',
@@ -643,7 +651,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // `0` turns the timed refresh off on purpose. Anything else that is not a finite, non-negative number (`NaN` from an
     // unset variable, a negative, a string) would turn it off too, silently, so another process's load or erasure would
     // never reach a long-lived reader: refused instead.
-    if (currentGenTtlMs !== undefined && currentGenTtlMs !== null) {
+    if (currentGenTtlMs !== undefined) {
       requireFiniteNumber(currentGenTtlMs, {
         min: 0,
         what: 'cache.genTtlMs',
@@ -954,6 +962,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * storage side can close the window; with no registry, no clock or `cache.genTtlMs: 0`, nothing bounds it at all.
    */
   invalidate(ref: SegmentRef): void {
+    validateUserRef(ref, 'read', PORT_KEYS);
     const key = segmentKey(ref);
     this.invalidated.invalidate(key);
     this.snapshots.delete(key);
@@ -1035,7 +1044,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     lease?: PinLease,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     for (let moved = 0; ; moved++) {
       try {
         try {
@@ -1073,7 +1082,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     at: { readonly generation: number; readonly fingerprint: string },
     lease?: PinLease,
   ): Promise<{ generation: number } & Required<PinnedObject>> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     if (typeof (at as Partial<typeof at> | undefined)?.fingerprint !== 'string')
       throw new ValidationError(
         `a pin of segment "${ref.segment}" needs the fingerprint of the object it names`,
@@ -1287,7 +1296,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * the one read path with no resilience.
    *
    * **`status` is re-checked here**, on every open rather than once at pin time. A pin taken before a
-   * crypto-shred must not keep unwrapping a DEK the shred destroyed; a destroyed segment resolves no generation
+   * crypto-shred must not keep unwrapping a DEK whose wrapping the shred removed; a destroyed segment resolves no
+   * generation
    * for anyone, and a pin's read of one fails. That holds from the pin's next open: a reader already open keeps
    * the key it unwrapped until it is evicted or invalidated.
    *
@@ -1367,7 +1377,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     if (this.registry === undefined) return this.openForTarget(ref, { generation });
     // One read of the row, for its status, its incarnation and its key wrappings together.
     const record = await this.registry.get(ref);
-    // Re-checked at open, not captured at pin: a shred between the two must be observed. A row that has gone
+    // Re-checked at open, not captured at pin: a destroy between the two must be observed. A row that has gone
     // takes its key material with it, so there is nothing left to read under any generation.
     if (record === null || record.status === 'destroyed') return null;
     return this.openForTarget(ref, {
@@ -1386,7 +1396,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<Uint8Array | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     if (reader === null) return null;
     if (
@@ -1468,7 +1478,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<number[]> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? [] : reader.chunkKeys();
   }
@@ -1482,7 +1492,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<ReadonlyMap<number, number> | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : reader.cardinalities();
   }
@@ -1493,7 +1503,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<SegmentSize | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
@@ -1501,16 +1511,18 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * Whether the segment is a registered name at all. With a registry: a row that is not a `destroyed` tombstone,
    * including one with no generation yet (minted by `setRetention` before the first load), which somebody deliberately
-   * created. A tombstone holds nothing, so it answers `false`. Without a registry there is no registration to
+   * created. No generation resolves through a tombstone, so it answers `false`. Without a registry there is no
+   * registration to
    * consult, so the honest answer is whether the bucket holds any generation of it.
    *
    * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
    * tell apart.
    */
   async exists(ref: SegmentRef): Promise<boolean> {
-    validateUserRef(ref);
-    // A `destroyed` row is a segment that was dropped, retired or shredded: it holds nothing, so a combine that names it
-    // is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
+    validateUserRef(ref, 'read', PORT_KEYS);
+    // A `destroyed` row is a segment that was dropped, retired, crypto-shredded or destroyed in the clear: no
+    // generation resolves through it, so a combine that names it is refused as one naming a segment that never was,
+    // rather than read as empty. An exclude read empty suppresses
     // nobody. A row with no generation yet (a retention policy set first) still exists.
     if (this.registry !== undefined) {
       const row = await this.registry.get(ref);
@@ -1932,12 +1944,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   async listChunkKeys(ref: SegmentRef): Promise<number[]> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.withFreshSnapshot(ref, (reader) => reader.chunkKeys(), []);
   }
 
   async sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.withFreshSnapshot<SegmentSize | null>(
       ref,
       (reader) => ({ sizeBytes: reader.sizeBytes }),
@@ -1946,7 +1958,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   async cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.withFreshSnapshot<ReadonlyMap<number, number> | null>(
       ref,
       (reader) => reader.cardinalities(),
@@ -1968,7 +1980,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * believed until the next time the object is opened, which holds it against the summary.
    */
   async summary(ref: SegmentRef): Promise<GenerationSummary | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.described(
       ref,
       (generation, row) => summaryOfGeneration(generation, row),
@@ -2019,7 +2031,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<GenerationSummary | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : summaryOfGeneration(reader.generation, describe(reader));
   }
@@ -2034,7 +2046,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * are the generation's the row names, and `checkConsistency` is what finds such a row.
    */
   async stat(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     return this.described<GenerationSummary & SegmentSize>(
       ref,
       (generation, row) => ({
@@ -2051,7 +2063,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<(GenerationSummary & SegmentSize) | null> {
-    validateUserRef(ref);
+    validateUserRef(ref, 'read', PORT_KEYS);
     const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : sizedSummary(reader);
   }
@@ -2074,8 +2086,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    *
    * A *second* NotFound is pathological (GC outrunning resolution) and propagates rather than fabricating an
    * absent answer — never return a wrong result. `ifGone` is returned when the segment has no committed
-   * generation to serve: storage is empty, or the row was dropped or crypto-shredded, in which case reading empty
-   * is the documented outcome rather than a failure.
+   * generation to serve: storage is empty, or the row is destroyed (crypto-shredded, destroyed in the clear or
+   * dropped), in which case
+   * reading empty is the documented outcome rather than a failure.
    *
    * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry
    * re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a

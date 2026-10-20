@@ -11,6 +11,7 @@ CloudBitmaps can report storage GETs and bytes, cache hit rate, retries, interse
 through a **metrics sink**. It is off by default (a no-op: emission is skipped entirely when unused). Pass one and the
 library pushes typed events to it:
 
+<!-- typecheck: backend -->
 ```ts
 import { CloudRoaring, CountingMetricsSink } from '@cloudbitmaps/roaring';
 
@@ -50,6 +51,7 @@ high-water mark), and its `audit` sink fires per output.
 
 A quick look in dev is one line:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `backend` to the reader -->
 ```ts
 const store = new CloudRoaring({ storage: backend, metrics: { onEvent: (e) => console.log(e) } });
 ```
@@ -57,6 +59,7 @@ const store = new CloudRoaring({ storage: backend, metrics: { onEvent: (e) => co
 **OpenTelemetry** (or Datadog, CloudWatch, ...) is a 12-line adapter you write. CloudBitmaps adds no telemetry
 dependency of its own:
 
+<!-- typecheck-skip: a fragment: the page leaves `backend` to the reader; imports `@opentelemetry/api`, which this repository does not install -->
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
@@ -105,6 +108,7 @@ points, so you pass `audit` to each: a load (`store.load`), an `*Into` materiali
 an erasure (`store.eraseSubject`), a drop (`store.dropSegment`), a crypto-shred (`destroySegment`, `eraseNamespace`)
 and the retention sweep (`store.retireExpired`):
 
+<!-- typecheck: store, backend -->
 ```ts
 import { RecordingAuditSink, destroySegment } from '@cloudbitmaps/roaring';
 
@@ -125,10 +129,11 @@ audit.snapshot();
 // [ { kind: 'segment.publish', segment: 'users', incarnation: '3f9c…', generation: 0 },
 //   { kind: 'segment.rewrite', namespace: 'eu', segment: '…', incarnation: 'a71e…', fromGeneration: 4, generation: 5 },
 //   { kind: 'segment.erase',   segment: 'users', incarnation: '3f9c…' } ]
-// (segment.erase fires only for an ENCRYPTED segment — a cleartext tombstone leaves the bytes readable.)
+// (segment.erase fires only for an ENCRYPTED segment. A cleartext tombstone emits segment.tombstone instead: the
+// bytes stay readable.)
 ```
 
-The events are vendor-neutral. There are eight kinds, each carrying the segment's name and namespace, or, for
+The events are vendor-neutral. There are nine kinds, each carrying the segment's name and namespace, or, for
 `namespace.erase`, the namespace's.
 
 Every `segment.*` event also carries `incarnation`, the id of the segment's registry row as the operation found or
@@ -146,10 +151,30 @@ tokens in another form, and on a `segment.load-refused` from a load that found n
 | `segment.load-refused` | a load did not publish (a `materializeMany` dry run emits none, nor any other audit event): a guard refused its result, the segment's row changed while it wrote or appeared where it found none, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0`. `unanswered: true` marks a refusal after a registry write that may have landed: one that got no answer, or, on Azure Blob, one that met a conflict. The generation may then have been current, and read, for a while, or may be current still. On Azure Blob it is set on most `superseded` refusals that lost a race at the registry; on S3, GCS, memory and local files only after a write with no answer | `generation`, `reason`, `cardinality`, and `unanswered` when it applies |
 | `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward onto one an earlier rollback left — the one pointer move no automatic path makes. `unknown: true` marks a move the segment's row did not vouch for: `allowUnknown` was passed for a generation the row does not know or whose object is not the one it recorded, the row has no usable `knownGens`, or the target is older than a full `knownGens` reaches | `fromGeneration`, `generation`, and `unknown` when it applies |
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
-| `segment.collect` | an erasure (`eraseSubject`) found the id only outside the current generation, in a retained older generation, above the pointer after a rollback, in an object left under a tombstone, or in a first load's object on a segment with no generation yet, and deleted the generations holding it without rewriting any; or deleted, whatever the id, only objects no read of the segment can open (a first load's sealed under a key the row does not hold, or encrypted under a cleartext row), which it cannot search and which the ledger then does not list; emitted once a listing of the bucket shows nothing left holding the id | `fromGeneration` (the newest generation that held it; absent when the call found it in none and deleted only objects it could not search), `collected` (every generation the call deleted, ascending) |
+| `segment.collect` | an erasure (`eraseSubject`) found the id only outside the current generation, in a retained older generation, above the pointer after a rollback, in an object left under a tombstone, or in a first load's object on a segment with no generation yet, and deleted the generations holding it without rewriting any; or deleted, whatever the id, only objects no read of the segment can open (a first load's sealed under a key the row does not hold, or encrypted under a cleartext row), which it cannot search and which the ledger then does not list; emitted once a listing of the bucket shows nothing left holding the id (a delete that got no answer counts as made when a read then finds its object gone; [what an erasure's results claim](correctness.md#erasure-results)) | `fromGeneration` (the newest generation that held it; absent when the call found it in none and deleted only objects it could not search), `collected` (every generation the call deleted, ascending) |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
+| `segment.tombstone` | `destroySegment` or `eraseNamespace` with `allowCleartext` turned a segment with no key into a `destroyed` tombstone — not the idempotent re-run. Nothing was deleted and no key was destroyed, so this is not an erasure receipt: it records the tombstone, which a registry restore undoes | `objectsReadable` (always `true`). Not emitted when the write and its read-back both got no answer; see below |
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
 | `namespace.erase` | `eraseNamespace` runs, after every segment is done; also one `segment.erase` per segment actually shredded, emitted as each finishes (segments are shredded eight at a time, so those arrive in no fixed order) | `segmentsShredded` |
+
+**A write that got no answer is audited as one that was answered.** A write that tombstones a segment (a
+crypto-shred, a cleartext destroy or a drop) and lands but loses its response is settled by reading back the row, and
+emits the same events as if the answer had arrived. An erasure's or a drop's storage delete that lands and loses its
+response is settled the same way, by reading back the object. Three outcomes have no event. Two follow a write whose
+answer and read-back were both lost: the call throws `TransientError` (a retirement reports a `fault`), and the tombstone may
+already be there:
+
+- **A crypto-shred.** Its re-run finds the tombstone and answers `'already'` with no `segment.erase`, because the
+  tombstone does not record that it was a crypto-shred. A drop emits `segment.dispose` alone. Record that segment
+  yourself ([encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)).
+- **A cleartext destroy.** Its re-run answers `'already'` with no `segment.tombstone`, ever.
+
+- **An erasure's storage delete** that got no answer, whose check after it failed too or ran before the delete landed,
+  reports `error:`. Its re-run lists nothing for the segment. Keep the entry's error with the ledger as the record of
+  that deletion.
+
+A retention sweep that meets either of the first two emits nothing for the segment, then or when it purges the tombstone. The restore
+procedure's [list of tombstones](disaster-recovery.md#restore-procedure) is how to find them.
 
 The same two caveats as metrics apply. **`onEvent` runs synchronously** on the operation, so keep it cheap and offload
 network writes to your own queue. **`segment` and `namespace` are your own strings**, so treat them as potentially PII

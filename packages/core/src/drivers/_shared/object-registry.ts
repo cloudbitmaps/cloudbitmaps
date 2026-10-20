@@ -62,6 +62,7 @@
  * untrusted). **Recovery:** read the named object, and either restore a valid envelope or delete it; nothing
  * else is damaged, and discovery resumes on its own.
  */
+import { checkRegistryWriteOptions } from './options';
 import {
   IntegrityError,
   TransientError,
@@ -193,7 +194,9 @@ export interface ObjectRegistryStore {
    *
    * Sending it again after a lost response is safe, unlike a write: the precondition names one version, so a second
    * copy can remove nothing the first was not allowed to. A copy that meets its own landed delete fails the
-   * precondition and reports a conflict; the registry re-reads, and finds the row gone.
+   * precondition and reports a conflict; the registry re-reads and finds the row gone. An unfenced delete then returns,
+   * and one fenced on a token reports the conflict, which its caller settles by reading the row (the retention sweep
+   * does).
    *
    * The registry calls it only when {@link conditionalDelete} is `true`.
    */
@@ -275,6 +278,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     record: NewRegistryRecord,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     const checked = validateNewRegistryRecord(record);
     const key = registryObjectKey(this.prefix, ref);
     let lost: unknown;
@@ -336,6 +340,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     patch: RegistryPatch,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     const checked = validateRegistryPatch(patch);
     const key = registryObjectKey(this.prefix, ref);
     // The row the caller read, as this registry read it, when it is the row `expected` names; otherwise read it now.

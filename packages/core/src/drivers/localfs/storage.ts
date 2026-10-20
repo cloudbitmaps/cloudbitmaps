@@ -14,6 +14,7 @@
  * could match a file put under the path since. A lock in this process would close the gap between the two steps, but
  * there would still be no identity to compare, so the driver does not claim the capability. `getTail` reports no version.
  */
+import { checkDeleteOptions } from '../_shared/options';
 import { constants as FS } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { link, open, readdir, unlink } from 'node:fs/promises';
@@ -193,7 +194,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
    * cannot apply one. The parameter is declared so that a wrapper of this driver can hand the port's options on.
    */
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
-    void options;
+    checkDeleteOptions(options);
     // Idempotent: deleting an absent generation is a no-op (GC may race / retry).
     const path = storageObjectPath(this.root, key);
     if (await this.exactCase.differs(path)) return; // another case's object is not this one
