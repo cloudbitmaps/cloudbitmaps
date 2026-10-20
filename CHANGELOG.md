@@ -167,6 +167,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An erasure's, a drop's and a load's collection storage deletes that land and lose their response are now settled by
+  reading the object back.** Before, an `eraseSubject` whose delete of a generation holding the id landed and lost its
+  answer recorded `erased: false` with an `error:` note and no `segment.collect`, and its re-run found nothing, so
+  nothing recorded the deletion; a `dropSegment` undercounted `generationsDeleted` in its result and in
+  `segment.dispose`; a load threw `TransientError` after `segment.publish`. A delete whose object a read then finds gone
+  now counts as deleted. When that read fails too, or the delete lands after it, the call still reports the fault, and
+  the guides say to keep the error as the record. A default GCS store sends every storage delete once, so it had the
+  most exposure.
+
 - **A crypto-shred (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement) and a drop's tombstone
   for a segment with no row, whose write lands and loses its response, are now settled by the write token, and report
   and audit the shred.** A cleartext destroy (`allowCleartext`) whose answer is lost is settled the same way, and a

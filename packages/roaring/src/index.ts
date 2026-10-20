@@ -655,8 +655,8 @@ export interface SubjectErasureEntry {
    * could not prove the segment was still the same one, or a generation still holding the id when the bucket was
    * listed at the end, whether or not a rewrite was published first — also re-runs, but **read what the re-run
    * says**: it usually reports `erased: true` against the generation it found the id in, it reports
-   * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
-   * receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
+   * nothing at all if a racing collector took that generation first, or this call's own delete of it landed after a
+   * fault the call could not settle (the bit is gone, but no run holds a receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
    * left in its bucket is an orphan, which `store.generations(ref)` lists and `store.dropSegment(ref, {
    * confirmSegment })` deletes; `checkConsistency` and the collection a load runs read rows, so neither reaches it.
    * **Segments the id is not in

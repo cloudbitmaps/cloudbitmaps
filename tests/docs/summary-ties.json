@@ -633,12 +633,6 @@
     },
     {
       "file": "docs/guide/erasure.md",
-      "claim": "row-write-settled",
-      "sentence": "b04d197c9047",
-      "starts": "The storage failed under it, or a registry"
-    },
-    {
-      "file": "docs/guide/erasure.md",
       "claim": "deleting-call-detects",
       "sentence": "173efc363787",
       "starts": "A rollback landed between the erasure's read of"
@@ -816,12 +810,6 @@
       "claim": "two-ratio-bounds",
       "sentence": "b5fc7b12b56e",
       "starts": "Math.max(1.5, 1 + 1000 / before) : 0"
-    },
-    {
-      "file": "docs/guide/observability.md",
-      "claim": "erasure-results",
-      "sentence": "0d8ccfcdfdd0",
-      "starts": "an erasure (eraseSubject) found the id only outside"
     },
     {
       "file": "docs/guide/production.md",
