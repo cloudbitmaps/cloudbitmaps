@@ -19,8 +19,9 @@ const TOOLS = fileURLToPath(new URL('./packages/tools/src', import.meta.url));
 export default defineConfig({
   test: {
     globals: true,
-    // Configures fast-check once for all eight property suites: verbose counterexamples, and `FC_SEED` to
-    // replay a CI failure locally. See the file for why the seed stays random by default.
+    // Configures fast-check for every property suite: verbose counterexamples, a seed per test that is printed
+    // before its first property runs (`FC_SEED` replays it), and a time limit on each property so a hang fails
+    // naming its seed. See the file for why the seed stays random by default.
     setupFiles: ['tests/setup-fast-check.ts'],
     exclude: ['tests/integration/**', 'node_modules/**'],
     passWithNoTests: false,

@@ -194,7 +194,9 @@ export interface ObjectRegistryStore {
    *
    * Sending it again after a lost response is safe, unlike a write: the precondition names one version, so a second
    * copy can remove nothing the first was not allowed to. A copy that meets its own landed delete fails the
-   * precondition and reports a conflict; the registry re-reads, and finds the row gone.
+   * precondition and reports a conflict; the registry re-reads and finds the row gone. An unfenced delete then returns,
+   * and one fenced on a token reports the conflict, which its caller settles by reading the row (the retention sweep
+   * does).
    *
    * The registry calls it only when {@link conditionalDelete} is `true`.
    */

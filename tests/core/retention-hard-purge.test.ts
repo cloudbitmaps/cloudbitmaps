@@ -33,6 +33,7 @@ import { tokenParts } from '../helpers/tokens';
 import { testEntropy } from '../helpers/entropy';
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
 const T0 = 1_790_000_000_000;
 /**
  * A two-day retention, and a ten-day grace before a tombstone is purged. The grace must stay longer than a day, the
@@ -342,7 +343,7 @@ describe('races and faults: the purge removes only the row it judged', () => {
     expect(left).toEqual([0]);
   });
 
-  it('a delete that lands and loses its response is a fault: nothing else is deleted, and the next sweep settles it', async () => {
+  it('a delete that lands and loses its response is reported as the purge it was, and its pointer goes with it', async () => {
     const w = world();
     const ref = { namespace: 'n', segment: 'day' };
     const tomb = await due(w, ref);
@@ -353,17 +354,8 @@ describe('races and faults: the purge removes only the row it judged', () => {
       now: w.now(),
       tombstoneGraceMs: GRACE,
     });
-    expect(first.entries).toEqual([
-      { ...ref, action: 'skipped', reason: 'failed: connection reset after the delete' },
-    ]);
-    // The outcome was not known, so the pointer was left for the next sweep to find.
-    expect(await bucketRows(w, pointerDay)).toHaveLength(1);
-    const next = await retireExpired(w.deps, {
-      scan: 'index',
-      now: w.now(),
-      tombstoneGraceMs: GRACE,
-    });
-    expect(next.entries).toEqual([]); // the row had gone: the pointer is litter, and is removed
+    expect(first.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
+    expect(first.purgeFaults).toBe(0);
     expect(await bucketRows(w, pointerDay)).toEqual([]);
     expect(registryObjects(w)).toBe(0);
   });
@@ -413,8 +405,9 @@ describe('races and faults: the purge removes only the row it judged', () => {
             straddled = true;
             // While this load writes, the segment expires, is retired, purged, and loaded anew by someone else.
             w.advance(RETENTION + 1);
-            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
-            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
+            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
+            w.advance(HOUR);
+            await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
             expect(await w.registry.get(ref)).toBeNull();
             await store.load(ref, [7]);
           }
@@ -1069,27 +1062,6 @@ describe('a purge pointer that outlives its row is removed by the unscoped fleet
     expect(registryObjects(w)).toBe(0);
   });
 
-  it('a delete that landed and lost its response: the next unscoped scan finds the pointer to nothing and removes it', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'day' };
-    const filedUnder = await retired(w, ref, GRACE);
-    w.advance(GRACE);
-    w.store.landThenFailDelete = new TransientError('connection reset after the delete');
-    const first = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    expect(first.entries).toEqual([
-      { ...ref, action: 'skipped', reason: 'failed: connection reset after the delete' },
-    ]);
-    expect(await w.registry.get(ref)).toBeNull(); // it landed
-    expect(await bucketRows(w, filedUnder)).toHaveLength(1); // outcome unknown, so the pointer was kept
-
-    const next = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    expect(next.entries).toEqual([]);
-    expect(await bucketRows(w, filedUnder)).toEqual([]);
-    expect(registryObjects(w)).toBe(0);
-    const after = await readsOf(w, () => retireExpired(w.deps, { now: w.now() }));
-    expect(after.reads).toBe(0); // read once, and gone
-  });
-
   it('a pointer older than the lookback, which no index scan reaches, is removed by the unscoped fleet scan', async () => {
     const w = world();
     const ref = { namespace: 'n', segment: 'day' };
@@ -1322,9 +1294,10 @@ describe('a load that collects by name meets a row the purge removed', () => {
     await atFour(w, T0 + RETENTION);
     w.advance(RETENTION + 1);
     const registry = afterPublish(w, async () => {
-      // A retirement drops the segment (tombstone, then every object), and with no grace the next sweep purges the row.
-      await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
-      const purged = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
+      // A retirement drops the segment (tombstone, then every object), and with the shortest grace the sweep an hour later purges the row.
+      await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
+      w.advance(HOUR);
+      const purged = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: HOUR });
       expect(purged.tombstonesPurged).toBe(1);
       expect(await w.registry.get(ref)).toBeNull();
     });

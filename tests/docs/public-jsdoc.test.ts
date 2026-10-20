@@ -473,6 +473,7 @@ describe('the surface gate takes its entry points from the packages', () => {
       '@cloudbitmaps/azure-blob',
       '@cloudbitmaps/core',
       '@cloudbitmaps/core/driver-kit',
+      '@cloudbitmaps/core/node',
       '@cloudbitmaps/gcs',
       '@cloudbitmaps/roaring',
       '@cloudbitmaps/s3',

@@ -6,6 +6,8 @@ import { S3StorageDriver } from '@/s3/storage';
 import { loadSegment } from '@/core/load';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+import { S3Storage } from '@/s3/backend';
+import { CloudRoaring, errorKind } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { STUB_BUCKET, StubS3Bucket, type FaultKind } from '../../helpers/s3-bucket-stub';
 import { testEntropy } from '../../helpers/entropy';
@@ -95,6 +97,14 @@ describe('S3: which answers are a throttle, on the error the real SDK raises', (
     const err = await capture({ status: 503, code: 'ServiceUnavailable' });
     expect((err as { name?: string }).name).toBe('ServiceUnavailable');
     expect(isThrottle(err)).toBe(true);
+  });
+
+  it('a bare 429 is a throttle too, and transient', async () => {
+    const err = await capture({ status: 429, code: 'TooManyRequests' });
+    expect((err as { name?: string }).name).toBe('TooManyRequests');
+    expect(isThrottle(err)).toBe(true);
+    expect(isTransient(err)).toBe(true);
+    expect(isConditionalConflict(err)).toBe(false);
   });
 
   it.each<[string, FaultKind]>([
@@ -399,6 +409,17 @@ describe('S3: a registry row is sent once, whatever the answer', () => {
     ).rejects.toBeInstanceOf(TransientError);
     expect(bucket.count('PutObject', isRow)).toBe(2); // the create, then the swap once
   });
+
+  it('a compare-and-swap answered with a bare 429 is the same: sent once, then TransientError', async () => {
+    const bucket = new StubS3Bucket();
+    const registry = new S3RegistryDriver({ client: bucket.client(), bucket: STUB_BUCKET });
+    const { token } = await registry.create({ segment: 's' }, { currentGen: 0 });
+    bucket.arm('PutObject', { status: 429, code: 'TooManyRequests' }, isRow);
+    await expect(
+      registry.compareAndSwap({ segment: 's' }, token, { currentGen: 1 }),
+    ).rejects.toBeInstanceOf(TransientError);
+    expect(bucket.count('PutObject', isRow)).toBe(2);
+  });
 });
 
 describe('S3: a load whose writes are throttled, through the real SDK', () => {
@@ -426,6 +447,25 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
     const r = await loadSegment(SEG, [1, 2], deps);
     expect(r).toMatchObject({ generation: 1, published: true });
     expect(bucket.count('PutObject', isObject)).toBe(3); // the first load's, then this one's twice
+  });
+
+  it('an object answered once with a bare 429 is sent again, and the load publishes', async () => {
+    const { bucket, deps } = store();
+    await loadSegment(SEG, [1], deps);
+    bucket.arm('PutObject', { status: 429, code: 'TooManyRequests' }, isObject);
+    const r = await loadSegment(SEG, [1, 2], deps);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    expect(bucket.count('PutObject', isObject)).toBe(3);
+  });
+
+  it('a row answered once with a bare 429 is settled by the publish, and the load publishes', async () => {
+    const { bucket, deps } = store();
+    await loadSegment(SEG, [1], deps);
+    bucket.arm('PutObject', { status: 429, code: 'TooManyRequests' }, isRow);
+    const r = await loadSegment(SEG, [1, 2], deps);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    expect(bucket.count('DeleteObject')).toBe(0);
+    expect((await deps.registry.get(SEG))!.currentGen).toBe(1);
   });
 
   it('an object throttled on every send throws TransientError, deletes nothing, and leaves the row where it was', async () => {
@@ -505,5 +545,46 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
     expect((await deps.registry.get(SEG))!.currentGen).toBe(1);
     expect(bucket.objects.has('_default/segments/s.1.crbm')).toBe(true);
     expect(bucket.count('DeleteObject')).toBe(0);
+  });
+});
+
+describe('S3: reads answered with a bare 429, through the real SDK', () => {
+  const T429 = { status: 429, code: 'TooManyRequests' } as const;
+  const arm429 = (bucket: StubS3Bucket): void => {
+    for (let i = 0; i < 100; i++) bucket.arm('GetObject', T429, isRow);
+  };
+
+  it('a row read that is answered 429 on every attempt is a TransientError, after the store retries it', async () => {
+    const bucket = new StubS3Bucket();
+    const make = () =>
+      new CloudRoaring({
+        storage: new S3Storage({ bucket: STUB_BUCKET, client: bucket.client() }),
+      });
+    await make().load({ segment: 's' }, [1, 2, 3]);
+    const before = bucket.count('GetObject', isRow);
+    arm429(bucket);
+    const err = await make()
+      .segment('s')
+      .has(1)
+      .catch((e: unknown) => e);
+    expect(errorKind(err)).toBe('TransientError');
+    // The store's read retry ran it again past the SDK's own three attempts.
+    expect(bucket.count('GetObject', isRow) - before).toBeGreaterThan(3);
+  });
+
+  it('a pointer refresh answered 429 rides out on the generation already read', async () => {
+    const bucket = new StubS3Bucket();
+    let t = 0;
+    const cr = new CloudRoaring({
+      storage: new S3Storage({ bucket: STUB_BUCKET, client: bucket.client() }),
+      seams: { clock: { now: () => t, sleep: async () => {} } },
+      cache: { genTtlMs: 1_000 },
+    });
+    await cr.load({ segment: 's' }, [1, 2, 3]);
+    const seg = cr.segment('s');
+    expect(await seg.has(2)).toBe(true);
+    t += 5_000; // past the cached pointer's lifetime: the next read refreshes it
+    arm429(bucket);
+    expect(await seg.has(2)).toBe(true);
   });
 });

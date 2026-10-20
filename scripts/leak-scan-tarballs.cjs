@@ -11,6 +11,9 @@
 // recipe, executable and wired into CI and the release gate, because a recipe a human has to remember to run
 // is not a gate.
 //
+// It also reads each packed `package.json` (`scripts/lib/family-manifest.cjs`): the family must be pinned at exact
+// versions in what ships, which only a packed manifest shows, since pnpm writes the version at pack time.
+//
 // Why it must run BEFORE `pnpm publish`: an npm tarball is immutable outside the 72-hour unpublish window.
 // There is no "fix it in the next patch" for a string that has already shipped — the old version stays
 // downloadable. This is the last point at which a leak is still cheap.
@@ -97,6 +100,15 @@ try {
     if (!existsSync(tree)) throw new Error(`unpacked ${tarballs[0]} has no package/ directory`);
 
     console.log(`\n── ${pkg.name} (${tarballs[0]}) ──`);
+    // The packed manifest is what a consumer installs from: it must name the rest of the family at exact
+    // versions (pnpm turns `workspace:*` into one) and export its own package.json.
+    const packed = JSON.parse(readFileSync(join(tree, 'package.json'), 'utf8'));
+    const manifestProblems = require('./lib/family-manifest.cjs').manifestProblems(
+      packed,
+      pkgs.map((p) => p.name),
+    );
+    for (const problem of manifestProblems) console.error(`packed manifest: ${problem}`);
+    if (manifestProblems.length > 0) failures++;
     try {
       run('node', [join(ROOT, 'scripts', 'leak-scan.cjs'), ...strict, '--dir', tree], ROOT);
     } catch {

@@ -5,6 +5,7 @@ import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import {
   DEFAULT_LOOKBACK_BUCKETS,
   DEFAULT_RETIRE_LIMIT,
+  MIN_TOMBSTONE_GRACE_MS,
   SweepTally,
   resolveRetireOptions,
 } from '@/core/retention-sweep';
@@ -35,7 +36,7 @@ describe('resolveRetireOptions', () => {
       now: NOW,
       limit: 5,
       purgeTombstones: false,
-      tombstoneGraceMs: 0,
+      tombstoneGraceMs: 3_600_000,
       scan: 'index',
       lookbackBuckets: 3,
       shards,
@@ -45,7 +46,7 @@ describe('resolveRetireOptions', () => {
     expect(resolved).toMatchObject({
       limit: 5,
       purgeTombstones: false,
-      grace: 0,
+      grace: 3_600_000,
       scan: 'index',
       lookbackBuckets: 3,
       shards,
@@ -70,9 +71,53 @@ describe('resolveRetireOptions', () => {
     [{ now: NOW, limit: 0 }, /`limit`/],
     [{ now: NOW, tombstoneGraceMs: -1 }, /`tombstoneGraceMs`/],
     [{ now: NOW, maxScanSegments: 0 }, /`maxScanSegments`/],
+    [{ now: NOW, scan: 'bogus' as never }, /`scan` must be 'fleet' or 'index'; got "bogus"/],
+    [{ now: NOW, scan: 'idnex' as never }, /`scan` must be 'fleet' or 'index'; got "idnex"/],
+    [{ now: NOW, scan: 'Index' as never }, /`scan` must be 'fleet' or 'index'; got "Index"/],
+    [{ now: NOW, scan: null as never }, /`scan` must be 'fleet' or 'index'; got null/],
+    [
+      { now: NOW, lookbackBuckets: -1 },
+      /`lookbackBuckets` must be an integer from 0 to 3660 .*; got -1/,
+    ],
+    [{ now: NOW, lookbackBuckets: 'x' as never }, /`lookbackBuckets` must be an integer/],
+    [{ now: NOW, lookbackBuckets: null as never }, /`lookbackBuckets` must be an integer/],
+    [
+      { now: NOW, scan: 'index' as const, lookbackBuckets: 1.5 },
+      /`lookbackBuckets` must be an integer/,
+    ],
+    [
+      { now: NOW, tombstoneGraceMs: 0 },
+      /`tombstoneGraceMs` must be a finite number of at least 3600000 \(one hour: .*; got 0$/,
+    ],
+    [{ now: NOW, tombstoneGraceMs: 3_599_999 }, /at least 3600000 .*; got 3599999$/],
+    [{ now: NOW, tombstoneGraceMs: Infinity }, /`tombstoneGraceMs` must be a finite number/],
+    [{ now: NOW, limit: null as never }, /`limit` must be an integer/],
+    [{ now: NOW, tombstoneGraceMs: null as never }, /`tombstoneGraceMs` must be a finite number/],
+    [{ now: NOW, shards: [], totalShards: 2 }, /shards is empty/],
+    [{ now: NOW, shards: [0, 0], totalShards: 2 }, /shard 0 is listed twice/],
+    [{ now: NOW, shards: [0, 1, 1], totalShards: 3 }, /shard 1 is listed twice/],
   ])('refuses %j', (options, message) => {
     expect(() => resolveRetireOptions(options)).toThrow(ValidationError);
     expect(() => resolveRetireOptions(options)).toThrow(message);
+  });
+
+  it('takes a tombstoneGraceMs of exactly one hour, and refuses it with purging off too', () => {
+    expect(MIN_TOMBSTONE_GRACE_MS).toBe(3_600_000);
+    expect(resolveRetireOptions({ now: NOW, tombstoneGraceMs: MIN_TOMBSTONE_GRACE_MS }).grace).toBe(
+      3_600_000,
+    );
+    expect(() =>
+      resolveRetireOptions({ now: NOW, tombstoneGraceMs: 1_000, purgeTombstones: false }),
+    ).toThrow(/at least 3600000/);
+    expect(() => resolveRetireOptions({ now: NOW, tombstoneGraceMs: 1_000, dryRun: true })).toThrow(
+      /at least 3600000/,
+    );
+  });
+
+  it('takes a lookbackBuckets of 0 and each scan', () => {
+    expect(resolveRetireOptions({ now: NOW, lookbackBuckets: 0 }).lookbackBuckets).toBe(0);
+    expect(resolveRetireOptions({ now: NOW, scan: 'fleet' }).scan).toBe('fleet');
+    expect(resolveRetireOptions({ now: NOW, scan: 'index' }).scan).toBe('index');
   });
 
   it('reports the first bad option in the order the checks run', () => {

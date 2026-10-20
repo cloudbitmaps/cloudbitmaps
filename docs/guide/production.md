@@ -13,7 +13,7 @@ checklist: work down the table, and follow each link for the detail.
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes and is strongly consistent, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten, and a check that a delete landed can be wrong. `store.preflight()` checks that a second write is refused and that a read and a listing see a write, not the registry's `If-Match` or a read after a delete | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
 | Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing, and times the [lifecycle check](#check-the-lifecycle-rules-from-code)'s one read only when `readTimeoutMs` is set: at the default of `0` that read is untimed, and `store.preflight()` gives up on it after 30 seconds | [Reliability](#reliability-retries-backoff--timeouts) |
-| Your job re-runs a write after a transient error | A write is retried for you only where that is safe: a throttled S3 or GCS object, and a registry write that went unanswered. Any other transient fault reaches you as `TransientError` | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your job re-runs a write after a transient error | A write is sent again for you only where that is safe: a [throttled S3 or GCS object](correctness.md#object-write-resent), and the registry write of a `load`, an `*Into` verb, an erasure's rewrite or an erasure's write to the row when the row shows it did not land. Every other write that gets no answer is [settled by reading back](correctness.md#row-write-settled) its row or its object, and one that landed is reported as landed ([what each settles](correctness.md#settle-by-read-back)). A `TransientError` reaches you for a write the read-back shows did not land, when the read-back failed too, or on a registry that reports no write tokens, which reads nothing back: run the call again. | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
 | Metrics and audit sinks are wired to your stack | Both are off by default | [Observability](observability.md) |
@@ -24,6 +24,7 @@ checklist: work down the table, and follow each link for the detail.
 
 Run it once on a first run or at deploy time, before the first load, under the identity the store will run with:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `S3Storage` to the reader -->
 ```ts
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'cr' }) });
 const report = await store.preflight();
@@ -228,6 +229,7 @@ the store keeps. `checkLifecycle` is optional on a `StorageBackend`, so on a val
 `?.`; on every backend this library ships (`S3Storage`, `GcsStorage`, `AzureBlobStorage`, `MemoryStorage` and
 `LocalFsStorage`) it is always there:
 
+<!-- typecheck-skip: a fragment: the page leaves `S3Storage` to the reader -->
 ```ts
 const backend = new S3Storage({ bucket: 'bitmaps', prefix: 'cr' });
 const verdict = await backend.checkLifecycle();
@@ -324,6 +326,7 @@ query retries those transient faults with bounded exponential backoff and full j
 and the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` itself.
 It is on by default.
 
+<!-- typecheck: backend -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
@@ -332,6 +335,7 @@ const store = new CloudRoaring({ storage: backend }); // reads already retry
 
 Tune the policy, or turn it off. The policy is partial, so name only what you change; `onRetry` goes in the same group:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `backend`, `log` to the reader -->
 ```ts
 const store = new CloudRoaring({
   storage: backend, // an S3Storage, GcsStorage, ...
@@ -372,6 +376,7 @@ client that has no such option. Measured against a local server that accepts a r
 a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s.
 **`readTimeoutMs` on `GcsStorage` does bound it, and it is off unless you set it:**
 
+<!-- typecheck -->
 ```ts
 import { GcsStorage } from '@cloudbitmaps/gcs';
 
@@ -440,6 +445,7 @@ and a throttled read throws the timeout rather than the 503. The store's read re
 stub answering two 503s and then the data, a read with `readTimeoutMs: 2_000` timed out after 2.0 s, and `has()` through
 the store returned after 4.0 s, as it did with the timeout off.
 
+<!-- typecheck-skip: a fragment: the page leaves `AzureBlobStorage`, `containerClient` to the reader -->
 ```ts
 const backend = new AzureBlobStorage({ containerClient, readTimeoutMs: 2_000 });
 ```
@@ -458,6 +464,7 @@ backoff, about 8.35 s, rather than hanging. That bound is derived, not measured:
 and 200 ms between them, and one timed-out request per attempt; any request earlier in the same attempt that did
 answer adds its own time.
 
+<!-- typecheck -->
 ```ts
 import { S3Storage } from '@cloudbitmaps/s3';
 
@@ -475,6 +482,7 @@ worst queueing your concurrency implies, which is about the concurrent reads div
 read takes (8,000 ÷ 50 × 50 ms is 8 s on a client with 50 sockets; derived), or raise `maxSockets`. A registry listing keeps up to 48 row reads open at once, so on a client you pass, at the SDK's 50 sockets, your own concurrent reads may wait for a socket while a listing runs, and that wait counts toward `readTimeoutMs`; the client the store builds has 128. The client the store builds takes it
 as an option; a client you pass is yours to set:
 
+<!-- typecheck-skip: a fragment: the page leaves `S3Storage` to the reader -->
 ```ts
 const backend = new S3Storage({ bucket: 'my-bitmaps', maxSockets: 256 });
 ```
@@ -487,6 +495,7 @@ the settings the SDK's defaults mode would have given it (the `connectionTimeout
 one): pass those yourself if you rely on them, or let `S3Storage` build the client and set `maxSockets` on it, which
 changes the limit and nothing else.
 
+<!-- typecheck-skip: imports `@smithy/node-http-handler`, which this repository does not install -->
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
@@ -550,6 +559,7 @@ times no write, because a write abandoned in flight can still land after it was 
 or listing, on any backend. On S3 a timeout on your client turns a hung write or listing into a transient fault,
 which for a write is yours to re-run. Build the client with the timeout and pass it to the backend:
 
+<!-- typecheck-skip: imports `@smithy/node-http-handler`, which this repository does not install -->
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
@@ -573,17 +583,16 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 
 | Calls | Retried for you? |
 |---|---|
-| Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` | Yes, with backoff; `retry` tunes it |
-| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | Only where it is safe, and not by `retry`: a throttled write-once object on S3 and GCS is sent again, and a registry write that got no answer is settled by reading the row and, if nothing changed, sent again as a fresh compare-and-swap (at most three, after a wait; [a load's writes](correctness.md#when-a-write-is-throttled-or-gets-no-answer)). Any other transient fault reaches you: run the call again. The reads they make along the way are retried, with backoff: a load guard's read of the current generation, and an erasure's reads of the generation it rewrites, of the one it wrote, and of any other that may still hold the id |
+| Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()`; and the search `subjectReport` and `eraseSubject` make under a destroyed segment, its listing included | Yes, with backoff; `retry` tunes it |
+| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | Settled, and sent again only where it is safe, never by `retry`. A [throttled write-once object](correctness.md#object-write-resent) on S3 and GCS is sent again. A registry write that gets no answer is settled by [reading the row](correctness.md#row-write-settled), and through the store the read-back waits between its reads (the store passes a sleeping clock; a direct call into core's internal entry with no clock does not wait). The publish of a `load`, an `*Into` verb or an erasure's rewrite, and an erasure's write to the row before it deletes, are sent again as a fresh compare-and-swap when the row shows they did not land (at most three, after a wait; [a load's writes](correctness.md#when-a-write-is-throttled-or-gets-no-answer)). Every other lifecycle write counts as landed when the row shows its write token: the crypto-shred of `destroySegment`, `eraseNamespace`, `dropSegment` and a sweep's retirement, a drop's tombstone, `setRetention`, `clearRetention`, and a `rollback`'s move and its move back. A delete that gets no answer is settled by reading back what it removed: a sweep's delete of a tombstone or a due-index pointer counts as done when the row is gone, and a storage delete (a load's collection, an erasure's, a drop's sweep) when its object is gone (an erasure's, when another object is under the number, as a refusal). Any other outcome reaches you as the `TransientError`: run the call again. It can still have landed when the read-back failed too, a delete can land after its check, and a registry that reports no write tokens cannot show a write by its token; [what a re-run then answers](correctness.md#settle-by-read-back) lists each case. The reads they make along the way are retried, with backoff: a load guard's read of the current generation, and an erasure's reads of the generation it rewrites, of the one it wrote, and of any other that may still hold the id |
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
 would find itself already there and report a conflict. So [the S3 and GCS drivers send a conditional write
-once](correctness.md#sdk-retry), and again only where an id it carries tells a replay apart (a throttled object), and [a
-load or a rollback settles an unanswered registry write by reading the row](correctness.md#row-write-settled). Two GCS
+once](correctness.md#sdk-retry), and again only where an id it carries tells a replay apart (a throttled object), and [every write settles an unanswered registry write by reading the row](correctness.md#row-write-settled). Two GCS
 writes keep the SDK's retry: a resumable upload (an object above `simpleUploadThresholdBytes`), which carries the same
 id, and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to send twice (a copy that meets
-the first's landed delete reads as a lost race, and a re-read settles it). Azure Blob's
+the first's landed delete reads as a lost race, and the retention sweep, which sends that delete, settles it by reading the row and finding it gone). Azure Blob's
 client retry can replay any write, a registry row included: [the id tells a replay from another writer's
 object](correctness.md#tagged-writes), and for a row that read-back is not definitive ([how retries stay
 correct](correctness.md#how-retries-stay-correct)). A fault those do not settle reaches you as `TransientError`, and
@@ -605,6 +614,16 @@ To learn whether an attempt landed, check instead of replaying: compare `store.g
 before the call. A new current generation is a publish that landed. A new one above the current is an object that
 landed unpublished. While another writer is active on the segment, the listing cannot say whose either one is.
 `generations` is not retried either, so a fault there means asking again.
+
+### A write that gets no answer
+
+A lifecycle write that gets no answer [reads back its row](correctness.md#row-write-settled) or [its object](correctness.md#settle-by-read-back), and counts as landed when what it reads carries
+its own mark: [a crypto-shred](correctness.md#settle-shred), [a drop's tombstone](correctness.md#settle-tombstone),
+[a retention write](correctness.md#settle-retention) and [a rollback's move and its move
+back](correctness.md#settle-rollback) by the write's token, [a sweep's purge](correctness.md#settle-sweep) by the row
+being gone, and [a storage delete](correctness.md#settle-storage-delete) by the object being gone. Each read-back waits
+between its reads through the store. [What each settles](correctness.md#a-write-that-gets-no-answer), and what a re-run
+then answers, is in the guide to how it stays correct.
 
 ## Schedule the work
 
@@ -633,6 +652,7 @@ calls one operation may fan out to and throws `BudgetExceededError` instead of r
 at 1,000,000 units. Lower it on untrusted or multi-tenant surfaces. Raise it, or pass `budget: false`, for trusted
 bulk jobs.
 
+<!-- typecheck-skip: a fragment: the page leaves `backend`, `hugeIds`, `otherIds` to the reader -->
 ```ts
 import { CloudRoaring, BudgetExceededError } from '@cloudbitmaps/roaring';
 
@@ -656,6 +676,7 @@ try {
 The operations that take options (the combines, `subjectReport`, `eraseSubject`) accept a per-call override. A
 partial override inherits the store ceiling; it never resets it to the default:
 
+<!-- typecheck-skip: a fragment: the page leaves `userId` to the reader -->
 ```ts
 // tighten or lift the ceiling for one call:
 await store.subjectReport(userId, { namespace: 'eu', budget: { maxRequests: 5_000 } });
@@ -670,7 +691,7 @@ scan), `limit` is the bound that was in force and `spent` is what the call had r
 on the option:
 
 - `'budget.maxRequests'`: the requests a plan needs. Raising the budget to it lets the call through, except for an
-  enumeration stopped at its bound (`subjectReport`, `eraseSubject`'s scan), which reports `limit + 1`, a lower bound:
+  enumeration stopped at its bound (`subjectReport`, `eraseSubject`'s scan), and a `subjectReport` refused while it searches a destroyed segment, which report `limit + 1`, a lower bound:
   raising the budget to it can be refused again, so raise it with room to spare.
 - `'maxBufferedBytes'`: a **lower bound** on the memory the call needs, namely what it held plus what it asked for at the
   moment it was refused. Raising the limit to `spent` can be refused again further on, because the call had not finished
@@ -692,6 +713,12 @@ that hold the key, so a large suppression list is not charged for keys it cannot
 (an `intersect` of two or more segments) is still charged a unit for each such key, though a batch sends fewer requests than it has keys. Bytes need no separate
 limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads no
 payload: it answers from the row's summary, or from the index when the row has none it can use, so it approaches the ceiling only on a source that cannot serve cardinalities.
+
+`subjectReport` charges one unit per registered segment too, and, for each destroyed segment in scope, one for each
+object it opens under it beyond the one the row names (a segment's own listing and that open are in its unit). A drop
+that deleted everything costs 1 listing; a cleartext destroy with 3 objects, 7 requests; 10 objects, 21, of which 10 are
+budget units when the id is only in the oldest. A report that runs out throws `BudgetExceededError`, never a short
+answer, with `spent` at `limit + 1`, a lower bound: raise the budget with room to spare.
 
 `eraseSubject` charges one unit per registered segment, and one for each generation it opens beyond the one the
 row names. Only the enumeration can refuse the whole call. A segment that runs the budget out during the scan is

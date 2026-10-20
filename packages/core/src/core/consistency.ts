@@ -7,8 +7,8 @@
  * the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
- * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
- * gone/unreadable, not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
+ * Read-only; bounded fan-out. `destroyed` segments are skipped: no generation resolves through one, so a missing
+ * object under it is not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
  * `errored` (never aborts the scan). One segment can add several entries to `inconsistent` (its current object, and with
  * `generations` one per known generation whose object is not the one recorded) and can also be in `errored`, when a
  * read failed after those were found; with `generations` a segment costs up to one read per entry of its ledger.
@@ -431,7 +431,8 @@ export async function runConsistencyCheck(
   if (options.generations !== undefined && typeof options.generations !== 'boolean') {
     throw new ValidationError(`generations must be a boolean; got ${String(options.generations)}`);
   }
-  const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
+  const concurrency =
+    options.concurrency === undefined ? DEFAULT_CHECK_CONCURRENCY : options.concurrency;
   // Fail fast before the (possibly huge) registry scan, not after.
   requirePositiveInteger(concurrency, 'concurrency');
   // Only an absent value means the default: a `null` or a malformed one is refused by the scan, as a malformed `budget` is.
@@ -450,7 +451,7 @@ export async function runConsistencyCheck(
     recs,
     concurrency,
     async (rec): Promise<SegmentResult> => {
-      if (rec.status === 'destroyed') return NOTHING; // Storage intentionally gone — not a torn restore
+      if (rec.status === 'destroyed') return NOTHING; // no generation resolves through it — not a torn restore
       const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
       let live: RegistryRecord | null;
       let current: Outcome;
@@ -459,7 +460,7 @@ export async function runConsistencyCheck(
         // enumeration may have read eventually-consistently and can lag the live pointer. `rec` is used only to
         // enumerate + skip destroyed segments.
         live = await deps.registry.get(ref);
-        if (!live || live.status === 'destroyed') return NOTHING; // vanished/shredded — no live pointer
+        if (!live || live.status === 'destroyed') return NOTHING; // vanished or destroyed — no live pointer
         // A row with no Storage generation is *deliberately* Storage-less — a retention policy recorded before the first
         // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing
         // can be missing. Reporting it

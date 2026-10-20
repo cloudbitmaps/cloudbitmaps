@@ -6,7 +6,7 @@
  * per-chunk payloads. The write path lives beside it, in `crbm-write.ts`, `publish.ts` and `bulk-load.ts`, and the
  * opening of a stored generation in `crbm-open.ts`.
  */
-import { requireFiniteNumber, requirePositiveInteger } from './check';
+import { checkRequireEncryption, requireFiniteNumber, requirePositiveInteger } from './check';
 import {
   DEFAULT_CURRENT_GEN_TTL_MS,
   DEFAULT_MAX_OPEN_INDEX_BYTES,
@@ -174,8 +174,9 @@ interface Resolution {
 }
 
 /**
- * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a crypto-shredded
- * one, whose DEK is gone from the row, so no read through it can decrypt its Storage bytes; and a row with no Storage
+ * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a destroyed
+ * one, through which no read resolves a generation (after a crypto-shred its DEK is gone from the row too); and a row
+ * with no Storage
  * generation yet (minted by `setSegmentRetention` ahead of the first load, so admin tools can see the segment), which
  * resolves exactly like a segment with no row. Returning `null` for that last one rather than a generation is the whole reason such a row is safe
  * to create: the alternative, pointing at a generation that does not exist, is the `missing-storage-generation` state.
@@ -627,6 +628,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       maxOpenIndexBytes,
       ...readerOptions
     } = options;
+    // Exactly a boolean: a truthy string read as `true` here, and not by the write paths, which compare with `=== true`.
+    checkRequireEncryption(requireEncryption);
+    if (maxOpenSegments !== undefined) requirePositiveInteger(maxOpenSegments, 'maxOpenSegments');
+    if (maxOpenIndexBytes !== undefined) {
+      requirePositiveInteger(maxOpenIndexBytes, 'maxOpenIndexBytes');
+    }
     if (keystore !== undefined && registry === undefined) {
       throw new CapabilityError(
         'a keystore needs a storage backend — that is where the wrapped DEKs live. A bare IStorageDriver has no registry to hold them',
@@ -644,7 +651,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // `0` turns the timed refresh off on purpose. Anything else that is not a finite, non-negative number (`NaN` from an
     // unset variable, a negative, a string) would turn it off too, silently, so another process's load or erasure would
     // never reach a long-lived reader: refused instead.
-    if (currentGenTtlMs !== undefined && currentGenTtlMs !== null) {
+    if (currentGenTtlMs !== undefined) {
       requireFiniteNumber(currentGenTtlMs, {
         min: 0,
         what: 'cache.genTtlMs',
@@ -1289,7 +1296,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * the one read path with no resilience.
    *
    * **`status` is re-checked here**, on every open rather than once at pin time. A pin taken before a
-   * crypto-shred must not keep unwrapping a DEK the shred destroyed; a destroyed segment resolves no generation
+   * crypto-shred must not keep unwrapping a DEK whose wrapping the shred removed; a destroyed segment resolves no
+   * generation
    * for anyone, and a pin's read of one fails. That holds from the pin's next open: a reader already open keeps
    * the key it unwrapped until it is evicted or invalidated.
    *
@@ -1369,7 +1377,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     if (this.registry === undefined) return this.openForTarget(ref, { generation });
     // One read of the row, for its status, its incarnation and its key wrappings together.
     const record = await this.registry.get(ref);
-    // Re-checked at open, not captured at pin: a shred between the two must be observed. A row that has gone
+    // Re-checked at open, not captured at pin: a destroy between the two must be observed. A row that has gone
     // takes its key material with it, so there is nothing left to read under any generation.
     if (record === null || record.status === 'destroyed') return null;
     return this.openForTarget(ref, {
@@ -1503,7 +1511,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * Whether the segment is a registered name at all. With a registry: a row that is not a `destroyed` tombstone,
    * including one with no generation yet (minted by `setRetention` before the first load), which somebody deliberately
-   * created. A tombstone holds nothing, so it answers `false`. Without a registry there is no registration to
+   * created. No generation resolves through a tombstone, so it answers `false`. Without a registry there is no
+   * registration to
    * consult, so the honest answer is whether the bucket holds any generation of it.
    *
    * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
@@ -1511,8 +1520,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   async exists(ref: SegmentRef): Promise<boolean> {
     validateUserRef(ref, 'read', PORT_KEYS);
-    // A `destroyed` row is a segment that was dropped, retired or shredded: it holds nothing, so a combine that names it
-    // is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
+    // A `destroyed` row is a segment that was dropped, retired, crypto-shredded or destroyed in the clear: no
+    // generation resolves through it, so a combine that names it is refused as one naming a segment that never was,
+    // rather than read as empty. An exclude read empty suppresses
     // nobody. A row with no generation yet (a retention policy set first) still exists.
     if (this.registry !== undefined) {
       const row = await this.registry.get(ref);
@@ -2076,8 +2086,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    *
    * A *second* NotFound is pathological (GC outrunning resolution) and propagates rather than fabricating an
    * absent answer — never return a wrong result. `ifGone` is returned when the segment has no committed
-   * generation to serve: storage is empty, or the row was dropped or crypto-shredded, in which case reading empty
-   * is the documented outcome rather than a failure.
+   * generation to serve: storage is empty, or the row is destroyed (crypto-shredded, destroyed in the clear or
+   * dropped), in which case
+   * reading empty is the documented outcome rather than a failure.
    *
    * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry
    * re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a

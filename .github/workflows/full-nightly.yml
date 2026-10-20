@@ -68,3 +68,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+        # A stalled test run ends the job in 15 minutes (a normal one takes 5 to 8), not at the job limit.
+        timeout-minutes: 15

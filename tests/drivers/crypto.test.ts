@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { InProcessKeystore, NodeAead } from '@/drivers/crypto';
 import { aadFor } from '@/core/crypto';
 import { IntegrityError, KeyUnavailableError, ValidationError } from '@/core/errors';
-import type { SegmentRef } from '@/index';
+import { errorKind, type SegmentRef } from '@/index';
 
 const key = (): Uint8Array => randomBytes(32);
 const SEG: SegmentRef = { segment: 's' };
@@ -229,5 +229,60 @@ describe('key material is held in buffers of its own', () => {
     const { wrapped } = await store.createDek();
     const aead = await store.openDek(wrapped);
     expect(own((aead as unknown as { key: Uint8Array }).key)).toBe(32);
+  });
+});
+
+describe('InProcessKeystore refuses what it does not take', () => {
+  const keys = { a: randomBytes(32), rec: randomBytes(32) };
+  const build = (options: unknown): InProcessKeystore =>
+    new InProcessKeystore(options as ConstructorParameters<typeof InProcessKeystore>[0]);
+
+  it('refuses a misspelt option by name, with the options it takes', () => {
+    const make = (): InProcessKeystore => build({ keys, activeKeyId: 'a', recoveryKeyID: 'rec' });
+    expect(make).toThrow(ValidationError);
+    expect(make).toThrow(
+      'InProcessKeystore does not take `recoveryKeyID`. It takes `keys`, `activeKeyId`, `recoveryKeyId`.',
+    );
+  });
+
+  it.each([
+    ['no options', undefined, /needs an options object/],
+    ['null', null, /needs an options object/],
+    ['an empty bag', {}, /`keys` must be a plain object/],
+    ['null keys', { keys: null, activeKeyId: 'a' }, /`keys` must be a plain object/],
+    ['array keys', { keys: [], activeKeyId: 'a' }, /`keys` must be a plain object/],
+    [
+      'a Map of keys',
+      { keys: new Map([['a', randomBytes(32)]]), activeKeyId: 'a' },
+      /not a Map or an array/,
+    ],
+    ['no activeKeyId', { keys }, /`activeKeyId` must be a string/],
+    ['a numeric activeKeyId', { keys, activeKeyId: 1 }, /`activeKeyId` must be a string/],
+    [
+      'a numeric recoveryKeyId',
+      { keys, activeKeyId: 'a', recoveryKeyId: 1 },
+      /`recoveryKeyId` must be a string/,
+    ],
+    [
+      'a null recoveryKeyId',
+      { keys, activeKeyId: 'a', recoveryKeyId: null },
+      /`recoveryKeyId` must be a string/,
+    ],
+  ])('refuses %s with a ValidationError', (_name, options, message) => {
+    let thrown: unknown;
+    try {
+      build(options);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ValidationError);
+    expect(errorKind(thrown)).toBeDefined();
+    expect((thrown as Error).message).toMatch(message);
+  });
+
+  it('still takes the three documented options, and wraps under both KEKs', async () => {
+    const ks = build({ keys, activeKeyId: 'a', recoveryKeyId: 'rec' });
+    expect((await ks.createDek()).wrapped.map((w) => w.keyId)).toEqual(['a', 'rec']);
+    expect(() => build({ keys, activeKeyId: 'a', recoveryKeyId: undefined })).not.toThrow();
   });
 });

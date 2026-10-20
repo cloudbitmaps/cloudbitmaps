@@ -24,7 +24,7 @@
  * later load's collection takes it, and until then a rollback onto it is refused unless `allowUnknown` is passed, since the
  * row never recorded it.
  */
-import { requireFiniteNumber, requireInteger } from './check';
+import { checkRequireEncryption, requireFiniteNumber, requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
@@ -347,13 +347,15 @@ export async function judgeLoad(
   const guard = checkedGuard(options.guard, '');
   // What a load refuses before its guard, in the order it refuses it.
   assertRegistryCanWrite(deps.registry, 'load');
+  checkRequireEncryption(deps.requireEncryption);
   if (deps.requireEncryption === true && deps.keystore === undefined) {
     throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
   }
   const row = await deps.registry.get(ref);
   if (row?.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+      `segment "${ref.segment}" is destroyed — refusing to write: no generation resolves through a destroyed row; ` +
+        `use a new segment`,
     );
   }
   const cleartext = row?.wrappedDeks === undefined || row.wrappedDeks.length === 0;
@@ -408,8 +410,9 @@ export type LoadRefusal =
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
    * deleted, or a row appeared where the load found none. Once another write has changed the row, the object stays in
    * the bucket, still billed, until a later load's collection deletes it or the segment is dropped, because its
-   * generation number may by then name another writer's object; until it goes, a rollback onto it needs `allowUnknown`, as onto any generation the row does not know. Once the row is
-   * `destroyed` (dropped or crypto-shredded), the object is deleted; once the row is gone, so is an object whose footer
+   * generation number may by then name another writer's object; until it goes, a rollback onto it needs
+   * `allowUnknown`, as onto any generation the row does not know. Once the row is `destroyed` (crypto-shredded,
+   * destroyed in the clear or dropped), the object is deleted; once the row is gone, so is an object whose footer
    * matches what this load wrote (another load's object of the same ids is not a match: the footer carries each write's
    * own identity), and so is a cleartext one under a row with key material.
    */
@@ -648,7 +651,7 @@ async function runLoad(
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   const codec = requireCodec(deps.codec, 'loadSegment');
   const entropy = requireEntropy(deps.entropy, 'a load');
-  const keep = options.keep ?? 1;
+  const keep = options.keep === undefined ? 1 : options.keep;
   requireInteger(keep, { min: 0, what: 'keep' });
   const guard = checkedGuard(options.guard, '');
   // The metadata as of this call, checked and copied before any round trip: what is stored is what the caller passed

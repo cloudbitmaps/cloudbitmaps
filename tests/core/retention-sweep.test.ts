@@ -302,7 +302,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
       'retireExpired: `maxScanSegments` must be an integer of at least 1; got 1.5',
     );
     await expect(refused({ tombstoneGraceMs: Infinity })).rejects.toThrow(
-      'retireExpired: `tombstoneGraceMs` must be a finite number of at least 0; got Infinity',
+      'retireExpired: `tombstoneGraceMs` must be a finite number of at least 3600000 (one hour: the tombstone must outlast a create sent again after it got no answer); got Infinity',
     );
     await expect(retireExpired(w.dropDeps, { now: NaN })).rejects.toThrow(
       'retireExpired: `now` must be a finite number (epoch milliseconds); got NaN',

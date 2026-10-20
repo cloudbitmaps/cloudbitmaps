@@ -408,7 +408,7 @@ const VALIDATED_SEGMENTS =
 const LOAD_KEEPS = Number(
   sourceMatch(
     'packages/core/src/core/load.ts',
-    /options\.keep \?\? (\d+)/g,
+    /options\.keep === undefined \? (\d+) : options\.keep/g,
     "load()'s default keep",
   )[1],
 );
@@ -946,6 +946,7 @@ function render() {
 
   const medium = byId('medium');
   const sample = [
+    '<!-- typecheck -->',
     '```ts',
     "import { estimateCost } from '@cloudbitmaps/tools';",
     '',
@@ -1011,6 +1012,7 @@ function render() {
   const o = g.monthlyUSD.byOp;
   const guideWords = estimatorWords(g);
   const guideExample = [
+    '<!-- typecheck -->',
     '```ts',
     "import { estimateCost } from '@cloudbitmaps/tools';",
     '',

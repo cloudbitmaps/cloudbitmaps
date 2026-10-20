@@ -191,6 +191,7 @@ export {
   checkRegistryWriteOptions,
   refuseUnknownOptions,
   requireBool,
+  requireNonEmptyString,
   requirePositiveInt,
 } from './drivers/_shared/options';
 

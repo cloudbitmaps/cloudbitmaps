@@ -16,7 +16,7 @@ import { testEntropy } from '../helpers/entropy';
  * The audit sink and every event the library emits: `segment.publish` (a load became current),
  * `segment.rollback` (the pointer moved back), `segment.load-refused` (a load's guard refused it),
  * `segment.rewrite` (a subject erasure), `segment.collect` (a subject erasure that deleted generations and rewrote
- * none), `segment.erase` (a crypto-shred), `segment.dispose` (storage reclaimed) and `namespace.erase`. Each segment
+ * none), `segment.erase` (a crypto-shred), `segment.tombstone` (a cleartext tombstone), `segment.dispose` (storage reclaimed) and `namespace.erase`. Each segment
  * event's `incarnation` is covered in `audit-incarnation.test.ts`.
  *
  * Two properties are load-bearing throughout, because an audit trail exists to prevent exactly these:
@@ -357,7 +357,16 @@ describe('audit: segment.erase / namespace.erase', () => {
     });
     expect(res.destroyed).toBe(true); // tombstoned…
     expect(res.cryptoShredded).toBe(false); // …but not a crypto-shred
-    expect(audit.snapshot()).toEqual([]); // so no false erasure receipt
+    // so no false erasure receipt: the tombstone is recorded as a destroy that left the objects readable
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.tombstone',
+        namespace: undefined,
+        segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
+        objectsReadable: true,
+      },
+    ]);
   });
 
   it('a throwing audit sink never breaks the erase', async () => {
@@ -437,6 +446,8 @@ describe('AuditEvent union', () => {
         case 'segment.rollback':
           return e.segment;
         case 'segment.erase':
+          return e.segment;
+        case 'segment.tombstone':
           return e.segment;
         case 'segment.dispose':
           return e.segment;

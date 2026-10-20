@@ -846,7 +846,12 @@ describe('the shred an erasure runs: its options and the command it names', () =
   it('destroySegment and dropSegment each name themselves when the shred gives up on contention', async () => {
     const w = await loadedStore({}, { retry: false });
     await w.load(SHRED_SEG, [1, 2, 3]);
-    const deps = { storage: w.storage as IStorageDriver, registry: contended(w.registry) };
+    // A clock that does not wait: the documented call waits out lease churn on the system clock by default.
+    const deps = {
+      storage: w.storage as IStorageDriver,
+      registry: contended(w.registry),
+      clock: { sleep: (): Promise<void> => Promise.resolve() },
+    };
     await expect(
       destroySegment(SHRED_SEG, deps, { confirmSegment: 'seg', allowCleartext: true }),
     ).rejects.toThrow(/^destroySegment: contention shredding/);
