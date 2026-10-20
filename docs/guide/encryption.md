@@ -117,14 +117,26 @@ crypto-shreds an encrypted segment and deletes its objects.
 - **A cleartext segment has no key to shred.** `destroySegment` on one changes nothing and returns
   `{ destroyed: false, cryptoShredded: false, reason: 'cleartext' }` instead of throwing. `eraseNamespace` leaves such
   segments as they are and reports each the same way. `allowCleartext: true` tombstones them anyway, which stops them
-  resolving but leaves their bytes readable in the bucket. `dropSegment` is the call that deletes them.
+  resolving but leaves their bytes readable in the bucket, and the call emits a `segment.tombstone` audit event for each
+  tombstone it writes, which says so (`objectsReadable: true`) and is not an erasure receipt. `dropSegment` is the call
+  that deletes them.
 - **`destroySegment` reports why it did nothing.** `reason` is `'cleartext'` for a segment with no key, `'absent'` for no
   row, and `'already'` for a tombstone.
+- **A shred that throws `TransientError` may have landed.** A shred that gets no answer reads the row back, and
+  reports the shred as done when the row shows its own tombstone. When that read fails too, it throws the
+  `TransientError`, and the segment may already be destroyed. A re-run then answers
+  `{ destroyed: true, cryptoShredded: false, reason: 'already' }` and emits no `segment.erase`, because the tombstone
+  does not record which call wrote it or that it was a crypto-shred. If the re-run answers `'already'` for a segment
+  you had not destroyed before, record its crypto-shred yourself, with the error. `eraseNamespace` reports that
+  segment as `failed: …` with `destroyed: false`, and a retention sweep reports it as `retired` with a `fault` and
+  `cryptoShredded: true` and emits no `segment.erase` for it. When the sweep cannot read the row afterwards either,
+  its entry is `skipped` with a reason that says the tombstone may have landed. The same holds for a cleartext
+  destroy, whose re-run emits no `segment.tombstone`.
 - **`eraseNamespace` returns one `DestroyResult` per segment** and records per-segment faults instead of throwing:
   `reason: 'contended'` or `` `failed: ...` ``, with `destroyed: false`, means the segment still holds data. Inspect
   them. A `maxScanSegments` that is not a whole number of at least 1 throws `ValidationError`.
 - **`eraseNamespace` shreds eight segments at a time.** Each segment still has its own read and compare-and-swap, and
-  a fault in one is recorded against it and stops no other. `destroyed` is in the listing's order, whichever segment
+  a fault in one is recorded against it and stops no other. `destroyed` is in the order the registry listed the segments, which is unspecified and differs between backends (match entries by `segment`), whichever segment
   finishes first; the `segment.erase` events are emitted as each segment finishes, so their order is not the
   listing's, and `namespace.erase` comes last.
 - **`eraseNamespace` lists the whole namespace before it destroys anything**, and holds the listing in memory, so it

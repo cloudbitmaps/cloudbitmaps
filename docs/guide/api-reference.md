@@ -256,14 +256,13 @@ the result (`'empty'`, `'min-cardinality'`, `'min-retained'` or `'max-growth'`),
 There are two ways to get there first. Another load may have taken the same generation number, so this one wrote
 nothing (`size: 0`). Or the segment's registry row changed while the load was writing: another load published, a
 retention change, a rollback or an erasure wrote the row, or the row was deleted. A refused load deletes the object
-it wrote while the row is unchanged, changed only in its leases, or destroyed (crypto-shredded, destroyed in the
-clear or dropped), and, once one read of the object's footer matches what the load wrote, when the row is gone or, for
-a cleartext object, has key material. Once
-another write has otherwise changed the row, it leaves the object in the bucket, an orphan: a load's listing deletes
-it once a generation above it is current, unless the row's window names it, and can keep it in its window where the
-row has none. Until it goes, `rollback` refuses it unless `allowUnknown` is passed, since the row never recorded it, and with
-the override a rollback onto it publishes what no load published ([an orphan is collected
-later](correctness.md#how-a-load-stays-correct)).
+it wrote while the row is unchanged, changed only in its leases, or destroyed (crypto-shredded, destroyed in the clear
+or dropped), and, once one read of the object's footer matches what the load wrote, when the row is gone or, for a
+cleartext object, has key material. Once another write has otherwise changed the row, it leaves the object in the
+bucket, an orphan: a load's listing deletes it once a generation above it is current, unless the row's window names it,
+and can keep it in its window where the row has none. Until it goes, `rollback` refuses it unless `allowUnknown` is
+passed, since the row never recorded it, and with the override a rollback onto it publishes what no load published ([an
+orphan is collected later](correctness.md#how-a-load-stays-correct)).
 The `store.load` row lists the guards and what throws instead.
 
 **`input` is a `LoadInput`: ids, or a whole bitmap.** Ids are any sync **or async** iterable of integers in
@@ -390,7 +389,7 @@ that holds one can run it. Every other verb is a store method.
 |---|---|
 | `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you **already hold** — a fleet sweep over `registry.list()`, where `store.getRetention` would cost a read per segment. The three-way answer is the point: `'invalid'` lets a sweep *report* a malformed row instead of silently reading it as "never expires" or aborting the whole ledger |
 | `destroySegment(ref, { registry }, { confirmSegment, allowCleartext?, audit? })` → `Promise<DestroyResult>` | crypto-shred one whole segment: one compare-and-swap removes its wrapped key from the segment's current registry row, and the objects stay in the bucket. Every copy of the objects, backups and WORM copies included, is unreadable once no retained copy of that row holds the wrapped key (noncurrent versions, backups and point-in-time copies of the row), or once every KEK that wrapped it is destroyed; until then a registry restore to a point before the shred undoes it ([encryption & DR](disaster-recovery.md#encryption--dr)). A cleartext segment has no key, so without `allowCleartext` the call changes nothing and returns `reason: 'cleartext'`, and with it the call writes the tombstone and leaves the objects readable in the bucket. A free function over `backend.registry`, so it invalidates no store ([details](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)) |
-| `eraseNamespace(namespace, { registry }, { confirmNamespace, allowCleartext?, audit?, maxScanSegments? })` → `Promise<{ destroyed: DestroyResult[] }>` | crypto-shred an entire namespace or tenant. It lists the namespace first and stops at `maxScanSegments` (default 250,000) with nothing erased, then shreds eight segments at a time. One `DestroyResult` per segment, in the listing's order, with faults recorded rather than thrown, so **inspect it** ([details](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)) |
+| `eraseNamespace(namespace, { registry }, { confirmNamespace, allowCleartext?, audit?, maxScanSegments? })` → `Promise<{ destroyed: DestroyResult[] }>` | crypto-shred an entire namespace or tenant. It lists the namespace first and stops at `maxScanSegments` (default 250,000) with nothing erased, then shreds eight segments at a time. One `DestroyResult` per segment, in the order the registry listed them (unspecified: match by `segment`), with faults recorded rather than thrown, so **inspect it** ([details](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)) |
 | `excludingReservedRows(listing)` | wraps a `registry.list()` stream and drops the bookkeeping rows (the due-index pointers). **Every unscoped fleet-wide enumeration must apply it** — `store.segments` and the sweep already do, so this is for a fleet pass you write yourself |
 
 ### Optional plug-ins you construct and pass in
@@ -399,7 +398,7 @@ that holds one can run it. Every other verb is a store method.
 |---|---|---|
 | `new InProcessKeystore({ keys, activeKeyId, recoveryKeyId? })` | `encryption.keystore` (store) | encryption-at-rest + crypto-shred (BYOK) |
 | `new CountingMetricsSink()` (or your own `IMetricsSink`; omit the option for the no-op) | `metrics` | observability — `storage.get` / `cache` / `retry` / `intersect` / `op` / `advisory` events |
-| `new RecordingAuditSink()` (or your own `IAuditSink`; omit the option to record nothing) | `audit`, on each call that writes: `store.load`, the `*Into` verbs, `store.rollback`, `store.eraseSubject`, `store.dropSegment`, `destroySegment`, `eraseNamespace` and `store.retireExpired` | compliance trail — `segment.publish` / `segment.load-refused` / `segment.rollback` / `segment.rewrite` / `segment.collect` / `segment.erase` / `segment.dispose` / `namespace.erase`; each `segment.*` event carries the row's `incarnation` |
+| `new RecordingAuditSink()` (or your own `IAuditSink`; omit the option to record nothing) | `audit`, on each call that writes: `store.load`, the `*Into` verbs, `store.rollback`, `store.eraseSubject`, `store.dropSegment`, `destroySegment`, `eraseNamespace` and `store.retireExpired` | compliance trail — `segment.publish` / `segment.load-refused` / `segment.rollback` / `segment.rewrite` / `segment.collect` / `segment.erase` / `segment.tombstone` / `segment.dispose` / `namespace.erase`; each `segment.*` event carries the row's `incarnation` |
 
 `segment.collect` is what `eraseSubject` emits when it deletes generations and rewrites none: an id held only outside the current generation, objects left under a tombstone, a first load's object on a segment with no generation yet, or only objects no read of the segment can open. `fromGeneration` is the newest generation it found holding the id and is absent when it found the id in none; `collected` lists the generations it deleted. A switch over `AuditEvent['kind']` handles it beside `segment.rewrite`.
 

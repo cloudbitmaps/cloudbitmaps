@@ -4,7 +4,6 @@
     "packages/core/src/core/combine-many.ts::class Run > pass": 222,
     "packages/core/src/core/combine-many.ts::class Run > publishWave": 119,
     "packages/core/src/core/crbm/reader.ts::class CrbmReader > open": 196,
-    "packages/core/src/core/erasure.ts::dropSegmentFor": 109,
     "packages/core/src/core/generation-gc.ts::listingPass": 112,
     "packages/core/src/core/load.ts::runLoad": 215,
     "packages/core/src/core/publish.ts::publishGenerationKept": 215,

@@ -377,8 +377,7 @@ row stays recoverable wherever the storage keeps a copy of it: with object versi
 a noncurrent-version rule expires them, as an overwritten row's do; with soft delete on, it stays for the retention
 window (GCS: on by default for a new bucket, 7 days; Azure Blob: where enabled, for the days set), whatever the registry
 did. A [tombstone a hand-run `dropSegment`, a
-crypto-shred or a cleartext destroy left is never purged by the
-library](docs/guide/correctness.md#tombstones-purged-narrowly).
+crypto-shred or a cleartext destroy left is never purged by the library](docs/guide/correctness.md#tombstones-purged-narrowly).
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
 [retention guide](docs/guide/retention.md).
@@ -425,7 +424,7 @@ rewrite: `fromGeneration` → `generation`), `segment.collect` (a subject erasur
 no reader resolves: the generations holding the id, when it found the id only outside the current generation, or, with
 no `fromGeneration`, only objects no read of the segment can open, which it deletes whatever the id), `segment.erase`
 (a genuine
-crypto-shred), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
+crypto-shred), `segment.tombstone` (a cleartext tombstone from `allowCleartext`, which deletes nothing), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
 `namespace.erase` — for your audit log / SIEM. Each `segment.*` event names the segment's `incarnation` when its
 registry token carries one, so a segment created again under the same name is told apart from the one before.
 It is off by default and exception-safe. See the [dashboards guide](docs/guide/dashboards.md), which also says
