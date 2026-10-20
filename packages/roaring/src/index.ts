@@ -42,6 +42,7 @@ import {
   NotFoundError,
   UnsupportedError,
   ValidationError,
+  errorKind,
   WriteConflictError,
   checkBudget,
   collectWithinBudget,
@@ -192,6 +193,14 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
     validateSegmentRef({ segment: 'x', namespace: options.namespace });
   }
   refuseReservedNamespace(options.namespace);
+  // The two are alternatives. Read as both, a call written to reach every tenant scanned one and reported it erased
+  // there, while the others kept the id.
+  if (options.namespace !== undefined && options.allNamespaces === true) {
+    throw new ValidationError(
+      `${op}: pass a namespace or { allNamespaces: true }, not both: with both, it is unclear whether to scan ` +
+        `one namespace or every one`,
+    );
+  }
   if (options.namespace === undefined && options.allNamespaces !== true) {
     throw new ValidationError(
       `${op} scans the global id space across all namespaces — pass an explicit \`namespace\`, ` +
@@ -491,7 +500,8 @@ export interface EncryptionOptions {
    *
    * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both
    * carry it into their write path, so on a cleartext segment a materialisation throws and an erasure records
-   * `note: 'error: requireEncryption: …'` in its ledger rather than erasing. And since a segment's encryption is
+   * `note: 'error: KeyUnavailableError: requireEncryption: …'` in its ledger rather than erasing, whatever id it erases and
+   * whether or not the id is in the segment: it does not read the segment. And since a segment's encryption is
    * decided at its **first** generation, this cannot be switched on for a segment that already has one — load
    * into a new encrypted segment and drop the old one.
    */
@@ -592,7 +602,7 @@ export interface SubjectErasureEntry {
    * no pointer (a purge and re-creation, or a hand-made write), while the call was in flight, so **this call** did
    * not erase the id;
    * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
-   * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
+   * if the racing writer already removed it. `` `error: <class>: <message>` `` — an isolated per-segment fault, named by its error's class
    * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the
    * fault. A budget refusal is one of these: the segment's generations did not fit `budget`, so it was not finished;
    * re-run with a higher `budget`. A fault that landed once part of the work was already done — a Storage `delete` fault, a collect that
@@ -1845,6 +1855,11 @@ export class CloudRoaring {
    * tax every load for a rare request; this admin scan is `O(registered segments)` and touches no hot path. Needs
    * a storage backend (throws {@link UnsupportedError} otherwise).
    *
+   * **Scope: one `namespace`, or `{ allNamespaces: true }`, never both** (both throws `ValidationError`, as does
+   * neither). A segment loaded with no `namespace` is in no namespace you can name: only `{ allNamespaces: true }`
+   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's
+   * object keys use, for such a segment, is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
+   *
    * **Current as of the registry row, not as of the reader's cache.** Each segment's resolved generation is
    * compared with the row the scan listed, and a segment whose cached generation differs is re-resolved before the
    * read, so a load or an erasure from another process shows at once — whatever `cache.genTtlMs` is, `0` included.
@@ -1867,15 +1882,12 @@ export class CloudRoaring {
    */
   async subjectReport(
     id: number,
-    options: {
-      namespace?: string;
-      allNamespaces?: boolean;
-      concurrency?: number;
-      budget?: BudgetOption;
-    } = {},
+    options: { concurrency?: number; budget?: BudgetOption } & (
+      { namespace: string; allNamespaces?: false } | { allNamespaces: true; namespace?: undefined }
+    ),
   ): Promise<SubjectReport> {
     checkOptions(options, 'subjectReport', CALL_KEYS.subjectReport, ['allNamespaces']);
-    options ??= {};
+    options ??= {} as typeof options; // plain JS: no options reads as no scope, which requireScope refuses
     const registry = this.requireRegistry('subjectReport');
     requireScope(options, 'subjectReport'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
@@ -1958,6 +1970,11 @@ export class CloudRoaring {
    * from the bucket on return for each segment the ledger reports `erased: true`.** A noncurrent version, a replica
    * or a backup keeps the old object until its own lifecycle removes it.
    *
+   * **Scope: one `namespace`, or `{ allNamespaces: true }`, never both** (both throws `ValidationError`, as does
+   * neither). A segment loaded with no `namespace` is in no namespace you can name: only `{ allNamespaces: true }`
+   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's
+   * object keys use, for such a segment, is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
+   *
    * For each **registered** segment the id is a member of, `eraseIdFromSegment` rewrites the current generation
    * without the id — every chunk streamed through, one bit cleared — publishes the rewrite **fenced on the
    * generation it was derived from**, and collects the generation that held the bit. A segment whose current
@@ -2033,19 +2050,15 @@ export class CloudRoaring {
    */
   async eraseSubject(
     id: number,
-    options: {
-      namespace?: string;
-      allNamespaces?: boolean;
-      audit?: IAuditSink;
-      concurrency?: number;
-      budget?: BudgetOption;
-    } = {},
+    options: { audit?: IAuditSink; concurrency?: number; budget?: BudgetOption } & (
+      { namespace: string; allNamespaces?: false } | { allNamespaces: true; namespace?: undefined }
+    ),
   ): Promise<EraseSubjectResult> {
     // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
     // for its options still moves the counter: conservative, so an erasure is never missed.
     this.erasureEpoch++;
     checkOptions(options, 'eraseSubject', CALL_KEYS.eraseSubject, ['allNamespaces']);
-    options ??= {};
+    options ??= {} as typeof options; // plain JS: no options reads as no scope, which requireScope refuses
     this.erasuresRunning++;
     try {
       return await this.eraseSubjectRun(id, options);
@@ -2115,7 +2128,9 @@ export class CloudRoaring {
             segment: rec.segment,
             namespace: rec.namespace,
             erased: false,
-            note: `error: ${err instanceof Error ? err.message : String(err)}`,
+            note: `error: ${errorKind(err) ?? (err instanceof Error ? err.name : 'Error')}: ${
+              err instanceof Error ? err.message : String(err)
+            }`, // the class lets a note be matched to the guide's table
           };
         } finally {
           // Whatever the outcome, this process's own view of the segment is now suspect: a landed rewrite

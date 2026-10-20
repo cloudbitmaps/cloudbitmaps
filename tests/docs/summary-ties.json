@@ -21,18 +21,6 @@
     },
     {
       "file": "PRIVACY.md",
-      "claim": "every-holder-goes",
-      "sentence": "8afc07e8bb8d",
-      "starts": "So is every other generation still holding the"
-    },
-    {
-      "file": "PRIVACY.md",
-      "claim": "every-holder-goes",
-      "sentence": "ee5acbc25bfc",
-      "starts": "(When the current generation holds the id, the"
-    },
-    {
-      "file": "PRIVACY.md",
       "claim": "erasure-results",
       "sentence": "9ffbe81757c6",
       "starts": "Before it says erased: true the call lists"
@@ -558,12 +546,6 @@
       "claim": "erasure-results",
       "sentence": "d7f17a08e582",
       "starts": "An erasure entry that says erased: true means"
-    },
-    {
-      "file": "docs/guide/disaster-recovery.md",
-      "claim": "every-holder-goes",
-      "sentence": "eb9f5d8b1598",
-      "starts": "If the generation the pointer names does not"
     },
     {
       "file": "docs/guide/disaster-recovery.md",

@@ -759,9 +759,10 @@ each, with nothing held but the rows.
 <a id="every-holder-goes"></a>**Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,
 where a later rollback can make them current again. So the call searches every generation in the segment's bucket. A
-holder below the pointer goes with the `keep: 0` collection, and each holder above it is deleted one by one. A
-generation up there that never held the id stays as a rollback target when the current generation does not hold the
-id, unless no read of the segment can open it, and then it goes whatever the id ([the effect across a
+holder below the pointer goes with the `keep: 0` collection, and each holder above it is deleted one by one. Once the
+call finds a holder anywhere, above the pointer or below, its `keep: 0` collection takes every generation below the
+pointer, clean ones included. A generation above the pointer that never held the id stays as a rollback target when
+the current generation does not hold the id, unless no read of the segment can open it, and then it goes whatever the id ([the effect across a
 fleet](erasure.md#three-rules-while-you-erase)). A rewrite is numbered above everything, so its `keep: 0` collection takes every
 older generation, above the pointer or below.
 

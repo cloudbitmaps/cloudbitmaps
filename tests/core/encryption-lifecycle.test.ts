@@ -161,7 +161,7 @@ describe('encryption lifecycle — one DEK per segment, across every generation'
     await w.load([1, 2]);
     await expect(
       eraseIdFromSegment(SEG, 1, { ...w.deps, requireEncryption: true }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    ).rejects.toBeInstanceOf(KeyUnavailableError);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
   });
 });

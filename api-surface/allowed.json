@@ -510,5 +510,13 @@
   {
     "entry": "@cloudbitmaps/roaring SubjectReport.tombstones",
     "reason": "agreed with the maintainer on 2026-10-19: a subject report also lists each destroyed segment whose leftover objects still hold the id in the clear, the objects eraseSubject deletes, found by the same search; required and always present, [] when none; SubjectReport is an output type the store builds, so only code that constructs one by hand adds the field"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.eraseSubject",
+    "reason": "a scope is one namespace or every namespace, never both: the options are now required and a union of { namespace, allNamespaces?: false } or { allNamespaces: true, namespace?: undefined }, so TypeScript refuses the pair that the call now refuses at run time with a ValidationError (it honoured namespace and ignored allNamespaces before); a call with no options already threw ValidationError, and one that passes allNamespaces as a boolean variable no longer compiles"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.subjectReport",
+    "reason": "a scope is one namespace or every namespace, never both: the options are now required and a union of { namespace, allNamespaces?: false } or { allNamespaces: true, namespace?: undefined }, so TypeScript refuses the pair that the call now refuses at run time with a ValidationError (it honoured namespace and ignored allNamespaces before); a call with no options already threw ValidationError, and one that passes allNamespaces as a boolean variable no longer compiles"
   }
 ]
