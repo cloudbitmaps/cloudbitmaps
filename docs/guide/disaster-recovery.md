@@ -231,7 +231,9 @@ makes the coordinated restore point easy to hit rather than something you have t
    [a registry row the library did not write](#a-registry-row-the-library-did-not-write)). A row created after `T`
    has no such version; the row's body names its `namespace` and `segment`. If you do not want that segment's
    objects, first run `store.dropSegment(ref, { confirmSegment: ref.segment, audit })`, which deletes them and
-   removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`. On a registry
+   removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`, where `ref` is a
+   typed `{ segment, namespace }` built from the row's body (the registry and storage ports refuse any other key, so a
+   misspelt `namespace` throws rather than deleting the default namespace's row). On a registry
    that reports `conditionalDelete` it removes the row outright, by a delete fenced on the version it read; on any
    other it replaces the row with a tombstone that keeps the row's token counter, and the rest of the row with it,
    wrapped keys included — the reason for dropping first. Prefer it to an object-store delete, which
@@ -261,22 +263,27 @@ makes the coordinated restore point easy to hit rather than something you have t
    <!-- typecheck-skip: a fragment: the page leaves `audit`, `backend`, `disposedAfterT`, `shreddedAfterT`, `subjectsErasedAfterT` to the reader -->
    ```ts
    import { destroySegment } from '@cloudbitmaps/roaring';
+   import type { SegmentRef } from '@cloudbitmaps/roaring';
 
-   // `backend` is the one this store is built with; `audit` is your sink.
-   for (const ref of shreddedAfterT) {
+   // `backend` is the one this store is built with; `audit` is your sink. Build each ref from the event's two
+   // fields: an event, an erasure ledger entry or a consistency issue is not a ref and is refused whole.
+   for (const e of shreddedAfterT) {
      // each segment with a `segment.erase` event after T
+     const ref: SegmentRef = { segment: e.segment, namespace: e.namespace };
      await destroySegment(ref, { registry: backend.registry }, { confirmSegment: ref.segment, audit });
    }
-   for (const ref of cleartextDestroyedAfterT) {
+   for (const e of cleartextDestroyedAfterT) {
      // each segment with a `segment.tombstone` event after T: a cleartext destroy, which no `segment.erase` records
+     const ref: SegmentRef = { segment: e.segment, namespace: e.namespace };
      await destroySegment(
        ref,
        { registry: backend.registry },
        { confirmSegment: ref.segment, allowCleartext: true, audit },
      );
    }
-   for (const ref of disposedAfterT) {
+   for (const e of disposedAfterT) {
      // each segment with a `segment.dispose` event after T (a drop re-shreds an encrypted segment too)
+     const ref: SegmentRef = { segment: e.segment, namespace: e.namespace };
      const r = await store.dropSegment(ref, { confirmSegment: ref.segment, audit });
      if (r.generationsRemaining.length > 0) console.warn(`${ref.segment}: not fully reclaimed, re-run`);
    }

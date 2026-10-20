@@ -342,7 +342,7 @@ export async function judgeLoad(
   deps: Omit<LoadDeps, 'entropy'>,
   options: Pick<LoadOptions, 'allowEmpty' | 'guard'> = {},
 ): Promise<LoadJudgement> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'judgeLoad');
   requireInteger(cardinality, { min: 0, what: 'judgeLoad: cardinality' });
   const guard = checkedGuard(options.guard, '');
   // What a load refuses before its guard, in the order it refuses it.
@@ -646,7 +646,7 @@ async function runLoad(
   deps: LoadDeps,
   options: LoadOptions,
 ): Promise<LoadResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'load');
   checkedAuditSink(options.audit, 'load');
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   const codec = requireCodec(deps.codec, 'loadSegment');

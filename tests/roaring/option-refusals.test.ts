@@ -378,6 +378,10 @@ const EXCLUDED: Readonly<Record<string, string>> = {
     'an error class carrying { cause }, not a configuration',
   '@cloudbitmaps/roaring TransientError.constructor':
     'an error class carrying { cause }, not a configuration',
+  '@cloudbitmaps/core/driver-kit checkDeleteOptions':
+    'the checker itself; held by tests/drivers/port-keys.test.ts',
+  '@cloudbitmaps/core/driver-kit checkRegistryWriteOptions':
+    'the checker itself; held by tests/drivers/port-keys.test.ts',
   '@cloudbitmaps/core/driver-kit refuseUnknownOptions': 'the checker itself',
   '@cloudbitmaps/roaring CloudRoaring.materializeMany':
     'its options are held by its own tests (another change owns the verb)',

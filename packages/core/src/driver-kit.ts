@@ -187,6 +187,8 @@ export {
 
 // Option checks a backend or driver applies to its constructor's options, each refusing with `ValidationError`.
 export {
+  checkDeleteOptions,
+  checkRegistryWriteOptions,
   refuseUnknownOptions,
   requireBool,
   requireNonEmptyString,

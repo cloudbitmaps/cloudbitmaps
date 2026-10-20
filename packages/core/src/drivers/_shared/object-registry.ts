@@ -62,6 +62,7 @@
  * untrusted). **Recovery:** read the named object, and either restore a valid envelope or delete it; nothing
  * else is damaged, and discovery resumes on its own.
  */
+import { checkRegistryWriteOptions } from './options';
 import {
   IntegrityError,
   TransientError,
@@ -277,6 +278,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     record: NewRegistryRecord,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     const checked = validateNewRegistryRecord(record);
     const key = registryObjectKey(this.prefix, ref);
     let lost: unknown;
@@ -338,6 +340,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     patch: RegistryPatch,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     const checked = validateRegistryPatch(patch);
     const key = registryObjectKey(this.prefix, ref);
     // The row the caller read, as this registry read it, when it is the row `expected` names; otherwise read it now.

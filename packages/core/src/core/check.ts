@@ -23,7 +23,7 @@ import { ValidationError } from './errors';
  * A value as a message shows it: a number or boolean as itself, a bigint with an `n` (so `5n` is not mistaken for
  * `5`), a string quoted (so `'200'` is not mistaken for `200`), and anything else by its type.
  */
-function shown(value: unknown): string {
+export function shown(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value);
   if (typeof value === 'bigint') return `${value}n`;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);

@@ -7,8 +7,8 @@
  * unreadable once no retained copy of the row still holds the wrapped key (a noncurrent version, a backup or a
  * point-in-time copy of the row), or once every KEK that wrapped it is destroyed; until then a registry restore to a
  * point before the shred makes the segment readable again. **Immediate**, and it cannot be undone through the library
- * (a registry restore to before it can), so it's gated behind an explicit confirmation (name the exact
- * segment/namespace). A `destroyed` segment reads as empty: no generation resolves through a destroyed row. Only an
+ * (a registry restore to before it can), so it's gated behind an explicit confirmation (the
+ * segment's name; the namespace is not checked, so build the ref's `namespace` from a value you have checked). A `destroyed` segment reads as empty: no generation resolves through a destroyed row. Only an
  * **encrypted** segment is crypto-shredded; a cleartext one has no key to shred, and `allowCleartext` tombstones it
  * with its objects left readable.
  *
@@ -144,8 +144,8 @@ const ERASE_NAMESPACE_KEYS = [
 
 /**
  * Crypto-shred one segment. It cannot be undone through the library (a registry restore to a point before it can).
- * `confirmSegment` must equal `ref.segment` (a guard against an accidental destroy — you must name the exact
- * segment). A non-encrypted segment is rejected unless you opt in via `allowCleartext` (there's no key to shred; its
+ * `confirmSegment` must equal `ref.segment` (a guard against an accidental destroy of another name; it checks the
+ * name only, not the namespace, so build the ref's `namespace` from a value you have checked). A non-encrypted segment is rejected unless you opt in via `allowCleartext` (there's no key to shred; its
  * Storage bytes stay readable — the tombstone only stops the segment resolving).
  *
  * The options are `confirmSegment`, `allowCleartext` and `audit`. Any other key (`dryRun`, which this call does not
@@ -156,7 +156,7 @@ export async function destroySegment(
   deps: EraseDeps,
   options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
 ): Promise<DestroyResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'destroySegment');
   // Before the registry is read: a `dryRun` (which this call does not take) must not shred, nor a string for
   // `allowCleartext` be read as true.
   checkEraseDeps('destroySegment', deps);
@@ -463,7 +463,7 @@ export async function dropSegmentFor(
   options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
   sweep: SweepDrop | undefined,
 ): Promise<DropResult | null> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'dropSegment');
   checkDropOptions(options);
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(

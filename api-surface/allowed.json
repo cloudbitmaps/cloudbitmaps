@@ -508,6 +508,14 @@
     "reason": "a new type, agreed with the maintainer on 2026-10-18: the read-only bitmap deserializePortable returns, a PortableBitmap and an Iterable<number> with size and has(id); roaring's RoaringBitmap32 satisfies it as it is"
   },
   {
+    "entry": "@cloudbitmaps/core/driver-kit checkDeleteOptions",
+    "reason": "added so every storage driver refuses a misspelt or mistyped ifVersion in one place, rather than deleting unconditionally"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit checkRegistryWriteOptions",
+    "reason": "added so every registry driver refuses a misspelt or mistyped held or onToken in one place"
+  },
+  {
     "entry": "@cloudbitmaps/core/driver-kit requireNonEmptyString",
     "reason": "the backends refuse an empty or non-string endpoint, container and project id through one shared check, as they already do for sizes and switches with requirePositiveInt and requireBool; a driver author gets the same check for the options of their own backend"
   },

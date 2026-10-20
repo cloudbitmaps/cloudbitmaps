@@ -189,7 +189,7 @@ export async function getSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
 ): Promise<RetentionPolicy | null | 'invalid'> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'getRetention');
   const record = await deps.registry.get(ref);
   if (record === null || record.status === 'destroyed') return null;
   return readRetentionPolicy(record.retention);
@@ -302,7 +302,7 @@ export async function setSegmentRetention(
   deps: RetentionDeps,
   policy: RetentionPolicy,
 ): Promise<SetRetentionResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'setRetention');
   validateRetentionPolicy(policy);
   const base = { segment: ref.segment, namespace: ref.namespace };
   // What this call sent: the tokens of its writes; which of them were a create (a row's `pointerId` is its create's
@@ -391,7 +391,7 @@ export async function clearSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
 ): Promise<boolean> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'clearRetention');
   const tokens = writeTokens(deps.registry);
   // Every expiry an attempt read before it sent a write: its pointer goes, whatever the row shows by then.
   const previous = new Set<number>();

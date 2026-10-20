@@ -203,6 +203,8 @@
     "@cloudbitmaps/core/driver-kit WriteConflictError": "class WriteConflictError extends CloudRoaringError",
     "@cloudbitmaps/core/driver-kit WriteConflictError.constructor": "constructor(message: string);",
     "@cloudbitmaps/core/driver-kit brandAsBackend": "function brandAsBackend<T extends { storage: IStorageDriver; registry: IRegistryDriver; }>(target: T): T & StorageBackend;",
+    "@cloudbitmaps/core/driver-kit checkDeleteOptions": "function checkDeleteOptions(options: unknown): string | undefined;",
+    "@cloudbitmaps/core/driver-kit checkRegistryWriteOptions": "function checkRegistryWriteOptions(options: unknown): void;",
     "@cloudbitmaps/core/driver-kit concatBytes": "function concatBytes(parts: readonly Uint8Array[]): Uint8Array;",
     "@cloudbitmaps/core/driver-kit encodeNameForKey": "function encodeNameForKey(name: string): string;",
     "@cloudbitmaps/core/driver-kit encodeNameForPath": "function encodeNameForPath(name: string): string;",

@@ -177,7 +177,8 @@ export type StorageDriverCase =
   | 'failed write'
   | 'missing location'
   | 'list across pages'
-  | 'conditional delete';
+  | 'conditional delete'
+  | 'refuses a misspelt key and option';
 
 /** `n` bytes that differ at every offset, so a read from the wrong offset cannot match by accident. */
 function patterned(n: number): Uint8Array {
@@ -638,6 +639,33 @@ export function storageDriverConformance(
     storageDeleteConformance(makeDriver, test);
     storageListingConformance(makeDriver, test, options, pagedListSize);
     storageGenerationsAndConditionalDelete(makeDriver, test, options);
+    storageRefusals(makeDriver, test);
+  });
+}
+
+/**
+ * A driver refuses what it cannot honour instead of acting on a guess: a key with a field it does not take (a misspelt
+ * `namespace` would address the default namespace's object) and a delete option it does not take (a misspelt
+ * `ifVersion` would delete unconditionally). Each leaves the stored object where it was. A driver over a location that does not exist skips it.
+ */
+function storageRefusals(makeDriver: () => IStorageDriver, test: DriverTest): void {
+  test('refuses a misspelt key and option', async () => {
+    const d = makeDriver();
+    await putBytes(d, key(0), patterned(7));
+    const typoKey = {
+      segment: CONFORMANCE_SEGMENT,
+      namspace: 'eu',
+      generation: 0,
+    } as unknown as GenKey;
+    await expect(d.delete(typoKey)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.getTail(typoKey, 1)).rejects.toBeInstanceOf(ValidationError);
+    const { version } = await d.getTail(key(0), 1);
+    const typoOption = { ifVersoin: version ?? 'v' } as never;
+    await expect(d.delete(key(0), typoOption)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.delete(key(0), { ifVersion: 7 } as never)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await generationsOf(d, SEG)).toEqual([0]);
   });
 }
 
@@ -679,6 +707,30 @@ const collect = (): { tokens: string[]; options: { onToken: (t: string) => void 
 };
 
 type RegistryConformanceOptions = NonNullable<Parameters<typeof registryConformance>[2]>;
+
+/**
+ * A registry refuses what it cannot honour instead of acting on a guess: a ref with a field it does not take (a
+ * misspelt `namespace` would address the default namespace's row) and a write option it does not take or of the wrong
+ * type. Each leaves the stored row where it was. Not skippable.
+ */
+function registryRefusals(makeDriver: () => IRegistryDriver): void {
+  it('refuses a ref with a misspelt field and a misspelt or mistyped write option, and writes nothing', async () => {
+    const d = makeDriver();
+    const typo = { segment: CONFORMANCE_SEGMENT, namspace: 'eu' } as unknown as SegmentRef;
+    await d.create(SEG, { currentGen: 1 });
+    await expect(d.get(typo)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.delete(typo)).rejects.toBeInstanceOf(ValidationError);
+    await expect(d.create(typo, { currentGen: 0 })).rejects.toBeInstanceOf(ValidationError);
+    const { token } = (await d.get(SEG))!;
+    await expect(
+      d.compareAndSwap(SEG, token, { currentGen: 2 }, { onTokan: () => undefined } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      d.compareAndSwap(SEG, token, { currentGen: 2 }, { held: 'row' } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect((await d.get(SEG))?.currentGen).toBe(1);
+  });
+}
 
 function registryRowLifecycle(makeDriver: () => IRegistryDriver): void {
   it('advertises strongRead', () => {
@@ -1879,6 +1931,7 @@ export function registryConformance(
     registryKnownGens(makeDriver);
     registryKnownGensValidation(makeDriver);
     registryLeases(makeDriver);
+    registryRefusals(makeDriver);
     // ── a write's token, reported before it is sent ────────────────────────────────────────────────────────────────
     // A registry that sets `reportsWriteTokens` tells a writer the token of each write before sending it, so that the
     // writer can say, whatever became of the request, whether the row's `pointerId` is its own write's. A registry that

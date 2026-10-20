@@ -5,6 +5,8 @@
  *
  * Not in `core/` (this is a driver), so it may hold concrete state.
  */
+import { checkDeleteOptions } from './_shared/options';
+import { checkRegistryWriteOptions } from './_shared/options';
 import { createHash } from 'node:crypto';
 import { BufferSink, checkTailLength } from '../core/blob';
 import type { BlobSink } from '../core/blob';
@@ -91,6 +93,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     record: NewRegistryRecord,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     validateSegmentRef(ref);
     const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
@@ -115,6 +118,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     patch: RegistryPatch,
     options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
+    checkRegistryWriteOptions(options);
     validateSegmentRef(ref);
     const checked = validateRegistryPatch(patch);
     const key = segmentKey(ref);
@@ -212,8 +216,8 @@ export class MemoryStorageDriver implements IStorageDriver {
   }
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const ifVersion = checkDeleteOptions(options);
     const k = genObjectKey(key);
-    const ifVersion = options?.ifVersion;
     const stored = this.objects.get(k);
     // The check and the removal in one step: nothing can store another object under the key between them.
     if (ifVersion !== undefined && stored !== undefined && stored.version !== ifVersion) {

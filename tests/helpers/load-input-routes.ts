@@ -202,6 +202,10 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     'its one load only seeds a segment to read through a leased handle; the shape of the stream is what it tests, and the input form is not',
   'tests/roaring/call-options.test.ts':
     'its loads only seed segments for the option checks of other calls; the input form is not what it tests',
+  'tests/drivers/port-keys.test.ts':
+    'its one load only runs a store over wrapping drivers that validate each ref they are handed; the refusal is what it tests, and the input form is not',
+  'tests/roaring/segment-ref-keys.test.ts':
+    'its loads only seed segments for the ref checks of other calls; the refusal is what it tests, and the input form is not',
   'tests/roaring/combine-options.test.ts':
     'its loads only seed segments for the option checks of the reads and combines, and the counters are reset after ' +
     'them; the refusal is what it tests, and the input form is not',

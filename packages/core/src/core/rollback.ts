@@ -117,7 +117,7 @@ export async function listGenerations(
   ref: SegmentRef,
   deps: GenerationListDeps,
 ): Promise<GenerationEntry[]> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'generations');
   const record = await deps.registry.get(ref);
   // A destroyed row keeps the pointer it had, but no read resolves through it, so no generation is current.
   const current = record?.status === 'destroyed' ? null : (record?.currentGen ?? null);
@@ -255,7 +255,7 @@ export async function rollbackSegment(
   deps: GenerationListDeps,
   options: { audit?: IAuditSink; allowUnknown?: boolean } = {},
 ): Promise<RollbackResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'rollback');
   checkedAuditSink(options.audit, 'rollback');
   requireInteger(toGeneration, { min: 0, what: 'rollback: generation' });
 

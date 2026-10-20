@@ -534,7 +534,7 @@ async function eraseOnce(
   options: { audit?: IAuditSink },
   seen: Pass,
 ): Promise<EraseIdResult> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'eraseIdFromSegment');
   checkedAuditSink(options.audit, 'eraseIdFromSegment');
   const { chunkKey, remainder } = splitId(id); // validates the u32 range
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');
@@ -1313,7 +1313,7 @@ export async function findIdUnderTombstone(
   id: number,
   deps: SearchDeps,
 ): Promise<number | null> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'findIdUnderTombstone');
   const { chunkKey, remainder } = splitId(id);
   const codec = requireCodec(deps.codec, 'findIdUnderTombstone');
   const c: HoldsCall = {
