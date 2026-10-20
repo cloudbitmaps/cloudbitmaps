@@ -220,7 +220,10 @@ describe('an invalidation reaches a pinned read in flight', () => {
           [1, 2],
           { registry: backend.registry },
         ),
-      run: ({ store, seg }) => store.segment('src', { namespace: NS }).intersectInto(seg, []),
+      run: ({ store, seg }) => {
+        const src = store.segment('src', { namespace: NS });
+        return src.unionInto(seg, [src]);
+      },
       expect: 'reads again',
     },
     {

@@ -268,7 +268,8 @@ describe('the per-id stream is the generator it was in 0.13.0', () => {
   it('failing results are as in 0.13.0 for the per-id path, plus batches()', async () => {
     const { store } = await loadedStore({ s: [1, 2] });
     const bad = store.segment('s').intersect([]);
-    await expect(collect(bad)).resolves.toEqual([1, 2]); // an empty operand list is just this segment
+    await expect(collect(bad)).rejects.toBeInstanceOf(ValidationError); // an empty operand list is refused
+    await expect(batchesOf(bad)).rejects.toBeInstanceOf(ValidationError);
     const failing = store.segment('s').iterate({ after: -1 });
     await expect(collect(failing)).rejects.toBeInstanceOf(ValidationError);
     await expect(batchesOf(failing)).rejects.toBeInstanceOf(ValidationError);
@@ -402,7 +403,12 @@ describe('batches() fails and refuses exactly as the per-id stream does', () => 
         () => s.union([store.segment('t')], { budget: { maxRequests: 1 } }),
         BudgetExceededError,
       ],
-      ['empty intersect', () => s.intersect([], { concurrency: 0 }), ValidationError],
+      ['empty intersect', () => s.intersect([], { concurrency: 4 }), ValidationError],
+      [
+        'bad concurrency',
+        () => s.intersect([store.segment('t')], { concurrency: 0 }),
+        ValidationError,
+      ],
       ['absent operand', () => s.andNot([ghost]), ValidationError],
     ];
     for (const [name, make, type] of cases) {
@@ -440,7 +446,9 @@ describe('batches() fails and refuses exactly as the per-id stream does', () => 
     await expect(batchesOf(bad.intersect([store.segment('ok')]))).rejects.toBeInstanceOf(
       IntegrityError,
     );
-    await expect(batchesOf(bad.union([]))).rejects.toBeInstanceOf(IntegrityError);
+    await expect(batchesOf(bad.union([store.segment('ok')]))).rejects.toBeInstanceOf(
+      IntegrityError,
+    );
   });
 });
 

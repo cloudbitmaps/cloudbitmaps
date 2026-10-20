@@ -13,6 +13,34 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **An `*Into` whose destination is also one of its sources is refused with `ValidationError`, before any request, and so is `store.load(x, ids)` when `ids` is a stream of this library that read `x`.**
+  `intersectInto`, `unionInto` and `andNotInto` throw when `dest` is the segment they are called on, one of the
+  operands or one of the excludes (the same namespace and name, however the handle was made: a second handle or a pin
+  of it counts), naming the verb and the segment; `materializeMany` already refused it for each `dest`. A `load` throws
+  when its input is the result of `iterate`, `everyNth`, `intersect`, `union` or `andNot` (as returned) over a segment
+  that includes the one it loads, in the same store or one built over the same registry driver (a copy between stores
+  over different backends loads as before; two separate store instances over one bucket cannot be told apart, so the
+  refusal does not cover them). Before, such a call read its sources at the generation the store last resolved, up
+  to `cache.genTtlMs` old, and published over the destination's row as it then stood, so another process's newer load
+  of the segment was replaced by a result built from the one before it, with no `WriteConflictError`. This release has
+  no fenced in-place update. To change a segment from its own content, write the result into a new segment and point
+  readers at it. A single writer that knows no other writer exists may still load the result back in two steps
+  (`x.intersectInto(tmp, …)`, then `store.load(x, tmp.iterate())`), and that is unfenced.
+- **`intersect([])` and `intersectInto(dest, [])` are refused with `ValidationError`.** They read as the segment alone,
+  so an operand list built in a loop that came out empty turned a filter into no filter. The error reads `intersect
+  requires at least one segment to intersect with; to read every id of one segment, use iterate()` (a stream throws
+  when it is first read; `intersectInto` says to call `materializeMany` for a copy). To read every id of one segment,
+  call `iterate()`. To copy a segment or a pin of it into another, where `intersectInto(dest, [])` did it, call
+  `store.materializeMany({ operands: { src }, outputs: [{ dest, expr: { or: ['src'] } }], keep })`, which reads each
+  chunk once, at one instant. `intersect([], { exclude })` becomes `andNot([exclude])`.
+- **`PinnedAt`, the type of `seg.pinnedAt`, is a union of two shapes in place of three independent nullable fields:**
+  `{ generation: number; version: string; fingerprint: string }` for a pin of a generation and `{ generation: null;
+  version: null; fingerprint: null }` for a pin of a segment that had none, so a check of `generation` narrows all
+  three. Code that reads the fields compiles as it did; code that builds a `PinnedAt` from fields that are each
+  `number | null` or `string | null`, or that assigns one with a `null` in only some fields, no longer compiles: narrow
+  on `generation` first, or build the one shape or the other. An interface that extends it (TS2312) or a class that
+  implements it (TS2422) does not compile either, since neither can name a union: intersect it with the shape you need
+  instead.
 - **Config objects refuse an option they do not take, a value of the wrong type, an empty name or endpoint, and a
   `null` where a value is taken, each with a `ValidationError` that names the option.** Each was accepted, or threw an
   untyped error, and did something other than what was asked. Code that passed one of them and worked now throws when
@@ -253,6 +281,19 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A union or an andNot of nothing is the segment itself.** `union([])` and `andNot([])` stream the segment's ids, and
+  `unionInto(dest, [])` and `andNotInto(dest, [])` publish them. `andNot([])` and `andNotInto(dest, [])` threw
+  `andNot requires at least one segment to subtract`; `union([])` always read the segment. A list of one day passed as
+  `days[0].union(days.slice(1))` works as the retention guide writes it.
+- **`pinAt` takes a pin's `pinnedAt` whole, and the errors of the range, count and absent-operand checks name their
+  verb.** Once `generation` is not `null`, `seg.pinAt(first.pinnedAt)` reopens that generation: the record's `version` is
+  a key `pinAt` accepts and does not read, where a third key was refused, and the sample in the reading guide
+  type-checks under `strict`. A pin of a segment with no generation, passed to `pinAt`, throws `pinAt: the pin named no
+  generation (the segment had none when it was pinned), so there is nothing to reopen`, and an unknown key's error says
+  "pinAt takes" where it said "this version takes". A bad `after`, `through`, `n` or `concurrency` begins with the verb
+  asked (`iterate`, `intersect`, `union`, `andNot`, `everyNth`, `materializeMany`: `intersect: through must be an
+  integer from 0 to 4294967295`), and an error naming absent operands says `operand "z1" names a segment` for one and
+  `operands "z1", "z2" name segments` for several.
 - **The main entry of `@cloudbitmaps/core` imports no Node builtin, so it loads in a context with none, which the
   roadmap said it already did.** It reached `node:fs`, `node:fs/promises`, `node:path` and `node:crypto` through the
   in-memory and local-filesystem backends and the in-process cipher and keystore, which are now exported by

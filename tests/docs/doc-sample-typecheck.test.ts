@@ -161,6 +161,15 @@ describe('the compile step', () => {
     probe('store-not-asked.md', 'await store.segment("a").count();'),
     probe('store-asked.md', 'await store.segment("a").count();', ['store']),
     probe(
+      'pin-at-nullable.md',
+      [
+        "const first = await store.segment('a').pin();",
+        'const { generation, fingerprint } = first.pinnedAt!;',
+        "await store.segment('a').pinAt({ generation, fingerprint });",
+      ].join('\n'),
+      ['store'],
+    ),
+    probe(
       'own-store.md',
       "import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';\nconst store = new CloudRoaring({ storage: new MemoryStorage() });\nvoid store;",
     ),
@@ -190,6 +199,12 @@ describe('the compile step', () => {
     expect(of('store-not-asked.md').length).toBeGreaterThan(0);
     expect(of('store-asked.md')).toEqual([]);
     expect(of('own-store.md')).toEqual([]);
+  });
+
+  it('refuses the nullable fields of a pin passed whole to pinAt, which the narrowing on generation avoids', () => {
+    const errors = of('pin-at-nullable.md');
+    expect(errors.length).toBeGreaterThan(0);
+    for (const e of errors) expect(e).toContain('TS2322');
   });
 });
 

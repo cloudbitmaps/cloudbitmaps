@@ -204,9 +204,10 @@ describe('union / andNot / intersect(exclude)', () => {
     ).resolves.toEqual(spread([1]));
   });
 
-  it('rejects the degenerate operand lists', async () => {
-    const { store } = harness();
-    await expect(collect(store.segment('a').andNot([]))).rejects.toThrow(/andNot requires/);
+  it('reads an andNot of nothing as the segment itself', async () => {
+    const { store, seed } = harness();
+    seed('a', [1, 2, 70_000]);
+    expect(await collect(store.segment('a').andNot([]))).toEqual([1, 2, 70_000]);
   });
 
   it('keeps every id inside its own chunk, and re-reads identically — operands are not consumed', async () => {

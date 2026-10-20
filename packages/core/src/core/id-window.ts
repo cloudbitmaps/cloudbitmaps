@@ -33,24 +33,29 @@ interface IdBounds {
 
 /**
  * Throws {@link ValidationError} unless `bound` is left out or is an id: an integer from 0 to 4294967295. The message
- * says what is wrong and never carries the value, which is an id.
+ * begins with the verb `op` that was asked, says what is wrong and never carries the value, which is an id.
  */
-export function assertIdBound(name: 'after' | 'through', bound: number | undefined): void {
+export function assertIdBound(
+  name: 'after' | 'through',
+  bound: number | undefined,
+  op: string,
+): void {
   if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-    throw new ValidationError(`${name} must be an integer from 0 to ${U32_MAX}`);
+    throw new ValidationError(`${op}: ${name} must be an integer from 0 to ${U32_MAX}`);
   }
 }
 
 /**
- * Validate a read's range. `null` when none was asked for, so the read does no extra work; `'empty'` when no id can be
- * in it (`after >= through`, which is a cursor at the end of its window, not an error).
+ * Validate a read's range for the verb `op`, which begins an error's message. `null` when none was asked for, so the
+ * read does no extra work; `'empty'` when no id can be in it (`after >= through`, which is a cursor at the end of its
+ * window, not an error).
  */
-export function windowOf(range: IdBounds | undefined): IdWindow | 'empty' | null {
+export function windowOf(range: IdBounds | undefined, op: string): IdWindow | 'empty' | null {
   const after = range?.after;
   const through = range?.through;
   if (after === undefined && through === undefined) return null;
-  assertIdBound('after', after);
-  assertIdBound('through', through);
+  assertIdBound('after', after, op);
+  assertIdBound('through', through, op);
   const lo = after === undefined ? 0 : after + 1;
   const hi = through ?? U32_MAX;
   if (lo > hi) return 'empty';

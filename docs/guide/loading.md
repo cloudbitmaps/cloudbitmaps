@@ -813,6 +813,41 @@ the destination and decide; do not treat it as "the write did not happen". A cal
 lease is refused earlier and harder, with `LeaseExpiredError`. An `*Into` publishes with the fences a load does: see
 [which fence a publish carries](correctness.md#which-fence).
 
+**The destination cannot also be a source.** An `*Into` whose `dest` is the segment it is called on, one of its operands
+or one of its excludes is refused with `ValidationError`, before any request, and names the verb and the segment. The call
+reads its sources at the generation this store last resolved, which can be up to `cache.genTtlMs` old, and publishes
+fenced on the destination's row as it stands: with the destination also a source, another process's newer load of it
+would be replaced by a result built from the one before, and no conflict would be raised. A segment is the same segment
+however its handle was made: a second handle, a pin of it and the same name in the same namespace all count. `materializeMany` applies
+the same rule to each `dest`, and `store.load` refuses ids that a stream of this library read from the segment it is
+loading (`store.load(x, x.intersect([y]))`), for the same reason. That check covers a stream of the same store, or of a
+store built over the same registry driver object; a copy between two stores over different backends loads as it always
+did. Two separate store instances built over the same bucket cannot be told apart, so it does not cover them, and the
+advice below applies there.
+
+**This release has no fenced in-place update of a segment from its own content.** Write the result into a new segment and
+point readers at it, for example a dated target or a pair of segments you alternate between. A load of ids derived from
+the segment it writes, in two steps (`x.intersectInto(tmp, …)` then `store.load(x, tmp.iterate())`) or through a stream of
+your own that wraps a read of `x`, is not refused and is **unfenced**: it publishes over whatever `x` is by then, so it is
+safe only where nothing else writes `x`. A single writer that knows no other writer exists may update in place that way.
+
+**`intersectInto(dest, [])` is refused.** An intersection over nothing has no meaning, and a list built in a
+loop that came out empty would otherwise turn a filter into no filter. A union or an andNot with nothing is the segment
+itself, so `unionInto(dest, [])` and `andNotInto(dest, [])` publish its ids. To copy a segment, or a pin of it, into a
+segment of its own, use `materializeMany` with the segment as its one operand. It reads each chunk once, at one instant,
+where a combine that names the segment twice reads it twice and, on a live segment, can write a chunk that holds two
+generations:
+
+<!-- typecheck-skip: a fragment, `src` and `dest` are segments the reader already holds -->
+```ts
+// src and dest are segments of this store. `keep` is how many earlier generations of dest the call keeps.
+await store.materializeMany({
+  operands: { src },
+  outputs: [{ dest, expr: { or: ['src'] } }],
+  keep: 2,
+});
+```
+
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
 then calling `andNotInto`. The suppression folds into the same chunk-aligned pass, and each exclude is read only where
 the intersection survived.
