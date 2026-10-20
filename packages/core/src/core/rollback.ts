@@ -675,6 +675,17 @@ async function moveBack(
   return undone;
 }
 
+/** The conflict a rollback throws when it cannot confirm its swap is the one the row shows; `cause` is kept. */
+function unconfirmedSwap(err: Error, cause: unknown = err): WriteConflictError {
+  // The driver's error stays as the cause; the message says what the caller can do about it.
+  const lost = new WriteConflictError(
+    "rollback: the segment's row changed while the rollback ran, and this rollback could not confirm that its " +
+      'swap is the one the row shows; check store.generations(ref) and run it again',
+  );
+  lost.cause = cause;
+  return lost;
+}
+
 /**
  * The compare-and-swap that moves the pointer, settled whatever it answers: the token it was given and the token of the
  * row the undo is fenced on, of a swap that answered, or of the row that shows one that did not answer, or that
@@ -717,7 +728,14 @@ async function swapPointer(
       // can be left on a target collected meanwhile. The row says which.
       if (isTransientError(err)) return swapLanded(ref, record, swap, registry, err, sent, deps);
       if (!isWriteConflictError(err)) throw err;
-      const seen = await readBack(() => registry.get(ref), err, deps);
+      let seen: RegistryRecord | null;
+      try {
+        seen = await readBack(() => registry.get(ref), err, deps);
+      } catch (readErr) {
+        // Every read failed: the swap may have landed, and the driver's bare conflict does not say so.
+        if (readErr === err) throw unconfirmedSwap(err, err.cause);
+        throw readErr;
+      }
       // A swap that landed and came back as a conflict (a client's replay that met another writer's write, or a replay
       // after a delete) is settled by the row, before any wait: the pointer is over this call's write, whatever else
       // has been written to the row since. The undo is fenced on the row read back.
@@ -733,13 +751,7 @@ async function swapPointer(
       // The row after the wait is the one the swap goes on against, if it is still the one read with only leases
       // changed.
       if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) {
-        // The driver's error stays as the cause; the message says what the caller can do about it.
-        const lost = new WriteConflictError(
-          "rollback: the segment's row changed while the rollback ran, and this rollback could not confirm that its " +
-            'swap is the one the row shows; check store.generations(ref) and run it again',
-        );
-        lost.cause = err;
-        throw lost;
+        throw unconfirmedSwap(err);
       }
       against = now.token;
     }

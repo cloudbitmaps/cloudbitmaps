@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A rollback whose swap met a conflict and whose every read of the row then failed now throws `WriteConflictError`,
+  where 0.22.0 threw `TransientError`.** The error is the rollback's own, saying it could not confirm that its swap is
+  the one the row shows, with the read's `TransientError` as its `cause`; the pointer may be on the target. A caller
+  that caught `TransientError` around `store.rollback` to run it again now misses this one: catch `WriteConflictError`
+  as well, and run the rollback again after checking `store.generations(ref)`, which finds the pointer where it is.
+
 - **`subjectReport` and `eraseSubject` refuse a `namespace` given together with `{ allNamespaces: true }`, take their
   scope in a type that refuses the pair, and begin an `error:` note with the error's class.** With both, the call
   honoured `namespace` and ignored `allNamespaces`, so a caller who meant every tenant erased one, and its ledger read

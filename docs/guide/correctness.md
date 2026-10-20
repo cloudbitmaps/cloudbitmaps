@@ -12,7 +12,7 @@ which code, tests and docs cite by number.
 
 | Section | Its guide |
 |---|---|
-| [When a load is refused](#when-a-load-is-refused): each `reason` and what to do, what throws instead, and [a write that is throttled or gets no answer](#when-a-write-is-throttled-or-gets-no-answer) | [Loading in depth](loading.md) |
+| [When a load is refused](#when-a-load-is-refused): each `reason` and what to do, what throws instead, and [a write that is throttled or gets no answer](#when-a-write-is-throttled-or-gets-no-answer), and [a write that gets no answer](#a-write-that-gets-no-answer) | [Loading in depth](loading.md) |
 | [How a load stays correct](#how-a-load-stays-correct): numbering, the publish and its fences, crashes and orphans, collection and leases, and [a rollback that races a collection](#a-rollback-that-races-a-collection) | [Loading in depth](loading.md) |
 | [How a pin stays correct](#how-a-pin-stays-correct): the caches a pin shares, one generation per call, a re-created segment, and what invalidates a pin | [Reading in depth](reading.md#read-one-fixed-point-in-time) |
 | [How retention stays correct](#how-retention-stays-correct): the order of a drop, the purge of a tombstone, and the due index's pointers | [Retention](retention.md) |

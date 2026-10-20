@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudRoaring } from '@/index';
 import type { SegmentRef } from '@/index';
-import { NotFoundError, TransientError } from '@/core/errors';
+import { NotFoundError, TransientError, WriteConflictError } from '@/core/errors';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
@@ -45,6 +45,8 @@ describe.each<Kind>(['memory', 'localfs'])(
       readonly noTokens?: boolean;
       /** Clear the pointer first, so the rollback starts from a row with no pointer. */
       readonly noPointer?: boolean;
+      /** Another writer moves the pointer to generation 1 right after the fault fires. */
+      readonly rival?: boolean;
     }
 
     /** A segment of three generations; the first move of a rollback removes generation 0, then the undo is faulted. */
@@ -54,6 +56,14 @@ describe.each<Kind>(['memory', 'localfs'])(
       const raw: IRegistryDriver =
         dir === undefined ? new MemoryRegistryDriver() : new LocalFsRegistryDriver(dir);
       const faulty = faultyRegistry(raw);
+      const arm = (f: Fault) => {
+        faulty.arm('compareAndSwap', f);
+        if (opts.rival === true)
+          faulty.between(async () => {
+            const row = (await raw.get(SEG))!;
+            await raw.compareAndSwap(SEG, row.token, { currentGen: 1 });
+          });
+      };
       let swaps = 0;
       let watching = false;
       const registry = new Proxy(faulty, {
@@ -65,7 +75,7 @@ describe.each<Kind>(['memory', 'localfs'])(
           }
           return async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
             if (watching && opts.onSwap === true && swaps === 0) {
-              faulty.arm('compareAndSwap', fault);
+              arm(fault);
               if (opts.failReads !== undefined) faulty.failReads(opts.failReads);
             }
             let res;
@@ -75,7 +85,7 @@ describe.each<Kind>(['memory', 'localfs'])(
               if (watching) swaps += 1;
               if (swaps === 1 && opts.onSwap !== true) {
                 await storage.delete({ ...SEG, generation: 0 });
-                faulty.arm('compareAndSwap', fault);
+                arm(fault);
                 if (opts.failReads !== undefined) faulty.failReads(opts.failReads);
               }
             }
@@ -154,6 +164,62 @@ describe.each<Kind>(['memory', 'localfs'])(
       expect((err as Error).message).toMatch(/the pointer may still name 0/);
       expect(sleeps).toHaveLength(2);
       expect(row.currentGen).toBe(2);
+    });
+
+    it('settles a move back whose conflict was its own landing, after a wait (b)', async () => {
+      const { err, row, sleeps } = await run('b', { failReads: 1 });
+
+      expect((err as Error).message).toMatch(/the pointer was put back/);
+      expect(sleeps).toHaveLength(1);
+      expect(row.currentGen).toBe(2);
+    });
+
+    it("does not take another writer's win for its move back after a conflict (d)", async () => {
+      const { err, row } = await run('d', { rival: true });
+
+      expect(err).toBeInstanceOf(NotFoundError);
+      expect((err as Error).message).toMatch(/the pointer may still name 0/);
+      expect(row.currentGen).toBe(1);
+    });
+
+    it('waits between the reads of a move back after a conflict, then says "may" (b)', async () => {
+      const { err, row, sleeps } = await run('b', { failReads: 3 });
+
+      expect(err).toBeInstanceOf(NotFoundError);
+      expect((err as Error).message).toMatch(/the pointer may still name 0/);
+      expect(sleeps).toHaveLength(2);
+      expect(row.currentGen).toBe(2);
+    });
+
+    it('settles a swap whose conflict was its own landing, after a wait (b)', async () => {
+      const { err, result, row, sleeps } = await run('b', { onSwap: true, failReads: 1 });
+
+      expect(err).toBeUndefined();
+      expect(result).toEqual({ fromGeneration: 2, generation: 0 });
+      expect(sleeps).toHaveLength(1);
+      expect(row.currentGen).toBe(0);
+    });
+
+    it('throws the conflict when another writer won the swap (d)', async () => {
+      const { err, row } = await run('d', { onSwap: true, rival: true });
+
+      expect(err).toBeInstanceOf(WriteConflictError);
+      expect((err as Error).message).toMatch(
+        /could not confirm that its swap is the one the row shows/,
+      );
+      expect(row.currentGen).toBe(1);
+    });
+
+    it('waits between the reads of a swap after a conflict, then throws its own conflict (b)', async () => {
+      const { err, row, sleeps } = await run('b', { onSwap: true, failReads: 3 });
+
+      expect(err).toBeInstanceOf(WriteConflictError);
+      expect((err as Error).message).toMatch(
+        /could not confirm that its swap is the one the row shows/,
+      );
+      expect((err as Error).cause).toBeInstanceOf(TransientError);
+      expect(sleeps).toHaveLength(2);
+      expect(row.currentGen).toBe(0);
     });
 
     it.each(['a', 'b'] as const)(

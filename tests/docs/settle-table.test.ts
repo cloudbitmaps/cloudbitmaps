@@ -27,9 +27,6 @@ const SETTLED: Record<string, string[]> = {
   "a load's collection": ['generation-gc.ts'],
 };
 
-/** Backticked names in the token-settled sentence that are not lifecycle helpers. */
-const NOT_HELPERS: string[] = ['load'];
-
 /** Every backticked identifier in the row's sentence "counts as landed when the row shows its write token: ...". */
 function tokenSettledNames(row: string): string[] {
   const start = row.indexOf('counts as landed when the row shows its write token:');
@@ -52,7 +49,6 @@ describe('the production guide names only helpers that settle through settle.ts'
     const named = tokenSettledNames(row);
     expect(named.length).toBeGreaterThan(0);
     for (const n of named) {
-      if (NOT_HELPERS.includes(n)) continue;
       expect(Object.keys(SETTLED), `\`${n}\` is named as settled by a write token`).toContain(n);
     }
   });
