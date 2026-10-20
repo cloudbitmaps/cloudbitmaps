@@ -171,7 +171,8 @@ so, and so do the module headers in the code.
   and lost its answer.** Before, the move back sent no write token and any failure ended the loop, so a move back that
   landed read as "the pointer may still name" the target while the pointer was back. The call now reads the row and takes
   the move back as landed when the row's `pointerId` is a token it sent; one that never landed still says the pointer
-  may be on the target. The production guide's and the API reference's account of what each lifecycle helper settles, and
+  may be on the target. The rollback's read-backs (of its swap and its move back) now make up to three reads and wait
+  between them on the clock the call passes, as every other lifecycle read-back does. The production guide's and the API reference's account of what each lifecycle helper settles, and
   the roadmap's deferral list, now state what the code does: a write token, the row gone, or the object gone, and what
   still throws `TransientError` (both the answer and the read-back lost, a delete that lands after its check, a registry
   that reports no write tokens).
@@ -207,7 +208,7 @@ so, and so do the module headers in the code.
 - **A crypto-shred (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement) and a drop's tombstone
   for a segment with no row, whose write lands and loses its response, are now settled by the write token, and report
   and audit the shred.** A cleartext destroy (`allowCleartext`) whose answer is lost is settled the same way, and a
-  shred's read-back now waits between its reads, on the system clock when the call passes none. Before, they threw
+  shred's read-back now waits between its reads, through `@cloudbitmaps/roaring`, on the system clock when the call passes none. Before, they threw
   `TransientError`, or recorded `failed: …` with `destroyed: false`, and the re-run answered `'already'` with no
   `segment.erase`, ever. A retirement reported `retired` with `generationsRemaining: []` while every object was still
   in the bucket; it now lists what is left. After a clean shred whose listing then faulted, its `cryptoShredded` said

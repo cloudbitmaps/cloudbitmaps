@@ -18,7 +18,7 @@
  */
 import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
-import { incarnationField } from './token';
+import { incarnationField, sameIncarnation } from './token';
 import { pointerSetBy } from './pointer-id';
 import { readBack, writeTokens } from './settle';
 import { footerCrcUnder, openRollbackTargetFrom, readRollbackTargetFooter } from './crbm-open';
@@ -393,7 +393,7 @@ export async function rollbackSegment(
     ref,
     record,
     { toGeneration, summary, known: knownAfter },
-    deps.registry,
+    deps,
     churn,
   );
 
@@ -435,13 +435,13 @@ export async function rollbackSegment(
     }
   }
   if (!stillThere || replaced) {
-    const undone = await moveBack(ref, record, toGeneration, swapped, deps.registry, churn);
+    const undone = await moveBack(ref, record, toGeneration, swapped, deps.registry, churn, deps);
     throw new NotFoundError(
       `rollback: generation ${toGeneration} of "${ref.segment}" was ${replaced ? 'replaced' : 'collected'} while the pointer was moving` +
         (undone
           ? ' — the pointer was put back'
-          : `, and the move back failed, so the pointer may still name ${toGeneration} (a write that landed and lost ` +
-            'its response reads as a failure here). Check which generation is current, then re-run a rollback to a ' +
+          : `, and the move back failed, so the pointer may still name ${toGeneration} (the row could not show ` +
+            'whether the move back landed). Check which generation is current, then re-run a rollback to a ' +
             'generation that exists, or restore the object.'),
     );
   }
@@ -594,17 +594,24 @@ async function moveBack(
   swapped: { readonly pointerId: Token; readonly token: Token },
   registry: IRegistryDriver,
   churn: ReturnType<typeof leaseChurn>,
+  waits: ChurnDeps,
 ): Promise<boolean> {
   let undone = false;
   let undoAgainst = swapped.token;
   // The tokens of the undo's own writes: a move back that got no answer, or met a conflict, is settled by the row's
   // pointerId carrying one of them.
   const undo = writeTokens(registry);
-  const undoLanded = (row: RegistryRecord | null): boolean =>
-    row !== null &&
-    undo.sent !== undefined &&
-    record.currentGen !== null &&
-    pointerSetBy(row, record, record.currentGen, undo.sent);
+  const undoLanded = (row: RegistryRecord | null): boolean => {
+    if (row === null || undo.sent === undefined) return false;
+    if (record.currentGen !== null) return pointerSetBy(row, record, record.currentGen, undo.sent);
+    // A rollback from a row with no pointer moves back to none.
+    return (
+      row.currentGen === null &&
+      row.status !== 'destroyed' &&
+      sameIncarnation(record, row) &&
+      undo.sent.has(row.pointerId)
+    );
+  };
   for (;;) {
     try {
       // The target the rollback just found gone, or replaced, is not a generation the row knows any more.
@@ -634,7 +641,7 @@ async function moveBack(
       if (isTransientError(err)) {
         // A move back that got no answer: the row says whether it landed.
         try {
-          const row = await readBack(() => registry.get(ref), err);
+          const row = await readBack(() => registry.get(ref), err, waits);
           if (undoLanded(row)) undone = true;
         } catch {
           // unknown: reported as may-still-name below
@@ -644,7 +651,7 @@ async function moveBack(
       if (!isWriteConflictError(err)) break;
       let now: RegistryRecord | null;
       try {
-        const seen = await registry.get(ref);
+        const seen = await readBack(() => registry.get(ref), err, waits);
         if (undoLanded(seen)) {
           undone = true;
           break;
@@ -683,9 +690,10 @@ async function swapPointer(
     readonly summary: RegistrySummary | undefined;
     readonly known: readonly KnownGeneration[] | undefined;
   },
-  registry: IRegistryDriver,
+  deps: GenerationListDeps,
   churn: ReturnType<typeof leaseChurn>,
 ): Promise<{ readonly pointerId: Token; readonly token: Token }> {
+  const { registry } = deps;
   let against = record.token;
   // The tokens of every swap this call sent, as a registry that reports them says before it sends each one (a resend
   // reports a new one); absent for a registry that does not, whose swap that got no answer is then settled by the row
@@ -707,9 +715,9 @@ async function swapPointer(
     } catch (err) {
       // A swap that got no answer may have landed, and the check after it has to run on one that did, or the pointer
       // can be left on a target collected meanwhile. The row says which.
-      if (isTransientError(err)) return swapLanded(ref, record, swap, registry, err, sent);
+      if (isTransientError(err)) return swapLanded(ref, record, swap, registry, err, sent, deps);
       if (!isWriteConflictError(err)) throw err;
-      const seen = await registry.get(ref);
+      const seen = await readBack(() => registry.get(ref), err, deps);
       // A swap that landed and came back as a conflict (a client's replay that met another writer's write, or a replay
       // after a delete) is settled by the row, before any wait: the pointer is over this call's write, whatever else
       // has been written to the row since. The undo is fenced on the row read back.
@@ -776,14 +784,9 @@ async function swapLanded(
   registry: IRegistryDriver,
   unanswered: TransientError,
   sent: ReadonlySet<Token> | undefined,
+  waits: ChurnDeps,
 ): Promise<RegistryRecord> {
-  let now: RegistryRecord | null;
-  try {
-    now = await registry.get(ref);
-  } catch (readErr) {
-    if (isIntegrityError(readErr)) throw readErr;
-    throw unanswered;
-  }
+  const now = await readBack(() => registry.get(ref), unanswered, waits);
   if (sent !== undefined) {
     if (now === null || !pointerSetBy(now, record, swap.toGeneration, sent)) throw unanswered;
     return now;

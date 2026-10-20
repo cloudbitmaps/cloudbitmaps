@@ -402,7 +402,7 @@ between here and there:
    - an `op` metric for `store.load`, which the metrics sink does not time;
    - sending a lifecycle write again when the row shows it did not land. Every write reads back its row or its object
      when it gets no answer ([how a row write is settled](guide/correctness.md#row-write-settled),
-     [what each helper settles](guide/correctness.md#a-write-that-gets-no-answer)) and goes on from one that landed.
+     [what each helper settles](guide/correctness.md#settle-by-read-back)) and goes on from one that landed.
      Only the publish of a load, an `*Into` or an erasure's rewrite, and an erasure's write to the row, send one again
      ([publish is forward-only](guide/correctness.md#publish-is-forward-only)). The others throw the `TransientError`,
      and a re-run is safe: a crypto-shred, a drop's tombstone, `setRetention`, `clearRetention`, a rollback's move and
