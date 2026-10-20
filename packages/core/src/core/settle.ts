@@ -7,7 +7,12 @@
  * I/O of its own.
  */
 import type { Rng } from './determinism';
-import { WriteConflictError, isNotFoundError, isTransientError } from './errors';
+import {
+  WriteConflictError,
+  isNotFoundError,
+  isTransientError,
+  isWriteConflictError,
+} from './errors';
 import { UNANSWERED_BASE_MS } from './leases';
 import type {
   GenKey,
@@ -15,6 +20,7 @@ import type {
   IStorageDriver,
   RegistryRecord,
   RegistryWriteOptions,
+  SegmentRef,
   StorageDeleteOptions,
   Token,
 } from './ports';
@@ -146,6 +152,31 @@ export async function deleteSettled(
         `generation s.${key.generation} is another object than the version given; not deleted`,
       );
     }
+    throw err;
+  }
+}
+
+/**
+ * Delete a registry row, and settle a delete that got no answer, or met a conflict, by reading the row: a row that is
+ * gone means the delete landed (or another writer removed it, which leaves the same row), and the call counts it as
+ * deleted. A row still there means a refusal or a lost race, and the original error is thrown as it was. A delete
+ * fenced on a token that finds its row gone is a conflict by the port's contract, and a store that resends a delete
+ * whose answer was lost meets exactly that, so the conflict is settled here and not by the registry. A read-back that
+ * fails every time throws the original error.
+ */
+export async function rowDeleteSettled(
+  registry: IRegistryDriver,
+  ref: SegmentRef,
+  expected?: Token,
+  waits: ReadBackWaits = {},
+): Promise<void> {
+  try {
+    await registry.delete(ref, expected);
+    return;
+  } catch (err) {
+    if (!isTransientError(err) && !isWriteConflictError(err)) throw err;
+    const row = await readBack(() => registry.get(ref), err as Error, waits);
+    if (row === null) return;
     throw err;
   }
 }
