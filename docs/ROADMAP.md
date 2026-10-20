@@ -186,7 +186,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
   rather than quietly running up a bill. Every registry scan has a ceiling by default: the DR consistency check,
   the retention sweep and `eraseNamespace` refuse past `maxScanSegments` (250,000 rows by default), and the subject scans
-  (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`, which `eraseSubject` also charges for each superseded generation it opens. `budget: false`, on the
+  (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`, which `eraseSubject` also charges for each superseded generation it opens, and both for each object they open under a destroyed segment. `budget: false`, on the
   call or on the store, lifts that ceiling, and a subject scan then holds every row it lists.
 - **Immutable, generation-keyed objects.** `segment.<gen>.crbm` + one registry pointer, never overwritten in
   place. A load takes the next number past both the pointer and whatever is in the bucket, so a crashed
@@ -217,7 +217,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   **physical deletion on return** for every segment its ledger reports `erased: true`, with a
   per-segment ledger and an audit event per segment erased: `segment.rewrite`, or `segment.collect` where only other
   generations held the id, which is also emitted, with no `fromGeneration`, for a segment where the erasure deleted only
-  objects no read of it can open. `subjectReport` is the read side (access). What a
+  objects no read of it can open. `subjectReport` is the read side (access), and it finds the objects a cleartext destroy left, which the erasure deletes. What a
   rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder an erasure
   deletes by name, above the pointer or on a segment with no generation yet, is deleted only while it is the object
   the erasure read, on a storage driver that reports
@@ -479,6 +479,11 @@ None of these are committed and none have dates. If one matters to you,
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) and say so — that's the single best way to
 move it up.
 
+- **Answer an encrypted leftover object from its first tail read.** The search `subjectReport` and `eraseSubject` make
+  under a destroyed segment reads an encrypted object's tail twice (the open, then the footer that says it is
+  encrypted), 20 reads for a crypto-shred that left 10 objects, paid by every report that scopes it for as long as the
+  objects stay. The footer is already in the first tail read, so one read would halve it in the report and the erasure
+  alike.
 - **`analyze` — try it on your own data before adopting anything.** Point a command at a file of your IDs and it
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the object size, the read cost and the monthly figure that follow — **offline, with no cloud account and

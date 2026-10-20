@@ -573,7 +573,7 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 
 | Calls | Retried for you? |
 |---|---|
-| Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` | Yes, with backoff; `retry` tunes it |
+| Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()`; and the search `subjectReport` and `eraseSubject` make under a destroyed segment, its listing included | Yes, with backoff; `retry` tunes it |
 | Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | Only where it is safe, and not by `retry`: a throttled write-once object on S3 and GCS is sent again, and a registry write that got no answer is settled by reading the row and, if nothing changed, sent again as a fresh compare-and-swap (at most three, after a wait; [a load's writes](correctness.md#when-a-write-is-throttled-or-gets-no-answer)). Any other transient fault reaches you: run the call again. The reads they make along the way are retried, with backoff: a load guard's read of the current generation, and an erasure's reads of the generation it rewrites, of the one it wrote, and of any other that may still hold the id |
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
@@ -670,7 +670,7 @@ scan), `limit` is the bound that was in force and `spent` is what the call had r
 on the option:
 
 - `'budget.maxRequests'`: the requests a plan needs. Raising the budget to it lets the call through, except for an
-  enumeration stopped at its bound (`subjectReport`, `eraseSubject`'s scan), which reports `limit + 1`, a lower bound:
+  enumeration stopped at its bound (`subjectReport`, `eraseSubject`'s scan), and a `subjectReport` refused while it searches a destroyed segment, which report `limit + 1`, a lower bound:
   raising the budget to it can be refused again, so raise it with room to spare.
 - `'maxBufferedBytes'`: a **lower bound** on the memory the call needs, namely what it held plus what it asked for at the
   moment it was refused. Raising the limit to `spent` can be refused again further on, because the call had not finished
@@ -692,6 +692,12 @@ that hold the key, so a large suppression list is not charged for keys it cannot
 (an `intersect` of two or more segments) is still charged a unit for each such key, though a batch sends fewer requests than it has keys. Bytes need no separate
 limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads no
 payload: it answers from the row's summary, or from the index when the row has none it can use, so it approaches the ceiling only on a source that cannot serve cardinalities.
+
+`subjectReport` charges one unit per registered segment too, and, for each destroyed segment in scope, one for each
+object it opens under it beyond the one the row names (a segment's own listing and that open are in its unit). A drop
+that deleted everything costs 1 listing; a cleartext destroy with 3 objects, 7 requests; 10 objects, 21, of which 10 are
+budget units when the id is only in the oldest. A report that runs out throws `BudgetExceededError`, never a short
+answer, with `spent` at `limit + 1`, a lower bound: raise the budget with room to spare.
 
 `eraseSubject` charges one unit per registered segment, and one for each generation it opens beyond the one the
 row names. Only the enumeration can refuse the whole call. A segment that runs the budget out during the scan is

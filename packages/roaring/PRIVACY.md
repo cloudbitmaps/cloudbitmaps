@@ -88,7 +88,7 @@ not in are not listed. A segment where the erasure found the id in nothing it co
 no read of it can open, is not listed either: the audit sink gets `segment.collect { collected }` for it, with no
 `fromGeneration`, and that event is the only record of the deletion. `store.subjectReport(id, { namespace })` answers
 the read side (Art. 15 — which segments
-an id is in).
+an id is in, and which destroyed segments still hold it in objects left in the bucket).
 
 An erasure that finds the id in no generation but an older one also writes the segment's registry row once, before it
 deletes anything, when the row's ledger of known generations names a generation the call is about to delete: it takes
@@ -434,8 +434,8 @@ crypto-shred), `segment.dispose` (a `dropSegment`, including every retirement th
 registry token carries one, so a segment created again under the same name is told apart from the one before.
 It is off by default and exception-safe. See the [dashboards guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/dashboards.md), which also says
 which event is the receipt for which claim. An erasure *ledger* — per-subject-request proof of physical deletion
-— is returned by **`eraseSubject`**. `subjectReport` is the read side and returns only which segments an id is
-in; it performs no deletion and issues no ledger.
+— is returned by **`eraseSubject`**. `subjectReport` is the read side and returns which segments an id is
+in, and which destroyed segments' leftover objects hold it; it performs no deletion and issues no ledger.
 
 **Log hygiene:** `segment` / `namespace` are *your* strings and may encode sensitive purpose; IDs are personal
 data. The library never logs bitmap contents or raw IDs, but **you** should treat segment names and IDs as PII
