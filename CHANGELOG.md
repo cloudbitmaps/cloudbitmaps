@@ -173,6 +173,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`MemoryStorage`'s generation and segment listings list what is present when they begin.** Both iterated the live
+  store, so an object or segment stored while a caller was still reading a listing was yielded, and a caller that
+  stored one for each key it was shown never finished. Each now takes its keys first, as the local-files driver's
+  directory read and a single page of an S3 or Azure listing do. An object or segment deleted during a listing is now
+  still yielded, as on those backends, where before it was skipped.
+
 - **A rollback whose target went while the pointer was moving reports the pointer as put back when the move back landed
   and lost its answer.** Before, the move back sent no write token and any failure ended the loop, so a move back that
   landed read as "the pointer may still name" the target while the pointer was back. The call now reads the row and takes
