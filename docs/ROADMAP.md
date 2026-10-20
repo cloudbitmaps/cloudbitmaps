@@ -63,7 +63,7 @@ marked with the release it is to ship in, and sits under `[Unreleased]` in the [
 | A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
 | A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
 | Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
-| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a target the row's `knownGens` does not name and one whose footer checksum is not the recorded one (with or without a key), unless `allowUnknown` is passed, which is audited; a collected target, a crypto-shredded segment; rolling to the current generation checks its object is there and is the recorded one, and a swap that met a conflict or got no answer is settled by reading the row, by the write token on a registry that reports them |
+| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a target the row's `knownGens` does not name and one whose footer checksum is not the recorded one (with or without a key), unless `allowUnknown` is passed, which is audited; a collected target, a destroyed segment (crypto-shredded, destroyed in the clear or dropped); rolling to the current generation checks its object is there and is the recorded one, and [a swap that met a conflict or got no answer is settled by reading the row](guide/correctness.md#rollback-settles-its-swap), by the write token on a registry that reports them |
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained, maxGrowth }` adds the plausibility bounds, judged against what `dest` held |
@@ -186,7 +186,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
   rather than quietly running up a bill. Every registry scan has a ceiling by default: the DR consistency check,
   the retention sweep and `eraseNamespace` refuse past `maxScanSegments` (250,000 rows by default), and the subject scans
-  (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`, which `eraseSubject` also charges for each superseded generation it opens. `budget: false`, on the
+  (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`, which `eraseSubject` also charges for each superseded generation it opens, and both for each object they open under a destroyed segment. `budget: false`, on the
   call or on the store, lifts that ceiling, and a subject scan then holds every row it lists.
 - **Immutable, generation-keyed objects.** `segment.<gen>.crbm` + one registry pointer, never overwritten in
   place. A load takes the next number past both the pointer and whatever is in the bucket, so a crashed
@@ -217,7 +217,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   **physical deletion on return** for every segment its ledger reports `erased: true`, with a
   per-segment ledger and an audit event per segment erased: `segment.rewrite`, or `segment.collect` where only other
   generations held the id, which is also emitted, with no `fromGeneration`, for a segment where the erasure deleted only
-  objects no read of it can open. `subjectReport` is the read side (access). What a
+  objects no read of it can open. `subjectReport` is the read side (access), and it finds the objects a cleartext destroy left, which the erasure deletes. What a
   rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder an erasure
   deletes by name, above the pointer or on a segment with no generation yet, is deleted only while it is the object
   the erasure read, on a storage driver that reports
@@ -400,14 +400,18 @@ between here and there:
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
    - an `op` metric for `store.load`, which the metrics sink does not time;
-   - the reconcile of an unanswered registry write, for the writes of `setRetention` and a crypto-shred; the publish
-     of a load, an `*Into` or an erasure's rewrite, and the write an erasure makes to the row before it deletes an
-     object a load may still publish, settle one by reading the row. A `rollback` reads the row too, and goes on from a
-     swap the row shows landed, but does not send again one the row shows did not land: it throws the
-     `TransientError`;
-   - settling a rollback's undo by the write token: the undo is fenced on the row read back, and its failure message
-     says the pointer "may" still name the target. The undo also restores the ledger the row had before the swap, so a
-     ledger-only write made in between (a prune) is undone with it;
+   - sending a lifecycle write again when the row shows it did not land. Every write reads back its row or its object
+     when it gets no answer ([how a row write is settled](guide/correctness.md#row-write-settled),
+     [what each helper settles](guide/correctness.md#settle-by-read-back)) and goes on from one that landed.
+     Only the publish of a load, an `*Into` or an erasure's rewrite, and an erasure's write to the row, send one again
+     ([publish is forward-only](guide/correctness.md#publish-is-forward-only)). The others throw the `TransientError`,
+     and a re-run is safe: a crypto-shred, a drop's tombstone, `setRetention`, `clearRetention`, a rollback's move and
+     move back, a sweep's deletes, and a storage delete;
+   - a record of a crypto-shred whose answer and read-back were both lost. The tombstone does not say which call wrote it
+     or that it was a crypto-shred, so the re-run answers `'already'` and emits no `segment.erase`;
+   - a delete that lands after the read that checked it, and a registry that reports no write tokens. Both end as the fault the call reports; running the call again is safe;
+   - a rollback's move back restores the ledger the row had before the move, so a ledger-only write made in between (a
+     prune) is undone with it;
    - a `rollback` with no key at hand (no keystore, or one that cannot open the key) below the pointer of an encrypted
      segment whose row has no usable `knownGens`, or onto a number below a full list's oldest entry, which opens nothing:
      it checks that the object is in the bucket and, from its footer, that it is encrypted exactly when the row has
@@ -479,12 +483,27 @@ None of these are committed and none have dates. If one matters to you,
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) and say so — that's the single best way to
 move it up.
 
+- **Answer an encrypted leftover object from its first tail read.** The search `subjectReport` and `eraseSubject` make
+  under a destroyed segment reads an encrypted object's tail twice (the open, then the footer that says it is
+  encrypted), 20 reads for a crypto-shred that left 10 objects, paid by every report that scopes it for as long as the
+  objects stay. The footer is already in the first tail read, so one read would halve it in the report and the erasure
+  alike.
 - **`analyze` — try it on your own data before adopting anything.** Point a command at a file of your IDs and it
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the object size, the read cost and the monthly figure that follow — **offline, with no cloud account and
   nothing created**. Today's cost tooling can only answer that once you're already a user, which is backwards. It
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
+- **A data key per generation.** A segment seals every generation under one data key for its whole life, so the count
+  of seals under that key grows with every load and erasure rewrite, and a full-width segment reloaded every few minutes
+  passes the 2³² seals below which a repeated random nonce is negligibly unlikely
+  ([how many seals one key takes](guide/correctness.md#seal-count)). Deriving a key per generation from the segment's
+  key bounds each key to one generation's seals. It changes how a generation is sealed and the keystore port, so it is
+  decided at the `1.0` format freeze, not before.
+- **A scope of its own for un-namespaced segments.** A segment loaded with no `namespace` is reached by
+  `subjectReport`, `eraseSubject` and `retireExpired` only when the call covers every namespace (`allNamespaces: true`,
+  or no `namespace` on a sweep), because the registry port cannot list the absent namespace alone, and `'_default'`
+  names an ordinary namespace. A scope for just those segments needs a filter on the registry port.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
 - **A ledger that tells a generation a load published from one a seed recorded.** A rollback refuses a generation the
   row's `knownGens` does not name, but a publish over a row with no usable ledger seeds one from the bucket, an orphan or

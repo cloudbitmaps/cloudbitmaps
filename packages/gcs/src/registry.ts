@@ -192,7 +192,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     try {
       // The SDK may send this again after a lost response, as it does any request with a precondition. The
       // precondition names one generation, so a second copy removes nothing the first could not; one that meets the
-      // first's landed delete is a 404, a conflict, and the registry re-reads and finds the row gone.
+      // first's landed delete is a 404, a conflict. The registry re-reads and finds the row gone: an unfenced delete then
+      // returns, and one fenced on a token reports the conflict, which its caller settles by reading the row (the
+      // retention sweep does).
       await this.file(key).delete({ ifGenerationMatch: generationFence(expect.version, key) });
     } catch (err) {
       // A 412 (the generation moved on) or a 404 (the object is gone): the version to delete is not there.

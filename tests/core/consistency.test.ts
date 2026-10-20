@@ -38,7 +38,7 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
     ]);
   });
 
-  it('skips a destroyed (crypto-shredded) segment — its Storage is intentionally gone', async () => {
+  it('skips a destroyed segment: no generation resolves through it', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'dead', generation: 0 }, [1], { registry });

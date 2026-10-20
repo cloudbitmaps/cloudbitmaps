@@ -1,4 +1,8 @@
+import { relative } from 'node:path';
 import fc from 'fast-check';
+import { beforeEach } from 'vitest';
+import { limitFor, seedLine, seedWriter } from './helpers/fast-check-run';
+import { FULL_STRENGTH } from './helpers/strength';
 
 /**
  * One fast-check configuration for the property suites, so a red run can be reproduced.
@@ -16,8 +20,22 @@ import fc from 'fast-check';
  *   - `verbose` reports the failing counterexample, not just the assertion that tripped on it.
  *   - `includeErrorInReport` puts the thrown error in that report, so a property that fails by throwing (most
  *     of ours assert inside the predicate) says what threw rather than only which input was being tried.
- *   - `FC_SEED` pins the seed. fast-check prints the seed it used in every failure message; copy it and run
- *     `FC_SEED=<seed> pnpm test <file>` to replay that exact run locally.
+ *   - `FC_SEED` pins the seed. Every test that runs a property prints its seed BEFORE the first run (and
+ *     fast-check repeats it in a failure message); copy it and run `FC_SEED=<seed> pnpm vitest run <file> -t
+ *     "<test name>"` to replay that exact run locally.
+ *
+ * Two more make a hang something to act on, not a silence until the job is cancelled:
+ *
+ *   - The seed line is written before the first run, by `fs.writeSync(2, …)` and not by vitest's `console`. A
+ *     property whose awaits all resolve as microtasks starves the event loop: vitest's test timeout (a
+ *     `setTimeout`) cannot fire, vitest's console never sends its log, and fast-check prints a seed only on a
+ *     failure. The line goes through anyway, so a hung run still names its seed.
+ *   - Each `fc.assert` call is bounded to 0.8 of its test's own timeout, counted from that call's start
+ *     (`interruptAfterTimeLimit`, with `markInterruptAsFailure`). It is checked between runs, and an async run is
+ *     also cut mid-run when it yields to the event loop (its work goes on in the background). A property that
+ *     overruns fails with "Property interrupted … seed: <n>" before vitest's timeout, instead of running until the
+ *     job is cancelled. A test that spends more than a fifth of its timeout before its property, or holds two
+ *     properties, can still reach vitest's timeout first.
  *
  * The seed stays RANDOM by default, deliberately. Pinning one in CI would make every run identical and turn
  * property testing into a fixed table of cases — the exploration is the value, and a case it finds is a case
@@ -28,6 +46,13 @@ import fc from 'fast-check';
  * deterministic corpus sweeps rather than exploratory. `FC_SEED` therefore steers the exploratory suites,
  * which are the ones whose failures are otherwise unreproducible; the pinned two already replay by
  * construction.
+ *
+ * KNOWN LIMITS. The time limit is checked between runs, so a single run that never returns is named by the seed
+ * line but not ended. `fc.sample` is covered by neither the limit nor the seed line (none draws a random seed
+ * today). Several `fc.assert` calls in one test share that test's seed (one replay line per test). A call that
+ * pins its own `seed` or `interruptAfterTimeLimit` keeps it: per-call parameters win over the global ones, and
+ * the line then says so ("unless a call pins its own"). A pinned limit still gets the global
+ * `markInterruptAsFailure`, so a limit pinned as a budget fails the property where it once passed.
  */
 const pinned = process.env.FC_SEED;
 
@@ -39,8 +64,50 @@ if (wanted !== undefined && !Number.isFinite(Number(wanted))) {
   throw new Error(`FC_SEED must be a number; got ${JSON.stringify(pinned)}`);
 }
 
-fc.configureGlobal({
-  ...(wanted === undefined ? {} : { seed: Number(wanted) }),
+const baseConfig = {
   verbose: fc.VerbosityLevel.Verbose,
   includeErrorInReport: true,
+} as const;
+
+// Top-level configuration, for any fast-check call made while a file is collected.
+fc.configureGlobal({
+  ...(wanted === undefined ? {} : { seed: Number(wanted) }),
+  ...baseConfig,
+});
+
+/** The seed line of the running test, until its first property has written it. */
+let pending: string | undefined;
+
+beforeEach((ctx) => {
+  const seed =
+    wanted !== undefined ? Number(wanted) : (Date.now() ^ (Math.random() * 0x100000000)) | 0;
+  const limit = limitFor(ctx.task.timeout);
+  fc.configureGlobal({
+    ...baseConfig,
+    seed,
+    ...(limit === undefined
+      ? {}
+      : { interruptAfterTimeLimit: limit, markInterruptAsFailure: true }),
+  });
+  pending = seedLine(
+    {
+      name: ctx.task.name,
+      fullName: ctx.task.fullName,
+      file: relative(process.cwd(), ctx.task.file.filepath),
+      project: ctx.task.file.projectName,
+    },
+    seed,
+    FULL_STRENGTH,
+  );
+});
+
+// Instantiated by fast-check at the start of every `fc.assert`, before its first run: the seed is in the log even
+// if that run never returns. Once per test, and only in a test that runs a property.
+fc.installGlobalPlugin(() => {
+  if (pending !== undefined) {
+    const line = pending;
+    pending = undefined;
+    seedWriter.write(line);
+  }
+  return {};
 });

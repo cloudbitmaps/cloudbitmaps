@@ -69,6 +69,9 @@ export const HEAVY_SIZES = {
 
 export type HeavyName = keyof typeof HEAVY_SIZES;
 
+/** The environment assignment that gives a command the full size, for a line that tells a reader how to replay a run. */
+export const FULL_STRENGTH_ASSIGNMENT = 'CB_TEST_STRENGTH=full';
+
 /** Whether this run is the full-strength one. Read once, here, at import. */
 export const FULL_STRENGTH: boolean = (() => {
   const raw = process.env.CB_TEST_STRENGTH;

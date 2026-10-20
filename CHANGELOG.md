@@ -13,6 +13,32 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A rollback whose swap met a conflict and whose every read of the row then failed now throws `WriteConflictError`,
+  where 0.22.0 threw `TransientError`.** The error is the rollback's own, saying it could not confirm that its swap is
+  the one the row shows, with the read's `TransientError` as its `cause`; the pointer may be on the target. A caller
+  that caught `TransientError` around `store.rollback` to run it again now misses this one: catch `WriteConflictError`
+  as well, and run the rollback again after checking `store.generations(ref)`, which finds the pointer where it is.
+
+- **`subjectReport` and `eraseSubject` refuse a `namespace` given together with `{ allNamespaces: true }`, take their
+  scope in a type that refuses the pair, and begin an `error:` note with the error's class.** With both, the call
+  honoured `namespace` and ignored `allNamespaces`, so a caller who meant every tenant erased one, and its ledger read
+  complete while the others kept the id. Both now throw `ValidationError` before they list the registry. Each call's
+  `options` is now required and a union: a `namespace` (with `allNamespaces` absent or `false`), or
+  `allNamespaces: true` (with no `namespace`). A call with no options has always thrown `ValidationError`, so the type
+  now says what the code did. TypeScript now refuses: a call that passes both; `allNamespaces` as a `boolean`
+  variable; a `namespace` typed `string | undefined`, such as a tenant read from configuration; and an options object
+  typed with the old shape `{ namespace?: string; allNamespaces?: boolean }`, such as a wrapper that forwards its
+  options. To migrate: narrow first and refuse a missing tenant (`if (tenant === undefined) throw ...`), then pass
+  `{ namespace: tenant }`; type a stored scope as `{ namespace: string } | { allNamespaces: true }`. Do not turn a
+  missing tenant into `{ allNamespaces: true }`: that erases the id from every tenant, the mistake the scope exists to
+  stop. Separately, an `eraseSubject` ledger note that begins `error: ` now continues with the error's class
+  (`error: KeyUnavailableError: ...`), so it can be matched to a row of the guide's table; a matcher on the text after
+  `error: ` now matches after the class. The `requireEncryption` note is a `KeyUnavailableError`, as `subjectReport`
+  throws for the same cause, where it was a `ValidationError`. The guides, the API reference and the privacy note also
+  say what the scope reaches: a segment loaded with no `namespace` only under `allNamespaces: true`, `'_default'` being
+  an ordinary namespace name and not those segments, and what `encryption: { required: true }` means for an erasure
+  over cleartext segments.
+
 - **`deserializePortable(bytes)` returns `ReadonlyBitmap`, a type of this library's own, in place of `roaring`'s
   `RoaringBitmap32`, and no public signature names a type of the `roaring` package.** A `ReadonlyBitmap` is a
   `PortableBitmap` and an `Iterable<number>` with `size`, `has(id)`, ascending iteration and `serialize('portable')`.
@@ -33,6 +59,29 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A cleartext `destroySegment` or `eraseNamespace` (`allowCleartext`) now emits a `segment.tombstone` audit event.**
+  It wrote a `destroyed` tombstone and emitted nothing, so no record said the row had been tombstoned, and the restore
+  procedure could not find what a registry restore had brought back. The event carries the segment, its namespace and
+  incarnation, and `objectsReadable: true`, because nothing was deleted and no key was destroyed: it is not an erasure
+  receipt, and `segment.erase` keeps meaning a crypto-shred. It is emitted once per tombstone the call wrote, not for a
+  re-run. `AuditEvent` gains a member, so a `switch` over `event.kind` that is exhaustive (a `never` check) needs a
+  case for it. The disaster-recovery procedure's step that re-applies erasures re-applies these too.
+
+- **`subjectReport` lists a destroyed segment whose leftover objects still hold the id, in a new `tombstones`
+  field.** A cleartext `destroySegment` (`allowCleartext`), and a `dropSegment` whose sweep missed an object a load
+  was still writing, leave the id readable in the bucket though no read resolves the segment. `eraseSubject` already
+  searched and deleted those objects; the report now finds the same ones by the same search, so an Art. 15 answer
+  names what an Art. 17 erasure would delete. `SubjectReport` gains the required `tombstones: SubjectSegmentRef[]`,
+  `[]` when none, and `segments` is unchanged. A crypto-shredded segment's own objects are sealed under a key no row holds and are never a holder, so it is listed
+  only when an object left under it in the clear holds the id. Each destroyed segment in scope costs one more listing, and each object searched a tail read
+  and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted object); the budget is
+  charged one unit for each object opened past the one the row names, as `eraseSubject` charges, and a report that
+  runs out throws `BudgetExceededError` (with `spent` at `limit + 1`, a lower bound). A fault reading a destroyed
+  segment's leftover objects, or a budget that runs out, rejects the whole report rather than leaving the segment out, so
+  one leftover object that cannot be opened makes every report over its scope reject until it is removed:
+  `store.generations(ref)` lists what is left under it, and `dropSegment` deletes it. The listing of the bucket under a
+  destroyed segment, which `eraseSubject` makes too, is now retried under the store's read retry like the object reads,
+  so a transient fault on it no longer fails the report or puts an `error:` note in the ledger.
 - **A registry driver can mark a conflict that may follow its own write's landing: `unsettledConflict(message)`,
   exported from `@cloudbitmaps/core/driver-kit`.** It returns a `WriteConflictError` that carries a registered
   `Symbol.for` mark; being a `WriteConflictError`, it is a conflict in every other way (`errorKind` names it
@@ -132,6 +181,77 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`MemoryStorage`'s generation and segment listings list what is present when they begin.** Both iterated the live
+  store, so an object or segment stored while a caller was still reading a listing was yielded, and a caller that
+  stored one for each key it was shown never finished. Each now takes its keys first, as the local-files driver's
+  directory read and a single page of an S3 or Azure listing do. An object or segment deleted during a listing is now
+  still yielded, as on those backends, where before it was skipped.
+
+- **A rollback whose target went while the pointer was moving reports the pointer as put back when the move back landed
+  and lost its answer.** Before, the move back sent no write token and any failure ended the loop, so a move back that
+  landed read as "the pointer may still name" the target while the pointer was back. The call now reads the row and takes
+  the move back as landed when the row's `pointerId` is a token it sent; one that never landed still says the pointer
+  may be on the target. The rollback's read-backs (of its swap and its move back) now make up to three reads and wait
+  between them on the clock the call passes, as every other lifecycle read-back does. The production guide's and the API reference's account of what each lifecycle helper settles, and
+  the roadmap's deferral list, now state what the code does: a write token, the row gone, or the object gone, and what
+  still throws `TransientError` (both the answer and the read-back lost, a delete that lands after its check, a registry
+  that reports no write tokens).
+- **The retention sweep reports a purge or a pointer delete whose response was lost as the delete it was.** Before, a
+  purge that landed and lost its answer was `skipped` with `failed: ...` and counted in `purgeFaults`, and no later call
+  reported the purge; on Azure Blob, and on GCS with `conditionalDelete: true`, whose clients resend a delete after a lost response, the resend met the row it had
+  already removed and the purge showed as `failed: contended`, the default outcome of any purge whose response is lost.
+  Three such `failed:` reports in a row stopped purging for the rest of the call. An empty segment's row delete and the due-index
+  pointer deletes (a retirement's, a foreign tombstone's, the litter pass's and a purge's) were counted as faults the
+  same way. A delete that got no answer or met a conflict is now settled by reading the row: a row that is gone is a delete
+  that happened. A row still there stays a refusal or a lost race, as it was.
+
+- **`setRetention` and `clearRetention` whose write lands and loses its response are now settled by the write token,
+  and remove the old due-index pointer.** Before, `clearRetention` answered `false` for an expiry it removed (or threw
+  `TransientError` with the expiry already gone), `setRetention` ahead of the first load reported `createdRow: false`
+  for the row it made, and a `setRetention` that moved an expiry to another day left the old day's pointer in the due
+  index until the segment was retired and purged, one more row read on every scan that reached that day. A write that
+  got no answer is now read back: a row carrying this call's own write token counts as landed, and a pointer create
+  that got no answer is read back too, so `indexed` is true when the pointer is there. When a later write hides the clear's
+  token before the read-back, the call decides again from the row: it answers `false` with the expiry gone when the row
+  holds none, and removes the expiry and answers `true` when the later write set one. A
+  registry that does not report write tokens keeps throwing `TransientError`.
+
+- **An erasure's, a drop's and a load's collection storage deletes that land and lose their response are now settled by
+  reading the object back.** Before, an `eraseSubject` whose delete of a generation holding the id landed and lost its
+  answer recorded `erased: false` with an `error:` note and no `segment.collect`, and its re-run found nothing, so
+  nothing recorded the deletion; a `dropSegment` undercounted `generationsDeleted` in its result and in
+  `segment.dispose`; a load threw `TransientError` after `segment.publish`. A delete whose object a read then finds gone
+  now counts as deleted. When that read fails too, or the delete lands after it, the call still reports the fault, and
+  the guides say to keep the error as the record. A default GCS store sends every storage delete once, so it had the
+  most exposure.
+
+- **A crypto-shred (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement) and a drop's tombstone
+  for a segment with no row, whose write lands and loses its response, are now settled by the write token, and report
+  and audit the shred.** A cleartext destroy (`allowCleartext`) whose answer is lost is settled the same way, and a
+  shred's read-back now waits between its reads, through `@cloudbitmaps/roaring`, on the system clock when the call passes none. Before, they threw
+  `TransientError`, or recorded `failed: …` with `destroyed: false`, and the re-run answered `'already'` with no
+  `segment.erase`, ever. A retirement reported `retired` with `generationsRemaining: []` while every object was still
+  in the bucket; it now lists what is left. After a clean shred whose listing then faulted, its `cryptoShredded` said
+  `false` beside the `segment.erase` already emitted; it now says `true`. A shred whose answer and read-back are both
+  lost still throws and cannot be told from another tombstone: the guides say what to record. A retirement whose row
+  cannot be read afterwards is `skipped` with a reason that says the tombstone may have landed.
+
+- **Two erasures of different ids on one segment no longer report a raw storage error for the one that loses.** Both
+  could take the same next generation number, and the second put was refused as `generation already exists
+  (write-once)`. The loser now reports `'superseded'`, with nothing written or deleted, as a lost load race does, and
+  its re-run erases its id. The missing-keystore note no
+  longer names `eraseIdFromSegment`, a function an `eraseSubject` caller never called: it says the erasure has no
+  keystore to open the segment's key (`encryption.keystore` on the store).
+
+- **An error about a destroyed segment no longer says it was crypto-shredded.** A `dropSegment`, a retention retirement
+  and a cleartext `destroySegment` leave a destroyed row too, and a cleartext destroy leaves its objects readable in the
+  bucket. `rollback`, a load and a publish that races a destroy now say the segment is destroyed and that no
+  generation resolves through a destroyed row, and `setRetention` says it refuses a tombstone and that `dropSegment`
+  deletes what a destroy left in the bucket. Each is the same `ValidationError` as before. The guides, the format
+  reference and the doc-comments that called every destroyed row crypto-shredded, or its generations unreadable, say
+  the same, and the erasure guide no longer says a `destroySegment` deletes every generation.
+- **`generations()` marks no generation `current` on a destroyed segment.** The tombstone keeps the pointer it had, but
+  no read resolves a generation through it, so the entry that pointer named was listed as current.
 - **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
   audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,
   `eraseNamespace` and `dropSegment`, the API reference, the encryption and retention guides and the roadmap said a
