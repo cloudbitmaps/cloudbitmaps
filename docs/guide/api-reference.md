@@ -41,6 +41,7 @@ reads nothing of a store and needs none to run:
 @cloudbitmaps/tools           estimateCost, groundedReport, the price lists       (offline; dep: @cloudbitmaps/core)
 @cloudbitmaps/core            the internal engine; its main entry is outside the stability promise
 @cloudbitmaps/core/driver-kit the driver contracts: the ports, their record types, a driver's helpers
+@cloudbitmaps/core/node       internal: the backends and keystore that need a Node builtin (the flavor re-exports them)
 CLI (binary):                 export-segments
 ```
 
@@ -50,7 +51,7 @@ Each cloud SDK is a **real dependency** of its backend package, not an optional 
 **Where the code actually lives.** The flavor package is the roaring codec (internal, not exported),
 the `CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports, by name, the types the
 store's signatures name, the backends, the errors and the helpers an application calls. What it leaves on core is
-the engine, whose main entry is internal: the packages here import it, and it is not part of the public API. The
+the engine, whose main entry and `/node` subpath are internal: the packages here import it, and it is not part of the public API. The
 driver contracts the store's signatures stop at (`IStorageDriver`, `IRegistryDriver`, `StorageBackend`,
 `StorageChunkSource`, `IKeystore` and the registry's record types) have one home, `@cloudbitmaps/core/driver-kit`,
 and the flavor does not re-export them: an application that has to name one imports it from there, or derives it
@@ -577,7 +578,7 @@ against the on-disk format. Each section says where its names import from. The d
 [driver kit](#driver-kit--what-you-need-to-implement-a-driver), `@cloudbitmaps/core/driver-kit`, their one home;
 the cloud drivers' option types come from `@cloudbitmaps/s3`, `/gcs` and `/azure-blob`; and the few the store's own
 signatures name (`RetryPolicy`, `EraseDeps`) come from `@cloudbitmaps/roaring`. The main entry of `@cloudbitmaps/core`
-is internal: it is outside the stability promise and is not documented here, and neither are the `.crbm` reader, its
+and its `/node` subpath are internal: they are outside the stability promise and are not documented here, and neither are the `.crbm` reader, its
 crypto pair and the codec seam it exports.
 
 ### `.crbm` on-disk format
@@ -1175,7 +1176,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 names sit under that entry's heading, and a name listed under the wrong one fails it.
 
 `@cloudbitmaps/roaring` exports, by name, what an application uses: the store, its backends, the types its signatures
-name, the errors and the helpers a user calls, and nothing else. The main entry of `@cloudbitmaps/core` is internal, outside the stability promise, and is not indexed here; the
+name, the errors and the helpers a user calls, and nothing else. The main entry of `@cloudbitmaps/core` and its `/node` subpath are internal, outside the stability promise, and are not indexed here; the
 driver contracts, the ports the store's signatures stop at among them, are under `@cloudbitmaps/core/driver-kit`, their one home.
 
 ### `@cloudbitmaps/roaring` — values
@@ -1358,7 +1359,7 @@ Types: `CostReport` · `PricingProfile` · `RedisSizing` · `RedisNodeType` · `
   derives its entry list from every package's own `exports` map — so each package and each subpath it declares
   is covered, with no list to maintain — and asserts each exported name appears (backtick-wrapped) under **its own
   entry's heading** in the **"Complete export index"** section — so **adding an export without documenting it
-  breaks CI**. Core's main entry is internal and is skipped. It runs in **both**
+  breaks CI**. Core's main entry and `/node` are internal and are skipped. It runs in **both**
   directions: a name listed under an entry that does not export it, or that nothing exports any more, also fails,
   so a removed export cannot leave a stale entry behind. Two limits worth knowing rather than over-trusting:
   neither direction looks *above* that section, so the descriptive tables earlier on this page are guarded by
