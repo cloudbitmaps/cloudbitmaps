@@ -167,6 +167,17 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`setRetention` and `clearRetention` whose write lands and loses its response are now settled by the write token,
+  and remove the old due-index pointer.** Before, `clearRetention` answered `false` for an expiry it removed (or threw
+  `TransientError` with the expiry already gone), `setRetention` ahead of the first load reported `createdRow: false`
+  for the row it made, and a `setRetention` that moved an expiry to another day left the old day's pointer in the due
+  index until the segment was retired and purged, one more row read on every scan that reached that day. A write that
+  got no answer is now read back: a row carrying this call's own write token counts as landed, and a pointer create
+  that got no answer is read back too, so `indexed` is true when the pointer is there. When a later write hides the clear's
+  token before the read-back, the call decides again from the row: it answers `false` with the expiry gone when the row
+  holds none, and removes the expiry and answers `true` when the later write set one. A
+  registry that does not report write tokens keeps throwing `TransientError`.
+
 - **An erasure's, a drop's and a load's collection storage deletes that land and lose their response are now settled by
   reading the object back.** Before, an `eraseSubject` whose delete of a generation holding the id landed and lost its
   answer recorded `erased: false` with an `error:` note and no `segment.collect`, and its re-run found nothing, so

@@ -74,7 +74,10 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
 - **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
   policy is committed, and the fleet scan still retires the segment.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
-  `createdRow: true`) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
+  `createdRow: true`) with no storage generation (`currentGen: null`). A create that gets no answer is read back, and
+  `createdRow` stays `true` when the row carries the call's own write, even after a later policy or lease write. It
+  turns `false` only when a later load's publish moved the row's pointer before the read-back, since the call then
+  decides again from the row and sets the policy on it. with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
   sweep can already see the segment, and the first load publishes onto that row. A load already running when
   `setRetention` creates the row found none, so it is refused `superseded`, guarded or not: re-run it, and it
   publishes onto that row. Reads are unaffected: a pointer-less row resolves exactly like a segment with no row.
@@ -84,13 +87,27 @@ Reading and cancelling:
 ```ts
 const ref = { namespace: 'active-daily', segment: '2026-08-05' };
 await store.getRetention(ref); // → { expiresAt } | null | 'invalid'
-await store.clearRetention(ref); // → true if a policy was actually removed
+await store.clearRetention(ref); // → true if this call removed a policy
 ```
 
 `getRetention` returns the string `'invalid'` for a row whose `expiresAt` is present but unusable, such as a
 hand-edited one. That is deliberately not folded into `null`: a malformed policy reading as "never expires" on a
 segment someone believes is expiring is the kind of silence that costs a compliance commitment. Cancelling is its own
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
+
+### When `clearRetention` answers `false`
+
+A clear whose write gets no answer [reads the row back](correctness.md#row-write-settled) and counts the clear as landed when the row carries its own
+write token: it answers `true` and removes the pointer of the expiry it read. When a later write hides that token
+(a lease write, or another writer's), the row cannot say whose write removed the expiry. The call then decides again
+from the row, on every backend:
+
+- The row holds no expiry: the call answers `false`. The expiry is gone, and the pointer of the expiry it read is
+  removed.
+- The later write set an expiry: the call removes that one too, and answers `true`.
+
+A `setRetention` that moves an expiry removes the old day's pointer the same way. On a registry that does not report
+write tokens, a write that gets no answer throws `TransientError`, and the pointer stays until the call is run again.
 
 ### A deadline on a set
 
@@ -158,7 +175,9 @@ deletion to feel.
 - `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
-  pass. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
+  pass. Two stores writing the retention of one segment within a few round trips can remove each other's pointer (a
+  call that decides again removes the pointer of every expiry it read): the sweep with `scan: 'index'` then does not
+  see that segment, and it is retired by the next `'fleet'` scan. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
   nothing stranded.
 
 **Start with `dryRun`.** `dropSegment`'s `confirmSegment` guard protects nothing in a loop, because it is the same
