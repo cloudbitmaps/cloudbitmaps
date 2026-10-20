@@ -697,9 +697,11 @@ generation an erasure is deleting, outside the two cases the pointer alone decid
 full list's bound). If the target has gone, or another object holds its
 number, it moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
 (the row changed again, or the registry write failed), it throws `NotFoundError` saying
-`the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
-response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
-or still on the missing generation, the torn state this section resolves. A move that gets no answer at all
+`the move back failed, so the pointer may still name <n>`. It says "may" when the row cannot show where the pointer
+is: the read of the row failed too, another write moved it, the move back never landed and may yet, or the registry reports no write tokens. A move back that
+landed and lost its answer is settled by its token and reads as put back. Under "may" the pointer may already be back,
+or moved elsewhere by the write that beat the undo, or still on the missing generation, the torn state this section
+resolves. A move that gets no answer at all
 (`TransientError`), or one that meets a conflict, [is settled by reading the
 row](correctness.md#rollback-settles-its-swap): one the row shows landed (its pointer
 is at the target, over a write the rollback sent) is checked as above, and otherwise the rollback throws the

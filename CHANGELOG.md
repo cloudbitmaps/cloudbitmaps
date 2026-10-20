@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A rollback whose swap met a conflict and whose every read of the row then failed now throws `WriteConflictError`,
+  where 0.22.0 threw `TransientError`.** The error is the rollback's own, saying it could not confirm that its swap is
+  the one the row shows, with the read's `TransientError` as its `cause`; the pointer may be on the target. A caller
+  that caught `TransientError` around `store.rollback` to run it again now misses this one: catch `WriteConflictError`
+  as well, and run the rollback again after checking `store.generations(ref)`, which finds the pointer where it is.
+
 - **`subjectReport` and `eraseSubject` refuse a `namespace` given together with `{ allNamespaces: true }`, take their
   scope in a type that refuses the pair, and begin an `error:` note with the error's class.** With both, the call
   honoured `namespace` and ignored `allNamespaces`, so a caller who meant every tenant erased one, and its ledger read
@@ -167,6 +173,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A rollback whose target went while the pointer was moving reports the pointer as put back when the move back landed
+  and lost its answer.** Before, the move back sent no write token and any failure ended the loop, so a move back that
+  landed read as "the pointer may still name" the target while the pointer was back. The call now reads the row and takes
+  the move back as landed when the row's `pointerId` is a token it sent; one that never landed still says the pointer
+  may be on the target. The rollback's read-backs (of its swap and its move back) now make up to three reads and wait
+  between them on the clock the call passes, as every other lifecycle read-back does. The production guide's and the API reference's account of what each lifecycle helper settles, and
+  the roadmap's deferral list, now state what the code does: a write token, the row gone, or the object gone, and what
+  still throws `TransientError` (both the answer and the read-back lost, a delete that lands after its check, a registry
+  that reports no write tokens).
 - **The retention sweep reports a purge or a pointer delete whose response was lost as the delete it was.** Before, a
   purge that landed and lost its answer was `skipped` with `failed: ...` and counted in `purgeFaults`, and no later call
   reported the purge; on Azure Blob, and on GCS with `conditionalDelete: true`, whose clients resend a delete after a lost response, the resend met the row it had
@@ -199,7 +214,7 @@ so, and so do the module headers in the code.
 - **A crypto-shred (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement) and a drop's tombstone
   for a segment with no row, whose write lands and loses its response, are now settled by the write token, and report
   and audit the shred.** A cleartext destroy (`allowCleartext`) whose answer is lost is settled the same way, and a
-  shred's read-back now waits between its reads, on the system clock when the call passes none. Before, they threw
+  shred's read-back now waits between its reads, through `@cloudbitmaps/roaring`, on the system clock when the call passes none. Before, they threw
   `TransientError`, or recorded `failed: …` with `destroyed: false`, and the re-run answered `'already'` with no
   `segment.erase`, ever. A retirement reported `retired` with `generationsRemaining: []` while every object was still
   in the bucket; it now lists what is left. After a clean shred whose listing then faulted, its `cryptoShredded` said

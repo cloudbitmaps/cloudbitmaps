@@ -189,12 +189,6 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "which-fence",
-      "sentence": "7ce7d85747d2",
-      "starts": "settling a rollback's undo by the write token:"
-    },
-    {
-      "file": "docs/ROADMAP.md",
       "claim": "rollback-during-erasure",
       "sentence": "ddf2a8f32b03",
       "starts": "a rollback with no key at hand (no"
@@ -351,12 +345,6 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "rollback-settles-its-swap",
-      "sentence": "bce4bbb81d16",
-      "starts": "A swap that met a conflict or got"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
       "claim": "erasure-results",
       "sentence": "ac873065eb0c",
       "starts": "segment.collect is what eraseSubject emits when it deletes"
@@ -450,18 +438,6 @@
       "claim": "what-throws-instead",
       "sentence": "21c66828b9ef",
       "starts": "Check store.generations(ref) or checkConsistency() first: a rollback that"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "object-write-resent",
-      "sentence": "3845ce3d43e7",
-      "starts": "From a write, it is a fault the"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "row-write-settled",
-      "sentence": "3845ce3d43e7",
-      "starts": "From a write, it is a fault the"
     },
     {
       "file": "docs/guide/api-reference.md",
@@ -828,18 +804,6 @@
       "claim": "sdk-retry",
       "sentence": "572bea27e97f",
       "starts": "Reads retry by themselves; a write is retried"
-    },
-    {
-      "file": "docs/guide/production.md",
-      "claim": "object-write-resent",
-      "sentence": "bd1b064493af",
-      "starts": "Only where it is safe, and not by"
-    },
-    {
-      "file": "docs/guide/production.md",
-      "claim": "row-write-settled",
-      "sentence": "bd1b064493af",
-      "starts": "Only where it is safe, and not by"
     },
     {
       "file": "docs/guide/production.md",

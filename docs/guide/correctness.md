@@ -12,7 +12,7 @@ which code, tests and docs cite by number.
 
 | Section | Its guide |
 |---|---|
-| [When a load is refused](#when-a-load-is-refused): each `reason` and what to do, what throws instead, and [a write that is throttled or gets no answer](#when-a-write-is-throttled-or-gets-no-answer) | [Loading in depth](loading.md) |
+| [When a load is refused](#when-a-load-is-refused): each `reason` and what to do, what throws instead, and [a write that is throttled or gets no answer](#when-a-write-is-throttled-or-gets-no-answer), and [a write that gets no answer](#a-write-that-gets-no-answer) | [Loading in depth](loading.md) |
 | [How a load stays correct](#how-a-load-stays-correct): numbering, the publish and its fences, crashes and orphans, collection and leases, and [a rollback that races a collection](#a-rollback-that-races-a-collection) | [Loading in depth](loading.md) |
 | [How a pin stays correct](#how-a-pin-stays-correct): the caches a pin shares, one generation per call, a re-created segment, and what invalidates a pin | [Reading in depth](reading.md#read-one-fixed-point-in-time) |
 | [How retention stays correct](#how-retention-stays-correct): the order of a drop, the purge of a tombstone, and the due index's pointers | [Retention](retention.md) |
@@ -186,6 +186,32 @@ write's token is not its own: another rollback's identical move, or a write that
 rollback's landed swap, which cannot be told apart from it. Then the rollback throws `WriteConflictError` after a
 conflict and `TransientError` after no answer, audits nothing and deletes nothing, and a re-run finds the pointer where
 it is. A registry that reports no tokens settles a swap that got no answer by the row the swap would leave, and a conflict never as landed.
+
+### A write that gets no answer
+
+<a id="settle-by-read-back"></a>Every lifecycle write that gets no answer reads back its row or its object and takes the write as landed only when what it
+reads carries the call's own mark. Over a registry that reports write tokens the mark is the token the call sent before the
+write; no other writer's write carries it. Only a load, an `*Into` verb, an erasure's rewrite and an erasure's write to the row send the write again when
+the read-back shows it did not land; the others throw `TransientError`, and a re-run is safe. A read-back waits between its reads on the clock the call passes (under half a second, then under a second, with jitter) and gives up after three reads. Through the store, every lifecycle call passes a sleeping clock, so it waits; a direct call into core's internal entry with no clock does not wait.
+
+- <a id="settle-shred"></a>**A crypto-shred** (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement): settled by the tombstone's
+  `pointerId`, the token of the shred's own write. When the read-back fails too, the call throws `TransientError` and the
+  segment may be destroyed. Its re-run answers `'already'`, with no `segment.erase`.
+- <a id="settle-tombstone"></a>**A drop's tombstone for a segment with no row**: settled the same way. A re-run answers `'already'` and sweeps the bucket.
+- <a id="settle-retention"></a>**`setRetention`, `clearRetention`**: settled by the row's token. When another write has followed this call's write
+  before the read-back, the row cannot say whose write it shows, and the call decides again from the row. A re-run of
+  `setRetention` sets the same expiry again; a re-run of `clearRetention` that finds the expiry gone answers `false`
+  ([why](retention.md#when-clearretention-answers-false)).
+- <a id="settle-rollback"></a>**A `rollback`'s move and its move back**: settled by the row's `pointerId` being the token of a write the call sent. A
+  move back that landed is reported as "the pointer was put back". One that never landed, or whose read-back failed too,
+  says the pointer may still name the target; so does one whose row another write moved. A registry that reports no
+  tokens settles the move onto the target by the row it would leave, and cannot settle the move back: that message stays.
+- <a id="settle-sweep"></a>**A sweep's purge and its pointer removals**: settled by reading the row. A row that is gone counts as removed, whichever
+  request removed it, so two sweeps over the same rows at once can both count one purge.
+- <a id="settle-storage-delete"></a>**A storage delete** (a load's collection, an erasure's deletes, a drop's sweep): settled by a zero-byte read of the
+  object (up to three, as above). Gone, it counts as deleted. For an erasure's delete of a holder, another object under the number is the refusal a
+  conditional delete gives. When the read fails too, or the delete lands after it, the call reports the fault, and a re-run
+  finds the object gone: an erasure's re-run then lists nothing for the segment.
 
 ## How a load stays correct
 
@@ -1083,7 +1109,7 @@ won. This covers a generation's write-once put and the registry's create, compar
 write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone,
 but for two GCS writes that keep it: an object above `simpleUploadThresholdBytes` (a resumable upload, which the SDK
 retries within its session), and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to
-send twice (a copy that meets the first's landed delete reads as a lost race, and a re-read settles it). With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
+send twice (a copy that meets the first's landed delete reads as a lost race, and the retention sweep, which sends that delete, settles it by reading the row and finding it gone). With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
 after a throttle, when a random id in its metadata tells a first send that landed from another writer's object. A row
 write that gets no answer is settled by the load itself, which reads the row and sends a fresh compare-and-swap from
 it if nothing changed, at most three times
