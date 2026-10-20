@@ -70,7 +70,12 @@ import {
   splitId,
   takeLease,
 } from '@cloudbitmaps/core';
-import { pointerIdOf, requirePositiveInt, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import {
+  pointerIdOf,
+  requireBool,
+  requirePositiveInt,
+  validateSegmentRef,
+} from '@cloudbitmaps/core/driver-kit';
 import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
@@ -151,9 +156,11 @@ class SystemRng implements Rng {
 
 /**
  * What an erasure call waits with when its write gets no answer and it reads the row back: the caller's `clock` and
- * `rng`, else the real ones, so a call made with `{ registry }` alone waits between its reads.
+ * `rng`, else the real ones, so a call made with `{ registry }` alone waits between its reads. Deps that are not an
+ * object are passed on as they are, for the call to refuse with a `ValidationError`.
  */
 function withWaits(deps: EraseDeps): EraseDeps {
+  if (deps === null || typeof deps !== 'object') return deps;
   return { ...deps, clock: deps.clock ?? new SystemClock(), rng: deps.rng ?? new SystemRng() };
 }
 
@@ -474,9 +481,12 @@ export interface CloudRoaringOptions {
 
 /** {@link CloudRoaringOptions.cache} — the memory and staleness bounds. */
 export interface CacheOptions {
-  /** Ceiling on decoded Storage chunks held in RAM (default 1024). */
+  /** Ceiling on decoded Storage chunks held in RAM (default 1024): an integer of at least 1, else `ValidationError`. */
   readonly maxChunks?: number;
-  /** Optional TTL on cached chunks (ms). Omit to keep a chunk until it is evicted by the count bound. */
+  /**
+   * Optional TTL on cached chunks (ms): a finite number above 0, else `ValidationError`. Omit to keep a chunk until it is
+   * evicted by the count bound.
+   */
   readonly ttlMs?: number;
   /**
    * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
@@ -504,7 +514,8 @@ export interface CacheOptions {
   readonly genTtlMs?: number;
   /**
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
-   * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
+   * (default 1024; an integer of at least 1, else `ValidationError`) — the steady-state memory bound for a long-running
+   * server that reads across many segments.
    * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. With a
    * timed refresh ({@link CacheOptions.genTtlMs} above 0, and a backend) the store also keeps up to 8 times this many
    * segments' resolutions (what it read of each segment's row: never an unwrapped key, though the wrapped keys are in
@@ -527,7 +538,7 @@ export interface CacheOptions {
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed weight
    * would exceed the ceiling — whichever of the count/byte bounds binds first. A sixteenth of it (4 MiB by default)
    * bounds the segments' resolutions a store with a timed refresh keeps besides. Lower it for memory-tight
-   * deployments that read across wide segments. A ceiling below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Applies whenever the store builds its own read path.
+   * deployments that read across wide segments. An integer of at least 1, else `ValidationError`. A ceiling below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Applies whenever the store builds its own read path.
    */
   readonly readerMaxBytes?: number;
 }
@@ -542,7 +553,8 @@ export interface EncryptionOptions {
   readonly keystore?: IKeystore;
   /**
    * Refuse to touch a **cleartext** segment — a guard against silently reading, or writing, data that should be
-   * encrypted. Needs a backend, for the same reason as {@link EncryptionOptions.keystore}. Off by default.
+   * encrypted. Needs a backend, for the same reason as {@link EncryptionOptions.keystore}. Off by default. Exactly a
+   * boolean: any other value, a truthy string included, throws `ValidationError`.
    *
    * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both
    * carry it into their write path, so on a cleartext segment a materialisation throws and an erasure records
@@ -1139,10 +1151,10 @@ export class CloudRoaring {
       );
     }
     for (const [seam, name, needs] of seams) {
-      if (seam === undefined || seam === null) continue;
+      if (seam === undefined) continue;
       const has = (m: string): boolean =>
-        typeof (seam as Record<string, unknown>)[m] === 'function';
-      if (typeof seam !== 'object' || !needs.every(has)) {
+        seam !== null && typeof (seam as Record<string, unknown>)[m] === 'function';
+      if (seam === null || typeof seam !== 'object' || !needs.every(has)) {
         throw new ValidationError(
           `CloudRoaring's \`${name}\` must be an object with ${needs.map((m) => `\`${m}()\``).join(' and ')}`,
         );
@@ -1151,13 +1163,37 @@ export class CloudRoaring {
   }
 
   /**
+   * Refuse a `cache` or `encryption` value that can never be honoured, by the name the caller wrote. The sizes reach
+   * the caches under their own internal names, so left to them an error would name `maxEntries` or `maxBytes`; and
+   * `encryption.required` must be exactly a boolean, since the read path took a truthy string for `true` while every
+   * write path did not, which refused cleartext reads and still wrote cleartext.
+   */
+  private static rejectBadValues(options: CloudRoaringOptions): void {
+    const cache = options.cache;
+    if (cache !== undefined) {
+      requirePositiveInt('cache.maxChunks', cache.maxChunks);
+      requirePositiveInt('cache.readerMax', cache.readerMax);
+      requirePositiveInt('cache.readerMaxBytes', cache.readerMaxBytes);
+      const ttl: unknown = cache.ttlMs;
+      if (ttl !== undefined && (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0)) {
+        throw new ValidationError(
+          `cache.ttlMs must be a finite number above 0 (milliseconds); got ${typeof ttl === 'string' ? JSON.stringify(ttl) : String(ttl)}`,
+        );
+      }
+    }
+    requireBool("CloudRoaring's `encryption.required`", options.encryption?.required);
+  }
+
+  /**
    * Builds a store. Only `storage` is required: pass a backend such as `S3Storage` or `MemoryStorage`. `cache`,
-   * `encryption`, `retry`, `metrics`, `budget` and `seams` tune it. An option it does not take, or a seam missing a
-   * method the store calls, throws `ValidationError`.
+   * `encryption`, `retry`, `metrics`, `budget` and `seams` tune it. An option it does not take, a `cache` size or `ttlMs`
+   * that is not a usable number, an `encryption.required` that is not a boolean, or a seam missing a method the store
+   * calls, throws `ValidationError`.
    */
   constructor(options: CloudRoaringOptions) {
     CloudRoaring.rejectUnknownOptions(options);
     CloudRoaring.rejectHollowSeams(options);
+    CloudRoaring.rejectBadValues(options);
     const clock = options.seams?.clock ?? new SystemClock();
     const rng = options.seams?.rng ?? new SystemRng();
     const entropy = options.seams?.entropy ?? systemEntropy;
@@ -1360,7 +1396,7 @@ export class CloudRoaring {
         // puts that call on the operator. Inheriting `load()`'s collection would silently delete the
         // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
-        keep: options?.keep ?? KEEP_EVERY_GENERATION,
+        keep: options?.keep === undefined ? KEEP_EVERY_GENERATION : options.keep,
         ...(options?.audit === undefined ? {} : { audit: options.audit }),
       };
       result =
@@ -2655,7 +2691,7 @@ export class CloudRoaring {
    * charged to `limit`, so it never holds the retirements behind it, and purging stops for the rest of the call after
    * three refused purges in a row (a purge that succeeds starts the count again).
    *
-   * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
+   * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h; at least one hour, else `ValidationError`)
    * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself
    * first, since nothing else runs that collection on its own for a tombstoned segment (an erasure collects there
    * only
@@ -2682,7 +2718,7 @@ export class CloudRoaring {
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
       { registry: deps.registry, storage: deps.storage, clock: this.clock, rng: this.rng },
-      { ...opts, now: opts.now ?? this.clock.now() },
+      { ...opts, now: opts.now === undefined ? this.clock.now() : opts.now },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
     // nothing, so it invalidates nothing.

@@ -431,7 +431,8 @@ export async function runConsistencyCheck(
   if (options.generations !== undefined && typeof options.generations !== 'boolean') {
     throw new ValidationError(`generations must be a boolean; got ${String(options.generations)}`);
   }
-  const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
+  const concurrency =
+    options.concurrency === undefined ? DEFAULT_CHECK_CONCURRENCY : options.concurrency;
   // Fail fast before the (possibly huge) registry scan, not after.
   requirePositiveInteger(concurrency, 'concurrency');
   // Only an absent value means the default: a `null` or a malformed one is refused by the scan, as a malformed `budget` is.

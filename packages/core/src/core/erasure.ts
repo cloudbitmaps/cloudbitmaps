@@ -20,6 +20,7 @@ import { type AuditEvent, type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAud
 import { incarnationField } from './token';
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
+import { refuseUnknownOptions, requireBool } from './check';
 import {
   ValidationError,
   WriteConflictError,
@@ -105,10 +106,50 @@ const ERASE_CONCURRENCY = 8;
 const MAX_STORAGE_SWEEPS = 3;
 
 /**
+ * Refuse `deps` with no registry driver before anything is read: a misspelt `registry` key, or none, would leave it
+ * undefined, and an untyped `TypeError` at the first read. Other keys are the caller's own wiring and are left alone.
+ */
+function checkEraseDeps(name: string, deps: unknown): void {
+  const registry =
+    deps === null || typeof deps !== 'object'
+      ? undefined
+      : (deps as { registry?: { get?: unknown } | null }).registry;
+  if (registry === undefined || registry === null || typeof registry.get !== 'function') {
+    throw new ValidationError(
+      `${name}: \`deps.registry\` must be a registry driver, such as \`backend.registry\``,
+    );
+  }
+}
+
+/**
+ * Refuse a drop's options before anything is read. Internal, but the facade and the sweep reach it: a `dryRun` that is
+ * the string `'true'` must not drop for real.
+ */
+function checkDropOptions(options: { dryRun?: boolean; audit?: IAuditSink }): void {
+  refuseUnknownOptions('dropSegment', options, ['confirmSegment', 'dryRun', 'audit']);
+  requireBool('dropSegment: `dryRun`', options.dryRun);
+  checkedAuditSink(options.audit, 'dropSegment');
+}
+
+/** The options `destroySegment` takes. */
+const DESTROY_SEGMENT_KEYS = ['confirmSegment', 'allowCleartext', 'audit'] as const;
+
+/** The options `eraseNamespace` takes. */
+const ERASE_NAMESPACE_KEYS = [
+  'confirmNamespace',
+  'allowCleartext',
+  'audit',
+  'maxScanSegments',
+] as const;
+
+/**
  * Crypto-shred one segment. It cannot be undone through the library (a registry restore to a point before it can).
  * `confirmSegment` must equal `ref.segment` (a guard against an accidental destroy — you must name the exact
  * segment). A non-encrypted segment is rejected unless you opt in via `allowCleartext` (there's no key to shred; its
  * Storage bytes stay readable — the tombstone only stops the segment resolving).
+ *
+ * The options are `confirmSegment`, `allowCleartext` and `audit`. Any other key (`dryRun`, which this call does not
+ * take, included) and an `allowCleartext` that is not a boolean throw `ValidationError` before the registry is read.
  */
 export async function destroySegment(
   ref: SegmentRef,
@@ -116,6 +157,11 @@ export async function destroySegment(
   options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
 ): Promise<DestroyResult> {
   validateUserRef(ref);
+  // Before the registry is read: a `dryRun` (which this call does not take) must not shred, nor a string for
+  // `allowCleartext` be read as true.
+  checkEraseDeps('destroySegment', deps);
+  refuseUnknownOptions('destroySegment', options, DESTROY_SEGMENT_KEYS);
+  requireBool('destroySegment: `allowCleartext`', options.allowCleartext);
   checkedAuditSink(options.audit, 'destroySegment');
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
@@ -166,6 +212,7 @@ function tombstoneEvent(ref: SegmentRef, token: Token | undefined): AuditEvent {
  * other fleet scan keeps. A namespace over it throws `BudgetExceededError` **before any segment is destroyed**,
  * never part-way through; raise `maxScanSegments` when the namespace really is that large and the memory is there.
  * A `maxScanSegments` that is not a safe whole number of at least 1 throws `ValidationError`, again before anything is destroyed.
+ * So does any option it does not take (`dryRun` included) and an `allowCleartext` that is not a boolean.
  */
 export async function eraseNamespace(
   namespace: string,
@@ -181,6 +228,9 @@ export async function eraseNamespace(
     throw new ValidationError('eraseNamespace: namespace must be a non-empty string');
   }
   validateUserNamespace(namespace);
+  checkEraseDeps('eraseNamespace', deps);
+  refuseUnknownOptions('eraseNamespace', options, ERASE_NAMESPACE_KEYS);
+  requireBool('eraseNamespace: `allowCleartext`', options.allowCleartext);
   checkedAuditSink(options.audit, 'eraseNamespace');
   if (options.confirmNamespace !== namespace) {
     throw new ValidationError(
@@ -414,7 +464,7 @@ export async function dropSegmentFor(
   sweep: SweepDrop | undefined,
 ): Promise<DropResult | null> {
   validateUserRef(ref);
-  checkedAuditSink(options.audit, 'dropSegment');
+  checkDropOptions(options);
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `dropSegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental deletion)`,

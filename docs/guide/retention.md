@@ -145,7 +145,7 @@ const swept = await store.retireExpired({ namespace: 'active-daily' });
 // → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, purgeFaults, firstPurgeFault?, dryRun, entries }
 ```
 
-A bad argument throws `ValidationError`. A per-segment fault is an `entries` row, never a throw.
+A bad argument throws `ValidationError`, before the registry is listed: an unknown `scan` (a misspelt `'index'` would otherwise run the fleet sweep), a `lookbackBuckets` that is not an integer from 0 to 3,660 (checked on either scan), a `null` where a number is taken, or a bad `shards` (below). `tombstoneGraceMs` has a floor of one hour (3,600,000 ms), and a smaller number throws `ValidationError`: a tombstone purged sooner could let a first load's create, sent again after it got no answer, create the row again over the purged name, wrapped key included. A test that needs a short grace advances an injected clock instead. A per-segment fault is an `entries` row, never a throw.
 
 **It is a call, not a daemon.** Nothing in this library schedules itself, and that is deliberate: the same code has
 to behave identically in a Lambda, an edge isolate and a long-lived server, and a timer that only works in one of
@@ -161,8 +161,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 
 > ⚠️ **Run the sweep from one process, or shard it.** N replicas each running the full sweep would contend over the
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
-> disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
-> without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
+> disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, `shards`
+> without `totalShards`, an empty `shards` and a number listed twice are each a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
 > same slice across restarts. Two sweeps that overlap each count a purge they both saw happen, so `tombstonesPurged` is
 > what this sweep saw gone, not a total across sweeps.
 
@@ -245,12 +245,12 @@ it is charged to `limit`, and the purges go on.
   is read, so live indexed rows equal to the cap followed by a pointer whose row is gone are refused too: size it above
   the live rows. Narrow with `namespace` (and, for an index scan, a smaller `lookbackBuckets`) before raising it.
 - `tombstoneGraceMs` (default 86,400,000, 24 h) is how long a retirement's tombstone fences the name before a later
-  sweep may purge it. Keep it well above the longest time a first load's registry write can still arrive: seconds on S3
+  sweep may purge it, at least one hour (3,600,000 ms; a smaller number throws `ValidationError`). Keep it well above the longest time a first load's registry write can still arrive: seconds on S3
   and GCS, over a minute on Azure Blob at the SDK's default retry schedule
   ([the Azure driver](../../packages/azure-blob/README.md)). A first load whose create landed and lost its answer sends
   it again when it finds no row, so a purge inside that window lets the create make the segment again, pointing at a
-  generation the retirement deleted and, on an encrypted segment, holding the key it removed. An hour or more is far
-  above both, and so is the default; a grace of seconds is not safe, whatever the option accepts.
+  generation the retirement deleted and, on an encrypted segment, holding the key it removed. An hour is far
+  above both, and so is the default.
 
 `namespace` scopes the sweep to one namespace; omit it to sweep every namespace, segments loaded with no `namespace`
 included. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's object keys use, for those segments, is an

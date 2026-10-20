@@ -37,6 +37,7 @@ import {
   isUnsettledConflict,
   isWriteConflictError,
 } from './errors';
+import { refuseUnknownOptions } from './check';
 import { canIndex, dueBucket, dueIndexRef } from './due-index';
 import { casRetry } from './cas-retry';
 import type { ChurnDeps } from './leases';
@@ -134,6 +135,7 @@ function validateRetentionPolicy(policy: RetentionPolicy): void {
       `retention policy must be an object such as { expiresAt }; got ${policy === null ? 'null' : Array.isArray(policy) ? 'an array' : `a ${typeof policy}`}`,
     );
   }
+  refuseUnknownOptions('setRetention policy', policy, ['expiresAt']);
   const { expiresAt } = policy;
   if (typeof expiresAt !== 'number' || !Number.isInteger(expiresAt)) {
     throw new ValidationError(

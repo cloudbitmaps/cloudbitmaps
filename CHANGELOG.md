@@ -13,6 +13,71 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **Config objects refuse an option they do not take, a value of the wrong type, an empty name or endpoint, and a
+  `null` where a value is taken, each with a `ValidationError` that names the option.** Each was accepted, or threw an
+  untyped error, and did something other than what was asked. Code that passed one of them and worked now throws when
+  the object is built or the call is made, before it reads or writes. A key whose value is `undefined` still reads as
+  absent, so a spread of options keeps working. What to do about each:
+  - **`destroySegment` and `eraseNamespace`** refuse an option they do not take and an `allowCleartext` that is not a
+    boolean, before the registry is read. `{ confirmSegment, dryRun: true }` used to crypto-shred the segment, and on
+    `eraseNamespace` every segment of the namespace, because neither call checked its options; `allowCleartext:
+    'false'` was read as true. Remove the option the call does not take (there is no dry run for these two); pass a real
+    boolean.
+  - **Round 2 additions.** `concurrency` of `null` on `checkConsistency`, `intersect`, `union`, `andNot` and the `*Into`
+    verbs, and a per-call `budget` of `null` (as the store's already was), are refused instead of read as the default.
+    `S3Storage` refuses a `client` that has no `send` and `AzureBlobStorage` a `containerClient` that is not a container
+    client (a `BlobServiceClient` is the likely slip: pass `.getContainerClient(name)`); `S3Storage` refuses an `endpoint`
+    that is not an http or https URL, and `GcsStorage` an `apiEndpoint` that names no host; a `bucket` or a local-files
+    root of only spaces is refused. S3 `credentials` never print a value in a message, say a credential provider goes on
+    an `S3Client` given as `client`, and take only the keys documented plus the four the SDK stamps. `destroySegment` and
+    `eraseNamespace` refuse `deps` that are not `{ registry }` (with an optional `clock` and `rng`), before any read.
+    Core's own `dropSegment` refuses a `dryRun` that is not a boolean.
+  - **`new InProcessKeystore(options)`** refuses an option it does not take (a misspelt `recoveryKeyID` used to build a
+    keystore with no recovery wrapping, so every segment it wrote had one wrapping and losing the active key made it
+    unreadable), no options, a `keys` that is not a plain object (a `Map` included), and an `activeKeyId` or
+    `recoveryKeyId` that is not a string. Spell the options `keys`, `activeKeyId`, `recoveryKeyId`, and pass `keys` as
+    an object of key id to 32-byte `Uint8Array`. To check a recovery key is in force, read a new segment's row: its
+    `wrappedDeks` lists both ids.
+  - **`encryption.required`** must be exactly `true` or `false`. A truthy string such as `'true'` used to make reads
+    refuse cleartext while loads, erasures and `*Into` writes still wrote it. Compare the variable yourself
+    (`process.env.REQUIRE_ENCRYPTION === 'true'`). The same check holds the core read source and the core write entries
+    that take `requireEncryption`.
+  - **`retireExpired`** refuses a `scan` that is not `'fleet'` or `'index'` (a misspelt `'index'` ran the fleet sweep), a
+    `lookbackBuckets` that is not an integer from 0 to 3,660 on either scan (it was checked only on `'index'`, and
+    `1e9` threw a `RangeError`), a `null` `limit`, `tombstoneGraceMs` or `now` (read as the default), a `totalShards`
+    that is not a positive integer even without `shards`, and `shards` that is empty or lists a number twice. All are
+    refused before the registry is listed. Pass the value you mean, or leave the option out.
+  - **`retireExpired` refuses a `tombstoneGraceMs` below one hour (3,600,000 ms).** A shorter grace let a first load's
+    create that got no answer, sent again after a sweep purged its row, create the row again with the wrapped key the
+    retirement removed. Pass at least an hour; a test that needs a short grace advances an injected clock instead.
+  - **A `cache` size is refused under the name you wrote:** `cache.maxChunks`, `cache.readerMax` and
+    `cache.readerMaxBytes` must be integers of at least 1 and `cache.ttlMs` a finite number above 0. The errors named
+    `maxEntries`, `maxBytes` or `ttlMs`, and `readerMaxBytes: 1.5` was accepted. A source built by hand refuses
+    `maxOpenSegments` and `maxOpenIndexBytes` the same way. Pass whole numbers.
+  - **`null` is not read as the default** for `cache.genTtlMs`, `retry.maxAttempts`, `baseDelayMs`, `maxDelayMs`,
+    `backoffFactor` and `jitter`, `budget.maxRequests` (on the store and per call), `keep` on `load` and the `*Into`
+    verbs, and the `cache` sizes above. A `seams.clock`, `seams.rng` or `encryption.keystore` of `null` is refused too
+    (the keystore one built a store that threw a `TypeError` at its first encrypted write). Leave the option out, or
+    pass `undefined`, for the default.
+  - **`estimateCost`** refuses a segment with neither `sizeBytes` nor `cardinality`, which it priced at $0 of storage
+    (pass `sizeBytes: 0` for a segment that stores nothing; a missing `workload` stays allowed), and checks
+    `cardinality` even when `sizeBytes` wins. The cost model's refusals quote a string they print (`got "5"`).
+  - **`AzureBlobStorage`** refuses a `connectionString` that is empty, not a string, or not one the SDK can parse, with a
+    message that never holds the string, and a `container` that is `null`, empty or not a string (`null` built a store
+    on a container named "null"). **`S3Storage`** refuses a `region` that is empty, only whitespace or not a string, a
+    `pathStyle` that is not a boolean, and `credentials` that are not an object of non-empty `accessKeyId` and
+    `secretAccessKey` strings with an optional `sessionToken`. **`S3Storage` and `GcsStorage`** refuse an empty or
+    non-string `endpoint` / `apiEndpoint`, which sent every request to AWS or to the public GCS endpoint instead of the
+    service you configured, and `GcsStorage` an empty or non-string `projectId`. **All three cloud backends** refuse a
+    `prefix` that is not a string (a number or `null` threw a `TypeError`). No message holds a value, since an endpoint or
+    a credential can carry a secret. Leave an option out rather than pass an empty string for it.
+  - **`setRetention`** refuses a policy key other than `expiresAt`; drop the key.
+  - **`export-segments`** refuses a `CR_EXPORT_` variable it does not read, naming it and the four it takes: a misspelt
+    `CR_EXPORT_NAMSPACE` exported every namespace, and a script that still sets the removed `CR_EXPORT_SEGMENTS` exported
+    every segment. Unset or correct the variable.
+  - **One export is added to `@cloudbitmaps/core/driver-kit`** for backend authors, `requireNonEmptyString`, beside
+    `requireBool` and `refuseUnknownOptions`.
+
 - **A rollback whose swap met a conflict and whose every read of the row then failed now throws `WriteConflictError`,
   where 0.22.0 threw `TransientError`.** The error is the rollback's own, saying it could not confirm that its swap is
   the one the row shows, with the read's `TransientError` as its `cause`; the pointer may be on the target. A caller

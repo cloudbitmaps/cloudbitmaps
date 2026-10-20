@@ -43,6 +43,12 @@ export function prefixPart(prefix: string | undefined): string {
  */
 export function normalizeObjectPrefix(prefix: string | undefined): string | undefined {
   if (prefix === undefined) return undefined;
+  const given: unknown = prefix;
+  if (typeof given !== 'string') {
+    throw new ValidationError(
+      `prefix must be a string; got ${given === null ? 'null' : Array.isArray(given) ? 'array' : typeof given}`,
+    );
+  }
   for (const ch of prefix) {
     const code = ch.charCodeAt(0);
     // C0 plus DEL: a bare `< 0x20` lets U+007F through, and it is as unprintable as the rest.

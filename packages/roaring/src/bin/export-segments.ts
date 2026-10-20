@@ -88,8 +88,29 @@ export function answerArgs(
   };
 }
 
+/** The environment variables the command reads. */
+const EXPORT_VARIABLES: readonly string[] = [
+  'CR_EXPORT_ROOT',
+  'CR_EXPORT_OUT',
+  'CR_EXPORT_FORMAT',
+  'CR_EXPORT_NAMESPACE',
+];
+
 /** Parse + validate config from an environment map. Throws a {@link ValidationError} on misconfiguration. */
 export function parseConfig(env: Record<string, string | undefined>): ExportConfig {
+  // A misspelt `CR_EXPORT_NAMSPACE` would read as no namespace filter and export every namespace.
+  const unknown = Object.keys(env).filter(
+    (name) => name.startsWith('CR_EXPORT_') && !EXPORT_VARIABLES.includes(name),
+  );
+  if (unknown.length > 0) {
+    const which =
+      unknown.length > 1
+        ? `${unknown.join(', ')} are not settings export-segments takes.`
+        : `${unknown[0]} is not a setting export-segments takes.`;
+    throw new ValidationError(
+      `${which} It takes ${EXPORT_VARIABLES.join(', ')}; run export-segments --help`,
+    );
+  }
   const root = env.CR_EXPORT_ROOT;
   if (root === undefined || root === '') {
     throw new ValidationError(
