@@ -11,7 +11,7 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
-## [0.23.0] — 2026-10-19
+## [0.23.0] — 2026-10-20
 
 ### Breaking
 
