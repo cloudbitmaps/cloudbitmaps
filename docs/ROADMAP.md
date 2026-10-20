@@ -118,7 +118,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   never id by id, into chunks holding what the same ids write. A byte array passed as ids is refused rather than loaded byte
   by byte.
 - **A throttled write is sent again, and never lands twice**. On S3 and GCS a write-once object the service answers
-  as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
+  as throttled (`503` or a bare `429` on S3; `429` or `503` on GCS) is sent again, up to three more times with backoff ([why that is safe](guide/correctness.md#object-write-resent); [the SDK's own retry](guide/correctness.md#sdk-retry)), and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
   the same, with the same id. On S3 and GCS a registry row is sent once by the driver; on Azure Blob the client's retry can replay it, and a replay that meets a conflict is read back by its id, which is not definitive for a row. When its write gets no answer, the load reads
   the row and reports its own landed write as published (proved by the tokens the registry reported for the writes it
@@ -132,8 +132,8 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   past the fresh one) and, for the objects, against MinIO and fake-gcs-server with the throttle injected at the client.
   **Not yet captured** from the real services: whether S3, GCS and Azure apply a request they answered as throttled is
   not documented, so correctness rests on the write id, the write's token and the registry's fence, never on that, and
-  the in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an
-  S3-compatible service is not retried and not classified transient on S3.
+  the in-region calibration is where real throttle answers are measured. A bare `429` from an
+  S3-compatible service counts as a throttle on S3, as a `503` does.
 - **Metadata on a generation, and a row that describes its current generation**. `load` and the `*Into` verbs take a
   small record of your own (`metadata`: string keys, string or finite-number values, at most 1,024 bytes as canonical
   JSON), checked before the first request and stored in the generation's object. The write that moves the pointer also
@@ -483,6 +483,7 @@ None of these are committed and none have dates. If one matters to you,
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) and say so — that's the single best way to
 move it up.
 
+- **A construction-time check that refuses mixed `@cloudbitmaps/*` versions.** Today a flavor beside a driver of another version installs with no warning and fails to compile (two copies of `core`). A check when the store is built could refuse it at run time with a message naming both versions, or an exact `peerDependencies` entry could make the install itself refuse. Considered in a later release.
 - **Answer an encrypted leftover object from its first tail read.** The search `subjectReport` and `eraseSubject` make
   under a destroyed segment reads an encrypted object's tail twice (the open, then the footer that says it is
   encrypted), 20 reads for a crypto-shred that left 10 objects, paid by every report that scopes it for as long as the

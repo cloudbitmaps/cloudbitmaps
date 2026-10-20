@@ -150,7 +150,9 @@ function assertSubpathsResolveWithoutExports(pkgDir) {
   const { readFileSync, existsSync } = require('node:fs');
   const root = path.join(__dirname, '..', 'packages', pkgDir);
   const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
-  const subpaths = Object.keys(manifest.exports ?? {}).filter((k) => k !== '.');
+  const subpaths = Object.keys(manifest.exports ?? {}).filter(
+    (k) => k !== '.' && k !== './package.json', // the manifest is a file with no types
+  );
   if (subpaths.length === 0) return;
   const tv = manifest.typesVersions?.['*'] ?? {};
   const missing = [];
@@ -516,9 +518,9 @@ function entriesOf(pkgDir) {
     ),
   );
   const name = manifest.name;
-  return Object.keys(manifest.exports ?? { '.': null }).map((k) =>
-    k === '.' ? name : `${name}/${k.replace(/^\.\//, '')}`,
-  );
+  return Object.keys(manifest.exports ?? { '.': null })
+    .filter((k) => k !== './package.json') // a file, not a module: `assertManifestResolves` covers it
+    .map((k) => (k === '.' ? name : `${name}/${k.replace(/^\.\//, '')}`));
 }
 
 // The loaded store's whole write path in one call: `store.load()` encodes the ids into one immutable
@@ -788,10 +790,12 @@ function distEntryFilesOf(pkgDir) {
       'utf8',
     ),
   );
-  return Object.entries(manifest.exports ?? {}).map(([key, target]) => ({
-    key,
-    file: path.posix.normalize(target.default).replace(/^dist\//, ''),
-  }));
+  return Object.entries(manifest.exports ?? {})
+    .filter(([key]) => key !== './package.json') // a file, not a built entry
+    .map(([key, target]) => ({
+      key,
+      file: path.posix.normalize(target.default).replace(/^dist\//, ''),
+    }));
 }
 
 function assertEntrySdkFree(pkgDir) {
@@ -1009,6 +1013,27 @@ function assertRanLikeDirect(bin, how, viaLink, direct, out) {
   }
 }
 
+/**
+ * The family ships as one set, and every package can be found by `require.resolve('<name>/package.json')`.
+ *
+ * The manifest rules are in `scripts/lib/family-manifest.cjs` (the tarball scan applies the same rules to the
+ * packed manifests); this adds the check that the resolution works through the package name, the way a
+ * consumer's tool does it.
+ */
+function assertManifestResolves(pkgDir, familyNames) {
+  const { readFileSync } = require('node:fs');
+  const { manifestProblems } = require('./lib/family-manifest.cjs');
+  const file = path.join(__dirname, '..', 'packages', pkgDir, 'package.json');
+  const manifest = JSON.parse(readFileSync(file, 'utf8'));
+  const problems = manifestProblems(manifest, familyNames, { source: true });
+  const resolved = require.resolve(`${manifest.name}/package.json`);
+  if (require('node:fs').realpathSync(resolved) !== require('node:fs').realpathSync(file)) {
+    problems.push(`${manifest.name}/package.json resolves to ${resolved}, not ${file}`);
+  }
+  if (problems.length > 0) throw new Error(problems.join('\n'));
+  console.log(`  manifest OK: ${manifest.name}`);
+}
+
 async function main() {
   // First, so a lost or stray declaration is reported by the compiler, not by the narrower checks below.
   assertDeclarationsMatchWhatTscLoads();
@@ -1061,7 +1086,17 @@ async function main() {
   });
   // The leg that can actually fail: two separately bundled packages, each with its own class copy.
   assertPackagesShareOneCopy(require(CORE), require(PKG), require(S3));
+  const familyNames = packageDirs().map(
+    (d) =>
+      JSON.parse(
+        require('node:fs').readFileSync(
+          path.join(__dirname, '..', 'packages', d, 'package.json'),
+          'utf8',
+        ),
+      ).name,
+  );
   for (const pkgDir of packageDirs()) {
+    assertManifestResolves(pkgDir, familyNames);
     // The SDK sweep skips the driver packages — naming an SDK is what they exist for. The specifier check
     // does not: they publish `.d.ts` like everything else.
     if (!DRIVER_PACKAGES.includes(pkgDir)) assertEntrySdkFree(pkgDir);

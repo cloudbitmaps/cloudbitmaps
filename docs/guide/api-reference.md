@@ -692,9 +692,7 @@ export class MyStorage implements StorageBackend {
 }
 ```
 
-**How to depend on core.** The drivers in this repository depend on it as a plain dependency, on a caret range of
-the version they release with — the range `@cloudbitmaps/roaring` declares too, because all six packages release
-in lockstep, so a consumer's tree resolves one copy. A driver released on its own schedule has no such guarantee:
+**How to depend on core.** The drivers in this repository depend on it at the exact version they release with (`workspace:*` in the source, published as `X.Y.Z`), as `@cloudbitmaps/roaring` does, so a consumer who installs one version of every `@cloudbitmaps/*` package resolves one copy; a tree holds two when the versions differ. A driver released on its own schedule has no such guarantee:
 a plain range of its own can resolve to a second copy beside the consumer's, which is the case described under
 [Errors](#errors-typed--you-catch-these) where `instanceof` stops holding. A peer dependency, with a dev dependency
 to build against, makes the consumer's copy the only one:
@@ -1249,13 +1247,11 @@ Each of these conditional requests — the write-once `PutObject`, a multipart u
 the registry's create, compare-and-swap and tombstone, and with `conditionalDelete` the registry's `DeleteObject` under
 `If-Match` — is [sent with the SDK's retry off for that request alone](correctness.md#sdk-retry), whether
 the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry, the storage half's conditional `DeleteObject` (below) included. The registry's
-writes are sent once. A generation's object is sent again, at most three more times, after `503 SlowDown` (or any `503`)
-and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s: it carries a random id in its user metadata
+writes are sent once. A generation's object is sent again, at most three more times, after `503 SlowDown` (or any `503`) or
+a bare `429` (AWS S3 does not send one; some S3-compatible services do) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s ([why that is safe](correctness.md#object-write-resent)): it carries a random id in its user metadata
 (`x-amz-meta-cbwid`), and a precondition failure on a re-send, or an upload S3 no longer knows, reads it back, so an
 object with its own id is a success and any other a `WriteConflictError`; with nothing stored, a `409` or an unknown
-upload is an unknown outcome, a `TransientError`. A bare `429`, which AWS S3 does not send but some S3-compatible
-services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer that keys on
-`TransientError` will not retry it. A transient failure of a conditional write throws `TransientError`, and the write may
+upload is an unknown outcome, a `TransientError`. A transient failure of a conditional write throws `TransientError`, and the write may
 or may not have landed ([why](production.md#reliability-retries-backoff--timeouts)). The storage half's `DeleteObject` under `If-Match`, which with `conditionalDelete` deletes an erasure's holder only
 while it is the object the erasure read, keeps the client's retry: a copy that meets its own landed delete finds
 nothing, which is its success (a `412` on it is looked at with a `HeadObject` before it is called a conflict), and one

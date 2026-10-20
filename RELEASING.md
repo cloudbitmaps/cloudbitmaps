@@ -5,7 +5,8 @@ New versions of all six packages — `@cloudbitmaps/core`, `@cloudbitmaps/roarin
 human-gated** pipeline — you never run `npm publish` by hand. This is the map to that pipeline, which lives in
 [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-All six packages release **in lockstep**: one version number, one tag, everything published together —
+All six packages release **in lockstep**: one version number, one tag, everything published together (a
+`fixed` group in `.changeset/config.json`, so no release bumps one alone) —
 `core`, the `roaring` flavor, the `s3` / `gcs` / `azure-blob` driver packages and the `tools` package. Each of the
 five depends on `core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. None of the
 workflow's steps names a package: they glob `packages/*/package.json` and filter `./packages/**`, and the one
@@ -102,9 +103,14 @@ pnpm changeset
 Pre-`1.0`, a breaking change is a **minor** bump. Choose the bump for the family, since they move together.
 
 `@cloudbitmaps/core`'s main entry and `/node` are internal and outside the stability promise, so a change to either gets
-no CHANGELOG Breaking entry. Siblings can still be installed at different patch versions (`workspace:^` publishes as
-`^X.Y.Z`), so within a minor those entries change only additively: a removal or a changed signature waits for the
-next minor. Before a release, read the diff of `api-surface/internal.json` since the last tag for any removed or changed line.
+no CHANGELOG Breaking entry. All six packages publish at one version and pin each other exactly (`workspace:*` in the source, which
+pnpm publishes as `X.Y.Z`), so a published `roaring` never resolves a later `core` than the one it was built with, and
+core's internal entry may change freely between releases. A user who mixes versions of the family (a `roaring` of one release with an `s3` of another) gets two copies of `core` and no
+install warning: a TypeScript build refuses `storage: new S3Storage(...)` with `TS2322 ... [STORAGE_BACKEND_BRAND]`, and
+`instanceof` does not hold across the copies (`errorKind` still classifies). `npm ls @cloudbitmaps/core` shows the copies,
+and `pnpm up --latest '@cloudbitmaps/*'` aligns them. Mixed minors always did this; mixed patch versions now do too. Read the diff of `api-surface/internal.json` since the last tag anyway. `scripts/smoke.cjs`
+fails if a source manifest ranges another `@cloudbitmaps/*` package, and `scripts/leak-scan-tarballs.cjs` fails if a
+packed one does.
 
 ## What the automation does
 
@@ -356,7 +362,7 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
 | A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all six together. Recovery is a **patch release of the whole family**: fix what failed first (the log names the package), then a patch changeset and the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
 | `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green publish job. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
-| `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@^X.Y.Z` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:^` dependency to `^X.Y.Z` — a version the registry does not have until the real release, when the bootstrap runs after the version bump. (When core's version is already on the registry, the rc tarballs resolve.) The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
+| `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@X.Y.Z` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:*` dependency to `X.Y.Z` — a version the registry does not have until the real release, when the bootstrap runs after the version bump. (When core's version is already on the registry, the rc tarballs resolve.) The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
 | `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
 | `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and would make every manual publish impossible. |
 | `bootstrap-publish: every package already exists on the registry` | Working as intended — there is nothing to create. Ship the version by tag through the pipeline instead. |

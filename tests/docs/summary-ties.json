@@ -141,30 +141,6 @@
     },
     {
       "file": "docs/ROADMAP.md",
-      "claim": "object-write-resent",
-      "sentence": "3b3d12167651",
-      "starts": "A throttled write is sent again, and never"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "object-write-resent",
-      "sentence": "47070d51bae7",
-      "starts": "On S3 and GCS a write-once object the"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "sdk-retry",
-      "sentence": "47070d51bae7",
-      "starts": "On S3 and GCS a write-once object the"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "sdk-retry",
-      "sentence": "25eee725e500",
-      "starts": "On S3 and GCS a registry row is"
-    },
-    {
-      "file": "docs/ROADMAP.md",
       "claim": "row-write-settled",
       "sentence": "53fddb2f1daf",
       "starts": "When its write gets no answer, the load"
@@ -438,12 +414,6 @@
       "claim": "what-throws-instead",
       "sentence": "21c66828b9ef",
       "starts": "Check store.generations(ref) or checkConsistency() first: a rollback that"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
-      "claim": "object-write-resent",
-      "sentence": "988d40bdd9e0",
-      "starts": "A generation's object is sent again, at most"
     },
     {
       "file": "docs/guide/api-reference.md",
@@ -954,12 +924,6 @@
       "claim": "what-the-purge-removes",
       "sentence": "df1fcbb2d692",
       "starts": "On by default when the host the client"
-    },
-    {
-      "file": "packages/s3/README.md",
-      "claim": "object-write-resent",
-      "sentence": "06af8f8ba684",
-      "starts": "A generation's object is sent again, up to"
     },
     {
       "file": "packages/s3/README.md",

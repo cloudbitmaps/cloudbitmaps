@@ -75,9 +75,9 @@ Every change must pass these locally, and CI runs each of them on every pull req
   a type only it exported is recorded as `(referenced)` when a public signature names it, and its own lines are in
   `api-surface/internal.json`, which `--check` keeps current so a change to it shows in a diff. Making an entry
   internal is itself a change the gate asks for: a row `{"entry": "<specifier> (internal)", "reason": …}`. Because
-  `workspace:^` lets `@cloudbitmaps/roaring` 0.22.0 be installed beside `@cloudbitmaps/core` 0.22.1, **core's main entry
-  changes only additively within a minor**: a removal or a changed signature waits for the next minor, and the release
-  reviewer reads the `api-surface/internal.json` diff for it. Its known limits, the ones the
+  all six packages publish at one version and pin each other exactly (`workspace:*`), **core's main entry and `/node` may change
+  freely between releases**: each package resolves the exact core it was built with, so a flavor never meets an internal entry other than its own, and the release reviewer still reads the
+  `api-surface/internal.json` diff. Its known limits, the ones the
   [api-surface README](api-surface/README.md) lists:
 
   - A change in behaviour behind an unchanged signature: that is for tests.

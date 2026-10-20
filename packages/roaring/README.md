@@ -17,6 +17,8 @@ pnpm add @cloudbitmaps/s3                   # the storage you have: or @cloudbit
 pnpm add @cloudbitmaps/tools                # optional: price a store, offline
 ```
 
+Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
+
 `roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if you allow it. Allow it before you install:
 
 - **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.

@@ -55,6 +55,7 @@
       "types": "./dist/driver-kit.d.ts",
       "default": "./dist/driver-kit.js"
     },
+    "./package.json": "./package.json",
     "./node": {
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"

@@ -8,10 +8,9 @@
  * facade on top.
  *
  * **This entry is internal.** It is the engine `@cloudbitmaps/roaring` and the storage-driver packages import, and it is
- * outside the stability promise: it can change in any minor release, and a change to it gets no CHANGELOG Breaking
+ * outside the stability promise: it can change in any release, and a change to it gets no CHANGELOG Breaking
  * entry. Install `@cloudbitmaps/roaring` and a driver; `@cloudbitmaps/roaring` re-exports, by name, what an application
  * uses. The public entry of this package is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.
- * Within a minor, this entry changes only additively: a removal or a changed signature waits for the next minor.
  *
  * The drivers that need a Node builtin (the in-memory and local-filesystem backends, the in-process cipher and
  * keystore) are exported by `@cloudbitmaps/core/node`, so nothing this entry reaches imports a `node:*` builtin.
