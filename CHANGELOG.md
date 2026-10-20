@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-10-20
+
 ### Breaking
 
 - **An `*Into` whose destination is also one of its sources is refused with `ValidationError`, before any request, and so is `store.load(x, ids)` when `ids` is a stream of this library that read `x`.**
@@ -51,7 +53,7 @@ so, and so do the module headers in the code.
     `eraseNamespace` every segment of the namespace, because neither call checked its options; `allowCleartext:
     'false'` was read as true. Remove the option the call does not take (there is no dry run for these two); pass a real
     boolean.
-  - **Round 2 additions.** `concurrency` of `null` on `checkConsistency`, `intersect`, `union`, `andNot` and the `*Into`
+  - **`null` options, clients and endpoints.** `concurrency` of `null` on `checkConsistency`, `intersect`, `union`, `andNot` and the `*Into`
     verbs, and a per-call `budget` of `null` (as the store's already was), are refused instead of read as the default.
     `S3Storage` refuses a `client` that has no `send` and `AzureBlobStorage` a `containerClient` that is not a container
     client (a `BlobServiceClient` is the likely slip: pass `.getContainerClient(name)`); `S3Storage` refuses an `endpoint`
@@ -182,6 +184,14 @@ so, and so do the module headers in the code.
   not hold across the copies (`errorKind(err)` still classifies). `npm ls @cloudbitmaps/core` shows the copies, and
   `pnpm up --latest '@cloudbitmaps/*'` aligns them. Mixed minors already did this; what changed is that mixed patch
   versions do too.
+- **A registry that reports write tokens must report each one before it sends the write.** One that reports late has a
+  write's fault read as a read's: a load, an erasure or a bulk load throws the `TransientError` at once, without
+  reading the row to see whether the write landed, and does not settle it. A registry that wraps or extends one that
+  reports tokens and overrides `create` or `compareAndSwap` without passing `options` through, or without setting
+  `reportsWriteTokens` to `false`, reports no token, so every `TransientError` of its writes, a throttle included, is
+  thrown at once where it used to be read back and sent again. Report the token before sending, pass `options`
+  through, or set the flag to `false`. A registry you wrote or wrap that reported late (or dropped `options`) and settled
+  before now fails the same writes at once, so check the order in which yours reports before you upgrade.
 
 ### Added
 
@@ -227,8 +237,8 @@ so, and so do the module headers in the code.
   sends anything, and a registry delete's, stay plain. The predicate that reads the mark is internal. The
   `segment.load-refused` event's `unanswered` doc comment, the driver-kit and port docs, the guides and the Azure Blob
   README say so.
-- **`store.preflight()` checks a new store's storage and registry before its first load.** It resolves to `{ ok, checks }`
-  and always lists seven checks, in this order: `registry` (one read of a probe row that must be absent, and a registry
+- **`store.preflight()` checks a new store's storage and registry before its first load.** It resolves to a `PreflightResult`,
+  `{ ok, checks }`, whose `checks` are `PreflightCheck`s (both exported types), and always lists seven checks, in this order: `registry` (one read of a probe row that must be absent, and a registry
   that can write), `write` (one small probe object), `write-once` (a second write to the same key must be refused),
   `read` (the object reads back as written), `list` (the listing names it), `delete` (the run's own object is removed,
   by version where the driver applies one) and `lifecycle` (the backend's `checkLifecycle()`). Each check is `ok`,
@@ -307,13 +317,6 @@ so, and so do the module headers in the code.
   editor and the published `.d.ts` explain each. A test now holds every key of `api-surface/surface.json` to it: an
   entry passes with its own doc comment, or one inherited from the member it implements or overrides, and a key the
   test cannot resolve fails by name. No signature changes.
-- **A registry that reports write tokens must report each one before it sends the write.** One that reports late has a
-  write's fault read as a read's: a load, an erasure or a bulk load throws the `TransientError` at once, without
-  reading the row to see whether the write landed, and does not settle it. A registry that wraps or extends one that
-  reports tokens and overrides `create` or `compareAndSwap` without passing `options` through, or without setting
-  `reportsWriteTokens` to `false`, reports no token, so every `TransientError` of its writes, a throttle included, is
-  thrown at once where it used to be read back and sent again. Report the token before sending, pass `options`
-  through, or set the flag to `false`.
 - **A load's footer no longer builds a temporary array of numbers to encode the chunk index.** The index is now
   written into one buffer sized to it, so the bytes are the same and the footer no longer holds an array beside the
   index. Every load gains it, sorted or not: at the 65,536 chunks a segment can have, the array it dropped held about
@@ -324,6 +327,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The docs no longer call the encryption seal bound "far past any realistic workload".** A segment has one data key for
+  its life and every write seals under it, and a repeated random 96-bit nonce stays negligibly likely only below about
+  2³² seals under one key; nothing counts the seals or enforces the limit. A segment at the 65,536-chunk maximum reaches
+  it after about 65,500 loads or erasure rewrites: 230 days at one load every 5 minutes, sooner with erasure rewrites.
+  Past it a repeated nonce, still unlikely, would give whoever can read both objects the XOR of two chunks, and whoever
+  can write the bucket a way to forge objects under that key. `encryption.md` and `correctness.md` now say so, with the
+  figures for a segment of fewer chunks. Before a segment reaches the bound, load into a new segment, which draws a new
+  key, and drop the old one; or load it less often. A data key per generation is planned, to be decided at the 1.0
+  format freeze.
 - **The S3 driver counts a bare `429` as a throttle.** An S3-compatible service that answers a request with `429` (AWS
   S3 does not) was neither sent again nor a `TransientError`: the SDK's own error reached your code, past a layer that keys on
   `TransientError`. A `429` now behaves as a `503` does: a generation's object is sent again, a registry write that
@@ -422,7 +434,11 @@ so, and so do the module headers in the code.
   hover doc of `SegmentInfo.status` (what `store.segments()` returns) no longer says a destroyed segment's generations
   are gone: a `dropSegment` deletes them, and a crypto-shred leaves them in the bucket with the wrapped key removed
   from the row.
-- **Other docs state what the code and the calibration runs show.** A cache miss on a segment the store has not opened
+- **Other docs state what the code and the calibration runs show.** The `cache.ttlMs` row says what it does (the longest a
+  decoded chunk is kept, counted from when it was cached and not renewed by a hit; off by default; not `genTtlMs`); a
+  `LocalFsStorage` delete leaves its directory, so a dropped namespace and `cbm.due.preflight` stay as empty
+  directories; the `tombstoneGraceMs` window is over a minute on Azure Blob; the guide samples that did not compile are
+  fixed and held by a typecheck gate; a cache miss on a segment the store has not opened
   is three requests on S3, a pointer read, a tail read and the chunk's (measured), and four on Azure Blob, whose tail
   read is two; `LocalFsStorage` creates files at most `0600` and
   directories at most `0700`; a rollback refuses a generation its row does not know, below the pointer as well as

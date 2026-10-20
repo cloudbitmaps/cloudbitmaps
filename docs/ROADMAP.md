@@ -36,7 +36,7 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.22.0` or earlier; anything on `main` after it is
+Where each piece sits today. A bare **shipped** is in `0.23.0` or earlier; anything on `main` after it is
 marked with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
@@ -107,7 +107,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   length), writes it as one write-once object, judges it against the guard, and publishes it with a
   compare-and-swap on the registry row. A load that finds a row fences on the row's token, and one that finds none
   on that absence, guarded or not; a default load also fences on the pointer it judged; and a duplicate publish is an
-  idempotent no-op. Ids that already ascend load with `sorted: true` (unreleased: ships in the next release), which writes them one chunk at a time while the
+  idempotent no-op. Ids that already ascend load with `sorted: true` (shipped in 0.23.0), which writes them one chunk at a time while the
   object uploads, so the load holds one chunk and the writer's index (up to about 7 MiB, about 8 MiB for an encrypted
   segment, derived) whatever the segment's size, and writes the same object, byte for byte under the same write
   identity; an error the ids raise reaches the caller as the very object raised. Unsorted ids for a segment larger than
@@ -301,7 +301,7 @@ envelope**:
 | | Inside the envelope | Outside it (use with your own testing) |
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
-| **Scale** | up to ~100K segments; reads and combines of operands up to 10,000,000 ids on S3 (run `2026-10-07-88cd3`), the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments: an unsorted load holds them in RAM as their distinct ids (an external-merge bulk load is planned), and a sorted one (`sorted: true`, unreleased: ships in the next release) holds one chunk and the writer's index, measured in a unit test up to 10,000,000 ids and not yet run on a cloud; and ids past 2³²−1, which want the reserved 64-bit format |
+| **Scale** | up to ~100K segments; reads and combines of operands up to 10,000,000 ids on S3 (run `2026-10-07-88cd3`), the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments: an unsorted load holds them in RAM as their distinct ids (an external-merge bulk load is planned), and a sorted one (`sorted: true`, shipped in 0.23.0) holds one chunk and the writer's index, measured in a unit test up to 10,000,000 ids and not yet run on a cloud; and ids past 2³²−1, which want the reserved 64-bit format |
 | **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has a published in-region run, for cost and latency: the 2026-10-13 calibration run kept its pointer in the same bucket as the data |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
 | **Cost figures** | the **in-region run `2026-10-13-b329d`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) and the **large run `2026-10-07-88cd3`** (combines and the `*Into` verbs on the large suite's operands, their requests and latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; `materializeMany` on S3; other combine shapes; and GCS and Azure on a real account |
@@ -419,11 +419,11 @@ between here and there:
      `checkConsistency` does not flag. Every other target is held to the row's recorded footer checksum, or needs
      `allowUnknown` and the key;
    - the parts stretch, under [Planned](#planned--exploring);
-   - the lifecycle check's gaps (the check is unreleased: it ships in the next release). An abort-incomplete-upload rule on one namespace's keys silences that advice for every
+   - the lifecycle check's gaps (the check shipped in 0.23.0). An abort-incomplete-upload rule on one namespace's keys silences that advice for every
      namespace of the store. On GCS a `403` that is a billing or network-perimeter refusal gets the permission advice,
      which would not fix it. With no `prefix` it judges every rule it can read as if it covered the store, with no match
      against the key layout. S3's separate Intelligent-Tiering archive configuration is not read;
-   - `preflight()`'s accepted limits (`preflight()` is unreleased: it ships in the next release). Its cleanup delete after a failed write is unconditional, and a conflict whose
+   - `preflight()`'s accepted limits (`preflight()` shipped in 0.23.0). Its cleanup delete after a failed write is unconditional, and a conflict whose
      error cannot be read counts as a failure rather than another run's object, so a probe left at the same 48-bit
      number by another run can be removed. A
      listing pages through every leftover probe and names the first few. A `LocalFsStorage` host path can appear in an
@@ -528,7 +528,7 @@ move it up.
   [loading guide](guide/loading.md#what-a-load-accepts) shows.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
   bulk load that never buffers the distinct set of unsorted ids (ids that already ascend need none: `sorted: true`,
-  unreleased: ships in the next release).
+  shipped in 0.23.0).
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the
   format freeze; a port before then would be a compatibility trap. One concrete requirement a port must meet:
   storage generations contain **run containers**. Runs are part of the standard portable Roaring format, but a
