@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { ValidationError } from '@/index';
 import { answerArgs, parseConfig, USAGE } from '@/bin/export-segments';
 
 const BIN = fileURLToPath(
@@ -60,6 +61,32 @@ describe('export-segments command line', () => {
       expect(USAGE).toMatch(/CR_EXPORT_ROOT\s+\(required\)/);
       expect(USAGE).toMatch(/CR_EXPORT_OUT\s+\(required\)/);
       expect(USAGE).toMatch(/CR_EXPORT_NAMESPACE\s+\(optional\)/);
+    });
+  });
+
+  describe('a CR_EXPORT_ variable it does not read', () => {
+    it('is refused by name, with the ones it takes, so a misspelt namespace does not export every namespace', () => {
+      const env = { CR_EXPORT_ROOT: '/r', CR_EXPORT_OUT: '/o', CR_EXPORT_NAMSPACE: 'tenant-a' };
+      expect(() => parseConfig(env)).toThrow(ValidationError);
+      expect(() => parseConfig(env)).toThrow(
+        'CR_EXPORT_NAMSPACE is not a setting export-segments takes. It takes CR_EXPORT_ROOT, CR_EXPORT_OUT, CR_EXPORT_FORMAT, CR_EXPORT_NAMESPACE; run export-segments --help',
+      );
+    });
+    it('names each when there are several, and ignores other variables', () => {
+      expect(() =>
+        parseConfig({
+          CR_EXPORT_ROOT: '/r',
+          CR_EXPORT_OUT: '/o',
+          CR_EXPORT_A: '1',
+          CR_EXPORT_B: '2',
+        }),
+      ).toThrow('CR_EXPORT_A, CR_EXPORT_B are not settings export-segments takes.');
+      expect(
+        parseConfig({ CR_EXPORT_ROOT: '/r', CR_EXPORT_OUT: '/o', CR_OTHER: 'x', HOME: '/h' }),
+      ).toMatchObject({
+        root: '/r',
+        out: '/o',
+      });
     });
   });
 

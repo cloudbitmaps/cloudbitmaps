@@ -279,15 +279,15 @@ describe('a combine reads its operands a bounded number at a time', () => {
     expect(source.existing.asked).toHaveLength(WIDE);
     expect(source.existing.peak).toBe(16);
     const message = (error as Error).message;
-    expect(message.startsWith('intersect: operand "gone-0", "gone-1",')).toBe(true);
-    expect(message).toContain(`"gone-${WIDE - 1}" names a segment`);
+    expect(message.startsWith('intersect: operands "gone-0", "gone-1",')).toBe(true);
+    expect(message).toContain(`"gone-${WIDE - 1}" name segments`);
   });
 
   it('lists and asks after an exclude list the same way, includes first', async () => {
     const source = new AbsentEverywhere();
     const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
     await expect(collect(engine.andNot(refs[0]!, refs.slice(1)))).rejects.toThrow(
-      /^andNot: operand "gone-0", "gone-1",/,
+      /^andNot: operands "gone-0", "gone-1",/,
     );
     expect(source.listing.peak).toBe(16);
     expect(source.listing.asked).toEqual(refs.map((r) => r.segment));
@@ -367,10 +367,18 @@ describe('a combine reads its operands a bounded number at a time', () => {
       ),
     );
     expect((error as Error).message).toBe(
-      'intersect: operand "suppression/opt-out", "typo" names a segment that does not exist or was dropped, so it ' +
+      'intersect: operands "suppression/opt-out", "typo" name segments that do not exist or were dropped, so they ' +
         'would contribute nothing — an exclude would suppress no ids and an include would contribute none. Check the ' +
         'name and the namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
         '`allowAbsentOperands: true` if you meant it.',
+    );
+  });
+
+  it('names one absent operand in the singular', async () => {
+    const engine = new SegmentEngine({ storage: new AbsentEverywhere(), codec: roaringCodec });
+    const error = await failure(collect(engine.union([{ segment: 'typo' }])));
+    expect((error as Error).message).toMatch(
+      /^union: operand "typo" names a segment that does not exist or was dropped, so it would contribute nothing — /,
     );
   });
 
@@ -401,7 +409,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
     expect(source.existing.peak).toBe(16);
     const named = refs.map((r) => `"${r.segment}"`).join(', ');
     expect((error as Error).message).toBe(
-      `materializeMany: operand ${named} names a segment that does not exist or was dropped, so it would contribute ` +
+      `materializeMany: operands ${named} name segments that do not exist or were dropped, so they would contribute ` +
         'nothing — an exclude would suppress no ids and an include would contribute none. Check the name and the ' +
         'namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
         '`allowAbsentOperands: true` if you meant it.',

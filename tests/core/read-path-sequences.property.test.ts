@@ -120,8 +120,14 @@ async function run(ops: Op[], encrypted: boolean): Promise<void> {
       if (r.published) model.set(r.generation, { ids: new Set(op.ids), metadata: op.metadata });
     } else if (op.kind === 'union') {
       if (current === null) continue;
+      // A destination cannot also be a source, so the current ids are loaded into a segment of their own first.
+      const base = model.get(current)!;
+      await loadSegment({ namespace: 'ns', segment: `base${step}` }, [...base.ids], deps, {
+        keep: 0,
+        allowEmpty: true,
+      });
       const r = await writer
-        .segment('s', { namespace: 'ns' })
+        .segment(`base${step}`, { namespace: 'ns' })
         .unionInto(
           writer.segment('s', { namespace: 'ns' }),
           [writer.segment('o', { namespace: 'ns' })],
@@ -131,7 +137,6 @@ async function run(ops: Op[], encrypted: boolean): Promise<void> {
             ...(op.metadata === undefined ? {} : { metadata: op.metadata }),
           },
         );
-      const base = model.get(current)!;
       if (r.published) {
         model.set(r.generation, {
           ids: new Set([...base.ids, ...OTHER_IDS]),

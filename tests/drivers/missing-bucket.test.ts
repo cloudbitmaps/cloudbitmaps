@@ -25,6 +25,7 @@ const LIMIT = { timeout: 30_000 };
 
 /** Every case of the storage suite but `missing location`, which is the only one these stubs model. */
 const OTHER_CASES: readonly StorageDriverCase[] = [
+  'refuses a misspelt key and option',
   'write-once round trip',
   'collision',
   'missing object',

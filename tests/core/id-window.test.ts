@@ -15,9 +15,12 @@ import {
   keysWithin,
   remaindersWithin,
   WHOLE_ID_SPACE,
-  windowOf,
+  windowOf as windowOfVerb,
 } from '@/core/id-window';
 import type { IdWindow } from '@/core/id-window';
+
+/** The window for a read that no error is expected of: the verb only matters to a refusal. */
+const windowOf = (range: Parameters<typeof windowOfVerb>[0]) => windowOfVerb(range, 'iterate');
 import { ValidationError } from '@/core/errors';
 import { roaringCodec } from '@/roaring-codec';
 
@@ -79,14 +82,25 @@ describe('windowOf', () => {
       [{ through: Number.NaN }, 'through'],
       [{ after: 3, through: U32_MAX + 1 }, 'through'],
     ] as const) {
-      expect(() => windowOf(range)).toThrow(ValidationError);
-      expect(() => windowOf(range)).toThrow(`${name} must be an integer from 0 to ${U32_MAX}`);
+      expect(() => windowOfVerb(range, 'iterate')).toThrow(ValidationError);
+      for (const verb of [
+        'iterate',
+        'intersect',
+        'union',
+        'andNot',
+        'everyNth',
+        'materializeMany',
+      ]) {
+        expect(() => windowOfVerb(range, verb)).toThrow(
+          `${verb}: ${name} must be an integer from 0 to ${U32_MAX}`,
+        );
+      }
     }
     // The ends of the id space are ids.
     expect(windowOf({ after: 0, through: U32_MAX })).not.toBe('empty');
     expect(windowOf({ after: U32_MAX })).toBe('empty');
-    expect(() => assertIdBound('after', undefined)).not.toThrow();
-    expect(() => assertIdBound('through', U32_MAX)).not.toThrow();
+    expect(() => assertIdBound('after', undefined, 'iterate')).not.toThrow();
+    expect(() => assertIdBound('through', U32_MAX, 'iterate')).not.toThrow();
   });
 
   it('describes every id with the whole id space', () => {

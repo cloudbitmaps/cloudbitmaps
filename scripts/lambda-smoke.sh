@@ -33,7 +33,7 @@ RUN_IMAGE="$(docker_image_run_name "$IMAGE")" # a copy loaded from the cache run
 
 echo "lambda-smoke: build + pack the codec and the engine"
 pnpm build >/dev/null
-# Pack each package separately. `pnpm pack` rewrites the `workspace:^` dependency to a concrete version, so the
+# Pack each package separately. `pnpm pack` rewrites the `workspace:*` dependency to a concrete version, so the
 # tarballs are what a publish would ship. They are placed into the container's node_modules BY HAND rather than
 # `npm install`-ed, because the version of `@cloudbitmaps/core` that the flavor pins here is the one in THIS
 # tree, which is generally not on the registry yet — that is the whole point of testing before publishing.

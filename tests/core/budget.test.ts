@@ -105,9 +105,15 @@ describe('a budget is { maxRequests } or false', () => {
     );
   });
 
-  it('reads null and undefined-valued keys as absent: a per-op null inherits the store, even a disabled one', () => {
-    expect(resolvePerOpBudget(null as never, null)).toBeNull();
-    expect(resolvePerOpBudget(null as never, { maxRequests: 9 })).toEqual({ maxRequests: 9 });
+  it('reads undefined-valued keys as absent, and refuses null: a per-op budget of null is not "inherit the store"', () => {
+    expect(resolvePerOpBudget(undefined, null)).toBeNull();
+    expect(resolvePerOpBudget(undefined, { maxRequests: 9 })).toEqual({ maxRequests: 9 });
+    expect(() => resolvePerOpBudget(null as never, { maxRequests: 9 })).toThrow(
+      'budget must be { maxRequests } or false; got null',
+    );
+    expect(() => resolvePerOpBudget({ maxRequests: null } as never, null)).toThrow(
+      'budget.maxRequests must be an integer of at least 1; got null',
+    );
     expect(
       resolvePerOpBudget({ maxRequests: undefined, other: undefined } as never, { maxRequests: 9 }),
     ).toEqual({

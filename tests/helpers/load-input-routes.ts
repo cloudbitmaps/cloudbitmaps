@@ -39,6 +39,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/admin-path-counts.test.ts',
   'tests/tools/cost.test.ts',
   'tests/core/exclude-batching.test.ts',
+  'tests/core/destroyed-wording.test.ts',
   'tests/core/drop-segment.test.ts',
   'tests/core/erase-fences-inflight-load.test.ts',
   'tests/core/erase-retaken-number.test.ts',
@@ -49,6 +50,8 @@ export const ROUTED: readonly string[] = [
   'tests/core/erase-discard-retaken-number.test.ts',
   'tests/core/erase-discard-identical-bytes.test.ts',
   'tests/core/erase-discard-fault.test.ts',
+  'tests/core/storage-delete-lost-answer.test.ts',
+  'tests/core/undo-lost-answer.test.ts',
   'tests/core/erase-fence-licence.test.ts',
   'tests/core/erase-own-key-metadata-corrupt.test.ts',
   'tests/core/erase-sealed-does-not-stop-scan.test.ts',
@@ -106,6 +109,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/storage-source-heal-open.test.ts',
   'tests/core/subject-erasure.test.ts',
   'tests/core/erase-subject-budget.test.ts',
+  'tests/core/subject-report-tombstones.test.ts',
   'tests/core/summary-lifecycle.test.ts',
   'tests/core/summary-localfs.test.ts',
   'tests/core/lease-churn.test.ts',
@@ -148,6 +152,7 @@ export const ROUTED: readonly string[] = [
   'tests/drivers/s3/throttled-write.test.ts',
   'tests/engine.property.test.ts',
   'tests/flows.test.ts',
+  'tests/roaring/combine-refusals.test.ts',
   'tests/roaring/id-stream-batches.test.ts',
   'tests/roaring/pin-lease.races.test.ts',
   'tests/roaring/pin-lease.test.ts',
@@ -156,6 +161,8 @@ export const ROUTED: readonly string[] = [
   'tests/roaring/segment-other-copy.test.ts',
   'tests/roaring/store-load-binding.test.ts',
   'tests/roaring/warm-has.test.ts',
+  'tests/roaring/config-refusals.test.ts',
+  'tests/roaring/option-refusals.test.ts',
 ];
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
@@ -196,6 +203,10 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     'its one load only seeds a segment to read through a leased handle; the shape of the stream is what it tests, and the input form is not',
   'tests/roaring/call-options.test.ts':
     'its loads only seed segments for the option checks of other calls; the input form is not what it tests',
+  'tests/drivers/port-keys.test.ts':
+    'its one load only runs a store over wrapping drivers that validate each ref they are handed; the refusal is what it tests, and the input form is not',
+  'tests/roaring/segment-ref-keys.test.ts':
+    'its loads only seed segments for the ref checks of other calls; the refusal is what it tests, and the input form is not',
   'tests/roaring/combine-options.test.ts':
     'its loads only seed segments for the option checks of the reads and combines, and the counters are reset after ' +
     'them; the refusal is what it tests, and the input form is not',

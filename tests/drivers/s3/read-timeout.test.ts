@@ -955,7 +955,7 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
 });
 
 describe('S3: readTimeoutMs is validated where the backend is built', () => {
-  const client = {} as unknown as S3Client;
+  const client = { send: () => undefined } as unknown as S3Client;
   // 2 ** 31 is a safe integer, but a Node timer that long fires after 1 ms instead, so it is refused too.
   const invalid = [-1, Number.NaN, 1.5, Number.POSITIVE_INFINITY, 2 ** 31] as const;
   const REFUSAL = /readTimeoutMs must be a non-negative safe integer/;

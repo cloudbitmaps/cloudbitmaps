@@ -90,10 +90,12 @@ describe('chunk-skipping intersection', () => {
     expect(await collect(a.intersect([b, c]))).toEqual([3, 4, 5]);
   });
 
-  it('intersect with no others yields the segment itself', async () => {
+  it('intersect with no others is refused, as union and andNot are', async () => {
     const { store, seed } = harness();
     seed('a', [1, 2, 3, 70_000]);
-    expect(await collect(store.segment('a').intersect([]))).toEqual([1, 2, 3, 70_000]);
+    await expect(collect(store.segment('a').intersect([]))).rejects.toThrow(
+      /^intersect requires at least one segment to intersect with; to read every id of one segment, use iterate\(\)$/,
+    );
   });
 
   it('gives the same result regardless of the concurrency window', async () => {

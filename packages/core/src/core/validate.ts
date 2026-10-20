@@ -99,6 +99,13 @@ function validatePart(value: string, field: string): void {
   }
 }
 
+/**
+ * The keys a segment ref takes: its address, and the two a `segments()` row also carries so a listing row can be
+ * passed straight back. `discover.ts` holds this list to `SegmentInfo` at compile time, so a field added there is a
+ * type error until it is listed here.
+ */
+export const REF_KEYS = ['segment', 'namespace', 'currentGen', 'status'] as const;
+
 /** A ref is an object: a string, null or undefined is the common slip, and says what a ref looks like. */
 function requireRefObject(ref: unknown, hint = ''): void {
   if (typeof ref !== 'object' || ref === null) {
@@ -107,11 +114,15 @@ function requireRefObject(ref: unknown, hint = ''): void {
 }
 
 /**
- * Throws `ValidationError` unless `ref` is an object whose `segment` and, when given, `namespace` are valid names. It
- * does not refuse a reserved namespace, which a driver must be able to store.
+ * Throws `ValidationError` unless `ref` is an object whose `segment` and, when given, `namespace` are valid names, and
+ * which holds no other key: a misspelt `namespace` would otherwise address the segment of that name in the default
+ * namespace. The keys it takes are a port's: `segment`, `namespace`, a `GenKey`'s `generation`, a `ChunkRef`'s
+ * `chunkKey`, and a registry row's own fields and a `segments()` row's, so a row a driver listed can be passed back.
+ * It does not refuse a reserved namespace, which a driver must be able to store.
  */
 export function validateSegmentRef(ref: SegmentRef): void {
   requireRefObject(ref);
+  refuseUnknownKeys(ref);
   validatePart(ref.segment, 'segment');
   if (ref.namespace !== undefined) validatePart(ref.namespace, 'namespace');
 }
@@ -153,9 +164,94 @@ export function validateUserNamespace(namespace: string): void {
   }
 }
 
-/** Validate a segment ref an application hands in: the name rules, and a namespace outside the reserved prefix. */
-export function validateUserRef(ref: SegmentRef): void {
+/**
+ * The keys a driver port takes beyond a ref's own. The store hands its ports a generation key (a ref and a
+ * `generation`) or a chunk ref (a ref and a `chunkKey`) wherever they name a segment, and an operator repairing a
+ * registry hands them a row from `registry.list()` or `get()`, whose fields are fixed and listed here. A test holds
+ * the row fields to `RegistryRecord`'s.
+ */
+export const PORT_KEYS: readonly string[] = [
+  'generation',
+  'chunkKey',
+  'wrappedDeks',
+  'keyId',
+  'retention',
+  'residency',
+  'summary',
+  'knownGens',
+  'leases',
+  'createdAt',
+  'updatedAt',
+  'token',
+  'pointerId',
+];
+
+/** The mark the flavor's `Segment` handle carries on its prototype; a handle is not a ref. */
+const SEGMENT_HANDLE_MARK: unique symbol = Symbol.for('cloudbitmaps.roaring.segment/1');
+
+/** The own enumerable string keys of `ref` that neither a ref nor `extraKeys` names. */
+function unknownKeysOf(ref: object, extraKeys: readonly string[]): string[] {
+  return Object.keys(ref).filter(
+    (k) => !(REF_KEYS as readonly string[]).includes(k) && !extraKeys.includes(k),
+  );
+}
+
+/** Refuse a ref holding a key a driver port does not take, naming each such key and the keys it does take. */
+function refuseUnknownKeys(ref: object): void {
+  const unknown = unknownKeysOf(ref, PORT_KEYS);
+  if (unknown.length === 0) return;
+  const list = unknown.map((k) => `"${k}"`).join(', ');
+  throw new ValidationError(
+    `a driver port: unknown ${unknown.length === 1 ? 'key' : 'keys'} ${list} in the segment ref; it takes ` +
+      `{ segment, namespace } and a generation key's \`generation\`, a chunk ref's \`chunkKey\`, a \`segments()\` ` +
+      `row's \`currentGen\` and \`status\`, or a registry row's own fields (a segment addressed without its ` +
+      `namespace is a different segment)`,
+  );
+}
+
+/**
+ * Refuse a segment ref that holds a key it does not take, naming each such key, and a value that is a segment
+ * handle or an array rather than a ref. A misspelt `namespace` would otherwise address the segment of that name in
+ * the default namespace, and a drop, a rollback or a crypto-shred would act on the wrong segment. Only the ref's own
+ * enumerable string keys are read, one whose value is `undefined` included. `verb` names the call in the message.
+ */
+export function refuseUnknownRefKeys(
+  ref: object,
+  verb: string,
+  extraKeys: readonly string[] = [],
+): void {
+  if ((ref as Record<symbol, unknown>)[SEGMENT_HANDLE_MARK] === true) {
+    throw new ValidationError(
+      `${verb}: a segment handle is not a ref; pass { segment, namespace }`,
+    );
+  }
+  if (Array.isArray(ref)) {
+    throw new ValidationError(
+      `${verb}: a segment ref is an object such as { segment: 'name' }, not an array`,
+    );
+  }
+  const unknown = unknownKeysOf(ref, extraKeys);
+  if (unknown.length === 0) return;
+  const list = unknown.map((k) => `"${k}"`).join(', ');
+  throw new ValidationError(
+    `${verb}: unknown ${unknown.length === 1 ? 'key' : 'keys'} ${list} in the segment ref; a ref takes ` +
+      `{ segment, namespace } (and a \`segments()\` row's \`currentGen\` and \`status\`, which are read for ` +
+      `nothing); a segment addressed without its namespace is a different segment`,
+  );
+}
+
+/**
+ * Validate a segment ref an application hands in: the name rules, and a namespace outside the reserved prefix. With
+ * `verb`, the call a caller made, it also refuses a key a ref does not take, beyond `extraKeys`; leave `verb` out only
+ * for an internal key that extends a ref with keys of its own.
+ */
+export function validateUserRef(
+  ref: SegmentRef,
+  verb?: string,
+  extraKeys: readonly string[] = [],
+): void {
   requireRefObject(ref, '; store.segment() takes the bare name');
+  if (verb !== undefined) refuseUnknownRefKeys(ref, verb, extraKeys);
   validatePart(ref.segment, 'segment');
   if (ref.namespace !== undefined) validateUserNamespace(ref.namespace);
 }

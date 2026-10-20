@@ -14,6 +14,8 @@ no second service to run.
 pnpm add @cloudbitmaps/roaring @cloudbitmaps/azure-blob
 ```
 
+Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
+
 `roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if you allow it. Allow it before you install:
 
 - **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
@@ -28,6 +30,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/azure-blob
 
 ## Use
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
@@ -87,7 +90,7 @@ Any other key is refused by name.
   under each: a registry that never answers costs up to four times the policy's tries before the load throws
   `TransientError` and keeps its object: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s
   between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that
-  schedule, not measured).
+  schedule, not measured). A retention sweep's `tombstoneGraceMs` must stay above that window; the default 24 h does.
 - **Set `readTimeoutMs` to bound a read that stalls.** No client setting does: the SDK's per-try timer stops once the
   response headers arrive, so a body that stalls after them holds the read as long as the connection stays open. With
   `readTimeoutMs` set, each read request (a range read, a tail read's properties and its download, a registry row's

@@ -595,9 +595,9 @@
               Graviton, an unusual libc, a locked-down build that forbids compilation &mdash;
               compiles from source or does not install. Native addons <em>do</em> load on Deno, Bun
               and Lambda; what they cannot enter is an isolate runtime such as Cloudflare Workers.
-              The codec is what stops it there, not the engine: core imports no Node builtin. Edge
-              runtimes are not supported, and none will be claimed until CI runs the suite inside
-              one.
+              The codec is what stops it there, not the engine: core's main entry imports no Node
+              builtin. Edge runtimes are not supported, and none will be claimed until CI runs the
+              suite inside one.
             </p>
           </div>
           <div class="limit">

@@ -61,7 +61,10 @@ export function segmentsDir(root: string, ref: SegmentRef): string {
 export function storageObjectPath(root: string, key: GenKey): string {
   validateSegmentRef(key);
   requireInteger(key.generation, { min: 0, what: 'generation' });
-  return join(segmentsDir(root, key), storageObjectFilename(key.segment, key.generation));
+  return join(
+    segmentsDir(root, { segment: key.segment, namespace: key.namespace }),
+    storageObjectFilename(key.segment, key.generation),
+  );
 }
 
 /** Filename pattern for a segment's generations: `<segment>.<gen>.crbm`. */

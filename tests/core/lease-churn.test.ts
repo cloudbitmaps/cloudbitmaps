@@ -791,5 +791,6 @@ describe('64 holders taking and releasing while a writer works', () => {
       await churn;
       expect(seen.calls, run).toBeLessThan(LEASE_ONLY_RETRIES);
     }
-  });
+    // The churn is CPU-bound and, on a runner shared with other files, can pass the default 5 s; the assertion is a count.
+  }, 60_000);
 });

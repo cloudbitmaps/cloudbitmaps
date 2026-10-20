@@ -506,5 +506,37 @@
   {
     "entry": "@cloudbitmaps/roaring ReadonlyBitmap*",
     "reason": "a new type, agreed with the maintainer on 2026-10-18: the read-only bitmap deserializePortable returns, a PortableBitmap and an Iterable<number> with size and has(id); roaring's RoaringBitmap32 satisfies it as it is"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PinnedAt*",
+    "reason": "PinnedAt becomes a union of a pin of a generation ({ generation: number; version: string; fingerprint: string }) and a pin of none (all three null), agreed with the maintainer on 2026-10-19: the doc comment already promised that fingerprint is null only when generation is, and the union lets a check of generation narrow the record so pinAt takes it whole; code that reads the three fields compiles as before"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit checkDeleteOptions",
+    "reason": "added so every storage driver refuses a misspelt or mistyped ifVersion in one place, rather than deleting unconditionally"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit checkRegistryWriteOptions",
+    "reason": "added so every registry driver refuses a misspelt or mistyped held or onToken in one place"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit requireNonEmptyString",
+    "reason": "the backends refuse an empty or non-string endpoint, container and project id through one shared check, as they already do for sizes and switches with requirePositiveInt and requireBool; a driver author gets the same check for the options of their own backend"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SubjectReport.tombstones",
+    "reason": "agreed with the maintainer on 2026-10-19: a subject report also lists each destroyed segment whose leftover objects still hold the id in the clear, the objects eraseSubject deletes, found by the same search; required and always present, [] when none; SubjectReport is an output type the store builds, so only code that constructs one by hand adds the field"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.eraseSubject",
+    "reason": "a scope is one namespace or every namespace, never both: the options are now required and a union of { namespace, allNamespaces?: false } or { allNamespaces: true, namespace?: undefined }, so TypeScript refuses the pair that the call now refuses at run time with a ValidationError (it honoured namespace and ignored allNamespaces before); a call with no options already threw ValidationError, and one that passes allNamespaces as a boolean variable no longer compiles"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.subjectReport",
+    "reason": "a scope is one namespace or every namespace, never both: the options are now required and a union of { namespace, allNamespaces?: false } or { allNamespaces: true, namespace?: undefined }, so TypeScript refuses the pair that the call now refuses at run time with a ValidationError (it honoured namespace and ignored allNamespaces before); a call with no options already threw ValidationError, and one that passes allNamespaces as a boolean variable no longer compiles"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "a cleartext destroySegment or eraseNamespace (allowCleartext) now emits a segment.tombstone event, so the union gains a member { kind: 'segment.tombstone', namespace?, segment, incarnation?, objectsReadable: true } (a tombstone that deleted nothing and destroyed no key; not an erasure receipt); only a switch over event.kind that ends in a never check stops compiling until it gains the case; the event type is an output the library builds"
   }
 ]

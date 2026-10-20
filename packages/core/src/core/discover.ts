@@ -52,7 +52,7 @@ export interface SegmentInfo extends SegmentRef {
  * has to hold, use the fences that exist for it — `load`'s guard, or `expectFrom`/`expectToken` on a publish.
  */
 export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver): Promise<boolean> {
-  validateUserRef(ref);
+  validateUserRef(ref, 'exists');
   const record = await registry.get(ref);
   return record !== null && record.status !== 'destroyed' && record.currentGen !== null;
 }

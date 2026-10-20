@@ -419,14 +419,14 @@ describe('Azure Blob (Azurite): the precondition is applied', () => {
     await store.load(stuck, [1]);
     await store.setRetention(stuck, { expiresAt: t + 1 });
     t += 2;
-    expect((await store.retireExpired({ tombstoneGraceMs: 1_000 })).retired).toBe(1);
+    expect((await store.retireExpired({ tombstoneGraceMs: 3_600_000 })).retired).toBe(1);
     const row = container.getBlockBlobClient(registryObjectKey(p, stuck));
     const { snapshot } = await row.createSnapshot();
     await store.load(behind, [2]);
     await store.setRetention(behind, { expiresAt: t + 1 });
-    t += 1_002; // the stuck tombstone is due, and `behind` has expired
+    t += 3_600_002; // the stuck tombstone is due, and `behind` has expired
 
-    const res = await store.retireExpired({ tombstoneGraceMs: 1_000, limit: 1 });
+    const res = await store.retireExpired({ tombstoneGraceMs: 3_600_000, limit: 1 });
     expect(res.retired).toBe(1); // not held back by the refused purge, though the limit is 1
     expect(res.tombstonesPurged).toBe(0);
     expect(res.entries[0]).toMatchObject({
@@ -439,7 +439,7 @@ describe('Azure Blob (Azurite): the precondition is applied', () => {
     expect(await backend.registry.get(stuck)).toMatchObject({ status: 'destroyed' });
 
     await row.withSnapshot(snapshot!).delete();
-    const next = await store.retireExpired({ tombstoneGraceMs: 1_000 });
+    const next = await store.retireExpired({ tombstoneGraceMs: 3_600_000 });
     expect(next.purgeFaults).toBe(0);
     expect(await backend.registry.get(stuck)).toBeNull();
     expect(await azureExists(registryObjectKey(p, stuck))).toBe(false);
@@ -587,9 +587,9 @@ async function expectPurgeLeaves(
   await store.load(ref, [1, 2, 3]);
   await store.setRetention(ref, { expiresAt: t + 1 });
   t += 2;
-  expect((await store.retireExpired({ tombstoneGraceMs: 1_000 })).retired).toBe(1);
-  t += 1_000;
-  expect((await store.retireExpired({ tombstoneGraceMs: 1_000 })).tombstonesPurged).toBe(1);
+  expect((await store.retireExpired({ tombstoneGraceMs: 3_600_000 })).retired).toBe(1);
+  t += 3_600_000;
+  expect((await store.retireExpired({ tombstoneGraceMs: 3_600_000 })).tombstonesPurged).toBe(1);
   expect(await backend.registry.get(ref)).toBeNull();
   expect(await stored(ref)).toBe(tombstone);
 }

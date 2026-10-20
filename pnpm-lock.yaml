@@ -99,7 +99,7 @@ importers:
         specifier: ^12
         version: 12.33.0
       '@cloudbitmaps/core':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../core
     devDependencies:
       '@types/node':
@@ -121,7 +121,7 @@ importers:
   packages/gcs:
     dependencies:
       '@cloudbitmaps/core':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../core
       '@google-cloud/storage':
         specifier: ^7 || ^8
@@ -137,7 +137,7 @@ importers:
   packages/roaring:
     dependencies:
       '@cloudbitmaps/core':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../core
       roaring:
         specifier: 2.7.0
@@ -156,7 +156,7 @@ importers:
         specifier: '>=3.700.0 <4'
         version: 3.1132.0
       '@cloudbitmaps/core':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../core
     devDependencies:
       '@types/node':
@@ -169,7 +169,7 @@ importers:
   packages/tools:
     dependencies:
       '@cloudbitmaps/core':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../core
     devDependencies:
       '@types/node':

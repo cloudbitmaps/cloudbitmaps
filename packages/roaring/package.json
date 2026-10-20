@@ -48,7 +48,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -68,7 +69,7 @@
     "build": "node ../../scripts/build.mjs"
   },
   "dependencies": {
-    "@cloudbitmaps/core": "workspace:^",
+    "@cloudbitmaps/core": "workspace:*",
     "roaring": "2.7.0"
   },
   "devDependencies": {

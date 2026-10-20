@@ -292,7 +292,7 @@ describe('eraseIdFromSegment — encryption', () => {
     await w.load(SEG, [1, 2, 3]);
     await expect(
       eraseIdFromSegment(SEG, 2, { ...w.deps, requireEncryption: true }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    ).rejects.toBeInstanceOf(KeyUnavailableError);
     expect(await generations(w.storage, SEG)).toEqual([0]);
   });
 });
@@ -500,7 +500,7 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     await w.load(SEG, [1, 2, 3]);
     await w.registry.delete(SEG);
 
-    const ledger = await w.reader().eraseSubject(2, { namespace: SEG.namespace });
+    const ledger = await w.reader().eraseSubject(2, { namespace: 'ns' });
     expect(ledger.erasedFrom).toEqual([]);
     expect(ledger.scannedSegments).toBe(0); // not scanned at all — not "scanned and found clean"
     expect(await generations(w.storage, SEG)).toEqual([0]); // and the id is STILL in the bucket

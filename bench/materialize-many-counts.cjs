@@ -231,7 +231,7 @@ async function countInto(shape) {
     const dest = w.store.segment(`d${i}`);
     let r;
     if (typeof node === 'string') {
-      r = await w.store.segment(node).unionInto(dest, [], { exclude: [optOut], keep: 12 });
+      r = await w.store.segment(node).andNotInto(dest, [optOut], { keep: 12 });
     } else {
       const op = Object.keys(node)[0];
       const kids = [];

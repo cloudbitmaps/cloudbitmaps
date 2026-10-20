@@ -190,6 +190,7 @@ the long tail: the segments that are too many or too large to keep in RAM, and t
 library:
 
 <!-- SIZING:SAMPLE:START -->
+<!-- typecheck -->
 ```ts
 import { estimateCost } from '@cloudbitmaps/tools';
 

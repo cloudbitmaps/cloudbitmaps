@@ -24,8 +24,13 @@ export async function refuseAbsent<T>(
   const absent = candidates.filter((_, i) => !found[i]);
   if (absent.length === 0) return;
   const named = absent.map((c) => `"${nameOf(c)}"`).join(', ');
+  const [operand, names, does, was, it] =
+    absent.length > 1
+      ? ['operands', 'name segments', 'do', 'were', 'they']
+      : ['operand', 'names a segment', 'does', 'was', 'it'];
   throw new ValidationError(
-    `${op}: operand ${named} names a segment that does not exist or was dropped, so it would contribute nothing — ` +
+    `${op}: ${operand} ${named} ${names} that ${does} not exist or ${was} dropped, so ${it} would contribute ` +
+      'nothing — ' +
       'an exclude would suppress no ids and an include would contribute none. Check the name and the namespace (a ' +
       'segment addressed without its `namespace` is a DIFFERENT segment). Pass `allowAbsentOperands: true` if you ' +
       'meant it.',

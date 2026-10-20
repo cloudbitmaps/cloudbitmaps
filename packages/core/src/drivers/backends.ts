@@ -1,10 +1,10 @@
 /**
  * The two SDK-free backends, each as one object: `MemoryStorage` and `LocalFsStorage`.
  *
- * These live in the main entry because neither needs a cloud SDK — there is nothing to keep out of the
- * install, and it keeps the first five minutes to a single import. Their cloud siblings (`S3Storage`,
- * `GcsStorage`, `AzureBlobStorage`) ship in `@cloudbitmaps/s3`, `/gcs` and `/azure-blob` for the opposite
- * reason: each carries an SDK nobody should install for a service they do not use.
+ * These ship from `@cloudbitmaps/core/node`, not the main entry: each reaches a Node builtin (`LocalFsStorage` the
+ * filesystem, `MemoryStorage` `node:crypto` for the SHA-256 a write reports). Neither needs a cloud SDK. Their
+ * cloud siblings (`S3Storage`, `GcsStorage`, `AzureBlobStorage`) ship in `@cloudbitmaps/s3`, `/gcs` and
+ * `/azure-blob` for the opposite reason: each carries an SDK nobody should install for a service they do not use.
  *
  * Each one exists to state a location **once**. See {@link StorageBackend} for why that is worth a class.
  */
@@ -96,7 +96,7 @@ export class LocalFsStorage implements StorageBackend {
     readonly root: string,
     options: LocalFsStorageOptions = {},
   ) {
-    if (typeof root !== 'string' || root.length === 0) {
+    if (typeof root !== 'string' || root.trim().length === 0) {
       throw new ValidationError(
         `LocalFsStorage needs a root directory: a non-empty string, got ${root === '' ? 'an empty string' : typeof root}`,
       );

@@ -63,7 +63,7 @@ interface WiredStore {
  * A caller's partial policy, completed from {@link DEFAULT_RETRY_POLICY}, so tuning one field does not mean restating
  * all five.
  *
- * Each field is read with `??`, not by spreading over the default: a key that is present with the value
+ * Each field is read for `undefined`, not by spreading over the default: a key that is present with the value
  * `undefined` (the ordinary shape of a value read from env or JSON, which `exactOptionalPropertyTypes`
  * being off lets through) must fall back to the default. A spread would let it replace the default with
  * `undefined`, giving `NaN` delays that `SystemClock.sleep` turns into a ~1 ms hot retry loop, with the
@@ -74,17 +74,21 @@ interface WiredStore {
  * source checks the policy.
  */
 function resolveRetryPolicy(partial: Partial<RetryPolicy>): RetryPolicy {
-  const baseDelayMs = partial.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs;
+  // Only an absent value is the default: a `null` is kept, and refused when the retrying source checks the policy.
+  const orDefault = <K extends keyof RetryPolicy>(field: K): RetryPolicy[K] =>
+    partial[field] === undefined ? DEFAULT_RETRY_POLICY[field] : (partial[field] as RetryPolicy[K]);
+  const baseDelayMs = orDefault('baseDelayMs');
   return {
-    maxAttempts: partial.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
+    maxAttempts: orDefault('maxAttempts'),
     baseDelayMs,
     maxDelayMs:
-      partial.maxDelayMs ??
-      (typeof baseDelayMs === 'number' && baseDelayMs > DEFAULT_RETRY_POLICY.maxDelayMs
-        ? baseDelayMs
-        : DEFAULT_RETRY_POLICY.maxDelayMs),
-    backoffFactor: partial.backoffFactor ?? DEFAULT_RETRY_POLICY.backoffFactor,
-    jitter: partial.jitter ?? DEFAULT_RETRY_POLICY.jitter,
+      partial.maxDelayMs === undefined
+        ? typeof baseDelayMs === 'number' && baseDelayMs > DEFAULT_RETRY_POLICY.maxDelayMs
+          ? baseDelayMs
+          : DEFAULT_RETRY_POLICY.maxDelayMs
+        : partial.maxDelayMs,
+    backoffFactor: orDefault('backoffFactor'),
+    jitter: orDefault('jitter'),
   };
 }
 

@@ -32,8 +32,10 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
  * is refused, so every key built here is one {@link parseGenerationFromKey} reads back.
  */
 export function storageObjectKey(prefix: string | undefined, key: GenKey): string {
+  validateSegmentRef(key);
   requireInteger(key.generation, { min: 0, what: 'generation' });
-  return `${segmentObjectPrefix(prefix, key)}${key.generation}${SUFFIX}`;
+  const ref: SegmentRef = { segment: key.segment, namespace: key.namespace };
+  return `${segmentObjectPrefix(prefix, ref)}${key.generation}${SUFFIX}`;
 }
 
 /**
