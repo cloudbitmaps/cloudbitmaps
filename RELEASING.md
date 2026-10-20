@@ -183,7 +183,8 @@ which defaults to `true`. It waits for the same approval as a tag push.
   `pnpm -r publish --dry-run`, which uploads nothing. Like a real publish, it leaves out every package whose
   version is already on the registry, so on a ref whose manifests carry the released version it packs nothing and
   still exits 0: it exercises the publish step only on a version not yet released, such as `main` after the
-  version-bump pull request merges and before the tag. It skips the still-private check and the registry probes.
+  version-bump pull request merges and before the tag (the `release` environment's policy refuses a branch ref unless
+  `main` is added to it, so otherwise dispatch it on a tag). It skips the still-private check and the registry probes.
 - **`dryRun: false` publishes for real.** It runs the gate, the still-private check, the registry probes and the
   tarball leak scan, then publishes whatever version the manifests carry.
 - **On a branch ref, either one skips the tag check and the release-notes check**, because both key on a tag
@@ -236,9 +237,9 @@ so the hardening below is part of first-publishing one, not an afterthought:
 **GitHub:**
 
 - A **`release` environment** with the maintainer as a **required reviewer** — that reviewer is the approval
-  gate; without it the publish job runs unpaused. Limit its deployment branches and tags to `main` and the
-  `v*.*.*` tags (_Selected branches and tags_), so a tag push can deploy and a manual run can start from `main` or
-  a tag, and from nothing else.
+  gate; without it the publish job runs unpaused. Limit its deployment branches and tags to the `v*.*.*`
+  tag pattern alone (_Selected branches and tags_), so a tag push can deploy and nothing else can: a manual run
+  started from `main` is refused until `main` is added to that policy, so start a manual run from a tag.
 - `main` **branch-protected**: PRs required, force-pushes and deletions blocked.
 - Account 2FA.
 
