@@ -66,6 +66,7 @@ A key shift keeps the size: a join on the wrong key can replace a segment's memb
 sees. To refuse one, count how many of the current ids the new set keeps before you load it, reading the segment a chunk
 at a time:
 
+<!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32` to the reader -->
 ```ts
 declare const next: InstanceType<typeof RoaringBitmap32>; // the set you are about to load
 const before = await store.segment('active-us').count();
@@ -635,7 +636,10 @@ because deleting the row is what makes the name writable again:
    expired policy. Deleting that row would destroy the local attestation for an Art. 17 execution and un-fence the
    name. A marker cannot be forged that way, so a `destroyed` row the sweep did not create is never touched.
 2. **A grace period has passed since that stamp** (default 24 h). While the row exists every writer refuses the
-   segment, and that is what stops an in-flight load from resurrecting it.
+   segment, and that is what stops an in-flight load from resurrecting it. So the grace (`tombstoneGraceMs`) must
+   outlast the longest time a load's write can still reach the registry: a first load's create that got no answer is
+   sent again for up to about 3.5 s, and on Azure Blob the client's own retry replays each of those sends for about 16 s,
+   over a minute in all. The default 24 h is far above it; a grace of seconds is not.
 3. **Storage is provably empty for it.** If storage still holds a straggler generation, such as a load that was writing
    when the tombstone landed, the sweep collects it first, then purges. (The collection takes every generation of a
    destroyed row, and nothing else runs it on its own for a tombstoned segment: an erasure collects under a tombstone
@@ -1079,11 +1083,20 @@ call caught. A ledger entry carries `note`, never `reason`.
 
 ## How encryption stays correct
 
-<a id="seal-count"></a>**How many seals one key takes.** Each chunk is sealed with a fresh random 96-bit nonce, and two seals under one key
-sharing a nonce stays negligibly likely below about 2³² seals. Nothing counts seals or enforces that limit. A segment
-keeps its key for its whole life, so every load and every erasure rewrite (which seals every chunk again) counts
-toward it. It is far past any realistic workload; a segment that might approach it is created again, which draws a new
-key.
+<a id="seal-count"></a>**How many seals one key takes.** A segment has one data key for its whole life, drawn at its
+first encrypted generation, and every write seals under it: a load, an `*Into` or `materializeMany` output and an
+erasure rewrite each seal every chunk of the generation they write, its index, its summary and its metadata when it
+has any. Each seal draws a fresh random 96-bit nonce, and two seals under one key sharing a nonce stays negligibly
+likely below about 2³² seals (about one in 10¹⁰ at 2³², and growing with the square of the count); 2³² is also NIST
+SP 800-38D's limit for random nonces. Nothing counts seals or enforces that limit. A segment of N chunks reaches it after
+about 2³² / (N + 3) writes (each `LoadResult` reports `chunkCount`): decades at hourly loads for a few thousand chunks.
+A segment at the 65,536-chunk maximum (ids spread over the whole 32-bit range, such as hashed
+ids) reaches it after about 65,500 writes: about 7.5 years of hourly loads, 230 days of loads every 5 minutes, or two
+months of hourly loads with 1,000 erasure rewrites a day. Past it a repeated nonce, still unlikely, would give whoever
+can read both objects the XOR of two chunks, and whoever can write the bucket a way to forge objects under that key.
+Before a segment reaches it, load into a new segment, which draws a new key (dated names, as [retention](retention.md)
+uses, do this anyway), and drop the old one; or load it less often. A data key per generation is planned, to be decided
+at the 1.0 format freeze ([roadmap](../ROADMAP.md#planned--exploring)).
 
 <a id="never-half-encrypted"></a>**A segment is never half-encrypted.** A segment's encryption is decided at its first generation. Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and

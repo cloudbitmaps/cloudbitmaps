@@ -17,6 +17,7 @@ A segment loaded with no `namespace` is in no namespace you can name: only `{ al
 namespace name here, and passing it scans a namespace of that name, not them. A `namespace: '_default'` call over a
 fleet whose segments were loaded with no namespace lists none, and its `scannedSegments` is `0`.
 
+<!-- typecheck-skip: a fragment: the page leaves `userId` to the reader -->
 ```ts
 import { RecordingAuditSink } from '@cloudbitmaps/roaring';
 

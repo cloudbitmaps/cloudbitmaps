@@ -28,6 +28,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/gcs
 
 ## Use
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { GcsStorage } from '@cloudbitmaps/gcs';

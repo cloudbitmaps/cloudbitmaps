@@ -36,6 +36,7 @@ reports the same `op` event and the same `storage.get` per range request, and em
 
 Map the handful you chart to counters/histograms:
 
+<!-- typecheck-skip: a fragment: the page leaves `storage` to the reader; imports `@opentelemetry/api`, which this repository does not install -->
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
@@ -104,6 +105,7 @@ gauge. Because the library owns the objects, `stat()` reports each segment's **r
 `groundedReport()` from `@cloudbitmaps/tools` prices it. Each sample of a segment the store has not opened is one registry read, since the
 row's summary records the object's size; a row with no summary it can use adds a tail read of the object, for two requests in all on S3 and GCS and three on Azure Blob.
 
+<!-- typecheck-skip: imports `@opentelemetry/api`, which this repository does not install -->
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 import { groundedReport } from '@cloudbitmaps/tools';
@@ -155,6 +157,7 @@ Audit events are low-volume, high-value, and must be **durable and tamper-eviden
 append-only store (CloudWatch Logs, an S3 object-lock bucket, your SIEM), never to the same mutable place as
 metrics. The sink adds the timestamp and actor (the library keeps its core free of ambient time/identity):
 
+<!-- typecheck-skip: a fragment: the page leaves `auditLog`, `ids`, `registry`, `subjectId` to the reader -->
 ```ts
 import { destroySegment } from '@cloudbitmaps/roaring';
 import type { IAuditSink } from '@cloudbitmaps/roaring';

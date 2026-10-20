@@ -306,10 +306,15 @@ promise. The bitmap `deserializePortable` returned has only these members: its `
 `'portable'` and throws `ValidationError` for any other argument (a `RoaringBitmap32` also satisfies the type and takes
 other formats), and a call to any other member throws `TypeError`. A load takes it as `{ bitmap }`, and the bitmap
 `deserializePortable` returned also loads bare where ids go; the library keeps no reference to it. Its class is not part
-of the contract: do not cast it and do not test it with `instanceof`. For the rest of a
+of the contract: do not cast it and do not test it with `instanceof`. Do not pass it to a method of the `roaring` package from npm either: it is not a
+`RoaringBitmap32`, so the predicates and counts (`intersects`, `andCardinality`, `isSubset` and the like) answer wrongly
+without throwing in JavaScript (TypeScript refuses the call), the static `RoaringBitmap32.and`, `or` and `orMany` throw,
+and the constructor and the in-place operations (`orInPlace`, `addMany` and the like) read it as ids. It is not
+serialized to JSON either: `JSON.stringify(bitmap)` gives `"{}"`, so write `JSON.stringify([...bitmap])`. For the rest of a
 Roaring library's API (set algebra, `toArray`, and so on) decode its portable bytes with that library, after the
 check:
 
+<!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32`, `bytes`, `deserializePortable` to the reader -->
 ```ts
 const checked = deserializePortable(bytes); // ValidationError if malformed
 const native = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
@@ -435,7 +440,7 @@ The fields of each result type are described with its call: `DropResult` in
 | key | type | what it holds |
 |---|---|---|
 | `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
-| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024; with a timed refresh, 8 × as many segments' resolutions are kept apart from them) · `readerMaxBytes?` (their parsed indices, any metadata they hold, a fixed 3.75 KiB each for the objects around the index, and the chunk bytes a reader keeps of a small generation, default 64 MiB; a sixteenth of it bounds the resolutions) |
+| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` (the longest a decoded chunk is kept, in ms, counted from when it was cached and not renewed by a hit; off by default, so a chunk stays until the count bound evicts it; it is not how soon a reader sees a new load, which is `genTtlMs`) · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024; with a timed refresh, 8 × as many segments' resolutions are kept apart from them) · `readerMaxBytes?` (their parsed indices, any metadata they hold, a fixed 3.75 KiB each for the objects around the index, and the chunk bytes a reader keeps of a small generation, default 64 MiB; a sixteenth of it bounds the resolutions) |
 | `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
 | `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy`: `maxAttempts`, `baseDelayMs`, `maxDelayMs`, `backoffFactor` and `jitter`. Anything omitted keeps its default (`maxAttempts` 4, `baseDelayMs` 50, `backoffFactor` 2, `jitter` `'full'`), except `maxDelayMs`, which is 2000 ms, or `baseDelayMs` when that is larger. The store checks the policy when it is built and throws `ValidationError` unless `maxAttempts` is a whole number of at least 1, `baseDelayMs` a finite number of at least 0, `maxDelayMs` a finite number of at least `baseDelayMs` (50 ms unless you set it), `backoffFactor` a finite number of at least 1, and `jitter` `'full'` or `'none'`. Plus `onRetry?`, for the transient retry of every read that answers a query, and of the reads a load's guard and an erasure make along the way; `false` turns it off. It does not govern writes: a write is retried only where that is safe, and not by this option ([Resilience](#resilience-the-store-wires-this-by-default)) |
 | `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |
@@ -495,6 +500,7 @@ re-export them. Importing one makes `@cloudbitmaps/core` a direct dependency of 
 `@cloudbitmaps/roaring` you install, so one copy serves both. Or derive the type from what the flavor exports, with no
 dependency to add:
 
+<!-- typecheck -->
 ```ts
 import type { CloudRoaringOptions, EncryptionOptions, MemoryStorage } from '@cloudbitmaps/roaring';
 
@@ -662,6 +668,7 @@ backend built in your package is recognised in ours. It takes two lines that hav
 `declare` field** so the class satisfies `StorageBackend`, and a **runtime stamp** in the constructor, which
 `brandAsBackend` applies non-enumerably so a spread cannot carry it off.
 
+<!-- typecheck-skip: a fragment: the page leaves `MyRegistryDriver`, `MyStorageDriver`, `MyStorageOptions` to the reader -->
 ```ts
 import {
   STORAGE_BACKEND,
@@ -716,6 +723,7 @@ bucket and one prefix so they cannot disagree. A driver author who wants a backe
 backend's `.storage` wrapped for auditing, metrics or tenant scoping, or paired with a registry in a database you
 already run — brands a plain object with the ports:
 
+<!-- typecheck-skip: a fragment: the page leaves `CloudRoaring`, `auditing`, `inner` to the reader -->
 ```ts
 import { brandAsBackend } from '@cloudbitmaps/core/driver-kit';
 

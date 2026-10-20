@@ -494,6 +494,12 @@ move it up.
   nothing created**. Today's cost tooling can only answer that once you're already a user, which is backwards. It
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
+- **A data key per generation.** A segment seals every generation under one data key for its whole life, so the count
+  of seals under that key grows with every load and erasure rewrite, and a full-width segment reloaded every few minutes
+  passes the 2³² seals below which a repeated random nonce is negligibly unlikely
+  ([how many seals one key takes](guide/correctness.md#seal-count)). Deriving a key per generation from the segment's
+  key bounds each key to one generation's seals. It changes how a generation is sealed and the keystore port, so it is
+  decided at the `1.0` format freeze, not before.
 - **A scope of its own for un-namespaced segments.** A segment loaded with no `namespace` is reached by
   `subjectReport`, `eraseSubject` and `retireExpired` only when the call covers every namespace (`allNamespaces: true`,
   or no `namespace` on a sweep), because the registry port cannot list the absent namespace alone, and `'_default'`

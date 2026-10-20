@@ -494,7 +494,7 @@ const SIGNATURES = [
     claim: 'seal-count',
     patterns: [/2³² seals|2\^32 seals|96-bit nonce/i],
     summary:
-      'Each chunk is sealed with a fresh random 96-bit nonce, and a repeated nonce stays negligibly likely below about 2³² seals under one key, a limit nothing counts and far past any realistic workload.',
+      'Each chunk is sealed with a fresh random 96-bit nonce, and a repeated nonce stays negligibly likely below about 2³² seals under one key, a limit nothing counts: a segment at the 65,536-chunk maximum reaches it after about 65,500 loads or erasure rewrites, 230 days at one every 5 minutes.',
     lookAlike: "Encrypted: the index's nonce and tag (section 8).",
   },
   {

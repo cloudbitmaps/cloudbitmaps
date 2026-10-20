@@ -112,7 +112,9 @@ await store.load({ segment: 'active-this-week' }, [1, 2, 3]);
 ```
 
 `LocalFsStorage` creates its files owner-only (at most `0600`) and its directories at most `0700`: the process umask can only narrow them, so another user of the machine cannot read or list your segments; a missing parent of the root is created with the default mode, an existing directory keeps the mode it has, a registry row is always rewritten owner-only, and Windows ignores modes. It is for one process on one folder: two processes on the same folder do not protect each other from
-writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket.
+writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket. A delete removes the file and
+leaves its directory, so a dropped namespace, and the preflight probe's `cbm.due.preflight` folder, stay as empty
+directories.
 
 Names keep their case, but a case-insensitive filesystem (the macOS and Windows default) would open one file for
 `TenantA` and `tenanta`. `LocalFsStorage` compares the name it finds on disk exactly, so there a name in another case
@@ -451,8 +453,8 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
   when it is an ES module: `"type": "module"` in `package.json` (which `pnpm init` and `npm init -y` do not set) or the
   `.mts` extension; otherwise TypeScript reports `TS1309`. A `tsconfig.json` that typechecks them, with `@types/node`
   installed: `{ "compilerOptions": { "strict": true, "module": "nodenext", "target": "es2022", "types": ["node"] } }`.
-  `roaring`'s own types use `Symbol.dispose`, which `@types/node` declares. Without `@types/node`, take one of two
-  setups instead, or `roaring`'s `index.d.ts` reports `TS2550`: set `"skipLibCheck": true`, or set `"lib"` to
+  the `roaring` package's own types use `Symbol.dispose`, which `@types/node` declares. Without `@types/node`, take one of two
+  setups instead, or the `roaring` package from npm reports `TS2550` in its `index.d.ts` as soon as your code imports it (the `{ bitmap }` samples do): set `"skipLibCheck": true`, or set `"lib"` to
   `["es2022", "esnext.disposable", "dom"]` (an explicit `lib` replaces the default, so keep `dom` for `console`).
   A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`; `node16` and `node18` report `TS1479`
   on the import. A project on `moduleResolution: bundler` is unaffected. Code that reads `process.env`, as the Azure
