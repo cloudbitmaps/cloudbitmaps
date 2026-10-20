@@ -199,7 +199,7 @@ function rows(w: Awaited<ReturnType<typeof world>>): Row[] {
         concurrency: 'int',
         budget: 'obj',
       } satisfies Record<keyof Arg<Store['subjectReport'], 1>, Kind>,
-      call: (o) => store.subjectReport(1, o),
+      call: (o) => store.subjectReport(1, o as never),
     },
     {
       name: 'store.eraseSubject',
@@ -212,7 +212,7 @@ function rows(w: Awaited<ReturnType<typeof world>>): Row[] {
         concurrency: 'int',
         budget: 'obj',
       } satisfies Record<keyof Arg<Store['eraseSubject'], 1>, Kind>,
-      call: (o) => store.eraseSubject(99, o),
+      call: (o) => store.eraseSubject(99, o as never),
     },
     {
       name: 'store.retireExpired',

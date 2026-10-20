@@ -12,7 +12,7 @@ which code, tests and docs cite by number.
 
 | Section | Its guide |
 |---|---|
-| [When a load is refused](#when-a-load-is-refused): each `reason` and what to do, what throws instead, and [a write that is throttled or gets no answer](#when-a-write-is-throttled-or-gets-no-answer) | [Loading in depth](loading.md) |
+| [When a load is refused](#when-a-load-is-refused): each `reason` and what to do, what throws instead, and [a write that is throttled or gets no answer](#when-a-write-is-throttled-or-gets-no-answer), and [a write that gets no answer](#a-write-that-gets-no-answer) | [Loading in depth](loading.md) |
 | [How a load stays correct](#how-a-load-stays-correct): numbering, the publish and its fences, crashes and orphans, collection and leases, and [a rollback that races a collection](#a-rollback-that-races-a-collection) | [Loading in depth](loading.md) |
 | [How a pin stays correct](#how-a-pin-stays-correct): the caches a pin shares, one generation per call, a re-created segment, and what invalidates a pin | [Reading in depth](reading.md#read-one-fixed-point-in-time) |
 | [How retention stays correct](#how-retention-stays-correct): the order of a drop, the purge of a tombstone, and the due index's pointers | [Retention](retention.md) |
@@ -66,6 +66,7 @@ A key shift keeps the size: a join on the wrong key can replace a segment's memb
 sees. To refuse one, count how many of the current ids the new set keeps before you load it, reading the segment a chunk
 at a time:
 
+<!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32` to the reader -->
 ```ts
 declare const next: InstanceType<typeof RoaringBitmap32>; // the set you are about to load
 const before = await store.segment('active-us').count();
@@ -82,7 +83,7 @@ the outputs of a `materializeMany` call, count it with a dry run ([in the loadin
 
 <a id="what-throws-instead"></a>**What throws instead.** A refusal is an outcome. A throw is a fault:
 
-- invalid options or ids, or a crypto-shredded segment: `ValidationError`, an id lower than the one before it under
+- invalid options or ids, or a destroyed segment: `ValidationError`, an id lower than the one before it under
   `sorted: true` included;
 - an error your id source throws, as it threw it, this library's own `WriteConflictError` included: under
   `sorted: true` too, where the ids are read during the upload, and the storage driver never sees it; and, under
@@ -114,7 +115,7 @@ one that was passed.
 <a id="a-load-makes-two-writes"></a>A load makes two writes, and the backend handles each on its own terms.
 
 <a id="object-write-resent"></a>**The generation's object** is written once, to a number no other object holds, so a write the service refuses as too
-fast can be sent again. S3 answering `503 SlowDown` (or any `503`), and GCS answering `429` or `503`, make the driver
+fast can be sent again. S3 answering `503 SlowDown` (or any `503`, or a bare `429`, which some S3-compatible services send), and GCS answering `429` or `503`, make the driver
 send the write again, up to three more times, after a random wait under 500 ms, then under 1 s, then under 2 s; Azure
 Blob's client does the same under its own retry policy. Every object carries a random id in its metadata, because a
 service does not promise that a request it throttled was not applied: a re-send that meets an object carrying its own id
@@ -163,6 +164,8 @@ deleted: the write may still reach the registry after the load has returned, and
 object is the one state no reader can recover from. Re-run the load. It numbers its generation past the orphan, publishes
 whether or not the first attempt landed, and collection removes the orphan once a generation above it is current. To know
 whether the first attempt landed, check `store.generations(ref)` rather than replaying the request.
+A collection delete that gets no answer is settled by reading the object: gone, the load returns as if the delete had
+answered.
 
 <a id="unanswered-refusal-is-flagged"></a>A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
 been current for a while before another writer moved on: its `segment.load-refused` audit event carries `unanswered:
@@ -185,6 +188,32 @@ rollback's landed swap, which cannot be told apart from it. Then the rollback th
 conflict and `TransientError` after no answer, audits nothing and deletes nothing, and a re-run finds the pointer where
 it is. A registry that reports no tokens settles a swap that got no answer by the row the swap would leave, and a conflict never as landed.
 
+### A write that gets no answer
+
+<a id="settle-by-read-back"></a>Every lifecycle write that gets no answer reads back its row or its object and takes the write as landed only when what it
+reads carries the call's own mark. Over a registry that reports write tokens the mark is the token the call sent before the
+write; no other writer's write carries it. Only a load, an `*Into` verb, an erasure's rewrite and an erasure's write to the row send the write again when
+the read-back shows it did not land; the others throw `TransientError`, and a re-run is safe. A read-back waits between its reads on the clock the call passes (under half a second, then under a second, with jitter) and gives up after three reads. Through the store, every lifecycle call passes a sleeping clock, so it waits; a direct call into core's internal entry with no clock does not wait.
+
+- <a id="settle-shred"></a>**A crypto-shred** (`destroySegment`, `eraseNamespace`, `dropSegment`, a sweep's retirement): settled by the tombstone's
+  `pointerId`, the token of the shred's own write. When the read-back fails too, the call throws `TransientError` and the
+  segment may be destroyed. Its re-run answers `'already'`, with no `segment.erase`.
+- <a id="settle-tombstone"></a>**A drop's tombstone for a segment with no row**: settled the same way. A re-run answers `'already'` and sweeps the bucket.
+- <a id="settle-retention"></a>**`setRetention`, `clearRetention`**: settled by the row's token. When another write has followed this call's write
+  before the read-back, the row cannot say whose write it shows, and the call decides again from the row. A re-run of
+  `setRetention` sets the same expiry again; a re-run of `clearRetention` that finds the expiry gone answers `false`
+  ([why](retention.md#when-clearretention-answers-false)).
+- <a id="settle-rollback"></a>**A `rollback`'s move and its move back**: settled by the row's `pointerId` being the token of a write the call sent. A
+  move back that landed is reported as "the pointer was put back". One that never landed, or whose read-back failed too,
+  says the pointer may still name the target; so does one whose row another write moved. A registry that reports no
+  tokens settles the move onto the target by the row it would leave, and cannot settle the move back: that message stays.
+- <a id="settle-sweep"></a>**A sweep's purge and its pointer removals**: settled by reading the row. A row that is gone counts as removed, whichever
+  request removed it, so two sweeps over the same rows at once can both count one purge.
+- <a id="settle-storage-delete"></a>**A storage delete** (a load's collection, an erasure's deletes, a drop's sweep): settled by a zero-byte read of the
+  object (up to three, as above). Gone, it counts as deleted. For an erasure's delete of a holder, another object under the number is the refusal a
+  conditional delete gives. When the read fails too, or the delete lands after it, the call reports the fault, and a re-run
+  finds the object gone: an erasure's re-run then lists nothing for the segment.
+
 ## How a load stays correct
 
 <a id="numbering-is-the-loads"></a>**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: the one
@@ -204,13 +233,13 @@ that finds another object under the number re-reads the segment rather than serv
 segment's key, are sent before the ids are bucketed and encoded, and the write waits for their answers only when it
 needs them. The keystore is asked for the key once per load, and that one key serves both the guard's read of the
 current generation and the write; it is used only if the row the write reads after the ids still carries the same
-wrappings, and a load of a crypto-shredded row never asks for it. What a fence rests on keeps its order: the row the
+wrappings, and a load of a destroyed row never asks for it. What a fence rests on keeps its order: the row the
 guard judges is read first, a first load or an encrypted segment reads the row again after the ids, and the publish is
 fenced on the row the guard judged.
 
 What changes is the order in which a failure surfaces, never whether anything is written. A failed existence check
 (and the listing it falls back to) is raised after the ids have been consumed, so the encoding's error, or the refusal
-of the second row read (a crypto-shredded segment), can be raised instead of it; either way nothing is written or
+of the second row read (a destroyed segment), can be raised instead of it; either way nothing is written or
 published. A load that fails or is refused after its first row read may already have made its one keystore call for an
 existing encrypted segment, which a load that failed earlier did not.
 
@@ -247,7 +276,7 @@ the ones a live lease holds and the ones a rollback left above its own, and noth
 usable ledger starts one from the bucket: the window a listing keeps, which can name the number a refused load took,
 and later publishes keep naming it until the window pushes it out (see the paragraph on orphans below). A purge and
 re-create leaves the row with no ledger, which only makes the next load start one; a write that leaves the pointer where
-it is (`setRetention`, a crypto-shred aside) keeps it. A `rollback` carries the ledger it found, moving the target to its
+it is (`setRetention`, a destroy aside) keeps it. A `rollback` carries the ledger it found, moving the target to its
 end, so the next load draws its window from the order generations were made current, and starts none over a row that
 had none.
 
@@ -317,8 +346,9 @@ checksum-verified chunks from it.
 the fetch and the reopen, which are separate round trips. The call then serves the newer, committed generation: a move
 forward within that segment's lifetime, never a torn object. A second miss is pathological (collection outrunning
 resolution) and propagates instead of fabricating an absent answer. The one case that answers empty instead of
-throwing is a segment with no generation left to serve at all, dropped or crypto-shredded, where reading empty is the
-documented outcome.
+throwing is a segment with no generation to serve: its bucket holds none, or its row is destroyed (crypto-shredded,
+destroyed in the clear or dropped) and no generation resolves through it. There, reading empty is the documented
+outcome.
 
 <a id="exposure-window-is-the-ttl"></a>**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so at
 most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses: one, at the
@@ -333,8 +363,9 @@ generation is noticed there at the next refresh, within `cache.genTtlMs`, and no
 <a id="what-collection-does"></a>**What collection does, precisely.** A listing pass deletes generations strictly below `currentGen`, keeping the most
 recent `keep` of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It
 deletes nothing while `currentGen` is `null`, because an object under a pointer-less row is either a load about to
-publish or an orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or
-crypto-shred tombstone) every generation is garbage and all are collected, because no reader can resolve a tombstoned
+publish or an orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (the
+tombstone of a drop, a crypto-shred or a cleartext destroy) every generation is garbage and all are collected, because
+no reader can resolve a tombstoned
 segment.
 
 A by-name pass takes the generations the load's publish pushed out of the row's window, which it learned from the
@@ -589,7 +620,9 @@ it can finish only after the rollback's move, so the call's next read of the row
    tombstone landed still finishes the write. Its publish is then refused, but the object survives and holds the
    complete set. **Check `generationsRemaining`**: non-empty means bytes are still there and the drop should be
    repeated, since a re-drop of a tombstone re-sweeps its storage. The retention sweep collects them only for a
-   tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` wrote is left to you.
+   tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` or a `destroySegment` wrote is
+   left to
+   you.
 
 <a id="tombstones-purged-narrowly"></a>**Tombstones are purged, narrowly.** A retired segment leaves a `destroyed` row behind, and one dead row per retired
 daily segment would accumulate forever. The sweep deletes those rows too, but only when all three of these hold,
@@ -597,15 +630,20 @@ because deleting the row is what makes the name writable again:
 
 1. **The row carries the sweep's own retirement stamp.** This is a positive marker `retireExpired` writes on the
    tombstones it creates. It is not an inference from "destroyed plus an expired policy", which would be wrong, and
-   dangerously so. A crypto-shred leaves `retention` untouched, so the ordinary ordering (set a 30-day policy, then a
+   dangerously so. A crypto-shred or a cleartext destroy leaves `retention` untouched, so the ordinary ordering (set a
+   30-day policy, then a
    right-to-erasure request arrives mid-window and you call `destroySegment`) produces a GDPR tombstone that carries an
    expired policy. Deleting that row would destroy the local attestation for an Art. 17 execution and un-fence the
    name. A marker cannot be forged that way, so a `destroyed` row the sweep did not create is never touched.
 2. **A grace period has passed since that stamp** (default 24 h). While the row exists every writer refuses the
-   segment, and that is what stops an in-flight load from resurrecting it.
+   segment, and that is what stops an in-flight load from resurrecting it. So the grace (`tombstoneGraceMs`) must
+   outlast the longest time a load's write can still reach the registry: a first load's create that got no answer is
+   sent again for up to about 3.5 s, and on Azure Blob the client's own retry replays each of those sends for about 16 s,
+   over a minute in all. The default 24 h is far above it; a grace of seconds is not.
 3. **Storage is provably empty for it.** If storage still holds a straggler generation, such as a load that was writing
    when the tombstone landed, the sweep collects it first, then purges. (The collection takes every generation of a
-   destroyed row, and nothing else would ever run it for a tombstoned segment.) Only if storage still cannot be proven
+   destroyed row, and nothing else runs it on its own for a tombstoned segment: an erasure collects under a tombstone
+   only when an object there holds its id, and a re-run drop sweeps it.) Only if storage still cannot be proven
    gone does the row stay, with `tombstone-not-empty`. Without the row the collection can no longer see the segment at
    all, and the objects would be billed forever. `tombstone-not-empty` also covers the case where the collection
    declined because the row changed under it. That is not a storage fault, and the next cycle simply retries. The
@@ -653,8 +691,10 @@ a pointer would only add a row for every scan to read, and the fleet scan purges
 longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
 `lookbackBuckets`, the fleet scan purges the row.
 
-<a id="pointer-to-foreign-tombstone"></a>**A pointer to a tombstone the sweep did not write is removed.** A segment given a policy and then crypto-shredded or
-dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
+<a id="pointer-to-foreign-tombstone"></a>**A pointer to a tombstone the sweep did not write is removed.** A segment
+given a policy and then crypto-shredded, destroyed
+in the clear or dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its
+pointer would name
 nothing for ever. A sweep that reads such a pointer reads the segment's row again, and if it is still a tombstone
 without the sweep's stamp removes the pointer, fenced on the pointer's token, and leaves the tombstone as it was. It
 works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds; those past the
@@ -668,7 +708,8 @@ so until it goes the name is in the bucket, in a key. It lingers when the purge 
 - the purge ran with another `tombstoneGraceMs` than the sweep that filed the pointer, so the day it computes holds
   none (a purge removes the pointers its scan read, whatever day they are under, but a scan limited to a `namespace`
   reads none);
-- a delete landed and lost its response, so the sweep never learned the row was gone and kept the pointer, as it must;
+- a delete landed and lost its response, and the read of the row that would show it gone failed too, so the sweep
+  never learned the row was gone and kept the pointer, as it must;
 - the registry refused the pointer's removal (`purgeFaults` counts it);
 - the pointer's day has passed out of `lookbackBuckets`, where no index scan reads it.
 
@@ -751,9 +792,10 @@ each, with nothing held but the rows.
 <a id="every-holder-goes"></a>**Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,
 where a later rollback can make them current again. So the call searches every generation in the segment's bucket. A
-holder below the pointer goes with the `keep: 0` collection, and each holder above it is deleted one by one. A
-generation up there that never held the id stays as a rollback target when the current generation does not hold the
-id, unless no read of the segment can open it, and then it goes whatever the id ([the effect across a
+holder below the pointer goes with the `keep: 0` collection, and each holder above it is deleted one by one. Once the
+call finds a holder anywhere, above the pointer or below, its `keep: 0` collection takes every generation below the
+pointer, clean ones included. A generation above the pointer that never held the id stays as a rollback target when
+the current generation does not hold the id, unless no read of the segment can open it, and then it goes whatever the id ([the effect across a
 fleet](erasure.md#three-rules-while-you-erase)). A rewrite is numbered above everything, so its `keep: 0` collection takes every
 older generation, above the pointer or below.
 
@@ -967,8 +1009,10 @@ call caught. A ledger entry carries `note`, never `reason`.
   the third rule asks you not to run during an erasure) and a load of the id that takes its number before the call's
   last read. Every route needs a load of the id while it is erased, which
   [the first rule](erasure.md#three-rules-while-you-erase) asks you not to run.
-- A tombstoned row has its bucket searched too. A crypto-shred leaves objects no key opens, but a cleartext destroy, a
-  drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
+- A tombstoned row has its bucket searched too. A crypto-shred leaves objects no read through the library can open
+  (the row holds no key), but a cleartext destroy,
+  a drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds
+  the
   id, every object under the tombstone is deleted and the entry reads `erased: true`. The collection is held to the
   row the call searched: if the name was purged and loaded again before the collection read the row, the row it
   finds is another segment's, and the collection throws `WriteConflictError` and deletes nothing, so the new row's
@@ -1039,11 +1083,20 @@ call caught. A ledger entry carries `note`, never `reason`.
 
 ## How encryption stays correct
 
-<a id="seal-count"></a>**How many seals one key takes.** Each chunk is sealed with a fresh random 96-bit nonce, and two seals under one key
-sharing a nonce stays negligibly likely below about 2³² seals. Nothing counts seals or enforces that limit. A segment
-keeps its key for its whole life, so every load and every erasure rewrite (which seals every chunk again) counts
-toward it. It is far past any realistic workload; a segment that might approach it is created again, which draws a new
-key.
+<a id="seal-count"></a>**How many seals one key takes.** A segment has one data key for its whole life, drawn at its
+first encrypted generation, and every write seals under it: a load, an `*Into` or `materializeMany` output and an
+erasure rewrite each seal every chunk of the generation they write, its index, its summary and its metadata when it
+has any. Each seal draws a fresh random 96-bit nonce, and two seals under one key sharing a nonce stays negligibly
+likely below about 2³² seals (about one in 10¹⁰ at 2³², and growing with the square of the count); 2³² is also NIST
+SP 800-38D's limit for random nonces. Nothing counts seals or enforces that limit. A segment of N chunks reaches it after
+about 2³² / (N + 3) writes (each `LoadResult` reports `chunkCount`): decades at hourly loads for a few thousand chunks.
+A segment at the 65,536-chunk maximum (ids spread over the whole 32-bit range, such as hashed
+ids) reaches it after about 65,500 writes: about 7.5 years of hourly loads, 230 days of loads every 5 minutes, or two
+months of hourly loads with 1,000 erasure rewrites a day. Past it a repeated nonce, still unlikely, would give whoever
+can read both objects the XOR of two chunks, and whoever can write the bucket a way to forge objects under that key.
+Before a segment reaches it, load into a new segment, which draws a new key (dated names, as [retention](retention.md)
+uses, do this anyway), and drop the old one; or load it less often. A data key per generation is planned, to be decided
+at the 1.0 format freeze ([roadmap](../ROADMAP.md#planned--exploring)).
 
 <a id="never-half-encrypted"></a>**A segment is never half-encrypted.** A segment's encryption is decided at its first generation. Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
@@ -1069,7 +1122,7 @@ won. This covers a generation's write-once put and the registry's create, compar
 write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone,
 but for two GCS writes that keep it: an object above `simpleUploadThresholdBytes` (a resumable upload, which the SDK
 retries within its session), and the registry's delete under `ifGenerationMatch`, which its precondition makes safe to
-send twice (a copy that meets the first's landed delete reads as a lost race, and a re-read settles it). With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
+send twice (a copy that meets the first's landed delete reads as a lost race, and the retention sweep, which sends that delete, settles it by reading the row and finding it gone). With the retry off, a registry row is sent once, whatever the answer, and a generation's object once, or again
 after a throttle, when a random id in its metadata tells a first send that landed from another writer's object. A row
 write that gets no answer is settled by the load itself, which reads the row and sends a fresh compare-and-swap from
 it if nothing changed, at most three times
@@ -1084,7 +1137,7 @@ package stands:
 
 | package | conditional writes |
 |---|---|
-| `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete, a `DeleteObject` under `If-Match` included, are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. A bare `429`, which AWS S3 does not send but some S3-compatible services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer of yours that keys on `TransientError` will not retry it. The object carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure, a `409` or an unknown upload on a re-send reads it back; with nothing stored, a `409` or an unknown upload is an unknown outcome (`TransientError`) |
+| `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete, a `DeleteObject` under `If-Match` included, are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`), or a bare `429`, and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. A bare `429`, which AWS S3 does not send but some S3-compatible services do, is a throttle like a `503`. The object carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure, a `409` or an unknown upload on a re-send reads it back; with nothing stored, a `409` or an unknown upload is an unknown outcome (`TransientError`) |
 | `@cloudbitmaps/gcs` | the registry's writes are each one request, sent once. An object up to `simpleUploadThresholdBytes` (8 MiB by default) is one request, sent again, at most three more times with the same waits, after a `429` or `503` and nothing else, and carries a random id in its metadata. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it carries the same id, as every Azure Blob write does, as described below. The registry's delete under `ifGenerationMatch` goes through the SDK's retry, which a precondition makes safe: a second copy removes nothing the first could not |
 | `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict reads the stored blob back to tell the write's own landing from another writer's, as described below. The policy runs under each fresh compare-and-swap a load sends for a row write that went unanswered, so a registry that never answers costs a load up to four times the policy's tries (sixteen requests at its default of four) before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry's delete under `ifMatch` is sent the same way, safe for the same reason as GCS's |
 | in-memory and local filesystem | nothing is throttled, so nothing is sent again |

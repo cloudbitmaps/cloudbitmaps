@@ -161,7 +161,8 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
     try {
       // The client's retry policy may send this again after a lost response. The precondition names one ETag, so a
       // second copy removes nothing the first could not; one that meets the first's landed delete is a 404, a
-      // conflict, and the registry re-reads and finds the row gone.
+      // conflict. The registry re-reads and finds the row gone: an unfenced delete then returns, and one fenced on a
+      // token reports the conflict, which its caller settles by reading the row (the retention sweep does).
       await this.container
         .getBlockBlobClient(key)
         .delete({ conditions: { ifMatch: expect.version } });

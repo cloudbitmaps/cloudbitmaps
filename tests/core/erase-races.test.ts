@@ -613,6 +613,93 @@ async function cleanAndHolderAbove(deps: Deps): Promise<void> {
   await rollbackSegment(SEG, 0, deps);
 }
 
+describe('two erasures of different ids on one segment', () => {
+  /** A storage that holds each put until `n` have arrived, so every call has numbered its generation before any lands. */
+  function holdingPuts(storage: IStorageDriver, n: number): IStorageDriver {
+    const waiting: (() => void)[] = [];
+    return overStorage(storage, {
+      putImmutable: async (key, write) => {
+        await new Promise<void>((resolve) => {
+          waiting.push(resolve);
+          if (waiting.length === n) for (const release of waiting) release();
+        });
+        return storage.putImmutable(key, write);
+      },
+    });
+  }
+
+  it('reports the one that took the same generation number second as superseded, not as a storage error, and its re-run erases its id', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3, X, Y], w.deps);
+    const racing = { ...w.deps, storage: holdingPuts(w.storage, 2) };
+    const results = await Promise.all([
+      eraseIdFromSegment(SEG, X, racing),
+      eraseIdFromSegment(SEG, Y, racing),
+    ]);
+    const [winner, loser] = [results.find((r) => r.erased), results.find((r) => !r.erased)];
+    expect(winner).toBeDefined();
+    expect(loser).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      generation: undefined,
+      collected: [],
+    });
+    const lostId = results[0] === loser ? X : Y;
+    // The loser put nothing: the bucket holds the winner's rewrite alone.
+    expect(await generationsOf(w.storage)).toEqual([1]);
+    const again = await eraseIdFromSegment(SEG, lostId, w.deps);
+    expect(again).toMatchObject({ erased: true });
+    expect(await generationsOf(w.storage)).toEqual([2]);
+    const reader = await openGenerationReader(w.storage, { ...SEG, generation: 2 }, undefined, {});
+    const bytes = await reader.getChunk(0);
+    const ids = roaringCodec.safeDeserialize(bytes as Uint8Array, 1 << 20);
+    expect([ids.has(X), ids.has(Y)]).toEqual([false, false]);
+  });
+
+  it('reports the row as absent, not superseded, when it is purged while the number is taken', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3, X, Y], w.deps);
+    const racing = {
+      ...w.deps,
+      storage: overStorage(w.storage, {
+        putImmutable: async () => {
+          await w.registry.delete(SEG);
+          throw new WriteConflictError('generation already exists (write-once)');
+        },
+      }),
+    };
+    expect(await eraseIdFromSegment(SEG, X, racing)).toMatchObject({
+      erased: false,
+      reason: 'absent',
+    });
+  });
+});
+
+describe('two erasures racing for a number, when the row is dropped meanwhile', () => {
+  it('reports the row as destroyed, not superseded, when it is dropped while the number is taken', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3, X, Y], w.deps);
+    const racing = {
+      ...w.deps,
+      storage: overStorage(w.storage, {
+        putImmutable: async () => {
+          await dropSegment(
+            SEG,
+            { storage: w.storage, registry: w.registry },
+            { confirmSegment: 's' },
+          );
+          throw new WriteConflictError('generation already exists (write-once)');
+        },
+      }),
+    };
+    expect(await eraseIdFromSegment(SEG, X, racing)).toMatchObject({
+      erased: false,
+      reason: 'destroyed',
+      collected: [],
+    });
+  });
+});
+
 describe('a generation the erasure found clean, whose number another object takes', () => {
   it.each(['published', 'unpublished'] as const)(
     'reads it again when the name is dropped, purged and created again and a first load of the id takes that number (%s)',

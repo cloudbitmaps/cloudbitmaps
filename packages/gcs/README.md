@@ -14,6 +14,8 @@ second service to run.
 pnpm add @cloudbitmaps/roaring @cloudbitmaps/gcs
 ```
 
+Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
+
 `roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if you allow it. Allow it before you install:
 
 - **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
@@ -28,6 +30,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/gcs
 
 ## Use
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { GcsStorage } from '@cloudbitmaps/gcs';

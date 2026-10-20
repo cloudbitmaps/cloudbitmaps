@@ -2022,7 +2022,7 @@ export class SegmentEngine {
    * the read listed the segment's keys: the read then lists them again, and caches as a read begun after the call.
    *
    * The decoded-chunk cache is keyed by generation, which handles a *publish* (the new generation misses) but
-   * not a *destruction*: a segment that was erased from, dropped, shredded or retired has no newer generation
+   * not a *destruction*: a segment that was erased from, dropped, destroyed or retired has no newer generation
    * whose key would miss, so its decoded chunks stay resident and keep answering. That is why the erasing
    * process itself could report `erased: true` and then still answer `true` for the same id, out of RAM, with
    * no storage read to intercept.

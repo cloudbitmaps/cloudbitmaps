@@ -36,7 +36,8 @@ function ownKey(key: Uint8Array): Buffer {
  * never stored. Nonce-reuse safety: the random-96-bit birthday bound is ~q²/2⁹⁷, negligible below ~2³² seals
  * under one key. A per-segment DEK is **reused across all generations** (every load and rewrite encrypts under it), so
  * seal count is cumulative over the segment's life — a segment approaching ~2³² lifetime chunk-seals should be
- * re-seeded (a fresh segment ⇒ fresh DEK). Far beyond any realistic workload; noted for completeness. */
+ * re-seeded (a fresh segment ⇒ fresh DEK). A segment at the 65,536-chunk maximum reaches it after about 65,500 loads
+ * or rewrites (230 days at one every 5 minutes): load into a fresh segment, or load less often, before then. */
 export class NodeAead implements Aead {
   private readonly key: Buffer;
 

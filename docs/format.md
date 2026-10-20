@@ -468,7 +468,9 @@ an opaque blob (base64) of the keystore that wrote it. A keystore is pluggable, 
 `nonce(12) ‖ ciphertext ‖ tag(16)`, the AES-256-GCM seal of the 32-byte data key under the KEK with the UTF-8 bytes of
 `keyId` as associated data, so a wrapping cannot be relabelled to another KEK; another keystore (a KMS adapter, say)
 writes its own bytes there. Whether a later release fixes the inside of the blob or only the envelope is a freeze
-question ([section 11](#11-versioning-and-compatibility)). Discarding the list leaves the segment's bytes unreadable.
+question ([section 11](#11-versioning-and-compatibility)). Discarding every copy of the list, the row's retained
+versions included, leaves the segment's bytes unreadable; a
+crypto-shred discards it from the current row.
 The footer's `keyId` field stays zero.
 
 **What a reader without the key can still read.** The preamble, and every field of the footer, in the clear: the flags,
@@ -560,7 +562,7 @@ copies and caches of it.
 | Envelope field | Type | Meaning |
 |---|---|---|
 | `schemaVersion` | integer | the row's schema; 5. A write always stamps it |
-| `deleted` | boolean | `true` marks an envelope tombstone (not to be confused with a record's `status: "destroyed"`, the mark a crypto-shred leaves): the row is kept, with its counter advanced, so a re-create continues the counter; a reader treats a tombstone as absent. On a store whose conditional delete the backend honours, a delete removes the object instead and nothing is left |
+| `deleted` | boolean | `true` marks an envelope tombstone (not to be confused with a record's `status: "destroyed"`, the mark a crypto-shred, a cleartext destroy or a drop leaves): the row is kept, with its counter advanced, so a re-create continues the counter; a reader treats a tombstone as absent. On a store whose conditional delete the backend honours, a delete removes the object instead and nothing is left |
 | `record` | object | the row, below |
 
 An envelope with another field is refused with an `IntegrityError`.
@@ -594,7 +596,7 @@ ignores it turns the swap into last-write-wins.
 | `namespace` | string, optional | the caller's namespace; absent for none. The row must name the segment it is stored under |
 | `segment` | string | the segment's name; at most 256 characters once encoded |
 | `currentGen` | integer or `null` | the pointer: the generation reads resolve to, a non-negative safe integer. `null` says the segment exists and has no generation yet; a row can exist before the first load |
-| `status` | `"active"` or `"destroyed"` | `destroyed` is the tombstone left by a crypto-shred; the segment reads as empty |
+| `status` | `"active"` or `"destroyed"` | `destroyed` is the tombstone a crypto-shred, a cleartext destroy or a drop leaves: no generation resolves through it, and the segment reads as empty |
 | `wrappedDeks` | array, optional | the wrapped data keys of an encrypted segment ([section 8](#8-encryption-at-rest)): 1 to 8 entries `{ keyId, wrapped }`, both non-empty strings, `wrapped` an opaque keystore blob of at most 4,096 characters. A writer writes exactly those two fields; a reader accepts an entry with extra fields and ignores them. Absent means the segment is cleartext |
 | `keyId` | string, optional | reserved: an external key reference for a future key-management adapter; unused today |
 | `summary` | object, optional | a cached description of the current generation, below |

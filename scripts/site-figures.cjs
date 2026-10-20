@@ -766,7 +766,7 @@ const specAnchors = [];
   }
 
   // Third-party (non-workspace) runtime dependencies, PER PACKAGE. `@cloudbitmaps/*` is ours and is declared
-  // `workspace:^`, which is what makes the wording "third-party" true where a bare "runtime dependency" is not.
+  // `workspace:*`, which is what makes the wording "third-party" true where a bare "runtime dependency" is not.
   //
   // Reading `packages/roaring/package.json` alone against a site-wide badge saying "1 third-party dependency"
   // would be green and wrong: it answers "how many does the codec have?" while the badge makes a claim about

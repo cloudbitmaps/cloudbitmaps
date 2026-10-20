@@ -69,6 +69,7 @@ describe('S3 error classification', () => {
       expect(isTransient({ name: 'SlowDown' })).toBe(true); // S3 throttling
       expect(isTransient({ $metadata: { httpStatusCode: 503 } })).toBe(true);
       expect(isTransient({ $metadata: { httpStatusCode: 500 } })).toBe(true);
+      expect(isTransient({ $metadata: { httpStatusCode: 429 } })).toBe(true); // a bare 429, as S3-compatible services send
       expect(isTransient({ name: 'TimeoutError' })).toBe(true);
       expect(isTransient({ code: 'ECONNRESET' })).toBe(true);
       expect(isTransient({ code: 'EHOSTUNREACH' })).toBe(true);

@@ -2,7 +2,7 @@ import { listGenerations, rollbackSegment } from '@/core/rollback';
 import { loadSegment } from '@/core/load';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { NotFoundError, ValidationError } from '@/core/errors';
-import { destroySegment } from '@/core/erasure';
+import { destroySegment, dropSegment } from '@/core/erasure';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 import { MemoryStorage, CloudRoaring, RecordingAuditSink } from '@/index';
@@ -216,28 +216,83 @@ describe('rollbackSegment', () => {
     );
   });
 
-  it('refuses a crypto-shredded segment — every generation of it is unreadable', async () => {
-    const backend = new MemoryStorage();
-    const { storage, registry } = backend;
-    const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    await loadSegment(SEG, [1], {
-      storage,
-      registry,
-      entropy: testEntropy,
-      codec: roaringCodec,
-      keystore,
-    });
-    await loadSegment(
-      SEG,
-      [2],
-      { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
-      { keep: 9 },
-    );
-    await destroySegment(SEG, { registry }, { confirmSegment: 's' });
+  describe.each(['crypto-shred', 'cleartext destroy', 'drop'] as const)(
+    'refuses a destroyed segment, whichever route destroyed it: %s',
+    (route) => {
+      it('with one message, before any request to storage, leaving the row as it was', async () => {
+        const backend = new MemoryStorage();
+        const { storage, registry } = backend;
+        const keystore =
+          route === 'crypto-shred'
+            ? new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' })
+            : undefined;
+        const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+        await loadSegment(SEG, [1], deps);
+        await loadSegment(SEG, [2], deps, { keep: 9 });
+        if (route === 'drop')
+          await dropSegment(SEG, { storage, registry }, { confirmSegment: 's' });
+        else
+          await destroySegment(
+            SEG,
+            { registry },
+            {
+              confirmSegment: 's',
+              ...(route === 'cleartext destroy' ? { allowCleartext: true } : {}),
+            },
+          );
+        const row = await registry.get(SEG);
+        expect(row!.status).toBe('destroyed');
+        let objects = 0;
+        for await (const key of storage.list(SEG)) objects += key.generation >= 0 ? 1 : 0;
+        // A cleartext destroy leaves its objects readable in the bucket, the case the old text was false for.
+        expect(objects > 0).toBe(route !== 'drop');
 
-    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toBeInstanceOf(
-      ValidationError,
+        let requests = 0;
+        const counting = new Proxy(storage, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver) as unknown;
+            if (typeof value !== 'function') return value;
+            return (...args: unknown[]) => {
+              requests += 1;
+              return (value as (...a: unknown[]) => unknown).apply(target, args);
+            };
+          },
+        });
+        for (const target of [0, row!.currentGen!]) {
+          const err = await rollbackSegment(SEG, target, { storage: counting, registry }).catch(
+            (e: unknown) => e,
+          );
+          expect(err).toBeInstanceOf(ValidationError);
+          expect((err as Error).message).toBe(
+            'rollback: segment "s" is destroyed — no generation resolves through a destroyed row',
+          );
+          expect((err as Error).message).not.toMatch(/crypto-shredded|unreadable/);
+        }
+        expect(requests).toBe(0);
+        const after = await registry.get(SEG);
+        expect({ currentGen: after!.currentGen, token: after!.token }).toEqual({
+          currentGen: row!.currentGen,
+          token: row!.token,
+        });
+      });
+    },
+  );
+
+  it("the store's rollback and generations say the same of a cleartext-destroyed segment", async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.load, { keep: 9 });
+    await loadSegment(SEG, [2], w.load, { keep: 9 });
+    const store = new CloudRoaring({ storage: w.backend, retry: false });
+    await destroySegment(SEG, w.deps, { confirmSegment: 's', allowCleartext: true });
+    await expect(store.rollback(SEG, 0)).rejects.toThrow(
+      new ValidationError(
+        'rollback: segment "s" is destroyed — no generation resolves through a destroyed row',
+      ),
     );
+    // The objects stay in the bucket, readable, and the listing shows them: none is current.
+    const listed = await store.generations(SEG);
+    expect(listed.map((e) => e.generation)).toEqual([0, 1]);
+    expect(listed.filter((e) => e.current)).toEqual([]);
   });
 
   it('refuses a segment with no registry row', async () => {

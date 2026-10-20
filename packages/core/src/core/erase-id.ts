@@ -42,8 +42,8 @@
  * incarnation of a name, and a name that is retired and re-created restarts at `0`, so the number alone matched
  * a different segment entirely. Anything else — a load that published in the meantime, or another
  * erasure that got there first — is reported as `reason: 'superseded'`, `erased: false`, and the caller re-runs
- * against the new generation. A writer that claims the same generation *number* first surfaces as a
- * `WriteConflictError` (write-once).
+ * against the new generation. So is a writer that claims the same generation *number* first (write-once): the put
+ * is refused with a `WriteConflictError`, which is read here as the lost race it is.
  *
  * The same answer covers the read half, and for the same reason. An erasure collects with `keep: 0`, which takes
  * every generation below its new pointer — so a racing erasure can delete the generation this call is streaming,
@@ -134,7 +134,6 @@ import {
   IntegrityError,
   KeyUnavailableError,
   type NotFoundError,
-  ValidationError,
   WriteConflictError,
   isIntegrityError,
   isNotFoundError,
@@ -165,6 +164,7 @@ import type {
 } from './ports';
 import { generationsOf } from './generation-list';
 import { ascending } from './order';
+import { deleteSettled } from './settle';
 import { type ReadRetry, jitteredWait, retryRead } from './retry';
 import { metadataToCarry, ownSummary, usableSummary } from './summary';
 import { validateUserRef } from './validate';
@@ -301,7 +301,7 @@ export interface EraseIdResult {
    * a missing holder as "someone else got there", never as a failure.
    *
    * A call that cannot establish the claim **throws** `WriteConflictError` or the underlying fault rather than
-   * report `erased: true` over bytes that are still there. Four ways that happens: a Storage `delete` fault; a
+   * report `erased: true` over bytes that are still there. Four ways that happens: a Storage `delete` fault the call cannot settle by reading the object back; a
    * collection pass that could not prove the segment was still the same one (which an ordinary retirement landing
    * mid-call is enough to cause); the same refusal on the path where the current generation did not hold the id
    * and nothing was published at all; and a generation still holding the id when the bucket is listed at the end
@@ -310,6 +310,13 @@ export interface EraseIdResult {
    * bucket. The row write an erasure makes before deleting a holder a load may still publish, or before a refused
    * rewrite discards its own object, when it gets no answer that reading the row can settle, throws the registry's
    * `TransientError`, and that object is not deleted.
+   *
+   * A delete that gets no answer is settled by reading its key: gone, it counts as deleted and is listed in
+   * `collected`. Another object under the number, for a delete conditioned on the version searched, is not counted as
+   * deleted: the receipt then rests on the listing of the bucket, and says `erased: true` only when that object does
+   * not hold the id. When that read fails too, or the delete lands after it, the call reports the fault, and a re-run
+   * finds the object gone and lists nothing for the segment: keep the error with the ledger as the record of the
+   * deletion.
    *
    * A rollback that lands between the call's read of the row and one of its deletes, onto the generation being deleted,
    * leaves the pointer on an object that is gone. The call finds it at its next read of the row, or by reading the row
@@ -386,6 +393,25 @@ interface Pass {
 
 /** What the row says about a call's premise: `null` while it holds, otherwise the reason to report. */
 type Verdict = 'superseded' | 'absent' | 'destroyed' | null;
+
+/** What the search for an id in an object needs of the store: the objects, the codec, and the read bounds. */
+export type SearchDeps = Pick<EraseIdDeps, 'storage' | 'codec' | 'maxBitmapBytes' | 'readRetry'>;
+
+/** What {@link holds} and its callers read of an {@link EraseCall}, so a search that deletes nothing can build one. */
+type HoldsCall = Pick<
+  EraseCall,
+  | 'ref'
+  | 'chunkKey'
+  | 'remainder'
+  | 'codec'
+  | 'maxBytes'
+  | 'base'
+  | 'tombstoned'
+  | 'aead'
+  | 'read'
+  | 'sealed'
+  | 'versions'
+> & { readonly deps: SearchDeps };
 
 /**
  * What one pass of {@link eraseIdFromSegment} works from, passed to every phase of it. The first group is fixed once the
@@ -613,7 +639,7 @@ function refusedResult(
 }
 
 /** The crypto for the object at `generation`: the segment's DEK, bound to that generation. */
-function cryptoAt(c: EraseCall, generation: number): CrbmCrypto | undefined {
+function cryptoAt(c: HoldsCall, generation: number): CrbmCrypto | undefined {
   const { ref, aead } = c;
   return aead === undefined
     ? undefined
@@ -621,7 +647,7 @@ function cryptoAt(c: EraseCall, generation: number): CrbmCrypto | undefined {
 }
 
 /** Whether `holds` found the id in `generation`, as opposed to counting it a holder it could not search. */
-function found(c: EraseCall, generation: number, held: boolean | null): boolean {
+function found(c: HoldsCall, generation: number, held: boolean | null): boolean {
   return held === true && !c.sealed.has(generation);
 }
 
@@ -643,7 +669,7 @@ function found(c: EraseCall, generation: number, held: boolean | null): boolean 
  * segment's first generation, a publish never adds one to a segment that has generations, and only a crypto-shred,
  * which tombstones the row, removes it), so no generation a reader of the row can open is ever counted here.
  */
-async function holds(c: EraseCall, generation: number): Promise<boolean | null> {
+async function holds(c: HoldsCall, generation: number): Promise<boolean | null> {
   const { deps, chunkKey, remainder, codec, maxBytes, base, tombstoned, read, sealed, versions } =
     c;
   const key: GenKey = { ...base, generation };
@@ -731,7 +757,7 @@ async function holds(c: EraseCall, generation: number): Promise<boolean | null> 
  * the first fault in that order is the one thrown, so a fault past a holder never surfaces, as it never did.
  */
 async function holdsEach(
-  c: EraseCall,
+  c: HoldsCall,
   generations: readonly number[],
   { stopAtHolder }: { readonly stopAtHolder: boolean },
 ): Promise<{ generation: number; held: boolean | null }[]> {
@@ -1144,7 +1170,13 @@ async function deleteFenced(
     }
     if (moved !== null) break;
     try {
-      await deps.storage.delete({ ...base, generation }, { ifVersion: versions.get(generation) });
+      await deleteSettled(
+        deps.storage,
+        { ...base, generation },
+        { ifVersion: versions.get(generation) },
+        c.read,
+        { clock: deps.clock, rng: deps.rng },
+      );
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
       // Another object is under the number now: the one searched was deleted, and the number taken again. What this
@@ -1263,19 +1295,56 @@ async function unpublished(c: EraseCall): Promise<EraseIdResult> {
   throw cannotRemove(c, left);
 }
 
+/** The newest object listed under the tombstone that holds the id, searched as `holds` searches one; reads only. */
+async function holderUnderTombstone(c: HoldsCall): Promise<{ generation: number } | undefined> {
+  const newestFirst = (await c.read(() => generationsOf(c.deps.storage, c.ref))).reverse();
+  return (await holdsEach(c, newestFirst, { stopAtHolder: true })).find((h) => h.held === true);
+}
+
+/**
+ * The newest generation left under a tombstone that holds `id` in the clear, or `null`: the search
+ * {@link eraseIdFromSegment} makes under a tombstone, without its deletes. The caller has read the row as `destroyed`;
+ * this reads no row. It lists the bucket once and opens objects newest first, a few at a time, stopping at the first
+ * that holds the id; an object sealed under a key is no holder. It writes and deletes nothing. A fault on a read is
+ * thrown, after the read retry in `deps.readRetry` (the listing is retried too), never read as "not found".
+ */
+export async function findIdUnderTombstone(
+  ref: SegmentRef,
+  id: number,
+  deps: SearchDeps,
+): Promise<number | null> {
+  validateUserRef(ref);
+  const { chunkKey, remainder } = splitId(id);
+  const codec = requireCodec(deps.codec, 'findIdUnderTombstone');
+  const c: HoldsCall = {
+    ref,
+    deps,
+    chunkKey,
+    remainder,
+    codec,
+    maxBytes: deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES,
+    base: { segment: ref.segment, namespace: ref.namespace },
+    tombstoned: true,
+    aead: undefined,
+    read: <T>(op: () => Promise<T>): Promise<T> => retryRead(op, deps.readRetry),
+    sealed: new Set(),
+    versions: new Map(),
+  };
+  return (await holderUnderTombstone(c))?.generation ?? null;
+}
+
 /**
  * The row is a tombstone, so no generation is the segment's any more and every object left is garbage (invariant 4's
- * one exception). A crypto-shred leaves objects no key opens, but a cleartext destroy, a drop whose sweep left
- * something, or a write that landed after it leaves objects anyone can read. Each is searched; when one holds the id,
+ * one exception). A crypto-shred leaves objects no read through the library can open (the row holds no key), but a
+ * cleartext
+ * destroy, a drop whose sweep left something, or a write that landed after it leaves objects anyone can read. Each is
+ * searched; when one holds the id,
  * the collection's tombstone pass deletes them all, re-proving the row's token before each delete, and what is left
  * is read again. One listing for a tombstone with nothing left.
  */
 async function underTombstone(c: EraseCall): Promise<EraseIdResult> {
   const { ref, deps, base } = c;
-  const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
-  const holder = (await holdsEach(c, newestFirst, { stopAtHolder: true })).find(
-    (h) => h.held === true,
-  );
+  const holder = await holderUnderTombstone(c);
   if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
   const collected = await gcOrphanGenerations(ref, deps, { keep: 0, incarnation: c.record });
   const left = await holderLeft(c, new Set());
@@ -1532,17 +1601,32 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
     // authenticated and the summary is, so a stripped block is not made permanent by the rewrite. Such a source gets
     // here only past a fingerprint forged to match the row's, since stripping the block changes the object's size.
     const metadata = metadataToCarry(reader.metadata, aead === undefined ? undefined : described);
-    const tally = await writeCrbmGenerationStream(
-      deps.storage,
-      key,
-      rewrite(reader, chunkKey, target, codec, maxBytes, read),
-      {
-        crypto: cryptoAt(c, generation),
-        clock: deps.clock,
-        metadata,
-        entropy: deps.entropy,
-      },
-    );
+    let tally: Awaited<ReturnType<typeof writeCrbmGenerationStream>>;
+    try {
+      tally = await writeCrbmGenerationStream(
+        deps.storage,
+        key,
+        rewrite(reader, chunkKey, target, codec, maxBytes, read),
+        {
+          crypto: cryptoAt(c, generation),
+          clock: deps.clock,
+          metadata,
+          entropy: deps.entropy,
+        },
+      );
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+      // Another writer, usually an erasure of a different id on this segment, took the number between this call's
+      // `nextGeneration` and its put. Nothing of ours is in the bucket, so nothing is discarded. A retry would number
+      // again and be fenced on `from`, which that writer moves, so the answer is the one a lost publish gives.
+      let now: RegistryRecord | null;
+      try {
+        now = await deps.registry.get(ref);
+      } catch {
+        throw err;
+      }
+      return refusedResult(c, rowVerdict(c, now) ?? 'superseded');
+    }
     written = generation; // `putImmutable` commits atomically, so the object exists exactly now
     c.rewrote = { generation, fingerprint: tally.fingerprint };
     // Re-check the pointer before spending the verification read. The fence below is what makes the publish
@@ -1650,7 +1734,10 @@ async function discardRefused(
   let row = await deps.registry.get(ref);
   for (let attempts = 1; ; attempts++) {
     if (row !== null && row.status === 'destroyed') {
-      await deps.storage.delete(key);
+      await deleteSettled(deps.storage, key, undefined, c.read, {
+        clock: deps.clock,
+        rng: deps.rng,
+      });
       return row;
     }
     if (row === null || row.status !== 'active' || row.currentGen === null) return row;
@@ -1663,7 +1750,10 @@ async function discardRefused(
     const renewed = await renewal.renew(row);
     if ('row' in renewed) {
       try {
-        await deps.storage.delete(key, { ifVersion: proven.version });
+        await deleteSettled(deps.storage, key, { ifVersion: proven.version }, c.read, {
+          clock: deps.clock,
+          rng: deps.rng,
+        });
       } catch (err) {
         if (!isWriteConflictError(err)) throw err;
       }
@@ -1793,14 +1883,17 @@ async function resolveDek(
   if (record.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
     if (deps.keystore === undefined) {
       throw new KeyUnavailableError(
-        `segment "${ref.segment}" is encrypted but eraseIdFromSegment has no keystore`,
+        `segment "${ref.segment}" is encrypted, and the erasure has no keystore to open its key ` +
+          `(encryption.keystore on the store)`,
       );
     }
     return await deps.keystore.openDek(record.wrappedDeks);
   }
   // A row with no pointer holds no key because it holds no data yet, so it is not a cleartext segment.
   if (!row.pointerless && deps.requireEncryption === true) {
-    throw new ValidationError(`requireEncryption: segment "${ref.segment}" is cleartext`);
+    throw new KeyUnavailableError(
+      `requireEncryption: segment "${ref.segment}" is cleartext but encryption is required`,
+    );
   }
   return undefined;
 }

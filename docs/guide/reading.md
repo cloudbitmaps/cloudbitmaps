@@ -29,8 +29,10 @@ temporary segment and then calling `andNot` makes an intermediate nobody wants, 
 `exclude` included, with a `ValidationError` that names it. Read directly, a segment that was never loaded is empty,
 which is right. As an operand, a mistyped name or a missing `namespace` would contribute nothing and look correct,
 and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
-operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy or crypto-shredded
-is refused the same way, since it holds nothing. A segment loaded with no ids, or one that only has a retention policy,
+operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy, crypto-shredded
+or
+destroyed in the clear is refused the same way, since no generation resolves through it. A segment loaded with no ids,
+or one that only has a retention policy,
 counts as existing.
 
 A combine lists its operands' chunk keys at most 16 operands at a time, then asks the registry once about each operand
@@ -333,6 +335,7 @@ an id in a chunk it did not hold when the combine began is subtracted from there
 export, reconciliation or send then describes one instant instead of whichever generations happened to be current as
 it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not.
 
+<!-- typecheck: store -->
 ```ts
 const audience = await store.segment('active-30d').pin();
 for await (const id of audience.iterate()) {
@@ -359,6 +362,7 @@ for await (const id of audience.iterate()) {
 A pin records what it holds in `snap.pinnedAt`. `seg.pinAt({ generation, fingerprint })` reopens that generation later,
 in another task or another process, as the same kind of pinned handle `pin()` returns.
 
+<!-- typecheck-skip: `generation` is typed `number | null` here, so the destructure is not assignable to `pinAt`'s argument as written -->
 ```ts
 const first = await store.segment('active-30d').pin();
 const { generation, fingerprint } = first.pinnedAt!;
@@ -370,7 +374,7 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
   and loaded again, so a number alone does not name an object. A bare number, a fingerprint that is not one a pin
   recorded, or a key other than `generation` and `fingerprint` throws `ValidationError`.
 - **A generation that is gone throws `NotFoundError`, and `pinAt` never reads empty.** Collected, purged, on a
-  crypto-shredded segment, or another object than the fingerprint names: each is `NotFoundError`, at the call. A
+  destroyed segment, or another object than the fingerprint names: each is `NotFoundError`, at the call. A
   generation above the pointer after a rollback is refused too. A rollback deletes nothing, though, so once a later load
   moves the pointer past it, a generation it rolled back from can be reopened while its object is still stored and
   the fingerprint matches.
@@ -398,6 +402,7 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
 A job with a known end, such as a send that runs for 72 hours while a refresh job keeps loading the segment, can ask
 for its generation to be kept instead of sizing `keep` for it:
 
+<!-- typecheck: store -->
 ```ts
 const snap = await store.segment('active-30d').pin({ leaseUntil: Date.now() + 72 * 3_600_000 });
 snap.lease;            // { holder, until }
@@ -479,8 +484,17 @@ correct](correctness.md#how-a-pin-stays-correct).
 `iterate`, `intersect`, `union` and `andNot` return an `IdStream`: `for await` it for one id at a time, or
 call `.batches()` on it for one `Uint32Array` per chunk.
 
+<!-- typecheck -->
 ```ts
-for await (const id of audience.iterate()) send(id); // one id per await
+import type { Segment } from '@cloudbitmaps/roaring';
+
+// Your segments and functions.
+declare const audience: Segment;
+declare const optOut: Segment;
+declare function sendOne(id: number): void;
+declare function sendMany(ids: Uint32Array): Promise<void>;
+
+for await (const id of audience.iterate()) sendOne(id); // one id per await
 for await (const ids of audience.iterate().batches()) await sendMany(ids); // one array per chunk
 for await (const ids of audience.andNot([optOut]).batches()) await sendMany(ids);
 ```
@@ -519,6 +533,7 @@ for await (const ids of audience.andNot([optOut]).batches()) await sendMany(ids)
 only the chunks the range overlaps. That is keyset paging: each page asks for the ids after the last one the page
 before it ended on, so no page walks from the first id. Give each page both bounds.
 
+<!-- typecheck: store -->
 ```ts
 // Your functions: each yields or consumes ids.
 declare const activeIds: Iterable<number>;
@@ -603,6 +618,7 @@ that retries a transient failure, its retries run to their limit after the calle
 `(after, through]` when you pass a range: `everyNth(1_000)` yields the 1,000th id, then the 2,000th. It is the boundary
 pass of [paging through a segment](#page-through-a-segment) without decoding every chunk.
 
+<!-- typecheck: store -->
 ```ts
 const audience = await store.segment('active-30d').pin();
 

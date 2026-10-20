@@ -343,7 +343,7 @@ describe('races and faults: the purge removes only the row it judged', () => {
     expect(left).toEqual([0]);
   });
 
-  it('a delete that lands and loses its response is a fault: nothing else is deleted, and the next sweep settles it', async () => {
+  it('a delete that lands and loses its response is reported as the purge it was, and its pointer goes with it', async () => {
     const w = world();
     const ref = { namespace: 'n', segment: 'day' };
     const tomb = await due(w, ref);
@@ -354,17 +354,8 @@ describe('races and faults: the purge removes only the row it judged', () => {
       now: w.now(),
       tombstoneGraceMs: GRACE,
     });
-    expect(first.entries).toEqual([
-      { ...ref, action: 'skipped', reason: 'failed: connection reset after the delete' },
-    ]);
-    // The outcome was not known, so the pointer was left for the next sweep to find.
-    expect(await bucketRows(w, pointerDay)).toHaveLength(1);
-    const next = await retireExpired(w.deps, {
-      scan: 'index',
-      now: w.now(),
-      tombstoneGraceMs: GRACE,
-    });
-    expect(next.entries).toEqual([]); // the row had gone: the pointer is litter, and is removed
+    expect(first.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
+    expect(first.purgeFaults).toBe(0);
     expect(await bucketRows(w, pointerDay)).toEqual([]);
     expect(registryObjects(w)).toBe(0);
   });
@@ -1069,27 +1060,6 @@ describe('a purge pointer that outlives its row is removed by the unscoped fleet
     expect(res.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
     expect(await bucketRows(w, filedUnder)).toEqual([]);
     expect(registryObjects(w)).toBe(0);
-  });
-
-  it('a delete that landed and lost its response: the next unscoped scan finds the pointer to nothing and removes it', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'day' };
-    const filedUnder = await retired(w, ref, GRACE);
-    w.advance(GRACE);
-    w.store.landThenFailDelete = new TransientError('connection reset after the delete');
-    const first = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    expect(first.entries).toEqual([
-      { ...ref, action: 'skipped', reason: 'failed: connection reset after the delete' },
-    ]);
-    expect(await w.registry.get(ref)).toBeNull(); // it landed
-    expect(await bucketRows(w, filedUnder)).toHaveLength(1); // outcome unknown, so the pointer was kept
-
-    const next = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    expect(next.entries).toEqual([]);
-    expect(await bucketRows(w, filedUnder)).toEqual([]);
-    expect(registryObjects(w)).toBe(0);
-    const after = await readsOf(w, () => retireExpired(w.deps, { now: w.now() }));
-    expect(after.reads).toBe(0); // read once, and gone
   });
 
   it('a pointer older than the lookback, which no index scan reaches, is removed by the unscoped fleet scan', async () => {

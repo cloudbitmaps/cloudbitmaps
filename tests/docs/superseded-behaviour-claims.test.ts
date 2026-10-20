@@ -891,6 +891,44 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     ),
     why: '`segment.collect` is also emitted, with no `fromGeneration` and no ledger entry, by an erasure that found the id in nothing it could search and deleted only objects no read of the segment can open: define the event so it covers that case, and count only one that names a `fromGeneration` as a per-subject receipt',
   },
+  // A destroyed row is written by three routes: a crypto-shred, a cleartext destroy (its objects stay readable in the
+  // bucket) and a drop. No page may equate "destroyed" with "crypto-shredded", or call every generation of one unreadable.
+  {
+    claim: new RegExp(g(String.raw`destroyed\`? \(crypto-shredded\)`), 'i'),
+    why: 'a destroyed row is a crypto-shred, a cleartext destroy or a drop: say "destroyed", or name all three (crypto-shredded, destroyed in the clear or dropped)',
+  },
+  {
+    claim: new RegExp(g('every generation of it is unreadable'), 'i'),
+    why: 'a cleartext destroy leaves its objects readable from the bucket: say that no generation resolves through a destroyed row',
+  },
+  // The routes to a destroyed row are three: a crypto-shred, a cleartext destroy (its objects stay readable) and a
+  // drop. A true sentence names all three ("left by a crypto-shred, a cleartext destroy or a drop"), or says
+  // "destroyed". This refuses the two-route forms this repo has carried: a definition that gives the tombstone to
+  // the crypto-shred alone (after "is", so a sentence about a crypto-shred's own tombstone passes), "the mark a
+  // crypto-shred leaves", "post-crypto-shred tombstone", and a list that names the crypto-shred and the drop in either
+  // order, with or without a retirement between them. A list stands down when the clause goes on, within 60 characters
+  // and the sentence, to name the cleartext route, and after "encrypted" (a cleartext destroy never applies there).
+  // Known limits: other word orders and other nouns than those listed are not seen ("a crypto-shred, retired or
+  // dropped", "shredded or erased"), and a list that names the cleartext route more than 60 characters on is refused.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bis the tombstone left by a crypto-shred\b(?!,)` +
+          String.raw`|\bthe mark a crypto-shred leaves\b(?!,)` +
+          String.raw`|\bpost-crypto-shred tombstone\b` +
+          String.raw`|\bCrypto-shredded \(\`?destroyed\`?\) segments\b` +
+          String.raw`|\bdrop or crypto-shred tombstone\b` +
+          String.raw`|\btombstone a crypto-shred or a hand-run drop wrote\b` +
+          String.raw`|\btombstone a hand-run \`?dropSegment\`? or a crypto-shred\b` +
+          String.raw`|(?<!\bencrypted\b[^.;]{0,60})(?:\bcrypto-shredded or dropped\b` +
+          String.raw`|\bdropped,? (?:retired,? )?or (?:crypto-)?shredded\b` +
+          String.raw`|\bcrypto-shred(?:'s)? or a drop's tombstone\b)` +
+          String.raw`(?![^.;]{0,60}\b(?:in the clear|cleartext))`,
+      ),
+      'i',
+    ),
+    why: 'a destroyed row is also written by a cleartext destroy (its objects stay readable): name all three, "crypto-shredded, destroyed in the clear or dropped", or say "destroyed"',
+  },
 ];
 
 /**
@@ -1448,6 +1486,27 @@ describe('no document claims behaviour this library does not have', () => {
     '`segment.collect` (a subject erasure that found the id only outside the\ncurrent generation and deleted the generations holding it, rewriting none)',
     '| `segment.collect` | No generation in the bucket holds the erased id, and nothing was rewritten: the id was only in generations no reader resolves |',
     '`segment.rewrite` or `segment.collect` (with its ledger) for a per-subject\nerasure',
+    // A destroyed row equated with a crypto-shred, and its generations called unreadable.
+    'segment "x" is destroyed (crypto-shredded) — refusing to write',
+    'a `destroyed` (crypto-shredded) row, where advancing the pointer',
+    'a destroyed\n   * (crypto-shredded) segment is skipped',
+    '`destroyed`\n// (crypto-shredded) segments are skipped',
+    'every generation of it is unreadable',
+    'refused: every generation of\n   * it is unreadable, so a rollback',
+    'since every generation\n> of it is unreadable',
+    '`destroyed` is the tombstone left by a crypto-shred; the segment reads as empty',
+    'a record\'s `status: "destroyed"`, the mark a crypto-shred leaves)',
+    'the post-crypto-shred tombstone',
+    'a segment that was crypto-shredded or dropped',
+    'A crypto-shredded\n   * or dropped segment is skipped',
+    "a `destroyed` row (a crypto-shred's or a drop's tombstone)",
+    'A tombstone a hand-run `dropSegment` or a crypto-shred left is never purged',
+    // The forms this change removed.
+    'on a `destroyed` segment (a drop or crypto-shred tombstone) every generation is garbage',
+    'refuses an operand that names no segment, or one dropped, retired or shredded',
+    'Crypto-shredded (`destroyed`) segments are skipped',
+    'so a tombstone a crypto-shred or a hand-run drop wrote is never purged',
+    'a segment that was dropped or crypto-shredded',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1645,6 +1704,24 @@ describe('no document claims behaviour this library does not have', () => {
     '`segment.collect` (a subject erasure that rewrote nothing and deleted objects no reader resolves: the generations holding the id, when it found the id only outside the current generation)',
     'No generation in the bucket holds the erased id, and nothing was rewritten. With a `fromGeneration`, the id was only in generations no reader resolves.',
     '`segment.rewrite`, or a `segment.collect` that names a `fromGeneration`, with its ledger entry, for a per-subject erasure',
+    // A destroyed row as it is: three routes, and what is true of all of them.
+    'a destroyed segment (crypto-shredded, destroyed in the clear or dropped)',
+    'segment "x" is destroyed — no generation resolves through a destroyed row',
+    'the objects are unreadable once no retained copy of the row holds the key',
+    'A crypto-shredded segment (encrypted) is destroyed; its objects are unreadable without the key.',
+    '`destroyed` is the tombstone left by a crypto-shred, a cleartext destroy or a drop',
+    'the mark a crypto-shred, a cleartext destroy or a drop leaves',
+    'a segment that was crypto-shredded, destroyed in the clear or dropped',
+    'a crypto-shred or a drop clears it with the key material',
+    // True sentences about one route, or about all three in another order.
+    'The tombstone left by a crypto-shred holds no wrapped key and no summary.',
+    'An encrypted segment that was crypto-shredded or dropped has no wrapped key on its row.',
+    "On an encrypted segment, the row is a crypto-shred's or a drop's tombstone, and holds no key.",
+    'A key the tombstone left by a crypto-shred no longer holds stays in its retained copies.',
+    'A segment that was crypto-shredded or dropped, or destroyed in the clear with `allowCleartext`, resolves no generation.',
+    "The row is a crypto-shred's or a drop's tombstone, or a cleartext destroy's, and resolves no generation.",
+    'The tombstone a crypto-shred, a drop or a cleartext destroy leaves holds no lease.',
+    "A crypto-shred's tombstone deleted is a lost attestation.",
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });

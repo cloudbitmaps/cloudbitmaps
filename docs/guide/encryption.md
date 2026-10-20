@@ -41,6 +41,7 @@ Each segment gets its own random **DEK**, wrapped under your KEK and stored in t
 are AES-256-GCM-encrypted with the DEK, under associated data that binds each blob to its namespace, segment,
 generation and purpose (a chunk and its key, the index, the metadata or the summary).
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring, InProcessKeystore, LocalFsStorage } from '@cloudbitmaps/roaring';
 
@@ -70,7 +71,11 @@ Every later write to that segment reuses its DEK: a reload through `store.load` 
 an `*Into` verb on such a store, and the erasure rewrite. Loading a cleartext generation onto an encrypted segment is
 refused with `KeyUnavailableError`, before anything is written. A cleartext first load that the segment's first
 encrypted load overtakes after its object is written is refused at its publish instead, as `superseded`, and its
-cleartext object is deleted. With `encryption: { required: true }`, any cleartext write or read throws.
+cleartext object is deleted. With `encryption: { required: true }`, any cleartext write or read throws. An erasure reads a cleartext
+segment's current generation, so on such a store it is refused: `eraseSubject` lists the segment as an `error:` entry
+whatever id it erases, and `subjectReport` throws `KeyUnavailableError`, so run them from a store that can read every
+segment in scope. A cleartext object left under a tombstone, or a first load's object on a segment with no generation
+yet, is still searched and deleted.
 
 `InProcessKeystore` takes `keys`, `activeKeyId` and `recoveryKeyId`, and refuses anything else with `ValidationError`
 naming it, so a misspelt `recoveryKeyID` fails where the keystore is built rather than leaving every segment with one
@@ -93,6 +98,7 @@ wrapped key, or once every KEK that wrapped it is destroyed ([disaster recovery]
 Neither call can be undone through the library (a registry restore to a point before it can), so each makes you name
 the exact segment or namespace as confirmation.
 
+<!-- typecheck: backend -->
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
 
@@ -121,14 +127,26 @@ crypto-shreds an encrypted segment and deletes its objects.
 - **A cleartext segment has no key to shred.** `destroySegment` on one changes nothing and returns
   `{ destroyed: false, cryptoShredded: false, reason: 'cleartext' }` instead of throwing. `eraseNamespace` leaves such
   segments as they are and reports each the same way. `allowCleartext: true` tombstones them anyway, which stops them
-  resolving but leaves their bytes readable in the bucket. `dropSegment` is the call that deletes them.
+  resolving but leaves their bytes readable in the bucket, and the call emits a `segment.tombstone` audit event for each
+  tombstone it writes, which says so (`objectsReadable: true`) and is not an erasure receipt. `dropSegment` is the call
+  that deletes them.
 - **`destroySegment` reports why it did nothing.** `reason` is `'cleartext'` for a segment with no key, `'absent'` for no
   row, and `'already'` for a tombstone.
+- **A shred that throws `TransientError` may have landed.** A shred that gets no answer reads the row back, and
+  reports the shred as done when the row shows its own tombstone. When that read fails too, it throws the
+  `TransientError`, and the segment may already be destroyed. A re-run then answers
+  `{ destroyed: true, cryptoShredded: false, reason: 'already' }` and emits no `segment.erase`, because the tombstone
+  does not record which call wrote it or that it was a crypto-shred. If the re-run answers `'already'` for a segment
+  you had not destroyed before, record its crypto-shred yourself, with the error. `eraseNamespace` reports that
+  segment as `failed: …` with `destroyed: false`, and a retention sweep reports it as `retired` with a `fault` and
+  `cryptoShredded: true` and emits no `segment.erase` for it. When the sweep cannot read the row afterwards either,
+  its entry is `skipped` with a reason that says the tombstone may have landed. The same holds for a cleartext
+  destroy, whose re-run emits no `segment.tombstone`.
 - **`eraseNamespace` returns one `DestroyResult` per segment** and records per-segment faults instead of throwing:
   `reason: 'contended'` or `` `failed: ...` ``, with `destroyed: false`, means the segment still holds data. Inspect
   them. A `maxScanSegments` that is not a whole number of at least 1 throws `ValidationError`.
 - **`eraseNamespace` shreds eight segments at a time.** Each segment still has its own read and compare-and-swap, and
-  a fault in one is recorded against it and stops no other. `destroyed` is in the listing's order, whichever segment
+  a fault in one is recorded against it and stops no other. `destroyed` is in the order the registry listed the segments, which is unspecified and differs between backends (match entries by `segment`), whichever segment
   finishes first; the `segment.erase` events are emitted as each segment finishes, so their order is not the
   listing's, and `namespace.erase` comes last.
 - **`eraseNamespace` lists the whole namespace before it destroys anything**, and holds the listing in memory, so it
@@ -202,7 +220,8 @@ messages as carrying what the seal hides.
 ## How it stays correct
 
 [Each chunk is sealed with a fresh random 96-bit nonce](correctness.md#seal-count), and a repeated nonce stays
-negligibly likely below about 2³² seals under one key, a limit nothing counts and far past any realistic workload. A
+negligibly likely below about 2³² seals under one key, a limit nothing counts: a segment at the 65,536-chunk maximum reaches it after about 65,500 loads or erasure rewrites,
+230 days at one every 5 minutes. A
 segment's encryption [is decided at its first generation, so a segment is never
 half-encrypted](correctness.md#never-half-encrypted): a load onto a cleartext segment stays cleartext, or is refused
 with `encryption: { required: true }`, and an encrypted generation is never published onto a row with no key material.

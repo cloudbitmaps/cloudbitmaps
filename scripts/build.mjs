@@ -46,6 +46,8 @@ await rm(dist, { recursive: true, force: true });
 // checked from both directions.
 const entries = {};
 for (const key of Object.keys(pkg.exports ?? { '.': null })) {
+  // The manifest's own export is a file, not a built entry.
+  if (key === './package.json') continue;
   const name = key === '.' ? 'index' : key.replace(/^\.\//, '');
   const dir = path.join('src', name, 'index.ts');
   const flat = path.join('src', `${name}.ts`);

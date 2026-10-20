@@ -42,6 +42,8 @@ pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk bac
 pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
+Install the same version of every `@cloudbitmaps/*` package. The six release together at one version, and each one pins the exact version of `@cloudbitmaps/core` it was built with, so a flavor and a driver of different versions are two copies of `core`. A mix, such as a later `pnpm add @cloudbitmaps/s3` run beside an older `roaring`, installs with no warning and puts two copies of `core` in your tree. `new CloudRoaring({ storage: new S3Storage(...) })` then fails to compile with `TS2322 ... Property '[STORAGE_BACKEND_BRAND]' is missing`, and `instanceof` does not hold across the copies (`errorKind(err)` still classifies an error). `npm ls @cloudbitmaps/core` shows the copies; `pnpm up --latest '@cloudbitmaps/*'`, or `npm install @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z` with the same `X.Y.Z`, aligns them. Mixed minor versions always did this; mixed patch versions now do too.
+
 Installed before allowing it? The package throws at `import` (the install exited 0, or 1 on pnpm 11 and later). Add the
 setting, then run `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
 [Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
@@ -204,7 +206,10 @@ If the library breaks, you are not stuck:
 - **It is a library, not a service.** Your data lives in your bucket, your account or your filesystem. CloudBitmaps never sees it, and you are the data controller (see [`PRIVACY.md`](PRIVACY.md)).
 - **The files are an open format.** Each `.crbm` object is a documented container with a footer index and CRC32C checksums, wrapping standard Roaring serialization that every Roaring library (Java, Go, Python, C++, Rust, C#) reads. [The format reference](docs/format.md) gives every byte of the object and of the registry row.
 - **A bad load does not overwrite the last good one.** Generations are write-once and checksummed, and corruption is rejected before it is decoded. The one answer taken without decoding a payload, [`count()`](docs/guide/reading.md#what-count-trusts), comes from the registry row's summary, or from the index when the row has none, and is checked for internal consistency but not against the payloads. A bad load writes a new generation, and the previous one stays in the bucket for you to [roll the pointer back](docs/guide/loading.md#roll-back-a-segment) to. Under the default `keep: 1` it stays only until the next load, so roll back before you load again, or raise [`keep`](docs/guide/loading.md#generations-and-keep).
-- **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or `ndjson` (a destroyed segment, crypto-shredded or dropped, is listed in the manifest's `skipped` instead). The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
+- **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or
+  `ndjson` (a destroyed segment, crypto-shredded, destroyed in the clear or dropped, is listed in the manifest's
+  `skipped` instead). The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or
+  Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
 
 How this compares with pure Roaring libraries and bitmap databases on lock-in is in
 [Beyond the bill](docs/guide/why-cloudbitmaps.md#beyond-the-bill), and what a raw copy of the bucket holds is in
@@ -247,6 +252,7 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   └───────────────────────────────────────────────────────────────────────┘
 ```
 
+<!-- typecheck-skip: a fragment: the page leaves `engagedFromWarehouse`, `idsFromWarehouse`, `retained` to the reader -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';

@@ -69,6 +69,8 @@ jobs:
       - run: python3 scripts/site-links.py
       - run: pnpm typecheck
       - run: pnpm test
+        # A stalled test run ends the job in 15 minutes (a normal one takes 5 to 8), not at the job limit.
+        timeout-minutes: 15
       - run: pnpm build
       # `pnpm test` runs before the build, so the spawned-bin tests skip there; here they run against the built bin
       # and fail if it is missing.

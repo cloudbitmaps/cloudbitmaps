@@ -21,36 +21,22 @@
  * misses forms `SPECIFIER` covers; no suite notices a miss, because the gate stays green.
  */
 
-/**
- * Blank comments to same-length whitespace, KEEPING string and template literals.
+/*
+ * Comments are blanked to same-length whitespace by `blankComments` (`js-tokens.cjs`), with strings and templates kept.
  *
  * Two jobs at once. Comments must not be scanned: tsc preserves JSDoc into the `.d.ts` (70 of core's 71
- * declaration files carry a `/**`), so a doc-comment showing `import { X } from './my-app/wiring'` would
- * both trip the gate with an error asserting something false AND get silently rewritten by the build,
- * editing published documentation. The SDK gate guards against the same false positive (see
- * `sdk-specifiers.cjs`) — and the remedy a contributor reaches for is to water the comment down, which is
- * the erosion these gates exist to prevent.
+ * declaration files carry a doc comment), so a comment showing `import { X } from './my-app/wiring'` would both trip
+ * the gate with an error asserting something false AND get silently rewritten by the build, editing published
+ * documentation. The remedy a contributor reaches for is to water the comment down, which is the erosion these
+ * gates exist to prevent. Same-LENGTH because the callers rewrite the ORIGINAL source at the offsets found in the
+ * blanked copy; newlines are kept so line numbers survive too.
  *
- * Same-LENGTH (rather than `sdk-specifiers.cjs`'s single space) because this scanner's callers rewrite the
- * ORIGINAL source at the offsets found here; collapsing a comment would shift every offset after it.
- * Newlines are kept so line numbers survive too.
- *
- * Strings are kept because a real specifier IS a string literal; comments are the only place prose lives.
- *
- * That last clause is a generalisation, and here is its one hole: a string literal TYPE whose value happens
- * to be prose about an import — `export type Doc = "import { X } from './wiring'"` — is scanned like code,
- * so the build would edit inside the string and the gate would flag it. No such declaration exists, and the
- * alternative (a full parse) is not worth it for a contrived case, but the assumption is not absolute.
+ * The comments are the parser's, not found by pairing quotes, so a regular expression literal holding a quote cannot
+ * hide a later comment or string. A string literal TYPE whose value is prose about an import
+ * (`export type Doc = "import { X } from './wiring'"`) is still scanned like code, because the specifier regex below
+ * reads text; no such declaration exists.
  */
-function blankComments(source) {
-  return source.replace(
-    /(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
-    (match) =>
-      match[0] === '"' || match[0] === "'" || match[0] === '`'
-        ? match
-        : match.replace(/[^\n]/g, ' '),
-  );
-}
+const { blankComments } = require('./js-tokens.cjs');
 
 /**
  * Every syntactic position a `.d.ts` can name a relative module from.

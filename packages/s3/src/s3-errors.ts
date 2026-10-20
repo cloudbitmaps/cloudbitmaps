@@ -36,12 +36,14 @@ export function isConditionalConflict(err: unknown): boolean {
 }
 
 /**
- * S3 asked the client to slow down: `503 SlowDown`, or any other `503` (`ServiceUnavailable`). The SDK raises it with
- * `name` set to the code and `$metadata.httpStatusCode` to 503, and no `$retryable` marker. S3 does not document that a
- * throttled request was not applied, so a write sent again after one must still tell a landed first send apart.
+ * The service asked the client to slow down: `503 SlowDown`, any other `503` (`ServiceUnavailable`), or a bare `429`
+ * (`TooManyRequests`), which AWS S3 does not send and some S3-compatible services do. The SDK raises it with `name` set
+ * to the code and `$metadata.httpStatusCode` to the status, and no `$retryable` marker. The service does not document
+ * that a throttled request was not applied, so a write sent again after one must still tell a landed first send apart.
  */
 export function isThrottle(err: unknown): boolean {
-  return errorName(err) === 'SlowDown' || httpStatus(err) === 503;
+  const status = httpStatus(err);
+  return errorName(err) === 'SlowDown' || status === 503 || status === 429;
 }
 
 /** A multipart upload id S3 no longer knows: completed, aborted or expired (`404 NoSuchUpload`). */
@@ -99,7 +101,7 @@ function isClockSkewCorrected(err: unknown): boolean {
 }
 
 /**
- * A transient S3 fault that is safe to retry: throttling (`SlowDown` / 503), any 5xx, a dropped/timed-out
+ * A transient S3 fault that is safe to retry: throttling (`SlowDown` / 503 / 429), any 5xx, a dropped/timed-out
  * connection, a clock-skew refusal the SDK has corrected for, or anything the SDK itself marks retryable. Excludes
  * the deterministic outcomes above (412/404/416) — those are caller-meaningful and must never be
  * retried/reclassified.
@@ -108,7 +110,7 @@ export function isTransient(err: unknown): boolean {
   // A conditional-write conflict (412/409) is caller-meaningful OCC, not a blind-retryable transient.
   if (isConditionalConflict(err) || isNotFound(err) || isInvalidRange(err)) return false;
   return (
-    errorName(err) === 'SlowDown' ||
+    isThrottle(err) ||
     isServerSide(err) ||
     isNetworkOrTimeout(err) ||
     isSdkRetryable(err) ||

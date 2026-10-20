@@ -13,8 +13,8 @@
 #                                                    the cost model. On neither axis; it takes core's public
 #                                                    entry and nothing else.
 #
-# Every dependent depends on `@cloudbitmaps/core` via `workspace:^`, which pnpm resolves to a symlink into
-# `packages/core` locally and rewrites to a real semver range at publish. The dependency arrow is one-way —
+# Every dependent depends on `@cloudbitmaps/core` via `workspace:*`, which pnpm resolves to a symlink into
+# `packages/core` locally and rewrites to the exact version at publish. The dependency arrow is one-way —
 # core never imports a flavor or a driver package (that would be a cycle), which `pnpm lint:arch` proves.
 packages:
   - 'packages/*'
