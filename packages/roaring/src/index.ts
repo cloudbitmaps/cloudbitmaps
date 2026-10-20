@@ -36,17 +36,20 @@ import {
   RetryingStorageChunkSource,
   SegmentEngine,
   LEASE_SKEW_MS,
+  BudgetExceededError,
   LeaseExpiredError,
   MAX_LEASE_MS,
   NotFoundError,
   UnsupportedError,
   ValidationError,
+  errorKind,
   WriteConflictError,
   checkBudget,
   collectWithinBudget,
   excludingReservedRows,
   dropSegment,
   eraseIdFromSegment,
+  findIdUnderTombstone,
   judgeLoad,
   loadSegment,
   loadSegmentChunks,
@@ -113,6 +116,11 @@ import type {
 import { OpenChargingStorage } from './open-charging-storage';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
+import {
+  destroySegment as coreDestroySegment,
+  eraseNamespace as coreEraseNamespace,
+} from '@cloudbitmaps/core';
+import type { DestroyResult, EraseDeps } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { runPreflight } from '@cloudbitmaps/core';
@@ -139,6 +147,47 @@ class SystemRng implements Rng {
   next(): number {
     return Math.random();
   }
+}
+
+/**
+ * What an erasure call waits with when its write gets no answer and it reads the row back: the caller's `clock` and
+ * `rng`, else the real ones, so a call made with `{ registry }` alone waits between its reads.
+ */
+function withWaits(deps: EraseDeps): EraseDeps {
+  return { ...deps, clock: deps.clock ?? new SystemClock(), rng: deps.rng ?? new SystemRng() };
+}
+
+/**
+ * Crypto-shred one segment. It cannot be undone through the library (a registry restore to a point before it can).
+ * `confirmSegment` must equal `ref.segment` (a guard against an accidental destroy). A non-encrypted segment is
+ * rejected unless you opt in via `allowCleartext`: it has no key to shred, its Storage bytes stay readable, and the
+ * call emits a `segment.tombstone` audit event instead of `segment.erase`. A write that gets no answer is settled by
+ * reading the row back, waiting between reads on `deps.clock` (the system clock by default).
+ */
+export function destroySegment(
+  ref: SegmentRef,
+  deps: EraseDeps,
+  options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
+): Promise<DestroyResult> {
+  return coreDestroySegment(ref, withWaits(deps), options);
+}
+
+/**
+ * Crypto-shred every segment in a namespace. It cannot be undone through the library. `confirmNamespace` must equal
+ * `namespace`. Returns a per-segment result, in the order the registry listed the segments, which is unspecified. A
+ * write that gets no answer is settled as {@link destroySegment}'s is.
+ */
+export function eraseNamespace(
+  namespace: string,
+  deps: EraseDeps,
+  options: {
+    confirmNamespace: string;
+    allowCleartext?: boolean;
+    audit?: IAuditSink;
+    maxScanSegments?: number;
+  },
+): Promise<{ destroyed: DestroyResult[] }> {
+  return coreEraseNamespace(namespace, withWaits(deps), options);
 }
 
 /** Validate a segment ref a caller passes to a store method; a bare name is the common slip, and the hint says so. */
@@ -190,6 +239,14 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
     validateSegmentRef({ segment: 'x', namespace: options.namespace });
   }
   refuseReservedNamespace(options.namespace);
+  // The two are alternatives. Read as both, a call written to reach every tenant scanned one and reported it erased
+  // there, while the others kept the id.
+  if (options.namespace !== undefined && options.allNamespaces === true) {
+    throw new ValidationError(
+      `${op}: pass a namespace or { allNamespaces: true }, not both: with both, it is unclear whether to scan ` +
+        `one namespace or every one`,
+    );
+  }
   if (options.namespace === undefined && options.allNamespaces !== true) {
     throw new ValidationError(
       `${op} scans the global id space across all namespaces — pass an explicit \`namespace\`, ` +
@@ -374,7 +431,8 @@ export interface CloudRoaringOptions {
    * attempt, capped at 2 s, with full jitter): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
-   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
+   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id, and
+   * the search `subjectReport` and `eraseSubject` make under a destroyed segment (its listing of the bucket included).
    * This option does not govern writes, nor the calls that read the registry or list the bucket directly (`exists`,
    * `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`, `exportSegments` and
    * `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that
@@ -488,7 +546,8 @@ export interface EncryptionOptions {
    *
    * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both
    * carry it into their write path, so on a cleartext segment a materialisation throws and an erasure records
-   * `note: 'error: requireEncryption: …'` in its ledger rather than erasing. And since a segment's encryption is
+   * `note: 'error: KeyUnavailableError: requireEncryption: …'` in its ledger rather than erasing, whatever id it erases and
+   * whether or not the id is in the segment: it does not read the segment. And since a segment's encryption is
    * decided at its **first** generation, this cannot be switched on for a segment that already has one — load
    * into a new encrypted segment and drop the old one.
    */
@@ -543,12 +602,21 @@ export interface SubjectSegmentRef {
   readonly namespace?: string;
 }
 
-/** Result of {@link CloudRoaring.subjectReport} — the segments an id is a member of (over registered segments). */
+/** Result of {@link CloudRoaring.subjectReport}: the segments an id is a member of, and the destroyed segments whose leftover objects hold it. */
 export interface SubjectReport {
   /** The id the report is about. */
   readonly id: number;
   /** The registered segments the id is currently a member of. */
   readonly segments: SubjectSegmentRef[];
+  /**
+   * The destroyed segments whose leftover objects still hold the id in the clear: one destroyed with `allowCleartext`,
+   * dropped while a load wrote an object its sweep did not catch, or crypto-shredded over an object a cleartext writer
+   * left. No read resolves them, so the id is a member of none, but its bytes are in the bucket, and `eraseSubject`
+   * deletes them. A crypto-shredded segment's own objects are sealed under a key no row holds and are never a holder,
+   * so it is listed only when an object left under it in the clear holds the id. A destroyed segment with no
+   * object left is not listed either. `[]` when none.
+   */
+  readonly tombstones: SubjectSegmentRef[];
   /** How many registered segments were scanned (the completeness denominator). */
   readonly scannedSegments: number;
 }
@@ -580,15 +648,15 @@ export interface SubjectErasureEntry {
    * no pointer (a purge and re-creation, or a hand-made write), while the call was in flight, so **this call** did
    * not erase the id;
    * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
-   * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
+   * if the racing writer already removed it. `` `error: <class>: <message>` `` — an isolated per-segment fault, named by its error's class
    * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the
    * fault. A budget refusal is one of these: the segment's generations did not fit `budget`, so it was not finished;
    * re-run with a higher `budget`. A fault that landed once part of the work was already done — a Storage `delete` fault, a collect that
    * could not prove the segment was still the same one, or a generation still holding the id when the bucket was
    * listed at the end, whether or not a rewrite was published first — also re-runs, but **read what the re-run
    * says**: it usually reports `erased: true` against the generation it found the id in, it reports
-   * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
-   * receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
+   * nothing at all if a racing collector took that generation first, or this call's own delete of it landed after a
+   * fault the call could not settle (the bit is gone, but no run holds a receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
    * left in its bucket is an orphan, which `store.generations(ref)` lists and `store.dropSegment(ref, {
    * confirmSegment })` deletes; `checkConsistency` and the collection a load runs read rows, so neither reaches it.
    * **Segments the id is not in
@@ -1833,23 +1901,39 @@ export class CloudRoaring {
    * tax every load for a rare request; this admin scan is `O(registered segments)` and touches no hot path. Needs
    * a storage backend (throws {@link UnsupportedError} otherwise).
    *
+   * **Scope: one `namespace`, or `{ allNamespaces: true }`, never both** (both throws `ValidationError`, as does
+   * neither). A segment loaded with no `namespace` is in no namespace you can name: only `{ allNamespaces: true }`
+   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's
+   * object keys use, for such a segment, is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
+   *
    * **Current as of the registry row, not as of the reader's cache.** Each segment's resolved generation is
    * compared with the row the scan listed, and a segment whose cached generation differs is re-resolved before the
    * read, so a load or an erasure from another process shows at once — whatever `cache.genTtlMs` is, `0` included.
    * The comparison is on the generation **and** the row's token, so a segment retired, purged and loaded again from
    * generation 0 while this store held its old generation 0 is told apart too.
+   *
+   * **A destroyed segment is searched as {@link CloudRoaring.eraseSubject} searches it.** No read resolves a
+   * tombstone, so the id is a member of none, but a cleartext `destroySegment` (`allowCleartext`), or a `dropSegment`
+   * whose sweep missed an object a load was still writing, leaves objects anyone with bucket access can read. Each
+   * object left under the tombstone is opened newest first until one holds the id, and the segment is then listed in
+   * `tombstones`, never in `segments`. A crypto-shredded segment's own objects are sealed under a key no row holds and are
+   * never a holder: it is listed only when an object left under it in the clear holds the id. The cost is one listing per destroyed segment in scope (1 request when nothing is left), and for each
+   * object opened a tail read and, where its index lists the id's chunk, a chunk read (two tail reads for an encrypted
+   * object, which never holds the id): 7 requests for a cleartext destroy with 3 objects, 21 for 10. The budget is
+   * charged one unit for each object opened past the one the row names, as `eraseSubject` charges. A report that runs
+   * out, or whose listing or read fails after the store's retry, rejects rather than under-reporting, so one leftover
+   * object that cannot be opened makes every report over its scope reject until it is removed (`generations(ref)` lists
+   * what is left, `dropSegment` deletes it). A report refused for budget while it searches a destroyed segment reports
+   * `spent` as `limit + 1`, a lower bound.
    */
   async subjectReport(
     id: number,
-    options: {
-      namespace?: string;
-      allNamespaces?: boolean;
-      concurrency?: number;
-      budget?: BudgetOption;
-    } = {},
+    options: { concurrency?: number; budget?: BudgetOption } & (
+      { namespace: string; allNamespaces?: false } | { allNamespaces: true; namespace?: undefined }
+    ),
   ): Promise<SubjectReport> {
     checkOptions(options, 'subjectReport', CALL_KEYS.subjectReport, ['allNamespaces']);
-    options ??= {};
+    options ??= {} as typeof options; // plain JS: no options reads as no scope, which requireScope refuses
     const registry = this.requireRegistry('subjectReport');
     requireScope(options, 'subjectReport'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
@@ -1866,14 +1950,45 @@ export class CloudRoaring {
       budget,
       'subjectReport',
     );
+    // The scan charged one unit a segment; each object opened under a tombstone past the one its row names is
+    // charged too, to the same call-wide count, as `eraseSubject` charges them.
+    let opens = 0;
+    const charge = (): void => {
+      opens += 1;
+      // A refusal part-way through the search does not know what the whole search needs, so it says "more than"
+      // and reports the bound plus one, a lower bound, as an enumeration stopped at its bound does.
+      if (budget !== null && recs.length + opens > budget.maxRequests) {
+        throw new BudgetExceededError(
+          `subjectReport would fan out to more than ${budget.maxRequests} units, over the per-op budget: the search ` +
+            `under a destroyed segment was abandoned at that point, so no exact total is available. Raise ` +
+            `\`budget.maxRequests\`, override it per-op, or set \`budget: false\``,
+          {
+            option: 'budget.maxRequests',
+            limit: budget.maxRequests,
+            spent: budget.maxRequests + 1,
+          },
+        );
+      }
+    };
     // Bounded fan-out of `has()` across registered segments. Order-preserving ⇒ deterministic result. A has()
     // fault propagates (a report that can't read a segment must fail loud, not silently under-report).
     const membership = await mapWithConcurrency(
       recs,
       options.concurrency ?? DEFAULT_ADMIN_CONCURRENCY,
-      async (rec): Promise<SubjectSegmentRef | null> => {
-        if (rec.status === 'destroyed') return null; // already unreadable — never a member
+      async (rec): Promise<{ tombstone: boolean; ref: SubjectSegmentRef } | null> => {
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
+        if (rec.status === 'destroyed') {
+          // No read resolves a destroyed row, so the id is a member of none. A cleartext destroy, or a drop whose
+          // sweep left an object, leaves objects anyone with bucket access reads, which `eraseSubject` searches and
+          // deletes: search them the same way, charged as it charges them.
+          const deps = this.lifecycleDeps('subjectReport');
+          const storage =
+            budget === null
+              ? deps.storage
+              : new OpenChargingStorage(deps.storage, rec.currentGen, charge);
+          const held = await findIdUnderTombstone(ref, id, { ...deps, storage });
+          return held === null ? null : { tombstone: true, ref };
+        }
         // The row this scan just listed is authoritative; the reader's snapshot may be up to `cache.genTtlMs` behind
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
         // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
@@ -1887,19 +2002,24 @@ export class CloudRoaring {
           const listed = rec.currentGen === null ? null : `${rec.currentGen}:${pointerIdOf(rec)}`;
           if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
-        return (await this.engine.has(ref, id))
-          ? { segment: rec.segment, namespace: rec.namespace }
-          : null;
+        return (await this.engine.has(ref, id)) ? { tombstone: false, ref } : null;
       },
     );
-    const segments = membership.filter((m): m is SubjectSegmentRef => m !== null);
-    return { id, segments, scannedSegments: recs.length };
+    const listed = membership.filter((m) => m !== null);
+    const segments = listed.filter((m) => !m.tombstone).map((m) => m.ref);
+    const tombstones = listed.filter((m) => m.tombstone).map((m) => m.ref);
+    return { id, segments, tombstones, scannedSegments: recs.length };
   }
 
   /**
    * **Subject erasure (GDPR Art. 17): remove an id from every segment it's in, with the bit physically gone
    * from the bucket on return for each segment the ledger reports `erased: true`.** A noncurrent version, a replica
    * or a backup keeps the old object until its own lifecycle removes it.
+   *
+   * **Scope: one `namespace`, or `{ allNamespaces: true }`, never both** (both throws `ValidationError`, as does
+   * neither). A segment loaded with no `namespace` is in no namespace you can name: only `{ allNamespaces: true }`
+   * reaches it. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's
+   * object keys use, for such a segment, is an ordinary namespace name here, and passing it scans a namespace of that name, not those segments.
    *
    * For each **registered** segment the id is a member of, `eraseIdFromSegment` rewrites the current generation
    * without the id — every chunk streamed through, one bit cleared — publishes the rewrite **fenced on the
@@ -1976,19 +2096,15 @@ export class CloudRoaring {
    */
   async eraseSubject(
     id: number,
-    options: {
-      namespace?: string;
-      allNamespaces?: boolean;
-      audit?: IAuditSink;
-      concurrency?: number;
-      budget?: BudgetOption;
-    } = {},
+    options: { audit?: IAuditSink; concurrency?: number; budget?: BudgetOption } & (
+      { namespace: string; allNamespaces?: false } | { allNamespaces: true; namespace?: undefined }
+    ),
   ): Promise<EraseSubjectResult> {
     // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
     // for its options still moves the counter: conservative, so an erasure is never missed.
     this.erasureEpoch++;
     checkOptions(options, 'eraseSubject', CALL_KEYS.eraseSubject, ['allNamespaces']);
-    options ??= {};
+    options ??= {} as typeof options; // plain JS: no options reads as no scope, which requireScope refuses
     this.erasuresRunning++;
     try {
       return await this.eraseSubjectRun(id, options);
@@ -2058,7 +2174,9 @@ export class CloudRoaring {
             segment: rec.segment,
             namespace: rec.namespace,
             erased: false,
-            note: `error: ${err instanceof Error ? err.message : String(err)}`,
+            note: `error: ${errorKind(err) ?? (err instanceof Error ? err.name : 'Error')}: ${
+              err instanceof Error ? err.message : String(err)
+            }`, // the class lets a note be matched to the guide's table
           };
         } finally {
           // Whatever the outcome, this process's own view of the segment is now suspect: a landed rewrite
@@ -2092,6 +2210,7 @@ export class CloudRoaring {
    * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
    * Each entry says whether the row knows the generation (`known`): a known generation needs no `allowUnknown`; an unknown
    * one does, except below a row's pointer when the row has no usable record or the target is older than a full one reaches.
+   * No entry is `current` on a destroyed segment: its row keeps the pointer it had, but no read resolves through it.
    *
    * Needs a backend.
    */
@@ -2188,8 +2307,9 @@ export class CloudRoaring {
    * {@link ValidationError} before any request to storage, and a known one whose object carries another checksum than
    * the recorded one throws {@link IntegrityError}, with or without a keystore, since the footer is in the clear. A
    * generation not in the bucket (collected, or never written) throws `NotFoundError` naming what *is* available, a
-   * crypto-shredded segment throws {@link ValidationError} because every generation of it is unreadable, and a target
-   * that is cleartext under an encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from
+   * destroyed segment (crypto-shredded, destroyed in the clear or dropped) throws {@link ValidationError}, because no
+   * generation resolves through a destroyed row, and a target that is cleartext under an encrypted segment, or
+   * encrypted under a cleartext one, throws {@link IntegrityError} from
    * one tail read of it, because every read would refuse it. Rolling to the generation already current is a no-op that
    * reports itself, once one footer read finds its object in the bucket (and the one the row recorded); when the object is
    * gone it throws `NotFoundError` naming what is.
@@ -2323,7 +2443,7 @@ export class CloudRoaring {
    * does the first load of a row that records none, which then records it. {@link LoadResult.collected} then names
    * what the pass deleted by name, and one name may have been gone already.
    *
-   * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
+   * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a destroyed
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard has to read its size, which it does only when the row has no usable summary of it
    * (`IntegrityError`); a driver failure; and a fault in the collection's own reads, listing or deletes, or in the write
@@ -2454,7 +2574,7 @@ export class CloudRoaring {
    * A value in the past is legal and means "eligible on the next sweep" — backfilling a policy onto existing
    * buckets is normal. A value below `1_000_000_000_000` (2001-09-09) is rejected: it is almost certainly epoch
    * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a storage
-   * backend (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
+   * backend (throws {@link UnsupportedError} otherwise), and refuses a destroyed segment.
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
     validateRef(ref);
@@ -2477,8 +2597,10 @@ export class CloudRoaring {
   }
 
   /**
-   * **Cancel a segment's expiry** so no sweep retires it. Returns whether a policy was actually removed (`false`
-   * when there was none). A separate verb from `setRetention` on purpose: "never expire" as a magic value passed
+   * **Cancel a segment's expiry** so no sweep retires it. Returns whether this call removed a policy (`false`
+   * when there was none, and also when a write that got no answer cannot be shown to be this call's and the
+   * row holds no expiry: the expiry is gone either way, and its due-index pointer is removed. A later write that set an
+   * expiry is cleared too, and the answer is `true`). A separate verb from `setRetention` on purpose: "never expire" as a magic value passed
    * to the setter is how a typo becomes a deletion.
    */
   async clearRetention(ref: SegmentRef): Promise<boolean> {
@@ -2535,7 +2657,9 @@ export class CloudRoaring {
    *
    * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
    * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself
-   * first, since nothing else ever would for a tombstoned segment. Attribution is a **positive marker the sweep
+   * first, since nothing else runs that collection on its own for a tombstoned segment (an erasure collects there
+   * only
+   * when an object holds its id, and a re-run drop sweeps it). Attribution is a **positive marker the sweep
    * stamps on its own retirements**, not an inference from "destroyed + an expired policy": a crypto-shred leaves
    * `retention` untouched, so setting a policy and then honouring a right-to-erasure request mid-window produces
    * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. By default a
@@ -2804,8 +2928,9 @@ export class CloudRoaring {
    * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent,
    * errored }` — `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object
    * store, or roll the registry back to a coherent point). Needs the store built with a **backend**
-   * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
-   * the DR runbook (docs/guide/disaster-recovery.md).
+   * (throws {@link UnsupportedError} otherwise). `destroyed` segments (crypto-shredded, destroyed in the clear or
+   * dropped) are skipped. Pair
+   * it with the DR runbook (docs/guide/disaster-recovery.md).
    *
    * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still
    * answers the number its row records, while a read of the object throws, so the count alone never shows it. With
@@ -2909,8 +3034,9 @@ export class CloudRoaring {
    * Enumerates via the store's **own** registry (needs one — throws {@link UnsupportedError} otherwise) so the
    * enumeration and the read path provably share one registry. Encrypted segments are decrypted transparently
    * **iff** this store was wired with their keystore — the export is therefore **cleartext**; protect it.
-   * Crypto-shredded segments are skipped. A segment that can't be read is isolated into the manifest's `failed[]`
-   * (the run continues), so "a manifest exists" means the run finished — check `failed`. The `export-segments`
+   * Destroyed segments (crypto-shredded, destroyed in the clear or dropped) are skipped. A segment that can't be read
+   * is isolated into the manifest's `failed[]` (the run continues), so "a manifest exists" means the run finished —
+   * check `failed`. The `export-segments`
    * CLI wraps this with a filesystem sink. The `'roaring'` format's bitmaps are built by the store's own codec.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
@@ -3631,7 +3757,7 @@ export class Segment {
    * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
    * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
    *
-   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
+   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a destroyed segment),
    * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
    * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
    * reopened while its object is stored. Nothing keeps a generation alive unless you lease it: a later load's
@@ -4136,9 +4262,7 @@ export {
   // Backends
   MemoryStorage,
   LocalFsStorage,
-  // Crypto-shred and the retention policy helpers
-  destroySegment,
-  eraseNamespace,
+  // The retention policy helpers
   excludingReservedRows,
   readRetentionPolicy,
   // Encryption

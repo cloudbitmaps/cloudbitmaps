@@ -1,14 +1,21 @@
 # Subject access and erasure
 
 Two calls answer "what do you hold about this person?" (GDPR Art. 15) and "forget this person everywhere" (Art. 17):
-`store.subjectReport(id)` and `store.eraseSubject(id)`. Both scan the registered segments, so build the store on the
+`store.subjectReport(id, scope)` and `store.eraseSubject(id, scope)`. Both scan the registered segments, so build the store on the
 backend your loads used.
 
 ## Find an id, and erase it
 
 Both calls need a scope. Ids live in one global 32-bit space shared across namespaces, so a call with no namespace
 would sweep every tenant. To keep that from happening by accident, pass either a `namespace` or an explicit
-`{ allNamespaces: true }`. A call with neither throws `ValidationError`.
+`{ allNamespaces: true }`. A call with neither, or with both, throws `ValidationError`: they are alternatives, and a
+call that names a namespace and `allNamespaces: true` is unclear about which one it means. The types refuse the pair
+too.
+
+A segment loaded with no `namespace` is in no namespace you can name: only `{ allNamespaces: true }` reaches it.
+`_default`, the label the export tool and the disaster-recovery samples print, and the bucket's object keys use, for those segments, is an ordinary
+namespace name here, and passing it scans a namespace of that name, not them. A `namespace: '_default'` call over a
+fleet whose segments were loaded with no namespace lists none, and its `scannedSegments` is `0`.
 
 ```ts
 import { RecordingAuditSink } from '@cloudbitmaps/roaring';
@@ -16,6 +23,7 @@ import { RecordingAuditSink } from '@cloudbitmaps/roaring';
 // Art. 15: which segments is this id in? (scoped to one tenant)
 const report = await store.subjectReport(userId, { namespace: 'eu' });
 report.segments; // [{ segment, namespace }, ...]    report.scannedSegments: the completeness denominator
+report.tombstones; // destroyed segments whose leftover objects still hold the id
 
 // Art. 17: remove the id everywhere, across all tenants (the explicit fleet-wide acknowledgement)
 const audit = new RecordingAuditSink(); // or your own audit sink: see Observability
@@ -26,19 +34,37 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 `ledger.erasedFrom` is your **erasure ledger**, the proof of deletion. It is a return value only, so persist it or
 route it to your audit sink. When you pass `audit`, the store also emits an event per segment it erased the id from:
 `segment.rewrite` when it rewrote the current generation, `segment.collect` when it only deleted other generations.
-Segments the id is not in are not listed. A segment where the erasure found the id in nothing it could search, and
+Segments the id is not in are not listed, except a segment the call cannot search: an encrypted one on a store with no
+keystore, or a cleartext one on a store built with `encryption: { required: true }`. It is listed as an `error:` entry
+whatever id you erase, because the call cannot tell whether the id is there. A segment where the erasure found the id in nothing it could search, and
 deleted only objects no read of the segment can open ([below](#three-rules-while-you-erase)), is not listed either: the
 audit sink gets `segment.collect` for it with no `fromGeneration`, and that event is the only record of the deletion.
 The two calls look in different places: `subjectReport` reads what a reader reads, each segment's current generation,
-while `eraseSubject` also searches older generations, a tombstoned segment's objects and a first load's object that
-never published. So the ledger can name a segment the report did not.
+and searches each destroyed segment's leftover objects as the erasure does, listing one that holds the id under
+`tombstones`. A cleartext `destroySegment` (`allowCleartext`), or a `dropSegment` whose sweep missed an object a load was
+still writing, leaves the id readable in the bucket though no read resolves the segment. A crypto-shredded segment's own
+objects are sealed under a key no row holds and are never a holder, so it is listed only when an object left under it in
+the clear holds the id (a cleartext writer's leftover, say). `eraseSubject` also searches an active
+segment's older generations and a first load's object that never published, so the ledger can still name a segment the
+report did not. `subjectReport` reads each segment and throws on the first it cannot read (`KeyUnavailableError` for an
+encrypted segment on a store with no keystore, or for a cleartext one under `required`), rather than return a report
+that leaves it out; answer an access request over a mixed bucket from a store that can read every segment.
 
 `eraseSubject` needs a store built on a backend, because it writes generations. `subjectReport` needs one too, for
 the registry it lists. A store missing what a call needs throws `UnsupportedError`: a store built on a bare storage
 driver (`IStorageDriver`) or a pre-built `StorageChunkSource` instead of a backend cannot run either. Build it on `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
 `AzureBlobStorage`.
 
-**What it costs.** `subjectReport` costs one pass over the registered segments. `eraseSubject` costs more: a segment
+**What it costs.** `subjectReport` costs one pass over the registered segments, plus, for each destroyed segment in
+scope, one listing and an open of each object under it until one holds the id (two tail reads for an encrypted object,
+which never does), charged to the budget as `eraseSubject` charges them. Measured on the in-memory backend: a drop that
+deleted everything costs 1 request; a cleartext destroy with 3 objects costs 7 (one listing, then a tail read and a
+chunk read for each object); with 10 objects, 21; a crypto-shred with 10 objects, 21 (two tail reads each, no chunk
+read). A fault reading a destroyed segment's leftover objects (the listing included, after the store's retry), or a
+budget that runs out, rejects the whole report rather than leaving the segment out, so one leftover object that cannot
+be opened makes every report over its scope reject until it is removed: `store.generations(ref)` lists what is left
+under the segment, and `store.dropSegment(ref, { confirmSegment })` deletes it (a drop of an already destroyed row sweeps
+again). `eraseSubject` costs more: a segment
 whose current generation lacks the id is searched generation by generation, so a fleet that keeps long histories
 pays for every one. The per-op budget is charged for them, once for each generation however often the call opens
 it: a retry of a failed read, or a later open of a generation the call already opened, costs no further unit. The scan runs at a bounded `concurrency` (default 8; pass `{ concurrency }`), so it is quick over a large fleet
@@ -102,21 +128,21 @@ there", and `note` says why:
 
 | `note` | Means | What to do |
 |---|---|---|
-| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, replaced an object the call meant to delete, or beat the call's write to the segment's row five times in a row before it deleted anything (nothing was deleted). Usually a load; it can also be another erasure or an operator's `rollback`. On a segment with no generation yet, any other write of its row before the erasure renewed it reports it too: a first load's publish, a `setRetention`, another erasure's renewal. A row that loses its pointer after the call found one (purged and created again, or written by hand without a pointer) and a row purged and created again as another incarnation of the name report it as well: the call found a holder there and stopped before deleting it, so the bucket can still hold an object that holds the id. On a registry that reports write tokens, a rewrite counts as published only when the row's pointer is over its own write: another load of the same ids can take the rewrite's number once an erasure has freed it, and the rewrite is then `'superseded'`, with no `segment.rewrite` event and none of the generations the row names deleted. The same can happen to a rewrite whose own write landed and was then followed, ahead of the rewrite's next read of the row, by a write that renews the row's `pointerId` over it (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it): it cannot tell that from another load's write, so it reports `erased: false` and deletes nothing, and a re-run erases. On a registry that does not report write tokens, a rewrite whose write got no answer counts as published when the footer of the object under its number is the rewrite's own, the write identity it drew included: another load's object there, of the same ids or others, is `'superseded'` and deletes nothing. An object whose identity field is all zero (one written with zero entropy) can carry the rewrite's footer, and then the rewrite stands, with a `segment.rewrite` event for a generation another writer may have published. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
-| `error: <message>`, a transient storage or registry fault | The storage failed under it, or a registry write got no answer that reading the row could settle; the generations that write was to guard were not deleted. | Re-run. |
-| `error: <message>`, the budget ran out | The call's `budget` ended before all the segment's generations were searched. | Re-run with a higher `budget`. |
-| `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
-| `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
-| `error: <message>`, a `NotFoundError` saying the generation is another object than its registry row names | The object under the row's current generation is not the one the row's summary names by its fingerprint: put back from outside the library, or restored from another point than the registry. The erasure read none of its ids and wrote nothing. That object stays in the bucket and may hold the id, and every read that opens it refuses it. | Re-running will not help. Run `checkConsistency({ summaries: true })`, which reports the segment as `summary-mismatch`, restore the registry and the bucket to one coherent point ([disaster recovery](disaster-recovery.md)), then re-run the erasure. |
-| `error: <message>`, a `NotFoundError` saying an erasure deleted a generation and another writer moved the pointer onto it | A rollback landed between the erasure's read of the row and one of its deletes, onto the generation it was deleting (or, on a storage driver that ignores a delete's condition, a load took that number again and published, [below](#reading-the-ledger)), and the row still named it, with no object under it, when the call read the row again after a wait. The pointer may then name a missing object, and while it does every read of the segment fails; a rollback that found its target gone puts the pointer back itself, and the segment is then whole. Nothing restores a deleted object. On the rewrite path the call had published and sent `segment.rewrite`, and its collection stopped at that generation. With nothing rewritten, when nothing left in the bucket held the id, the deletion was recorded first, as a `segment.collect` event; with a holder left, nothing was recorded. | Check first: `store.generations(ref)` marks the current generation and lists the bucket, and `checkConsistency()` reports the segment as `missing-storage-generation` while the pointer names a missing object. Roll back to a generation still in the bucket only if it does. Then re-run. A re-run that lists nothing for the segment found the id gone: keep this entry's error and the `segment.collect` event with your ledger. |
-| `error: <message>`, an `IntegrityError` naming a chunk, or saying authentication failed | That segment is corrupt: a chunk holds a value no chunk can, or a generation sealed under the segment's own key has a chunk that does not open under it, or the current generation does not open under it at all. The rewrite refused to copy the corruption into a new generation, the erasure deletes nothing on account of that error, and no erasure happened on it. | Investigate; re-running will not help. |
-| `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all, and on a segment with no generation yet, when the erasure found a first load's object to delete and a first load wrote another, holding the id or sealed under its own key, after the erasure listed the bucket; when that load published before the erasure's last read of the row, the entry is `'superseded'` instead. A load of the id that took the number of a generation the erasure had found clean ends the same way, or as `'superseded'` when the erasure saw the row change before its deletes ([above](#reading-the-ledger)). | See what a re-run reports instead of assuming the job finished. |
+| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, replaced an object the call meant to delete, or beat the call's write to the segment's row five times in a row before it deleted anything (nothing was deleted). Usually a load; it can also be another erasure or an operator's `rollback`. Two erasures of different ids on one segment race each other: both can number the same next generation, the second put is refused as the write-once rule says, and that one reports `'superseded'` with nothing written or deleted. On a segment with no generation yet, any other write of its row before the erasure renewed it reports it too: a first load's publish, a `setRetention`, another erasure's renewal. A row that loses its pointer after the call found one (purged and created again, or written by hand without a pointer) and a row purged and created again as another incarnation of the name report it as well: the call found a holder there and stopped before deleting it, so the bucket can still hold an object that holds the id. On a registry that reports write tokens, a rewrite counts as published only when the row's pointer is over its own write: another load of the same ids can take the rewrite's number once an erasure has freed it, and the rewrite is then `'superseded'`, with no `segment.rewrite` event and none of the generations the row names deleted. The same can happen to a rewrite whose own write landed and was then followed, ahead of the rewrite's next read of the row, by a write that renews the row's `pointerId` over it (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it): it cannot tell that from another load's write, so it reports `erased: false` and deletes nothing, and a re-run erases. On a registry that does not report write tokens, a rewrite whose write got no answer counts as published when the footer of the object under its number is the rewrite's own, the write identity it drew included: another load's object there, of the same ids or others, is `'superseded'` and deletes nothing. An object whose identity field is all zero (one written with zero entropy) can carry the rewrite's footer, and then the rewrite stands, with a `segment.rewrite` event for a generation another writer may have published. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
+| `error: <class>: <message>`, a transient storage or registry fault | A request failed under it, and reading back could not show that it took effect: a registry write that got no answer that [reading the row](correctness.md#row-write-settled) could settle (the generations that write was to guard were not deleted), or a storage delete whose object was still there when the call read it back, or whose read failed too. Generations deleted before it stay deleted. | Re-run. A re-run that lists nothing for the segment found the id gone: a delete whose read failed, or that landed after it, took it. Keep this entry's error with your ledger as the record of that deletion. |
+| `error: BudgetExceededError: <message>`, the budget ran out | The call's `budget` ended before all the segment's generations were searched. | Re-run with a higher `budget`. |
+| `error: KeyUnavailableError: <message>` saying the segment "is encrypted, and the erasure has no keystore" (a missing keystore) | The segment is encrypted and the store has no keystore, so the call cannot open its key. It is listed whatever id you erase. | Wire the keystore (`encryption.keystore`). |
+| `error: KeyUnavailableError: requireEncryption: segment … is cleartext but encryption is required` (the same class as the missing keystore: tell the two apart by the message) | The store was built with `encryption: { required: true }` and the segment is cleartext, so the erasure did not read its current generation, as `required` refuses a cleartext read. It is listed whatever id you erase. A cleartext object left under a tombstone, or a first load's object on a segment with no generation yet, is still searched and deleted. | Erase it from a store built without `required`, or drop the segment. |
+| `error: NotFoundError: <message>`, saying the generation is another object than its registry row names | The object under the row's current generation is not the one the row's summary names by its fingerprint: put back from outside the library, or restored from another point than the registry. The erasure read none of its ids and wrote nothing. That object stays in the bucket and may hold the id, and every read that opens it refuses it. | Re-running will not help. Run `checkConsistency({ summaries: true })`, which reports the segment as `summary-mismatch`, restore the registry and the bucket to one coherent point ([disaster recovery](disaster-recovery.md)), then re-run the erasure. |
+| `error: NotFoundError: <message>`, saying an erasure deleted a generation and another writer moved the pointer onto it | A rollback landed between the erasure's read of the row and one of its deletes, onto the generation it was deleting (or, on a storage driver that ignores a delete's condition, a load took that number again and published, [below](#reading-the-ledger)), and the row still named it, with no object under it, when the call read the row again after a wait. The pointer may then name a missing object, and while it does every read of the segment fails; a rollback that found its target gone puts the pointer back itself, and the segment is then whole. Nothing restores a deleted object. On the rewrite path the call had published and sent `segment.rewrite`, and its collection stopped at that generation. With nothing rewritten, when nothing left in the bucket held the id, the deletion was recorded first, as a `segment.collect` event; with a holder left, nothing was recorded. | Check first: `store.generations(ref)` marks the current generation and lists the bucket, and `checkConsistency()` reports the segment as `missing-storage-generation` while the pointer names a missing object. Roll back to a generation still in the bucket only if it does. Then re-run. A re-run that lists nothing for the segment found the id gone: keep this entry's error and the `segment.collect` event with your ledger. |
+| `error: IntegrityError: <message>`, naming a chunk, or saying authentication failed | That segment is corrupt: a chunk holds a value no chunk can, or a generation sealed under the segment's own key has a chunk that does not open under it, or the current generation does not open under it at all. The rewrite refused to copy the corruption into a new generation, the erasure deletes nothing on account of that error, and no erasure happened on it. | Investigate; re-running will not help. |
+| `error: WriteConflictError: <message>` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all, and on a segment with no generation yet, when the erasure found a first load's object to delete and a first load wrote another, holding the id or sealed under its own key, after the erasure listed the bucket; when that load published before the erasure's last read of the row, the entry is `'superseded'` instead. A load of the id that took the number of a generation the erasure had found clean ends the same way, or as `'superseded'` when the erasure saw the row change before its deletes ([above](#reading-the-ledger)). | See what a re-run reports instead of assuming the job finished. |
 
 A fault can also land after a rewrite published. Examples are a storage `delete` fault, a collect that could not prove
 the segment was still the same one, and a generation still holding the id when the bucket is listed at the end (such
 as a rollback target an operator moved the pointer onto mid-collect). The pointer has then moved, and the re-run
 searches every generation in the bucket. It usually reports `erased: true` against the generation it found the id in, and nothing at
-all if a racing collector took that generation first (gone, but unreceipted).
+all if a racing collector took that generation first, or if this call's own delete of it landed after a fault the call could not settle (its read failed too, or the delete landed after the read): gone, but unreceipted. A storage delete that gets no answer and whose object is gone when the call reads it back is not this case: it counts as deleted, and the call answers `erased: true`.
 
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. But "not listed" is not by
 itself proof the id is gone. A segment whose registry row was purged is not scanned either, and its objects outlive it
@@ -146,7 +172,11 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
   found only there, is refused, and so is a first load still writing onto a segment with no generation yet, when the
   id is found in its object: the erasure renews the segment's row (its `pointerId`) before it deletes that object, and
   a load that found no row is refused by any row at all, so the load's publish meets another writer rather than
-  naming an object that is gone.
+  naming an object that is gone. The same goes for another erasure: erasures of different ids on one segment race
+  each other, one wins and the rest report `'superseded'`. Run them one after another, or re-run each while any of
+  its entries says `'superseded'`. An entry with another note is settled by what its row in the
+  [table](#reading-the-ledger) says: a re-run for some (a transient fault, the budget), never for others. A segment the
+  call cannot search is listed whatever id you erase.
 - **Never put a subject's id in a generation's metadata.** An erasure rewrites the ids and carries the metadata over as
   it is, without scanning it: it would copy an id there into the new generation, and the registry row holds a copy of
   the current generation's metadata too. Put a version, a time or a run id in it, and nothing that names a person.
@@ -275,9 +305,11 @@ it deletes a generation above the pointer, an object it cannot search or the obj
 `pointerId`, and its removal of the generations it will delete from the row's ledger, keep them),
 so an entry for a generation it deleted stays in the list until the entry's own time ends or the next publish or lease
 write prunes it: it spares nothing, since the object is gone, and it counts toward the 64 places until then. A
-`destroySegment`, a `dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone.
-So erasure, shred, drop and retention always win, and a lease never holds an erased subject's data past the bounds in
-the table above.
+`dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone. A `destroySegment`
+deletes no generation: it clears the row's leases with its keys, so the tombstone holds no lease, and the objects stay
+in the bucket. After a crypto-shred they are unreadable once no retained copy of the row holds the key (or every KEK
+that wrapped it is destroyed); after a cleartext destroy (`allowCleartext`) they are readable. So erasure, shred, drop
+and retention always win, and a lease never holds an erased subject's data past the bounds in the table above.
 
 A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
 rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on

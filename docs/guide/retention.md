@@ -67,12 +67,17 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
   an `expiresAt` below it, and `retireExpired` for a `now` below it.
 - **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto segments that already
   exist is a normal migration.
-- **A tombstone is refused.** A crypto-shredded, dropped or retired segment throws `ValidationError`: there is nothing
-  left to retire, so use a new segment name.
+- **A tombstone is refused.** A crypto-shredded, cleartext-destroyed, dropped or retired segment throws
+  `ValidationError`, so use a new segment name. A drop or a retirement deleted its objects (drop again
+  while `generationsRemaining` is not empty). A destroy left its objects in the bucket (readable after a cleartext
+  destroy), and `dropSegment` on the tombstone deletes them.
 - **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
   policy is committed, and the fleet scan still retires the segment.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
-  `createdRow: true`) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
+  `createdRow: true`) with no storage generation (`currentGen: null`). A create that gets no answer is read back, and
+  `createdRow` stays `true` when the row carries the call's own write, even after a later policy or lease write. It
+  turns `false` only when a later load's publish moved the row's pointer before the read-back, since the call then
+  decides again from the row and sets the policy on it. with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
   sweep can already see the segment, and the first load publishes onto that row. A load already running when
   `setRetention` creates the row found none, so it is refused `superseded`, guarded or not: re-run it, and it
   publishes onto that row. Reads are unaffected: a pointer-less row resolves exactly like a segment with no row.
@@ -82,13 +87,27 @@ Reading and cancelling:
 ```ts
 const ref = { namespace: 'active-daily', segment: '2026-08-05' };
 await store.getRetention(ref); // → { expiresAt } | null | 'invalid'
-await store.clearRetention(ref); // → true if a policy was actually removed
+await store.clearRetention(ref); // → true if this call removed a policy
 ```
 
 `getRetention` returns the string `'invalid'` for a row whose `expiresAt` is present but unusable, such as a
 hand-edited one. That is deliberately not folded into `null`: a malformed policy reading as "never expires" on a
 segment someone believes is expiring is the kind of silence that costs a compliance commitment. Cancelling is its own
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
+
+### When `clearRetention` answers `false`
+
+A clear whose write gets no answer [reads the row back](correctness.md#row-write-settled) and counts the clear as landed when the row carries its own
+write token: it answers `true` and removes the pointer of the expiry it read. When a later write hides that token
+(a lease write, or another writer's), the row cannot say whose write removed the expiry. The call then decides again
+from the row, on every backend:
+
+- The row holds no expiry: the call answers `false`. The expiry is gone, and the pointer of the expiry it read is
+  removed.
+- The later write set an expiry: the call removes that one too, and answers `true`.
+
+A `setRetention` that moves an expiry removes the old day's pointer the same way. On a registry that does not report
+write tokens, a write that gets no answer throws `TransientError`, and the pointer stays until the call is run again.
 
 ### A deadline on a set
 
@@ -139,7 +158,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
 > disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
 > without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
-> same slice across restarts.
+> same slice across restarts. Two sweeps that overlap each count a purge they both saw happen, so `tombstonesPurged` is
+> what this sweep saw gone, not a total across sweeps.
 
 **Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans
 the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you want the
@@ -147,14 +167,18 @@ deletion to feel.
 
 - A fleet scan is a billed `LIST` over the registry prefix plus one read per row it lists. The default `'fleet'` scan
   costs what the prefix holds: the live segments; every tombstone not purged yet (a retirement inside its grace, or one
-  whose storage is not proven gone); every tombstone a crypto-shred or a hand-run `dropSegment` left, which the library
-  never purges; on an unscoped scan, every due-index pointer; and, where the registry does not report
+  whose storage is not proven gone); [every tombstone a crypto-shred, a cleartext destroy or a hand-run `dropSegment`
+  left, which the
+  library never purges](correctness.md#tombstones-purged-narrowly); on an unscoped scan, every due-index pointer;
+  and, where the registry does not report
   `conditionalDelete` (GCS by default, an S3-compatible store), every row it ever deleted, kept as a marker the scan
   reads each cycle (see [what the purge removes](correctness.md#how-retention-stays-correct)).
 - `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
-  pass. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
+  pass. Two stores writing the retention of one segment within a few round trips can remove each other's pointer (a
+  call that decides again removes the pointer of every expiry it read): the sweep with `scan: 'index'` then does not
+  see that segment, and it is retired by the next `'fleet'` scan. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
   nothing stranded.
 
 **Start with `dryRun`.** `dropSegment`'s `confirmSegment` guard protects nothing in a loop, because it is the same
@@ -178,8 +202,8 @@ declare function scheduleAnotherPassSoon(): void;
 const swept = await store.retireExpired({ namespace: 'active-daily' });
 for (const e of swept.entries) {
   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`);
-  if (e.action === 'retired' && e.result.generationsRemaining.length > 0) {
-    console.warn(`${e.segment}: storage not fully reclaimed, re-run`);
+  if (e.action === 'retired' && (e.fault !== undefined || e.result.generationsRemaining.length > 0)) {
+    console.warn(`${e.segment}: storage not fully reclaimed, re-run dropSegment`);
   }
 }
 if (swept.limited) scheduleAnotherPassSoon(); // more work (retirements or purges) remains
@@ -190,7 +214,9 @@ if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaul
 removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
 snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
 one's reason in `firstPurgeFault`. So is a tombstone whose objects are still there after a collection that raised
-nothing, such as a store that acknowledges a delete it did not make. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+nothing, such as a store that acknowledges a delete it did not make. A delete whose response was lost, or whose resend
+met its own landing, is not a refusal: the sweep reads the row, and a row that is gone is a delete that happened,
+reported as the purge it was. A refused purge is `skipped` in the ledger, with the provider's message, and is not
 charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
 the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
 row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three
@@ -212,6 +238,10 @@ it is charged to `limit`, and the purges go on.
   is read, so live indexed rows equal to the cap followed by a pointer whose row is gone are refused too: size it above
   the live rows. Narrow with `namespace` (and, for an index scan, a smaller `lookbackBuckets`) before raising it.
 
+`namespace` scopes the sweep to one namespace; omit it to sweep every namespace, segments loaded with no `namespace`
+included. `'_default'`, the label the export tool and the disaster-recovery samples print, and the bucket's object keys use, for those segments, is an
+ordinary namespace name here: passing it sweeps a namespace of that name, not them.
+
 **Every `skipped` reason is worth an alert, for a different reason:**
 
 - **`invalid-policy`**: the row's `expiresAt` cannot be used. That segment is not expiring, and someone probably
@@ -223,7 +253,12 @@ it is charged to `limit`, and the purges go on.
 - **`failed: ...`**: that one segment's retirement threw, or, on a tombstone, its purge did, and a purge the registry
   refuses is also counted in `purgeFaults` (above). `dropSegment` writes the tombstone before the storage sweep,
   deliberately, so a fault there leaks bytes, not correctness. A fault after the tombstone landed is reported as
-  `retired` with a `fault`, because that segment really is retired. Re-running collects the bytes.
+  `retired` with a `fault`, because that segment really is retired (when the row cannot be read afterwards either, the
+  entry is `skipped` with a reason that says the tombstone may have landed), and its `generationsRemaining` lists what a
+  listing of the bucket then found (the generations its row named when that listing failed too). A sweep's re-run does
+  not collect them at once: it skips a tombstone until `tombstoneGraceMs` has passed, and its purge then collects the
+  bytes with no `segment.dispose`. Run `store.dropSegment(ref, { confirmSegment })` on that segment, which sweeps at
+  once and emits `segment.dispose`.
 
 **A segment the cap deferred gets no ledger entry**: the cap shows only as `limited: true`, which is what to alert on.
 That cap is what stands between a bad `expiresAt` backfill (or clock skew) and a retired fleet, so it defers instead
@@ -239,7 +274,7 @@ a policy. Four levers exist, and they answer different questions:
 |---|---|---|
 | **`store.retireExpired({ … })`** | lists the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window**: the usual answer, [above](#run-the-sweep-storeretireexpired) |
 | **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, then deletes its storage generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it also discards the key, so it is a strict superset there. Afterwards the segment **reads as empty** | **retiring a bucket and reclaiming the storage** |
-| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: removes the key from the segment's current registry row, so the storage bytes, backups and WORM copies included, are unreadable once no retained copy of that row holds it, or once every KEK that wrapped it is destroyed; the objects stay in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies of the objects |
+| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: removes the key from the segment's current registry row, so the storage bytes, backups and WORM copies included, are unreadable once no retained copy of that row holds it, or once every KEK that wrapped it is destroyed; the objects stay in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'`, unless `allowCleartext` writes the tombstone and leaves the bytes readable | erasure that must reach immutable copies of the objects |
 | `store.load(ref, ids, { keep })`, or an `*Into` given `keep` | the write's own collection: deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([generations and `keep`](loading.md#generations-and-keep)), not live data |
 
 Deleting an object does not reach a noncurrent version, a cross-region replica, or a point-in-time snapshot. Removing
@@ -314,8 +349,8 @@ Two limits to know before you automate it:
   `ValidationError`), which is what makes the storage sweep converge. To reuse a name, use a fresh dated name, which
   is the pattern anyway, or retire the segment through `retireExpired`, which purges the tombstones it wrote itself
   once their grace period has passed and their storage is empty, and on a registry with a conditional delete removes
-  them for good. A tombstone a hand-run `dropSegment` wrote is never
-  purged by the library; the
+  them for good. [A tombstone a hand-run `dropSegment` or a `destroySegment` wrote is never
+  purged by the library](correctness.md#tombstones-purged-narrowly); the
   [disaster-recovery runbook](disaster-recovery.md#repair-an-unstamped-tombstone-after-a-hard-kill) shows how to
   delete such a row by hand once its storage is empty.
 - **"Reads as empty" depends on a timed refresh.** See [how soon a reader sees a change](reading.md#how-soon-a-reader-sees-a-new-load).
@@ -433,6 +468,7 @@ exactly that family's daily segments, and `eraseNamespace` can retire the whole 
 can reach bytes about to disappear and no load can publish onto the segment, and a failure part-way through leaks bytes,
 not correctness: check `generationsRemaining`, and drop again while it is not empty. The sweep [purges a tombstone only
 when the row carries the sweep's own retirement stamp](correctness.md#tombstones-purged-narrowly), its grace period has
-passed, and storage is provably empty for it, so a tombstone a crypto-shred or a hand-run drop wrote is never purged.
+passed, and storage is provably empty for it, so a tombstone a crypto-shred, a cleartext destroy or a hand-run drop
+wrote is never purged.
 What a purge removes on each backend, the due index's pointers and the race the fleet scan repairs, what each step
 costs, and `purgeTombstones: false` are in [How retention stays correct](correctness.md#how-retention-stays-correct).
