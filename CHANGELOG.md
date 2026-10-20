@@ -11,6 +11,16 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **The format page's chunk-payload section says what a writer of your own needs to reproduce the bytes, and both READMEs
+  credit the Roaring authors.** [`docs/format.md`](docs/format.md) section 3 now defines a run (a maximal sequence of
+  consecutive values), the bit order of a bitset (value `v` is bit `v mod 8` of byte `v div 8`), little-endian
+  integers, the three payload lengths, and that a payload is never empty. No byte a writer produces changes. The root
+  README and the `@cloudbitmaps/roaring` README gain a Credits section for the Roaring format and its authors, with the
+  specification and the three papers. The test suite now holds every bitmap codec to CRoaring and to that written rule
+  on every container boundary, which changes nothing for a caller.
+
 ## [0.23.0] — 2026-10-20
 
 ### Breaking
