@@ -227,7 +227,7 @@ registry row is a random holder id, a generation number and an instant, with no 
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,
 { format })` (and the `export-segments` CLI) dumps the current generation of every registered segment that is not
-destroyed (crypto-shredded or dropped) to a portable
+destroyed (crypto-shredded, destroyed in the clear or dropped) to a portable
 file — `roaring` (loadable by any roaring library) or `ndjson` (newline ids) — readable without CloudBitmaps. A destroyed segment resolves no generation, so it is not exported: the manifest's `skipped` lists it, and `segments`, `failed` and `skipped` together account for every segment row the registry listed.
 It's a **controller-side bulk dump** (all segments, opaque ids), not a per-subject deliverable — the per-subject
 rights are `subjectReport` (Art. 15) / `eraseSubject` (Art. 17). Encrypted segments are decrypted transparently
@@ -376,8 +376,9 @@ reserved `cbm.due.` namespace whose key spells out the segment's namespace and n
 row stays recoverable wherever the storage keeps a copy of it: with object versioning on, its earlier versions stay until
 a noncurrent-version rule expires them, as an overwritten row's do; with soft delete on, it stays for the retention
 window (GCS: on by default for a new bucket, 7 days; Azure Blob: where enabled, for the days set), whatever the registry
-did. A tombstone a hand-run `dropSegment` or a
-crypto-shred left is never purged by the library.
+did. A [tombstone a hand-run `dropSegment`, a
+crypto-shred or a cleartext destroy left is never purged by the
+library](docs/guide/correctness.md#tombstones-purged-narrowly).
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
 [retention guide](docs/guide/retention.md).

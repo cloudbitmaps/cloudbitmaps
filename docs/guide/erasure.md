@@ -275,9 +275,11 @@ it deletes a generation above the pointer, an object it cannot search or the obj
 `pointerId`, and its removal of the generations it will delete from the row's ledger, keep them),
 so an entry for a generation it deleted stays in the list until the entry's own time ends or the next publish or lease
 write prunes it: it spares nothing, since the object is gone, and it counts toward the 64 places until then. A
-`destroySegment`, a `dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone.
-So erasure, shred, drop and retention always win, and a lease never holds an erased subject's data past the bounds in
-the table above.
+`dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone. A `destroySegment`
+deletes no generation: it clears the row's leases with its keys, so the tombstone holds no lease, and the objects stay
+in the bucket. After a crypto-shred they are unreadable once no retained copy of the row holds the key (or every KEK
+that wrapped it is destroyed); after a cleartext destroy (`allowCleartext`) they are readable. So erasure, shred, drop
+and retention always win, and a lease never holds an erased subject's data past the bounds in the table above.
 
 A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
 rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on

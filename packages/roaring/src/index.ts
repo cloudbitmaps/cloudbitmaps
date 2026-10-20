@@ -2092,6 +2092,7 @@ export class CloudRoaring {
    * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
    * Each entry says whether the row knows the generation (`known`): a known generation needs no `allowUnknown`; an unknown
    * one does, except below a row's pointer when the row has no usable record or the target is older than a full one reaches.
+   * No entry is `current` on a destroyed segment: its row keeps the pointer it had, but no read resolves through it.
    *
    * Needs a backend.
    */
@@ -2188,8 +2189,9 @@ export class CloudRoaring {
    * {@link ValidationError} before any request to storage, and a known one whose object carries another checksum than
    * the recorded one throws {@link IntegrityError}, with or without a keystore, since the footer is in the clear. A
    * generation not in the bucket (collected, or never written) throws `NotFoundError` naming what *is* available, a
-   * crypto-shredded segment throws {@link ValidationError} because every generation of it is unreadable, and a target
-   * that is cleartext under an encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from
+   * destroyed segment (crypto-shredded, destroyed in the clear or dropped) throws {@link ValidationError}, because no
+   * generation resolves through a destroyed row, and a target that is cleartext under an encrypted segment, or
+   * encrypted under a cleartext one, throws {@link IntegrityError} from
    * one tail read of it, because every read would refuse it. Rolling to the generation already current is a no-op that
    * reports itself, once one footer read finds its object in the bucket (and the one the row recorded); when the object is
    * gone it throws `NotFoundError` naming what is.
@@ -2323,7 +2325,7 @@ export class CloudRoaring {
    * does the first load of a row that records none, which then records it. {@link LoadResult.collected} then names
    * what the pass deleted by name, and one name may have been gone already.
    *
-   * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
+   * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a destroyed
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard has to read its size, which it does only when the row has no usable summary of it
    * (`IntegrityError`); a driver failure; and a fault in the collection's own reads, listing or deletes, or in the write
@@ -2454,7 +2456,7 @@ export class CloudRoaring {
    * A value in the past is legal and means "eligible on the next sweep" — backfilling a policy onto existing
    * buckets is normal. A value below `1_000_000_000_000` (2001-09-09) is rejected: it is almost certainly epoch
    * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a storage
-   * backend (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
+   * backend (throws {@link UnsupportedError} otherwise), and refuses a destroyed segment.
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
     validateRef(ref);
@@ -2535,7 +2537,9 @@ export class CloudRoaring {
    *
    * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
    * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself
-   * first, since nothing else ever would for a tombstoned segment. Attribution is a **positive marker the sweep
+   * first, since nothing else runs that collection on its own for a tombstoned segment (an erasure collects there
+   * only
+   * when an object holds its id, and a re-run drop sweeps it). Attribution is a **positive marker the sweep
    * stamps on its own retirements**, not an inference from "destroyed + an expired policy": a crypto-shred leaves
    * `retention` untouched, so setting a policy and then honouring a right-to-erasure request mid-window produces
    * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. By default a
@@ -2804,8 +2808,9 @@ export class CloudRoaring {
    * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent,
    * errored }` — `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object
    * store, or roll the registry back to a coherent point). Needs the store built with a **backend**
-   * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
-   * the DR runbook (docs/guide/disaster-recovery.md).
+   * (throws {@link UnsupportedError} otherwise). `destroyed` segments (crypto-shredded, destroyed in the clear or
+   * dropped) are skipped. Pair
+   * it with the DR runbook (docs/guide/disaster-recovery.md).
    *
    * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still
    * answers the number its row records, while a read of the object throws, so the count alone never shows it. With
@@ -2909,8 +2914,9 @@ export class CloudRoaring {
    * Enumerates via the store's **own** registry (needs one — throws {@link UnsupportedError} otherwise) so the
    * enumeration and the read path provably share one registry. Encrypted segments are decrypted transparently
    * **iff** this store was wired with their keystore — the export is therefore **cleartext**; protect it.
-   * Crypto-shredded segments are skipped. A segment that can't be read is isolated into the manifest's `failed[]`
-   * (the run continues), so "a manifest exists" means the run finished — check `failed`. The `export-segments`
+   * Destroyed segments (crypto-shredded, destroyed in the clear or dropped) are skipped. A segment that can't be read
+   * is isolated into the manifest's `failed[]` (the run continues), so "a manifest exists" means the run finished —
+   * check `failed`. The `export-segments`
    * CLI wraps this with a filesystem sink. The `'roaring'` format's bitmaps are built by the store's own codec.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
@@ -3631,7 +3637,7 @@ export class Segment {
    * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
    * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
    *
-   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
+   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a destroyed segment),
    * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
    * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
    * reopened while its object is stored. Nothing keeps a generation alive unless you lease it: a later load's

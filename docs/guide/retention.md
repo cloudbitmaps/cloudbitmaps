@@ -67,8 +67,10 @@ every load. It is idempotent, so re-running is harmless, but it is a write.
   an `expiresAt` below it, and `retireExpired` for a `now` below it.
 - **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto segments that already
   exist is a normal migration.
-- **A tombstone is refused.** A crypto-shredded, dropped or retired segment throws `ValidationError`: there is nothing
-  left to retire, so use a new segment name.
+- **A tombstone is refused.** A crypto-shredded, cleartext-destroyed, dropped or retired segment throws
+  `ValidationError`, so use a new segment name. A drop or a retirement deleted its objects (drop again
+  while `generationsRemaining` is not empty). A destroy left its objects in the bucket (readable after a cleartext
+  destroy), and `dropSegment` on the tombstone deletes them.
 - **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
   policy is committed, and the fleet scan still retires the segment.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
@@ -147,8 +149,10 @@ deletion to feel.
 
 - A fleet scan is a billed `LIST` over the registry prefix plus one read per row it lists. The default `'fleet'` scan
   costs what the prefix holds: the live segments; every tombstone not purged yet (a retirement inside its grace, or one
-  whose storage is not proven gone); every tombstone a crypto-shred or a hand-run `dropSegment` left, which the library
-  never purges; on an unscoped scan, every due-index pointer; and, where the registry does not report
+  whose storage is not proven gone); [every tombstone a crypto-shred, a cleartext destroy or a hand-run `dropSegment`
+  left, which
+  the library never purges](correctness.md#tombstones-purged-narrowly); on an unscoped scan, every due-index pointer;
+  and, where the registry does not report
   `conditionalDelete` (GCS by default, an S3-compatible store), every row it ever deleted, kept as a marker the scan
   reads each cycle (see [what the purge removes](correctness.md#how-retention-stays-correct)).
 - `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
@@ -239,7 +243,7 @@ a policy. Four levers exist, and they answer different questions:
 |---|---|---|
 | **`store.retireExpired({ … })`** | lists the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window**: the usual answer, [above](#run-the-sweep-storeretireexpired) |
 | **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, then deletes its storage generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it also discards the key, so it is a strict superset there. Afterwards the segment **reads as empty** | **retiring a bucket and reclaiming the storage** |
-| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: removes the key from the segment's current registry row, so the storage bytes, backups and WORM copies included, are unreadable once no retained copy of that row holds it, or once every KEK that wrapped it is destroyed; the objects stay in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies of the objects |
+| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: removes the key from the segment's current registry row, so the storage bytes, backups and WORM copies included, are unreadable once no retained copy of that row holds it, or once every KEK that wrapped it is destroyed; the objects stay in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'`, unless `allowCleartext` writes the tombstone and leaves the bytes readable | erasure that must reach immutable copies of the objects |
 | `store.load(ref, ids, { keep })`, or an `*Into` given `keep` | the write's own collection: deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([generations and `keep`](loading.md#generations-and-keep)), not live data |
 
 Deleting an object does not reach a noncurrent version, a cross-region replica, or a point-in-time snapshot. Removing
@@ -314,8 +318,8 @@ Two limits to know before you automate it:
   `ValidationError`), which is what makes the storage sweep converge. To reuse a name, use a fresh dated name, which
   is the pattern anyway, or retire the segment through `retireExpired`, which purges the tombstones it wrote itself
   once their grace period has passed and their storage is empty, and on a registry with a conditional delete removes
-  them for good. A tombstone a hand-run `dropSegment` wrote is never
-  purged by the library; the
+  them for good. [A tombstone a hand-run `dropSegment` or a `destroySegment` wrote is never
+  purged by the library](correctness.md#tombstones-purged-narrowly); the
   [disaster-recovery runbook](disaster-recovery.md#repair-an-unstamped-tombstone-after-a-hard-kill) shows how to
   delete such a row by hand once its storage is empty.
 - **"Reads as empty" depends on a timed refresh.** See [how soon a reader sees a change](reading.md#how-soon-a-reader-sees-a-new-load).
@@ -433,6 +437,7 @@ exactly that family's daily segments, and `eraseNamespace` can retire the whole 
 can reach bytes about to disappear and no load can publish onto the segment, and a failure part-way through leaks bytes,
 not correctness: check `generationsRemaining`, and drop again while it is not empty. The sweep [purges a tombstone only
 when the row carries the sweep's own retirement stamp](correctness.md#tombstones-purged-narrowly), its grace period has
-passed, and storage is provably empty for it, so a tombstone a crypto-shred or a hand-run drop wrote is never purged.
+passed, and storage is provably empty for it, so a tombstone a crypto-shred, a cleartext destroy or a hand-run drop
+wrote is never purged.
 What a purge removes on each backend, the due index's pointers and the race the fleet scan repairs, what each step
 costs, and `purgeTombstones: false` are in [How retention stays correct](correctness.md#how-retention-stays-correct).

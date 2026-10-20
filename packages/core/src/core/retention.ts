@@ -246,8 +246,9 @@ async function reindex(
  * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
  * row's `retention` metadata are preserved — this owns one key, not the whole object.
  *
- * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
- * a sweep repeatedly "retire" bytes that are already gone.
+ * Refuses a `destroyed` segment: a sweep never retires a tombstone (it purges only its own, by their stamp), so a
+ * policy on one would never act. Objects a destroy left in the bucket are deleted by `dropSegment` on the tombstone,
+ * not by a policy.
  */
 export async function setSegmentRetention(
   ref: SegmentRef,
@@ -343,8 +344,8 @@ export async function clearSegmentRetention(
 function assertNotDestroyed(record: RegistryRecord, ref: SegmentRef): void {
   if (record.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to set a retention policy on a ` +
-        `tombstone; there is nothing left to retire. Use a new segment.`,
+      `segment "${ref.segment}" is destroyed — refusing to set a retention policy on a ` +
+        `tombstone. Use a new segment; to delete objects a destroy left in the bucket, run dropSegment.`,
     );
   }
 }

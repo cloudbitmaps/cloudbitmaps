@@ -8,8 +8,11 @@
  * backup or a point-in-time copy of the row), or once every KEK that wrapped it is destroyed; until then a registry
  * restore to a point before the shred makes the segment readable again. **Immediate**, and it cannot be undone
  * through the library (a registry restore to before it can), so it's gated behind an explicit confirmation (name the
- * exact segment/namespace). A `destroyed` segment reads as empty (its current row holds no DEK). Only works on an
- * **encrypted** segment; a cleartext segment has no key to shred.
+ * exact segment/namespace). A `destroyed` segment reads as empty: no generation resolves through a destroyed row.
+ * Only
+ * an **encrypted** segment is crypto-shredded; a cleartext one has no key to shred, and `allowCleartext` tombstones
+ * it
+ * with its objects left readable.
  *
  * The tombstone is also the fence every writer respects: a load refuses
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different

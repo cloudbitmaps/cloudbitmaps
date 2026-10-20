@@ -481,7 +481,7 @@ async function encodedBeforeTheRow(
 
 /**
  * The segment's row as the write judges it (when a registry is wired), with the refusals it makes on it: a
- * crypto-shredded segment, whose write would create bytes no reader can reach, and an encrypted one with no keystore.
+ * destroyed segment, whose write would create bytes no reader can reach, and an encrypted one with no keystore.
  * A present cleartext row the caller already read is used as read (see `row`).
  */
 async function rowForWrite(
@@ -501,7 +501,8 @@ async function rowForWrite(
         : null;
   if (existing?.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+      `segment "${ref.segment}" is destroyed — refusing to write: no generation resolves through a destroyed row; ` +
+        `use a new segment`,
     );
   }
 

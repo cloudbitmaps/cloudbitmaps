@@ -116,7 +116,7 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
   object. The drivers this project ships run it once.
 - **A long stream is a long load.** The row is read before the stream and fenced at the publish after it, as for an
   unsorted load, so a write to the row while your ids stream (another load, a `setRetention`) makes the load
-  `superseded`. A segment crypto-shredded while they stream is caught the same way, and the object the load wrote is
+  `superseded`. A segment destroyed while they stream is caught the same way, and the object the load wrote is
   deleted under the `destroyed` row ([how a load stays correct](correctness.md#how-a-load-stays-correct)).
 
 **A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
@@ -494,7 +494,7 @@ neither is this one. An `*Into` always lists when it is given a `keep`.
 | `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1): by name at any `keep` up to 64, by listing on every 16th generation and in the cases above. |
 | an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination lists twice when its number was free (once to seed the ledger, once to collect; it sends no separate write), collects everything below its pointer beyond its `keep`, and records the window it kept. This is the step `store.load` exists to stop you forgetting. |
 | `eraseSubject` | **Yes**, with `keep: 0`: the generation holding the bit must not survive the call. Collection's range leaves out three kinds of object, so the erasure deletes each itself, by name: a holder above the pointer, which a `rollback` leaves there; a first load's object that holds the id on a segment with no generation yet; and an object no read of the segment can open, which it cannot search and deletes whatever the id. |
-| `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched. |
+| `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment`, a crypto-shred or a cleartext destroy left is never touched. |
 | `dropSegment` | Deletes every generation of the segment it drops, and reports any it could not in `generationsRemaining`. |
 
 An `*Into` that collects on the way through:
@@ -676,8 +676,9 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
 **Why rollback is not forward-only.** Forward-only is right for a writer: a load whose ids came from upstream loses
 nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an
 operator who has looked at the segment and knows which generation they want. So rollback refuses rather than guesses.
-A crypto-shredded segment throws `ValidationError`, since every generation of it is unreadable, and rolling to the
-generation already current is a reported no-op once one footer read finds its object in the bucket, and, when the row
+A destroyed segment (crypto-shredded, destroyed in the clear or dropped) throws `ValidationError`, since no
+generation resolves through a destroyed row, and rolling to the generation already current is a reported no-op once
+one footer read finds its object in the bucket, and, when the row
 knows it, with the checksum it recorded (another footer under the number throws `IntegrityError`, and so does a footer that fails its own checks: a no-op
 reports no segment as fine over a corrupt current footer). When the object
 is gone (a collection raced an earlier move), it throws `NotFoundError` naming the generations that are there, so
@@ -803,8 +804,9 @@ error. The dangerous direction is the quiet one: a mistyped include collapses an
 while a mistyped exclude removes a safeguard and you do not. Both throw a `ValidationError` naming the segment. A
 segment with a registry row that is not a tombstone is accepted even when it holds no ids, because somebody created it
 deliberately: a row minted by `setRetention` before its first load, or a segment loaded empty. A name with no registry
-row is refused, and so is a `destroyed` tombstone (a segment dropped, retired or crypto-shredded). `store.exists()`
-answers `false` for a row minted ahead of its first load, which a combine still accepts. Pass
+row is refused, and so is a `destroyed` tombstone (a segment dropped, retired, crypto-shredded or destroyed in
+the clear). `store.exists()` answers `false` for a row minted ahead of its first load, which a combine still accepts.
+Pass
 `allowAbsentOperands: true` to combine against a name that may not exist yet; it then reads as empty.
 
 To write many results over the same operands, see [many outputs from one pass](#many-outputs-from-one-pass-materializemany).

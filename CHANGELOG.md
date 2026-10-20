@@ -124,6 +124,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An error about a destroyed segment no longer says it was crypto-shredded.** A `dropSegment`, a retention retirement
+  and a cleartext `destroySegment` leave a destroyed row too, and a cleartext destroy leaves its objects readable in the
+  bucket. `rollback`, a load and a publish that races a destroy now say the segment is destroyed and that no
+  generation resolves through a destroyed row, and `setRetention` says it refuses a tombstone and that `dropSegment`
+  deletes what a destroy left in the bucket. Each is the same `ValidationError` as before. The guides, the format
+  reference and the doc-comments that called every destroyed row crypto-shredded, or its generations unreadable, say
+  the same, and the erasure guide no longer says a `destroySegment` deletes every generation.
+- **`generations()` marks no generation `current` on a destroyed segment.** The tombstone keeps the pointer it had, but
+  no read resolves a generation through it, so the entry that pointer named was listed as current.
 - **The erasure, crypto-shred and retention guarantees say what the code does.** The hover docs of the `segment.erase`
   audit event, `DestroyResult.cryptoShredded`, `DropResult.cryptoShredded` and `wouldCryptoShred`, `destroySegment`,
   `eraseNamespace` and `dropSegment`, the API reference, the encryption and retention guides and the roadmap said a

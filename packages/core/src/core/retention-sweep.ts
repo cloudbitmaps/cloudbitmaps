@@ -28,7 +28,8 @@
  * gets a `destroyed` row, and one dead row per retired daily bucket — or per retired dedup wave — is exactly the
  * registry litter `dropSegment` already refuses to create for a row-less accumulator. Purging is narrow on
  * purpose: only a tombstone carrying the **stamp this sweep writes on its own retirements** (so it is attributably
- * ours: a crypto-shred's tombstone does not carry it, unless the shred lands between this sweep's re-read of the
+ * ours: a crypto-shred's or a cleartext destroy's tombstone does not carry it, unless the shred lands between this
+ * sweep's re-read of the
  * row and its drop, which then reports the tombstone dropped and stamps it), only after a grace period, and only
  * once Storage is provably empty for it —
  * because deleting the row is what makes the name reusable and takes the segment out of reach of
@@ -44,7 +45,8 @@
  * it: an index scan in its buckets, and an unscoped fleet scan, which reads every pointer, in all of them. Where a
  * delete only rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would
  * only add a row for every scan to read. The pointers a scan reads to a tombstone this sweep did not write (a
- * crypto-shred, a drop by hand) are removed too, since the sweep will never act on that row; the row stays.
+ * crypto-shred, a cleartext destroy, a drop by hand) are removed too, since the sweep will never act on that row; the
+ * row stays.
  */
 import { requireFiniteNumber, requireInteger, requirePositiveInteger } from './check';
 import { type IAuditSink, checkedAuditSink } from './audit';
@@ -670,7 +672,8 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
   const { now, limit, grace, dryRun } = opts;
   const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
   const base = { segment: rec.segment, namespace: rec.namespace };
-  // A tombstone this sweep did not write (a crypto-shred, a drop by hand) is never retired or purged here, and it
+  // A tombstone this sweep did not write (a crypto-shred, a cleartext destroy, a drop by hand) is never retired or
+  // purged here, and it
   // has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and the row stays.
   const stamp = retirementStamp(rec.retention);
   if (stamp === null) {
@@ -708,8 +711,9 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
   try {
     if (!(await isFullyReclaimed(deps, ref))) {
       // Self-heal rather than report-and-wait: `gcOrphanGenerations` takes EVERY generation of a destroyed
-      // row, and nothing else will ever call it for this segment (no load publishes onto a tombstone, and the
-      // erasure rewrite refuses one). Without this the row is stuck forever, the
+      // row, and nothing else calls it on its own for this segment (no load publishes onto a tombstone, the
+      // erasure rewrite refuses one, an erasure collects there only when an object holds its id, and a re-run drop
+      // sweeps it). Without this the row is stuck forever, the
       // objects are billed forever, and the sweep pays two list calls per cycle to say so again. Measured.
       let collectFault: { error: unknown } | undefined;
       if (!dryRun) {
@@ -896,7 +900,8 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
       // tombstoned by this delete: only a `destroyed` row is removed, and only at the token it was read with.
       //
       // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable
-      // from a crypto-shred's tombstone, which no sweep may ever delete, so one transient registry fault would
+      // from a crypto-shred's or a cleartext destroy's tombstone, which no sweep may ever delete, so one transient
+      // registry fault would
       // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it. The
       // stamp itself only touches a `destroyed` row, so a name that was re-created meanwhile is left alone.
       const tombstone = await deps.registry.get(ref).catch(() => null);
