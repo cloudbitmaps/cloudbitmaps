@@ -790,10 +790,12 @@ function distEntryFilesOf(pkgDir) {
       'utf8',
     ),
   );
-  return Object.entries(manifest.exports ?? {}).map(([key, target]) => ({
-    key,
-    file: path.posix.normalize(target.default).replace(/^dist\//, ''),
-  }));
+  return Object.entries(manifest.exports ?? {})
+    .filter(([key]) => key !== './package.json') // a file, not a built entry
+    .map(([key, target]) => ({
+      key,
+      file: path.posix.normalize(target.default).replace(/^dist\//, ''),
+    }));
 }
 
 function assertEntrySdkFree(pkgDir) {
