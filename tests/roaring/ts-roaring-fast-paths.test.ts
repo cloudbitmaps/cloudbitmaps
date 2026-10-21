@@ -2,14 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import { roaringCodec as NA } from '@/roaring-codec';
 import { tsRoaringCodec as TS } from '@/ts-roaring/bitmap';
+import { runExport } from '@/export';
+import { CloudRoaring, MemoryStorage } from '@/index';
+import type { ExportSink, ExportWriter } from '@/index';
 
 /**
  * Differential regression tests for the TypeScript codec's fast paths, each compared with the native codec (and a
  * plain sorted set): the gallop around its skew of 16, the bitset popcount and word loops, run edges and word
  * boundaries, copy-on-write of shared containers against every mutator (before, in the middle of, and with a clone
  * during an encodeChunks), a bitmap combined with itself, and decoded bitmaps that must not alias their input
- * (a Uint8Array, a Buffer, a pooled Buffer, a SharedArrayBuffer, an offset subarray). Written by an independent
- * review of the fast paths.
+ * (a Uint8Array, a Buffer, a pooled Buffer, a SharedArrayBuffer, an offset subarray). Each case checks the fast
+ * path's bytes and contents against the native codec and against a set built one id at a time.
  */
 // The differential cases combine many 64 Ki-value operands in both codecs; a shared CI runner needs more than 5 s.
 vi.setConfig({ testTimeout: 60_000 });
@@ -433,5 +436,40 @@ describe('export batching vs per-id native', () => {
       t.optimize?.();
       per.optimize?.();
       expect(hex(t.serialize())).toBe(hex(per.serialize()));
+    });
+});
+
+describe('runExport batching, end to end', () => {
+  // More than 65,536 ids across many chunks, with ids at and above 2^31 up to 2^32 - 1, so the export's full-batch
+  // flush runs more than once and its tail flush runs after it.
+  const ids = [
+    ...Array.from({ length: 150 }, (_, c) => range(0, 900).map((i) => c * 65536 + i * 7)).flat(),
+    ...range(2 ** 31 - 3, 2 ** 31 + 3),
+    ...range(2 ** 31 + 70000, 2 ** 31 + 70500),
+    ...range(2 ** 32 - 1000, 2 ** 32),
+  ];
+  for (const [name, codec] of [
+    ['native', NA],
+    ['typescript', TS],
+  ] as const)
+    it(`exports ${ids.length} ids in the bytes a per-id add writes (${name} codec)`, async () => {
+      expect(ids.length).toBeGreaterThan(2 * 65536 - 1);
+      const backend = new MemoryStorage();
+      await new CloudRoaring({ storage: backend }).load({ segment: 's' }, ids);
+      const store = new CloudRoaring({ storage: backend });
+      const out: Uint8Array[] = [];
+      const sink: ExportSink = {
+        open(): ExportWriter {
+          return {
+            write: (b) => void out.push(Uint8Array.from(b)),
+            close() {},
+          };
+        },
+      };
+      const manifest = await runExport(store, backend.registry, sink, { codec });
+      expect(manifest.totalIds).toBe(ids.length);
+      const want = codec.empty();
+      for (const v of ids) want.add(v);
+      expect(hex(Buffer.concat(out))).toBe(hex(want.serialize()));
     });
 });

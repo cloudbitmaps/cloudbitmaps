@@ -44,8 +44,8 @@
  * TypeScript one's allocation both show up in the figures; neither is subtracted.
  *
  *   - THERE IS NO COLD-PROCESS FIGURE. Everything here is a warmed codec: 300 ms of calls before timing. The first
- *     calls of a fresh process (the cost a Lambda cold start pays) are not measured here; the measurement PR owns that
- *     row.
+ *     calls of a fresh process (the cost a Lambda cold start pays) are not measured here, and this bench has no
+ *     cold-process figure.
  *   - Each cell runs in its own child process, so the TypeScript codec's inline caches see one workload and not the
  *     container kinds of every earlier cell. Inside a cell both codecs still share the process.
  *   - The optimizing tier is not confirmed. A check from `--allow-natives-syntax` would report on the cell's closure,
