@@ -10,10 +10,8 @@
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import { tsRoaringCodec } from '../ts-roaring/bitmap';
 
-/** The store's safe decoder: a size cap, the structural check, then the decode; a typed error for anything else. */
-export function safeDeserialize(bytes: Uint8Array, maxBytes: number): CodecBitmap {
-  return tsRoaringCodec.safeDeserialize(bytes, maxBytes);
-}
+/** The store's decoder: its `safeDeserialize` is a size cap, the structural check, then the decode, and a typed error for anything else. */
+export { tsRoaringCodec };
 
 /**
  * What an accepted decode must be: it iterates strictly ascending, `size` is the number of values it iterates, and

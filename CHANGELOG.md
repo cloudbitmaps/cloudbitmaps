@@ -56,7 +56,9 @@ so, and so do the module headers in the code.
   integers, the three payload lengths, and that a payload is never empty. No byte a writer produces changes. The root
   README and the `@cloudbitmaps/roaring` README gain a Credits section for the Roaring format and its authors, with the
   specification and the three papers. The test suite now holds every bitmap codec to CRoaring and to that written rule
-  on every container boundary, which changes nothing for a caller.
+  on every container boundary, and the nightly bitmap-decoder fuzz target runs the TypeScript decoder, each input read with and without the
+  trailing-bytes refusal. The TypeScript codec's
+  module README is documentation. None of this changes anything for a caller.
 
 ## [0.23.0] — 2026-10-20
 

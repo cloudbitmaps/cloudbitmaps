@@ -16,7 +16,7 @@ validation front:
 
 | Target | Entry point | Coverage | Runs |
 | --- | --- | --- | --- |
-| `targets/safe-deserialize.mjs` | the codec's safe deserialize → its structural check → the TypeScript portable decoder | **coverage-guided** over both (pure TS) | `pnpm fuzz:deser` |
+| `targets/safe-deserialize.mjs` | the TypeScript codec's safe deserialize (`tsRoaringCodec`) → the structural check → its own container decode (slab, in-place aliasing, run containers), each input read with and without `whole` | **coverage-guided** through the whole decode (all instrumented JS) | `pnpm fuzz:deser` |
 | `targets/crbm-index.mjs` | `parseIndex` **directly** on raw index bytes | **coverage-guided** (pure, branch-dense TS) | `pnpm fuzz:index` |
 | `targets/crbm-ext.mjs` | `parseExtension` **directly** on the raw sections of an extension block: the section walk, then the metadata record (UTF-8, JSON, the metadata rules, canonical form), read as cleartext and again as sealed under a key whose every open fails | **coverage-guided** (pure TS) | `pnpm fuzz:ext` |
 | `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds, with and without an extension block), opened at the default tail, a footer-sized tail, a footer-sized tail with every range read a byte short, and tails at and a byte either side of where the input's footer puts the index, the block's trailer and the block | **coverage-guided** | `pnpm fuzz:crbm` |
@@ -67,7 +67,8 @@ reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accret
 ## When a crash is found — the regression loop
 
 1. Minimize it: `jazzer <target> -- -minimize_crash=1 <fuzz/crashes/crash-…>`.
-2. Copy the reproducer into `tests/core/crbm/fuzz-corpus/{safe-deserialize,crbm-index,crbm-ext,crbm-reader}/`. A
+2. Copy the reproducer into `tests/core/crbm/fuzz-corpus/{safe-deserialize,crbm-index,crbm-ext,crbm-reader}/` (a bitmap-decoder reproducer goes in
+   `safe-deserialize/` and is replayed through both decoders). A
    reproducer written by hand, for a hostile shape the campaign has not reached, goes in the same place.
 3. Fix the bug. [`tests/core/crbm/fuzz-corpus.test.ts`](../tests/core/crbm/fuzz-corpus.test.ts) replays every
    committed reproducer on **every PR** (the campaign itself runs nightly and weekly, never as a per-PR gate), so the
