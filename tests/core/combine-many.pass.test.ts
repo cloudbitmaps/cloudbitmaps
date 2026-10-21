@@ -444,14 +444,14 @@ describe('the memory ledger', () => {
       a: { 0: big(), 1: big(), 2: big(), 3: bytesOf([1, 2, 3]), 4: big() },
     });
     source.cards = () => 1;
-    const r = await run(source, ['a'], [{ expr: 'a' }], { maxBufferedBytes: 41_505 });
+    const r = await run(source, ['a'], [{ expr: 'a' }], { maxBufferedBytes: 42_790 });
     const error = (r.outputs[0] as { error: BudgetExceededError }).error;
     expect(error).toBeInstanceOf(BudgetExceededError);
     expect(error.message).toContain(
-      'operand "a" at chunk 4 would hold more than maxBufferedBytes (41505)',
+      'operand "a" at chunk 4 would hold more than maxBufferedBytes (42790)',
     );
-    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 41_505, spent: 42_040 });
-    expect(error.spent).toBeGreaterThan(41_505);
+    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 42_790, spent: 43_640 });
+    expect(error.spent).toBeGreaterThan(42_790);
   });
 
   it('an output that cannot fit alone has BudgetExceededError, and the others publish', async () => {
@@ -462,7 +462,7 @@ describe('the memory ledger', () => {
     });
     const refused = (r.outputs[0] as { error: BudgetExceededError }).error;
     expect(refused).toBeInstanceOf(BudgetExceededError);
-    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 40_000, spent: 45552 });
+    expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 40_000, spent: 42474 });
     expect(ok(r.outputs[1]!).ids).toEqual([1, 2, 3]);
     expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(40_000);
   });
@@ -473,7 +473,7 @@ describe('the memory ledger', () => {
     const error = (r.outputs[0] as { error: BudgetExceededError }).error;
     expect(error.message).toMatch(/raise maxBufferedBytes to at least \d+/);
     // The refusal's `spent` is the very figure the message names as the least that would let the output through.
-    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 10_000, spent: 109246 });
+    expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 10_000, spent: 111166 });
     expect(error.message).toContain(`to at least ${error.spent}`);
     expect(source.opens).toEqual([]);
   });
