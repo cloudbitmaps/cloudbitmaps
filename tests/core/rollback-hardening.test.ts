@@ -18,7 +18,7 @@ import { incarnationOf } from '@/core/token';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
@@ -39,7 +39,7 @@ const key = (): InProcessKeystore =>
 
 function world(keystore?: IKeystore, registry: IRegistryDriver = new MemoryRegistryDriver()) {
   const storage = new MemoryStorageDriver();
-  const load = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const load = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
   return { storage, registry, load, deps: { storage, registry, keystore } };
 }
 type World = ReturnType<typeof world>;

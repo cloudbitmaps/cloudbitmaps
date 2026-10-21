@@ -6,7 +6,7 @@ import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { ValidationError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { craftPortable } from '../helpers/portable-bytes';
 import { counterEntropy } from '../helpers/entropy';
@@ -37,7 +37,7 @@ function counted<T extends object>(target: T): { driver: T; calls: string[] } {
   return { driver, calls };
 }
 
-function world(codec: CodecInterface = roaringCodec) {
+function world(codec: CodecInterface = storeCodec) {
   const storage = counted<IStorageDriver>(new MemoryStorageDriver());
   const registry = counted<IRegistryDriver>(new MemoryRegistryDriver());
   return {
@@ -217,14 +217,14 @@ describe('{ serialized }: portable Roaring bytes, checked before anything is rea
   } {
     const calls: Array<{ length: number; max: number; shared: boolean }> = [];
     const codec: CodecInterface = {
-      ...roaringCodec,
+      ...storeCodec,
       safeDeserialize: (bytes, max) => {
         calls.push({
           length: bytes.byteLength,
           max,
           shared: isShared(bytes.buffer),
         });
-        return roaringCodec.empty();
+        return storeCodec.empty();
       },
     };
     return { codec, calls };
@@ -428,9 +428,9 @@ describe('an input that is none of the three is refused', () => {
 describe('a codec without encodeChunks loads a bitmap input through its ids', () => {
   it('and writes the same object as the ids would', async () => {
     const withoutEncode: CodecInterface = {
-      ...roaringCodec,
+      ...storeCodec,
       safeDeserialize: (bytes, max) => {
-        const bitmap = roaringCodec.safeDeserialize(bytes, max);
+        const bitmap = storeCodec.safeDeserialize(bytes, max);
         return new Proxy(bitmap, {
           get: (t, prop) => (prop === 'encodeChunks' ? undefined : Reflect.get(t, prop, t)),
         }) as CodecBitmap;

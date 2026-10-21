@@ -7,7 +7,7 @@ import { setSegmentRetention } from '@/core/retention';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { publishGeneration } from '../helpers/publish';
 import { testEntropy } from '../helpers/entropy';
@@ -31,7 +31,7 @@ async function destroyed(route: Route) {
     route === 'crypto-shred'
       ? new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' })
       : undefined;
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
   for (const ids of [[1], [1, 2], [1, 2, 3]]) await loadSegment(SEG, ids, deps, { keep: 9 });
   if (route === 'drop') await dropSegment(SEG, { storage, registry }, { confirmSegment: 's' });
   else
@@ -112,7 +112,7 @@ describe.each(ROUTES)('a segment destroyed by a %s', (route) => {
 it('still marks the current generation of an active segment', async () => {
   const backend = new MemoryStorage();
   const { storage, registry } = backend;
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
   await loadSegment(SEG, [1], deps, { keep: 9 });
   await loadSegment(SEG, [1, 2], deps, { keep: 9 });
   const entries = await listGenerations(SEG, { storage, registry });

@@ -925,7 +925,7 @@ const specAnchors = [];
   } else {
     for (const [label, want] of [
       ['soak · combines', String(soak.combines)],
-      ['soak · native creep', `${soak.nativeCreepMiB.toFixed(2)} MiB`],
+      ['soak · external creep', `${soak.externalCreepMiB.toFixed(2)} MiB`],
     ]) {
       if (!benchPage.includes(want)) {
         fail(

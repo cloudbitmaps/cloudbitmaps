@@ -111,6 +111,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # `pnpm test` loads the oracle's prebuilt `roaring` binary here, in the job that can publish: refuse one whose checksum is not recorded.
+      - run: node scripts/verify-roaring-prebuilt.cjs --strict
+
       # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older. A FLOOR, not
       # `@latest`: `@latest` silently makes every release depend on whatever npm shipped that morning, so a
       # regression in a brand-new npm becomes a broken release with no change on our side and nothing in the

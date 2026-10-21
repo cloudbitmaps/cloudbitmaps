@@ -1,4 +1,4 @@
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { joinId } from '@/core/bit-route';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryStorageDriver } from '@/drivers/memory';
@@ -39,7 +39,7 @@ describe('bulk-load across the flush boundary', () => {
 
     const storage = new MemoryStorageDriver();
     const res = await bulkLoadCrbmGeneration(storage as never, KEY as never, ids(), {
-      codec: roaringCodec,
+      codec: storeCodec,
     } as never);
 
     // The assertion that catches an overwrite: a replace-instead-of-merge bug loses everything written before

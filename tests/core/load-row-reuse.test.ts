@@ -10,7 +10,7 @@ import { rollbackSegment } from '@/core/rollback';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
@@ -31,7 +31,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 
@@ -41,7 +41,7 @@ async function idsOf(storage: IStorageDriver, generation: number): Promise<numbe
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
       out.push((chunkKey << 16) + r);
     }
   }

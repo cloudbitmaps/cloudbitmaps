@@ -3,20 +3,20 @@
 # Hard RSS ceiling gate — the definitive memory bound the soak's leak-*watch* cannot prove.
 #
 # The soak bench proves *no creep* (post-GC heap stays flat); it does NOT prove a hard *peak-RSS* ceiling —
-# and RSS includes the `roaring` addon's **off-heap native** memory, which a JS heap sample can't see. This
-# gate closes that: run a sustained read+combine+re-load workload under a hard cgroup `--memory` limit (swap
+# and RSS includes memory a JS heap sample can't see (the allocator's retained arenas, buffers, the runtime's own
+# floor). This gate closes that: run a sustained read+combine+re-load workload under a hard cgroup `--memory` limit (swap
 # disabled, so the limit is a true RSS ceiling) and assert the process **completes without being OOM-killed**
 # (a cgroup OOM surfaces as container exit code 137). If a cache regressed to unbounded, the sustained fleet
 # would grow past the cap and the kernel would kill it — the gate has teeth.
 #
 # Why Docker (not systemd-run): it works identically on a Linux CI runner AND on a local Linux-VM Docker
-# (Colima/Docker Desktop), and it builds `roaring` **from source for the container's platform** (the host's
-# macOS/arm64 addon can't load in the Linux container), reusing the supply-chain from-source path.
+# (Colima/Docker Desktop). The store is plain JavaScript, so nothing the soak runs loads a native addon and no
+# toolchain or platform-specific build is needed: the container runs the built `dist` as it is.
 #
 # Two independent teeth: (1) the hard `--memory` CEILING catches a gross/fast blowup (OOM-kill → exit 137);
-# (2) the soak's own post-GC creep verdict catches a subtle sub-MiB leak (soak.cjs exits 1). We build roaring
-# in an UNCONSTRAINED stage and run ONLY the soak under the tight ceiling — so the ceiling is sized to the
-# runtime working set (sharp), not inflated by the one-off from-source compile.
+# (2) the soak's own post-GC creep verdict catches a subtle sub-MiB leak (soak.cjs exits 1). We stage the built
+# packages in an UNCONSTRAINED step and run ONLY the soak under the tight ceiling — so the ceiling is sized to the
+# runtime working set (sharp), not inflated by staging.
 #
 # Usage: `pnpm rss-gate` (or `bash scripts/rss-gate.sh`). Needs Docker. Tunables (env):
 #   RSS_GATE_MEMORY=384m     hard cgroup RSS ceiling for the RUN phase (well above the ~170 MiB reader-phase
@@ -42,8 +42,6 @@ command -v docker >/dev/null 2>&1 || {
 echo "rss-gate: build the library (both workspace packages)"
 pnpm build >/dev/null
 
-# Pin the in-container roaring build to the exact version the repo resolves, so the gate tests our real dep.
-ROARING_VER="$(node -p "require('./node_modules/roaring/package.json').version")"
 # Repo-local, NOT mktemp: Docker Desktop shares /Users but not /var/folders, and this is bind-mounted.
 STAGE="$ROOT/.rss-stage"
 
@@ -80,27 +78,18 @@ clean_stage
 mkdir -p "$STAGE"
 trap clean_stage EXIT
 
-# Stage 1 — build roaring FROM SOURCE + stage dist + soak into a shared dir, UNCONSTRAINED (the compile's peak
-# is not what we gate). The full node image ships the C/C++ toolchain node-gyp needs. Output is kept so a build
-# failure is diagnosable (only piped away on success would hide the error) — `set -e` fails the gate on error.
-echo "rss-gate: stage build (roaring ${ROARING_VER} from source, uncapped)"
-docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage" "$STAGE_RUN" bash -lc '
+# Stage 1 — stage the built packages + the soak into a shared dir, UNCONSTRAINED. Nothing here installs from a
+# registry or compiles: the store is JavaScript only, so the stage is a copy. Output is kept so a failure is
+# diagnosable — `set -e` fails the gate on error.
+echo "rss-gate: stage the built packages"
+docker run --rm -v "$ROOT:/w:ro" -v "$STAGE:/stage" "$STAGE_RUN" bash -lc '
   set -e
   cd /stage
-  npm init -y >/dev/null 2>&1
-  # npm has its own retry; this raises it from the default of 2. It covers the REGISTRY legs of the install
-  # (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
-  # its headers separately and retries those on its own schedule, which this setting does not reach. Each
-  # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface the image pull
-  # above meets with docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
-  # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
-  export npm_config_fetch_retries=5
-  npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --no-audit --no-fund
   # soak.cjs requires the packages BY NAME (`@cloudbitmaps/roaring`), so lay out a minimal node_modules with
   # both built packages. Placing them directly (rather than `npm install`-ing tarballs) keeps the stage
   # registry-free: the flavor package depends on `@cloudbitmaps/core@workspace:*`, which no registry can resolve
   # pre-publish. Node needs only package.json + dist to resolve through the `exports` map, which is what we want
-  # to exercise. `roaring` sits at the stage root, so both packages resolve the native addon from there.
+  # to exercise.
   mkdir -p bench node_modules/@cloudbitmaps/core node_modules/@cloudbitmaps/roaring
   cp -r /w/packages/core/dist        node_modules/@cloudbitmaps/core/dist
   cp    /w/packages/core/package.json node_modules/@cloudbitmaps/core/package.json
@@ -110,7 +99,7 @@ docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage
 '
 
 # Stage 2 — run ONLY the soak under the tight hard ceiling. `--memory-swap` == `--memory` disables swap, so the
-# limit is a true RSS ceiling (no spill hides growth) and covers roaring's off-heap native memory.
+# limit is a true RSS ceiling (no spill hides growth).
 echo "rss-gate: run soak under a hard ${MEM} RSS ceiling (swap off)"
 docker run --rm \
   --memory="$MEM" --memory-swap="$MEM" \
@@ -150,7 +139,7 @@ node -e '
   const out = {
     note: "Written by scripts/rss-gate.sh. The ceiling is this gate parameter; the rest is the soak verdict run under it. Regenerate with `pnpm rss-gate`.",
     ceiling: process.argv[2],
-    swap: "disabled (--memory-swap == --memory), so the ceiling is a true RSS bound and covers the roaring addon off-heap memory",
+    swap: "disabled (--memory-swap == --memory), so the ceiling is a true RSS bound",
     seconds: Number(process.argv[3]),
     segments: Number(process.argv[4]),
     readerCacheCap: Number(process.argv[5]),
@@ -158,8 +147,8 @@ node -e '
     verdict: soak.verdict,
     heapCreepMiB: soak.creepMiB,
     heapCreepLimitMiB: soak.creepLimitMiB,
-    nativeCreepMiB: soak.nativeCreepMiB,
-    nativeCreepLimitMiB: soak.nativeCreepLimitMiB,
+    externalCreepMiB: soak.externalCreepMiB,
+    externalCreepLimitMiB: soak.externalCreepLimitMiB,
     samples: Array.isArray(soak.samples) ? soak.samples.length : undefined,
     combines: soak.combines,
     reloads: soak.reloads,

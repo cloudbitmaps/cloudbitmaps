@@ -4,7 +4,7 @@ import { openGenerationReader } from '@/core/crbm-open';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -49,7 +49,7 @@ async function holds(
     undefined,
   );
   const bytes = await reader.getChunk(0);
-  return bytes !== null && roaringCodec.safeDeserialize(bytes, 1 << 20).has(ID);
+  return bytes !== null && storeCodec.safeDeserialize(bytes, 1 << 20).has(ID);
 }
 
 const cleanGenerations = (n: number): number[][] => Array.from({ length: n }, () => [1, 2, 3]);
@@ -183,7 +183,7 @@ describe('eraseSubject charges the generations it opens', () => {
     shape: 'ledger' | 'no-ledger' | 'no-pointer',
   ): Promise<MemoryStorage> {
     const backend = new MemoryStorage();
-    const deps = { ...backend, codec: roaringCodec, entropy: testEntropy };
+    const deps = { ...backend, codec: storeCodec, entropy: testEntropy };
     if (shape === 'no-pointer') {
       await backend.registry.create(ref('audience'), { currentGen: null });
       for (const [generation, ids] of [

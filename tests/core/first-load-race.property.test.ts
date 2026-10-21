@@ -8,7 +8,7 @@ import { loadSegment, type LoadResult } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { testEntropy } from '../helpers/entropy';
 
 /**
@@ -158,7 +158,7 @@ async function idsAt(storage: IStorageDriver, generation: number): Promise<numbe
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
       out.push((chunkKey << 16) + r);
     }
   }
@@ -228,7 +228,7 @@ describe('loads racing onto a segment with no row (property)', () => {
                   },
                 ),
                 entropy: testEntropy,
-                codec: roaringCodec,
+                codec: storeCodec,
               },
               { ...(spec.guarded ? {} : { allowEmpty: true }), audit: audits[i] },
             ).then(
@@ -245,7 +245,7 @@ describe('loads racing onto a segment with no row (property)', () => {
             storage: counted(wait ? scheduled(s, storage, STORAGE_CALLS, other) : storage, erasure),
             registry: wait ? scheduled(s, registry, REGISTRY_CALLS, other) : registry,
             entropy: testEntropy,
-            codec: roaringCodec,
+            codec: storeCodec,
           };
           // The other writer's own outcome is not what this checks: an erasure may refuse or find nothing, a drop may
           // lose a race.

@@ -10,7 +10,7 @@ import { usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { objectFingerprint } from '../helpers/fingerprint';
 import { testEntropy } from '../helpers/entropy';
 
@@ -54,7 +54,7 @@ function world(keystore?: InProcessKeystore) {
     storage,
     registry,
     tails,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec, keystore },
   };
 }
 type World = ReturnType<typeof world>;

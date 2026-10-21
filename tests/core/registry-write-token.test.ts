@@ -23,7 +23,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import type { ObjectRegistryStore, ObjectRow } from '@/drivers/_shared/object-registry';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { Entropy } from '@/core/determinism';
 import { brandAsBackend } from '@/core/ports';
@@ -204,7 +204,7 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
   let deps: {
     storage: IStorageDriver;
     registry: IRegistryDriver;
-    codec: typeof roaringCodec;
+    codec: typeof storeCodec;
     entropy: Entropy;
     clock: typeof clock;
   };
@@ -212,7 +212,7 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
     kit = await make();
     storage = new MemoryStorageDriver();
     registry = kit.registry;
-    deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
   });
   afterEach(() => kit.done());
 
@@ -651,7 +651,7 @@ describe('a registry that reports write tokens, with an Azure-like store', () =>
     const store = new MapStore();
     const registry = new ObjectStoreRegistry(store, 'p', () => 1_000);
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     const audit = new RecordingAuditSink();
     store.afterWrite = async () => {
@@ -682,7 +682,7 @@ describe('a registry that does not report write tokens keeps the proof by its ob
       storage: new MemoryStorageDriver(),
       registry: spy,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock,
     };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
@@ -695,7 +695,7 @@ describe('a registry that does not report write tokens keeps the proof by its ob
   it('a write of its own that landed and lost its response is published, by the footer of its object', async () => {
     const registry = quiet();
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     const g = gate();
     const b = loadSegment(
@@ -742,7 +742,7 @@ describe('every writer that reaches the publish is settled by the write token', 
       storage: mem.storage,
       registry: mem.registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock,
     };
     await store.load({ segment: 'a' }, operands.a);
@@ -822,7 +822,7 @@ describe('every writer that reaches the publish is settled by the write token', 
       storage: mem.storage,
       registry: mem.registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock,
     };
     await loadSegment(DEST, [9], plain, { allowEmpty: true });
@@ -1196,7 +1196,7 @@ describe('a registry that overrides a write method: forwarding options settles b
   /** A load of ids onto a row at generation 0 through `registry`, and what the bucket and the row hold after it. */
   async function loadOver(registry: IRegistryDriver) {
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     const audit = new RecordingAuditSink();
     const result = await loadSegment(REF, [4, 8], deps, { allowEmpty: true, keep: 1, audit });

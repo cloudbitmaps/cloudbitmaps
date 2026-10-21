@@ -22,7 +22,7 @@ import {
 } from '@/core/reader-defaults';
 import { segmentKey } from '@/core/keys';
 import { destroySegment } from '@/core/erasure';
-import { SafeBitmap } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
@@ -222,7 +222,7 @@ type World = Awaited<ReturnType<typeof world>>;
 
 /** Which generation of `a` a chunk is from: `a`'s generation g holds `1 + 2g` in chunk 0. */
 const remainder0 = (bytes: Uint8Array | null): number =>
-  SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()[0]!;
+  storeCodec.safeDeserialize(bytes!, 1 << 20).toArray()[0]!;
 
 describe('the resolution cache exists only with a timed refresh', () => {
   it.each([

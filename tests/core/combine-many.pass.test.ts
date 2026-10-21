@@ -20,7 +20,7 @@ import {
 } from '@/core/errors';
 import type { MetricEvent } from '@/core/metrics';
 import type { ChunkRead, ReadChunksOptions, SegmentRef, StorageChunkSource } from '@/core/ports';
-import { roaringCodec, SafeBitmap } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
 import { reachSite } from '../helpers/force-refusal';
 import { collecting, request, runBatch, seed } from '../helpers/combine-many';
@@ -34,7 +34,7 @@ const ok = (o: { ok: boolean }): Published => {
   expect(o.ok).toBe(true);
   return (o as unknown as { value: Published }).value;
 };
-const bytesOf = (values: number[]): Uint8Array => SafeBitmap.fromValues(values).serialize();
+const bytesOf = (values: number[]): Uint8Array => storeCodec.fromValues(values).serialize();
 
 /** A source over a table of chunk bytes per segment: what a test needs when the source must lie or fail. */
 class TableSource implements StorageChunkSource {
@@ -149,7 +149,7 @@ async function run(
       allowAbsentOperands: true,
       ...extra,
     }),
-    { source, codec: roaringCodec, clock },
+    { source, codec: storeCodec, clock },
   );
 }
 
@@ -207,7 +207,7 @@ describe('request counts', () => {
     });
     const r = await runCombineMany(
       compileCombineMany(request(setup, outputs, { maxBufferedBytes: 420_000 })),
-      { source: setup.source, codec: roaringCodec, clock },
+      { source: setup.source, codec: storeCodec, clock },
     );
     expect(r.stats.groups).toBeGreaterThan(1);
     // Two operands open per group: between one group's opens and the next's, every publish of the first has settled.
@@ -504,7 +504,7 @@ describe('the memory ledger', () => {
       compileCombineMany(
         request(seed(sets, source), outputs, { publishConcurrency: 3, allowAbsentOperands: true }),
       ),
-      { source, codec: roaringCodec, clock },
+      { source, codec: storeCodec, clock },
     );
     expect(peak).toBe(3);
   });
@@ -542,7 +542,7 @@ describe('leases and deadlines, per key', () => {
     const outputs = [{ expr: { and: ['a', 'b'] } }, { expr: 'a' }].map(collecting);
     const r = await runCombineMany(compileCombineMany({ ...request(setup, outputs), operands }), {
       source: setup.source,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock,
     });
     expect((r.outputs[0] as { error: unknown }).error).toBeInstanceOf(LeaseExpiredError);
@@ -593,7 +593,7 @@ describe('the re-check of subtracted operands', () => {
     const operands = pinnedOperands(setup, pinned, now, reads);
     const r = await runCombineMany(
       compileCombineMany({ ...request(setup, specs.map(collecting)), operands }),
-      { source: setup.source, codec: roaringCodec, clock },
+      { source: setup.source, codec: storeCodec, clock },
     );
     return { r, reads: reads.n };
   };
@@ -694,7 +694,7 @@ describe('the re-check of subtracted operands', () => {
         ...request(setup, [collecting({ expr: { andNot: ['a', 'opt'] } })]),
         operands,
       }),
-      { source: setup.source, codec: roaringCodec, clock },
+      { source: setup.source, codec: storeCodec, clock },
     );
     expect((r.outputs[0] as { error: Error }).error.message).toBe('registry down');
   });
@@ -713,7 +713,7 @@ describe('the re-check of subtracted operands', () => {
         ...request(setup, [collecting({ expr: 'a', exclude: ['opt'] })]),
         operands,
       }),
-      { source: setup.source, codec: roaringCodec, clock },
+      { source: setup.source, codec: storeCodec, clock },
     );
     ok(r.outputs[0]!);
     expect(r.stats.operands.opt).toMatchObject({ pinned: false, endGeneration: 4 });
@@ -729,7 +729,7 @@ describe('budgets and absent operands', () => {
         compileCombineMany(
           request(setup, [collecting({ expr: 'a' })], { budget: { maxRequests: 2 } }),
         ),
-        { source: setup.source, codec: roaringCodec, clock },
+        { source: setup.source, codec: storeCodec, clock },
       ),
     ).rejects.toBeInstanceOf(BudgetExceededError);
     expect(setup.source.opened).toEqual([]);
@@ -741,7 +741,7 @@ describe('budgets and absent operands', () => {
       compileCombineMany(
         request(setup, [collecting({ expr: 'a' })], { budget: { maxRequests: 2 } }),
       ),
-      { source: setup.source, codec: roaringCodec, clock },
+      { source: setup.source, codec: storeCodec, clock },
     ).catch((e: unknown) => e);
     // `spent` is the count the plan needs, which the message states too.
     expect(error).toMatchObject({ option: 'budget.maxRequests', limit: 2, spent: 3 });
@@ -752,7 +752,7 @@ describe('budgets and absent operands', () => {
     const setup = seed({ a: ids([1, 2, 3]) });
     const r = await runCombineMany(
       compileCombineMany(request(setup, [collecting({ expr: 'a' })], { budget: null })),
-      { source: setup.source, codec: roaringCodec, clock },
+      { source: setup.source, codec: storeCodec, clock },
     );
     expect(r.stats.budget.maxRequests).toBeNull();
   });
@@ -799,7 +799,7 @@ describe('operand names and stats', () => {
     }));
     const r = await runCombineMany(compileCombineMany(request(setup, outputs)), {
       source: setup.source,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock,
     });
     expect(r.stats.requests.attributed.put).toBe(6);
@@ -881,20 +881,20 @@ describe('the plan is charged to the budget', () => {
     await expect(
       runCombineMany(compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })), {
         source,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock,
       }),
     ).rejects.toThrow(/the plan alone .* passes maxBufferedBytes \(100000\)/);
     const refused = await runCombineMany(
       compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })),
-      { source, codec: roaringCodec, clock },
+      { source, codec: storeCodec, clock },
     ).catch((e: unknown) => e);
     expect(refused).toMatchObject({ option: 'maxBufferedBytes', limit: 100_000, spent: 100220 });
     expect(source.opened).toEqual([]);
     await expect(
       runCombineMany(compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })), {
         source,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock,
       }),
     ).rejects.toBeInstanceOf(BudgetExceededError);
@@ -905,13 +905,13 @@ describe('the plan is charged to the budget', () => {
     const setup = seed({ a: wide.map((k) => joinId(k, 1)) }, source);
     const r = await runCombineMany(
       compileCombineMany(request(setup, many(3).map(collecting), { maxBufferedBytes: 64 << 20 })),
-      { source, codec: roaringCodec, clock },
+      { source, codec: storeCodec, clock },
     );
     // three outputs of 2,000 keys: 4 KB of root keys each, the trees and the index, are in the high water mark
     expect(r.stats.memory.highWaterBytes).toBeGreaterThan(3 * 4_000);
     const tight = await runCombineMany(
       compileCombineMany(request(setup, many(1).map(collecting), { maxBufferedBytes: 30_000 })),
-      { source, codec: roaringCodec, clock },
+      { source, codec: storeCodec, clock },
     );
     expect((tight.outputs[0] as { error: Error }).error.message).toMatch(/and the plan holds \d+/);
     expect((tight.outputs[0] as { error: Error }).error.message).toMatch(
@@ -939,7 +939,7 @@ describe('pricing a group does not grow with the group', () => {
     const work: PlanWork = { adds: 0, withs: 0, operandSteps: 0, planBuilds: 0 };
     const r = await runCombineManyCounted(
       compileCombineMany(request(setup, outputs, { maxBufferedBytes: budget })),
-      { source: setup.source, codec: roaringCodec, clock },
+      { source: setup.source, codec: storeCodec, clock },
       work,
     );
     return { r, work };
@@ -977,7 +977,7 @@ describe('pricing a group does not grow with the group', () => {
       tiny(300),
       runCombineMany(compileCombineMany(request(setup, others)), {
         source: setup.source,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock,
       }),
       tiny(40),
@@ -1008,7 +1008,7 @@ describe('the identity of a pinned operand', () => {
           ...request(setup, [collecting({ expr: 'a', exclude: ['opt'] })]),
           operands: operandsFor(held, now),
         }),
-        { source: setup.source, codec: roaringCodec, clock },
+        { source: setup.source, codec: storeCodec, clock },
       );
     expect(stale((await go('10:1', '10:2')).outputs[0]!)).toBe(true);
     expect((await go('10:1', '10:1')).outputs[0]!.ok).toBe(true);
@@ -1031,12 +1031,12 @@ describe('the identity of a pinned operand', () => {
       ValidationError,
     );
     const again = rebindCombineMany(compiled, setup.operands);
-    const r = await runCombineMany(again, { source: setup.source, codec: roaringCodec, clock });
+    const r = await runCombineMany(again, { source: setup.source, codec: storeCodec, clock });
     expect(ok(r.outputs[0]!).keys).toEqual([1]);
     await expect(
       runCombineMany(
         { request: compiled.request },
-        { source: setup.source, codec: roaringCodec, clock },
+        { source: setup.source, codec: storeCodec, clock },
       ),
     ).rejects.toThrow(/takes the result of compileCombineMany/);
   });
@@ -1057,7 +1057,7 @@ describe('runCombineMany: what it reports to a metrics sink', () => {
       compileCombineMany(request(setup, specs, { maxBufferedBytes: 420_000 })),
       {
         source: setup.source,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: { now: () => 0, sleep: async () => {} },
         metrics: { onEvent: (e) => events.push(e) },
       },
@@ -1078,7 +1078,7 @@ describe('runCombineMany: what it reports to a metrics sink', () => {
       compileCombineMany(request(setup, [collecting({ expr: { and: ['a', 'b'] } })])),
       {
         source: setup.source,
-        codec: roaringCodec,
+        codec: storeCodec,
         // Each read of the clock moves it on, so a request that reads it before and after takes some time.
         clock: { now: () => (t += 5), sleep: async () => {} },
         metrics: { onEvent: (e) => events.push(e) },
@@ -1096,7 +1096,7 @@ describe('runCombineMany: what it reports to a metrics sink', () => {
       compileCombineMany(request(setup, [collecting({ expr: { or: ['a', 'b'] } })])),
       {
         source: setup.source,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: { now: () => 0, sleep: async () => {} },
         metrics: {
           onEvent: () => {

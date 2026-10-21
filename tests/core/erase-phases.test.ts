@@ -6,7 +6,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { SegmentRef } from '@/index';
 import type { GenKey, IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -22,7 +22,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, codec: roaringCodec, entropy: testEntropy },
+    deps: { storage, registry, codec: storeCodec, entropy: testEntropy },
   };
 }
 
@@ -132,7 +132,7 @@ describe('the steps of an erasure', () => {
     const res = await eraseIdFromSegment(SEG, 7, {
       storage,
       registry,
-      codec: roaringCodec,
+      codec: storeCodec,
       entropy: testEntropy,
     });
     expect(cas).toBe(1);

@@ -1,6 +1,6 @@
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/bulk-load';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { SystemClock } from '@/system-clock';
 import { YIELD_EVERY } from '@/core/cooperative';
 import { joinId } from '@/core/bit-route';
@@ -92,7 +92,7 @@ describe('bulk-load is cooperative', () => {
     // be passing because the load is slow for some unrelated reason.
     const { turns } = await loopTurnsDuring(() =>
       coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, {
-        codec: roaringCodec,
+        codec: storeCodec,
         entropy: testEntropy,
       }),
     );
@@ -110,7 +110,7 @@ describe('bulk-load is cooperative', () => {
       { entropy: fixedEntropy(GOLDEN_NONCE) },
     );
     const without = await coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, {
-      codec: roaringCodec,
+      codec: storeCodec,
       entropy: fixedEntropy(GOLDEN_NONCE),
     });
     expect(withClock.sha256).toBe(without.sha256);

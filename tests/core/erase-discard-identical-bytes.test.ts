@@ -13,7 +13,7 @@ import type {
   RegistryPatch,
 } from '@cloudbitmaps/core/driver-kit';
 import type { Clock, SegmentRef } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { collect } from '../helpers/loaded';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
 import { testEntropy, zeroEntropy } from '../helpers/entropy';
@@ -62,7 +62,7 @@ interface Sent {
 async function refusedRewrite(stallAt: Stall, clk: Clock = clock, entropy: Entropy = testEntropy) {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
-  const deps = { storage, registry, entropy, codec: roaringCodec, clock: clk };
+  const deps = { storage, registry, entropy, codec: storeCodec, clock: clk };
   await loadSegment(REF, [1, 2, X, Y], deps); // generation 0
 
   const l1AtPublish = gate();
@@ -307,7 +307,7 @@ describe("a refused rewrite's discard whose renewal of the row loses", () => {
   it('with no answer, having not landed, and no clock to wait on: it throws and deletes nothing', async () => {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [1, 2, X], deps);
     const l1AtPublish = gate();
     const l1Registry = Object.create(registry) as IRegistryDriver;
@@ -466,7 +466,7 @@ describe("an erasure's renewal of the row before it deletes a holder", () => {
   it('a write of leases alone between the renewal and the delete does not stop the erasure', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     // A load writes generation 1, which holds 9, above the pointer, and holds its publish.
     const atPublish = gate();
@@ -515,7 +515,7 @@ describe('refused rewrites of several erasures racing one that won', () => {
       const ids = Array.from({ length: losers }, (_, i) => 1_000 + i);
       const storage = new MemoryStorageDriver();
       const registry: IRegistryDriver = new MemoryRegistryDriver();
-      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+      const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
       await loadSegment(REF, [1, 2, Z, ...ids], deps); // generation 0, one chunk
 
       // The winner writes generation 1 and holds its publish.

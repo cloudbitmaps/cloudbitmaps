@@ -15,7 +15,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
@@ -49,7 +49,7 @@ function world() {
     storageCalls,
     registryCalls,
     reset,
-    deps: { storage, registry: counted, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry: counted, entropy: testEntropy, codec: storeCodec },
   };
 }
 type World = ReturnType<typeof world>;
@@ -887,7 +887,7 @@ describe('a load that repairs a segment whose current object is gone lists, and 
         storage: w.memory,
         registry: w.registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       });
       expect(erased).toMatchObject({ erased: true });
     });
@@ -961,7 +961,7 @@ function landing(w: World) {
     },
   }) as IStorageDriver;
   return {
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
     /** Forget the last publish, before a load. */
     reset: (): void => {
       at.landed = undefined;

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudRoaring, IntegrityError } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { SafeBitmap, roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { verifyGeneration } from '@/core/crbm-open';
 import type { SegmentRef } from '@/index';
 import type {
@@ -79,7 +79,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     const healed = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(healed).not.toBeNull();
     // Not merely "it did not throw": the bytes must be generation 1's, which holds the extra id.
-    expect(SafeBitmap.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+    expect(storeCodec.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
   });
 
   it('currentGeneration answers from the resolution and opens nothing, so the read after it meets the race, and heals', async () => {
@@ -97,7 +97,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     const source = new CrbmStorageChunkSource(storage, { registry });
     await expect(source.currentGeneration(SEG)).resolves.toBe(0); // what the row named when it was read
     const healed = await source.getChunk({ segment: 's', chunkKey: 0 });
-    expect(SafeBitmap.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+    expect(storeCodec.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
     await expect(source.currentGeneration(SEG)).resolves.toBe(1);
   });
 
@@ -117,7 +117,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     // The version the row read names: generation 0's, under which nothing of generation 1 is ever read.
     await expect(source.currentVersion(SEG)).resolves.toMatch(/^0:/);
     const healed = await source.getChunk({ segment: 's', chunkKey: 0 });
-    expect(SafeBitmap.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+    expect(storeCodec.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
     await expect(source.currentVersion(SEG)).resolves.toMatch(/^1:/);
   });
 
@@ -351,7 +351,7 @@ describe("a generation's footer must name the generation it is stored as", () =>
   it('refuses it on the write paths too: an erasure does not rewrite from a misfiled generation', async () => {
     const { storage, registry } = await misfiled(0, 1);
     await expect(
-      eraseIdFromSegment(SEG, 1, { storage, registry, entropy: testEntropy, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, 1, { storage, registry, entropy: testEntropy, codec: storeCodec }),
     ).rejects.toThrow(IntegrityError);
     expect((await registry.get(SEG))!.currentGen).toBe(1); // nothing was published
   });
@@ -378,7 +378,7 @@ describe("a generation's footer must name the generation it is stored as", () =>
       await sink.write(misplaced.bytes);
     });
     await expect(
-      eraseIdFromSegment(SEG, 9, { storage, registry, entropy: testEntropy, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, 9, { storage, registry, entropy: testEntropy, codec: storeCodec }),
     ).rejects.toThrow(/generation 0: its footer says generation 2/);
   });
 

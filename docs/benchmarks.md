@@ -279,11 +279,11 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   while the count looks "in bounds". Peak RSS is shown for context only: it is a **process high-water** that also
   folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after GC), so it grows with
   fleet size here and is **not** a clean read-path footprint. The flat **live-heap** column is the bound. Live
-  heap plus the soak's native-memory watch prove **no leak** on the read path. A store with a timed refresh also keeps each segment's resolution in a second cache bounded at 8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default), a few hundred bytes an entry; [what each reader holds](guide/sizing.md#what-each-reader-holds) gives the heap it takes.
+  heap plus the soak's external-memory watch (typed arrays' backing stores, which the store's bitmaps use) prove **no leak** on the read path. A store with a timed refresh also keeps each segment's resolution in a second cache bounded at 8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default), a few hundred bytes an entry; [what each reader holds](guide/sizing.md#what-each-reader-holds) gives the heap it takes.
 - **The hard RSS ceiling — measured.** A sustained read + combine + re-load workload over **400 segments**
   completes inside a hard **384 MiB** cgroup ceiling with swap disabled (`--memory-swap == --memory`), so the
-  limit is a true RSS bound rather than a heap one, and it covers **off-heap** memory that a JS heap sample
-  cannot see (the run predates the TypeScript codec, when the roaring addon held the bitmaps there). No OOM-kill; both creep verdicts inside their bands. `pnpm rss-gate` records the
+  limit is a true RSS bound rather than a heap one, and it covers memory that a JS heap sample
+  cannot see (the allocator's retained arenas, buffers, the runtime's own floor). The gate runs the built packages as they are: nothing it runs loads a native addon. No OOM-kill; both creep verdicts (heap and external memory) inside their bands. `pnpm rss-gate` records the
   run to `bench/rss-gate-results.json`, which the site figure gate checks the published number against.
 
   **Why a ceiling and not an RSS reading.** The ceiling is a property of the workload; a reader-process RSS
@@ -376,10 +376,9 @@ hundred times as many ids, spread over the same 8,192 chunks (array containers, 
 is the same size at every tier, and an unsorted load of the largest tier's ids: a million on a pull request, ten
 million at full size. The ids come from a generator, and the storage hashes what it is sent and keeps none of it, so
 neither the input nor a backend's buffer is in the figure. Every 65,536 ids and at every sink write of 32 KiB or more,
-the test lets a turn of the event loop pass, forces four synchronous major collections, and reads the JS heap, external
-memory and the native memory roaring's bitmaps hold, by roaring's own count (on Node 24 the heap statistics' external
-figure leaves roaring's out). Each figure is the highest reading over the one taken just before the load. Every run
-prints its readings in its log.
+the test lets a turn of the event loop pass, forces four synchronous major collections, and reads the JS heap and external
+memory (a typed array's backing store, where the codec's bitmaps live). Each figure is the highest reading over the one
+taken just before the load. Every run prints its readings in its log.
 
 **The bound, enforced on every CI run.** A sorted load's peak stays **under 3 MiB** at every tier, and the largest
 tier's within 0.5 MiB of the smallest's. An unsorted load of the largest tier's ids peaks at least four times as high
@@ -513,7 +512,7 @@ pnpm bench         # builds, then regenerates bench/crossover.svg, bench/results
 pnpm bench:scale   # HEAVY: builds a fleet up to 100K segments on local disk (fsync-bound), measures, and prints
 SCALE_INJECT=1 pnpm bench:scale   # the same, then rewrites bench/scale-results.json and the at-scale table here + the site
 SCALE_FLEETS=1000,10000 pnpm bench:scale   # smaller + faster for a quick check
-pnpm soak          # sustained loaded-store reads + combines + re-loads; heap/native creep verdict
+pnpm soak          # sustained loaded-store reads + combines + re-loads; heap/external creep verdict
 pnpm rss-gate      # the same soak under a hard cgroup --memory ceiling (needs Docker)
 ```
 

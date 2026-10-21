@@ -12,7 +12,7 @@ import { openSummary, sealSummary, summaryAgrees, usableSummary } from '@/core/s
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec, SafeBitmap } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { FINGERPRINT } from '../helpers/fingerprint';
 import { testEntropy } from '../helpers/entropy';
@@ -30,7 +30,7 @@ const IDS = [1, 2, 3, 70_000, 200_000];
 function world(keystore?: InProcessKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
   return { storage, registry, deps, keystore };
 }
 type World = ReturnType<typeof world>;
@@ -319,7 +319,7 @@ describe('the rewrite is checked against the summary it will publish', () => {
     const w = world();
     const key0 = { ...SEG, generation: 0 };
     const chunks = (async function* () {
-      yield { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3]) };
+      yield { chunkKey: 0, bitmap: storeCodec.fromValues([1, 2, 3]) };
     })();
     const tally = await writeCrbmGenerationStream(w.storage, key0, chunks, { metadata: META });
     await verifyGeneration(w.storage, key0, { ...tally, metadata: META }, undefined);

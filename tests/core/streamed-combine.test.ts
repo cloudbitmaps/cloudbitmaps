@@ -10,7 +10,7 @@ import { SegmentEngine, BoundedLru, CountingMetricsSink } from '@cloudbitmaps/co
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import { BudgetExceededError, IntegrityError, ValidationError } from '@/core/errors';
 import { chunkGenKey } from '@/core/keys';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { joinId } from '@/core/bit-route';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
@@ -33,7 +33,7 @@ function setup(
   const metrics = new CountingMetricsSink();
   const engine = new SegmentEngine({
     storage,
-    codec: roaringCodec,
+    codec: storeCodec,
     ...(cache ? { cache } : {}),
     metrics,
     ...(options.budget === undefined ? {} : { budget: { maxRequests: options.budget } }),
@@ -96,7 +96,7 @@ describe('which operands stream', () => {
     const plain = new MemoryStorageChunkSource();
     seedSegment(plain, 'a', A);
     seedSegment(plain, 'b', B);
-    const engine = new SegmentEngine({ storage: plain, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: plain, codec: storeCodec });
     expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([2, 3, 4]));
   });
 
@@ -369,7 +369,7 @@ describe('the decoded-chunk cache', () => {
     const storage = new StreamChunkSource();
     seedSegment(storage, 'a', ids([1, 2, 3, 4, 5, 6]));
     const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 2, clock });
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache });
     expect(await collect(engine.union([ref('a')]))).toEqual(ids([1, 2, 3, 4, 5, 6]));
     expect(await collect(engine.union([ref('a')]))).toEqual(ids([1, 2, 3, 4, 5, 6]));
   });
@@ -545,7 +545,7 @@ describe('the streamed read equals the per-key read', () => {
               ['s', s],
             ] as const)
               seedSegment(storage, n, ids(c, 2));
-            return new SegmentEngine({ storage, codec: roaringCodec });
+            return new SegmentEngine({ storage, codec: storeCodec });
           };
           const options = { ...r, concurrency };
           const reads = (e: SegmentEngine) => [

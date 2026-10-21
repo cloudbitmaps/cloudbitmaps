@@ -16,7 +16,7 @@ import { openSummary, summaryAgrees, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { FINGERPRINT } from '../helpers/fingerprint';
@@ -40,7 +40,7 @@ const key = (): InProcessKeystore =>
 function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const load = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const load = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
   return { storage, registry, load, deps: { storage, registry, keystore } };
 }
 type World = ReturnType<typeof world>;

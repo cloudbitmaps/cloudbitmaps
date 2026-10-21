@@ -10,7 +10,7 @@ import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { IMetricsSink } from '@/index';
 import type { Clock, Rng, SegmentRef } from '@/index';
 import type { ChunkRef, StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { SegmentEngine } from '@/core/engine';
 import { BoundedLru } from '@cloudbitmaps/core';
 import type { CodecBitmap } from '@cloudbitmaps/core';
@@ -157,7 +157,7 @@ describe('metrics emission (via CloudRoaring)', () => {
     const storage = new MemoryStorageChunkSource();
     seedSegment(storage, 'users', [5]);
     // No `cache` in EngineDeps → the cache branch is skipped entirely.
-    const engine = new SegmentEngine({ codec: roaringCodec, storage, metrics: counter });
+    const engine = new SegmentEngine({ codec: storeCodec, storage, metrics: counter });
     expect(await engine.has({ segment: 'users' }, 5)).toBe(true);
     const snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 0, misses: 0 }); // no spurious cache events without a cache
@@ -308,7 +308,7 @@ describe('each chunk lookup of the engine costs and reports what its kind of rea
     const source = new CrbmStorageChunkSource(storage, { registry, clock: manualClock() });
     const engine = new SegmentEngine({
       storage: source,
-      codec: roaringCodec,
+      codec: storeCodec,
       cache: new BoundedLru<string, CodecBitmap>({ maxEntries: 100, clock: { now: () => 0 } }),
     });
     expect(await engine.has({ segment: 's' }, 2)).toBe(true); // the chunk is cached

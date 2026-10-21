@@ -20,7 +20,7 @@ import {
 import { BoundedLru } from '@/core/lru';
 import type { CodecBitmap } from '@/core/codec';
 import type { ChunkRef } from '@/core/ports';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect } from '../helpers/loaded';
@@ -77,7 +77,7 @@ async function world(refs: readonly SegmentRef[] = REFS) {
     maxOpenSegments: 64,
   });
   const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 4096, clock: { now: () => 0 } });
-  const engine = new SegmentEngine({ storage: source, codec: roaringCodec, cache });
+  const engine = new SegmentEngine({ storage: source, codec: storeCodec, cache });
   /** The cached chunk of segment `i` at `chunkKey`, looked up by the key `chunkGenKey` builds. */
   const cached = async (i: number, chunkKey: number) =>
     cache.peek(chunkGenKey({ ...refs[i]!, chunkKey }, (await source.currentVersion(refs[i]!))!));
@@ -208,7 +208,7 @@ describe('the chunk-key format', () => {
     source.seed(at(1), chunk(5));
     source.seed(at(12), chunk(7));
     const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 64, clock: { now: () => 0 } });
-    const engine = new SegmentEngine({ storage: source, codec: roaringCodec, cache });
+    const engine = new SegmentEngine({ storage: source, codec: storeCodec, cache });
     expect(await engine.has({ segment: 's' }, HI + 5)).toBe(true); // chunk 1, cached at generation 23
     source.generation = 3;
     expect(await engine.has({ segment: 's' }, 12 * HI + 7)).toBe(true);

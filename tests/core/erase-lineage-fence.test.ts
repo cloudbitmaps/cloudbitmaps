@@ -2,7 +2,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-open';
 import { publishGeneration } from '../helpers/publish';
 import { dropSegment } from '@/core/erasure';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import type { SegmentRef } from '@/index';
 import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -29,8 +29,7 @@ async function idsIn(storage: MemoryStorageDriver, generation: number): Promise<
   for (const ck of reader.chunkKeys()) {
     const bytes = await reader.getChunk(ck);
     if (bytes === null) continue;
-    for (const v of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray())
-      out.push(v + ck * 65536);
+    for (const v of storeCodec.safeDeserialize(bytes, 1 << 20).toArray()) out.push(v + ck * 65536);
   }
   return out.sort((a, b) => a - b);
 }
@@ -72,7 +71,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
       storage: wrapped,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
 
     // The rewrite was derived from a segment that no longer exists. It must NOT claim an erasure.
@@ -121,7 +120,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
       storage: wrapped,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     }).catch((e: Error) => `threw ${e.name}: ${e.message}`);
 
     expect(res).toMatchObject({ erased: false, reason: 'superseded' });
@@ -177,7 +176,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
       storage: wrappedStorage,
       registry: wrappedRegistry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     }).catch((e: Error) => `threw ${e.name}: ${e.message}`);
 
     expect(res).toMatchObject({ erased: false, reason: 'superseded' });
@@ -232,7 +231,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(res.collected).toEqual([0]);

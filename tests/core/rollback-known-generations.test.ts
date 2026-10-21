@@ -28,7 +28,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { RecordingAuditSink } from '@/index';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import type { AuditEvent } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { counterEntropy } from '../helpers/entropy';
@@ -65,7 +65,7 @@ function world(encrypted: boolean) {
     storage: memory,
     registry,
     entropy: counterEntropy(),
-    codec: roaringCodec,
+    codec: storeCodec,
     keystore,
     clock,
   };

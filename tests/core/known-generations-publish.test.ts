@@ -20,7 +20,7 @@ import { MAX_TAIL_BYTES, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { objectFingerprint } from '../helpers/fingerprint';
 import { testEntropy } from '../helpers/entropy';
@@ -41,7 +41,7 @@ function world(encrypted: boolean) {
   const keystore = encrypted
     ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
     : undefined;
-  const deps = { storage: memory, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const deps = { storage: memory, registry, entropy: testEntropy, codec: storeCodec, keystore };
   return { memory, registry, keystore, deps };
 }
 type World = ReturnType<typeof world>;

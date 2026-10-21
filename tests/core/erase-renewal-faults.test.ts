@@ -2,7 +2,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, ValidationError } from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { recordedWaits } from '../helpers/unanswered-registry';
 import { testEntropy } from '../helpers/entropy';
@@ -40,7 +40,7 @@ describe("an erasure's renewal of the row, and its deletes", () => {
         storage,
         registry: reg,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(await gens(storage)).toEqual([0]);
@@ -65,7 +65,7 @@ describe("an erasure's renewal of the row, and its deletes", () => {
         storage,
         registry: reg,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         ...recordedWaits(),
       }),
     ).rejects.toBeInstanceOf(IntegrityError);
@@ -88,7 +88,7 @@ describe("an erasure's renewal of the row, and its deletes", () => {
         storage,
         registry: reg,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       });
       expect(out).toMatchObject({ erased: false, reason: 'superseded' });
       expect(await gens(storage)).toEqual([0]);
@@ -118,7 +118,7 @@ describe("an erasure's renewal of the row, and its deletes", () => {
       storage,
       registry: reg,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       ...recordedWaits(),
     });
     expect(n).toBeGreaterThan(10);
@@ -137,7 +137,7 @@ describe("an erasure's renewal of the row, and its deletes", () => {
         storage: st,
         registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       }),
     ).rejects.toBeInstanceOf(TransientError);
     expect(await gens(storage)).toEqual([0]);

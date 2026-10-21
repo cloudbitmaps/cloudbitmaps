@@ -6,7 +6,7 @@ import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { collect } from '../helpers/loaded';
 import { REF, clock, gate, generations } from '../helpers/retaken-number-race';
 import { testEntropy } from '../helpers/entropy';
@@ -94,7 +94,7 @@ describe('a refused load under a row another write changed deletes nothing below
     async (keep) => {
       const storage = new MemoryStorageDriver();
       const registry = new MemoryRegistryDriver();
-      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+      const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
       expect(await loadSegment(REF, [9], deps, { keep })).toMatchObject({
         generation: 0,
         published: true,
@@ -141,7 +141,7 @@ describe('a refused load under a row another write changed deletes nothing below
   it('a number a rollback below it freed for a load of the same bytes stays that load’s', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [9], deps); // 0
     await loadSegment(REF, [10], deps); // 1, keeps 0
 

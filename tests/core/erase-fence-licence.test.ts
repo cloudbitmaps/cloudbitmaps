@@ -19,7 +19,7 @@ import type {
   IStorageDriver,
   RegistryRecord,
 } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting as countingCalls } from '../helpers/counting';
 import { recordedWaits, unansweredRegistry } from '../helpers/unanswered-registry';
@@ -42,7 +42,7 @@ interface World {
   readonly load: {
     storage: IStorageDriver;
     registry: IRegistryDriver;
-    codec: typeof roaringCodec;
+    codec: typeof storeCodec;
     entropy: Entropy;
   };
 }
@@ -53,7 +53,7 @@ function world(): World {
   return {
     storage,
     registry,
-    load: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    load: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 
@@ -67,7 +67,7 @@ async function holdersOf(storage: IStorageDriver, id: number): Promise<number[]>
   for await (const key of storage.list(SEG)) {
     const reader = await openGenerationReader(storage, key, undefined);
     const bytes = await reader.getChunk(0);
-    if (bytes !== null && roaringCodec.safeDeserialize(bytes, 1 << 20).has(id)) {
+    if (bytes !== null && storeCodec.safeDeserialize(bytes, 1 << 20).has(id)) {
       out.push(key.generation);
     }
   }
@@ -846,7 +846,7 @@ describe('what an erasure costs at the store an object-store registry is over', 
     const store = new CountingObjectStore(0, { conditionalDelete: true });
     let t = 1_000;
     const registry = new ObjectStoreRegistry(store, 'p', () => (t += 1));
-    const load = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const load = { storage, registry, entropy: testEntropy, codec: storeCodec };
     if (shape === 'older') {
       await loadSegment(SEG, [1, 999], load, { keep: 1 }); // 0 holds, and the ledger names it
       await loadSegment(SEG, [1], load, { keep: 1 });
@@ -1216,7 +1216,7 @@ describe('after erased: true, no ledger entry names a generation that held the i
         fc.asyncProperty(fc.array(step, { minLength: 3, maxLength: 14 }), async (steps) => {
           const storage = new MemoryStorageDriver();
           const registry = reg.make();
-          const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+          const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
           for (const s of steps) {
             if (s.kind === 'load') {
               await loadSegment(SEG, [100, ...s.ids], deps, { keep: s.keep });

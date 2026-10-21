@@ -14,9 +14,8 @@ import { chunkReads } from '../helpers/chunk-reads';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
 import type { CloudRoaringOptions, CombineOptions, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { collect, seedSegment } from '../helpers/loaded';
-import { SafeBitmap } from '@/native-codec';
 import { SegmentEngine } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
 
@@ -691,7 +690,7 @@ describe('property: a range read is the full read filtered to the range', () => 
 describe('an index is untrusted', () => {
   it('a chunk key listed twice is refused, rather than read and yielded twice', async () => {
     const storage = new MemoryStorageChunkSource();
-    storage.seed({ segment: 'a', chunkKey: 1 }, SafeBitmap.fromValues([5]).serialize());
+    storage.seed({ segment: 'a', chunkKey: 1 }, storeCodec.fromValues([5]).serialize());
     const twice: typeof storage.listChunkKeys = async (ref) => [
       ...(await storage.listChunkKeys(ref)),
       1,
@@ -711,7 +710,7 @@ describe("the engine's own range read, which the facade reaches only with a boun
     const storage = new MemoryStorageChunkSource();
     const ids = [0, 1, K - 1, K, U32_MAX - K, U32_MAX - 1, U32_MAX];
     seedSegment(storage, 'a', ids);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage, codec: storeCodec });
     expect(await collect(engine.iterate({ segment: 'a' }, {}))).toEqual(ids);
     expect(
       await collect(engine.iterate({ segment: 'a' }, { after: undefined, through: undefined })),

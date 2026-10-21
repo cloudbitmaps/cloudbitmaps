@@ -7,9 +7,10 @@
  * prebuilt binary (compiling from source if no prebuilt matches) on every runner that installs, the release job's
  * install included. That binary runs there, so a changed upstream artifact would run unverified code on the runners,
  * the release runner among them. It is not in our tarball, so the signed publish never covers it. The check runs in
- * the cross-OS job, the one place a table row exists for every OS and Node ABI the runners use.
- * WHEN IT GOES. When the oracle no longer installs `roaring`: delete this script, its checksum table, the CI step that
- * runs it and `tests/ci/prebuilt-checksums.test.ts` together.
+ * the cross-OS job, the one place a table row exists for every OS and Node ABI the runners use, and in the release
+ * job right after its install, because that job's `pnpm test` loads the binary before anything is published.
+ * WHEN IT GOES. When the oracle no longer installs `roaring`: delete this script, its checksum table, the CI and
+ * release steps that run it and `tests/ci/prebuilt-checksums.test.ts` together.
  *
  * Modes:
  *   - key known in scripts/roaring-prebuilt-checksums.json → sha256 must match, else exit 1;

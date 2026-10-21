@@ -9,7 +9,7 @@ import { listGenerations, rollbackSegment } from '@/core/rollback';
 import { summaryAgrees, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { testEntropy } from '../helpers/entropy';
 
 // Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
@@ -63,7 +63,7 @@ async function run(ops: Op[], encrypted: boolean): Promise<void> {
     : undefined;
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
   /** What each generation holds, by the model. */
   const model = new Map<number, { ids: Set<number>; metadata: GenerationMetadata | undefined }>();
 
