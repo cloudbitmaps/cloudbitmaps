@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -129,6 +130,19 @@ function expectChunkStored(
   for (const how of ['plain', 'runs', 'ranges'] as const) {
     // A payload as another writer left it, with or without run containers: decoded, then stored, it is the rule's.
     const decoded = codec.safeDeserialize(crPlainBytes(lows, how), CAP, { whole: true });
+    // Before optimize(): a decoded bitmap serializes to the bytes it was given, runs and ties kept.
+    const given = crPlainBytes(lows, how);
+    expectSame(
+      `${label}: decoded ${how} bytes, serialize before optimize`,
+      decoded.serialize(),
+      given,
+    );
+    // The { serialized } load path: the chunk payloads are the rule's, whatever container kinds came in.
+    const viaEncode = [
+      ...(codec.safeDeserialize(given, CAP, { whole: true }).encodeChunks?.() ?? []),
+    ];
+    for (const chunk of viaEncode)
+      expectSame(`${label}: decoded ${how} bytes, encodeChunks`, chunk.payload, ruled);
     decoded.optimize?.();
     expectSame(`${label}: decoded ${how} bytes, then stored`, decoded.serialize(), ruled);
     expectContents(`${label}: decoded contents`, decoded, lows);
@@ -1013,10 +1027,9 @@ describe('the codec oracle: the golden .crbm files', () => {
 
   it.each(files)('%s: every chunk payload decodes and re-stores byte for byte', async (file) => {
     const reader = await CrbmReader.open(
-      new BufferReader(
-        new Uint8Array(readFileSync(fileURLToPath(new URL(file, `file://${GOLDEN}`)))),
-      ),
+      new BufferReader(new Uint8Array(readFileSync(join(GOLDEN, file)))),
     );
+    let restored = 0;
     for (const key of reader.chunkKeys()) {
       const payload = (await reader.getChunk(key))!;
       let layoutAccepts = true;
@@ -1046,15 +1059,22 @@ describe('the codec oracle: the golden .crbm files', () => {
         const viaEncode = [...(codec.safeDeserialize(payload, CAP).encodeChunks?.() ?? [])];
         for (const chunk of viaEncode)
           expectSame(`${name}, ${file}: encodeChunks`, chunk.payload, payload);
+        restored++;
       }
+    }
+    // Not vacuous: the load objects hold real bitmaps, so every chunk is decoded and re-stored by every codec.
+    // (The basic and metadata objects hold opaque bytes, which the refusal branch covers.)
+    if (file.includes('load')) {
+      expect(restored, `${file}: payloads decoded and re-stored`).toBe(
+        reader.chunkKeys().length * CODECS.length,
+      );
+      expect(restored, `${file}: some payload was decoded`).toBeGreaterThan(0);
     }
   });
 
   it('holds payloads of every shape: the load object decodes seven chunks', async () => {
     const reader = await CrbmReader.open(
-      new BufferReader(
-        new Uint8Array(readFileSync(fileURLToPath(new URL('v1.0-load.crbm', `file://${GOLDEN}`)))),
-      ),
+      new BufferReader(new Uint8Array(readFileSync(join(GOLDEN, 'v1.0-load.crbm')))),
     );
     expect(reader.chunkKeys()).toEqual([0, 1, 2, 3, 4, 7, 65_535]);
   });
