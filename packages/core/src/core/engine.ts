@@ -486,6 +486,28 @@ function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uin
 }
 
 /**
+ * The operand chunks of one key by ascending cardinality, equal sizes in their given order; a new array, the operands
+ * themselves are not touched. Each chunk's size is read once.
+ */
+function smallestFirst<T extends { readonly size: number } | null>(chunks: readonly T[]): T[] {
+  const out = chunks.slice();
+  const sizes = out.map((c) => c?.size ?? 0);
+  for (let i = 1; i < out.length; i++) {
+    const c = out[i] as T;
+    const size = sizes[i] as number;
+    let j = i - 1;
+    while (j >= 0 && (sizes[j] as number) > size) {
+      out[j + 1] = out[j] as T;
+      sizes[j + 1] = sizes[j] as number;
+      j--;
+    }
+    out[j + 1] = c;
+    sizes[j + 1] = size;
+  }
+  return out;
+}
+
+/**
  * The keys a combine reads, ascending. Candidate keys come from the INCLUDE operands only: an exclude can subtract ids
  * from a chunk but can never introduce one, so a key no include holds cannot appear in the result however large the
  * suppression list is. That asymmetry is what makes suppression cheap.
@@ -1493,10 +1515,14 @@ export class SegmentEngine {
     // A key the index lists but the source cannot produce bytes for reads as empty — and under AND an empty
     // operand empties the result.
     if (mode === 'all' && chunks.some((c) => c === null)) return null;
-    const first = chunks[0];
+    // An AND of three or more is taken smallest first: the clone is of the smallest, and the running result stays as
+    // small as the operands allow (one that is small, an array, meets a large bitset or run container as a filter and
+    // never builds a bitset). The answer is the same in any order.
+    const ordered = mode === 'all' && chunks.length > 2 ? smallestFirst(chunks) : chunks;
+    const first = ordered[0];
     const acc = first ? first.clone() : this.codec.empty();
-    for (let i = 1; i < chunks.length; i++) {
-      const other = chunks[i];
+    for (let i = 1; i < ordered.length; i++) {
+      const other = ordered[i];
       if (other === null || other === undefined) continue; // 'any' only — 'all' returned above
       if (mode === 'all') {
         acc.andInPlace(other);
