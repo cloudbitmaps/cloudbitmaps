@@ -24,8 +24,9 @@
  * the set alone):
  *
  *            and                       or                         andNot
- *   A  A     merge, or gallop when     merge while the union      merge, or gallop when
- *            one side is 16x longer    fits an array, else bits   the second side is 16x longer
+ *   A  A     merge, or gallop when     merge while the union      scratch bitset from 32 values,
+ *            one side is 16x longer    fits an array, else bits   gallop when the second side is
+ *            (scratch bitset from 32)                             16x longer, else merge
  *   A  B     probe each value          copy the bitset, set bits  keep values whose bit is clear
  *   B  B     word loop                 word loop                  word loop
  *   R  R     interval intersection     interval union             interval difference
@@ -775,6 +776,28 @@ function andNotArrays(a: Container, b: Container): Container | null {
       at = gallop(y, 0, at, je, v);
       if (at === je || y[at] !== v) out[n++] = v;
     }
+    return arrayOfScratch(out, n);
+  }
+  if (b.len >= PROBE_MIN) {
+    // Similar sizes: mark the part of `b` inside `a`'s span in the scratch bitset, then keep each value of `a` whose bit
+    // is clear. Both arrays are read once, in order, with no unpredictable branch.
+    const ae = a.off + a.len;
+    const first = x[a.off] as number;
+    const last = x[ae - 1] as number;
+    const from = gallop(y, 0, b.off, je, first);
+    const to = gallop(y, 0, from, je, last + 1);
+    const words = probeWords;
+    for (let j = from; j < to; j++) {
+      const v = y[j] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    for (let i = a.off; i < ae; i++) {
+      const v = x[i] as number;
+      // Written whether or not `v` is kept; only a kept value moves `n` past its slot.
+      out[n] = v;
+      n += (((words[v >>> 5] as number) >>> (v & 31)) & 1) ^ 1;
+    }
+    for (let j = from; j < to; j++) words[(y[j] as number) >>> 5] = 0;
     return arrayOfScratch(out, n);
   }
   let i = a.off;

@@ -14,6 +14,9 @@ bench/calibration/large/*.json
 tests/bench/fixtures/calibration-rehearsal*.json
 tests/bench/fixtures/calibration-large-rehearsal.json
 
+# The codec comparison's evidence is the bench's own output, one round per line, and a test recomputes it from itself.
+bench/ts-codec-comparison-results.json
+
 # Markdown is hand-formatted (ASCII diagrams, alignment) — Prettier would mangle it.
 **/*.md
 
