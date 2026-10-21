@@ -103,10 +103,11 @@ interface Decoded {
  * @throws {IntegrityError} for every shape {@link parsePortableLayout} refuses.
  */
 export function decodeContainers(input: Uint8Array): Decoded {
-  // The bytes are copied before they are checked, and the checked copy is the one read: a buffer another thread is
+  // The bytes are copied before they are checked, and the checked copy is the one read (Uint8Array's own slice, which
+  // always copies; a Node Buffer's slice is a view of the same memory): a buffer another thread is
   // still writing (a shared one) could otherwise pass the check and then hold different bytes when they are copied
   // into containers, leaving an unsorted array or a bitset whose cardinality is not its bit count.
-  const bytes = input.slice();
+  const bytes = Uint8Array.prototype.slice.call(input) as Uint8Array;
   const layout = parsePortableLayout(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const keys: number[] = [];

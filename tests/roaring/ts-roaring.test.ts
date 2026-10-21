@@ -195,28 +195,36 @@ describe('the TypeScript codec keeps its own books', () => {
     }
   });
 
-  it('reads the bytes it checked when the buffer changes under it during the load', () => {
-    const values = [10, 20, 30, 40, 50];
-    const good = tsRoaringCodec.fromValues(values).serialize();
-    const shared = new Uint8Array(new SharedArrayBuffer(good.length));
-    shared.set(good);
-    const live = new Uint8Array(shared.buffer);
-    let touched = 0;
-    // Every time the loader looks at the buffer's backing store, a "writer" swaps two stored values.
-    Object.defineProperty(shared, 'buffer', {
-      get() {
-        touched++;
-        const at = good.length - 10;
-        const x = live[at] as number;
-        live[at] = live[at + 2] as number;
-        live[at + 2] = x;
-        return live.buffer;
-      },
-    });
-    const loaded = tsRoaringCodec.safeDeserialize(shared, CAP, { whole: true });
-    expect(loaded.toArray()).toEqual(values);
-    expect(touched, 'the loader must not need the shared backing store after checking').toBe(0);
-  });
+  // A Node Buffer's own slice() is a view of the same memory, so a Buffer over shared memory is its own case.
+  const sharedViews: ReadonlyArray<[string, (sab: SharedArrayBuffer) => Uint8Array]> = [
+    ['a Uint8Array', (sab) => new Uint8Array(sab)],
+    ['a Buffer', (sab) => Buffer.from(sab)],
+  ];
+  it.each(sharedViews)(
+    'reads the bytes it checked when %s changes under it during the load',
+    (_name, wrap) => {
+      const values = [10, 20, 30, 40, 50];
+      const good = tsRoaringCodec.fromValues(values).serialize();
+      const shared = wrap(new SharedArrayBuffer(good.length));
+      shared.set(good);
+      const live = new Uint8Array(shared.buffer);
+      let touched = 0;
+      // Every time the loader looks at the buffer's backing store, a "writer" swaps two stored values.
+      Object.defineProperty(shared, 'buffer', {
+        get() {
+          touched++;
+          const at = good.length - 10;
+          const x = live[at] as number;
+          live[at] = live[at + 2] as number;
+          live[at + 2] = x;
+          return live.buffer;
+        },
+      });
+      const loaded = tsRoaringCodec.safeDeserialize(shared, CAP, { whole: true });
+      expect(loaded.toArray()).toEqual(values);
+      expect(touched, 'the loader must not need the shared backing store after checking').toBe(0);
+    },
+  );
 });
 
 describe('the TypeScript codec reads hostile bytes as native does', () => {
