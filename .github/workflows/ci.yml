@@ -70,7 +70,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
         # A stalled test run ends the job in 15 minutes, not at the job limit. A normal one takes 5 to 9 (measured on
-        # this workflow's runs: 5.5 and 6.6 minutes on Node 24 and 22, 6.4 and 8.5 on an earlier run).
+        # a run of this workflow: 5.6 minutes on Node 22 and 8.6 on Node 24, the slower leg), so the limit is 1.7 times the
+        # slowest run seen: tight enough to end a stall early, with room for a slow runner.
         timeout-minutes: 15
       - run: pnpm build
       # `pnpm test` runs before the build, so the spawned-bin tests skip there; here they run against the built bin
