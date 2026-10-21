@@ -263,7 +263,7 @@ describe('{ serialized }: portable Roaring bytes, checked before anything is rea
       const w = world();
       const err = await loadSegment(SEG, { serialized }, w.deps).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ValidationError);
-      expect((err as Error).message).toContain('orMany');
+      expect((err as Error).message).toContain('combine them first');
       expect(w.calls()).toEqual([]);
     }
     const w = world();
@@ -432,7 +432,13 @@ describe('a codec without encodeChunks loads a bitmap input through its ids', ()
       safeDeserialize: (bytes, max) => {
         const bitmap = storeCodec.safeDeserialize(bytes, max);
         return new Proxy(bitmap, {
-          get: (t, prop) => (prop === 'encodeChunks' ? undefined : Reflect.get(t, prop, t)),
+          get: (t, prop) => {
+            if (prop === 'encodeChunks') return undefined;
+            // Methods run on the target: the TypeScript codec's bitmap keeps its state in private fields, which a
+            // proxy as `this` cannot reach.
+            const value = Reflect.get(t, prop, t);
+            return typeof value === 'function' ? value.bind(t) : value;
+          },
         }) as CodecBitmap;
       },
     };
