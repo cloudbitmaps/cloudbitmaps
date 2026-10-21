@@ -23,17 +23,20 @@
  *     `serialize()` afterwards depends on the set alone;
  *   - `safeDeserialize` runs the layout check first (`portable/layout.ts`), so the structure every operation assumes is
  *     proven before a container is built, and refuses what the native path refuses, with `IntegrityError`;
- *   - a combine builds its result into fresh containers, shares nothing with its operand and never changes it.
+ *   - a combine never changes its operand. A key only this bitmap holds keeps its container by reference (it can be a
+ *     run), an unshared bitset's words are reused in place, and a key only the operand holds is copied in for a union;
+ *     a pair of containers combines into an array or a bitset, never a run.
  *   - `clone` shares every container with the original and flags it, so the first write on either side copies it.
  *
  * Writing an id that is not an integer from 0 to 4,294,967,295 throws `ValidationError`; reading one (`has`) says no
  * and removing one does nothing. A combine works on each pair of containers by their kinds (`containers.ts` has the
  * table), `addMany` and `removeMany` group sorted ids by key and touch each container once, and iteration is a class
- * that walks the containers where they are (`iterator.ts`).
+ * that walks the containers where they are (`iterator.ts`; a bitmap must not be mutated while it is iterated).
  *
  * `encodeChunks` takes a snapshot of the containers and marks each shared, so the bitmap may change while the chunks
  * are read: a change copies a shared container first, and the chunks stay what they were when it was called. It
- * optimizes and serializes one container per step, so a writer can yield between steps; it leaves the bitmap as it was.
+ * optimizes and serializes one container per step, so a writer can yield between steps. Membership and bytes are
+ * unchanged, but every container is now flagged shared, so the next write to each copies it once.
  *
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */
