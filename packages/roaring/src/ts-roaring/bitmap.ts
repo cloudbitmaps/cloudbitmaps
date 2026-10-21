@@ -24,6 +24,7 @@
  *   - `safeDeserialize` runs the layout check first (`portable/layout.ts`), so the structure every operation assumes is
  *     proven before a container is built, and refuses what the native path refuses, with `IntegrityError`;
  *   - a combine builds its result into fresh containers, shares nothing with its operand and never changes it.
+ *   - `clone` shares every container with the original and flags it, so the first write on either side copies it.
  *
  * Writing an id that is not an integer from 0 to 4,294,967,295 throws `ValidationError`; reading one (`has`) says no
  * and removing one does nothing. A combine works on each pair of containers by their kinds (`containers.ts` has the

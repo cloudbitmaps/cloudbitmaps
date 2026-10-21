@@ -195,43 +195,67 @@ describe('array difference through a scratch bitset', () => {
   });
 });
 describe('a clone shares its containers until one side writes', () => {
-  const kinds: Record<string, () => number[]> = {
-    array: () => thin(500, 7),
-    bitset: () => thin(20_000, 3),
-    runs: () => range(100, 5000).concat(range(9000, 40_000)),
+  // One container of each kind, written to while a clone still holds it: the array has spare room and starts at 0, so
+  // an add or remove could be done in place, and `runs` is a run container decoded from bytes.
+  const SOURCES: Record<string, { make: () => CodecBitmap; has: number; absent: number }> = {
+    array: {
+      make: () => {
+        const m = TS.fromValues(thin(500, 7));
+        m.remove(0);
+        return m;
+      },
+      has: 21,
+      absent: 22, // inside the array, so an in-place add would shift values the clone still reads
+    },
+    bitset: { make: () => TS.fromValues(thin(20_000, 3)), has: 21, absent: 65_001 },
+    runs: {
+      make: () => asRuns(TS.fromValues(range(100, 5000).concat(range(9000, 40_000)))),
+      has: 12_000,
+      absent: 65_001,
+    },
   };
-  for (const [kn, ids] of Object.entries(kinds))
-    for (const [on, other] of Object.entries(kinds))
-      for (const op of ['andInPlace', 'orInPlace', 'andNotInPlace'] as const) {
-        it(`${kn} ${op} ${on}`, () => {
-          const mk = (v: number[]) => {
-            const m = TS.fromValues(v);
-            if (kn === 'runs' && v === ids()) m.optimize?.();
-            return m;
-          };
-          const source = mk(ids());
+  const OPERANDS: Record<string, number[]> = {
+    array: thin(300, 11, 5),
+    bitset: thin(25_000, 2),
+    runs: range(3000, 12_000),
+  };
+  const writers = (has: number, absent: number): Record<string, (b: CodecBitmap) => void> => ({
+    add: (b) => b.add(absent),
+    remove: (b) => b.remove(has),
+    addMany: (b) => b.addMany([absent, absent - 1, absent - 2]),
+    removeMany: (b) => b.removeMany([has, has + 3, has + 6]),
+    optimize: (b) => b.optimize?.(),
+    ...Object.fromEntries(
+      Object.entries(OPERANDS).flatMap(([on, other]) =>
+        (['andInPlace', 'orInPlace', 'andNotInPlace'] as const).map((op) => [
+          `${op} ${on}`,
+          (b: CodecBitmap) => b[op](TS.fromValues(other)),
+        ]),
+      ),
+    ),
+  });
+  for (const [kn, { make, has, absent }] of Object.entries(SOURCES))
+    for (const [wn, write] of Object.entries(writers(has, absent)))
+      for (const first of ['source', 'clone'] as const) {
+        it(`${kn} ${wn}, ${first} first`, () => {
+          const source = make();
+          const original = [...source];
           const bytes = hex(source.serialize());
+          const model = make();
+          write(model);
+          const after = [...model];
           const copy = source.clone();
-          const operand = TS.fromValues(other());
-          copy[op](operand);
-          expect([...source]).toEqual(ids());
-          expect(hex(source.serialize())).toBe(bytes);
-          expect([...operand]).toEqual(other());
-          const want = NA.fromValues(ids());
-          want[op](NA.fromValues(other()));
-          expect([...copy]).toEqual([...want]);
-          // A write to the source after the clone leaves the clone as it was.
-          const snapshot = [...copy];
-          source.removeMany(ids().slice(0, 10));
-          source.add(65_000);
-          expect([...copy]).toEqual(snapshot);
-          // A clone of a clone, and a combine on the original, leave every other holder's content alone.
-          const again = copy.clone();
-          copy[op](operand);
-          expect([...again]).toEqual(snapshot);
-          const cloneNow = [...copy];
-          source[op](operand);
-          expect([...copy]).toEqual(cloneNow);
+          const [one, two] = first === 'source' ? [source, copy] : [copy, source];
+          write(one);
+          expect([...one]).toEqual(after);
+          expect([...two]).toEqual(original);
+          if (first === 'clone') expect(hex(source.serialize())).toBe(bytes);
+          // A clone of the untouched holder, and then its own write, leave the first writer's result as it is.
+          const third = two.clone();
+          write(two);
+          expect([...two]).toEqual(after);
+          expect([...third]).toEqual(original);
+          expect([...one]).toEqual(after);
         });
       }
 });
@@ -442,13 +466,13 @@ describe('cow', () => {
           if (when === 'cloneMid') {
             take();
             const c = b.clone();
-            const cBefore = [...c];
             MUT[mn]!(c);
             MUT.add!(c);
             MUT.removeMany!(c);
+            const cAfter = [...c];
             expect([...b]).toEqual(BUILDS[bn]!().toArray()); // original untouched by clone mutation
             MUT[mn]!(b);
-            void cBefore;
+            expect([...c]).toEqual(cAfter); // the clone keeps what it held when the original changed
           }
           while (!take());
           expect(got).toEqual(want);
