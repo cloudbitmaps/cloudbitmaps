@@ -79,6 +79,7 @@ const {
   leftoversHint,
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
+const { CODECS, packageFor } = require('./lib/codec-engine.cjs');
 const {
   LARGE_STAGES,
   LARGE_SIZES,
@@ -187,6 +188,19 @@ try {
 } catch (err) {
   refuse(err.message);
 }
+/**
+ * Which Roaring codec the stores of this run use: unset for the published packages exactly as they are installed, or
+ * `native` / `typescript` for the stores of a bundle built from this checkout's sources, with the store package's
+ * internal codec switch set to it (`bench/lib/codec-engine.cjs`). Run it once with each, from the same checkout, to put
+ * the two codecs' request counts and latencies side by side; `native` here is the same bundle with the native codec, so
+ * the only difference between the two runs is the codec. Bench only: nothing in `packages/` reads this variable.
+ */
+const CODEC = (process.env.CR_CALIBRATE_CODEC ?? '').trim();
+if (CODEC !== '' && !CODECS.includes(CODEC)) {
+  refuse(`CR_CALIBRATE_CODEC must be ${CODECS.join(' or ')}, or unset, not "${CODEC}"`);
+}
+/** A package's exports: the installed published one, or, with a codec named, the same package from the bundle. */
+const packageOf = (name) => packageFor(name, ROOT);
 /** The stages this suite runs: the projection, the run's end-of-run check and the harness's own refusal read this list. */
 const STAGES = SUITE === 'large' ? LARGE_STAGES : DEFAULT_STAGES;
 
@@ -593,7 +607,7 @@ async function main() {
     if (
       SUITE === 'default' &&
       MODE !== 'project' &&
-      !(await collectsByName(await import('@cloudbitmaps/roaring')))
+      !(await collectsByName(await packageOf('roaring')))
     ) {
       refuse(
         `the installed @cloudbitmaps/roaring does not collect by name at keep ${STEADY_KEEP}, which the steadyLoad ` +
@@ -601,10 +615,7 @@ async function main() {
       );
     }
     if (SUITE === 'default' && MODE !== 'project') {
-      readsAfterCollect = await readsRowAfterCollect(
-        await import('@cloudbitmaps/roaring'),
-        STEADY_KEEP,
-      );
+      readsAfterCollect = await readsRowAfterCollect(await packageOf('roaring'), STEADY_KEEP);
     }
     if (SUITE === 'large') {
       // The layouts, and what the engine does on them, counted in memory before anything is created: the bound needs the
@@ -987,6 +998,7 @@ async function main() {
     region: REHEARSE ? 'n/a (local container)' : region,
     measured: {
       packageVersion,
+      ...(CODEC === '' ? {} : { codec: CODEC }),
       ...(readsAfterCollect === undefined ? {} : { readsRowAfterCollect: readsAfterCollect }),
       harness: harnessRef(ROOT),
       node: process.version,
@@ -1238,8 +1250,8 @@ async function main() {
     };
     log(`network: round-trip floor ${floor.toFixed(1)} ms — ${results.network.client}`);
 
-    const { S3Storage } = await import('@cloudbitmaps/s3');
-    const { CloudRoaring } = await import('@cloudbitmaps/roaring');
+    const { S3Storage } = await packageOf('s3');
+    const { CloudRoaring } = await packageOf('roaring');
     // `readTimeoutMs: 0` stated, not left to the default: a timed request must not be cut short, whatever the S3
     // package's default becomes.
     const storage = new S3Storage({ client, bucket, prefix: STORE_PREFIX, readTimeoutMs: 0 });

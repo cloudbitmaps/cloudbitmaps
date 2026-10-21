@@ -80,4 +80,19 @@ function engineWith(codec, options) {
   return engine;
 }
 
-module.exports = { CODECS, bundleEngine, engineWith, evaluate };
+let shared;
+/**
+ * A package's exports for a calibration harness: the installed published package when `CR_CALIBRATE_CODEC` is unset
+ * (`name` is `roaring` or `s3`), and otherwise the same package from one bundle of this checkout's sources with the
+ * codec named by the variable, shared by everything in the process that asks.
+ */
+async function packageFor(name, root) {
+  const codec = (process.env.CR_CALIBRATE_CODEC ?? '').trim();
+  if (codec === '') {
+    return name === 's3' ? import('@cloudbitmaps/s3') : import('@cloudbitmaps/roaring');
+  }
+  shared ??= engineWith(codec, { root, withS3: true });
+  return shared[name];
+}
+
+module.exports = { CODECS, bundleEngine, engineWith, evaluate, packageFor };
