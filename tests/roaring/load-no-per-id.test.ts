@@ -9,6 +9,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
 import { testEntropy } from '../helpers/entropy';
+import { codecLeg } from '../helpers/codec-leg';
 
 /**
  * A load of a 12M-member bitmap runs no JavaScript per id: counted, not timed, so it holds on any machine.
@@ -107,32 +108,36 @@ describe('a 12M-member bitmap load runs no per-id JavaScript', () => {
     expect(nonzero(counts())).toEqual({});
   });
 
-  it('control: the same counters see a load from ids, and a codec that cannot encode its own chunks', async () => {
-    const counts = countPerIdCalls();
-    const store = new CloudRoaring({ storage: new MemoryStorage() });
-    await store.load({ segment: 'small' }, [1, 2, 3, 70_000]);
-    expect(counts()).toMatchObject({ splitId: 4, fromValues: 2 });
+  // Counts the native codec's `fromValues`, which the TypeScript leg does not call.
+  it.skipIf(codecLeg() === 'ts')(
+    'control: the same counters see a load from ids, and a codec that cannot encode its own chunks',
+    async () => {
+      const counts = countPerIdCalls();
+      const store = new CloudRoaring({ storage: new MemoryStorage() });
+      await store.load({ segment: 'small' }, [1, 2, 3, 70_000]);
+      expect(counts()).toMatchObject({ splitId: 4, fromValues: 2 });
 
-    // A codec without `encodeChunks` loads a bitmap through its ids: the path a missing seam would fall back to.
-    const without: CodecInterface = {
-      ...roaringCodec,
-      safeDeserialize: (bytes, max) => {
-        const decoded = roaringCodec.safeDeserialize(bytes, max);
-        return new Proxy(decoded, {
-          get: (t, prop) => (prop === 'encodeChunks' ? undefined : Reflect.get(t, prop, t)),
-        }) as CodecBitmap;
-      },
-    };
-    const before = splitIdCalls.n;
-    const deps = {
-      storage: new MemoryStorageDriver(),
-      registry: new MemoryRegistryDriver(),
-      codec: without,
-      entropy: testEntropy,
-    };
-    await loadSegment({ segment: 'fallback' }, { bitmap: new RoaringBitmap32([1, 2, 3]) }, deps);
-    expect(splitIdCalls.n - before).toBe(3);
-  });
+      // A codec without `encodeChunks` loads a bitmap through its ids: the path a missing seam would fall back to.
+      const without: CodecInterface = {
+        ...roaringCodec,
+        safeDeserialize: (bytes, max) => {
+          const decoded = roaringCodec.safeDeserialize(bytes, max);
+          return new Proxy(decoded, {
+            get: (t, prop) => (prop === 'encodeChunks' ? undefined : Reflect.get(t, prop, t)),
+          }) as CodecBitmap;
+        },
+      };
+      const before = splitIdCalls.n;
+      const deps = {
+        storage: new MemoryStorageDriver(),
+        registry: new MemoryRegistryDriver(),
+        codec: without,
+        entropy: testEntropy,
+      };
+      await loadSegment({ segment: 'fallback' }, { bitmap: new RoaringBitmap32([1, 2, 3]) }, deps);
+      expect(splitIdCalls.n - before).toBe(3);
+    },
+  );
 });
 
 describe('a bitmap load still hands the event loop back', () => {

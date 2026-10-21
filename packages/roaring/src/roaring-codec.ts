@@ -200,14 +200,16 @@ export class SafeBitmap implements CodecBitmap {
 }
 
 /**
- * A bare `RoaringBitmap32` of this package's own `roaring`, or a bitmap {@link deserializePortable} returned, passed
- * where ids go, loads as `{ bitmap }`: from its containers, through the same check as any bytes, never id by id. Any
- * other input passes through unchanged, and a bitmap from another copy of `roaring` is loaded as the ids it
- * iterates, which is correct and slower.
+ * Any object with a `serialize` method (the `PortableBitmap` shape), passed where ids go, loads as `{ bitmap }`: from
+ * its containers, through the same check as any bytes, never id by id. It is a test by shape, not `instanceof`, so a
+ * `RoaringBitmap32` of this package's `roaring`, a bitmap {@link deserializePortable} returned and a bitmap of
+ * another copy of `roaring` all load the same way, under either codec. Anything else passes through unchanged.
  */
 export function bitmapAsLoadInput(input: LoadInput): LoadInput {
-  return input instanceof RoaringBitmap32 || input instanceof ReadonlyRoaringView
-    ? { bitmap: input as PortableBitmap }
+  return typeof input === 'object' &&
+    input !== null &&
+    typeof (input as { serialize?: unknown }).serialize === 'function'
+    ? { bitmap: input as unknown as PortableBitmap }
     : input;
 }
 
@@ -223,6 +225,24 @@ export const roaringCodec: CodecInterface = {
     SafeBitmap.safeDeserialize(bytes, maxBytes, options),
   owns: (bitmap) => bitmap instanceof SafeBitmap,
 };
+
+let activeCodec: CodecInterface = roaringCodec;
+
+/**
+ * The codec the store hands to the engine at every site that injects one (`CloudRoaring`, a load, a pin, an export
+ * and {@link deserializePortable}): the native codec unless a harness has flipped it with {@link setFlagshipCodec}.
+ * Internal: no public entry exports it, and a store cannot be configured with a codec.
+ */
+export function flagshipCodec(): CodecInterface {
+  return activeCodec;
+}
+
+/** Flip the codec the store uses, for the whole process. Test and bench harnesses only; returns the previous one. */
+export function setFlagshipCodec(codec: CodecInterface): CodecInterface {
+  const previous = activeCodec;
+  activeCodec = codec;
+  return previous;
+}
 
 /**
  * A decoded bitmap that can only be read: what {@link deserializePortable} returns. Its ids come out ascending when
@@ -247,9 +267,9 @@ export interface ReadonlyBitmap extends PortableBitmap, Iterable<number> {
  * answering wrongly. The decoded bitmap sits in a private field. It is not exported from the package.
  */
 class ReadonlyRoaringView implements ReadonlyBitmap {
-  readonly #bitmap: SafeBitmap;
+  readonly #bitmap: CodecBitmap;
 
-  constructor(bitmap: SafeBitmap) {
+  constructor(bitmap: CodecBitmap) {
     this.#bitmap = bitmap;
   }
 
@@ -288,5 +308,5 @@ class ReadonlyRoaringView implements ReadonlyBitmap {
  * @throws {ValidationError} for bytes that are not exactly one well-formed portable bitmap, as a load refuses them.
  */
 export function deserializePortable(bytes: Uint8Array): ReadonlyBitmap {
-  return new ReadonlyRoaringView(decodeSerialized(bytes, roaringCodec) as SafeBitmap);
+  return new ReadonlyRoaringView(decodeSerialized(bytes, flagshipCodec()));
 }

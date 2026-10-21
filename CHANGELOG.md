@@ -11,6 +11,15 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **A bitmap passed where ids go is recognised by its shape: any object with a `serialize` method loads as `{ bitmap }`,
+  so a `RoaringBitmap32` from another copy of `roaring` is no longer loaded as the ids it iterates.** It is written from
+  its containers through the same check as any bytes, which is faster, and the stored bytes are the same. What a caller
+  can notice: `sorted: true` with such a bitmap now throws `ValidationError` like it does for `{ bitmap }` (drop `sorted`,
+  or pass `[...bitmap]`), and an iterable that has a `serialize` method of its own is serialized, not iterated (rename the
+  method, or pass `{ serialized }` or the ids as an array).
+
 ### Changed
 
 - **The format page's chunk-payload section says what a writer of your own needs to reproduce the bytes, and both READMEs
@@ -19,7 +28,9 @@ so, and so do the module headers in the code.
   integers, the three payload lengths, and that a payload is never empty. No byte a writer produces changes. The root
   README and the `@cloudbitmaps/roaring` README gain a Credits section for the Roaring format and its authors, with the
   specification and the three papers. The test suite now holds every bitmap codec to CRoaring and to that written rule
-  on every container boundary, which changes nothing for a caller.
+  on every container boundary, which changes nothing for a caller. The store's own suites also run a second time on
+  the TypeScript codec, behind an internal switch that no public entry exports and no option reaches; the store still
+  uses the native codec.
 
 ## [0.23.0] — 2026-10-20
 

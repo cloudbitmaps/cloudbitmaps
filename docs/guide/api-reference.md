@@ -296,8 +296,8 @@ whatever the segment's size, and writes the same object an unsorted load of the 
 id lower than the one before throws `ValidationError` naming its position. The row, the number and the key are settled
 before the first id is read. An error the ids raise reaches the caller as the very object raised, never seen by the
 storage driver, and a storage driver that runs its write again gets `IntegrityError`. With `{ serialized }`, `{ bitmap
-}`, a bitmap `deserializePortable` returned or a `RoaringBitmap32` of this package's `roaring` (one from another copy
-loads as its ids, and takes `sorted`), and as a value that is not a boolean, it throws `ValidationError` before any
+}`, a bitmap `deserializePortable` returned, a `RoaringBitmap32` or any object with a `serialize('portable')` method, and
+as a value that is not a boolean, it throws `ValidationError` before any
 request; the `*Into` verbs do not take it
 ([ids that already ascend](loading.md#what-a-load-accepts)).
 

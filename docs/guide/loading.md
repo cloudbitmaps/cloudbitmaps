@@ -100,9 +100,9 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
   `ValidationError` naming its position and never the id (`ids[41]: lower than the id before it; …`): sort at the
   source, or leave `sorted` off. A bad id is refused as it is without the option, at its position.
 - **For ids only.** With `{ serialized }`, `{ bitmap }`, a bitmap `deserializePortable` returned, or a
-  `RoaringBitmap32` of the `roaring` this package uses, `sorted: true` throws `ValidationError` before any request:
-  those are held whole already and written from their own containers. A bitmap from another copy of `roaring` loads as
-  the ids it iterates, which ascend, so it takes `sorted`. A `sorted` that is not a boolean throws too. The `*Into`
+  `RoaringBitmap32` (of this package's `roaring` or of another copy, or any object with a `serialize('portable')`
+  method), `sorted: true` throws `ValidationError` before any request: those are held whole already and written from
+  their own containers. An iterable with no such method loads as the ids it iterates. A `sorted` that is not a boolean throws too. The `*Into`
   verbs do not take it.
 - **The segment is judged before an id is read.** The row and its refusals (a destroyed segment, an encrypted one the
   load has no keystore for, `requireEncryption` on a cleartext one), the generation number and the key are all settled
