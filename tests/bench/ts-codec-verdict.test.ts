@@ -229,4 +229,47 @@ describe('the committed evidence', () => {
   it('records the commit the figures were taken on', () => {
     expect(doc.commit).toMatch(/^[0-9a-f]{40}$/);
   });
+
+  it('has every figure of the report’s read, write and start-up tables in the file', () => {
+    const report = readFileSync(join(ROOT, 'bench', 'ts-codec-comparison.md'), 'utf8');
+    const rows = report
+      .split('\n')
+      .filter((l) => l.startsWith('|'))
+      .map((l) =>
+        l
+          .split('|')
+          .slice(1, -1)
+          .map((c) => c.trim()),
+      );
+    const pct = (x: number) => `${x >= 0 ? '+' : '-'}${Math.abs(x * 100).toFixed(1)}%`;
+    for (const c of doc.reads.cells) {
+      const row = rows.find((r) => r[0] === c.dataset && r[1] === c.op && r.length > 8);
+      expect(row, `${c.dataset} ${c.op}`).toBeDefined();
+      expect(row!.slice(4), `${c.dataset} ${c.op}`).toEqual([
+        pct(c.perProcess.typescriptVsNative),
+        pct(c.perProcess.controlVsNative),
+        c.perProcess.verdict,
+        pct(c.inProcess.typescriptVsNative),
+        pct(c.inProcess.controlVsNative),
+        c.inProcess.verdict,
+        String(c.perProcess.loadMax),
+      ]);
+    }
+    for (const o of doc.reads.perOp) {
+      const row = rows.find((r) => r[0] === o.op && r.length === 8);
+      expect(row, o.op).toBeDefined();
+      expect(row![4]).toBe(o.perProcess.verdict);
+      expect(row![3]).toBe(pct(o.perProcess.worstControl));
+    }
+    for (const w of doc.write.rows) {
+      const row = rows.find((r) => r[0] === w.op && r.length === 6);
+      expect(row, w.op).toBeDefined();
+      expect(row!.slice(3)).toEqual([pct(w.typescriptVsNative), pct(w.controlVsNative), w.verdict]);
+    }
+    for (const [name, f] of Object.entries(doc.startup.coldProcess.fields)) {
+      const row = rows.find((r) => r[0] === name && r.length === 5);
+      expect(row, name).toBeDefined();
+      expect(row!.slice(3)).toEqual([pct(f.typescriptVsNative), pct(f.controlVsNative)]);
+    }
+  });
 });
