@@ -871,9 +871,9 @@ const specAnchors = [];
   // The RSS envelope is a CEILING claim, not a measurement, and it is gated as one.
   //
   // `rss-gate-results.json` records the hard cgroup limit the workload ran under and whether it survived. The
-  // per-run measurements in that file (creep, reader RSS) are deliberately NOT gated against the page: they
-  // move a little with the machine, and a gate that forces a site edit on every benchmark run is a gate people
-  // start skipping. What the page must state is the claim — the ceiling, the workload that ran inside it, and
+  // run's measurements (creep and its limit, reader RSS) are checked below against the creep limits and against the
+  // reader RSS `docs/benchmarks.md` quotes, so a local `pnpm rss-gate` rewrites the record and turns this check
+  // red until the doc is edited; that friction is intended. What the page must state is the claim — the ceiling, the workload that ran inside it, and
   // that nothing was OOM-killed.
   //
   // Without SOAK_INJECT the soak's verdict lives only in container stdout, and the stage directory is deleted

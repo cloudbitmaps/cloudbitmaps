@@ -7,21 +7,20 @@ import { fileURLToPath } from 'node:url';
  * test takes it from `tests/helpers/store-codec.ts`). A test reaches the native codec behind the store through the
  * store package's internal codec switch: `withNativeCodec()` (tests/helpers/codec-leg.ts) or `setFlagshipCodec` (from
  * `@/roaring-codec`). It can also import the native codec itself, by any path ending in `native-codec`, whether the
- * specifier is an alias or relative, from any directory except `tests/roaring/` and `tests/helpers/`: the oracle and
- * the differential tests live there and use the native codec as an object beside the store.
- *
- * The rule: a file reaches the native codec this way only if it is on a list below, with the reason.
+ * specifier is an alias or relative, with or without an extension. No directory is exempt: a file reaches the native
+ * codec this way only if it is on a list below, with the reason.
  *
  *   NATIVE_STORE_FILES   the native codec is the point of the file: it flips the switch, or hands the native codec to
  *                        an engine, or tests the native bitmap class itself;
+ *   NATIVE_ORACLE_FILES  the oracle and the differential tests, named one by one: they use the native codec as an
+ *                        object beside the store, to judge the TypeScript codec against it;
  *   NATIVE_BYTES_FILES   the file only uses the native bitmap class to build chunk bytes or decode them, an
  *                        independent reader and writer beside the store, and never passes the native codec to an
  *                        engine (no `roaringCodec` in its text).
  *
  * Both directions are held:
  *
- *   FORWARD   every file under `tests/` that names the switch or imports the native codec (outside the two oracle
- *             directories) is on a list;
+ *   FORWARD   every file under `tests/` that names the switch or imports the native codec is on a list;
  *   BACKWARD  every listed file exists and still does so, so a file that stopped needing the native codec leaves the
  *             list; a bytes-only file never names `roaringCodec`.
  *
@@ -38,8 +37,20 @@ const NATIVE_STORE_FILES: Readonly<Record<string, string>> = {
     'holds the switch itself: it flips it both ways and restores it',
   'tests/roaring/deserialize-portable.test.ts':
     'spies on the native decoder to prove what a decode does and does not call',
+  'tests/roaring/load-bitmap.test.ts':
+    'tests the native bitmap class, and its racing-decode case wraps the native codec to simulate a write landing between the check and the decode',
   'tests/roaring/load-no-per-id.test.ts':
     'counts the native bitmap calls a load makes, beside the TypeScript counts',
+};
+
+const NATIVE_ORACLE_FILES: Readonly<Record<string, string>> = {
+  'tests/helpers/roaring-oracle.ts':
+    'the oracle: the codec list, CRoaring bytes and the comparison helpers',
+  'tests/roaring/portable-layout.test.ts': 'judges the layout check against the native library',
+  'tests/roaring/ts-roaring.test.ts':
+    'holds the TypeScript codec to the native one as the reference',
+  'tests/roaring/ts-roaring-fast-paths.test.ts':
+    'differential tests of the fast paths against the native codec',
 };
 
 const NATIVE_BYTES_FILES: Readonly<Record<string, string>> = {
@@ -60,19 +71,13 @@ const DEFINES_SWITCH = new Set([
   'tests/arch/native-store-files.test.ts',
 ]);
 
-/** The directories whose files hold the native codec as an oracle beside the store. */
-const ORACLE_DIRS = ['tests/roaring/', 'tests/helpers/'];
-
 const SWITCH_USE = /\bwithNativeCodec\b|\bsetFlagshipCodec\b/;
-const NATIVE_IMPORT = /native-codec['"]/;
+const NATIVE_IMPORT = /native-codec(\.[cm]?[jt]s)?['"`]/;
 const NATIVE_ENGINE_CODEC = /\broaringCodec\b/;
 
-/** Whether `file` puts the native codec where this rule holds it: the switch anywhere, an import outside the oracles. */
-function reachesNative(file: string, text: string): boolean {
-  return (
-    SWITCH_USE.test(text) ||
-    (!ORACLE_DIRS.some((d) => file.startsWith(d)) && NATIVE_IMPORT.test(text))
-  );
+/** Whether a file's text puts the native codec where this rule holds it: the switch, or an import of the native codec. */
+function reachesNative(text: string): boolean {
+  return SWITCH_USE.test(text) || NATIVE_IMPORT.test(text);
 }
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -95,18 +100,22 @@ function strayNativeStores(
   listed: ReadonlySet<string>,
 ): string[] {
   return files.filter(
-    (file) => !DEFINES_SWITCH.has(file) && !listed.has(file) && reachesNative(file, read(file)),
+    (file) => !DEFINES_SWITCH.has(file) && !listed.has(file) && reachesNative(read(file)),
   );
 }
 
 const ALL = sources(join(ROOT, 'tests'));
 const read = (file: string): string => readFileSync(join(ROOT, file), 'utf8');
-const LISTED = new Set([...Object.keys(NATIVE_STORE_FILES), ...Object.keys(NATIVE_BYTES_FILES)]);
+const LISTED = new Set([
+  ...Object.keys(NATIVE_STORE_FILES),
+  ...Object.keys(NATIVE_ORACLE_FILES),
+  ...Object.keys(NATIVE_BYTES_FILES),
+]);
 
 describe('the store runs one codec in the tests, except where the native codec is the point', () => {
   it('the pattern finds the files it exists for (a control that must hit)', () => {
     expect(
-      ALL.filter((f) => !DEFINES_SWITCH.has(f) && reachesNative(f, read(f))).length,
+      ALL.filter((f) => !DEFINES_SWITCH.has(f) && reachesNative(read(f))).length,
     ).toBeGreaterThan(8);
   });
 
@@ -117,11 +126,12 @@ describe('the store runs one codec in the tests, except where the native codec i
   it('BACKWARD: every listed file exists and still uses the native codec, with a reason', () => {
     for (const [file, reason] of [
       ...Object.entries(NATIVE_STORE_FILES),
+      ...Object.entries(NATIVE_ORACLE_FILES),
       ...Object.entries(NATIVE_BYTES_FILES),
     ]) {
       expect(ALL, `${file} is listed and missing`).toContain(file);
       expect(
-        reachesNative(file, read(file)),
+        reachesNative(read(file)),
         `${file} is listed and no longer uses the native codec`,
       ).toBe(true);
       expect(reason.length, `${file} needs a reason`).toBeGreaterThan(10);
@@ -145,9 +155,10 @@ describe('the store runs one codec in the tests, except where the native codec i
       ],
       ['tests/x/stray2.test.ts', 'setFlagshipCodec(roaringCodec);'],
       [
-        'tests/roaring/oracle-beside.test.ts',
-        "import { roaringCodec } from '@/native-codec';\nroaringCodec.fromValues([1]);",
+        'tests/roaring/stray-oracle.test.ts',
+        "import { roaringCodec } from '@/native-codec';\nnew SegmentEngine({ codec: roaringCodec });",
       ],
+      ['tests/roaring/ts-roaring.test.ts', "import { roaringCodec } from '@/native-codec';"],
       ['tests/x/core.test.ts', 'new SegmentEngine({ storage, codec: roaringCodec });'],
       [
         'tests/core/stray-core.test.ts',
@@ -163,14 +174,18 @@ describe('the store runs one codec in the tests, except where the native codec i
         "import { roaringCodec } from '../helpers/native-codec';\nnew SegmentEngine({ codec: roaringCodec });",
       ],
       ['tests/helpers/oracle.ts', "import { roaringCodec } from './native-codec';"],
+      ['tests/x/ext.test.ts', "import { roaringCodec } from '@/native-codec.js';"],
       ['tests/x/storecodec.test.ts', "import { storeCodec } from '../helpers/store-codec';"],
     ]);
     const files = [...planted.keys()];
     expect(strayNativeStores(files, (f) => planted.get(f)!, LISTED)).toEqual([
       'tests/x/stray.test.ts',
       'tests/x/stray2.test.ts',
+      'tests/roaring/stray-oracle.test.ts',
       'tests/core/stray-core.test.ts',
       'tests/drivers/rel.test.ts',
+      'tests/helpers/oracle.ts',
+      'tests/x/ext.test.ts',
     ]);
   });
 });

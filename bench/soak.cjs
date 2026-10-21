@@ -297,6 +297,14 @@ function analyze(samples, iters, reader, work) {
   // Band = 15% of this run's baseline (a *relative* tolerance that scales with the working set) PLUS a small
   // absolute floor for the sampling/allocator noise that does NOT scale with size. The floor is metric-specific
   // so it stays anchored to each axis's real working set. Both axes sit at MiB scale, so each gets a 1 MiB floor.
+  // The external floor is kept at 1 MiB on evidence, not by habit. External memory is bimodal at the sample level
+  // (the recorded run swings between 2.6 and 3.9 MiB from one sample to the next), so the first-third and
+  // last-third medians can land on different modes. Over every contiguous sub-run of the recorded series (at least
+  // 14 samples) the creep measure spans -0.85 to +0.60 MiB, and CI's run measured +0.17. A floor under about 0.9 MiB
+  // would trip an honest run, which is the worse failure for a gate that runs inside the RSS job. At the 1 MiB floor
+  // a growth of about 60% of the baseline over a run still passes and one of about 80% fails (the recorded samples
+  // with a linear ramp added, run through this function), so a leak of a quarter of the baseline is below what this
+  // measure can tell from its own noise; a smaller leak is for the longer nightly run and the RSS ceiling to catch.
   // Miss direction is fail-safe (a real leak compounds well past the band).
   const creepOf = (pickSample, floorMiB) => {
     const xs = samples.map(pickSample);

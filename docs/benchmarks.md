@@ -6,7 +6,7 @@
 > sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the estimator's own numbers. The
 > polished, shareable version lives on the [site](../site/benchmarks.html).
 
-> **Which figures are on which codec.** Re-measured on the TypeScript codec on 2026-10-21: the soak (limitation 04) and
+> **Which figures are on which codec.** Re-measured on the TypeScript codec on 2026-10-21: the soak ([limitation 04](../site/benchmarks.html#limits)) and
 > the hard RSS ceiling, whose record is the file CI's gate wrote that day. Still measured before the store's codec moved to
 > TypeScript: the read, fleet-memory and at-scale figures. The cost model and the crossover do not depend on the codec; the
 > codec comparison is in [`bench/ts-codec-comparison.md`](../bench/ts-codec-comparison.md).

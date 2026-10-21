@@ -24,7 +24,7 @@ import {
   ValidationError as CoreValidationError,
 } from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { batchWorld, range } from '../helpers/batch-world';
 import { feedOf, lcg, recordsOf } from '../helpers/combine-feed';
 import { testEntropy } from '../helpers/entropy';
@@ -414,7 +414,7 @@ describe('judgeLoad', () => {
   const deps = () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    return { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    return { storage, registry, entropy: testEntropy, codec: storeCodec };
   };
 
   it('reads the object when the row has no usable summary, and counts both reads', async () => {

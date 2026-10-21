@@ -12,6 +12,7 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 import { aadFor } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { SafeBitmap, roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { checkPortableLayout, containerPayloads } from '@/portable/layout';
 import { IntegrityError, ValidationError } from '@/core/errors';
 import { CrbmReader } from '@/core/crbm/reader';
@@ -627,9 +628,9 @@ describe('a bitmap load reports the fingerprint of the object it wrote', () => {
     // A refused load deletes its object only once the footer proves it its own, by this fingerprint.
     const storage = new MemoryStorageDriver();
     const key = { ...SEG, generation: 0 };
-    const decoded = prepareLoadInput(input, roaringCodec) as DecodedLoadInput;
+    const decoded = prepareLoadInput(input, storeCodec) as DecodedLoadInput;
     const written = await bulkLoadCrbmGeneration(storage, key, decoded, {
-      codec: roaringCodec,
+      codec: storeCodec,
       entropy: testEntropy,
     });
     const reader = await openGenerationReader(storage, key, undefined);
