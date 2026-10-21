@@ -10,7 +10,8 @@ import {
 } from './tests/helpers/load-input-routes';
 
 // The suites the `ts-codec` project runs: the flavor's own, core's (which go through the store), the engine's
-// end-to-end files, and the memory and local-files drivers. Native-only files are excluded, each with its reason.
+// end-to-end files, and the memory and local-files drivers. A test that cannot run on the TypeScript codec (it spies on
+// the native binding, say) skips itself with `codecLeg()`; no whole file is excluded.
 const TS_CODEC_SUITES = [
   'tests/roaring/**/*.test.ts',
   'tests/core/**/*.test.ts',
@@ -21,7 +22,6 @@ const TS_CODEC_SUITES = [
   'tests/flows.test.ts',
   'tests/index.test.ts',
 ];
-const TS_CODEC_EXCLUDED: string[] = [];
 
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
@@ -74,7 +74,7 @@ export default defineConfig({
         test: {
           name: 'ts-codec',
           include: [...TS_CODEC_SUITES],
-          exclude: [...TS_CODEC_EXCLUDED, 'tests/integration/**', 'node_modules/**'],
+          exclude: ['tests/integration/**', 'node_modules/**'],
           setupFiles: ['tests/setup-codec-ts.ts'],
           provide: { codec: 'ts' },
         },
