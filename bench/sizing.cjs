@@ -14,7 +14,7 @@
  *
  * Run: `pnpm bench:sizing` (builds first) to rewrite the regions; `pnpm bench:sizing:check` to verify them.
  * `require()` loads @cloudbitmaps/tools, which ships ESM only, through Node's `require(esm)`, as bench/run.cjs does:
- * the tools package, not the flavor, since this is arithmetic and the flavor would load the native addon for nothing.
+ * the tools package, not the flavor, since this is arithmetic and the flavor would load the whole store for nothing.
  */
 'use strict';
 const { execFileSync } = require('node:child_process');

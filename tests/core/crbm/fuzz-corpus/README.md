@@ -13,7 +13,7 @@ bug stays fixed. A reproducer passes when it is refused with a typed error or de
 To add one: minimize the `fuzz/crashes/…` artifact, drop the bytes into the matching subdirectory (any
 filename), and fix the bug.
 
-The hand-written ones in `safe-deserialize/` are portable-roaring payloads the native deserializer accepts and
+The hand-written ones in `safe-deserialize/` are portable-roaring payloads CRoaring's deserializer accepts and
 the structural check in the roaring codec's safe deserialize refuses: containers or values out of order or listed twice,
 runs overlapping or running past their container, a run container with no runs, and a bitset whose header
 cardinality disagrees with its bits. In `crbm-reader/`, `chunk-containers-out-of-order.crbm` is a whole `.crbm`, with valid

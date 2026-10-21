@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 #
-# Lambda / Amazon-Linux deployability smoke — the orchestrator half.
+# Lambda / Amazon-Linux deployability smoke: the orchestrator half.
 #
-# Proves the PACKED library deploys to the flagship serverless target (AWS Lambda's Amazon Linux 2023 Node
-# runtime). The native `roaring` dep has NO linux-arm64 prebuilt for the current Lambda node runtimes, so it
-# must compile for the target — this replicates the real "build-for-target" deploy path: provision a toolchain
-# in an AL2023 container, `npm install` the tarball (which builds roaring), then load + round-trip it under
-# both ESM and CJS (scripts/lambda-smoke.mjs). Catches a deploy regression the macOS unit lane can't see.
+# Proves the PACKED library loads on the flagship serverless target (AWS Lambda's Amazon Linux 2023 Node runtime).
+# The packages carry no native code, so there is nothing to build for the target: this packs core and the flavor,
+# unpacks them into a `node_modules` on the host, mounts that into the Lambda runtime image and, there, loads the
+# library under both ESM and CJS and round-trips a load (scripts/lambda-smoke.mjs). It also checks that no native
+# addon is installed. Catches a deploy regression the unit lane cannot see: a packed file missing from the tarball, an
+# `exports` map that does not resolve on the runtime's Node, a built-in the runtime lacks.
 #
 # Usage: `pnpm lambda-smoke` (or `bash scripts/lambda-smoke.sh`). Needs Docker. Override the base image with
-# LAMBDA_SMOKE_IMAGE (e.g. `public.ecr.aws/lambda/nodejs:20`). On an arm64 host this tests Graviton natively;
-# CI runs it on x64, and the cross-OS addon build is the `native-os-matrix` job's to cover.
+# LAMBDA_SMOKE_IMAGE (e.g. `public.ecr.aws/lambda/nodejs:20`). Docker on the runner fixes the architecture tested
+# (x64 in CI, arm64 on an Apple-Silicon host); the code is the same JavaScript on both, and the cross-OS job
+# (`cross-os` in ci.yml) loads the built packages on Linux, macOS and Windows.
 
 set -euo pipefail
 
@@ -31,21 +33,20 @@ command -v docker >/dev/null 2>&1 || {
 docker_pull_with_backoff "$IMAGE"
 RUN_IMAGE="$(docker_image_run_name "$IMAGE")" # a copy loaded from the cache runs by this name
 
-echo "lambda-smoke: build + pack the codec and the engine"
+echo "lambda-smoke: build + pack the flavor and the engine"
 pnpm build >/dev/null
 # Pack each package separately. `pnpm pack` rewrites the `workspace:*` dependency to a concrete version, so the
-# tarballs are what a publish would ship. They are placed into the container's node_modules BY HAND rather than
+# tarballs are what a publish would ship. They are unpacked into `node_modules` BY HAND rather than
 # `npm install`-ed, because the version of `@cloudbitmaps/core` that the flavor pins here is the one in THIS
-# tree, which is generally not on the registry yet — that is the whole point of testing before publishing.
-# Manual placement keeps the check registry-free while still exercising the REAL packed artifacts and the
-# `exports` maps.
+# tree, which is generally not on the registry yet: that is the whole point of testing before publishing. Manual
+# placement keeps the check registry-free while still exercising the REAL packed artifacts and the `exports` maps.
 #
-# Codec + engine only. What this proves is that the NATIVE `roaring` addon compiles and loads on the Lambda
-# runtime; the driver packages are plain JS over a cloud SDK with nothing platform-specific to establish, and
-# `pnpm smoke` already resolves their entries and subpaths out of the built artifacts.
-# Repo-local (NOT mktemp): Docker Desktop shares /Users, not /var/folders, and these get bind-mounted.
+# Flavor + engine only: the driver packages are plain JS over a cloud SDK with nothing platform-specific to
+# establish, and `pnpm smoke` already resolves their entries and subpaths out of the built artifacts.
+# Repo-local (NOT mktemp): Docker Desktop shares /Users, not /var/folders, and this gets bind-mounted.
 PACKDIR="$ROOT/.pack-tmp"
 rm -rf "$PACKDIR" && mkdir -p "$PACKDIR"
+trap 'rm -rf "$PACKDIR"' EXIT
 ( cd packages/core    && pnpm pack --pack-destination "$PACKDIR" >/dev/null )
 ( cd packages/roaring && pnpm pack --pack-destination "$PACKDIR" >/dev/null )
 CORE_TGZ="$(ls "$PACKDIR"/cloudbitmaps-core-*.tgz | head -1)"
@@ -54,48 +55,13 @@ ROARING_TGZ="$(ls "$PACKDIR"/cloudbitmaps-roaring-*.tgz | head -1)"
   echo "lambda-smoke: pnpm pack produced no tarballs" >&2
   exit 1
 }
-ROARING_VER="$(node -p "require('./node_modules/roaring/package.json').version")"
+APP="$PACKDIR/app"
+mkdir -p "$APP/node_modules/@cloudbitmaps/core" "$APP/node_modules/@cloudbitmaps/roaring"
+tar -xzf "$CORE_TGZ"    --strip-components=1 -C "$APP/node_modules/@cloudbitmaps/core"
+tar -xzf "$ROARING_TGZ" --strip-components=1 -C "$APP/node_modules/@cloudbitmaps/roaring"
+cp scripts/lambda-smoke.mjs "$APP/lambda-smoke.mjs"
 
-trap 'rm -rf "$PACKDIR"' EXIT
-
-# Mount the repo read-only (it's under /Users, which Docker Desktop shares by default — a mktemp dir under
-# /var/folders is NOT shared). We only read the tarball + the in-container script; the install writes to a
-# container-local temp dir.
-echo "lambda-smoke: install + run inside $IMAGE"
-docker run --rm --entrypoint bash -e ROARING_VER="$ROARING_VER" -v "$CORE_TGZ:/w/core.tgz:ro" -v "$ROARING_TGZ:/w/roaring.tgz:ro" -v "$ROOT/scripts/lambda-smoke.mjs:/w/lambda-smoke.mjs:ro" "$RUN_IMAGE" -lc '
-  set -e
-  # Provide the toolchain so roaring compiles for the target, and FORCE the build-from-source path
-  # (npm_config_build_from_source=true) rather than relying on the absence of a prebuilt — this both guarantees
-  # the addon is built from source on ANY runner (x64/arm64) and exercises the exact command SECURITY.md
-  # documents for consumers who do not want to trust a prebuilt binary.
-  # Same treatment as the npm line below, and for the same reason: this is a network fetch from a
-  # shared runner IP, and suppressed-with-no-retry is how a throttled AL2023 mirror reds the gate
-  # with a bare exit and zero bytes of explanation. dnf.conf here sets no retries of its own.
-  dnf install -y gcc-c++ make python3 tar gzip >/dev/null 2>&1 || {
-    echo "dnf install failed; re-running with output so the real error is visible" >&2
-    dnf install -y gcc-c++ make python3 tar gzip
-  }
-  cd "$(mktemp -d)"
-  npm init -y >/dev/null 2>&1
-  # npm has its own retry; this raises it from the default of 2. It covers the REGISTRY legs of the install
-  # (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
-  # its headers separately and retries those on its own schedule, which this setting does not reach. Each
-  # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface the image pull
-  # above meets with docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
-  # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
-  export npm_config_fetch_retries=5
-  npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --no-audit --no-fund >/dev/null 2>&1 || {
-    # Re-run once WITHOUT suppressing output, so the log carries the registry real error instead of a bare
-    # non-zero exit. Same rule as scripts/lib/docker-pull.sh: a retry that hides a bad version or a
-    # genuinely missing package is worse than no retry.
-    echo "npm install failed; re-running with output so the real error is visible" >&2
-    npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --no-audit --no-fund
-  }
-  # Unpack the two real tarballs into node_modules (see the pack comment above for why not `npm install`).
-  mkdir -p node_modules/@cloudbitmaps/core node_modules/@cloudbitmaps/roaring
-  tar -xzf /w/core.tgz    --strip-components=1 -C node_modules/@cloudbitmaps/core
-  tar -xzf /w/roaring.tgz --strip-components=1 -C node_modules/@cloudbitmaps/roaring
-  cp /w/lambda-smoke.mjs .
-  node lambda-smoke.mjs
-'
+# Mounted read-only: the smoke only reads. No install runs in the container, so it needs no network and no toolchain.
+echo "lambda-smoke: load + run inside $IMAGE"
+docker run --rm --entrypoint node -v "$APP:/w/app:ro" -w /w/app "$RUN_IMAGE" lambda-smoke.mjs
 echo "lambda-smoke: PASS ($IMAGE)"

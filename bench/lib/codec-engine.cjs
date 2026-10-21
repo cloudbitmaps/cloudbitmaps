@@ -2,12 +2,13 @@
  * The store with a choice of Roaring codec, for the benches that compare the TypeScript codec with the native one
  * (`bench/ts-codec-engine.cjs`, and `bench/calibrate-aws.cjs` when `CR_CALIBRATE_CODEC` names a codec).
  *
- * The store package's codec switch is internal: no built entry exports it, and the TypeScript codec is not in any
- * built entry, so a bench cannot flip an installed package. This module bundles the sources of the packages it needs
+ * The store package's codec switch is internal: no built entry exports it, so a bench cannot flip an
+ * installed package. This module bundles the sources of the packages it needs
  * (the roaring facade, and the S3 driver when asked) into one CommonJS module with esbuild, so the facade, the switch
  * and the codecs are one copy of each, and returns the exports with the switch in hand. Core is resolved to its source
  * through the roaring package's `tsconfig.json` `paths`, so it is inlined once and shared by every package in the
- * bundle. The native addon and the cloud SDK stay external and are loaded from the install that holds them.
+ * bundle. The native codec (a test helper) is bundled as the comparison; `roaring`, which it loads, and the cloud
+ * SDK stay external and are loaded from the install that holds them.
  *
  * Bench only: nothing under `packages/*` reads an environment variable or exposes the switch for this.
  */

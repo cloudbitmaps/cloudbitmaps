@@ -798,12 +798,15 @@ Package it however you already do: a zip of your bundle and `node_modules`, a co
 (`FROM public.ecr.aws/lambda/nodejs:22`, `npm ci`), or a Lambda layer holding `node_modules`, reused across
 functions.
 
-The repository's CI still checks this path end to end today: the `pnpm lambda-smoke` gate installs the packages in an
-Amazon Linux 2023 container and loads them under both ESM and CJS, and `pnpm build-lambda-layer` from a clone produces
-`dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring flavor. Both scripts still build the
-development-only `roaring` package from source, because the repository's own tests use it as the reference; a user's
-install does not. The layer script is in the repository, not a published artifact: nothing on npm or on a GitHub
-release carries it, though a manually dispatched CI run can build one and attach it to that run.
+The repository's CI checks this path on every push: the `pnpm lambda-smoke` gate packs core and the flavor, unpacks
+them into a `node_modules`, mounts it into the Amazon Linux 2023 Lambda runtime image (nothing is installed or built
+inside it), checks that no native addon is present, and loads and round-trips the library under both ESM and CJS. It
+runs on `x86_64`; the packages are the same JavaScript on `arm64`, which no job runs. `pnpm build-lambda-layer` from a
+clone produces `dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring flavor and nothing compiled,
+and loads the unzipped layer from `/opt/nodejs/node_modules` in the same image through `NODE_PATH`, which Lambda sets
+for a layer and which resolves `require()` and not an ESM `import`. The layer script is in the repository, not a
+published artifact: nothing on npm or on a GitHub release carries it, though a manually dispatched CI run can build one
+and attach it to that run.
 
 ## How it stays correct
 

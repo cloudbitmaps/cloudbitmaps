@@ -113,7 +113,7 @@ CI runs more than these. Its `build & test` job also holds the site and the benc
 for leaks, runs the spawned `export-segments` tests against the built bin
 (`CB_REQUIRE_BUILT_BIN=1 pnpm exec vitest run tests/bin/export-segments-cli.test.ts`, after `pnpm build`), and checks
 the fuzz lockfile; separate jobs run the dependency audit, the smoke test on the declared Node
-floor, the Lambda deployability smoke, the hard RSS ceiling and the native addon on Linux, Windows and macOS.
+floor, the Lambda deployability smoke, the hard RSS ceiling and the install, build and smoke on Linux, Windows and macOS.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) says why each one is there.
 
 `pnpm test` runs a few heavy tests at a reduced size, so a push stays cheap. A scheduled run keeps the coverage:

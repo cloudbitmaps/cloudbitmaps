@@ -126,7 +126,7 @@ runs, and then, in order (a run started by hand skips some of these; see [A manu
   `bench:expected-figures:check`, `bench:event-loop:check`, `bench:load-input:check`, `bench:check`), its tracked-tree
   `leak-scan` and its fuzz lockfile check stay in CI, because they guard the site, the docs and the tracked tree rather
   than what goes in the tarball. CI's other jobs do guard the artifact — integration against the emulators, the smoke
-  test on the Node floor, the Lambda smoke, the RSS ceiling and the native addon on three operating systems — and they
+  test on the Node floor, the Lambda smoke, the RSS ceiling and the install, build and smoke on three operating systems — and they
   are not re-run here either: the tag goes on a `main` commit whose CI run is green, which is why the TL;DR tags the
   merge commit and waits for that run. The tarball's own `leak-scan` DOES run here. The **dependency audit** is repeated
   here rather than trusted from CI because it is the one gate whose verdict changes with *no commit at all*: an advisory

@@ -16,9 +16,9 @@ import type { CrbmCrypto } from '@/core/crypto';
  * committed here and this test — which DOES run in the normal suite on every PR — locks the fix in.
  *
  * The contract mirrors the fuzz targets exactly: arbitrary bytes fed through the real read path either succeed
- * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/native crash/hang is a bug,
+ * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/hang is a bug,
  * and so is a decode that is not self-consistent (see {@link assertConsistentDecode}). Four corpora mirror the four
- * targets: raw serialized bitmaps (native deserializer), raw index regions, raw extension-block sections, and whole
+ * targets: raw serialized bitmaps (the TypeScript decoder), raw index regions, raw extension-block sections, and whole
  * `.crbm` objects.
  */
 const MAX_BYTES = DEFAULT_MAX_BITMAP_BYTES; // the decode cap the fuzz targets run under
@@ -33,7 +33,7 @@ function reproducers(sub: string): Array<{ name: string; bytes: Uint8Array }> {
     .map((f) => ({ name: f, bytes: new Uint8Array(readFileSync(join(dir, f))) }));
 }
 
-/** The native-deserializer target's contract (mirrors fuzz/targets/safe-deserialize.mjs). */
+/** The decoder target's contract (mirrors fuzz/targets/safe-deserialize.mjs). */
 function deserialize(bytes: Uint8Array): void {
   assertConsistentDecode(safeDeserialize(bytes, MAX_BYTES));
 }

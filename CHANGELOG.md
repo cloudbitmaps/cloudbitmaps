@@ -30,6 +30,13 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The Lambda layer the repository builds holds JavaScript only, and the CI jobs that held the native addon now check the packages.** `pnpm build-lambda-layer` used to compile `roaring` for Amazon Linux 2023 inside a container, so
+  a layer was one architecture; it now unpacks the packed core and flavor into `nodejs/node_modules`, refuses a layer
+  that holds an addon, zips it, and loads it from `/opt` in the Lambda runtime image, so one layer serves `x86_64` and
+  `arm64`. `pnpm lambda-smoke` no longer installs a toolchain or builds anything in the container: it checks that no
+  addon is installed and that the packed library loads and round-trips under ESM and CJS. The layer script is not a
+  published artifact. The cross-OS CI job is named `cross-os`; it no longer claims an addon build.
+
 - **`@cloudbitmaps/roaring` has no native dependency.** The store's codec is Roaring written in TypeScript, which reads
   and writes the same portable bytes as before: a stored object, a `{ serialized }` input and an export are byte for
   byte what the `roaring` package wrote, so nothing is migrated, and a store can have readers and writers on either
