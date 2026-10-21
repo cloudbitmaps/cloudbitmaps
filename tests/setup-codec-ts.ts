@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, expect } from 'vitest';
 
 /**
@@ -8,10 +10,23 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect } from 'vitest';
  *
  * It also guards the leg: the native codec's methods are wrapped, and a test fails when one ran while it was not
  * meant to (a store built before the flip, for instance, which would keep the native codec and leave the leg testing
- * native without a word). A test file that names `roaringCodec` or imports the `roaring` binding itself (the oracle
- * files, and the core files that hand the native codec to core on purpose) is exempt. So is a native call whose nearest
- * caller is a test or helper frame. A store a test builds at module scope is still native when the leg flips, and the
- * guard fails it as soon as it decodes or encodes.
+ * native without a word). Two rules say which files are checked:
+ *   1. Guarded: every "store file", one that builds a store with `new CloudRoaring(` or through a helper in `tests/helpers`
+ *      that builds them (`new CloudRoaring(` in the helper, or an import of another such helper, to a fixed point; a helper
+ *      that itself names the native codec is not one).
+ *      A file that builds no store has nothing to guard.
+ *   2. Exempt, because it names the native codec on purpose: a store file that names `roaringCodec` or imports the
+ *      `roaring` binding, or imports a store-building helper that does (the oracle files, and the core files that hand
+ *      the native codec to core).
+ * Coverage: 160 of the leg's 321 files are store files; 88 are guarded and 72 exempt (11 under `tests/roaring/`, which
+ * hold the native codec as the oracle or load with it on purpose, and 61 under `tests/core/`, which pass `roaringCodec`
+ * to core directly because core is codec-agnostic and the file is testing core, not the store).
+ * Within a guarded file, a synchronous native call whose nearest caller is a test or helper frame is exempt. After an
+ * `await` only library frames remain on the stack, so a helper's native call made there can be misread as a store's (a
+ * possible false positive; nothing trips it today). Not checked:
+ * native calls made in a file's `beforeAll` or `afterAll` (the check runs after each test), and the rare call made
+ * synchronously from a core-class method a test calls directly, with no facade frame on the stack. A store a test
+ * builds at module scope is still native when the leg flips, and the guard fails it as soon as it decodes or encodes.
  *
  * The flip is made in `beforeAll`, with dynamic imports, and not at the top of this file: a setup file's imports load
  * core's modules before the test file's `vi.mock` calls take effect, so importing the library here would hand every
@@ -35,7 +50,7 @@ function calledByStore(): boolean {
   // Innermost first: the nearest of a test frame (a helper that drives core with the native codec on purpose) and the
   // facade frame (a store) says who asked. Neither (a continuation of an async store operation) is a store.
   for (const file of files) {
-    if (file.includes('/tests/')) return false;
+    if (file.startsWith(TESTS_DIR)) return false;
     if (file.endsWith('/packages/roaring/src/index.ts')) return true;
   }
   return files.some(
@@ -43,15 +58,52 @@ function calledByStore(): boolean {
   );
 }
 
+const TESTS_DIR = `${dirname(fileURLToPath(import.meta.url))}/`;
+
 let nativeCalls: string[] = [];
+
+const NATIVE_ON_PURPOSE = /\broaringCodec\b|from 'roaring'/;
+
+// Helpers that build stores, found once: `new CloudRoaring(` in the helper, or an import of one that does.
+let storeHelpers: string[] | undefined;
+function storeBuildingHelpers(): string[] {
+  if (storeHelpers) return storeHelpers;
+  const dir = join(TESTS_DIR, 'helpers');
+  const sources = new Map<string, string>();
+  for (const entry of readdirSync(dir)) {
+    if (entry.endsWith('.ts'))
+      sources.set(entry.slice(0, -3), readFileSync(join(dir, entry), 'utf8'));
+  }
+  // A helper that names the native codec hands it to core on purpose, so a file that imports it is exempt like one that
+  // names the codec itself.
+  for (const [name, source] of sources) if (NATIVE_ON_PURPOSE.test(source)) sources.delete(name);
+  const found = new Set<string>();
+  for (const [name, source] of sources) if (source.includes('new CloudRoaring(')) found.add(name);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [name, source] of sources) {
+      if (found.has(name)) continue;
+      if ([...found].some((h) => new RegExp(`from '\\./${h}'`).test(source))) {
+        found.add(name);
+        grew = true;
+      }
+    }
+  }
+  storeHelpers = [...found];
+  return storeHelpers;
+}
 
 const exemptFiles = new Map<string, boolean>();
 function usesNativeOnPurpose(path: string): boolean {
   let exempt = exemptFiles.get(path);
   if (exempt === undefined) {
     const source = readFileSync(path, 'utf8');
-    // Guarded: a file that builds a store through the package facade. Exempt: one that names the native codec itself.
-    exempt = !/from '@\/index'/.test(source) || /\broaringCodec\b|from 'roaring'/.test(source);
+    const buildsStores =
+      source.includes('new CloudRoaring(') ||
+      storeBuildingHelpers().some((h) =>
+        new RegExp(`from '(?:\\.\\.?/)+helpers/${h}'`).test(source),
+      );
+    exempt = !buildsStores || NATIVE_ON_PURPOSE.test(source);
     exemptFiles.set(path, exempt);
   }
   return exempt;
