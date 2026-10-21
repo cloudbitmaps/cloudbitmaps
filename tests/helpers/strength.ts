@@ -59,6 +59,12 @@ export const HEAVY_SIZES = {
   },
   /** Native bitmaps measured per chunk cardinality, one fresh process each; only the 3,000 and 20,000 cases use it. */
   combineLedgerSamples: { full: 8_000, reduced: 4_000, file: 'core/combine-ledger.test.ts' },
+  /** Seeded interleavings of an erasure and the loads in flight, checked for the erased id served after `erased: true`. */
+  eraseFenceFuzzRuns: {
+    full: 40_000,
+    reduced: 1_000,
+    file: 'core/erase-fence-fuzz.property.test.ts',
+  },
   /** Ids in the largest of the sorted load's three heap tiers (the other two are a tenth and a hundredth of it). */
   sortedLoadHeapIds: {
     full: 10_000_000,

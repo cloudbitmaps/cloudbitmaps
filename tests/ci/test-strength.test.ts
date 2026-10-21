@@ -21,6 +21,7 @@ const SIZES_BEFORE_THE_REDUCTION: Record<HeavyName, number> = {
   combineLedgerSamples: 8_000,
   // Added with the switch already in place: the size it was written at.
   sortedLoadHeapIds: 10_000_000,
+  eraseFenceFuzzRuns: 40_000,
 };
 
 const TESTS = fileURLToPath(new URL('..', import.meta.url));

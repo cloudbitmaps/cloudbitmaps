@@ -8,6 +8,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
+import { setSegmentRetention } from '@/core/retention';
 
 /**
  * An erasure that found the id refuses every load that read the row before it began, whichever generation held it.
@@ -87,6 +88,29 @@ function collectedAfterRead(storage: IStorageDriver, generation: number): IStora
   });
 }
 
+/** The registry, running `act` once, right after the `nth` read answers: another writer landing mid-call. */
+function afterRead(
+  registry: IRegistryDriver,
+  nth: number,
+  act: () => Promise<void>,
+): IRegistryDriver {
+  let n = 0;
+  return new Proxy(registry, {
+    get(t, p, rx) {
+      const value: unknown = Reflect.get(t, p, rx);
+      if (typeof value !== 'function') return value;
+      const fn = value as (...a: unknown[]) => unknown;
+      if (p !== 'get') return (...a: unknown[]) => fn.apply(t, a);
+      return async (...a: unknown[]) => {
+        const row = await (fn.apply(t, a) as Promise<unknown>);
+        n += 1;
+        if (n === nth) await act();
+        return row;
+      };
+    },
+  });
+}
+
 /** The ids of the generation the row names (cleartext), or `null` with no pointer or no object. */
 async function served(
   storage: IStorageDriver,
@@ -121,6 +145,7 @@ async function race(
   ids: number[],
   id: number,
   eraseStorage: IStorageDriver = storage,
+  eraseRegistry: IRegistryDriver = registry,
 ) {
   const readRow = deferred();
   const mayWrite = deferred();
@@ -133,7 +158,7 @@ async function race(
   await readRow.promise; // the load has read the row: the erasure begins after every load's read
   const erased = await eraseIdFromSegment(SEG, id, {
     storage: eraseStorage,
-    registry,
+    registry: eraseRegistry,
     entropy: testEntropy,
     codec: roaringCodec,
   });
@@ -231,5 +256,55 @@ describe('an erasure that answers erased: true, and a load that read the row bef
     expect(after.currentGen).toBe(before.currentGen);
     expect(after.pointerId).not.toBe(before.pointerId);
     expect(after.knownGens).toEqual(before.knownGens);
+  });
+
+  it('F: another writer changed a field but the leases since the call began, which refuses the load; the erasure adds no write', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [7], {
+      registry,
+      publish: false,
+    });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [5], { registry });
+    const counts: Record<string, number> = {};
+    // A write of the row's retention lands after the erasure read the row: not a lease, so it moves the token.
+    const mid = afterRead(counting(registry, counts), 1, async () => {
+      await setSegmentRetention(SEG, { registry }, { expiresAt: Date.now() + 86_400_000 });
+    });
+
+    const {
+      erased,
+      loaded,
+      served: ids,
+    } = await race(storage, registry, [7, 5, 3, 4], 7, storage, mid);
+    expect(erased).toMatchObject({ erased: true, fromGeneration: 0 });
+    expect(loaded).toMatchObject({ published: false, reason: 'superseded' });
+    expect(ids).toEqual([5]);
+    expect(counts.compareAndSwap ?? 0).toBe(0);
+  });
+
+  it('G: a load moved the pointer past the holder since the call began, which refuses the load; the erasure adds no write', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [5], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [7], {
+      registry,
+      publish: false,
+    });
+    const counts: Record<string, number> = {};
+    // Another writer publishes generation 2, above the holder, after the erasure read the row: the pointer passes it.
+    const mid = afterRead(counting(registry, counts), 1, async () => {
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 2 }, [5, 6], { registry });
+    });
+
+    const {
+      erased,
+      loaded,
+      served: ids,
+    } = await race(storage, registry, [7, 5, 3, 4], 7, storage, mid);
+    expect(erased).toMatchObject({ erased: true });
+    expect(loaded).toMatchObject({ published: false, reason: 'superseded' });
+    expect(ids).toEqual([5, 6]);
+    expect(counts.compareAndSwap ?? 0).toBe(0);
   });
 });

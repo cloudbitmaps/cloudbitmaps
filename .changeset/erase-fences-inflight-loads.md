@@ -6,4 +6,4 @@
 '@cloudbitmaps/azure-blob': patch
 ---
 
-An erasure that found the id renews the segment's row on every path, so a load that read the row before the erasure began is refused.
+Every load that read the row before an erasure that found the id began is refused, by the erasure's write to the row or by another write that already changed its token.

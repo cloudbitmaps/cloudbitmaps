@@ -954,9 +954,10 @@ function doomedGenerations(
  * load's), and a sweep that found a searched holder when the ledger names nothing to prune. A holder below the pointer
  * needs no renewal to keep a load from publishing that number, but a load that read the row before the call began
  * carries its own input, which may hold the id, and only a write of the row refuses it. A prune is such a write, so
- * with one no renewal is added. So every call that found the id writes the row, and every load that read the row before
- * it began is refused. (When a load has already moved the pointer past the holders, that move refused every load that
- * read the row before it, and no renewal is made.) The pointer is
+ * with one no renewal is added. So every load that read the row before the call began is refused, by this call's
+ * write or by another write that already changed the token: the renewal is skipped when a prune is made, when another
+ * writer changed a field but the leases since the call read the row, and when a load has already moved the pointer
+ * past the holders (that move refused every load that read the row before it). The pointer is
  * named at the value it has ({@link renewPointer}), which changes nothing a read resolves and renews the row's
  * `pointerId`, the value the load's fence compares. A load numbers its object above the pointer (above everything in
  * the bucket, on a row with no pointer) and publishes it with a compare-and-swap fenced on the row it read, which a
@@ -969,7 +970,9 @@ function doomedGenerations(
  * bounded by the pointer it reads.
  *
  * **No write when none is owed.** The call goes on under the row it read when the ledger names nothing to remove and
- * another writer's renewal landed after this call listed the bucket, since a renewal is needed, another writer's renewal landed after this call listed the bucket. A load that wrote a
+ * either the row differs from the one read at the call's start in any field but its leases (a write of `knownGens`
+ * alone counts: that change already moved the token every earlier load fences on, so no renewal is added), or, where
+ * a renewal is needed, another writer's renewal landed after this call listed the bucket. A load that wrote a
  * holder the listing found read the row before it wrote, so before that renewal, and its fence refuses it; one
  * renewal that landed before the listing does not license a delete, since a load could have read that row and written a
  * holder since. That is why the row is read here, after the listing, and compared with the row each later read finds. A

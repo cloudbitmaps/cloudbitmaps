@@ -168,9 +168,11 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
 
 - **Do not load the segment while erasing from it.** A load that lands after the rewrite carries whatever its source
   held, and the library cannot know that source was meant to exclude the id. Pause loads of the affected segments for
-  the duration, or fix the source first and load after, and let loads already running finish before you start. An
-  erasure that found the id renews the segment's row (its `pointerId`) on every path, so a load that read the row before
-  the erasure began is refused as `'superseded'` and never publishes what its source held; a load that starts during
+  the duration, or fix the source first and load after, and let loads already running finish before you start. Every
+  load that read the row before an erasure that found the id began is refused as `'superseded'` and never publishes
+  what its source held, either by this erasure's write to the row (its prune of the ledger, or a renewal of the
+  `pointerId` when the ledger names nothing) or by an earlier write that had moved the token (a write of
+  another field since the call read it, or a load that moved the pointer past the holders; [when no write is owed](correctness.md#no-write-when-none-owed)); a load that starts during
   the erasure is not covered. A writer that lands during the rewrite is caught and
   reported as `'superseded'`, not as an error. A load still writing a generation above the pointer, when the id is
   found only there, is refused, and so is a first load still writing onto a segment with no generation yet, when the
