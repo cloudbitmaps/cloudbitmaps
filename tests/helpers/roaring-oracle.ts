@@ -119,6 +119,35 @@ export function ruleBytes(values: readonly number[]): Uint8Array {
   return out;
 }
 
+/**
+ * The bytes of a whole bitmap that has had no `optimize()`: what `serialize()` writes for a bitmap built from ids (or
+ * by `add`, ascending, as the export path builds one) and never re-encoded. No container is a run, so the cookie is
+ * 12346 and the header is a container count, a `(key, cardinality - 1)` pair and a body offset for each container; a
+ * container is an array up to 4,096 values and a bitset above. `ids` are ascending and distinct, any 32-bit id.
+ */
+export function plainRuleBytes(ids: readonly number[]): Uint8Array {
+  const chunks = chunksOf(ids);
+  const n = chunks.length;
+  const headerBytes = 8 + 8 * n;
+  const bodyBytes = chunks.map(({ lows }) =>
+    lows.length <= ARRAY_MAX ? 2 * lows.length : BITSET_BODY_BYTES,
+  );
+  const out = new Uint8Array(headerBytes + bodyBytes.reduce((sum, b) => sum + b, 0));
+  const view = new DataView(out.buffer);
+  view.setUint32(0, 0x303a, true);
+  view.setUint32(4, n, true);
+  let at = headerBytes;
+  chunks.forEach(({ key, lows }, i) => {
+    view.setUint16(8 + 4 * i, key, true);
+    view.setUint16(10 + 4 * i, lows.length - 1, true);
+    view.setUint32(8 + 4 * n + 4 * i, at, true);
+    if (lows.length <= ARRAY_MAX) lows.forEach((v, k) => view.setUint16(at + 2 * k, v, true));
+    else for (const v of lows) out[at + (v >>> 3)]! |= 1 << (v & 7);
+    at += bodyBytes[i]!;
+  });
+  return out;
+}
+
 function ruleRun(values: readonly number[], runs: number): Uint8Array {
   const out = new Uint8Array(11 + 4 * runs);
   const view = new DataView(out.buffer);

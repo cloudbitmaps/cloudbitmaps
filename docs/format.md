@@ -156,11 +156,14 @@ format that gives three shapes:
 | run | when its body is strictly smaller than the array's (up to 4,096 values) or the bitset's (more than 4,096), below | `3B 30 00 00` ‖ `01` ‖ `00 00` ‖ `u16(card−1)` ‖ `u16(runs)` ‖ for each run `u16(start)` ‖ `u16(length−1)` |
 
 **Reading the table (writer today).** Every integer is little-endian. A **run** is a maximal sequence of consecutive
-values, so two runs never touch, and the runs are written in ascending order; `runs` counts them. In a bitset,
+values, so two runs never touch, and the runs are written in ascending order (the writer never writes touching runs,
+and a reader of this library refuses them, and overlapping runs, in a payload it is given); `runs` counts them. In a bitset,
 value `v` is bit `v mod 8` of byte `v div 8` of the body, counting from the least significant bit; a bitset body is always all
 8,192 bytes. The array and bitset headers are 16 bytes and the run header is 11 bytes before its run list, so a payload
 is `16 + 2 · cardinality`, 8,208 or `11 + 4 · runs` bytes long. A payload is never empty: a chunk with no ids is not
-written.
+written, and a writer of your own must not write a zero-length payload. A reader of this library reads a zero-length
+payload as the empty bitmap (the native decoder does), so one that arrives is not refused here; a port should not rely on
+that.
 
 **Which shape the writer picks (writer today).** The choice is Roaring's, made on the size of the container *body*, not
 of the whole payload: a run body is `2 + 4 · runs` bytes, an array body `2 · cardinality`, a bitset body 8,192. A

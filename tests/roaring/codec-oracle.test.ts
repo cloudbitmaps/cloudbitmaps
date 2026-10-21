@@ -1,6 +1,12 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { IntegrityError } from '@cloudbitmaps/core';
 import type { CodecBitmap, CodecInterface } from '@cloudbitmaps/core';
+import { BufferReader } from '@/core/blob';
+import { CrbmReader } from '@/core/crbm/reader';
+import { checkPortableLayout } from '@/portable/layout';
 import {
   CODECS,
   buildSet,
@@ -11,6 +17,7 @@ import {
   describeDifference,
   firstDifference,
   oneChunk,
+  plainRuleBytes,
   prng,
   relatedTo,
   ruleBytes,
@@ -136,8 +143,27 @@ function expectChunkStored(
 function checkSet(label: string, ids: readonly number[], salt: number): void {
   expectOracleSound(ids);
   const nativeWhole = crStoredBytes(ids);
+  const plain = plainRuleBytes(ids);
+  expectSame(
+    `${label}: CRoaring's unoptimized bytes against the written form`,
+    crPlainBytes(ids, 'plain'),
+    plain,
+  );
   for (const { name, codec } of CODECS) {
     const where = `${name}, ${label}`;
+    // serialize() with no optimize(): what the export path writes. Array or bitset by cardinality, never stale.
+    expectSame(
+      `${where}: serialize before optimize, fromValues`,
+      codec.fromValues(scrambled(salt, ids)).serialize(),
+      plain,
+    );
+    const exported = codec.empty();
+    for (const v of ids) exported.add(v);
+    expectSame(`${where}: serialize before optimize, add per id`, exported.serialize(), plain);
+    const bulk = codec.empty();
+    bulk.addMany(scrambled(salt + 3, ids));
+    expectSame(`${where}: serialize before optimize, addMany`, bulk.serialize(), plain);
+
     const bitmap = codec.fromValues(scrambled(salt, ids));
     expectContents(where, bitmap, ids);
 
@@ -180,6 +206,24 @@ function expectedCombine(op: Combine, a: readonly number[], b: readonly number[]
   return a.filter((v) => (op === 'andInPlace') === other.has(v));
 }
 
+/**
+ * How an operand is built. `values` is `fromValues` (array and bitset containers only); `runs` is decoded from bytes
+ * CRoaring wrote after `runOptimize()` (a run only where it is smaller; an array stays at a tie); `ranges` is decoded
+ * from bytes built by `addRange` per maximal run, so every container is a run, ties and bitsets included.
+ */
+type Route = 'values' | 'runs' | 'ranges';
+const ROUTES: readonly Route[] = ['values', 'runs', 'ranges'];
+
+function buildBitmap(
+  codec: CodecInterface,
+  ids: readonly number[],
+  route: Route,
+  salt: number,
+): CodecBitmap {
+  if (route === 'values') return codec.fromValues(scrambled(salt, ids));
+  return codec.safeDeserialize(crPlainBytes(ids, route), CAP, { whole: true });
+}
+
 /** What every codec must give for `a op b`, with the operand `b` and an earlier clone of `a` untouched. */
 function checkCombine(
   label: string,
@@ -187,6 +231,7 @@ function checkCombine(
   a: readonly number[],
   b: readonly number[],
   salt: number,
+  routes: readonly [Route, Route] = ['values', 'values'],
 ): void {
   const want = expectedCombine(op, a, b);
   const raw = crOf(a);
@@ -195,9 +240,9 @@ function checkCombine(
   const wantBytes = crStoredBytes(want);
 
   for (const { name, codec } of CODECS) {
-    const where = `${name}, ${label}: ${op}`;
-    const left = codec.fromValues(scrambled(salt, a));
-    const right = codec.fromValues(scrambled(salt + 1, b));
+    const where = `${name}, ${label} (${routes[0]} / ${routes[1]}): ${op}`;
+    const left = buildBitmap(codec, a, routes[0], salt);
+    const right = buildBitmap(codec, b, routes[1], salt + 1);
     const before = left.clone();
     left[op](right);
     expectContents(`${where} result`, left, want);
@@ -521,6 +566,7 @@ describe('the codec oracle: every subset of a small window', () => {
 const propertyRuns = (): { numRuns: number } => ({ numRuns: heavy('codecOracleProperties') });
 const salt = fc.integer({ min: 0, max: 0x7fffffff });
 const mode = fc.constantFrom('subset', 'superset', 'shift', 'copy', 'stranger');
+const route = fc.constantFrom(...ROUTES);
 
 describe('the codec oracle: properties over biased random sets', () => {
   it('stores one chunk as the rule and CRoaring write it, however the set was built', () => {
@@ -543,21 +589,29 @@ describe('the codec oracle: properties over biased random sets', () => {
 
   it('combines two sets as CRoaring does, leaving the operand and an earlier clone alone', () => {
     fc.assert(
-      fc.property(setSpec(2), setSpec(2), mode, salt, (specA, specB, how, s) => {
-        const a = buildSet(specA);
-        const b = relatedTo(a, how, s, buildSet(specB));
-        for (const op of COMBINES) checkCombine(`related by ${how}`, op, a, b, s);
-      }),
+      fc.property(
+        setSpec(2),
+        setSpec(2),
+        mode,
+        salt,
+        route,
+        route,
+        (specA, specB, how, s, ra, rb) => {
+          const a = buildSet(specA);
+          const b = relatedTo(a, how, s, buildSet(specB));
+          for (const op of COMBINES) checkCombine(`related by ${how}`, op, a, b, s, [ra, rb]);
+        },
+      ),
       propertyRuns(),
     );
   }, 300_000);
 
   it('combines two single chunks, and stores the result as the rule writes it', () => {
     fc.assert(
-      fc.property(oneChunk, oneChunk, mode, salt, (specA, specB, how, s) => {
+      fc.property(oneChunk, oneChunk, mode, salt, route, route, (specA, specB, how, s, ra, rb) => {
         const a = buildSet(specA);
         const b = relatedTo(a, how, s, buildSet(specB)).filter((v) => v < 65_536);
-        for (const op of COMBINES) checkCombine(`one chunk, ${how}`, op, a, b, s);
+        for (const op of COMBINES) checkCombine(`one chunk, ${how}`, op, a, b, s, [ra, rb]);
       }),
       propertyRuns(),
     );
@@ -653,15 +707,16 @@ describe('the codec oracle: random sequences of adds, removes and combines', () 
     fc.assert(
       fc.property(
         fc.array(setSpec(2), { minLength: 2, maxLength: 3 }),
+        fc.array(route, { minLength: 3, maxLength: 3 }),
         fc.array(stepArb, { minLength: 1, maxLength: 20 }),
-        (starts, steps) => {
+        (starts, routes, steps) => {
           for (const { name, codec } of CODECS) {
             const all: Triple[] = starts.map((spec, i) => {
               const ids = buildSet(spec);
               return {
                 model: new Set(ids),
                 raw: crOf(ids),
-                bitmap: codec.fromValues(scrambled(i, ids)),
+                bitmap: buildBitmap(codec, ids, routes[i]!, i),
               };
             });
             steps.forEach((step, n) => {
@@ -717,4 +772,290 @@ describe('the codec oracle: random sequences of adds, removes and combines', () 
       propertyRuns(),
     );
   }, 300_000);
+});
+
+// --- every pair of container kinds ---------------------------------------------------------------------------------
+
+type Kind = 'array' | 'bitset' | 'run';
+
+/**
+ * Operands of each container kind, all inside one chunk and laid over one another so a combine finds work: runs that
+ * end where the other operand's run ends, begin where it begins, sit inside it, and straddle it.
+ */
+const OPERANDS: Record<Kind, ReadonlyArray<{ readonly name: string; readonly ids: number[] }>> = {
+  array: [
+    { name: 'every 7th from 5', ids: spaced(300, 7, 5) },
+    { name: 'three consecutive', ids: [1, 2, 3] },
+    { name: 'five and a stray', ids: [100, 101, 102, 103, 104, 999] },
+    { name: '4,096 values', ids: spaced(4_096, 3) },
+  ],
+  bitset: [
+    { name: 'every 11th from 3', ids: spaced(5_000, 11, 3) },
+    { name: '4,097 consecutive', ids: range(0, 4_097) },
+    { name: 'a long band', ids: range(100, 60_000) },
+  ],
+  run: [
+    { name: 'two runs, 100-199 and 300-349', ids: [...range(100, 100), ...range(300, 50)] },
+    { name: 'a run ending where the first ends', ids: range(150, 50) },
+    { name: 'a run across the gap', ids: range(199, 102) },
+    { name: 'one run over both', ids: range(100, 250) },
+    { name: 'three then a run of five', ids: [1, 2, 3, ...range(100, 5)] },
+    { name: 'a full container', ids: range(0, 65_536) },
+    { name: 'six runs of mixed length', ids: runsOf([30, 1, 200, 2, 60, 700], 1_000, 10) },
+  ],
+};
+const KINDS: readonly Kind[] = ['array', 'bitset', 'run'];
+const routeOf = (kind: Kind): Route => (kind === 'run' ? 'ranges' : 'values');
+
+describe('the codec oracle: every pair of container kinds, for every combine', () => {
+  it('builds the operands as the kinds it names', () => {
+    for (const kind of KINDS) {
+      for (const { name, ids } of OPERANDS[kind]) {
+        const bytes = crPlainBytes(ids, kind === 'run' ? 'ranges' : 'plain');
+        const cookie = new DataView(bytes.buffer, bytes.byteOffset).getUint16(0, true);
+        expect(cookie, `${kind} operand ${name}`).toBe(kind === 'run' ? 12_347 : 12_346);
+        if (kind !== 'run')
+          expect(ids.length > 4_096, `${kind} operand ${name}`).toBe(kind === 'bitset');
+      }
+    }
+  });
+
+  for (const kindA of KINDS) {
+    for (const kindB of KINDS) {
+      it(`${kindA} against ${kindB}: and, or and andNot, then the bytes after optimize`, () => {
+        for (const a of OPERANDS[kindA]) {
+          for (const b of OPERANDS[kindB]) {
+            for (const op of COMBINES) {
+              checkCombine(
+                `${kindA} (${a.name}) with ${kindB} (${b.name})`,
+                op,
+                a.ids,
+                b.ids,
+                a.ids.length + b.ids.length,
+                [routeOf(kindA), routeOf(kindB)],
+              );
+            }
+          }
+        }
+      });
+    }
+  }
+
+  it('stores an andNot result as the rule writes it, not as the run it was: 22 bytes, not 15', () => {
+    // Three values left of a run that is removed: card = 2 x runs + 1, so the rule keeps an array.
+    const a = [1, 2, 3, ...range(100, 5)];
+    const b = [...range(100, 5), 999];
+    for (const { name, codec } of CODECS) {
+      const left = buildBitmap(codec, a, 'ranges', 0);
+      left.andNotInPlace(buildBitmap(codec, b, 'values', 1));
+      left.optimize?.();
+      expectSame(
+        `${name}: andNot of a run container, stored`,
+        left.serialize(),
+        ruleBytes([1, 2, 3]),
+      );
+      expect(left.serialize().length, `${name}: an array of three values`).toBe(22);
+    }
+  });
+
+  it('removes every value of a run operand from a run container, its last one included', () => {
+    for (const { name, codec } of CODECS) {
+      const left = buildBitmap(codec, range(100, 100), 'ranges', 0);
+      left.andNotInPlace(buildBitmap(codec, range(150, 50), 'ranges', 1));
+      expectContents(`${name}: run andNot run, ending together`, left, range(100, 50));
+      const rest = buildBitmap(codec, range(100, 100), 'ranges', 0);
+      rest.andNotInPlace(buildBitmap(codec, range(100, 100), 'ranges', 1));
+      expectContents(`${name}: run andNot the same run`, rest, []);
+    }
+  });
+});
+
+// --- serialize before optimize ------------------------------------------------------------------------------------
+
+describe('the codec oracle: serialize() with no optimize(), the export path', () => {
+  const grown = (n: number): number[] => spaced(n, 3);
+  it('writes an array at 4,096 values and a bitset at 4,097, whichever way it got there', () => {
+    for (const { name, codec } of CODECS) {
+      const down = codec.fromValues(grown(4_098));
+      down.remove(0);
+      down.remove(3);
+      expectSame(
+        `${name}: bitset removed to 4,096`,
+        down.serialize(),
+        plainRuleBytes(spaced(4_096, 3, 6)),
+      );
+      expect(down.serialize().length, `${name}: an array of 4,096 values`).toBe(16 + 2 * 4_096);
+
+      const up = codec.fromValues(grown(4_096));
+      expectSame(`${name}: 4,096 values`, up.serialize(), plainRuleBytes(grown(4_096)));
+      up.add(1);
+      expectSame(
+        `${name}: array added to 4,097`,
+        up.serialize(),
+        plainRuleBytes(ascending([...grown(4_096), 1])),
+      );
+
+      const exported = codec.empty();
+      for (const v of grown(4_096)) exported.add(v);
+      expectSame(
+        `${name}: 4,096 added one by one`,
+        exported.serialize(),
+        plainRuleBytes(grown(4_096)),
+      );
+      exported.add(1);
+      exported.remove(1);
+      expectSame(`${name}: back to 4,096`, exported.serialize(), plainRuleBytes(grown(4_096)));
+    }
+  });
+
+  it('writes each chunk by its own cardinality, in several chunks', () => {
+    const ids = [
+      ...spaced(4_096, 3),
+      ...spaced(4_097, 3, 65_536),
+      ...spaced(10, 5, 3 * 65_536),
+      ...range(7 * 65_536, 65_536),
+    ];
+    for (const { name, codec } of CODECS) {
+      expectSame(`${name}: four chunks`, codec.fromValues(ids).serialize(), plainRuleBytes(ids));
+    }
+  });
+});
+
+// --- add and remove, directly -------------------------------------------------------------------------------------
+
+describe('the codec oracle: add and remove of one id', () => {
+  const HIGH = [2 ** 31 - 1, 2 ** 31, 2 ** 31 + 1, 2 ** 31 + 65_535, FOUR_GIB - 1, FOUR_GIB];
+
+  it('leaves size and bytes alone when the id is already present', () => {
+    const cases: Array<[string, number[], Route]> = [
+      ['an array', spaced(300, 7, 5), 'values'],
+      ['a bitset', spaced(5_000, 11, 3), 'values'],
+      ['a run container', [...range(100, 100), ...range(300, 50)], 'ranges'],
+      ['a tie array', [1, 2, 3], 'values'],
+    ];
+    for (const { name, codec } of CODECS) {
+      for (const [what, ids, how] of cases) {
+        const bitmap = buildBitmap(codec, ids, how, 0);
+        for (const v of [ids[0]!, ids[1]!, ids.at(-1)!]) {
+          bitmap.add(v);
+          expect(bitmap.size, `${name}, ${what}: size after add(${v}) of a present id`).toBe(
+            ids.length,
+          );
+        }
+        bitmap.addMany([ids[0]!, ids.at(-1)!]);
+        expect(bitmap.size, `${name}, ${what}: size after addMany of present ids`).toBe(ids.length);
+        expectContents(`${name}, ${what}: after adding present ids`, bitmap, ids);
+        bitmap.remove(65_535 - 1);
+        bitmap.removeMany([65_000, 65_001]);
+        expect(bitmap.size, `${name}, ${what}: size after remove of absent ids`).toBe(ids.length);
+        bitmap.optimize?.();
+        expectSame(`${name}, ${what}: stored`, bitmap.serialize(), crStoredBytes(ids));
+      }
+    }
+  });
+
+  it('counts an id once however often it is added, in one chunk and in several', () => {
+    for (const { name, codec } of CODECS) {
+      const bitmap = codec.empty();
+      for (const v of [5, 5, 5, 70_000, 70_000, 5, FOUR_GIB, FOUR_GIB]) bitmap.add(v);
+      expect(bitmap.size, `${name}: size`).toBe(3);
+      expectSame(`${name}: toArray`, bitmap.toArray(), [5, 70_000, FOUR_GIB]);
+      expect(bitmap.serialize().length, `${name}: bytes`).toBe(
+        plainRuleBytes([5, 70_000, FOUR_GIB]).length,
+      );
+    }
+  });
+
+  it('adds, finds, removes and stores ids at and above 2^31', () => {
+    for (const { name, codec } of CODECS) {
+      const bitmap = codec.empty();
+      const model = new Set<number>();
+      for (const v of HIGH) {
+        bitmap.add(v);
+        model.add(v);
+        const ids = ascending(model);
+        expectContents(`${name}: after add(${v})`, bitmap, ids);
+        expect(bitmap.has(v), `${name}: has(${v})`).toBe(true);
+        expect(bitmap.has(v - 2 ** 31), `${name}: has(${v} - 2^31) is a different id`).toBe(
+          model.has(v - 2 ** 31),
+        );
+      }
+      bitmap.addMany(HIGH.map((v) => v - 7).filter((v) => v >= 0));
+      for (const v of HIGH) model.add(v - 7);
+      expectContents(`${name}: after addMany`, bitmap, ascending(model));
+      bitmap.optimize?.();
+      expectSame(`${name}: stored`, bitmap.serialize(), crStoredBytes(ascending(model)));
+      bitmap.remove(2 ** 31);
+      bitmap.removeMany([FOUR_GIB, 2 ** 31 + 1]);
+      for (const v of [2 ** 31, FOUR_GIB, 2 ** 31 + 1]) model.delete(v);
+      expectContents(`${name}: after remove and removeMany`, bitmap, ascending(model));
+      bitmap.optimize?.();
+      expectSame(
+        `${name}: stored after removes`,
+        bitmap.serialize(),
+        crStoredBytes(ascending(model)),
+      );
+    }
+  });
+});
+
+// --- the golden corpus --------------------------------------------------------------------------------------------
+
+describe('the codec oracle: the golden .crbm files', () => {
+  const GOLDEN = fileURLToPath(new URL('../golden/', import.meta.url));
+  const files = readdirSync(GOLDEN)
+    .filter((f) => f.endsWith('.crbm') && !f.includes('encrypted'))
+    .sort();
+
+  it('lists the cleartext objects of the corpus', () => {
+    expect(files.length).toBe(6);
+  });
+
+  it.each(files)('%s: every chunk payload decodes and re-stores byte for byte', async (file) => {
+    const reader = await CrbmReader.open(
+      new BufferReader(
+        new Uint8Array(readFileSync(fileURLToPath(new URL(file, `file://${GOLDEN}`)))),
+      ),
+    );
+    for (const key of reader.chunkKeys()) {
+      const payload = (await reader.getChunk(key))!;
+      let layoutAccepts = true;
+      try {
+        checkPortableLayout(payload);
+      } catch (err) {
+        expect(err).toBeInstanceOf(IntegrityError);
+        layoutAccepts = false;
+      }
+      for (const { name, codec } of CODECS) {
+        if (!layoutAccepts) {
+          // The basic and metadata objects hold opaque bytes that pin the container, not a codec.
+          expect(
+            () => codec.safeDeserialize(payload, CAP, { whole: true }),
+            `${name}, ${file}, chunk ${key}`,
+          ).toThrow(IntegrityError);
+          continue;
+        }
+        const decoded = codec.safeDeserialize(payload, CAP, { whole: true });
+        decoded.optimize?.();
+        expectSame(`${name}, ${file}, chunk ${key}: re-stored`, decoded.serialize(), payload);
+        expectSame(
+          `${name}, ${file}, chunk ${key}: the rule's bytes`,
+          ruleBytes(decoded.toArray()),
+          payload,
+        );
+        const viaEncode = [...(codec.safeDeserialize(payload, CAP).encodeChunks?.() ?? [])];
+        for (const chunk of viaEncode)
+          expectSame(`${name}, ${file}: encodeChunks`, chunk.payload, payload);
+      }
+    }
+  });
+
+  it('holds payloads of every shape: the load object decodes seven chunks', async () => {
+    const reader = await CrbmReader.open(
+      new BufferReader(
+        new Uint8Array(readFileSync(fileURLToPath(new URL('v1.0-load.crbm', `file://${GOLDEN}`)))),
+      ),
+    );
+    expect(reader.chunkKeys()).toEqual([0, 1, 2, 3, 4, 7, 65_535]);
+  });
 });
