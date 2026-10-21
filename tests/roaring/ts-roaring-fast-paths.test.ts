@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import { roaringCodec as NA } from '@/roaring-codec';
 import { tsRoaringCodec as TS } from '@/ts-roaring/bitmap';
@@ -11,6 +11,9 @@ import { tsRoaringCodec as TS } from '@/ts-roaring/bitmap';
  * (a Uint8Array, a Buffer, a pooled Buffer, a SharedArrayBuffer, an offset subarray). Written by an independent
  * review of the fast paths.
  */
+// The differential cases combine many 64 Ki-value operands in both codecs; a shared CI runner needs more than 5 s.
+vi.setConfig({ testTimeout: 60_000 });
+
 const CAP = 1 << 27;
 const hex = (u: Uint8Array) => Buffer.from(u).toString('hex');
 const range = (a: number, b: number) => Array.from({ length: b - a }, (_, i) => a + i);
