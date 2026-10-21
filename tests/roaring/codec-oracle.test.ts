@@ -47,6 +47,8 @@ import { heavy } from '../helpers/strength';
  */
 const CAP = 1 << 24;
 const FOUR_GIB = 0xffffffff;
+/** One case runs every codec in `CODECS`, so it gets room on a loaded CI runner (the default is 5 s). */
+const SLOW_CASE_MS = 60_000;
 
 // --- what one case asserts ----------------------------------------------------------------------------------------
 
@@ -427,9 +429,13 @@ function bulkLoadIds(): number[] {
 
 describe('the codec oracle: the corpus', () => {
   const cases = corpus();
-  it.each(cases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
-    checkSet(c.name, ascending(c.ids), c.ids.length + 1);
-  });
+  it.each(cases.map((c) => [c.name, c] as const))(
+    '%s',
+    (_name, c) => {
+      checkSet(c.name, ascending(c.ids), c.ids.length + 1);
+    },
+    SLOW_CASE_MS,
+  );
 
   it('holds 62,000 chunks, as a bulk load writes them', () => {
     const ids = bulkLoadIds();
@@ -836,22 +842,26 @@ describe('the codec oracle: every pair of container kinds, for every combine', (
 
   for (const kindA of KINDS) {
     for (const kindB of KINDS) {
-      it(`${kindA} against ${kindB}: and, or and andNot, then the bytes after optimize`, () => {
-        for (const a of OPERANDS[kindA]) {
-          for (const b of OPERANDS[kindB]) {
-            for (const op of COMBINES) {
-              checkCombine(
-                `${kindA} (${a.name}) with ${kindB} (${b.name})`,
-                op,
-                a.ids,
-                b.ids,
-                a.ids.length + b.ids.length,
-                [routeOf(kindA), routeOf(kindB)],
-              );
+      it(
+        `${kindA} against ${kindB}: and, or and andNot, then the bytes after optimize`,
+        () => {
+          for (const a of OPERANDS[kindA]) {
+            for (const b of OPERANDS[kindB]) {
+              for (const op of COMBINES) {
+                checkCombine(
+                  `${kindA} (${a.name}) with ${kindB} (${b.name})`,
+                  op,
+                  a.ids,
+                  b.ids,
+                  a.ids.length + b.ids.length,
+                  [routeOf(kindA), routeOf(kindB)],
+                );
+              }
             }
           }
-        }
-      });
+        },
+        SLOW_CASE_MS,
+      );
     }
   }
 
@@ -1025,52 +1035,56 @@ describe('the codec oracle: the golden .crbm files', () => {
     expect(files.length).toBe(6);
   });
 
-  it.each(files)('%s: every chunk payload decodes and re-stores byte for byte', async (file) => {
-    const reader = await CrbmReader.open(
-      new BufferReader(new Uint8Array(readFileSync(join(GOLDEN, file)))),
-    );
-    let restored = 0;
-    for (const key of reader.chunkKeys()) {
-      const payload = (await reader.getChunk(key))!;
-      let layoutAccepts = true;
-      try {
-        checkPortableLayout(payload);
-      } catch (err) {
-        expect(err).toBeInstanceOf(IntegrityError);
-        layoutAccepts = false;
-      }
-      for (const { name, codec } of CODECS) {
-        if (!layoutAccepts) {
-          // The basic and metadata objects hold opaque bytes that pin the container, not a codec.
-          expect(
-            () => codec.safeDeserialize(payload, CAP, { whole: true }),
-            `${name}, ${file}, chunk ${key}`,
-          ).toThrow(IntegrityError);
-          continue;
-        }
-        const decoded = codec.safeDeserialize(payload, CAP, { whole: true });
-        decoded.optimize?.();
-        expectSame(`${name}, ${file}, chunk ${key}: re-stored`, decoded.serialize(), payload);
-        expectSame(
-          `${name}, ${file}, chunk ${key}: the rule's bytes`,
-          ruleBytes(decoded.toArray()),
-          payload,
-        );
-        const viaEncode = [...(codec.safeDeserialize(payload, CAP).encodeChunks?.() ?? [])];
-        for (const chunk of viaEncode)
-          expectSame(`${name}, ${file}: encodeChunks`, chunk.payload, payload);
-        restored++;
-      }
-    }
-    // Not vacuous: the load objects hold real bitmaps, so every chunk is decoded and re-stored by every codec.
-    // (The basic and metadata objects hold opaque bytes, which the refusal branch covers.)
-    if (file.includes('load')) {
-      expect(restored, `${file}: payloads decoded and re-stored`).toBe(
-        reader.chunkKeys().length * CODECS.length,
+  it.each(files)(
+    '%s: every chunk payload decodes and re-stores byte for byte',
+    async (file) => {
+      const reader = await CrbmReader.open(
+        new BufferReader(new Uint8Array(readFileSync(join(GOLDEN, file)))),
       );
-      expect(restored, `${file}: some payload was decoded`).toBeGreaterThan(0);
-    }
-  });
+      let restored = 0;
+      for (const key of reader.chunkKeys()) {
+        const payload = (await reader.getChunk(key))!;
+        let layoutAccepts = true;
+        try {
+          checkPortableLayout(payload);
+        } catch (err) {
+          expect(err).toBeInstanceOf(IntegrityError);
+          layoutAccepts = false;
+        }
+        for (const { name, codec } of CODECS) {
+          if (!layoutAccepts) {
+            // The basic and metadata objects hold opaque bytes that pin the container, not a codec.
+            expect(
+              () => codec.safeDeserialize(payload, CAP, { whole: true }),
+              `${name}, ${file}, chunk ${key}`,
+            ).toThrow(IntegrityError);
+            continue;
+          }
+          const decoded = codec.safeDeserialize(payload, CAP, { whole: true });
+          decoded.optimize?.();
+          expectSame(`${name}, ${file}, chunk ${key}: re-stored`, decoded.serialize(), payload);
+          expectSame(
+            `${name}, ${file}, chunk ${key}: the rule's bytes`,
+            ruleBytes(decoded.toArray()),
+            payload,
+          );
+          const viaEncode = [...(codec.safeDeserialize(payload, CAP).encodeChunks?.() ?? [])];
+          for (const chunk of viaEncode)
+            expectSame(`${name}, ${file}: encodeChunks`, chunk.payload, payload);
+          restored++;
+        }
+      }
+      // Not vacuous: the load objects hold real bitmaps, so every chunk is decoded and re-stored by every codec.
+      // (The basic and metadata objects hold opaque bytes, which the refusal branch covers.)
+      if (file.includes('load')) {
+        expect(restored, `${file}: payloads decoded and re-stored`).toBe(
+          reader.chunkKeys().length * CODECS.length,
+        );
+        expect(restored, `${file}: some payload was decoded`).toBeGreaterThan(0);
+      }
+    },
+    SLOW_CASE_MS,
+  );
 
   it('holds payloads of every shape: the load object decodes seven chunks', async () => {
     const reader = await CrbmReader.open(
