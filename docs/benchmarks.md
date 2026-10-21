@@ -6,9 +6,10 @@
 > sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the estimator's own numbers. The
 > polished, shareable version lives on the [site](../site/benchmarks.html).
 
-> **Measured on the native codec.** The read, memory and soak figures on this page were measured before the store's
-> codec moved to TypeScript. The cost model and the crossover do not depend on the codec; the codec comparison is in
-> [`bench/ts-codec-comparison.md`](../bench/ts-codec-comparison.md).
+> **Which figures are on which codec.** Re-measured on the TypeScript codec on 2026-10-21: the soak (limitation 04) and
+> the hard RSS ceiling, whose record is the file CI's gate wrote that day. Still measured before the store's codec moved to
+> TypeScript: the read, fleet-memory and at-scale figures. The cost model and the crossover do not depend on the codec; the
+> codec comparison is in [`bench/ts-codec-comparison.md`](../bench/ts-codec-comparison.md).
 
 CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
 sustained read rate, pay-per-use is far cheaper; above it, the cluster wins. This is that crossover.
@@ -329,9 +330,9 @@ number the kernel consults when a container hits its memory limit and something 
 ### Why RSS and not the JavaScript heap
 
 CloudBitmaps keeps a bitmap's containers in typed arrays, whose backing memory V8 allocates outside its JavaScript
-object heap, and a `Buffer` read from storage is the same kind of memory. (Every figure on this page was measured
+object heap, and a `Buffer` read from storage is the same kind of memory. (The read, fleet-memory and at-scale figures on this page were measured
 before the store's codec moved from the `roaring` native addon to TypeScript, where the containers sat in `malloc`
-memory outside V8 altogether; none has been re-measured since.) So a process holding a large bitmap looks like this:
+memory outside V8 altogether; the soak and the RSS gate were re-run on the TypeScript codec on 2026-10-21.) So a process holding a large bitmap looks like this:
 
 ```
 ┌──────────────── RSS — what the OS sees ────────────────┐
@@ -362,9 +363,7 @@ rather than reporting a measurement. Two reasons the reading is the less useful 
    headline it would be read as a specification this project has not promised.
 
 The ceiling, by contrast, is a property of *the workload and the bound*, which is what the gate actually
-establishes and what a reader can act on. The committed run, `bench/rss-gate-results.json`, is one arm64 machine
-under Docker: its isolated reader process sat at 69.5 MiB of RSS, well inside the ceiling. CI runs the same gate on
-an x64 Linux runner and fails the build if the workload is OOM-killed or creeps; it keeps no reading. A latency
+establishes and what a reader can act on. The committed run, `bench/rss-gate-results.json`, is the file the gate wrote in CI on 2026-10-21, on the TypeScript codec: Node 22 on an x64 Linux runner under Docker. Its isolated reader process sat at 68.2 MiB of RSS, well inside the ceiling. CI runs the same gate on every push and fails the build if the workload is OOM-killed or creeps; it keeps no reading beyond that file. A latency
 number moves with the machine and the network as well, which is why the latency figures above come from a run
 inside the region and not from a laptop.
 

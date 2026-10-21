@@ -891,9 +891,12 @@ const specAnchors = [];
         'the site must not cite a failed run as an envelope',
     );
   } else if (
-    ![rss.heapCreepMiB, rss.heapCreepLimitMiB, rss.externalCreepMiB, rss.externalCreepLimitMiB].every(
-      Number.isFinite,
-    ) ||
+    ![
+      rss.heapCreepMiB,
+      rss.heapCreepLimitMiB,
+      rss.externalCreepMiB,
+      rss.externalCreepLimitMiB,
+    ].every(Number.isFinite) ||
     !Number.isFinite(rss.readerProcess?.rssMiB)
   ) {
     // The file is what `scripts/rss-gate.sh` writes: both creep verdicts and the reader process's RSS. One without
