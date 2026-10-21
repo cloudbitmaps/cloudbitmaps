@@ -882,7 +882,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     const main = src.indexOf('async function main');
     expect(src.indexOf('evidenceConflict(', main)).toBeLessThan(
-      src.indexOf("await import('@cloudbitmaps/roaring')", main),
+      src.indexOf("await packageOf('roaring')", main),
     );
   });
 
@@ -1002,7 +1002,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       at('process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE'),
     );
     expect(at('process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE')).toBeLessThan(
-      src.indexOf("await import('@cloudbitmaps/roaring')"),
+      src.indexOf("await packageOf('roaring')"),
     );
   });
 
