@@ -817,8 +817,8 @@ ledger again before the call deletes it. The same write renews the row's `pointe
   the call began: the row's `pointerId` is new since the call read it (a load or a rollback moved the pointer, or another
   erasure renewed it), or its ledger differs (another erasure pruned it; between two `pointerId`s a ledger only shrinks,
   because every writer that adds an entry names the pointer). Two erasures of different ids on one segment that delete the
-  same generations write once between them, and both report `erased: true`. A write of the retention, the residency or the
-  kept window is not such a change: a later write can put it back, and a load that read the row before the call would then
+  same generations write once between them, and both report `erased: true`. A write of the retention or the residency is
+  not such a change: a later write can put it back, and a load that read the row before the call would then
   find it as it read it, so a call that finds only that renews the `pointerId`. A rewrite that a concurrent erasure's
   renewal lands under is refused as `superseded`, and its caller runs it again.
 - <a id="erasure-load-lands-first"></a>**A load that lands first.** Holders below the pointer: the call prunes against the pointer it finds, keeping the

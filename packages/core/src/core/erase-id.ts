@@ -958,8 +958,8 @@ function doomedGenerations(
  * already changed the row's `pointerId` or its ledger, which no later write can put back (a `pointerId` is a write's
  * token, never reused; between two `pointerId`s a ledger only shrinks, because every writer that adds an entry names the
  * pointer and so renews it). That covers a load or a rollback that moved the pointer, another renewal, and another
- * erasure's prune. A write of the retention, the residency or the kept window is not such a write, since a later write
- * can restore those and a load that read the row before the call would then find the row as it read it, so it does not
+ * erasure's prune. A write of the retention or the residency is not such a write, since a later write
+ * can restore either and a load that read the row before the call would then find the row as it read it, so it does not
  * license the skip. So every load that read the row before the call began is refused, by this call's write or by a write
  * that changed the `pointerId` or the ledger since the call read the row. The pointer is
  * named at the value it has ({@link renewPointer}), which changes nothing a read resolves and renews the row's
@@ -1056,8 +1056,8 @@ async function fence(c: EraseCall, plan: FencePlan): Promise<Fenced> {
     // read it before the call began. Two changes since the call read the row are such a fence: a new `pointerId` (a
     // write's token, never reused: a load's, a rollback's or another renewal) and a ledger that differs (between two
     // `pointerId`s a ledger only shrinks, since every writer that adds an entry names the pointer and so renews it, so
-    // a changed ledger never returns to what a load read). A write of the retention, residency or kept window is not
-    // one: a later write can put those back, and a load that read the row before the call would then find it as it
+    // a changed ledger never returns to what a load read). A write of the retention or residency is not
+    // one: a later write can put either back, and a load that read the row before the call would then find it as it
     // read it. Nor is a lease write, which a load ignores.
     const sweepOwes =
       plan.sweeps &&
