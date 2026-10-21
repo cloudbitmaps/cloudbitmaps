@@ -125,11 +125,28 @@ describe('array intersection through a scratch bitset', () => {
     pair(range(0, 4096), range(61_440, 65_536));
     pair([0, 65_535], [0, 65_535]);
   });
+  it('only the span of the longer array under the shorter one is read: disjoint, touching, partial, inside', () => {
+    const big = thin(400, 10, 1000);
+    const small = (from: number) => thin(40, 10, from);
+    pair(small(0), big);
+    pair(big, small(0));
+    pair(small(5000), big);
+    pair(big, small(5000));
+    pair(small(1000 - 390), big);
+    pair(small(1000 + 3990 - 0), big);
+    pair(small(1000 - 200), big);
+    pair(small(1000 + 3990 - 200), big);
+    pair(small(2000), big);
+    pair(thin(32, 1, 0), thin(32, 1, 31));
+    pair(thin(32, 1, 0), thin(32, 1, 32));
+  });
   it('leaves nothing behind in the scratch: a later intersection never sees an earlier one', () => {
-    const first = TS.fromValues(thin(500, 100));
-    first.andInPlace(TS.fromValues(thin(500, 100)));
-    const second = TS.fromValues(thin(500, 100, 7));
-    second.andInPlace(TS.fromValues(thin(500, 100, 9)));
+    // The first call sets bits the second one's longer array holds; the second's shorter array holds none of them.
+    const early = thin(40, 100);
+    const first = TS.fromValues(early);
+    first.andInPlace(TS.fromValues(early.concat(thin(200, 100, 7))));
+    const second = TS.fromValues(thin(40, 100, 9));
+    second.andInPlace(TS.fromValues(early.concat(thin(100, 100, 9).slice(40))));
     expect([...second]).toEqual([]);
   });
 });
