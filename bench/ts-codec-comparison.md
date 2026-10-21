@@ -7,14 +7,14 @@ from the rounds (`tests/bench/ts-codec-verdict.test.ts` recomputes them, and loo
 the file). The instrument is `bench/ts-codec-engine.cjs` (`node --expose-gc bench/ts-codec-engine.cjs --all`, about an
 hour), with `bench/ts-codec.cjs` for the per-operation figures.
 
-Machine: Apple M3 Pro, 11 cores, macOS, Node v24.18.1. The figures were taken by one `--all` run on the committed tree
-`3912bc0a2bc9ba6d87eee6afbaeae9ed26b6579b` (the bench; the file and this report were committed after it), the tree clean.
-The 1-minute load average, which includes the bench's own processes, was 2.2 to 6.8 for the read cells (every cell started
-under the bar of 6, and each row below says its own highest), 3.1 for the write path, 3.0 for memory and 2.9 for
-start-up. Another process on the machine pushed a few rounds of three cells (dense `iterate`, runs `iterate`, mixed
-`count`) to 6 or a little above during the run; the file keeps the load of every round, and none of those three cells
-changes its verdict under either basis (their controls are in band, or the cell is inconclusive already). Every figure is
-wall-clock on one machine, recorded and not asserted.
+Machine: Apple M3 Pro, 11 cores, macOS, Node v24.18.1. The write path, memory and start-up figures come from one `--all`
+run on the committed tree `3912bc0a2bc9ba6d87eee6afbaeae9ed26b6579b` (the bench; the file and this report were committed
+after it), the tree clean. The read cells were then taken a second time, alone, on the same bench code, because another
+process on the machine may have overlapped the first run's reads (the lock that keeps the machine to one heavy job was
+removed once by another job); the first reads are not kept, and the file says so. The 1-minute load average, which includes
+the bench's own processes, was 2.3 to 4.7 for the read cells (no round reached 6, and each row below says its cell's
+highest), 3.1 for the write path, 3.0 for memory and 2.9 for start-up. Every figure is wall-clock on one machine, recorded
+and not asserted.
 
 ## How a verdict is computed
 
@@ -40,10 +40,10 @@ Every read cell is measured two ways, and the table gives both:
 
 **The gate verdict of a cell is the per-process one**, because it is the one that looks like production; the in-process
 figures are the cross-check. They agree on every cell that is over the bar. Where they differ, the table shows both
-verdicts: in-process, dense `andNot` (control +3.2%), runs `has` (control -2.5%) and spread8k `iterate` (control -2.2%) are
-inconclusive where per-process is within the bar, and per-process runs `iterate` (control +2.1%) is inconclusive where
-in-process is within it. The two ways were taken at different times, so a control that sits just outside the band in one is
-machine drift, not a property of the cell.
+verdicts: in-process, sparse `iterate` (control -3.2%), sparse `andNot` (control +3.3%) and mixed `has` (control -2.2%) are
+inconclusive where per-process is within the bar, and per-process spread8k `intersect2` (control -2.3%) is inconclusive
+where in-process is within it. The two ways were taken at different times in each cell's life, so a control that sits just
+outside the band in one is machine drift, not a property of the cell.
 
 A store's calls were counted per codec in one untimed pass over the stores that were timed, with their caches dropped
 first (a warm read calls methods of the cached bitmaps, not the codec's own functions, so the decode and the combine are
@@ -59,11 +59,11 @@ on a warm cache.
 |---|---|---|
 | Correctness: zero oracle differences | measured so far: none | the oracle, hostile-input, pin, TypeScript-codec and fast-path suites pass on Node 24.18.1 (14 files, 1,558 tests); the two codecs wrote the same exported bytes in all 31 write-path rounds |
 | Correctness: a week of nightly fuzz with none | **cannot be judged yet** | the week starts at merge. Wiring (read from the workflows): `full-nightly.yml` runs the whole suite, the oracle files included, at 04:00 UTC every day; `fuzz-nightly.yml` fuzzes the four untrusted-bytes targets (`deser`, `crbm`, `index`, `ext`) at 05:00 UTC, all of them on the native deserializer: no fuzz target runs the TypeScript codec yet, so the week's fuzz evidence for it is the property tests' |
-| Hot path: `has` | within the 5% bar, **with little power on the codec** | per-process worst ts vs native +0.0%, worst control -1.3%; in-process worst +0.4%, worst control -2.5% (inconclusive: runs). A call is 512 awaited probes at about 1 us each, of which the codec's `has` is about 26 to 39 ns native and 8 to 29 ns TypeScript on one chunk (`bench/ts-codec-results.json`, measured earlier): a codec two to three times slower on the probe alone would still land within 5% of the call. The per-operation `has` rows are the sensitive figure |
-| Hot path: `count` | within the 5% bar, **not informative: no codec call** | per-process worst +0.9%, control -0.9%; in-process worst +0.5%, control +0.6%. `count` is read from the generation's index; the file records zero codec calls in every cell |
-| Hot path: `iterate` | inconclusive | per-process worst -0.1% with the worst control +2.1% (runs); in-process worst +0.5%, worst control -2.2% (spread8k). The TypeScript codec is 10% to 14% faster on the spread sets |
-| Hot path: `intersect` | **over the 5% bar** | per-process: two operands worst +22.0% (sparse), four operands worst +46.4% (mixed), controls within +1.9%; in-process +23.3% and +43.6%. Cells below |
-| Hot path: `andNot` (beyond the four the gate names) | **over the 5% bar** | sparse, +6.5% per-process (control -0.4%) and +6.5% in-process (control +0.2%): 1.5 points over the bar in both ways. The first run read +5.8% with a control at +3.9% and called it inconclusive |
+| Hot path: `has` | within the 5% bar, **with little power on the codec** | per-process worst ts vs native +2.2% (spread), worst control -1.7%; in-process worst +0.4%, worst control -2.2% (inconclusive: mixed). A call is 512 awaited probes at about 1 us each, of which the codec's `has` is about 26 to 39 ns native and 8 to 29 ns TypeScript on one chunk (`bench/ts-codec-results.json`, measured earlier): a codec two to three times slower on the probe alone would still land within 5% of the call. The per-operation `has` rows are the sensitive figure |
+| Hot path: `count` | within the 5% bar, **not informative: no codec call** | per-process worst +1.4%, worst control +1.0%; in-process worst +0.5%, worst control -0.6%. `count` is read from the generation's index; the file records zero codec calls in every cell |
+| Hot path: `iterate` | within the 5% bar per-process (in-process: inconclusive) | per-process worst +0.1%, worst control -1.7%; in-process worst +2.9%, worst control -3.2% (sparse, inconclusive). The TypeScript codec is 12% to 14% faster on the spread sets |
+| Hot path: `intersect` | **over the 5% bar** | per-process: two operands worst +22.8% (sparse), four operands worst +48.3% (mixed), the controls of the over cells within +0.9%; in-process +24.4% and +44.3%. Cells below |
+| Hot path: `andNot` (beyond the four the gate names) | within the 5% bar per-process, **at the bar** | sparse: +4.5% per-process (control -0.4%), 0.5 points under the bar; +6.1% in-process with a control at +3.3% (inconclusive). An earlier `--all` run, not kept, read +6.5% in both ways with the controls in band: the cell sits at the bar and neither a pass nor a failure should be read from it |
 | Write path: the bulk load no slower | faster (derived), a **warm** figure | 31 interleaved rounds: load -34.8% (control -0.2%). The first load in a **fresh process** is not that: `loadMs` of the cold row, two loads of the mixed set, is +13.4% on TypeScript (control -0.3%; median of 31 processes each), below |
 | Install: works on every package manager with nothing configured | **cannot be judged yet** | measured at the switch, when `roaring` leaves the dependencies; the TypeScript codec has no install step of its own (expected) |
 | In-region calibration | **cannot be judged yet** | prepared, not run: see the commands in the pull request and `bench/README.md` |
@@ -80,67 +80,68 @@ ones, and the load is the highest seen during that cell's per-process rounds.
 
 | data set | op | native | typescript | ts vs native (per-process) | A/A control (per-process) | verdict (per-process) | ts vs native (in-process) | A/A control (in-process) | verdict (in-process) | load |
 |---|---|---|---|---|---|---|---|---|---|---|
-| dense | has | 499.5 us | 492.9 us | -1.6% | +0.6% | within the 5% bar | -3.0% | -0.6% | within the 5% bar | 4.57 |
-| dense | count | 1.4 us | 1.4 us | -0.5% | -0.9% | within the 5% bar | +0.4% | +0.6% | within the 5% bar | 4.57 |
-| dense | iterate | 160.5 ms | 162.1 ms | -1.7% | +1.2% | within the 5% bar | -0.9% | +0.3% | within the 5% bar | 4.57 |
-| dense | intersect2 | 85.3 ms | 84.1 ms | -0.9% | +0.4% | within the 5% bar | +1.3% | +0.6% | within the 5% bar | 4.57 |
-| dense | intersect4 | 18.2 ms | 18.6 ms | +2.8% | +0.2% | within the 5% bar | +2.4% | +0.1% | within the 5% bar | 4.57 |
-| dense | andNot | 83.6 ms | 85.4 ms | +1.3% | -0.7% | within the 5% bar | +2.4% | +3.2% | inconclusive | 4.57 |
-| sparse | has | 541.4 us | 535.0 us | -1.0% | +1.3% | within the 5% bar | -0.2% | +1.7% | within the 5% bar | 5.31 |
-| sparse | count | 1.5 us | 1.5 us | +0.3% | +0.8% | within the 5% bar | -0.6% | -0.5% | within the 5% bar | 5.31 |
-| sparse | iterate | 37.7 ms | 37.7 ms | -0.1% | -1.2% | within the 5% bar | +0.5% | +0.1% | within the 5% bar | 5.31 |
-| sparse | intersect2 | 3.7 ms | 4.5 ms | +22.0% | -0.4% | over the 5% bar | +23.3% | +0.2% | over the 5% bar | 5.31 |
-| sparse | intersect4 | 3.8 ms | 4.7 ms | +24.6% | -0.4% | over the 5% bar | +30.9% | +0.9% | over the 5% bar | 5.31 |
-| sparse | andNot | 40.6 ms | 43.4 ms | +6.5% | -0.4% | over the 5% bar | +6.5% | +0.2% | over the 5% bar | 5.31 |
-| runs | has | 523.1 us | 517.6 us | -0.8% | +0.3% | within the 5% bar | +0.4% | -2.5% | inconclusive | 5.1 |
-| runs | count | 1.4 us | 1.3 us | -0.3% | +0.3% | within the 5% bar | +0.5% | -0.2% | within the 5% bar | 5.1 |
-| runs | iterate | 597.9 ms | 598.4 ms | -0.2% | +2.1% | inconclusive | -1.4% | +1.5% | within the 5% bar | 5.1 |
-| runs | intersect2 | 401.9 ms | 400.1 ms | -1.2% | +1.0% | within the 5% bar | -1.0% | +1.3% | within the 5% bar | 5.1 |
-| runs | intersect4 | 149.4 ms | 151.0 ms | +2.3% | +1.9% | within the 5% bar | +0.3% | +0.4% | within the 5% bar | 5.1 |
-| runs | andNot | 250.6 ms | 250.4 ms | -0.4% | +1.2% | within the 5% bar | -1.7% | -0.8% | within the 5% bar | 5.1 |
-| mixed | has | 497.3 us | 481.5 us | -2.6% | -0.2% | within the 5% bar | -3.6% | -1.4% | within the 5% bar | 4.41 |
-| mixed | count | 1.4 us | 1.4 us | +0.9% | -0.1% | within the 5% bar | -0.3% | -0.4% | within the 5% bar | 4.41 |
-| mixed | iterate | 432.8 ms | 427.7 ms | -1.2% | -0.1% | within the 5% bar | +0.0% | +0.4% | within the 5% bar | 4.41 |
-| mixed | intersect2 | 112.0 ms | 112.7 ms | +1.0% | +1.3% | within the 5% bar | +0.0% | -0.4% | within the 5% bar | 4.41 |
-| mixed | intersect4 | 2.7 ms | 4.0 ms | +46.4% | +0.3% | over the 5% bar | +43.6% | +1.6% | over the 5% bar | 4.41 |
-| mixed | andNot | 349.1 ms | 352.4 ms | +0.1% | +0.6% | within the 5% bar | -1.7% | +0.5% | within the 5% bar | 4.41 |
-| spread | has | 551.6 us | 545.7 us | -3.3% | -1.3% | within the 5% bar | -2.1% | -0.4% | within the 5% bar | 3.85 |
-| spread | count | 1.5 us | 1.5 us | +0.5% | -0.5% | within the 5% bar | +0.0% | -0.3% | within the 5% bar | 3.85 |
-| spread | iterate | 297.2 ms | 260.6 ms | -13.7% | +0.4% | within the 5% bar | -10.2% | +0.3% | within the 5% bar | 3.85 |
-| spread8k | has | 515.4 us | 526.0 us | +0.0% | +0.4% | within the 5% bar | -1.1% | -0.1% | within the 5% bar | 3.51 |
-| spread8k | count | 1.6 us | 1.7 us | +0.9% | -0.2% | within the 5% bar | -0.2% | +0.0% | within the 5% bar | 3.51 |
-| spread8k | iterate | 32.9 ms | 29.0 ms | -12.1% | +0.4% | within the 5% bar | -12.0% | -2.2% | inconclusive | 3.51 |
-| spread8k | intersect2 | 31.8 ms | 26.0 ms | -18.1% | -0.3% | within the 5% bar | -10.1% | +0.7% | within the 5% bar | 3.51 |
-| spread8k | intersect4 | 53.1 ms | 48.7 ms | -8.4% | +1.1% | within the 5% bar | -7.8% | +0.7% | within the 5% bar | 3.51 |
-| spread8k | andNot | 60.3 ms | 54.5 ms | -9.8% | -0.1% | within the 5% bar | -10.9% | -1.6% | within the 5% bar | 3.51 |
+| dense | has | 496.3 us | 496.5 us | +0.7% | +1.3% | within the 5% bar | -2.1% | -0.4% | within the 5% bar | 3.57 |
+| dense | count | 1.4 us | 1.4 us | -0.1% | -0.4% | within the 5% bar | +0.2% | +0.1% | within the 5% bar | 3.57 |
+| dense | iterate | 157.9 ms | 156.5 ms | -2.3% | -1.7% | within the 5% bar | +2.3% | -0.8% | within the 5% bar | 3.57 |
+| dense | intersect2 | 84.3 ms | 84.4 ms | -2.9% | -1.9% | within the 5% bar | +1.1% | +1.9% | within the 5% bar | 3.57 |
+| dense | intersect4 | 17.9 ms | 18.3 ms | +3.1% | +0.4% | within the 5% bar | +3.1% | +0.1% | within the 5% bar | 3.57 |
+| dense | andNot | 83.8 ms | 83.0 ms | +0.3% | +1.2% | within the 5% bar | +0.5% | -1.5% | within the 5% bar | 3.57 |
+| sparse | has | 547.7 us | 530.0 us | -2.9% | +0.1% | within the 5% bar | +0.4% | +1.3% | within the 5% bar | 2.94 |
+| sparse | count | 1.5 us | 1.5 us | -0.5% | -0.2% | within the 5% bar | +0.5% | +0.3% | within the 5% bar | 2.94 |
+| sparse | iterate | 37.7 ms | 37.3 ms | +0.1% | +1.3% | within the 5% bar | +1.9% | -3.2% | inconclusive | 2.94 |
+| sparse | intersect2 | 3.6 ms | 4.4 ms | +22.8% | +0.0% | over the 5% bar | +24.4% | -0.3% | over the 5% bar | 2.94 |
+| sparse | intersect4 | 3.7 ms | 4.6 ms | +27.3% | +0.9% | over the 5% bar | +31.3% | +1.9% | over the 5% bar | 2.94 |
+| sparse | andNot | 41.5 ms | 43.4 ms | +4.5% | -0.4% | within the 5% bar | +6.1% | +3.3% | inconclusive | 2.94 |
+| runs | has | 532.1 us | 516.0 us | -1.7% | +0.7% | within the 5% bar | -2.4% | -0.4% | within the 5% bar | 4.66 |
+| runs | count | 1.3 us | 1.4 us | +1.4% | +1.0% | within the 5% bar | -0.4% | -0.6% | within the 5% bar | 4.66 |
+| runs | iterate | 607.5 ms | 597.1 ms | -2.4% | +0.9% | within the 5% bar | -2.3% | -0.0% | within the 5% bar | 4.66 |
+| runs | intersect2 | 401.0 ms | 394.8 ms | -1.2% | +0.5% | within the 5% bar | -1.6% | -1.6% | within the 5% bar | 4.66 |
+| runs | intersect4 | 149.5 ms | 151.1 ms | +1.9% | +1.1% | within the 5% bar | -2.0% | +0.2% | within the 5% bar | 4.66 |
+| runs | andNot | 250.5 ms | 251.6 ms | +0.6% | +0.8% | within the 5% bar | -0.7% | +0.9% | within the 5% bar | 4.66 |
+| mixed | has | 495.8 us | 481.7 us | -2.6% | +0.3% | within the 5% bar | -3.7% | -2.2% | inconclusive | 3.43 |
+| mixed | count | 1.4 us | 1.4 us | +0.0% | +0.1% | within the 5% bar | -0.1% | -0.6% | within the 5% bar | 3.43 |
+| mixed | iterate | 432.2 ms | 425.9 ms | -1.5% | -0.9% | within the 5% bar | +2.9% | +0.4% | within the 5% bar | 3.43 |
+| mixed | intersect2 | 112.2 ms | 113.1 ms | +3.5% | -0.4% | within the 5% bar | +1.5% | -0.8% | within the 5% bar | 3.43 |
+| mixed | intersect4 | 2.7 ms | 4.0 ms | +48.3% | +0.3% | over the 5% bar | +44.3% | +0.9% | over the 5% bar | 3.43 |
+| mixed | andNot | 347.0 ms | 348.8 ms | +0.0% | +0.2% | within the 5% bar | -0.4% | -0.2% | within the 5% bar | 3.43 |
+| spread | has | 549.4 us | 567.1 us | +2.2% | +0.6% | within the 5% bar | -1.9% | -0.2% | within the 5% bar | 3.56 |
+| spread | count | 1.5 us | 1.5 us | +1.0% | +0.3% | within the 5% bar | +0.2% | +0.0% | within the 5% bar | 3.56 |
+| spread | iterate | 297.3 ms | 257.3 ms | -13.0% | +0.5% | within the 5% bar | -11.6% | +0.2% | within the 5% bar | 3.56 |
+| spread8k | has | 545.6 us | 525.6 us | -3.4% | -1.7% | within the 5% bar | -1.3% | +0.4% | within the 5% bar | 4.15 |
+| spread8k | count | 1.6 us | 1.7 us | +1.0% | -0.6% | within the 5% bar | -0.1% | -0.1% | within the 5% bar | 4.15 |
+| spread8k | iterate | 33.0 ms | 28.9 ms | -13.6% | -1.5% | within the 5% bar | -11.8% | -1.2% | within the 5% bar | 4.15 |
+| spread8k | intersect2 | 31.8 ms | 26.6 ms | -16.5% | -2.3% | inconclusive | -11.7% | -0.7% | within the 5% bar | 4.15 |
+| spread8k | intersect4 | 53.0 ms | 48.9 ms | -8.1% | +1.3% | within the 5% bar | -10.3% | +0.2% | within the 5% bar | 4.15 |
+| spread8k | andNot | 59.8 ms | 54.4 ms | -9.6% | +0.5% | within the 5% bar | -13.1% | +0.4% | within the 5% bar | 4.15 |
 
 Per op (derived: the worst of its cells; a cell whose control is out of band is inconclusive; the worst control is the
 control of the cell where its magnitude is largest, with the sign it was measured with):
 
 | op | cells | worst ts vs native (per-process) | worst control (per-process) | verdict (per-process) | worst ts vs native (in-process) | worst control (in-process) | verdict (in-process) |
 |---|---|---|---|---|---|---|---|
-| has | 6 | +0.0% | -1.3% | within the 5% bar | +0.4% | -2.5% | inconclusive |
-| count | 6 | +0.9% | -0.9% | within the 5% bar | +0.5% | +0.6% | within the 5% bar |
-| iterate | 6 | -0.1% | +2.1% | inconclusive | +0.5% | -2.2% | inconclusive |
-| intersect2 | 5 | +22.0% | +1.3% | over the 5% bar | +23.3% | +1.3% | over the 5% bar |
-| intersect4 | 5 | +46.4% | +1.9% | over the 5% bar | +43.6% | +1.6% | over the 5% bar |
-| andNot | 5 | +6.5% | +1.2% | over the 5% bar | +6.5% | +3.2% | over the 5% bar |
+| has | 6 | +2.2% | -1.7% | within the 5% bar | +0.4% | -2.2% | inconclusive |
+| count | 6 | +1.4% | +1.0% | within the 5% bar | +0.5% | -0.6% | within the 5% bar |
+| iterate | 6 | +0.1% | -1.7% | within the 5% bar | +2.9% | -3.2% | inconclusive |
+| intersect2 | 5 | +22.8% | -2.3% | over the 5% bar | +24.4% | +1.9% | over the 5% bar |
+| intersect4 | 5 | +48.3% | +1.3% | over the 5% bar | +44.3% | +1.9% | over the 5% bar |
+| andNot | 5 | +4.5% | +1.2% | within the 5% bar | +6.1% | +3.3% | inconclusive |
 
 What the table says, in the order of the gate:
 
 - `count` is answered in about 1.4 us in every cell by both codecs and made no codec call (measured, counts in the file):
   it is read from the generation's index, so it is not evidence about the codec.
 - `has` is dominated by the store's asynchronous call, about 1 us a probe. Per-process every cell is within the bar and the
-  codecs are within a few percent in both directions; in-process one cell (runs) has a control outside the band and is
+  codecs are within a few percent in both directions; in-process one cell (mixed) has a control outside the band and is
   inconclusive. Little power on the codec: see the gate row.
-- `iterate` is inconclusive on the strength of one cell per way (per-process runs, control +2.1%, where the TypeScript
-  median is -0.2%; in-process spread8k, control -2.2%), and TypeScript is 10% to 14% faster on the spread sets in both ways.
-- **`intersect` is over the bar on three cells in both ways:** sparse (+22.0% and +24.6% per-process for two and four
-  operands) and mixed (+46.4% at four operands). These cells are the cheap ones (3 to 5 ms for a call), so the codec's share
+- `iterate` is within the bar in every cell per-process; in-process, sparse has a control at -3.2% and is inconclusive.
+  TypeScript is 11% to 14% faster on the spread sets in both ways.
+- **`intersect` is over the bar on three cells in both ways:** sparse (+22.8% and +27.3% per-process for two and four
+  operands) and mixed (+48.3% at four operands). These cells are the cheap ones (3 to 5 ms for a call), so the codec's share
   is largest. The per-operation bench puts the sparse and skewed combines among the TypeScript codec's slower rows. The
   cause was not investigated here; the figures are the finding. The other `intersect` cells are within the bar or faster,
-  and none is inconclusive in either way.
-- **`andNot` on sparse is over the bar** (+6.5% in both ways, the control in band in both).
+  except spread8k `intersect2` per-process, which is -16.5% with a control at -2.3% and so inconclusive.
+- **`andNot` on sparse is at the bar:** +4.5% per-process (within, by 0.5 points), +6.1% in-process with a control at +3.3%
+  (inconclusive), and +6.5% in both ways in an earlier run that is not kept.
 
 ## The write path (measured; derived verdicts)
 
@@ -234,6 +235,6 @@ is the facade a switch of the codec inside today's package would ship until `roa
   Locally, `CR_CALIBRATE_CODEC=native node bench/range-counts.cjs --check` and `CR_CALIBRATE_CODEC=typescript node
   bench/range-counts.cjs --check` both report that `bench/range-counts.json` is what the engine makes (measured, on the
   bundle with each codec), so identical counts in region are expected.
-- Whether the over-the-bar cells (`intersect` on sparse and mixed, `andNot` on sparse) are the codec or the instrument:
-  the control resolved them (it sat within +-2% in each, in both ways), and the per-process figures, which look like
+- Whether the over-the-bar cells (`intersect` on sparse and mixed) are the codec or the instrument: the control resolved
+  them (it sat within +-2% in each, in both ways), and the per-process figures, which look like
   production, agree with the in-process ones, so they are expected to be the codec; a fix and a re-run settle it.
