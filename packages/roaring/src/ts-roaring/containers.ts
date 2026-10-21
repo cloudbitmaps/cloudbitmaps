@@ -642,6 +642,13 @@ function skewed(shorter: number, longer: number): boolean {
   return longer >= GALLOP_SKEW * shorter;
 }
 
+// Arrays shorter than this are merged; from here a similar-sized pair is intersected through a scratch bitset, which
+// reads both arrays once, in order, with no unpredictable branch.
+const PROBE_MIN = 32;
+
+// Scratch bitset for the probe and run intersections: all zero between calls (each call clears what it set).
+const probeWords = new Uint32Array(WORDS);
+
 /** Values both arrays hold. */
 function andArrays(a: Container, b: Container): Container | null {
   const small = a.len <= b.len ? a : b;
@@ -650,6 +657,23 @@ function andArrays(a: Container, b: Container): Container | null {
   const l = lows16(big);
   const out = values16(small.len);
   let n = 0;
+  if (small.len >= PROBE_MIN && !skewed(small.len, big.len)) {
+    const words = probeWords;
+    const se = small.off + small.len;
+    for (let i = small.off; i < se; i++) {
+      const v = s[i] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    const le = big.off + big.len;
+    for (let j = big.off; j < le; j++) {
+      const v = l[j] as number;
+      // The slot is written whether or not `v` is in the set; only a hit moves `n` past it.
+      out[n] = v;
+      n += ((words[v >>> 5] as number) >>> (v & 31)) & 1;
+    }
+    for (let i = small.off; i < se; i++) words[(s[i] as number) >>> 5] = 0;
+    return arrayOfScratch(out, n);
+  }
   if (skewed(small.len, big.len)) {
     let at = 0;
     const end = big.off + big.len;
@@ -683,10 +707,13 @@ function filterByBits(a: Container, b: Container, keep: boolean): Container | nu
   const u16 = lows16(a);
   const words = words32(b);
   const out = values16(a.len);
+  const flip = keep ? 0 : 1;
   let n = 0;
   for (let i = a.off; i < a.off + a.len; i++) {
     const v = u16[i] as number;
-    if ((((words[v >>> 5] as number) >>> (v & 31)) & 1) === (keep ? 1 : 0)) out[n++] = v;
+    // Written whether or not `v` is kept; only a kept value moves `n` past its slot (no unpredictable branch).
+    out[n] = v;
+    n += (((words[v >>> 5] as number) >>> (v & 31)) & 1) ^ flip;
   }
   return arrayOfScratch(out, n);
 }
@@ -697,6 +724,18 @@ function filterByRuns(a: Container, b: Container, keep: boolean): Container | nu
   const pairs = lows16(b);
   const out = values16(a.len);
   let n = 0;
+  if (keep && a.len >= b.len) {
+    // At least as many values as runs: walk the runs, skipping the values below each and copying those inside it.
+    const ae = a.off + a.len;
+    let i = a.off;
+    for (let r = 0; r < b.len && i < ae; r++) {
+      const start = pairs[b.off + 2 * r] as number;
+      const end = start + (pairs[b.off + 2 * r + 1] as number);
+      while (i < ae && (u16[i] as number) < start) i++;
+      while (i < ae && (u16[i] as number) <= end) out[n++] = u16[i++] as number;
+    }
+    return arrayOfScratch(out, n);
+  }
   let r = 0;
   for (let i = a.off; i < a.off + a.len; i++) {
     const v = u16[i] as number;

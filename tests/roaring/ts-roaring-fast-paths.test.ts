@@ -99,6 +99,64 @@ describe('gallop', () => {
       }
   });
 });
+describe('array intersection through a scratch bitset', () => {
+  // Spread values over the whole chunk, so word and bit extremes (0, 31, 32, 65535) are held.
+  const spread = (n: number, off: number) =>
+    Array.from({ length: n }, (_, i) => Math.min(65_535, Math.floor((i * 65_536) / n) + off));
+  it('either side of its minimum length and of the gallop skew, with every overlap', () => {
+    for (const small of [1, 31, 32, 33, 64]) {
+      for (const mult of [1, 2, 15, 16, 17]) {
+        const big = spread(small * mult, 0);
+        const half = big.filter((_, i) => i % 2 === 0).slice(0, small);
+        for (const other of [spread(small, 1), spread(small, 0), half, big.slice(0, small)]) {
+          pair(other, big);
+          pair(big, other);
+        }
+      }
+    }
+  });
+  it('4,096-value arrays, the full chunk edge of an array, and disjoint then equal operands', () => {
+    const a = thin(4096, 16);
+    const b = thin(4096, 16, 3);
+    pair(a, b);
+    pair(a, a);
+    pair(a, thin(4096, 16, 8));
+    pair(thin(4097, 15), a);
+    pair(range(0, 4096), range(61_440, 65_536));
+    pair([0, 65_535], [0, 65_535]);
+  });
+  it('leaves nothing behind in the scratch: a later intersection never sees an earlier one', () => {
+    const first = TS.fromValues(thin(500, 100));
+    first.andInPlace(TS.fromValues(thin(500, 100)));
+    const second = TS.fromValues(thin(500, 100, 7));
+    second.andInPlace(TS.fromValues(thin(500, 100, 9)));
+    expect([...second]).toEqual([]);
+  });
+});
+
+describe('array intersection with runs, either side of the values-versus-runs choice', () => {
+  const runsOf = (count: number, len: number, gap: number, start = 0) =>
+    range(0, count).flatMap((r) => range(start + r * (len + gap), start + r * (len + gap) + len));
+  it('fewer values than runs, as many, and more', () => {
+    const runs = runsOf(40, 10, 10);
+    for (const n of [1, 39, 40, 41, 80, 400]) {
+      pair(thin(n, 7, 3), runs);
+      pair(thin(n, 3, 9), runs);
+      pair(runs, thin(n, 5));
+    }
+  });
+  it('values below, between, inside and above the runs; the last run ending at 65535; none shared', () => {
+    const runs = runsOf(30, 20, 40, 100);
+    pair([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], runs);
+    pair(thin(100, 60, 120), runs);
+    pair(thin(100, 60, 130), runs);
+    pair(range(2000, 2100), runs);
+    const tail = range(65_000, 65_536);
+    pair([64_999, 65_000, 65_535, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17], tail);
+    pair(thin(600, 100, 5), tail.concat(range(100, 200)));
+  });
+});
+
 describe('bitset / popcount', () => {
   it('word counts and patterns', () => {
     const full = range(0, 65536);
