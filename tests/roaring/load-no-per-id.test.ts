@@ -22,6 +22,11 @@ import { withNativeCodec } from '../helpers/codec-leg';
  * up. What a bitmap load does instead (serialize, the structural check, the decode, the header walk, the CRC32C of
  * the written bytes) is per container or per byte, and is not counted here.
  *
+ * Limit: the control for the codec's bitmap moves its counters through direct calls, and the planted iterator walk
+ * is what proves a per-id loop in a load would be seen. A per-id loop written in the module-level container helpers
+ * of `ts-roaring/containers.ts` or `ts-roaring/iterator.ts`, which no method of the bitmap class calls, is not
+ * counted.
+ *
  * The fixture is the worst case for that per-byte work: 65,536 array containers, every chunk of the id space in
  * use, 184 ids in each.
  */

@@ -444,14 +444,52 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     ).rejects.toThrow(ValidationError);
   });
 
-  describe('whatever else an object with a serialize method is, it loads through serialize', () => {
+  describe('an iterable with a serialize method loads through serialize; nothing else changes', () => {
     const portable = (ids: number[]): Uint8Array => new RoaringBitmap32(ids).serialize('portable');
     const chunk7 = async (): Promise<Buffer> => Buffer.from((await loadAndRead([7])).bytes);
+    const refused = async (input: unknown): Promise<void> => {
+      const store = new CloudRoaring({ storage: new MemoryStorage() });
+      await expect(store.load(SEG, input as LoadInput)).rejects.toThrow(ValidationError);
+    };
 
-    it('a Uint8Array with its own serialize is not refused as a byte array: it loads as its serialize says', async () => {
-      const bytes = Object.assign(new Uint8Array([1, 2, 3]), { serialize: () => portable([7]) });
-      const { bytes: out } = await loadAndRead(bytes as unknown as LoadInput);
+    it('a Uint8Array with its own serialize is still refused as a byte array', async () => {
+      await refused(Object.assign(new Uint8Array([1, 2, 3]), { serialize: () => portable([7]) }));
+    });
+
+    it('a Buffer with its own serialize is still refused as a byte array', async () => {
+      await refused(Object.assign(Buffer.from([1, 2, 3]), { serialize: () => portable([7]) }));
+    });
+
+    it('a Uint8ClampedArray with its own serialize is still refused as a byte array', async () => {
+      await refused(
+        Object.assign(new Uint8ClampedArray([1, 2, 3]), { serialize: () => portable([7]) }),
+      );
+    });
+
+    it('another typed array with a serialize is a bitmap, as any iterable with serialize is', async () => {
+      const ids = Object.assign(new Uint32Array([1, 2, 3]), { serialize: () => portable([7]) });
+      const { bytes: out } = await loadAndRead(ids as unknown as LoadInput);
       expect(Buffer.from(out).equals(await chunk7())).toBe(true);
+    });
+
+    it('{ serialized, serialize } is still refused for its two keys', async () => {
+      await refused({ serialized: portable([1, 2, 3]), serialize: () => portable([7]) });
+    });
+
+    it('{ bitmap, serialize } is still refused for its two keys', async () => {
+      await refused({ bitmap: new RoaringBitmap32([1]), serialize: () => portable([7]) });
+    });
+
+    it('an object that is not iterable and has only a serialize method is still refused', async () => {
+      await refused({ serialize: () => portable([7]) });
+    });
+
+    it('sorted: true throws for an iterable with a serialize method and for an array with one', async () => {
+      const store = new CloudRoaring({ storage: new MemoryStorage() });
+      const array = Object.assign([1, 2, 3], { serialize: () => portable([7]) });
+      await expect(
+        store.load(SEG, array as unknown as LoadInput, { sorted: true }),
+      ).rejects.toThrow(ValidationError);
     });
 
     it('an array with its own serialize is serialized, not iterated', async () => {
@@ -460,10 +498,14 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
       expect(Buffer.from(out).equals(await chunk7())).toBe(true);
     });
 
-    it('{ serialized, serialize } loads as a bitmap: serialize decides, serialized is ignored', async () => {
-      const both = { serialized: portable([1, 2, 3]), serialize: () => portable([7]) };
-      const { bytes: out } = await loadAndRead(both as unknown as LoadInput);
-      expect(Buffer.from(out).equals(await chunk7())).toBe(true);
+    it('a look-alike whose serialize returns malformed bytes is a ValidationError, before any request', async () => {
+      const lookAlike = {
+        *[Symbol.iterator]() {
+          yield 1;
+        },
+        serialize: () => new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+      };
+      await refused(lookAlike);
     });
 
     it('a serialize that throws fails the load with its own error', async () => {
@@ -488,7 +530,13 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
       'a serialize that returns %s is a ValidationError, before any request',
       async (_name, serialize) => {
         const store = new CloudRoaring({ storage: new MemoryStorage() });
-        await expect(store.load(SEG, { serialize } as unknown as LoadInput)).rejects.toThrow(
+        const input = {
+          *[Symbol.iterator]() {
+            yield 1;
+          },
+          serialize,
+        };
+        await expect(store.load(SEG, input as unknown as LoadInput)).rejects.toThrow(
           ValidationError,
         );
       },

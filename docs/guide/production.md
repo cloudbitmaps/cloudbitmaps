@@ -800,9 +800,9 @@ functions.
 
 The repository's CI still checks this path end to end today: the `pnpm lambda-smoke` gate installs the packages in an
 Amazon Linux 2023 container and loads them under both ESM and CJS, and `pnpm build-lambda-layer` from a clone produces
-`dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring flavor. Both scripts still build the
-development-only `roaring` package from source, because the repository's own tests use it as the reference; a user's
-install does not. The layer script is in the repository, not a published artifact: nothing on npm or on a GitHub
+`dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring flavor. The layer script still installs the
+`roaring` package into the layer as well, compiled from source in the container. Nothing in the layer loads it, and a
+later change removes it. `pnpm lambda-smoke` installs it the same way, and loads only the two packages. The layer script is in the repository, not a published artifact: nothing on npm or on a GitHub
 release carries it, though a manually dispatched CI run can build one and attach it to that run.
 
 ## How it stays correct

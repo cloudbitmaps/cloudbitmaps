@@ -2,19 +2,23 @@
  * The resident-bytes ledger of a batch combine. Pure: no I/O, time or randomness.
  *
  * It counts what is **resident**, not what a bitmap serializes to: a bitmap costs a fixed amount over its
- * serialized bytes, so a million small chunks hold far more than their serialized size says. Measured on the native
- * (CRoaring) codec, before the store's codec became TypeScript and not re-measured since, with one bitmap per chunk, the cost over serialized size was about 440 bytes for a chunk of up to 50 ids,
- * rising to about 1,700 bytes around 3,000 ids (an array container's spare capacity) and falling to about 300 bytes for
- * a bitset. {@link residentBytes} is a model that stays above every measured point.
+ * serialized bytes, so a million small chunks hold far more than their serialized size says. Measured on the store's
+ * codec, the TypeScript Roaring codec, as the live JS heap plus external memory after a forced collection, with one
+ * bitmap per chunk, the cost over serialized size was about 450 bytes for a bitmap decoded from its stored bytes and
+ * 670 to 800 for one built by adds, for a chunk of up to 1,000 ids; for a chunk of 3,000 ids built by adds (an array
+ * container's spare capacity) the whole bitmap held about 8,900 bytes, and a bitset about 8,650 decoded and 8,900
+ * built. {@link residentBytes} is a model that stays above every measured point.
  */
 
 /**
- * The fixed resident cost of one bitmap beyond its serialized bytes. Measured on the native (CRoaring) codec, before the
- * store's codec became TypeScript and not re-measured since, over 50,000
- * bitmaps of one chunk each, it was 430 to 450 bytes for a chunk of up to 50 ids on macOS (arm64) and 357 to 373 on Linux
- * (arm64, glibc 2.36), and 279 to 433 for a bitset; the constant sits above the highest of those.
+ * The fixed resident cost of one bitmap beyond its serialized bytes. Measured on the TypeScript codec over 50,000
+ * bitmaps of one chunk each (live heap plus external memory after a forced collection, macOS arm64, Node 24), it was
+ * 435 to 452 bytes for a bitmap decoded from stored bytes and 674 to 803 for one built by adds, at every cardinality
+ * from 1 to 20,000; the constant is the highest of those rounded up to a multiple of 64. The resident-set growth of
+ * the same process was larger (1,600 to 4,500 bytes a bitmap), because the collector keeps freed pages: that is the
+ * allocator's slack, which the ledger does not count and the process-memory guidance in the loading guide covers.
  */
-export const RESIDENT_BITMAP_OVERHEAD = 512;
+export const RESIDENT_BITMAP_OVERHEAD = 832;
 
 /** The most one chunk's portable payload can be after run optimization: a bitset container and its header. */
 const MAX_CHUNK_SERIALIZED = 8_208;
@@ -26,15 +30,15 @@ export function serializedBound(cardinality: number): number {
 
 /**
  * The most the data of one chunk's bitmap holds resident: an array container stops at 4,096 values and becomes a bitset
- * of 8,192 bytes, so past that its spare capacity cannot grow. Measured at 8,538 to 8,641 bytes with the overhead, for
- * every chunk of 4,096 values or more.
+ * of 8,192 bytes, so past that its spare capacity cannot grow. Measured at 8,643 (decoded) to 8,882 (built by adds) bytes with the overhead,
+ * for every chunk of 4,096 values or more.
  */
 const MAX_RESIDENT_DATA = 8_800;
 
 /** The resident bytes of one bitmap whose serialized size is `serialized`: above every measured point. */
 export function residentBytes(serialized: number): number {
   return Math.ceil(
-    RESIDENT_BITMAP_OVERHEAD + Math.min(1.6 * serialized, serialized + 2_000, MAX_RESIDENT_DATA),
+    RESIDENT_BITMAP_OVERHEAD + Math.min(1.6 * serialized, serialized + 2_200, MAX_RESIDENT_DATA),
   );
 }
 

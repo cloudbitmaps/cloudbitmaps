@@ -15,8 +15,8 @@ release.
 CloudBitmaps treats **all bytes read back from storage as untrusted input**. Every `.crbm` object — its chunk
 payloads, its index, its footer and, when its footer flags one, the extension block that carries a generation's
 metadata — is
-length-checked and CRC-verified, and deserialized by the codec's own
-bounds-checked decoder (there is no trusting variant) behind a hard size cap, before the decoder sees it. The cap is 1 MiB per chunk, and an
+length-checked and CRC-verified before the decoder sees it, and decoded by the codec's own bounds-checked decoder
+(there is no trusting variant) behind a hard size cap. The cap is 1 MiB per chunk, and an
 index entry above it (above 1 MiB plus the 28 bytes of nonce and tag, on an encrypted object) is refused when the
 object is opened, before any payload is read. The decoder copies the bytes
 before it checks them and reads only the copy, and each payload's **structure** is checked before any container is

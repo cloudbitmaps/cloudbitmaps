@@ -57,7 +57,7 @@ export interface CodecBitmap {
   toArray(): number[];
   /**
    * The set's values as one ascending `Uint32Array` the caller owns: what a batch read converts a chunk with, in one
-   * native step instead of one iterator step per value.
+   * step instead of one iterator step per value.
    *
    * **Optional.** A codec without it is read through its iterator, which is correct and slower.
    *

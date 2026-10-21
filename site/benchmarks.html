@@ -98,6 +98,11 @@
               off our own arithmetic. Every money figure and rate below is checked against its source by a build gate, so a
               regression <em>or an overclaim</em> fails the build.
             </p>
+            <p class="hero-lede">
+              The read, memory and soak figures were measured on the native codec, before the store's codec moved to
+              TypeScript. The cost model and the crossover do not depend on the codec; the codec comparison is in
+              <code>bench/ts-codec-comparison.md</code> in the repository.
+            </p>
             <p class="actions">
               <a class="btn btn-primary" href="#anchors">The cost anchors →</a>
               <a class="btn" href="#limits">What they do not establish</a>
@@ -800,8 +805,10 @@
               issues combines: <strong>7262</strong> of them over 90 s, alongside <strong>2908</strong>
               re-loads — each re-load publishes a new generation, which is what makes the reader cache's
               generation refresh and the cache's generation-keyed entries do real work instead of sitting
-              idle — after which the roaring engine's live off-heap bytes had moved by
-              <strong>0.00 MiB</strong> — where anything above 0.28 MiB would have failed the run. What stays local is
+              idle — after which the <code>roaring</code> package's live off-heap bytes had moved by
+              <strong>0.00 MiB</strong> — where anything above 0.28 MiB would have failed the run. (The store no longer
+              uses that package, so that watch now sees none of the store's memory; the heap and resident-set creep
+              verdicts carry the claim.) What stays local is
               the <em>driver</em>: both run against local storage, so this bounds our own bookkeeping and says
               nothing about a real S3 round trip. The <a href="demo.html">measured run</a> remains a single
               operation, not a duration.

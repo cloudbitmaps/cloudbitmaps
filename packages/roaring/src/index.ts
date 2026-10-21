@@ -2416,10 +2416,10 @@ export class CloudRoaring {
    * `input` is ids (any sync or async iterable of integers in `[0, 2^32)`), or a whole bitmap: `{ bitmap }`, anything
    * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
    * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
-   * containers with no per-id work, and gives the generation chunk for chunk what its ids would. Any
-   * object with a `serialize` method (a `RoaringBitmap32`, or a bitmap `deserializePortable` returned) passed as ids
-   * loads as `{ bitmap }`, even when it is also iterable. A
-   * `Uint8Array` or `Buffer` passed as ids is refused with `ValidationError`, since each byte would load as an id:
+   * containers with no per-id work, and gives the generation chunk for chunk what its ids would. An
+   * iterable with a `serialize` method (a `RoaringBitmap32`, another copy's bitmap, or a bitmap `deserializePortable`
+   * returned) passed as ids loads as `{ bitmap }` and is not iterated. A `Uint8Array` or `Buffer` passed as ids is
+   * refused with `ValidationError`, since each byte would load as an id, even when it has a `serialize` of its own:
    * pass bytes as `{ serialized }`.
    *
    * Ids are held whole in memory before the object is written: the generation's bitmaps and a buffer of up to about 28
