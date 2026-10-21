@@ -7,8 +7,9 @@ import { describe, expect, it } from 'vitest';
 /**
  * The rule that turns the engine bench's paired samples into a verdict (`bench/lib/codec-verdict.cjs`), held at its
  * boundaries, and the committed evidence (`bench/ts-codec-comparison-results.json`) held to it: every median, quartile
- * and verdict in the file is recomputed from the rounds beside it, and every figure of the report is looked up in the
- * file, so the report cannot say what its evidence does not. Nothing here times anything.
+ * and verdict in the file is recomputed from the rounds beside it, and every figure of every table of the report, its
+ * module-load sentence and its per-kind memory differences are looked up in the file (the other figures in its prose are
+ * not). Nothing here times anything.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
@@ -128,6 +129,14 @@ describe('the verdict rule', () => {
 
 type Cell = Summary & { rounds: Round[]; verdict?: string };
 type ReadBasis = Cell & { verdict: string; answersAgree: boolean; loadMax: number };
+type Spread = { median: number; min: number; max: number };
+type MemoryFigures = {
+  chunks: number;
+  heapExternal: Spread;
+  rss: Spread;
+  rssBelowHeap: number;
+  samples: number[][];
+};
 type Doc = {
   rules: { minRounds: number; roundFields: string[]; orders: number[][] };
   commit: string;
@@ -153,10 +162,11 @@ type Doc = {
     coldProcess: { fields: Record<string, Cell> };
   };
   memory: {
+    repeats: number;
     rows: {
       dataset: string;
-      native: { heapExternal: { median: number }; samples: number[][] };
-      typescript: { heapExternal: { median: number }; samples: number[][] };
+      native: MemoryFigures;
+      typescript: MemoryFigures;
     }[];
   };
 };
@@ -230,7 +240,7 @@ describe('the committed evidence', () => {
     expect(doc.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 
-  it('has every figure of the report’s read, write and start-up tables in the file', () => {
+  it('has every figure of the report’s tables, the module-load sentence and the memory differences in the file', () => {
     const report = readFileSync(join(ROOT, 'bench', 'ts-codec-comparison.md'), 'utf8');
     const rows = report
       .split('\n')
@@ -241,16 +251,25 @@ describe('the committed evidence', () => {
           .slice(1, -1)
           .map((c) => c.trim()),
       );
+    // Printed from the rounds' own medians, not from the four-place ratios stored beside them, so a figure is rounded once.
     const pct = (x: number) => `${x >= 0 ? '+' : '-'}${Math.abs(x * 100).toFixed(1)}%`;
+    const ratios = (cell: { rounds: Round[] }) =>
+      summarise(cell.rounds).verdictInputs as [number, number];
+    const ts = (cell: { rounds: Round[] }) => pct(ratios(cell)[0]);
+    const control = (cell: { rounds: Round[] }) => pct(ratios(cell)[1]);
+    const time = (ns: number) =>
+      ns < 1e6 ? `${(ns / 1e3).toFixed(1)} us` : `${(ns / 1e6).toFixed(1)} ms`;
     for (const c of doc.reads.cells) {
       const row = rows.find((r) => r[0] === c.dataset && r[1] === c.op && r.length > 8);
       expect(row, `${c.dataset} ${c.op}`).toBeDefined();
-      expect(row!.slice(4), `${c.dataset} ${c.op}`).toEqual([
-        pct(c.perProcess.typescriptVsNative),
-        pct(c.perProcess.controlVsNative),
+      expect(row!.slice(2), `${c.dataset} ${c.op}`).toEqual([
+        time(c.perProcess.nativeMedian),
+        time(c.perProcess.typescriptMedian),
+        ts(c.perProcess),
+        control(c.perProcess),
         c.perProcess.verdict,
-        pct(c.inProcess.typescriptVsNative),
-        pct(c.inProcess.controlVsNative),
+        ts(c.inProcess),
+        control(c.inProcess),
         c.inProcess.verdict,
         String(c.perProcess.loadMax),
       ]);
@@ -258,18 +277,74 @@ describe('the committed evidence', () => {
     for (const o of doc.reads.perOp) {
       const row = rows.find((r) => r[0] === o.op && r.length === 8);
       expect(row, o.op).toBeDefined();
-      expect(row![4]).toBe(o.perProcess.verdict);
-      expect(row![3]).toBe(pct(o.perProcess.worstControl));
+      const mine = doc.reads.cells.filter((c) => c.op === o.op);
+      const worst = (b: 'perProcess' | 'inProcess') => [
+        pct(Math.max(...mine.map((c) => ratios(c[b])[0]))),
+        pct(signedWorst(mine.map((c) => ratios(c[b])[1]))),
+        o[b].verdict,
+      ];
+      expect(row!.slice(1), o.op).toEqual([
+        String(mine.length),
+        ...worst('perProcess'),
+        ...worst('inProcess'),
+      ]);
     }
     for (const w of doc.write.rows) {
       const row = rows.find((r) => r[0] === w.op && r.length === 6);
       expect(row, w.op).toBeDefined();
-      expect(row!.slice(3)).toEqual([pct(w.typescriptVsNative), pct(w.controlVsNative), w.verdict]);
+      expect(row!.slice(1), w.op).toEqual([
+        time(w.nativeMedian),
+        time(w.typescriptMedian),
+        ts(w),
+        control(w),
+        w.verdict,
+      ]);
     }
     for (const [name, f] of Object.entries(doc.startup.coldProcess.fields)) {
       const row = rows.find((r) => r[0] === name && r.length === 5);
       expect(row, name).toBeDefined();
-      expect(row!.slice(3)).toEqual([pct(f.typescriptVsNative), pct(f.controlVsNative)]);
+      expect(row!.slice(1), name).toEqual([
+        String(f.nativeMedian),
+        String(f.typescriptMedian),
+        ts(f),
+        control(f),
+      ]);
+    }
+    for (const m of doc.memory.rows)
+      for (const k of ['native', 'typescript'] as const) {
+        const row = rows.find((r) => r[0] === m.dataset && r[2] === k && r.length === 6);
+        expect(row, `${m.dataset} ${k}`).toBeDefined();
+        const x = m[k];
+        const span = (f: { median: number; min: number; max: number }) =>
+          `${f.median} (${f.min} to ${f.max})`;
+        expect(row!.slice(1), `${m.dataset} ${k}`).toEqual([
+          String(x.chunks),
+          k,
+          span(x.heapExternal),
+          span(x.rss),
+          `${x.rssBelowHeap} of ${doc.memory.repeats}`,
+        ]);
+      }
+    // The prose is wrapped, so a sentence is looked up with its line breaks as single spaces.
+    const prose = report.replace(/\s+/g, ' ');
+    const mod = doc.startup.moduleLoadMs;
+    const ms = (x: number) => `${x.toFixed(1)} ms`;
+    for (const figure of [
+      ms(mod.nativeMedian),
+      ms(mod.typescriptMedian),
+      `(${pct(ratios(mod)[0])}; the control, native again, ${control(mod)})`,
+    ])
+      expect(prose, 'module load').toContain(figure);
+    // The memory text names the difference between the codecs, per kind, and the one row whose resident ranges do not overlap.
+    const grouped = (n: number) => n.toLocaleString('en-US');
+    for (const m of doc.memory.rows) {
+      const diff = m.typescript.heapExternal.median - m.native.heapExternal.median;
+      expect(prose, `memory difference ${m.dataset}`).toContain(`${m.dataset} ${grouped(diff)}`);
+      const ratio = (m.typescript.rss.median / m.native.rss.median).toFixed(2);
+      expect(prose, `memory ratio ${m.dataset}`).toContain(`${m.dataset} ${ratio}`);
+      const disjoint =
+        m.typescript.rss.max < m.native.rss.min || m.native.rss.max < m.typescript.rss.min;
+      expect(disjoint, `resident ranges of ${m.dataset}`).toBe(m.dataset === 'spread8k');
     }
   });
 });

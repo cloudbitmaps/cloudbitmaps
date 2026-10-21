@@ -7,8 +7,8 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * Under `CR_CALIBRATE_CODEC` the calibration harness takes its stores from one bundle of this checkout's sources, with
- * the store package's codec switch set. A harness file that imported `@cloudbitmaps/roaring` or `@cloudbitmaps/s3`
- * directly would count, check or construct against the installed published package instead, and the run would claim a
+ * the store package's codec switch set. A harness file that imported a library package (`@cloudbitmaps/roaring`, `@cloudbitmaps/s3`, the
+ * core or another driver) directly would count, check or construct against the installed published package instead, and the run would claim a
  * codec its numbers did not come from. So the harness reaches those packages only through `packageOf`, and this holds
  * it to that by text, over every file the harness runs from.
  */
@@ -21,7 +21,7 @@ const DEFINES_THE_FALLBACK = 'bench/lib/codec-engine.cjs';
 
 /** Whether a source text reaches a library package by `import(...)`, `require(...)` or `from '...'`, not through `packageOf`. */
 const importsDirectly = (text: string): boolean =>
-  /(?:\bimport\s*\(|\brequire\s*\(|\bfrom\s)\s*['"`]@cloudbitmaps\/(?:roaring|s3)(?:\/[^'"`]*)?['"`]/.test(
+  /(?:\bimport\s*\(|\brequire\s*\(|\bfrom\s)\s*['"`]@cloudbitmaps\/(?!tools['"`/])[a-z0-9-]+(?:\/[^'"`]*)?['"`]/.test(
     text,
   );
 
@@ -35,6 +35,9 @@ describe('the harness reaches the library only through packageOf', () => {
       "import { S3Storage } from '@cloudbitmaps/s3';",
       "await import( '@cloudbitmaps/s3' )",
       "require('@cloudbitmaps/roaring/package.json')",
+      "await import('@cloudbitmaps/core')",
+      "import { GcsStorage } from '@cloudbitmaps/gcs';",
+      "require('@cloudbitmaps/azure-blob')",
     ])
       expect(importsDirectly(planted), planted).toBe(true);
   });
@@ -44,6 +47,7 @@ describe('the harness reaches the library only through packageOf', () => {
       "const { CloudRoaring } = await packageOf('roaring');",
       "const { S3Storage } = await packageOf('s3');",
       "({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/tools'));",
+      "await import('@cloudbitmaps/tools/package.json')",
       '// the installed @cloudbitmaps/roaring does not collect by name',
       "refuse('the installed @cloudbitmaps/roaring is too old');",
       "const rel = 'node_modules/@cloudbitmaps/roaring/package.json';",

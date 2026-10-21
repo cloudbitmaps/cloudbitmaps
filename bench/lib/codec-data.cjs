@@ -3,8 +3,8 @@
  * times, from a seeded generator, so every process and every run builds the same bytes. Pure.
  *
  * A data set is a number of chunks of one kind: `dense` (a bitset in every chunk), `sparse` (arrays), `runs`, `mixed`
- * (the three kinds in turn), `spread` (16 ids in chunks drawn from the whole key space, the shape of the largest load
- * the research used) and `spread8k` (the same shape; a separate name so a scale can give it fewer chunks).
+ * (the three kinds in turn), `spread` (16 ids in chunks drawn from the whole key space: a million ids over 62,500
+ * chunks, the largest load the comparison times) and `spread8k` (the same shape; a separate name so a scale can give it fewer chunks).
  */
 'use strict';
 
