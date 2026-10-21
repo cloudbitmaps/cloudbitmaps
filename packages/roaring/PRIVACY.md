@@ -104,7 +104,9 @@ again, the row changes a second time.
 
 Two of the rules while you erase. **Do not load a segment while erasing from it**: a load that lands after the rewrite carries whatever
 its source held, and the library cannot know that source was meant to exclude the id — fix the source first, or
-quiesce loads of the affected segments for the duration. A writer that lands *during* the rewrite is caught and
+quiesce loads of the affected segments for the duration, and let loads already running finish before you start. An erasure
+that found the id renews the segment's row on every path, so a load that read the row before the erasure began is refused
+(`superseded`) and never publishes what its source held; a load that starts during the erasure is not covered. A writer that lands *during* the rewrite is caught and
 the entry says `erased: false, note: 'superseded'` — because the publish was refused **by that fence**, because
 a racing **erasure** (which collects with `keep: 0`) deleted the generation the rewrite was still streaming, or
 because an operator's `rollback` moved the pointer while the call was deleting generations above it. When two

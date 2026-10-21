@@ -806,13 +806,16 @@ describe('the write is made only when the ledger names something to delete', () 
   it.each([
     ['nothing' as const, 7],
     ['unusable' as const, 8],
-  ])('ledger names %s: no compare-and-swap, %i registry reads', async (shape, gets) => {
-    const w = await names(shape);
-    const c = counting(w.registry);
-    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
-    expect(res).toMatchObject({ erased: true, collected: [0] });
-    expect(c.tally).toEqual({ gets, attempts: 0, landed: 0 });
-  });
+  ])(
+    'ledger names %s: one compare-and-swap, a renewal, and %i registry reads',
+    async (shape, gets) => {
+      const w = await names(shape);
+      const c = counting(w.registry);
+      const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
+      expect(res).toMatchObject({ erased: true, collected: [0] });
+      expect(c.tally).toEqual({ gets, attempts: 1, landed: 1 });
+    },
+  );
 
   it('ledger names the holder: one compare-and-swap, and the ledger loses it before the delete', async () => {
     const w = await names('holder');
@@ -884,17 +887,17 @@ describe('what an erasure costs at the store an object-store registry is over', 
       storage: { list: 3, getTail: 2, getRange: 2, delete: 1 },
     });
   });
-  it('an id held only by an older generation, with a usable ledger that does not name it: 7 reads and no write', async () => {
+  it('an id held only by an older generation, with a usable ledger that does not name it: 8 reads and 1 write, a renewal', async () => {
     expect(await requests('unnamed')).toEqual({
-      registry: [7, 0],
+      registry: [8, 1],
       storage: { list: 3, getTail: 2, getRange: 2, delete: 1 },
     });
   });
-  it('an id held only by an older generation, on a row with no usable ledger: 8 reads and no write, and the current generation is opened again', async () => {
+  it('an id held only by an older generation, on a row with no usable ledger: 9 reads and 1 write, a renewal, and the current generation is opened again', async () => {
     // No ledger vouches for the generation the call found clean, so the receipt opens it again: one tail read and one
     // chunk read more than where the row has a ledger.
     expect(await requests('no-ledger')).toEqual({
-      registry: [8, 0],
+      registry: [9, 1],
       storage: { list: 3, getTail: 3, getRange: 3, delete: 1 },
     });
   });
@@ -973,7 +976,8 @@ describe('a row with no usable ledger that a load starts between the fence and t
     expect(res).toMatchObject({ erased: true });
     expect(await holdersOf(w.storage, 999)).toEqual([]);
     expect(await ledgerOf(w.registry)).not.toContain(0);
-    expect(c.tally.landed).toBe(1);
+    // The first fence renews the row, since the ledger named nothing; the second prunes what the load's ledger names.
+    expect(c.tally.landed).toBe(2);
     // The second collection spares the generation the call found clean, which the load's window names.
     expect(await bucket(w)).toEqual([2, 3]);
   });

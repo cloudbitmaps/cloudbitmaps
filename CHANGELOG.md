@@ -11,6 +11,16 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An erasure that found the id now refuses every load that read the row before it began.**
+  When the only holder was an object below the pointer that the row's ledger never named (a crashed load's
+  object), the erasure wrote nothing to the row, so a load already in flight, whose own input held the id,
+  published it and the id was served again after `erased: true`; on every other path the same load was refused
+  as `superseded`. The erasure now renews the row's `pointerId` (one extra registry write, on that path only)
+  so the guarantee is the same everywhere. A load that does this is refused as `superseded`, as on the other paths. Loads that start
+  during an erasure are still not covered: pause them, and let running loads finish before you start.
+
 ## [0.23.0] — 2026-10-20
 
 ### Breaking

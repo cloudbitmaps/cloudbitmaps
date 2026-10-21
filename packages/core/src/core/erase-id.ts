@@ -949,8 +949,14 @@ function doomedGenerations(
  * collection leaves current. The current generation is never removed. A row with no usable ledger names nothing, and
  * is not written for it.
  *
- * **The renewal** is only for the deletes by name (a holder above the pointer, one sealed under a key the
- * row does not hold, any holder on a row with no pointer, where every object is a first load's), and the pointer is
+ * **The renewal** is made where no other write fences a load in flight: the deletes by name (a holder above the pointer,
+ * one sealed under a key the row does not hold, any holder on a row with no pointer, where every object is a first
+ * load's), and a sweep that found a searched holder when the ledger names nothing to prune. A holder below the pointer
+ * needs no renewal to keep a load from publishing that number, but a load that read the row before the call began
+ * carries its own input, which may hold the id, and only a write of the row refuses it. A prune is such a write, so
+ * with one no renewal is added. So every call that found the id writes the row, and every load that read the row before
+ * it began is refused. (When a load has already moved the pointer past the holders, that move refused every load that
+ * read the row before it, and no renewal is made.) The pointer is
  * named at the value it has ({@link renewPointer}), which changes nothing a read resolves and renews the row's
  * `pointerId`, the value the load's fence compares. A load numbers its object above the pointer (above everything in
  * the bucket, on a row with no pointer) and publishes it with a compare-and-swap fenced on the row it read, which a
@@ -962,8 +968,8 @@ function doomedGenerations(
  * is renewed. A pointer that moved forward is no obstacle to a prune alone, since the collection below the pointer is
  * bounded by the pointer it reads.
  *
- * **No write when none is owed.** The call goes on under the row it read when the ledger names nothing to remove and,
- * where a renewal is needed, another writer's renewal landed after this call listed the bucket. A load that wrote a
+ * **No write when none is owed.** The call goes on under the row it read when the ledger names nothing to remove and
+ * another writer's renewal landed after this call listed the bucket, since a renewal is needed, another writer's renewal landed after this call listed the bucket. A load that wrote a
  * holder the listing found read the row before it wrote, so before that renewal, and its fence refuses it; one
  * renewal that landed before the listing does not license a delete, since a load could have read that row and written a
  * holder since. That is why the row is read here, after the listing, and compared with the row each later read finds. A
@@ -1039,7 +1045,10 @@ async function fence(c: EraseCall, plan: FencePlan): Promise<Fenced> {
     const ledger = usableKnownGens(row);
     const doomed = doomedGenerations(c, plan, byName, ledger, pointer);
     const named = ledger !== undefined && ledger.some((e) => doomed.has(e.generation));
-    const renew = byName.length > 0;
+    // A sweep that found a holder owes the row a write when nothing else has fenced the loads that read it before the
+    // call began: a prune is such a write, and so is any write of another field since the call read the row.
+    const sweepOwes = plan.sweeps && !pastHolders && !named && onlyLeasesDiffer(record, row);
+    const renew = byName.length > 0 || sweepOwes;
     const renewedAfter = held && row.pointerId !== first!.pointerId;
     if (!named && (!renew || renewedAfter)) {
       c.premise = row;
