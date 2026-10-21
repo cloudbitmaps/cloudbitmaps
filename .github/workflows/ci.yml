@@ -24,7 +24,7 @@ jobs:
     # GitHub-hosted, everywhere, with no switch to a self-hosted runner: one would be pointless (Actions is free
     # on public repos) and unsafe (a fork's pull request would execute on the runner's host).
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -69,8 +69,9 @@ jobs:
       - run: python3 scripts/site-links.py
       - run: pnpm typecheck
       - run: pnpm test
-        # A stalled test run ends the job in 15 minutes (a normal one takes 5 to 8), not at the job limit.
-        timeout-minutes: 15
+        # A stalled test run ends the job in 20 minutes, not at the job limit. A normal one takes 8 to 12: the store's
+        # suites run twice, once on each codec.
+        timeout-minutes: 20
       - run: pnpm build
       # `pnpm test` runs before the build, so the spawned-bin tests skip there; here they run against the built bin
       # and fail if it is missing.
