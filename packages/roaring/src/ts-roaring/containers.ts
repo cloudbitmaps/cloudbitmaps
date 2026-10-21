@@ -14,6 +14,7 @@
  * bitset, so a mutating path never has to edit runs. This module is the simple form: a combine of two containers goes
  * through bitset words and picks the kind by cardinality. Speed work lands on top of it, not in it.
  */
+import { ARRAY_MAX_CARDINALITY } from '../portable/layout';
 
 /** A container of sorted `u16` values. */
 export const ARRAY = 0;
@@ -23,8 +24,6 @@ export const BITSET = 1;
 export const RUN = 2;
 type Kind = typeof ARRAY | typeof BITSET | typeof RUN;
 
-/** An array holds at most this many values; one with more is a bitset. */
-const ARRAY_MAX = 4_096;
 /** 32-bit words in a bitset container. */
 export const WORDS = 2_048;
 /** Bytes of a bitset container's body. */
@@ -87,7 +86,7 @@ function setRange(words: Uint32Array, start: number, end: number): void {
  * above. `lows` is kept as the array's storage when it becomes one.
  */
 export function fromSortedLows(lows: Uint16Array, count: number): Container {
-  if (count <= ARRAY_MAX) return arrayContainer(lows, count);
+  if (count <= ARRAY_MAX_CARDINALITY) return arrayContainer(lows, count);
   const words = new Uint32Array(WORDS);
   for (let i = 0; i < count; i++) {
     const v = lows[i] as number;
@@ -101,7 +100,7 @@ function fromWords(words: Uint32Array): Container | null {
   let card = 0;
   for (let i = 0; i < WORDS; i++) card += popcount32(words[i] as number);
   if (card === 0) return null;
-  if (card > ARRAY_MAX) return bitsetContainer(words, card);
+  if (card > ARRAY_MAX_CARDINALITY) return bitsetContainer(words, card);
   const out = new Uint16Array(card);
   wordsToLows(words, out);
   return arrayContainer(out, card);
@@ -161,7 +160,7 @@ function toWords(c: Container): Uint32Array {
 /** An array or a bitset (by cardinality) with a run container's values; any other container as it is. */
 function demote(c: Container): Container {
   if (c.kind !== RUN) return c;
-  if (c.card > ARRAY_MAX) return bitsetContainer(toWords(c), c.card);
+  if (c.card > ARRAY_MAX_CARDINALITY) return bitsetContainer(toWords(c), c.card);
   const out = new Uint16Array(c.card);
   toLows(c, out);
   return arrayContainer(out, c.card);
@@ -211,7 +210,7 @@ export function containerAdd(c: Container, low: number): Container {
     words[low >>> 5] = (words[low >>> 5] as number) | (1 << (low & 31));
     return bitsetContainer(words, plain.card + 1);
   }
-  if (plain.card === ARRAY_MAX) {
+  if (plain.card === ARRAY_MAX_CARDINALITY) {
     const words = toWords(plain);
     words[low >>> 5] = (words[low >>> 5] as number) | (1 << (low & 31));
     return bitsetContainer(words, plain.card + 1);
@@ -221,7 +220,7 @@ export function containerAdd(c: Container, low: number): Container {
   if (u16.length > plain.len) {
     u16.copyWithin(at + 1, at, plain.len);
   } else {
-    u16 = new Uint16Array(Math.min(ARRAY_MAX, Math.max(8, plain.len * 2)));
+    u16 = new Uint16Array(Math.min(ARRAY_MAX_CARDINALITY, Math.max(8, plain.len * 2)));
     u16.set(plain.u16.subarray(0, at));
     u16.set(plain.u16.subarray(at, plain.len), at + 1);
   }
@@ -241,7 +240,7 @@ export function containerRemove(c: Container, low: number): Container | null {
     const words = plain.words;
     words[low >>> 5] = (words[low >>> 5] as number) & ~(1 << (low & 31));
     const card = plain.card - 1;
-    if (card > ARRAY_MAX) return bitsetContainer(words, card);
+    if (card > ARRAY_MAX_CARDINALITY) return bitsetContainer(words, card);
     const out = new Uint16Array(card);
     wordsToLows(words, out);
     return arrayContainer(out, card);
@@ -334,7 +333,7 @@ function toRun(c: Container, runs: number): Container {
  */
 export function optimize(c: Container): Container {
   const runs = runCount(c);
-  const plain = c.card <= ARRAY_MAX ? 2 * c.card : BITSET_BYTES;
+  const plain = c.card <= ARRAY_MAX_CARDINALITY ? 2 * c.card : BITSET_BYTES;
   if (2 + 4 * runs < plain) return c.kind === RUN ? c : toRun(c, runs);
   return demote(c);
 }

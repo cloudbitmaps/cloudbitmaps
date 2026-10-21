@@ -140,22 +140,16 @@ class TsBitmap implements CodecBitmap {
 
   /**
    * The set as storage chunks, optimized first: each payload is the portable bytes of a one-container bitmap holding
-   * that chunk's low 16 bits. Payloads are built one per step, so the bitmap must not change while they are read.
+   * that chunk's low 16 bits. Every payload is written before this returns, so a change to the bitmap while the
+   * chunks are read cannot alter bytes already promised.
    */
   encodeChunks(): Iterable<EncodedChunk> {
     this.optimize();
-    const keys = this.#keys.slice();
-    const conts = this.#conts.slice();
-    return (function* () {
-      for (let i = 0; i < conts.length; i++) {
-        const c = conts[i] as Container;
-        yield {
-          chunkKey: keys[i] as number,
-          payload: serializeContainers([0], [c]),
-          cardinality: c.card,
-        };
-      }
-    })();
+    return this.#conts.map((c, i) => ({
+      chunkKey: this.#keys[i] as number,
+      payload: serializeContainers([0], [c]),
+      cardinality: c.card,
+    }));
   }
 
   maximum(): number | undefined {

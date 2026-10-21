@@ -10,10 +10,13 @@
  *
  * Reading goes through {@link parsePortableLayout}, which holds every rule a reader refuses on (bounds, ordering, runs,
  * cardinalities, offsets), so there is one code path for what is a bitmap and this module only copies bytes the layout
- * has already vouched for.
+ * has already vouched for, on a private copy of the input.
  */
 import { IntegrityError } from '@cloudbitmaps/core';
 import {
+  NO_OFFSET_THRESHOLD,
+  SERIAL_COOKIE,
+  SERIAL_COOKIE_NO_RUNCONTAINER,
   parsePortableLayout,
   ARRAY as LAYOUT_ARRAY,
   BITMAP as LAYOUT_BITMAP,
@@ -29,11 +32,6 @@ import {
   runContainer,
   type Container,
 } from './containers';
-
-const COOKIE_NO_RUNS = 12_346;
-const COOKIE_RUNS = 12_347;
-/** A run-cookie bitmap carries an offset header from this many containers up. */
-const OFFSETS_FROM = 4;
 
 /** The size of a container's body on the wire. */
 function bodySize(c: Container): number {
@@ -60,7 +58,7 @@ export function serializeContainers(
 ): Uint8Array {
   const n = conts.length;
   const hasRun = conts.some((c) => c.kind === RUN);
-  const offsets = !hasRun || n >= OFFSETS_FROM;
+  const offsets = !hasRun || n >= NO_OFFSET_THRESHOLD;
   let at = hasRun ? 4 + ((n + 7) >>> 3) : 8;
   const describeAt = at;
   at += 4 * n;
@@ -72,12 +70,12 @@ export function serializeContainers(
   const out = new Uint8Array(total);
   const view = new DataView(out.buffer);
   if (hasRun) {
-    view.setUint32(0, COOKIE_RUNS | ((n - 1) << 16), true);
+    view.setUint32(0, SERIAL_COOKIE | ((n - 1) << 16), true);
     conts.forEach((c, i) => {
       if (c.kind === RUN) out[4 + (i >>> 3)] = (out[4 + (i >>> 3)] as number) | (1 << (i & 7));
     });
   } else {
-    view.setUint32(0, COOKIE_NO_RUNS, true);
+    view.setUint32(0, SERIAL_COOKIE_NO_RUNCONTAINER, true);
     view.setUint32(4, n, true);
   }
   for (let i = 0; i < n; i++) {
@@ -104,7 +102,11 @@ interface Decoded {
  *
  * @throws {IntegrityError} for every shape {@link parsePortableLayout} refuses.
  */
-export function decodeContainers(bytes: Uint8Array): Decoded {
+export function decodeContainers(input: Uint8Array): Decoded {
+  // The bytes are copied before they are checked, and the checked copy is the one read: a buffer another thread is
+  // still writing (a shared one) could otherwise pass the check and then hold different bytes when they are copied
+  // into containers, leaving an unsorted array or a bitset whose cardinality is not its bit count.
+  const bytes = input.slice();
   const layout = parsePortableLayout(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const keys: number[] = [];
