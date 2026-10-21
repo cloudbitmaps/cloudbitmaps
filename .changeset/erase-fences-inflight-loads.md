@@ -6,4 +6,4 @@
 '@cloudbitmaps/azure-blob': patch
 ---
 
-Every load that read the row before an erasure that found the id began is refused, by the erasure's write to the row or by another write that already changed its token.
+Every load that read the row before an erasure that found the id began is refused, by the erasure's write to the row or by a write since the erasure read the row that changed its `pointerId` or its ledger.

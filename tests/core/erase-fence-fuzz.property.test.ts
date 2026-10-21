@@ -4,6 +4,7 @@ import { openGenerationReader } from '@/core/crbm-open';
 import { eraseIdFromSegment, type EraseIdResult } from '@/core/erase-id';
 import { NotFoundError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
+import { clearSegmentRetention, setSegmentRetention } from '@/core/retention';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
@@ -16,7 +17,8 @@ import { heavy } from '../helpers/strength';
  * An erasure of X, and one to three loads that read the row before it began and carry X in their own input, over a
  * segment with a history of crashed and published generations of X and of another id Y (and sometimes an orphan above
  * the pointer). The loads' object writes are held; one hook fires at a random registry read of the erasure (an erasure
- * of Y, a generation published by another writer, a second erasure of X, or a full load); the loads' writes are
+ * of Y, a generation published by another writer, a second erasure of X, a full load, or a policy write: a retention
+ * expiry or a residency set and then cleared again, so the row is put back as the loads read it); the loads' writes are
  * released at a random read; and on a quarter of the runs the first compare-and-swap of the erasure lands with its
  * answer lost.
  *
@@ -26,8 +28,9 @@ import { heavy } from '../helpers/strength';
  *  2. with no hook and no lost answer, an erasure that found the id and did not erase it was refused as `'superseded'`.
  *
  * (1) is what an erasure that found the id promises a load that read the row before it began: that load is refused,
- * by the erasure's own write or by another write that already changed the row's token. Without the renewal on the path
- * that owed the ledger no prune, about 3% of these runs serve X after `erased: true`.
+ * by the erasure's own write or by another write that changed the row's `pointerId` or ledger, which no later write puts
+ * back. Without the renewal on the path that owed the ledger no prune, about 3.3% of these runs serve X after
+ * `erased: true`; where a retention or residency write counts as that other write, a set and a clear of it undo it.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
@@ -180,7 +183,29 @@ async function run(seed: number): Promise<{ erased: boolean; refused: boolean }>
   }
   const hookAt = 1 + pick(10);
   const releaseAt = 1 + pick(14);
-  const hook = pick(5);
+  const hook = pick(6);
+  const clearAt = hookAt + pick(8);
+  const policy = pick(2) === 0 ? 'retention' : 'residency';
+  let policySet = false;
+  let policyCleared = false;
+  const setPolicy = async (): Promise<void> => {
+    policySet = true;
+    if (policy === 'retention')
+      await setSegmentRetention(SEG, { registry }, { expiresAt: Date.now() + 86_400_000 });
+    else {
+      const row = await registry.get(SEG);
+      if (row !== null)
+        await registry.compareAndSwap(SEG, row.token, { residency: { region: 'x' } });
+    }
+  };
+  const clearPolicy = async (): Promise<void> => {
+    policyCleared = true;
+    if (policy === 'retention') await clearSegmentRetention(SEG, { registry });
+    else {
+      const row = await registry.get(SEG);
+      if (row !== null) await registry.compareAndSwap(SEG, row.token, { residency: undefined });
+    }
+  };
   const lost = pick(4) === 0;
   shape.push(`hook${hook}@${hookAt} release@${releaseAt} lost=${lost} loads=${nLoads}`);
   let hooked = false;
@@ -195,6 +220,8 @@ async function run(seed: number): Promise<{ erased: boolean; refused: boolean }>
   if (lost) faulty.arm('compareAndSwap', 'a', undefined, 1);
   const eraseReg = onGet(faulty, async (n) => {
     if (n === releaseAt) mayWrite.resolve();
+    if (hook === 5 && policySet && !policyCleared && n >= clearAt)
+      await clearPolicy().catch(() => undefined);
     if (n !== hookAt || hooked) return;
     hooked = true;
     if (hook === 1) await eraseIdFromSegment(SEG, Y, depsOf(registry)).catch(() => undefined);
@@ -210,6 +237,7 @@ async function run(seed: number): Promise<{ erased: boolean; refused: boolean }>
         threw: String(e),
       }));
     else if (hook === 4) await loadSegment(SEG, [Y, 62], depsOf(registry)).catch(() => undefined);
+    else if (hook === 5) await setPolicy().catch(() => undefined);
   });
   let res: Answer;
   try {
@@ -217,6 +245,8 @@ async function run(seed: number): Promise<{ erased: boolean; refused: boolean }>
   } catch (e) {
     res = { threw: String(e) };
   }
+  // A policy set that the erasure's reads did not outlast is cleared before the loads' writes land.
+  if (hook === 5 && policySet && !policyCleared) await clearPolicy().catch(() => undefined);
   mayWrite.resolve();
   await Promise.all(loads);
   const second = await other;
@@ -237,15 +267,19 @@ describe('an erasure and the loads that read the row before it began, in a rando
   it('never serves the erased id after erased: true', async () => {
     let runs = 0;
     let erased = 0;
+    let refused = 0;
     await fc.assert(
       fc.asyncProperty(fc.integer({ min: 1, max: 2 ** 31 - 1 }), async (seed) => {
         const out = await run(seed);
         runs += 1;
         if (out.erased) erased += 1;
+        if (out.refused) refused += 1;
       }),
       { numRuns: heavy('eraseFenceFuzzRuns') },
     );
     // The run is not vacuous: most runs erase.
     expect(erased).toBeGreaterThan(runs / 10);
+    // And some runs end in the refusal assertion 2 checks.
+    if (runs >= 1000) expect(refused).toBeGreaterThan(0);
   }, 900_000);
 });

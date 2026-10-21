@@ -8,7 +8,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
-import { setSegmentRetention } from '@/core/retention';
+import { clearSegmentRetention, setSegmentRetention } from '@/core/retention';
 
 /**
  * An erasure that found the id refuses every load that read the row before it began, whichever generation held it.
@@ -146,6 +146,7 @@ async function race(
   id: number,
   eraseStorage: IStorageDriver = storage,
   eraseRegistry: IRegistryDriver = registry,
+  afterErase: () => Promise<void> = async () => {},
 ) {
   const readRow = deferred();
   const mayWrite = deferred();
@@ -162,6 +163,7 @@ async function race(
     entropy: testEntropy,
     codec: roaringCodec,
   });
+  await afterErase();
   mayWrite.resolve(); // the load's object lands after the erasure's last look at the bucket
   const loaded = await load;
   return { erased, loaded, served: await served(storage, registry) };
@@ -258,7 +260,7 @@ describe('an erasure that answers erased: true, and a load that read the row bef
     expect(after.knownGens).toEqual(before.knownGens);
   });
 
-  it('F: another writer changed a field but the leases since the call began, which refuses the load; the erasure adds no write', async () => {
+  it('F: another writer changed a field but the leases since the call began, which refuses the load; the erasure adds one write', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [7], {
@@ -280,7 +282,31 @@ describe('an erasure that answers erased: true, and a load that read the row bef
     expect(erased).toMatchObject({ erased: true, fromGeneration: 0 });
     expect(loaded).toMatchObject({ published: false, reason: 'superseded' });
     expect(ids).toEqual([5]);
-    expect(counts.compareAndSwap ?? 0).toBe(0);
+    expect(counts.compareAndSwap).toBe(1);
+  });
+
+  it("F': the retention write is cleared again before the load's write, which restores the row the load read; the load is still refused", async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [7], {
+      registry,
+      publish: false,
+    });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [5], { registry });
+    const mid = afterRead(registry, 1, async () => {
+      await setSegmentRetention(SEG, { registry }, { expiresAt: Date.now() + 86_400_000 });
+    });
+
+    const {
+      erased,
+      loaded,
+      served: ids,
+    } = await race(storage, registry, [7, 5, 3, 4], 7, storage, mid, async () => {
+      await clearSegmentRetention(SEG, { registry });
+    });
+    expect(erased).toMatchObject({ erased: true, fromGeneration: 0 });
+    expect(loaded).toMatchObject({ published: false, reason: 'superseded' });
+    expect(ids).toEqual([5]);
   });
 
   it('G: a load moved the pointer past the holder since the call began, which refuses the load; the erasure adds no write', async () => {

@@ -19,9 +19,10 @@ so, and so do the module headers in the code.
   published it and the id was served again after `erased: true`; on every other path the same load was refused
   as `superseded`. The erasure now renews the row's `pointerId` (one extra registry write, on that path only)
   so the guarantee is the same everywhere: every load that read the row before the erasure began is refused, by the
-  erasure's write or by another write that already changed the row's token (the renewal is skipped when a prune
-  is made, when another writer changed a field other than the leases since the call read the row, and when a load
-  already moved the pointer past the holders). A load that does this is refused as `superseded`, as on the other
+  erasure's write or by a write that changed the row's `pointerId` or its ledger since the call read it (the renewal
+  is skipped when a prune is made, when a load or a rollback moved the pointer or another erasure renewed or pruned
+  since the call read the row; a write of the retention or residency is not such a write, since a later write can undo
+  it). A load that does this is refused as `superseded`, as on the other
   paths. Loads that start during an erasure are still not covered: pause them, and let running loads finish before
   you start.
 

@@ -262,8 +262,8 @@ each, which `eraseSubject`'s per-op budget does not charge again (on a segment w
 object it found clean, with no registry read added). An erasure that finds the id only
 in generations below the pointer, on a row whose ledger of known generations names what it deletes, writes the row once
 before its first delete, to take those names out of [the ledger](correctness.md#ledger-loses-what-it-deletes): 8 registry reads and 1 write; where the ledger names nothing it deletes, the
-write renews the row's `pointerId` instead (8 reads and 1 write, one write more than before), and on a row with no usable
-ledger it is 9 reads and 1 write, which also opens the current generation again; a call whose row another write
+write renews the row's `pointerId` instead (8 reads and 1 write), and on a row with no usable
+ledger it is 9 reads and 1 write, which also opens the current generation again; a call whose row's `pointerId` or ledger another write
 already changed since it read it makes no write of its own; a rewrite of the current generation is 10 reads and 1 write (counted at the registry the S3,
 GCS and Azure Blob drivers share, over an in-memory store, for a segment with one older generation that holds the
 id). Each of these is paid once per affected segment,

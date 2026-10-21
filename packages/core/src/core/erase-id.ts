@@ -149,7 +149,7 @@ import {
 } from './generation-gc';
 import { UNANSWERED_BASE_MS, UNANSWERED_RESENDS, leaseChurn, onlyLeasesDiffer } from './leases';
 import { renewPointer, renewsPointer } from './pointer-id';
-import { pruneKnown, usableKnownGens } from './known-generations';
+import { pruneKnown, sameKnownGens, usableKnownGens } from './known-generations';
 import { assertRegistryCanWrite } from './ports';
 import { checkRequireEncryption } from './check';
 import type {
@@ -954,10 +954,14 @@ function doomedGenerations(
  * load's), and a sweep that found a searched holder when the ledger names nothing to prune. A holder below the pointer
  * needs no renewal to keep a load from publishing that number, but a load that read the row before the call began
  * carries its own input, which may hold the id, and only a write of the row refuses it. A prune is such a write, so
- * with one no renewal is added. So every load that read the row before the call began is refused, by this call's
- * write or by another write that already changed the token: the renewal is skipped when a prune is made, when another
- * writer changed a field but the leases since the call read the row, and when a load has already moved the pointer
- * past the holders (that move refused every load that read the row before it). The pointer is
+ * with one no renewal is added. Without a prune, the renewal is skipped only where a write since the call read the row
+ * already changed the row's `pointerId` or its ledger, which no later write can put back (a `pointerId` is a write's
+ * token, never reused; between two `pointerId`s a ledger only shrinks, because every writer that adds an entry names the
+ * pointer and so renews it). That covers a load or a rollback that moved the pointer, another renewal, and another
+ * erasure's prune. A write of the retention, the residency or the kept window is not such a write, since a later write
+ * can restore those and a load that read the row before the call would then find the row as it read it, so it does not
+ * license the skip. So every load that read the row before the call began is refused, by this call's write or by a write
+ * that changed the `pointerId` or the ledger since the call read the row. The pointer is
  * named at the value it has ({@link renewPointer}), which changes nothing a read resolves and renews the row's
  * `pointerId`, the value the load's fence compares. A load numbers its object above the pointer (above everything in
  * the bucket, on a row with no pointer) and publishes it with a compare-and-swap fenced on the row it read, which a
@@ -970,14 +974,14 @@ function doomedGenerations(
  * bounded by the pointer it reads.
  *
  * **No write when none is owed.** The call goes on under the row it read when the ledger names nothing to remove and
- * either the row differs from the one read at the call's start in any field but its leases (a write of `knownGens`
- * alone counts: that change already moved the token every earlier load fences on, so no renewal is added), or, where
- * a renewal is needed, another writer's renewal landed after this call listed the bucket. A load that wrote a
- * holder the listing found read the row before it wrote, so before that renewal, and its fence refuses it; one
- * renewal that landed before the listing does not license a delete, since a load could have read that row and written a
- * holder since. That is why the row is read here, after the listing, and compared with the row each later read finds. A
- * concurrent erasure's write is such a licence: two erasures of different ids on one segment that both prune the
- * same entries write once between them, the second going on under the first's write.
+ * either the row's `pointerId` or ledger differs from the call's start row (above; the leases and the policy fields do
+ * not count), or, where a renewal is needed, another writer's renewal landed after this call listed the bucket. A load
+ * that wrote a holder the listing found read the row before it wrote, so before that renewal, and its fence refuses it;
+ * one renewal that landed before the listing does not license a delete, since a load could have read that row and
+ * written a holder since. That is why the row is read here, after the listing, and compared with the row each later
+ * read finds. A concurrent erasure's write is such a licence: two erasures of different ids on one segment that both
+ * prune the same entries write once between them, the second going on under the first's write. A rewrite that a
+ * concurrent erasure's renewal lands under is refused as `superseded`, and its caller runs it again.
  *
  * **A write that loses** to another writer is tried again from the row read after it, with the
  * prune applied to that fresh row. The fifth lost write across the call's fences ends the call with `'superseded'`;
@@ -1048,9 +1052,18 @@ async function fence(c: EraseCall, plan: FencePlan): Promise<Fenced> {
     const ledger = usableKnownGens(row);
     const doomed = doomedGenerations(c, plan, byName, ledger, pointer);
     const named = ledger !== undefined && ledger.some((e) => doomed.has(e.generation));
-    // A sweep that found a holder owes the row a write when nothing else has fenced the loads that read it before the
-    // call began: a prune is such a write, and so is any write of another field since the call read the row.
-    const sweepOwes = plan.sweeps && !pastHolders && !named && onlyLeasesDiffer(record, row);
+    // A sweep that found a holder owes the row a write when nothing that cannot be undone has fenced the loads that
+    // read it before the call began. Two changes since the call read the row are such a fence: a new `pointerId` (a
+    // write's token, never reused: a load's, a rollback's or another renewal) and a ledger that differs (between two
+    // `pointerId`s a ledger only shrinks, since every writer that adds an entry names the pointer and so renews it, so
+    // a changed ledger never returns to what a load read). A write of the retention, residency or kept window is not
+    // one: a later write can put those back, and a load that read the row before the call would then find it as it
+    // read it. Nor is a lease write, which a load ignores.
+    const sweepOwes =
+      plan.sweeps &&
+      !named &&
+      row.pointerId === record.pointerId &&
+      sameKnownGens(row.knownGens, record.knownGens);
     const renew = byName.length > 0 || sweepOwes;
     const renewedAfter = held && row.pointerId !== first!.pointerId;
     if (!named && (!renew || renewedAfter)) {
