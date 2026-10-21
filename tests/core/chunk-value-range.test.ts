@@ -12,7 +12,7 @@ import type { CodecBitmap } from '@/core/codec';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { testEntropy } from '../helpers/entropy';
-import { codecLeg } from '../helpers/codec-leg';
+import { withNativeCodec } from '../helpers/codec-leg';
 
 // A chunk payload holds REMAINDERS — 16-bit offsets within one chunk. Nothing upstream enforces that: the
 // byte/length caps bound size, and CRC/AEAD only prove the bytes are the bytes that were written, which anyone
@@ -247,10 +247,10 @@ describe('chunk payload structure', () => {
     }
   });
 
-  // Spies on the native codec's decoder, which the TypeScript leg does not call.
-  it.skipIf(codecLeg() === 'ts')(
+  // Spies on the native codec's decoder, which the TypeScript codec does not call: the native codec goes behind the store.
+  it(
     'checks a chunk once per fetch: not per id, and not again on a cache hit',
-    async () => {
+    withNativeCodec(async () => {
       const storage = new MemoryStorageChunkSource();
       storage.seed({ segment: 's', chunkKey: 0 }, forgeChunk([1, 2, 3, 4]));
       const store = new CloudRoaring({ storage });
@@ -264,6 +264,6 @@ describe('chunk payload structure', () => {
       } finally {
         spy.mockRestore();
       }
-    },
+    }),
   );
 });

@@ -15,7 +15,7 @@
  * driving the `.crbm` writer class directly. That class is not public — and this is the better seed anyway,
  * because the bytes then come off exactly the code path that writes a real generation, so a corpus entry
  * cannot drift from the format the library actually emits. The bitmaps for the `safe-deserialize` target come
- * from the native `roaring` addon's portable serializer, which is what the library's codec calls.
+ * from the `roaring` package's portable serializer, the same bytes the library's TypeScript codec writes.
  *
  * Objects with an extension block, which carry a generation's metadata, come from the `.crbm` writer itself, through the fuzz
  * build (`fuzz/build/fuzz-core.js`): a load is not given metadata, so it writes format 1.0 only.

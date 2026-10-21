@@ -5,8 +5,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect } from 'vitest';
 
 /**
  * Not a test: the setup of the `ts-codec` project in `vitest.config.ts`, which re-runs the store's own suites with the
- * store package's internal codec switch on the TypeScript codec instead of the native one. `tests/roaring/codec-switch.test.ts`
- * asserts the flip took effect, so the project cannot pass on native by accident.
+ * store package's internal codec switch on the TypeScript codec, the default, and guards that no store reaches the native codec. `tests/roaring/codec-switch.test.ts`
+ * asserts the TypeScript codec is in force, so the project cannot pass on native by accident.
  *
  * It also guards the leg: the native codec's methods are wrapped, and a test fails when one ran while it was not
  * meant to (a store built before the flip, for instance, which would keep the native codec and leave the leg testing

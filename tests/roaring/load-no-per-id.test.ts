@@ -9,7 +9,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { SystemClock } from '@/system-clock';
 import { testEntropy } from '../helpers/entropy';
-import { codecLeg } from '../helpers/codec-leg';
+import { withNativeCodec } from '../helpers/codec-leg';
 
 /**
  * A load of a 12M-member bitmap runs no JavaScript per id: counted, not timed, so it holds on any machine.
@@ -108,10 +108,10 @@ describe('a 12M-member bitmap load runs no per-id JavaScript', () => {
     expect(nonzero(counts())).toEqual({});
   });
 
-  // Counts the native codec's `fromValues`, which the TypeScript leg does not call.
-  it.skipIf(codecLeg() === 'ts')(
+  // Counts the native codec's `fromValues`, which the TypeScript codec does not call: the native codec goes behind the store.
+  it(
     'control: the same counters see a load from ids, and a codec that cannot encode its own chunks',
-    async () => {
+    withNativeCodec(async () => {
       const counts = countPerIdCalls();
       const store = new CloudRoaring({ storage: new MemoryStorage() });
       await store.load({ segment: 'small' }, [1, 2, 3, 70_000]);
@@ -136,7 +136,7 @@ describe('a 12M-member bitmap load runs no per-id JavaScript', () => {
       };
       await loadSegment({ segment: 'fallback' }, { bitmap: new RoaringBitmap32([1, 2, 3]) }, deps);
       expect(splitIdCalls.n - before).toBe(3);
-    },
+    }),
   );
 });
 

@@ -13,10 +13,10 @@ import { safeDeserialize, assertConsistentDecode } from '../build/fuzz-codec.js'
  *
  * IMPORTANT scope note (why this is the "front", not the "full chain"): open() gates the index parser and the
  * payload deserialize behind a triple CRC32C wall (footer CRC, index CRC, per-chunk payload CRC). A mutational
- * fuzzer cannot satisfy a CRC32C, so evolved inputs almost never reach `parseIndex`/`getChunk`/native-decode —
+ * fuzzer cannot satisfy a CRC32C, so evolved inputs almost never reach `parseIndex`/`getChunk`/decode —
  * they exercise open()'s validation + the CRC-rejection paths (which is real, coverage-guided value). The
  * CRC-gated deep surfaces are fuzzed elsewhere: the hand-written index parser by `crbm-index.mjs` (direct, past
- * the wall) and the native deserializer by `safe-deserialize.mjs` (direct, ungated); the deterministic
+ * the wall) and the bitmap decoder by `safe-deserialize.mjs` (direct, ungated); the deterministic
  * crafted-hostile suite (tests/core/crbm/crafted.test.ts) forges valid-CRC hostile indexes too.
  *
  * Each input is opened more than once, so the read paths an extension block adds are reached too: with the default

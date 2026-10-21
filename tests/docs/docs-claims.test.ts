@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 /**
  * Install, cache, `ReadonlyBitmap`, retention-grace and seal-bound claims, held where a rewrite cannot quietly undo
- * them: the install line for the `roaring` package from npm names the version the flavor pins, the seal bound does
+ * them: the install line for the `roaring` package from npm names the version the repo pins, the seal bound does
  * not call itself unreachable, a `ReadonlyBitmap` is not offered to a method of that package or to `JSON.stringify`
  * as it is, and the retention grace names the window it must outlast.
  *
@@ -20,13 +20,13 @@ const read = (file: string): string => {
 };
 
 const roaringPin = (
-  JSON.parse(readFileSync(join(ROOT, 'packages/roaring/package.json'), 'utf8')) as {
-    dependencies: Record<string, string>;
+  JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    devDependencies: Record<string, string>;
   }
-).dependencies['roaring'];
+).devDependencies['roaring'];
 
 describe('install, cache, ReadonlyBitmap and grace claims', () => {
-  it('tells a reader of the samples that import roaring to install the version the flavor pins', () => {
+  it('tells a reader of the samples that import roaring to install the version the repo pins', () => {
     expect(roaringPin).toMatch(/^\d+\.\d+\.\d+$/);
     expect(read('docs/guide/loading.md')).toContain(`pnpm add roaring@${roaringPin}`);
     expect(read('docs/guide/export.md')).toContain('add it to your own `package.json`');

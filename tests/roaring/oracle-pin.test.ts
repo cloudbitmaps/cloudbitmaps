@@ -33,16 +33,26 @@ describe('the codec oracle pin', () => {
     ).toBe(PINNED_CROARING);
   });
 
-  it('is the version the flavor declares, exactly', () => {
-    const manifest = JSON.parse(
-      readFileSync(new URL('../../packages/roaring/package.json', import.meta.url), 'utf8'),
-    ) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    const declared = manifest.dependencies?.roaring ?? manifest.devDependencies?.roaring;
-    expect(declared, 'the flavor must declare `roaring` as an exact version, never a range').toBe(
-      PINNED_ROARING,
-    );
+  it('is the version the repo root declares as a dev dependency, exactly, and no package of the family depends on it', () => {
+    const manifest = (path: string) =>
+      JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+        peerDependencies?: Record<string, string>;
+        optionalDependencies?: Record<string, string>;
+      };
+    expect(
+      manifest('../../package.json').devDependencies?.roaring,
+      'the repo root must declare `roaring` as an exact version, never a range',
+    ).toBe(PINNED_ROARING);
+    for (const pkg of ['core', 'roaring', 's3', 'gcs', 'azure-blob', 'tools']) {
+      const m = manifest(`../../packages/${pkg}/package.json`);
+      for (const field of [m.dependencies, m.peerDependencies, m.optionalDependencies]) {
+        expect(
+          Object.keys(field ?? {}),
+          `@cloudbitmaps/${pkg} must not depend on roaring`,
+        ).not.toContain('roaring');
+      }
+    }
   });
 });

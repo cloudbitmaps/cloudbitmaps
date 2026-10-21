@@ -26,10 +26,10 @@ const table = JSON.parse(
 ) as Record<string, string>;
 
 const roaringVersion = (
-  JSON.parse(readFileSync(join(ROOT, 'packages', 'roaring', 'package.json'), 'utf8')) as {
-    dependencies: Record<string, string>;
+  JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    devDependencies: Record<string, string>;
   }
-).dependencies.roaring as string;
+).devDependencies.roaring as string;
 
 const ci = parse(readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8')) as {
   jobs: Record<

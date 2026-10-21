@@ -4,18 +4,17 @@ import { deserializePortable, flagshipCodec, setFlagshipCodec } from '@/roaring-
 import { roaringCodec } from '@/native-codec';
 import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 import roaring from 'roaring';
-import { codecLeg } from '../helpers/codec-leg';
 
 const { RoaringBitmap32 } = roaring;
 
 /**
- * The store package's internal codec switch. The suites run once on the native codec and once, in the `ts-codec`
- * project, on the TypeScript codec; the first test here fails when the project's codec is not the one in force, so the
- * TypeScript leg cannot pass on native by accident.
+ * The store package's internal codec switch. Every suite runs on the TypeScript codec, the store's default; the first
+ * test here fails when it is not the one in force, so no project passes on native by accident. A harness flips the
+ * switch to the native codec, the oracle's reference, for the tests that compare the two.
  */
 describe('the store package codec switch', () => {
-  it('has the codec the running project asks for in force', () => {
-    expect(flagshipCodec()).toBe(codecLeg() === 'ts' ? tsRoaringCodec : roaringCodec);
+  it('has the TypeScript codec in force by default', () => {
+    expect(flagshipCodec()).toBe(tsRoaringCodec);
   });
 
   it('builds the codec of a store, a load and a decoded bitmap from the switch', async () => {
@@ -27,9 +26,7 @@ describe('the store package codec switch', () => {
     expect([...decoded]).toEqual([5, 9]);
     // a bitmap the codec made reads back through the codec that is in force
     expect(flagshipCodec().owns!(flagshipCodec().fromValues([1]))).toBe(true);
-    expect(
-      flagshipCodec().owns!((codecLeg() === 'ts' ? roaringCodec : tsRoaringCodec).fromValues([1])),
-    ).toBe(false);
+    expect(flagshipCodec().owns!(roaringCodec.fromValues([1]))).toBe(false);
   });
 
   it('flips and restores', () => {
