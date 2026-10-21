@@ -11,8 +11,9 @@
  *
  * WHAT IS MEASURED
  *
- * Median nanoseconds per call over interleaved rounds (native, TypeScript, native, ...), after a warm-up that runs for
- * a fixed time, not a fixed count. Each round times a batch sized to about 8 ms. Operations:
+ * Median nanoseconds per call over interleaved rounds (the codec that goes first alternates each round), after a
+ * warm-up of 300 ms per codec per cell, by time and not by count. Each round times a batch sized to about 8 ms, and
+ * every call's result is stored into a small array that outlives the run, so V8 cannot drop pure work. Operations:
  *
  *   has          256 probes of the chunk, half present, per probe
  *   decode       `safeDeserialize` of the chunk's stored bytes
@@ -20,7 +21,7 @@
  *   iterate      every value through `for...of`, per call
  *   toUint32     `toUint32Array()`, per call (the native codec's own call, where it has one)
  *   optimize     `optimize()` of a bitmap built from ids (a clone of it, so each call has the work to do)
- *   count        `size`
+ *   count        `size`, 256 reads per call, per read (one read is below the cost of the timing loop itself)
  *   clone        `clone()`
  *   build        `fromValues` of the chunk's ids
  *   addMany      1,000 more ids into a clone of the chunk
@@ -39,11 +40,22 @@
  *
  * Wall-clock and machine-dependent: recorded, not asserted. A figure is taken only while the 1-minute load average is
  * under 6 (the run waits, then refuses), and each carries the highest load seen during its cell. Medians of 11 rounds
- * on a warmed process are not a confidence interval. The two codecs share one process, so the native one's boundary
- * crossings and the TypeScript one's allocation both show up in the figures; neither is subtracted.
+ * are not a confidence interval. The two codecs share a process, so the native one's boundary crossings and the
+ * TypeScript one's allocation both show up in the figures; neither is subtracted.
+ *
+ *   - THERE IS NO COLD-PROCESS FIGURE. Everything here is a warmed codec: 300 ms of calls before timing. The first
+ *     calls of a fresh process (the cost a Lambda cold start pays) are not measured here; the measurement PR owns that
+ *     row.
+ *   - Each cell runs in its own child process, so the TypeScript codec's inline caches see one workload and not the
+ *     container kinds of every earlier cell. Inside a cell both codecs still share the process.
+ *   - The optimizing tier is not confirmed. A check from `--allow-natives-syntax` would report on the cell's closure,
+ *     not on the codec functions it calls, and would say nothing about them; the 300 ms warm-up is the stand-in.
+ *   - `TS_CODEC_SRC_DIR=<dir>` benches the TypeScript codec from `<dir>/src` (a copy of `packages/roaring/src` from
+ *     another commit, named by `TS_CODEC_SRC_COMMIT`) against the native codec of this checkout: how the committed
+ *     before-results were taken. `TS_CODEC_RESULTS=<file>` redirects the output file.
  *
  * `--only=<text>` runs the cells whose names contain the text (`--only=iterate`, `--only=and `). Run: `pnpm bench:ts-codec` (builds nothing: it bundles the codec sources itself). `TS_CODEC_INJECT=1` also writes
- * bench/ts-codec-results.json. `pnpm bench:ts-codec:check` (`--check`) measures nothing: it runs every operation once
+ * bench/ts-codec-results.json (or `TS_CODEC_RESULTS`). `pnpm bench:ts-codec:check` (`--check`) measures nothing: it runs every operation once
  * on both codecs and fails if their answers differ, or if a cell of the table is missing.
  */
 'use strict';
@@ -56,10 +68,15 @@ const { createRequire } = require('node:module');
 const { execFileSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const RESULTS = path.join(ROOT, 'bench/ts-codec-results.json');
+const RESULTS = process.env.TS_CODEC_RESULTS
+  ? path.resolve(process.env.TS_CODEC_RESULTS)
+  : path.join(ROOT, 'bench/ts-codec-results.json');
+const SRC_DIR = process.env.TS_CODEC_SRC_DIR
+  ? path.resolve(process.env.TS_CODEC_SRC_DIR)
+  : undefined;
 const ROUNDS = 11;
 const ROUND_MS = 8;
-const WARM_MS = 60;
+const WARM_MS = 300;
 const MAX_LOAD = 6;
 const CAP = 1 << 26;
 
@@ -71,7 +88,9 @@ function loadCodecs() {
     stdin: {
       contents:
         `export { roaringCodec } from './src/roaring-codec';\n` +
-        `export { tsRoaringCodec } from './src/ts-roaring/bitmap';\n`,
+        `export { tsRoaringCodec } from ${JSON.stringify(
+          SRC_DIR ? path.join(SRC_DIR, 'src/ts-roaring/bitmap') : './src/ts-roaring/bitmap',
+        )};\n`,
       resolveDir: rr,
       sourcefile: 'ts-codec-bench-entry.ts',
       loader: 'ts',
@@ -220,9 +239,14 @@ function cells(codecs) {
     });
     list.push({
       name: `count ${shape}`,
+      unit: 256,
       make: (c) => {
         const bm = decoded(c);
-        return () => bm.size;
+        return () => {
+          let n = 0;
+          for (let i = 0; i < 256; i++) n += bm.size;
+          return n;
+        };
       },
     });
     list.push({
@@ -277,7 +301,7 @@ function calibrate(fn) {
   let spent = 0;
   while (now() < warmEnd || spent < ROUND_MS * 1e6 * 0.5) {
     const t0 = now();
-    for (let i = 0; i < reps; i++) fn();
+    for (let i = 0; i < reps; i++) keep[i & 15] = fn();
     spent = now() - t0;
     if (spent < ROUND_MS * 1e6 * 0.5) reps *= 2;
     else if (now() >= warmEnd) break;
@@ -285,9 +309,13 @@ function calibrate(fn) {
   return Math.max(1, Math.round((reps * ROUND_MS * 1e6) / Math.max(spent, 1)));
 }
 
+/** Every result lands here, and the array is reachable from `globalThis`, so no call is dead code. */
+const keep = new Array(16).fill(0);
+globalThis.__tsCodecKeep = keep;
+
 function timeBatch(fn, reps) {
   const t0 = now();
-  for (let i = 0; i < reps; i++) fn();
+  for (let i = 0; i < reps; i++) keep[i & 15] = fn();
   return (now() - t0) / reps;
 }
 
@@ -310,31 +338,43 @@ function waitForQuietMachine() {
   }
 }
 
-function measure(codecs, list) {
-  const rows = [];
-  for (const cell of list) {
-    waitForQuietMachine();
-    let load = os.loadavg()[0];
-    const fns = { native: cell.make(codecs.native), ts: cell.make(codecs.ts) };
-    const reps = { native: calibrate(fns.native), ts: calibrate(fns.ts) };
-    const samples = { native: [], ts: [] };
-    for (let r = 0; r < ROUNDS; r++) {
-      samples.native.push(timeBatch(fns.native, reps.native));
-      samples.ts.push(timeBatch(fns.ts, reps.ts));
-    }
-    load = Math.max(load, os.loadavg()[0]);
-    const unit = cell.unit || 1;
-    const n = median(samples.native) / unit;
-    const t = median(samples.ts) / unit;
-    rows.push({
-      cell: cell.name,
-      nativeNs: +n.toFixed(1),
-      tsNs: +t.toFixed(1),
-      ratio: +(t / n).toFixed(2),
-      load: +load.toFixed(2),
-    });
+/** One cell, in this process: native and TypeScript rounds interleaved, the first alternating each round. */
+function measureCell(codecs, cell) {
+  waitForQuietMachine();
+  let load = os.loadavg()[0];
+  const fns = { native: cell.make(codecs.native), ts: cell.make(codecs.ts) };
+  const reps = { native: calibrate(fns.native), ts: calibrate(fns.ts) };
+  const samples = { native: [], ts: [] };
+  for (let r = 0; r < ROUNDS; r++) {
+    for (const k of r % 2 === 0 ? ['native', 'ts'] : ['ts', 'native'])
+      samples[k].push(timeBatch(fns[k], reps[k]));
   }
-  return rows;
+  load = Math.max(load, os.loadavg()[0]);
+  const unit = cell.unit || 1;
+  const n = median(samples.native) / unit;
+  const t = median(samples.ts) / unit;
+  return {
+    cell: cell.name,
+    nativeNs: +n.toFixed(1),
+    tsNs: +t.toFixed(1),
+    ratio: +(t / n).toFixed(2),
+    load: +load.toFixed(2),
+  };
+}
+
+/** Every cell, each in a fresh child process of this script (`--child=<exact cell name>`). */
+function measure(list) {
+  return list.map((cell) =>
+    JSON.parse(
+      execFileSync(process.execPath, [__filename, `--child=${cell.name}`], {
+        encoding: 'utf8',
+        env: process.env,
+      })
+        .trim()
+        .split('\n')
+        .pop(),
+    ),
+  );
 }
 
 /** Bytes each decoded chunk holds, by kind, after a forced collection. */
@@ -366,8 +406,13 @@ function memory(codecs) {
 }
 
 function sameAnswer(a, b) {
-  if (a instanceof Uint8Array || a instanceof Uint32Array)
+  if (a === undefined || b === undefined) return false;
+  if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b))
     return (
+      ArrayBuffer.isView(a) &&
+      ArrayBuffer.isView(b) &&
+      a.BYTES_PER_ELEMENT === b.BYTES_PER_ELEMENT &&
+      a.length === b.length &&
       Buffer.compare(
         Buffer.from(a.buffer, a.byteOffset, a.byteLength),
         Buffer.from(b.buffer, b.byteOffset, b.byteLength),
@@ -376,6 +421,9 @@ function sameAnswer(a, b) {
   // A bitmap: the same ids. Which container kind holds them is not an answer (a native combine can leave a run).
   if (a !== null && typeof a === 'object' && typeof a.toArray === 'function')
     return (
+      b !== null &&
+      typeof b === 'object' &&
+      typeof b.toArray === 'function' &&
       a.size === b.size &&
       Buffer.compare(
         Buffer.from(Uint32Array.from(a).buffer),
@@ -386,14 +434,14 @@ function sameAnswer(a, b) {
 }
 
 /** Every operation once on both codecs; their answers must agree. Measures nothing. */
-function check(codecs, list) {
+function check(codecs, list, complete) {
   const bad = [];
   for (const cell of list) {
     const x = cell.make(codecs.native)();
     const y = cell.make(codecs.ts)();
     if (!sameAnswer(x, y)) bad.push(cell.name);
   }
-  if (list.length !== 48) bad.push(`${list.length} cells, not 48`);
+  if (complete && list.length !== 48) bad.push(`${list.length} cells, not 48`);
   return bad;
 }
 
@@ -408,10 +456,17 @@ function fmt(ns) {
 function main() {
   const codecs = loadCodecs();
   const only = process.argv.find((a) => a.startsWith('--only='));
+  const child = process.argv.find((a) => a.startsWith('--child='));
   const all = cells(codecs);
+  if (child) {
+    const cell = all.find((c) => c.name === child.slice(8));
+    if (!cell) throw new Error(`no cell named ${child.slice(8)}`);
+    console.log(JSON.stringify(measureCell(codecs, cell)));
+    return;
+  }
   const list = only ? all.filter((c) => c.name.includes(only.slice(7))) : all;
   if (process.argv.includes('--check')) {
-    const bad = check(codecs, list);
+    const bad = check(codecs, list, !only);
     if (bad.length > 0) {
       console.error(`ts-codec bench: the codecs disagree or a cell is missing: ${bad.join(', ')}`);
       process.exit(1);
@@ -420,7 +475,7 @@ function main() {
     return;
   }
   const loadBefore = os.loadavg()[0];
-  const rows = measure(codecs, list);
+  const rows = measure(list);
   const mem = process.argv.includes('--memory') ? memory(codecs) : undefined;
   const head = ['cell', 'native', 'typescript', 'ts/native', 'load'];
   console.log(head.join('\t'));
@@ -443,10 +498,13 @@ function main() {
       // not a git checkout
     }
     const doc = {
-      note: 'Wall-clock and machine-dependent: recorded, not asserted. Medians of interleaved rounds, ns per call; ratio is typescript over native.',
+      note: 'Wall-clock and machine-dependent: recorded, not asserted. Medians of 11 interleaved rounds after a 300 ms warm-up, each cell in its own process, ns per call (count and has: per read); ratio is typescript over native.',
       cpu: os.cpus()[0].model,
       node: process.version,
-      commit,
+      commit: process.env.TS_CODEC_SRC_COMMIT || commit,
+      typescriptFrom: SRC_DIR
+        ? 'TS_CODEC_SRC_DIR (another commit; native codec is this checkout)'
+        : 'this checkout',
       loadBefore: +loadBefore.toFixed(2),
       loadAfter: +os.loadavg()[0].toFixed(2),
       rows,

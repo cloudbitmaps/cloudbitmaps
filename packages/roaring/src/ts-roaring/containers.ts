@@ -98,14 +98,21 @@ function runContainer(pairs: Uint16Array, runs: number, card: number): Container
 // what it wrote. Single-threaded and never held across a call that could run other code, so one of each is enough.
 let valueScratch = new Uint16Array(8_192);
 let pairScratch = new Uint16Array(8_192);
+// The most a scratch keeps for the life of the process: one container's worth of 16-bit values. A request above it
+// gets a fresh array that is not kept.
+const SCRATCH_KEEP = 65_536;
 
 function values16(n: number): Uint16Array {
-  if (valueScratch.length < n) valueScratch = new Uint16Array(Math.max(n, 2 * valueScratch.length));
+  if (valueScratch.length >= n) return valueScratch;
+  if (n > SCRATCH_KEEP) return new Uint16Array(n);
+  valueScratch = new Uint16Array(Math.max(n, Math.min(2 * valueScratch.length, SCRATCH_KEEP)));
   return valueScratch;
 }
 
 function pairs16(n: number): Uint16Array {
-  if (pairScratch.length < n) pairScratch = new Uint16Array(Math.max(n, 2 * pairScratch.length));
+  if (pairScratch.length >= n) return pairScratch;
+  if (n > SCRATCH_KEEP) return new Uint16Array(n);
+  pairScratch = new Uint16Array(Math.max(n, Math.min(2 * pairScratch.length, SCRATCH_KEEP)));
   return pairScratch;
 }
 
