@@ -10,7 +10,7 @@ import { ValidationError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { collect } from '../helpers/loaded';
 import { counterEntropy, fixedEntropy, recordingEntropy } from '../helpers/entropy';
 

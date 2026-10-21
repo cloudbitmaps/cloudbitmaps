@@ -7,7 +7,7 @@ import type { EraseIdDeps } from '@/core/erase-id';
 import { nextGeneration } from '@/core/generation-gc';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';

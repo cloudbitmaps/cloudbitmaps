@@ -2,7 +2,7 @@ import { expect } from 'vitest';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { CloudRoaring } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { Clock, SegmentRef } from '@/index';

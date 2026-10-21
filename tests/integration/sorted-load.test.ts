@@ -9,7 +9,7 @@ import { loadSegment } from '@/core/load';
 import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver } from '@/drivers/memory';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { S3StorageDriver } from '@/s3/storage';
 import { counterEntropy } from '../helpers/entropy';
 

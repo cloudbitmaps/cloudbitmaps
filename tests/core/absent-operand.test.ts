@@ -8,7 +8,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { SegmentEngine } from '@/core/engine';
 import { compileCombineMany, runCombineMany } from '@/core/combine-many';
 import type { StorageChunkSource } from '@/core/ports';
-import { roaringCodec, SafeBitmap } from '@/roaring-codec';
+import { roaringCodec, SafeBitmap } from '@/native-codec';
 import { joinId } from '@/core/bit-route';
 
 /**

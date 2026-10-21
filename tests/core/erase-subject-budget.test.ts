@@ -4,7 +4,7 @@ import { openGenerationReader } from '@/core/crbm-open';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 

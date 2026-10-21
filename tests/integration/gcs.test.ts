@@ -21,7 +21,7 @@ import { GcsStorage } from '@cloudbitmaps/gcs';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { CloudRoaring } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

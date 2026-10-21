@@ -9,7 +9,7 @@ import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IStorageDriver } from '@/core/ports';
 import { CloudRoaring, MemoryStorage, TransientError } from '@/index';
 import { IntegrityError } from '@/core/errors';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { openGenerationReader } from '@/core/crbm-open';

@@ -6,7 +6,7 @@ import { loadSegment } from '@/core/load';
 import type { SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver } from '@/drivers/memory';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { counterEntropy } from '../../helpers/entropy';
 import { guardLoopback } from '../../helpers/loopback-guard';
 

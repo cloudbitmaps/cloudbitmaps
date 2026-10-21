@@ -22,7 +22,7 @@ import type { IdWindow } from '@/core/id-window';
 /** The window for a read that no error is expected of: the verb only matters to a refusal. */
 const windowOf = (range: Parameters<typeof windowOfVerb>[0]) => windowOfVerb(range, 'iterate');
 import { ValidationError } from '@/core/errors';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 
 const inWindow = (id: number, after: number | undefined, through: number | undefined): boolean =>
   (after === undefined || id > after) && (through === undefined || id <= through);

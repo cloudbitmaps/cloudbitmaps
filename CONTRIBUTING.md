@@ -209,7 +209,7 @@ Third-party runtime dependencies are counted **per package**, and each one is de
 | package | third-party runtime deps |
 |---|---|
 | `@cloudbitmaps/core` | **none** |
-| `@cloudbitmaps/roaring` | `roaring` — the native codec, the reason a flavor is a package |
+| `@cloudbitmaps/roaring` | **none** — its one dependency is `@cloudbitmaps/core`, ours; `roaring` is a dev dependency, the oracle its tests compare the TypeScript codec against |
 | `@cloudbitmaps/s3` · `/gcs` · `/azure-blob` | its own cloud SDK, and only its own |
 | `@cloudbitmaps/tools` | **none** — its one dependency is `@cloudbitmaps/core`, ours |
 

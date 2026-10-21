@@ -28,7 +28,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { RecordingAuditSink } from '@/index';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import type { AuditEvent } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { counterEntropy } from '../helpers/entropy';

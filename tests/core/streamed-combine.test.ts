@@ -10,7 +10,7 @@ import { SegmentEngine, BoundedLru, CountingMetricsSink } from '@cloudbitmaps/co
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import { BudgetExceededError, IntegrityError, ValidationError } from '@/core/errors';
 import { chunkGenKey } from '@/core/keys';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { joinId } from '@/core/bit-route';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';

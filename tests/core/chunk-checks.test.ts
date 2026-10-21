@@ -10,7 +10,7 @@ import type { CodecBitmap } from '@/core/codec';
 import { SegmentEngine } from '@/core/engine';
 import { IntegrityError } from '@/core/errors';
 import type { StorageChunkSource } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { collect } from '../helpers/loaded';
 

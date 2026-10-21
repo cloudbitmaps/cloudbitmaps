@@ -5,7 +5,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { rollbackSegment } from '@/core/rollback';
 import type { IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 

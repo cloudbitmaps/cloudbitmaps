@@ -30,7 +30,8 @@ function bundleEngine({ root, withS3 = false }) {
   const entry = [
     `export * as roaring from './src/index';`,
     withS3 ? `export * as s3 from '../s3/src/index';` : '',
-    `export { setFlagshipCodec, roaringCodec } from './src/roaring-codec';`,
+    `export { setFlagshipCodec } from './src/roaring-codec';`,
+    `export { roaringCodec } from ${JSON.stringify(path.join(root, 'tests/helpers/native-codec'))};`,
     `export { tsRoaringCodec } from './src/ts-roaring/bitmap';`,
   ].join('\n');
   const out = buildSync({

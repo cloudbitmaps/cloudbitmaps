@@ -4,7 +4,7 @@ import {
   isCloudRoaringError,
   DEFAULT_MAX_BITMAP_BYTES,
 } from '../build/fuzz-core.js';
-import { SafeBitmap, assertConsistentDecode } from '../build/fuzz-codec.js';
+import { safeDeserialize, assertConsistentDecode } from '../build/fuzz-codec.js';
 
 /*
  * Coverage-guided fuzz target: the `.crbm` reader's FRONT — `CrbmReader.open` (footer magic/CRC · version ·
@@ -84,7 +84,7 @@ export async function fuzz(data) {
     try {
       const chunk = await reader.getChunk(k);
       if (chunk !== null) {
-        assertConsistentDecode(SafeBitmap.safeDeserialize(chunk, DEFAULT_MAX_BITMAP_BYTES));
+        assertConsistentDecode(safeDeserialize(chunk, DEFAULT_MAX_BITMAP_BYTES));
       }
     } catch (err) {
       if (isCloudRoaringError(err)) continue; // typed rejection on one chunk is fine

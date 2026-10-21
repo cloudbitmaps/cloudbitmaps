@@ -1,6 +1,6 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { CloudRoaring } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 
 // The intersection window's MEMORY bound, proven on the real `intersect` path.

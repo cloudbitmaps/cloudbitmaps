@@ -603,7 +603,11 @@ function startupMeasure() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-codec-engine-'));
   try {
     const files = {
-      native: moduleBundle(dir, 'native', `export { roaringCodec } from './src/roaring-codec';`),
+      native: moduleBundle(
+        dir,
+        'native',
+        `export { roaringCodec } from ${JSON.stringify(path.join(ROOT, 'tests/helpers/native-codec'))};`,
+      ),
       typescript: moduleBundle(
         dir,
         'typescript',

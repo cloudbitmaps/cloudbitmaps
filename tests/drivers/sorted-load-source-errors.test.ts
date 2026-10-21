@@ -9,7 +9,7 @@ import type { GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { S3StorageDriver } from '@/s3/storage';
 import { StubBlobService } from '../helpers/azure-blob-stub';
 import { counterEntropy } from '../helpers/entropy';

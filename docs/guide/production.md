@@ -18,7 +18,7 @@ checklist: work down the table, and follow each link for the detail.
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
 | Metrics and audit sinks are wired to your stack | Both are off by default | [Observability](observability.md) |
 | Loads and the retention sweep are scheduled | Nothing in the library runs on a timer | [Schedule the work](#schedule-the-work) |
-| Loads run off the request path, on a runtime with the native addon | A load uses a core and, unless its ids come sorted (`sorted: true`), holds a whole segment in memory | [Where to run it](#what-blocks-the-event-loop-and-where-to-run-it) |
+| Loads run off the request path, on a Node runtime | A load uses a core and, unless its ids come sorted (`sorted: true`), holds a whole segment in memory | [Where to run it](#what-blocks-the-event-loop-and-where-to-run-it) |
 
 ## Check the setup with `store.preflight()`
 

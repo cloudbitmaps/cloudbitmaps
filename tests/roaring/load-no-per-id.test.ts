@@ -6,7 +6,7 @@ import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { YIELD_EVERY } from '@/core/cooperative';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { SystemClock } from '@/system-clock';
 import { testEntropy } from '../helpers/entropy';
 import { codecLeg } from '../helpers/codec-leg';

@@ -2,7 +2,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { NotFoundError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { loadedStore } from '../helpers/loaded';
 import { testEntropy } from '../helpers/entropy';
 

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/core/audit';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment, type LoadOptions } from '@/core/load';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver } from '@cloudbitmaps/core/driver-kit';

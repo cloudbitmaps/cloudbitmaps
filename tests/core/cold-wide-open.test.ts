@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { SegmentEngine, BoundedLru } from '@cloudbitmaps/core';
 import type { CodecBitmap, IMetricsSink, MetricEvent } from '@cloudbitmaps/core';
 import { chunkGenKey } from '@/core/keys';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { joinId } from '@/core/bit-route';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
 import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';

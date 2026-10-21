@@ -3,7 +3,7 @@ import { WriteConflictError } from '@/core/errors';
 import { destroySegment } from '@/core/erasure';
 import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 import { zeroEntropy } from '../helpers/entropy';

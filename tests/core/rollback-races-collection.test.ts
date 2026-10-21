@@ -12,7 +12,7 @@ import type {
   IStorageDriver,
   RegistryRecord,
 } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { sameIncarnation } from '@/core/token';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
 import { testEntropy } from '../helpers/entropy';

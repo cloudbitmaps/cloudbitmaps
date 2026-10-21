@@ -4,7 +4,7 @@ import { RecordingAuditSink } from '@/core/audit';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { StubBlobService, xmlError } from '../../helpers/azure-blob-stub';
 import { testEntropy } from '../../helpers/entropy';
 

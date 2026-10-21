@@ -324,19 +324,21 @@ number the kernel consults when a container hits its memory limit and something 
 
 ### Why RSS and not the JavaScript heap
 
-CloudBitmaps does its set arithmetic through `roaring-node`, a **native addon**. Native code allocates with
-`malloc`, entirely outside V8's JavaScript heap. So a process holding a large bitmap looks like this:
+CloudBitmaps keeps a bitmap's containers in typed arrays, whose backing memory V8 allocates outside its JavaScript
+object heap, and a `Buffer` read from storage is the same kind of memory. (Every figure on this page was measured
+before the store's codec moved from the `roaring` native addon to TypeScript, where the containers sat in `malloc`
+memory outside V8 altogether; none has been re-measured since.) So a process holding a large bitmap looks like this:
 
 ```
 ┌──────────────── RSS — what the OS sees ────────────────┐
 │  Node binary, shared libraries      ~50–60 MiB, a floor │
 │  V8 JavaScript heap                 ← heap sampling     │
-│  roaring's containers               ← INVISIBLE to it   │
+│  bitmap containers (typed arrays)   ← INVISIBLE to it   │
 │  stacks, buffers, allocator arenas  ← invisible too     │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**A leak in the bitmap containers is invisible to a heap sample.** The heap graph stays flat while the process
+**A leak in the bitmap containers is invisible to a sample of the object heap.** The heap graph stays flat while the process
 grows until the kernel kills it. Since ["bounded memory & cost, always"](../AGENTS.md#hard-correctness-invariants) is one of this project's
 hard invariants, a measurement that cannot see the allocator doing the most work would be evidence of nothing.
 

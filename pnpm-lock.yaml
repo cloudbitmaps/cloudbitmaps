@@ -139,9 +139,6 @@ importers:
       '@cloudbitmaps/core':
         specifier: workspace:*
         version: link:../core
-      roaring:
-        specifier: 2.7.0
-        version: 2.7.0
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

@@ -12,7 +12,7 @@ import type {
   CombineManyRun,
 } from '@/core/combine-many';
 import { joinId } from '@/core/bit-route';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { StreamChunkSource } from './stream-chunk-source';
 import { seedSegment } from './loaded';
 

@@ -26,7 +26,7 @@ import { segmentKey, shardOf } from '@/core/keys';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { registryListPrefix, registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { CloudRoaring } from '@/index';
 import { CountingObjectStore } from '../helpers/counting';
 import { tokenParts } from '../helpers/tokens';

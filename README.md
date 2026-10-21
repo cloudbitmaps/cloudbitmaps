@@ -23,19 +23,7 @@ Three words appear everywhere:
 
 ## Install & entry points
 
-`roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if
-you allow it. Allow it first (create a `package.json` with `pnpm init` or `npm init -y` if you have none):
-
-- **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and
-  the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
-- **pnpm 11 and later:** put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside your `package.json`.
-  Those versions no longer read the `package.json` `pnpm` key. Without it the install exits 1 with
-  `ERR_PNPM_IGNORED_BUILDS`.
-- **pnpm 10:** add `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` to your `package.json`. Without it the
-  install exits 0 and the package throws at `import`.
-- **pnpm 9:** nothing extra.
-
-Then install:
+Install:
 
 ```bash
 pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
@@ -344,8 +332,8 @@ it).
 
 The Roaring Bitmap format and its algorithms are the work of Daniel Lemire and colleagues. See
 [roaringbitmap.org](https://roaringbitmap.org/) and the [Roaring format specification](https://github.com/RoaringBitmap/RoaringFormatSpec),
-which defines the portable bytes every chunk of a `.crbm` object holds. CRoaring, through the `roaring` binding, does
-today's bit math here. The papers:
+which defines the portable bytes every chunk of a `.crbm` object holds. The store's codec implements that format and those
+algorithms in TypeScript; CRoaring, through the `roaring` binding, is the reference its tests compare it against. The papers:
 
 - S. Chambi, D. Lemire, O. Kaser, R. Godin, "Better bitmap performance with Roaring bitmaps", *Software: Practice and
   Experience* 46(5), 2016. [arXiv:1402.6407](https://arxiv.org/abs/1402.6407)

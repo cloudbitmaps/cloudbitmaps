@@ -5,7 +5,7 @@ import { GcsStorageDriver } from '@/gcs/storage';
 import { loadSegment } from '@/core/load';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { STUB_GCS_BUCKET, StubGcsService } from '../../helpers/gcs-stub';
 import { testEntropy } from '../../helpers/entropy';
 

@@ -8,7 +8,7 @@ import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { S3Storage } from '@/s3/backend';
 import { CloudRoaring, errorKind } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { STUB_BUCKET, StubS3Bucket, type FaultKind } from '../../helpers/s3-bucket-stub';
 import { testEntropy } from '../../helpers/entropy';
 

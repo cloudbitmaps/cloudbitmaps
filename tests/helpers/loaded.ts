@@ -15,7 +15,7 @@
 import { MemoryStorageChunkSource } from './memory-chunk-source';
 import { MemoryStorage, CloudRoaring } from '@/index';
 import type { CloudRoaringOptions, SegmentRef } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from './bulk-load';
 import type { BulkLoadResult } from './bulk-load';
 import { splitId } from '@cloudbitmaps/core';

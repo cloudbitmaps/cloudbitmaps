@@ -24,7 +24,7 @@ import {
   ValidationError as CoreValidationError,
 } from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { batchWorld, range } from '../helpers/batch-world';
 import { feedOf, lcg, recordsOf } from '../helpers/combine-feed';
 import { testEntropy } from '../helpers/entropy';

@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SegmentEngine } from '@cloudbitmaps/core';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { seedSegment } from '../helpers/loaded';
 import type { ChunkRef } from '@/core/ports';

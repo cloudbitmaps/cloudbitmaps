@@ -1,11 +1,11 @@
 import roaring from 'roaring';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage, ValidationError, deserializePortable } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import type { LoadInput, PortableBitmap, ReadonlyBitmap } from '@/index';
 import { MAX_SERIALIZED_LOAD_BYTES, decodeSerialized } from '@/core/load-input';
 import type { CodecInterface } from '@/core/codec';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { craftPortable } from '../helpers/portable-bytes';
 import { zeroEntropy } from '../helpers/entropy';
 import { codecLeg } from '../helpers/codec-leg';

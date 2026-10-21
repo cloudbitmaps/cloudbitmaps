@@ -6,7 +6,7 @@ import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { collect } from '../helpers/loaded';
 import { counterEntropy, zeroEntropy } from '../helpers/entropy';
 import { withoutTokenReports } from '../helpers/no-token-reports';

@@ -9,7 +9,7 @@ import type { CodecBitmap } from '@/core/codec';
 import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IStorageDriver } from '@/core/ports';
 import { CloudRoaring, TransientError } from '@/index';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { collect } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

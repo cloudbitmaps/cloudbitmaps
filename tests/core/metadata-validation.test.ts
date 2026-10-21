@@ -4,7 +4,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { ValidationError } from '@/core/errors';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { counting } from '../helpers/counting';
 import { objectFingerprint } from '../helpers/fingerprint';
 import { testEntropy } from '../helpers/entropy';

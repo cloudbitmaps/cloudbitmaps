@@ -3,7 +3,7 @@ import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { RecordingAuditSink } from '@/core/audit';
 import { TransientError, WriteConflictError, isUnsettledConflict } from '@/core/errors';
 import { loadSegment } from '@/core/load';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { StubBlobService, xmlError } from '../../helpers/azure-blob-stub';
 import { testEntropy } from '../../helpers/entropy';
 

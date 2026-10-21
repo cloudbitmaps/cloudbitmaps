@@ -9,7 +9,7 @@ import type {
   CombineManyRequest,
   CombineManyRun,
 } from '@/core/combine-many';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { collecting, request, seed } from './combine-many';
 import type { OutputSpec, Published, Setup } from './combine-many';
 

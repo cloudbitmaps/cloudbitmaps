@@ -4,7 +4,7 @@ import type { IKeystore } from '@/core/crypto';
 import type { LoadResult } from '@/core/load';
 import type { GenerationMetadata, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { CounterNonceAead } from '../helpers/crbm-extension';
 import { counterEntropy } from '../helpers/entropy';
 

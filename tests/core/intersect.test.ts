@@ -1,7 +1,7 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import fc from 'fast-check';
 import { CloudRoaring, type Clock } from '@/index';
-import { roaringCodec, SafeBitmap } from '@/roaring-codec';
+import { roaringCodec, SafeBitmap } from '@/native-codec';
 import { SegmentEngine } from '@/core/engine';
 import { joinId } from '@/core/bit-route';
 import { ValidationError } from '@/core/errors';

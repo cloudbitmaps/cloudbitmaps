@@ -20,7 +20,7 @@ import {
 import { BoundedLru } from '@/core/lru';
 import type { CodecBitmap } from '@/core/codec';
 import type { ChunkRef } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect } from '../helpers/loaded';

@@ -14,7 +14,7 @@ import type {
   IStorageDriver,
   RegistryRecord,
 } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';
 import { testEntropy } from '../helpers/entropy';

@@ -75,7 +75,7 @@ marked with the release it is to ship in, and sits under `[Unreleased]` in the [
 | The ids at ranks `n`, `2n`, `3n` … of a pin — `pin.everyNth(n, range?)` | **shipped** — places each boundary from the index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s stream, window and budget; a live handle is refused, and a chunk that is read must match its count ([reading guide](guide/reading.md#every-nth-id-of-a-pin-everynth)) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool. A store with a `metrics` sink gets one `advisory` event when the client's pool is under 64 sockets, as a client you pass with the SDK's 50 is ([observability](guide/observability.md)). The in-region run's client had 128 sockets |
 | Deferred | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, the reconcile for `setRetention` and shred writes, and the resend of a `rollback` swap the row shows did not land: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
-| WASM CRoaring research | **after** the loaded store |
+| WASM CRoaring research | **dropped** — the TypeScript codec replaced the native addon, so there is no addon left for a WebAssembly build to remove |
 | A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — no library behaviour changes: the large suite has run against real S3, run `2026-10-07-88cd3`, whose figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-07-88cd3) |
 
 **What is next:** the batch stage (a refresh-shaped `materializeMany` measured on S3), a Lambda run, other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
@@ -88,9 +88,6 @@ and each storage package brings its own SDK — so no install carries an SDK for
 pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, storage + registry
 # npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
 ```
-
-On npm 12 and pnpm 10 and later, allow `roaring`'s install script first; see the
-[Install section of the getting-started guide](guide/getting-started.md#install).
 
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
 is a dependency of both, installed directly only to name a driver port's type from `@cloudbitmaps/core/driver-kit`
@@ -203,7 +200,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
 - **All stored bytes are untrusted.** The safe Roaring deserializer behind a hard size cap and a structural check
   of every payload (containers and values in order, runs disjoint, cardinalities matching the bits), per-chunk /
   per-index / per-footer CRC32C, and field validation on every `.crbm` header — a corrupt or hostile object
-  fails closed with a typed error instead of reaching the native addon trustingly.
+  fails closed with a typed error instead of reaching the decoder trustingly.
 - **Optional encryption at rest** — AES-256-GCM over the payload *and* the index (so metadata is hidden),
   envelope-wrapped per-segment DEKs under operator-held KEKs, AAD binding each ciphertext to its
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
@@ -548,15 +545,9 @@ move it up.
     refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
   - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
     become a dozen; throttling belongs to the SDK's retry alone.
-- **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
-  remove the native addon from the install story (prebuilt binaries, musl, from-source builds on Alpine) and is
-  the prerequisite for the edge-runtime item below. It is deliberately queued *behind* the loaded store's own
-  work — the benchmarks, `load()`, the docs pass — and it ships only if the measured decode throughput is
-  acceptable against the native addon on the shapes the benchmarks cover. Research, not a commitment.
-- **Route a load's bitmap input by shape, with the codec switch.** A bare bitmap passed where ids go is recognised by
-  class today (`roaring`'s `RoaringBitmap32`, or what `deserializePortable` returned), so it loads from its containers
-  and not id by id. When the codec behind `deserializePortable` can change, recognise it by shape (an object with
-  `serialize('portable')`) instead, or a bare `RoaringBitmap32` passed as ids loses that fast path.
+- **WASM CRoaring — dropped.** The store's codec is the TypeScript Roaring codec, which removed the native addon from
+  the install story (no install script, no prebuilt binary, nothing to compile on Alpine), so a WebAssembly build of
+  CRoaring as a second codec has nothing left to remove.
 - **Membership from an edge runtime — explicitly *not* supported today, and being explored.** A Cloudflare
   Worker answering "is id N in segment S?" against a storage generation in R2 is two ranged reads and a decode,
   which is the access pattern this format was designed for. What stops it is not the engine: core's main entry,
@@ -569,7 +560,7 @@ move it up.
   the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
   encoding, refuses the same malformed bytes the native path does because the two share one structural check, and
   is **not exported, not wired into anything, and not something you can use yet**. Read-only by
-  design: loads stay in Node, where the native codec is the right tool. **We will not claim this works on any
+  design: loads stay in Node. **We will not claim this works on any
   runtime until CI runs the conformance suite inside that runtime**: what a runtime can load is easy to get
   wrong, and a claim is not a test. Running the conformance suite inside an isolate also needs an in-memory backend that
   loads there. `MemoryStorage` hashes with `node:crypto`, so it is exported by `@cloudbitmaps/core/node` and not the
@@ -622,8 +613,9 @@ Saying no is part of the design:
   one, where a bitset would be larger still. What a flat bitset keeps is faster random access, one shift-and-mask against a
   container lookup: CPU time inside an operation that waits on an object-storage request. The codec seam stays;
   nothing is queued to fill it.
-- **Reimplementing the bit math.** CloudBitmaps wraps `roaring-node`/CRoaring. The object-store layout and the
-  chunk-skipping reads are the contribution; the container algorithms are not ours to re-invent.
+- **New container algorithms.** The store's codec implements the Roaring format and the algorithms of Lemire et al., with
+  CRoaring as the reference its tests compare it against. The object-store layout and the chunk-skipping reads are the
+  contribution; the container algorithms are not ours to re-invent.
 - **Any feature that taxes the hot path** (`has` / `count` / `intersect` / `union` / `andNot`) to speed up a
   rare operation. If it can't be pushed to wiring time, load time, a scheduled pass, an admin call, or the docs,
   it doesn't ship.

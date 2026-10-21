@@ -10,7 +10,7 @@ import { BoundedLru } from '@/core/lru';
 import { CountingMetricsSink } from '@/index';
 import type { CodecBitmap } from '@/core/codec';
 import type { ChunkRef } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { seedSegment } from '../helpers/loaded';
 

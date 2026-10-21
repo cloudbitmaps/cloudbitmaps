@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { CloudRoaring, destroySegment, eraseNamespace } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import type { IKeystore } from '@cloudbitmaps/core/driver-kit';

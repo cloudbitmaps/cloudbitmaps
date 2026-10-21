@@ -1,7 +1,7 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { CloudRoaring, TransientError, type Clock, type Rng, type SegmentRef } from '@/index';
 import type { ChunkRef, StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { loadedStore, seedSegment } from '../helpers/loaded';
 
 function fakeClock(): Clock & { advance: (ms: number) => void } {

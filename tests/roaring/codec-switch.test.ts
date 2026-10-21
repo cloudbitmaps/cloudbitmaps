@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import {
-  deserializePortable,
-  flagshipCodec,
-  roaringCodec,
-  setFlagshipCodec,
-} from '@/roaring-codec';
+import { deserializePortable, flagshipCodec, setFlagshipCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 import roaring from 'roaring';
 import { codecLeg } from '../helpers/codec-leg';

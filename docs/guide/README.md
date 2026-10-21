@@ -29,7 +29,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 
 - [**Errors and what to do**](api-reference.md#errors-typed--you-catch-these): every error, what it means, and whether to retry.
 - [**A load was refused**](correctness.md#when-a-load-is-refused): each `reason` and what to do.
-- [**Install or import fails**](getting-started.md#troubleshooting): the native addon, and the deprecation warning.
+- [**Install or import fails**](getting-started.md#troubleshooting): two messages from before the native dependency was dropped.
 
 ## Decide
 

@@ -14,7 +14,7 @@ import { takeLease } from '@/core/leases';
 import { rollbackSegment } from '@/core/rollback';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { counting } from '../helpers/counting';
 import { collect } from '../helpers/loaded';
 import { testEntropy } from '../helpers/entropy';

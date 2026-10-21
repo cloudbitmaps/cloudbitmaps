@@ -20,7 +20,7 @@ import {
 } from '@/core/errors';
 import type { MetricEvent } from '@/core/metrics';
 import type { ChunkRead, ReadChunksOptions, SegmentRef, StorageChunkSource } from '@/core/ports';
-import { roaringCodec, SafeBitmap } from '@/roaring-codec';
+import { roaringCodec, SafeBitmap } from '@/native-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
 import { reachSite } from '../helpers/force-refusal';
 import { collecting, request, runBatch, seed } from '../helpers/combine-many';

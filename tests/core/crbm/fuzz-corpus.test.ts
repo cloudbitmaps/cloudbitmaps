@@ -4,8 +4,7 @@ import { dirname, join } from 'node:path';
 import { CrbmReader, parseExtension, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { DEFAULT_MAX_BITMAP_BYTES, DEFAULT_MAX_PAYLOAD_BYTES } from '@/core/crbm/format';
-import { SafeBitmap } from '@/roaring-codec';
-import { assertConsistentDecode } from '@/testing/fuzz-codec';
+import { assertConsistentDecode, safeDeserialize } from '@/testing/fuzz-codec';
 import { CloudRoaringError, IntegrityError } from '@/core/errors';
 import type { BlobReader } from '@/core/blob';
 import type { CrbmCrypto } from '@/core/crypto';
@@ -36,7 +35,7 @@ function reproducers(sub: string): Array<{ name: string; bytes: Uint8Array }> {
 
 /** The native-deserializer target's contract (mirrors fuzz/targets/safe-deserialize.mjs). */
 function deserialize(bytes: Uint8Array): void {
-  assertConsistentDecode(SafeBitmap.safeDeserialize(bytes, MAX_BYTES));
+  assertConsistentDecode(safeDeserialize(bytes, MAX_BYTES));
 }
 
 /** The index-parser target's contract: raw index bytes → self-consistent entries or a typed error. */
@@ -117,7 +116,7 @@ async function readChain(bytes: Uint8Array): Promise<void> {
   for (const k of new Set([...reader.chunkKeys(), 0, 1, 256, 4096, 65535])) {
     try {
       const chunk = await reader.getChunk(k);
-      if (chunk !== null) assertConsistentDecode(SafeBitmap.safeDeserialize(chunk, MAX_BYTES));
+      if (chunk !== null) assertConsistentDecode(safeDeserialize(chunk, MAX_BYTES));
     } catch (err) {
       if (!(err instanceof CloudRoaringError)) throw err;
     }

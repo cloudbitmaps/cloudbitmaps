@@ -8,7 +8,7 @@ import { dropSegment as coreDropSegment } from '@/core/erasure';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**

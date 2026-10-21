@@ -23,7 +23,7 @@ import { brandAsBackend } from '@/core/ports';
 import { BudgetExceededError } from '@/core/errors';
 import { joinId } from '@/core/bit-route';
 import { chunkKeyUnder, segmentPrefix } from '@/core/keys';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
 import type { OpenedStream } from '../helpers/stream-chunk-source';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';

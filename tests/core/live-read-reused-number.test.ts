@@ -11,7 +11,7 @@ import { brandAsBackend } from '@/core/ports';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 

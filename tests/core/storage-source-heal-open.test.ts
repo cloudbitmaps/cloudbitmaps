@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudRoaring, IntegrityError } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { verifyGeneration } from '@/core/crbm-open';
 import type { SegmentRef } from '@/index';
 import type {

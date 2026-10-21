@@ -6,7 +6,7 @@ import { findIdUnderTombstone } from '@/core/erase-id';
 import { BudgetExceededError, TransientError } from '@/core/errors';
 import { brandAsBackend } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { loadedStore } from '../helpers/loaded';
 

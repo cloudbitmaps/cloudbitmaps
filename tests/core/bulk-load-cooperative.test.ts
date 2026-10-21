@@ -1,6 +1,6 @@
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/bulk-load';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { SystemClock } from '@/system-clock';
 import { YIELD_EVERY } from '@/core/cooperative';
 import { joinId } from '@/core/bit-route';

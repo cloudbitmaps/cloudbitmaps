@@ -3,7 +3,7 @@ import { loadSegment } from '@/core/load';
 import { ValidationError } from '@/core/errors';
 import { CloudRoaring, MemoryStorage, RecordingAuditSink } from '@/index';
 import type { SegmentRef } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { collect, loadedStore } from '../helpers/loaded';
 import { testEntropy } from '../helpers/entropy';

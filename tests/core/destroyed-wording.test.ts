@@ -7,7 +7,7 @@ import { setSegmentRetention } from '@/core/retention';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { publishGeneration } from '../helpers/publish';
 import { testEntropy } from '../helpers/entropy';

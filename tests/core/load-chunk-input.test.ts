@@ -4,7 +4,7 @@ import { ValidationError } from '@/core/errors';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import roaring from 'roaring';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { counterEntropy } from '../helpers/entropy';

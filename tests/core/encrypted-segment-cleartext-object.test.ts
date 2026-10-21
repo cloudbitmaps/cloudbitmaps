@@ -11,7 +11,7 @@ import { BufferReader } from '@/core/blob';
 import { IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { publishGeneration } from '../helpers/publish';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { SegmentRef } from '@/index';

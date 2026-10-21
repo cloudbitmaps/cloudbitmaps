@@ -9,7 +9,7 @@ import { TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';

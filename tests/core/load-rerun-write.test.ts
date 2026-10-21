@@ -6,7 +6,7 @@ import { loadSegment, loadSegmentChunks } from '@/core/load';
 import { type GenKey, type IStorageDriver, type SegmentRef, brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { counterEntropy, withoutWriteIdentity } from '../helpers/entropy';
 
 /**

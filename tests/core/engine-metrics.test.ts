@@ -10,7 +10,7 @@ import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { IMetricsSink } from '@/index';
 import type { Clock, Rng, SegmentRef } from '@/index';
 import type { ChunkRef, StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { SegmentEngine } from '@/core/engine';
 import { BoundedLru } from '@cloudbitmaps/core';
 import type { CodecBitmap } from '@cloudbitmaps/core';

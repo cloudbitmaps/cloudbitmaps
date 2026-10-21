@@ -20,7 +20,7 @@ import { setSegmentRetention } from '@/core/retention';
 import { usableSummary } from '@/core/summary';
 import { incarnationOf } from '@/core/token';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { CloudRoaring, RecordingAuditSink } from '@/index';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { brandAsBackend } from '@/core/ports';

@@ -17,7 +17,7 @@ payloads, its index, its footer and, when its footer flags one, the extension bl
 metadata — is
 length-checked and CRC-verified, and deserialized with the **safe**
 RoaringBitmap reader (never the
-trusting variant) behind a hard size cap, before the native addon sees it. The cap is 1 MiB per chunk, and an
+trusting variant) behind a hard size cap, before the decoder sees it. The cap is 1 MiB per chunk, and an
 index entry above it (above 1 MiB plus the 28 bytes of nonce and tag, on an encrypted object) is refused when the
 object is opened, before any payload is read. That reader only keeps its reads inside
 the buffer, so each payload's **structure** is checked before the reader runs: containers and values in order,
@@ -50,7 +50,7 @@ scenario (`pnpm dr-drill`).
 **Bytes a caller loads are untrusted the same way.** A load from `{ serialized }` portable Roaring bytes, or from a
 `{ bitmap }` through its own `serialize('portable')`, puts them behind a size cap of their own (537,403,396 bytes,
 more than any canonical 32-bit bitmap serializes to), the same structural check and the same safe reader before the
-native addon sees them, and refuses bytes after the bitmap's end. They are read through the typed array's own
+decoder sees them, and refuses bytes after the bitmap's end. They are read through the typed array's own
 accessors, so a subclass cannot show the check other bytes than the reader reads. Bytes in a `SharedArrayBuffer`
 are copied first. A plain buffer can still be written by another thread during the call (an unfinished `fs.read`,
 `crypto.randomFill` or asynchronous addon call into it), so the decode can see bytes the check did not: the load
@@ -60,9 +60,9 @@ are a `ValidationError`, since they are the caller's input rather than a stored 
 written.
 
 **A caller must not modify an input buffer while a load reads it.** The checks above hold for
-a buffer that stays as it was handed in. A buffer another thread, an unfinished `fs.read` or an asynchronous addon call
+a buffer that stays as it was handed in. A buffer another thread, an unfinished `fs.read` or an asynchronous call
 is still writing can differ between the structural check and the decode, and the load's re-check of each container
-catches a difference only after the native code has read it. Hand in a buffer that nothing else writes, or a copy of it.
+catches a difference only after the decoder has read it. Hand in a buffer that nothing else writes, or a copy of it.
 
 Encryption-at-rest (opt-in) is envelope AES-256-GCM with a per-segment DEK wrapped under operator-held KEK(s);
 the AEAD wiring is pinned to published known-answer vectors and the envelope/rotation/crypto-shred paths are
@@ -90,7 +90,7 @@ smuggles in a breaking change.
 
 | forced | reached us via | note |
 | --- | --- | --- |
-| `undici >=6.28.0 <7` | `roaring` -> `node-gyp` (optional, install-time) | |
+| `undici >=6.28.0 <7` | `roaring` (the test oracle, a dev dependency) -> `node-gyp` | |
 | `brace-expansion >=5.0.12 <6` | `eslint` / `typescript-eslint`, through `minimatch` | |
 | `nanoid >=3.3.18 <4` | the vitest toolchain | |
 | `uuid ^11.1.1` | `@google-cloud/storage` | |
@@ -112,11 +112,11 @@ unbounded range resolved to 14.x, which is three majors of blast radius for no s
 **None of these overrides reach consumers.** A `pnpm.overrides` entry applies to *this workspace's* install
 tree and is not part of any published manifest, so an installed `@cloudbitmaps/*` package resolves by the
 ranges its own manifest declares. What a consumer actually gets is counted **per package** — none for
-`@cloudbitmaps/core` and none for `@cloudbitmaps/tools`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
+`@cloudbitmaps/core` and none for `@cloudbitmaps/tools`, none for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
 (the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). One of the packages above does
 sit under a shipped SDK transitively — `uuid` under `@google-cloud/storage` — at whatever version that SDK
 itself resolves, which is the surface to reason about here, not our pinned one. `undici` is **not** in that
-category: it reaches this repo only through `roaring`'s `node-gyp`, an optional install-time path, and never
+category: it reaches this repo only through the test oracle's `roaring` dev dependency and its `node-gyp`, and never
 through a package a consumer installs.
 
 **A consumer's `npm audit` lists two moderate findings through `@cloudbitmaps/gcs`**: `uuid` below 11.1.1
@@ -131,11 +131,6 @@ other SDK it installs, shows a finding.
 ### Triaged (accepted) advisories
 
 **Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
-
-`tar` shows the policy at work. It is pulled in only by `roaring`'s **install-time** native-build chain
-(`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s own trusted prebuilt binary, and it is
-never on CloudBitmaps' runtime path, yet it is kept on a patched release: reachability is a reason to **not
-panic**, never a reason to stay unpatched when a patch exists.
 
 **The bar for adding an entry here:** a rationale that names the exact path the advisory would have to travel to
 matter, plus a concrete condition under which the entry gets removed. An accepted advisory with no revisit
@@ -191,18 +186,6 @@ produced the package they installed**. The controls:
   request's runs write entries only its own later runs read. So after anything untrusted has run in a workflow on
   `main`, such as a compromised dependency or Action, delete every cache entry (`gh cache delete --all`) as well as
   reverting it: an entry it wrote would be restored by later runs.
-- **The native addon, from source (optional, for the most cautious).** CloudBitmaps ships **pure JS/TS** — the
-  only native code is its runtime dependency **`roaring`** (CRoaring), which the *consumer* installs. Consumers
-  who prefer not to trust `roaring`'s prebuilt binary can build it **from source** at install time
-  (`npm_config_build_from_source=true npm ci`, given a C/C++ toolchain). CI already proves this exact path works
-  on every run: inside an Amazon Linux 2023 container, the `lambda deployability` job installs **`roaring`
-  itself** with **`npm_config_build_from_source=true`** — forcing the compile rather than relying on a
-  missing prebuilt, so the path is exercised even on a runner that has one — then unpacks the packed
-  `@cloudbitmaps/*` tarballs beside it and loads the result under both ESM and CJS. **Platform note:** `roaring` publishes prebuilt
-  binaries for common **glibc** targets but **none for musl**, so on Alpine the addon builds from source at
-  install regardless — provision a toolchain (`apk add --no-cache build-base python3`) or use a glibc base
-  image. The from-source path is currently CI-proven on glibc (AL2023); a musl/Alpine lane is a tracked
-  follow-up (the guarantee is documented, not yet gated).
 - **The published tarball is scanned, not just the source.** Before publishing, the release workflow packs each
   package, unpacks the `.tgz` and scans **what actually ships**
   ([`scripts/leak-scan-tarballs.cjs`](scripts/leak-scan-tarballs.cjs)) for credentials, private keys, real email

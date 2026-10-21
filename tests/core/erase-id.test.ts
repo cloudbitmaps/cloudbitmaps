@@ -12,7 +12,7 @@ import type {
   IKeystore,
   StorageDeleteOptions,
 } from '@cloudbitmaps/core/driver-kit';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';

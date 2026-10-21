@@ -22,7 +22,7 @@ import { rowVersionOf } from '@/core/crbm-storage-source';
 import type { PinnedObject } from '@/core/crbm-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';

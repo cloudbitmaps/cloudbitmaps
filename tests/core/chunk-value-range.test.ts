@@ -4,7 +4,7 @@ import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import { CloudRoaring, IntegrityError } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { joinId, MAX_REMAINDER } from '@/core/bit-route';
 import { collect } from '../helpers/loaded';
 import { craftPortable, type CraftedContainer } from '../helpers/portable-bytes';

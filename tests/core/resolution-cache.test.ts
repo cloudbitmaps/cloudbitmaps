@@ -22,7 +22,7 @@ import {
 } from '@/core/reader-defaults';
 import { segmentKey } from '@/core/keys';
 import { destroySegment } from '@/core/erasure';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 

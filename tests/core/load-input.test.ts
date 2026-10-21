@@ -6,7 +6,7 @@ import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { ValidationError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { craftPortable } from '../helpers/portable-bytes';
 import { counterEntropy } from '../helpers/entropy';

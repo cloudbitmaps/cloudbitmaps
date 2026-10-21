@@ -18,7 +18,7 @@ import type {
 import { ownedTail, provenObject } from '@/core/crbm-open';
 import { loadSegment } from '@/core/load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect } from '../helpers/chunk-stream';
 import { objectFingerprint } from '../helpers/fingerprint';

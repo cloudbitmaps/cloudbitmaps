@@ -4,7 +4,7 @@ import type { SegmentRef } from '@/index';
 import { aadFor } from '@/core/crypto';
 import type { Aead, IKeystore, WrappedDek } from '@/core/crypto';
 import { writeCrbmGenerationStream } from '../helpers/crbm-write';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import type { IStorageDriver } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { openGenerationReader } from '@/core/crbm-open';

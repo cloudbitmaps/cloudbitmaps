@@ -14,9 +14,9 @@ import { chunkReads } from '../helpers/chunk-reads';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
 import type { CloudRoaringOptions, CombineOptions, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { collect, seedSegment } from '../helpers/loaded';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { SegmentEngine } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
 

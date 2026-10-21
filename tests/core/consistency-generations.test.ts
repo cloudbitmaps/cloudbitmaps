@@ -16,7 +16,7 @@ import { runConsistencyCheck } from '@/core/consistency';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
 import { setSegmentRetention } from '@/core/retention';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';

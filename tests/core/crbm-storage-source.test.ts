@@ -5,7 +5,7 @@ import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { storageObjectPath } from '@/drivers/localfs/paths';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { CapabilityError, IntegrityError, ValidationError } from '@/core/errors';
 import type { IStorageDriver } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';

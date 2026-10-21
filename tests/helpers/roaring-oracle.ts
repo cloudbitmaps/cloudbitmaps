@@ -19,7 +19,7 @@
 import fc from 'fast-check';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import type { CodecInterface } from '@cloudbitmaps/core';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 
 /** A codec the oracle suite holds to CRoaring's answers. */

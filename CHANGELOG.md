@@ -11,7 +11,29 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **A bitmap passed where ids go is recognised by its shape, not its class: an object with a `serialize` method loads
+  as `{ bitmap }`.** `@cloudbitmaps/roaring` no longer imports the `roaring` package, so it cannot test for its
+  `RoaringBitmap32` class. A `RoaringBitmap32` and a bitmap `deserializePortable` returned still load as `{ bitmap }`,
+  from their containers. Two edges change. A bitmap from another copy of `roaring` used to load as the ids it
+  iterated, and took `sorted: true`; it now loads as `{ bitmap }`, so `sorted: true` with it throws `ValidationError`
+  before any request. An iterable of your own that has a `serialize` method used to be iterated; it is now serialized,
+  and its `serialize('portable')` must return portable Roaring bytes. What a caller does: for a bitmap from another
+  copy, drop `sorted: true`; for an iterable with its own `serialize`, load `[...yours]` or `{ serialized }` to say
+  which one you mean.
+
 ### Changed
+
+- **`@cloudbitmaps/roaring` has no native dependency.** The store's codec is Roaring written in TypeScript, which reads
+  and writes the same portable bytes as before: a stored object, a `{ serialized }` input and an export are byte for
+  byte what the `roaring` package wrote, so nothing is migrated, and a store can have readers and writers on either
+  codec at once. No package of this family depends on `roaring` now, so there is no install script to allow
+  (npm 12 `allowScripts`, pnpm `onlyBuiltDependencies` or `allowBuilds`), no binary to download, nothing to rebuild
+  when Node's major version changes, and the install is the same under `--ignore-scripts` and on Alpine. The two
+  troubleshooting entries for `Cannot find module './build/Release/roaring.node'` and `DEP0169` say they no longer
+  apply. `roaring` stays a pinned development dependency: the tests hold the TypeScript codec to it, as the
+  reference. A project that imports `roaring` itself (the samples that build a bitmap do) still installs and allows it.
 
 - **The format page's chunk-payload section says what a writer of your own needs to reproduce the bytes, and both READMEs
   credit the Roaring authors.** [`docs/format.md`](docs/format.md) section 3 now defines a run (a maximal sequence of

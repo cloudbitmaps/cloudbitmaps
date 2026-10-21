@@ -11,9 +11,9 @@ import type { DecodedLoadInput } from '@/core/load-input';
 import { MemoryStorageDriver } from '@/drivers/memory';
 import { aadFor } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { checkPortableLayout, containerPayloads } from '@/portable/layout';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, ValidationError } from '@/core/errors';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { bitsetOf, craftPortable } from '../helpers/portable-bytes';
@@ -401,19 +401,62 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
   });
 
-  it('a RoaringBitmap32 from another copy of roaring is loaded as the ids it iterates', async () => {
-    // A look-alike class: iterable, with serialize, but not this package's RoaringBitmap32.
-    class Elsewhere {
-      constructor(private readonly ids: number[]) {}
-      serialize(): Uint8Array {
-        throw new Error('not called: a bare bitmap of another class is ids');
-      }
-      [Symbol.iterator](): Iterator<number> {
-        return this.ids[Symbol.iterator]();
-      }
+  /** A look-alike class from "another copy" of a roaring library: iterable, and with `serialize('portable')`. */
+  class Elsewhere {
+    readonly serialized: number[] = [];
+    readonly iterated: number[] = [];
+    constructor(private readonly ids: number[]) {}
+    serialize(format: string): Uint8Array {
+      this.serialized.push(this.serialized.length);
+      expect(format).toBe('portable');
+      return new RoaringBitmap32(this.ids).serialize('portable');
     }
-    const { bytes } = await loadAndRead(new Elsewhere(IDS));
+    [Symbol.iterator](): Iterator<number> {
+      this.iterated.push(0);
+      return this.ids[Symbol.iterator]();
+    }
+  }
+
+  it('a bitmap from another copy of roaring loads by its shape: serialized once, never iterated', async () => {
+    const other = new Elsewhere(IDS);
+    const { bytes } = await loadAndRead(other as unknown as LoadInput);
+    expect(other.serialized).toHaveLength(1);
+    expect(other.iterated).toHaveLength(0);
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
+  });
+
+  it('an iterable with its own serialize is serialized, not iterated', async () => {
+    // Its serialize decides what loads, even where it disagrees with what it iterates.
+    const other = new Elsewhere([7]);
+    const { bytes } = await loadAndRead(other as unknown as LoadInput);
+    const chunk = await loadAndRead([7]);
+    expect(Buffer.from(bytes).equals(Buffer.from(chunk.bytes))).toBe(true);
+    expect(other.iterated).toHaveLength(0);
+  });
+
+  it('sorted: true with a bitmap of another copy throws ValidationError, as it does for any bitmap', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await expect(
+      store.load(SEG, new Elsewhere(IDS) as unknown as LoadInput, { sorted: true }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      store.load(SEG, new RoaringBitmap32(IDS) as unknown as LoadInput, { sorted: true }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it('ids that are not objects with serialize still load as ids: arrays, typed arrays, sets, generators', async () => {
+    const golden = Buffer.from(GOLDEN);
+    for (const input of [
+      IDS,
+      Uint32Array.from(IDS),
+      new Set(IDS),
+      (function* () {
+        yield* IDS;
+      })(),
+    ]) {
+      const { bytes } = await loadAndRead(input as LoadInput);
+      expect(Buffer.from(bytes).equals(golden)).toBe(true);
+    }
   });
 });
 

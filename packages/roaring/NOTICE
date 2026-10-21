@@ -7,6 +7,6 @@ file. You may obtain a copy of the License at:
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-@cloudbitmaps/roaring builds on the Roaring Bitmap data structure and uses the CRoaring
-engine (via the `roaring` Node.js binding) for in-memory bit math.
+@cloudbitmaps/roaring builds on the Roaring Bitmap data structure and implements the Roaring format and
+algorithms of Lemire et al.; CRoaring is used in its tests as the reference.
 Those projects are independent works under their own licenses.

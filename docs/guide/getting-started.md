@@ -11,30 +11,7 @@ New to the words? [The words these docs use](#the-words-these-docs-use) is at th
 
 ## Install
 
-In a new folder, run `pnpm init` (or `npm init -y`). Newer clients run a dependency's install script only if you allow
-it, and `roaring` needs its one script to fetch its native binary, so allow it before you install:
-
-- **npm 12:** add this to `package.json`. npm 11 runs the script but warns until you allow it the same way.
-
-  ```json
-  { "allowScripts": { "roaring": true } }
-  ```
-
-- **pnpm 11 and later:** put this in a `pnpm-workspace.yaml` beside the `package.json`. Those versions no longer read
-  the `package.json` `pnpm` key (they warn about it on every command), so leave it out.
-
-  ```yaml
-  allowBuilds:
-    roaring: true
-  ```
-
-- **pnpm 10:** add this to `package.json`.
-
-  ```json
-  { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
-  ```
-
-- **pnpm 9:** nothing extra.
+In a new folder, run `pnpm init` (or `npm init -y`). Nothing needs allowing first: no package here runs an install script or ships a native binary.
 
 Then:
 
@@ -45,9 +22,6 @@ pnpm add @cloudbitmaps/s3                   # only when you move to S3 (or /gcs,
 
 Install the same version of every `@cloudbitmaps/*` package. The six release together at one version, and each one pins the exact version of `@cloudbitmaps/core` it was built with, so a flavor and a driver of different versions are two copies of `core`. A mix, such as a later `pnpm add @cloudbitmaps/s3` run beside an older `roaring`, installs with no warning and puts two copies of `core` in your tree. `new CloudRoaring({ storage: new S3Storage(...) })` then fails to compile with `TS2322 ... Property '[STORAGE_BACKEND_BRAND]' is missing`, and `instanceof` does not hold across the copies (`errorKind(err)` still classifies an error). `npm ls @cloudbitmaps/core` shows the copies; `pnpm up --latest '@cloudbitmaps/*'`, or `npm install @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z` with the same `X.Y.Z`, aligns them. Mixed minor versions always did this; mixed patch versions now do too.
 
-If you installed before allowing it, the package throws at `import` (the install exited 0, or 1 on pnpm 11 and later): allow it, then run
-`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped.
-
 `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the engine underneath; it arrives on
 its own, and you install or import it only to name a driver port's type, such as `IStorageDriver`, which
 `@cloudbitmaps/core/driver-kit` exports ([the storage interfaces](api-reference.md#the-storage-interfaces-used-to-type-storage--registry)). Install one copy of `@cloudbitmaps/roaring` in a process; a combine
@@ -55,9 +29,6 @@ refuses a segment of another store, and a segment of another copy always belongs
 
 The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same
 Node versions: [CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) has the details.
-
-If `import` fails with `Cannot find module './build/Release/roaring.node'`, see
-[Troubleshooting](#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
 ## Your first segment, in memory
 
@@ -333,8 +304,7 @@ one row per item, each linking to the detail.
   [errors table](api-reference.md#errors-typed--you-catch-these) lists each one with what to do.
 - **A load returned `published: false`.** Read `result.reason`:
   [when a load is refused](correctness.md#when-a-load-is-refused).
-- **The install or the first `import` fails**, or Node prints a deprecation warning: see
-  [Troubleshooting](#troubleshooting) below.
+- **An old install error or deprecation warning:** [Troubleshooting](#troubleshooting) says which no longer apply.
 - **Timeouts and retries.** <a id="6-reliability-retries-backoff--timeouts"></a>Reads retry by themselves, and a write is
   retried only where that is safe, so a fault it does not settle is yours to re-run: [Reliability](production.md#reliability-retries-backoff--timeouts).
 - **Expiring data.** <a id="135-retention-ttl-and-pruning--what-exists-and-what-doesnt"></a>There is no per-id
@@ -344,102 +314,18 @@ one row per item, each linking to the detail.
 
 ### `Cannot find module './build/Release/roaring.node'` after a successful install
 
-The package is unusable at runtime, and on npm 12 and pnpm 10 the install still exits 0. Three ways to get here. Two skip
-`roaring`'s install script, and on **pnpm 10 and later the plain install is one of them**, with no flag of your own:
-
-```
-$ npm i @cloudbitmaps/roaring             # npm 12+: warns that roaring's install script was blocked, exits 0
-$ pnpm add @cloudbitmaps/roaring          # pnpm 10: warns "Ignored build scripts: roaring", exits 0
-$ pnpm add @cloudbitmaps/roaring          # pnpm 11+: fails with ERR_PNPM_IGNORED_BUILDS, exits 1
-$ npm i --ignore-scripts @cloudbitmaps/roaring    # any client, when you opt out of scripts
-$ node -e "require('@cloudbitmaps/roaring')"
-Error: Cannot find module './build/Release/roaring.node'
-```
-
-**npm 12 and pnpm 10 and later do not run a dependency's install script unless you allow it** — a deliberate supply-chain
-default, not a bug — so on them the *documented* install command needs a second step. npm 11 runs it and warns
-that `allowScripts` does not cover it yet; pnpm 9 runs it; every client skips it under `--ignore-scripts`.
-
-**Why.** The native dependency `roaring` publishes an npm tarball containing **no** compiled binary; it ships an
-`install` script that downloads the right prebuilt binary for your platform from GitHub Releases. Skip install
-scripts and that download never happens, so there is nothing for the addon loader to find. The client reports
-success because the *install* did succeed — only the post-install step was skipped.
-
-**The third: you changed Node's major version.** `roaring` downloads one binary per Node ABI, into
-`native/roaring-node-v<ABI>-<platform>-<arch>-<libc>`, and when the one for the running Node is missing it falls back to
-`./build/Release/roaring.node` and reports that path. An install made under Node 24 and run under Node 22 (after
-`nvm use 22`, a new CI image, a new Lambda runtime) fails with this same message. Allowing the script does not fix this
-by itself. Run `pnpm rebuild roaring` (or `npm rebuild roaring`) under the Node you now use; the allowance below must
-be in place for the rebuild to run.
-
-**Fixes, in order of preference:**
-
-1. **Allow the install script for that one package** — narrow the exception rather than re-enabling scripts
-   globally. Put it in a file your project commits so CI and teammates inherit it. npm 12 and pnpm 10 read your
-   `package.json`:
-
-   ```json
-   { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
-   ```
-
-   (the first key is npm's, the second pnpm 10's). pnpm 11 and later do not read the `pnpm` key: they stop with
-   `ERR_PNPM_IGNORED_BUILDS`, and the package throws at `import`. There the allowance goes in a `pnpm-workspace.yaml`
-   beside the `package.json`, and the `pnpm` key can stay out of `package.json`:
-
-   ```yaml
-   allowBuilds:
-     roaring: true
-   ```
-
-   `npm install-scripts approve roaring` (npm 12) and `pnpm approve-builds` do the same interactively; npm's
-   records the approval pinned to the installed `roaring` version.
-2. **Then re-run the skipped step** — `npm rebuild roaring` or `pnpm rebuild roaring`. The allowance above has
-   to be in place **first**: without it the rebuild still runs an install script the client will not run, and leaves
-   the package just as broken. npm 12 exits 0 but warns that it blocked one; `pnpm rebuild roaring` is a **silent
-   no-op** on pnpm 10 and 11, and fails with `ERR_PNPM_IGNORED_BUILDS` (exit 1) on pnpm 12. An approval made with `npm install-scripts approve roaring` runs
-   nothing by itself, so the rebuild is what fetches the binary.
-3. **Build from source** — `npm_config_build_from_source=true npm i` with a C/C++ toolchain present. Also the
-   route on **Alpine/musl**, where no prebuilt binary is published at all.
-
-**Check it at install time, not at 3am.** Because npm 12 and pnpm 10 exit 0 on this, add a startup or CI
-assertion that the addon actually loads — `node -e "require('@cloudbitmaps/roaring')"` — so a broken install
-fails your pipeline instead of your first request.
+This no longer applies from the first version that has no native dependency. `@cloudbitmaps/roaring` reads and writes
+Roaring bytes in TypeScript, so there is no install script to allow, no binary to download and nothing to rebuild when
+you change Node's major version, and it installs the same under `--ignore-scripts`, on Alpine and on any other platform
+Node 22.12 runs on. If you still see this message, either a release before this change is installed (upgrade
+`@cloudbitmaps/roaring`), or your project installed the `roaring` package from npm itself, as the samples that build a
+bitmap do: allow its install script as that package documents.
 
 ### `DEP0169 DeprecationWarning: url.parse() behavior is not standardized`
 
-A normal install does not print this: Node 22 prints it only under `--pending-deprecation`, and Node 24 only when the code calling `url.parse()` is not under a `node_modules` path, as in a bundle. Where it does appear, it is on stderr, the first time the package is loaded:
-
-```
-(node:1234) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors
-  at node_modules/@mapbox/node-pre-gyp/lib/util/versioning.js:338
-  at node_modules/roaring/index.js:32
-```
-
-**Nothing is wrong, and it is not CloudBitmaps code.** The chain is `@cloudbitmaps/roaring` → `roaring` (the
-CRoaring binding, the only native code involved) → `@mapbox/node-pre-gyp`, which locates the prebuilt binary for
-your platform. Finding it also computes the URL the binary *would* be downloaded from, using Node's legacy
-`url.resolve()`; that URL is then discarded, because the binary is already installed. So the warning is emitted
-for a computation whose result is never used.
-
-Specifics, so you can decide whether to care:
-
-- **Emitted once per process**, on **stderr**, and the process exits normally.
-- **Building from source does not avoid it.** `roaring` calls node-pre-gyp's lookup first and only falls back to
-  a locally-built binary if that throws `MODULE_NOT_FOUND`, so the lookup — and the warning — happens either way.
-- **It is not a stale dependency.** `@mapbox/node-pre-gyp` is at its latest published version; there is no
-  upgrade that removes this. The real fix is upstream in `roaring`, migrating to a resolver that reads the
-  filesystem without constructing URLs. Nothing in CloudBitmaps calls `url.parse()`.
-- **Security:** the inputs are `roaring`'s own `package.json` fields, not runtime or user-controlled data, and no
-  network request happens at load. The vulnerability class that motivated this deprecation — trusting a host
-  parsed out of untrusted input — does not apply here.
-
-**The one case where it actually matters.** Where the warning is printed and you run Node with **`--throw-deprecation`**, warnings become
-thrown errors and **your process will exit non-zero**. The import itself still succeeds — deprecation warnings
-are emitted asynchronously, so the throw lands after the module has loaded — but the process dies. If you use
-that flag, either drop it for the process that loads CloudBitmaps or allow this one deprecation.
-
-**What not to do:** `--no-deprecation` silences *every* deprecation warning in your application, including ones
-about your own code. Suppressing a whole diagnostic channel to hide one known-benign line is a bad trade.
+This no longer applies from the first version that has no native dependency: the warning came from the `roaring`
+package's own binary lookup, which `@cloudbitmaps/roaring` no longer installs or loads. If you still see it, it comes
+from a `roaring` package your project installed itself, or from a release before this change.
 
 ### CommonJS, Jest and TypeScript
 
@@ -461,8 +347,6 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
   A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`; `node16` and `node18` report `TS1479`
   on the import. A project on `moduleResolution: bundler` is unaffected. Code that reads `process.env`, as the Azure
   Blob snippet does, still needs `@types/node`.
-- On Alpine (musl) there is no prebuilt `roaring` binary, so the install compiles it: add a toolchain first
-  (`apk add --no-cache build-base python3`) or use a glibc image such as `node:22-slim`.
 
 ## The words these docs use
 

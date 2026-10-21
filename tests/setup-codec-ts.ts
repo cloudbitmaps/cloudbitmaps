@@ -46,16 +46,16 @@ function calledByStore(): boolean {
   Error.stackTraceLimit = stackTraceLimit;
   const files = sites
     .map((site) => site.getFileName() ?? '')
-    .filter((file) => !file.endsWith('/setup-codec-ts.ts'));
+    .filter(
+      (file) => !file.endsWith('/setup-codec-ts.ts') && !file.endsWith('/helpers/native-codec.ts'),
+    );
   // Innermost first: the nearest of a test frame (a helper that drives core with the native codec on purpose) and the
   // facade frame (a store) says who asked. Neither (a continuation of an async store operation) is a store.
   for (const file of files) {
     if (file.startsWith(TESTS_DIR)) return false;
     if (file.endsWith('/packages/roaring/src/index.ts')) return true;
   }
-  return files.some(
-    (file) => /\/packages\/[^/]+\/src\//.test(file) && !file.endsWith('/roaring-codec.ts'),
-  );
+  return files.some((file) => /\/packages\/[^/]+\/src\//.test(file));
 }
 
 const TESTS_DIR = `${dirname(fileURLToPath(import.meta.url))}/`;
@@ -109,11 +109,12 @@ function usesNativeOnPurpose(path: string): boolean {
   return exempt;
 }
 
-type Codec = typeof import('@/roaring-codec').roaringCodec;
+type Codec = typeof import('@/native-codec').roaringCodec;
 let restore: (() => void) | undefined;
 
 beforeAll(async () => {
-  const { roaringCodec, setFlagshipCodec } = await import('@/roaring-codec');
+  const { roaringCodec } = await import('@/native-codec');
+  const { setFlagshipCodec } = await import('@/roaring-codec');
   const { tsRoaringCodec } = await import('@/ts-roaring/bitmap');
   const methods = roaringCodec as unknown as Record<string, unknown>;
   const originals = { ...methods };

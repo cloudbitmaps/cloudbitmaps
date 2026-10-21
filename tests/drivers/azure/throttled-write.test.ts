@@ -5,7 +5,7 @@ import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { loadSegment } from '@/core/load';
 import { TransientError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { StubBlobService, xmlError, type Answer } from '../../helpers/azure-blob-stub';
 import { testEntropy } from '../../helpers/entropy';
 

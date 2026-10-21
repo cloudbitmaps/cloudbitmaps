@@ -19,7 +19,7 @@ import type {
   IStorageDriver,
   RegistryRecord,
 } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting as countingCalls } from '../helpers/counting';
 import { recordedWaits, unansweredRegistry } from '../helpers/unanswered-registry';

@@ -11,7 +11,7 @@
 import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/bulk-load';
 import { DecodedLoadInput, SortedLoadInput, prepareLoadInput } from '@/core/load-input';
 import type { LoadInput } from '@/core/load-input';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { SystemClock } from '@/system-clock';
 import { testEntropy } from './entropy';
 import {

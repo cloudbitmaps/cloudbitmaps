@@ -16,7 +16,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { segmentKey } from '@/core/keys';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect, expectSameBytes } from '../helpers/chunk-stream';
 import { Gate, Watched, turns, worstWhileWaiting } from '../helpers/live-buffers';

@@ -9,7 +9,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { RecordingAuditSink } from '@/index';
 import type { SegmentRef } from '@/index';
 import type { GenKey, IStorageDriver, StorageDeleteOptions } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';

@@ -5,7 +5,7 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { KeyUnavailableError, NotFoundError, ValidationError } from '@/core/errors';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { RecordingAuditSink, TransientError } from '@/index';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';

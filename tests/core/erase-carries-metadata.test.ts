@@ -12,7 +12,7 @@ import { openSummary, sealSummary, summaryAgrees, usableSummary } from '@/core/s
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec, SafeBitmap } from '@/roaring-codec';
+import { roaringCodec, SafeBitmap } from '@/native-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { FINGERPRINT } from '../helpers/fingerprint';
 import { testEntropy } from '../helpers/entropy';

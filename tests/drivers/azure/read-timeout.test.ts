@@ -11,7 +11,7 @@ import { writeCrbmGeneration } from '../../helpers/crbm-write';
 import { IntegrityError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { CloudRoaring } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { resolveReadTimeoutMs } from '@/azure-blob/read-timeout';
 import { StubBlobService, watchProcess, type Plan } from '../../helpers/azure-blob-stub';
 

@@ -279,8 +279,8 @@ The `store.load` row lists the guards and what throws instead.
 format, or `{ bitmap }`, any `PortableBitmap` (an object with `serialize('portable')`, such as `roaring`'s
 `RoaringBitmap32`, and optionally `getSerializationSizeInBytes('portable')`, which lets a load refuse one over the cap
 before serializing it), which is loaded as `{ serialized: bitmap.serialize('portable') }`, serialized once at the
-call. A bare `RoaringBitmap32` from the `roaring` this package uses, or a bitmap `deserializePortable` returned, passed
-as ids, is loaded as `{ bitmap }`. Bitmap bytes are capped at 537,403,396 bytes (more than any canonical 32-bit bitmap
+call. Any object with a `serialize` method (a `RoaringBitmap32` from the `roaring` package, or a bitmap `deserializePortable` returned) passed
+as ids is loaded as `{ bitmap }`, even if it is also iterable. Bitmap bytes are capped at 537,403,396 bytes (more than any canonical 32-bit bitmap
 serializes to), must hold exactly one bitmap, and
 are checked structurally and decoded by the safe deserializer before the first request; malformed or oversized
 bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then
@@ -296,8 +296,7 @@ whatever the segment's size, and writes the same object an unsorted load of the 
 id lower than the one before throws `ValidationError` naming its position. The row, the number and the key are settled
 before the first id is read. An error the ids raise reaches the caller as the very object raised, never seen by the
 storage driver, and a storage driver that runs its write again gets `IntegrityError`. With `{ serialized }`, `{ bitmap
-}`, a bitmap `deserializePortable` returned or a `RoaringBitmap32` of this package's `roaring` (one from another copy
-loads as its ids, and takes `sorted`), and as a value that is not a boolean, it throws `ValidationError` before any
+}`, a bitmap `deserializePortable` returned or any other object with a `serialize` method, and as a value that is not a boolean, it throws `ValidationError` before any
 request; the `*Into` verbs do not take it
 ([ids that already ascend](loading.md#what-a-load-accepts)).
 

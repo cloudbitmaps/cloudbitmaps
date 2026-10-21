@@ -6,7 +6,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { joinId } from '@/core/bit-route';
 import type { GenKey, IStorageDriver } from '@/core/ports';
 import { TransientError, WriteConflictError, destroySegment } from '@/index';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { zeroEntropy } from '../helpers/entropy';
 

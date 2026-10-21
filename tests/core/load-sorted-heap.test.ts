@@ -8,7 +8,7 @@ import { loadSegment } from '@/core/load';
 import type { BlobSink } from '@/core/blob';
 import type { GenKey, IStorageDriver, SegmentRef, StorageCaps } from '@/core/ports';
 import { MemoryRegistryDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { counterEntropy } from '../helpers/entropy';
 import { heavy } from '../helpers/strength';
 

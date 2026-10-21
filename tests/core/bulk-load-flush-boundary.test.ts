@@ -1,4 +1,4 @@
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { joinId } from '@/core/bit-route';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryStorageDriver } from '@/drivers/memory';

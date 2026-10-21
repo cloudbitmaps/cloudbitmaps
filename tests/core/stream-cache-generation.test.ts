@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { BoundedLru, SegmentEngine } from '@cloudbitmaps/core';
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { joinId } from '@/core/bit-route';
 import { chunkKeyUnder, segmentPrefix } from '@/core/keys';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';

@@ -23,7 +23,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import type { ObjectRegistryStore, ObjectRow } from '@/drivers/_shared/object-registry';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { Entropy } from '@/core/determinism';
 import { brandAsBackend } from '@/core/ports';

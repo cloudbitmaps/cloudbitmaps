@@ -6,7 +6,7 @@ import type { SegmentRef } from '@/core/ports';
 import type { WrappedDek } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { testEntropy } from '../helpers/entropy';
 
 /**
