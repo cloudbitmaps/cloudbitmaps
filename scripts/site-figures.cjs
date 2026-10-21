@@ -864,9 +864,10 @@ const specAnchors = [];
   // site — the whole point of this file is that no figure is published on the strength of someone having once
   // seen it.
   //
-  // The native-creep figure is the load-bearing one. It is the off-heap byte count the roaring addon actually
-  // holds, which is where a combine leak WOULD show up and where a JS-heap sample would miss it, so it is quoted
-  // to 2dp rather than as "flat" — a reader can tell 0.00 from 0.05, and "flat" hides which one it is.
+  // The external-creep figure is the load-bearing one. It is the post-GC external memory (typed arrays' backing
+  // stores, where the store's bitmaps live), which is where a combine leak of buffers WOULD show up and where a
+  // JS-heap sample would miss it, so it is quoted to 2dp rather than as "flat" — a reader can tell 0.00 from
+  // 0.05, and "flat" hides which one it is.
   // The RSS envelope is a CEILING claim, not a measurement, and it is gated as one.
   //
   // `rss-gate-results.json` records the hard cgroup limit the workload ran under and whether it survived. The

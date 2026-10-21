@@ -98,6 +98,11 @@
               off our own arithmetic. Every money figure and rate below is checked against its source by a build gate, so a
               regression <em>or an overclaim</em> fails the build.
             </p>
+            <p class="hero-lede">
+              The read, memory and soak figures were measured on the native codec, before the store's codec moved to
+              TypeScript. The cost model and the crossover do not depend on the codec; the codec comparison is in
+              <code>bench/ts-codec-comparison.md</code> in the repository.
+            </p>
             <p class="actions">
               <a class="btn btn-primary" href="#anchors">The cost anchors →</a>
               <a class="btn" href="#limits">What they do not establish</a>

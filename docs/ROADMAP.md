@@ -497,7 +497,7 @@ move it up.
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the object size, the read cost and the monthly figure that follow — **offline, with no cloud account and
   nothing created**. Today's cost tooling can only answer that once you're already a user, which is backwards. It
-  would also answer what Roaring's compression is buying you on your particular ids &mdash; which is a real
+  would also answer what Roaring is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **A data key per generation.** A segment seals every generation under one data key for its whole life, so the count
   of seals under that key grows with every load and erasure rewrite, and a full-width segment reloaded every few minutes
@@ -554,14 +554,14 @@ move it up.
   with every module it reaches, imports no `node:*` builtin and has zero runtime dependencies, and `pnpm smoke` loads
   the built entry, bundled for a platform with no builtin, in a `node:vm` context holding only web-platform globals,
   with string code generation off and random values, timers and `fetch` refused at global scope (two rules Workers
-  documents), on every CI run. That is as close to an isolate as CI gets today, and it is a load, not a run. The
-  **codec** is no longer what stops it: the store's Roaring codec is TypeScript, so there is no native addon to
-  refuse to load, and the codec's source imports no `node:` builtin (read from the source; no test runs it in an
-  isolate). What is tested is narrower: the codec round-trips under Node on Linux, macOS and Windows and in the Amazon
-  Linux 2023 Lambda image, and it is held to CRoaring on random and hostile bitmaps. What stops it now is the rest of
-  the flavor: its main entry re-exports `MemoryStorage`, `LocalFsStorage` and the in-process keystore from
-  `@cloudbitmaps/core/node`, which import Node builtins, and nothing runs a store inside an isolate. A read-only entry
-  that left those out is the first piece, and it is **not built**. **We will not claim this works on any
+  documents), on every CI run. That is as close to an isolate as CI gets today, and it is a load, not a run. It is not
+  the codec either: the store's codec is TypeScript, with no native addon. The flavor's entry imports Node builtins
+  (`node:crypto`, `node:fs`) for its in-memory and local-disk backends and its entropy, and no runtime but Node is
+  tested. So the first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which is in
+  the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
+  encoding, refuses the same malformed bytes the codec's decoder does because the two share one structural check, and
+  is **not exported, not wired into anything, and not something you can use yet**. Read-only by
+  design: loads stay in Node. **We will not claim this works on any
   runtime until CI runs the conformance suite inside that runtime**: what a runtime can load is easy to get
   wrong, and a claim is not a test. Running the conformance suite inside an isolate also needs an in-memory backend that
   loads there. `MemoryStorage` hashes with `node:crypto`, so it is exported by `@cloudbitmaps/core/node` and not the

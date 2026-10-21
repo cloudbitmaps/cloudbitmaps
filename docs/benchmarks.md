@@ -6,6 +6,10 @@
 > sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the estimator's own numbers. The
 > polished, shareable version lives on the [site](../site/benchmarks.html).
 
+> **Measured on the native codec.** The read, memory and soak figures on this page were measured before the store's
+> codec moved to TypeScript. The cost model and the crossover do not depend on the codec; the codec comparison is in
+> [`bench/ts-codec-comparison.md`](../bench/ts-codec-comparison.md).
+
 CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
 sustained read rate, pay-per-use is far cheaper; above it, the cluster wins. This is that crossover.
 

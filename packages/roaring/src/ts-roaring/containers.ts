@@ -49,7 +49,7 @@ export const WORDS = 2_048;
 /** Bytes of a bitset container's body. */
 export const BITSET_BYTES = 8_192;
 
-/** How many times longer one array must be than the other for the shorter to gallop over it instead of a linear merge. */
+/** How many times longer one array must be than the other for the shorter to gallop over it instead of a linear merge (a larger factor gallops less often, which suits similar sizes better and skewed ones worse). */
 const GALLOP_SKEW = 16;
 
 /** Whether this machine stores a typed array's elements little-endian, as the wire does (so a body is a plain copy). */
@@ -643,10 +643,11 @@ function skewed(shorter: number, longer: number): boolean {
 }
 
 // Arrays shorter than this are merged; from here a similar-sized pair is intersected through a scratch bitset, which
-// reads both arrays once, in order, with no unpredictable branch.
+// reads both arrays once, in order, with no unpredictable branch. A lower value pays the bitset's set-and-clear for
+// pairs the merge finishes sooner; a higher one leaves mid-sized pairs on the slower merge.
 const PROBE_MIN = 32;
 
-// Scratch bitset for the probe and run intersections: all zero between calls (each call clears what it set).
+// Scratch bitset for the array probe: all zero between calls (each call clears what it set).
 const probeWords = new Uint32Array(WORDS);
 
 /** Values both arrays hold. */
@@ -658,14 +659,20 @@ function andArrays(a: Container, b: Container): Container | null {
   const out = values16(small.len);
   let n = 0;
   if (small.len >= PROBE_MIN && !skewed(small.len, big.len)) {
-    const words = probeWords;
     const se = small.off + small.len;
+    const first = s[small.off] as number;
+    const last = s[se - 1] as number;
+    // Only the span of `big` between the shorter array's ends can hold a match.
+    const le = big.off + big.len;
+    if (last < (l[big.off] as number) || first > (l[le - 1] as number)) return null;
+    const from = gallop(l, 0, big.off, le, first);
+    const to = gallop(l, 0, from, le, last + 1);
+    const words = probeWords;
     for (let i = small.off; i < se; i++) {
       const v = s[i] as number;
       words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
     }
-    const le = big.off + big.len;
-    for (let j = big.off; j < le; j++) {
+    for (let j = from; j < to; j++) {
       const v = l[j] as number;
       // The slot is written whether or not `v` is in the set; only a hit moves `n` past it.
       out[n] = v;
@@ -724,6 +731,8 @@ function filterByRuns(a: Container, b: Container, keep: boolean): Container | nu
   const pairs = lows16(b);
   const out = values16(a.len);
   let n = 0;
+  // Walking the runs costs one step per run and per value, so it wins once values are at least as many as runs; with
+  // fewer values the per-value walk skips the runs it does not need to visit.
   if (keep && a.len >= b.len) {
     // At least as many values as runs: walk the runs, skipping the values below each and copying those inside it.
     const ae = a.off + a.len;

@@ -100,7 +100,7 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
   `ValidationError` naming its position and never the id (`ids[41]: lower than the id before it; …`): sort at the
   source, or leave `sorted` off. A bad id is refused as it is without the option, at its position.
 - **For ids only.** With `{ serialized }`, `{ bitmap }`, a bitmap `deserializePortable` returned, or
-  any other object with a `serialize` method (a `RoaringBitmap32` is one), `sorted: true` throws `ValidationError` before any request:
+  any iterable with a `serialize` method (a `RoaringBitmap32` is one), `sorted: true` throws `ValidationError` before any request:
   those are held whole already and written from their own containers. A `sorted` that is not a boolean throws too. The `*Into`
   verbs do not take it.
 - **The segment is judged before an id is read.** The row and its refusals (a destroyed segment, an encrypted one the
@@ -174,14 +174,15 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 - **It holds more than the bitmap.** At its peak a bitmap load holds a decoded copy of the bitmap and its
   re-encoded bytes, each about the size of the serialization, on top of the bytes you passed and what the backend
   buffers of the object it writes (one 8 MiB part on S3).
-- **A bare bitmap takes the same path where ids go.** Any object with a `serialize` method (a `RoaringBitmap32` from
-  any copy of `roaring`, or a bitmap `deserializePortable` returned) passed where ids go loads as `{ bitmap }`, even if
-  it is also iterable; its `serialize('portable')` must return portable Roaring bytes.
+- **A bare bitmap takes the same path where ids go.** An iterable with a `serialize` method (a `RoaringBitmap32` from
+  any copy of `roaring`, or a bitmap `deserializePortable` returned) passed where ids go loads as `{ bitmap }`: its
+  `serialize` decides, and it is not iterated. Its `serialize('portable')` must return portable Roaring bytes. An
+  object that is not iterable is not read this way: it is `{ serialized }` or `{ bitmap }` as the only key, or refused.
 - **A byte array is not ids.** A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids is refused with
   `ValidationError`, because each byte would be loaded as an id. Pass bytes as `{ serialized }`, and ids as a
   `Uint32Array` or an array of numbers. Every other typed array is ids. The refusal is made when the load runs: a byte
-  array is an iterable of numbers, so the compiler accepts one as ids. (One that carries a `serialize` method of its own is a bitmap, not a
-  byte array: it loads as what its `serialize('portable')` returns.)
+  array is an iterable of numbers, so the compiler accepts one as ids. A byte array that carries a `serialize` method of its own is refused
+  too.
 - **Parts of one segment, built separately.** Join them in one process and load the union once: a load writes one
   generation from one process. [The recipe](#parts-of-one-segment-built-separately) is below.
 
@@ -953,8 +954,9 @@ computed it and when it ran.
 
 **Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass counts
 as **resident**, which is not what it serializes to: a bitmap costs a fixed amount over its serialized bytes
-(about 440 bytes for a sparse chunk on macOS and about 360 on Linux, measured on the native codec on arm64 before the
-store's codec became TypeScript, and not re-measured since; the model sits above both), so the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size
+(832 bytes in the model, measured on the TypeScript codec as the live heap plus external memory after a forced collection,
+over 50,000 bitmaps of one chunk each on macOS arm64: 435 to 452 bytes for a bitmap decoded from stored bytes and 674 to
+803 for one built by adds; the model sits above both), so the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size
 where the source knows it, capped at the window the call asked for, since an index is not trusted to say how much a stream
 holds; for a source that cannot say its size, which no shipped one is, the index's own cardinalities are the estimate), each
 chunk being evaluated, and the plan itself: the root keys and expression of every output and the operand indexes (2 bytes a root key, 320 a node and 3,700 an output, so about 10 KB an output of 8 nodes over 2,000

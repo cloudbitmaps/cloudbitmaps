@@ -10,14 +10,19 @@ import { ValidationError, decodeSerialized } from '@cloudbitmaps/core';
 import { tsRoaringCodec } from './ts-roaring/bitmap';
 
 /**
- * Whatever serializes itself to portable Roaring (an object with a `serialize` method: a caller's `RoaringBitmap32`
- * from the `roaring` package, or a bitmap {@link deserializePortable} returned), passed where ids go, loads as
- * `{ bitmap }`: from its containers, through the same check as any bytes, never id by id. Any other input passes
- * through unchanged. An object with its own `serialize` that is also iterable is serialized, not iterated.
+ * An iterable that serializes itself to portable Roaring (an object with `Symbol.iterator` and a `serialize` method: a
+ * caller's `RoaringBitmap32` from the `roaring` package, another copy's bitmap, or a bitmap {@link deserializePortable}
+ * returned), passed where ids go, loads as `{ bitmap }`: from its containers, through the same check as any bytes,
+ * never id by id. Its `serialize` decides, even where it disagrees with what it iterates. Any other input passes
+ * through unchanged, so the core's own rules apply to it: a byte array (`Uint8Array`, `Buffer`) is refused as ids even
+ * with a `serialize` of its own, and an object that is not iterable is read as `{ serialized }` or `{ bitmap }` or
+ * refused, whatever else it has.
  */
 export function bitmapAsLoadInput(input: LoadInput): LoadInput {
-  return typeof input === 'object' &&
-    input !== null &&
+  if (typeof input !== 'object' || input === null) return input;
+  const tag = Object.prototype.toString.call(input).slice(8, -1);
+  if (tag === 'Uint8Array' || tag === 'Uint8ClampedArray') return input;
+  return Symbol.iterator in input &&
     typeof (input as { serialize?: unknown }).serialize === 'function'
     ? { bitmap: input as unknown as PortableBitmap }
     : input;

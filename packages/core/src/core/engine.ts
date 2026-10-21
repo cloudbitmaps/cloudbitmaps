@@ -469,7 +469,7 @@ class CombineWindow {
 }
 
 /**
- * The ids of one chunk as one array, ascending: the chunk's remainders (one native export, or the codec's iterator
+ * The ids of one chunk as one array, ascending: the chunk's remainders (one bulk export, or the codec's iterator
  * when it has none) joined with the chunk key in one pass, and, for a read with a range, cut to it. Empty when the
  * chunk holds nothing the read wants. The array is the caller's to keep: nothing else holds it.
  */
