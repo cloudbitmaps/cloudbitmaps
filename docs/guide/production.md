@@ -787,31 +787,23 @@ and keep `has`, `count` and `intersect` where the requests are.
 
 ## Deploying to AWS Lambda
 
-Serverless chunk-skipping intersection is what CloudBitmaps is for, so Lambda is a first-class target, with
-one thing to know. The bitmap math runs on **`roaring`, a native (C++) addon**, whose install fetches a binary for
-the platform the install runs on. So a `node_modules` installed on a laptop and zipped up does not load on
-Lambda: **install for the target** — Amazon Linux, your function's architecture, its Node version — as any native
-addon needs. `roaring` publishes no prebuilt binary for Linux on arm64, so on a Graviton function the addon
-compiles from source during that install, which needs a C/C++ toolchain. This is a one-time build step, not a
-per-invocation cost. Every CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x`
-or a later runtime.
+Serverless chunk-skipping intersection is what CloudBitmaps is for, so Lambda is a first-class target, and it
+needs nothing special. `@cloudbitmaps/roaring` has no native addon and no install script: the bitmap math is
+TypeScript, so nothing is built per architecture, no toolchain is needed, and a `node_modules` installed on a laptop
+and zipped up loads on Lambda the same as one installed anywhere else. Match only the **Node version**: every
+CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x` or a later runtime, on `arm64`
+(Graviton) or `x86_64` alike.
 
-Pick whichever you already use:
+Package it however you already do: a zip of your bundle and `node_modules`, a container image
+(`FROM public.ecr.aws/lambda/nodejs:22`, `npm ci`), or a Lambda layer holding `node_modules`, reused across
+functions.
 
-- **`sam build --use-container`** (or `--use-container` on your framework) — builds deps inside an Amazon
-  Linux image matching the runtime, so `roaring` is installed for the target. The simplest path.
-- **Container image Lambda** — `FROM public.ecr.aws/lambda/nodejs:22`, add a build toolchain
-  (`dnf install -y gcc-c++ make python3`), `npm ci`, deploy the image.
-- **A Lambda layer** — build `node_modules` once in an Amazon Linux 2023 container and ship it as a layer,
-  reused across functions.
-
-Match the **arch** (`arm64` Graviton vs `x86_64`) and **Node version** of your function when you build. Our
-CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring` from source in an AL2023
-container and loads the package under both ESM and CJS). The repository can also build a layer for you: from a
-clone, `pnpm build-lambda-layer` produces `dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring
-flavor with the addon compiled in an AL2023 container of the machine's own architecture. It is a script in the
-repository, not a published artifact: nothing on npm or on a GitHub release carries it, though a manually
-dispatched CI run can build one and attach it to that run.
+The repository's CI still checks this path end to end today: the `pnpm lambda-smoke` gate installs the packages in an
+Amazon Linux 2023 container and loads them under both ESM and CJS, and `pnpm build-lambda-layer` from a clone produces
+`dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring flavor. Both scripts still build the
+development-only `roaring` package from source, because the repository's own tests use it as the reference; a user's
+install does not. The layer script is in the repository, not a published artifact: nothing on npm or on a GitHub
+release carries it, though a manually dispatched CI run can build one and attach it to that run.
 
 ## How it stays correct
 

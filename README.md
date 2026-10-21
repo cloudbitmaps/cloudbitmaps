@@ -32,10 +32,6 @@ pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, 
 
 Install the same version of every `@cloudbitmaps/*` package. The six release together at one version, and each one pins the exact version of `@cloudbitmaps/core` it was built with, so a flavor and a driver of different versions are two copies of `core`. A mix, such as a later `pnpm add @cloudbitmaps/s3` run beside an older `roaring`, installs with no warning and puts two copies of `core` in your tree. `new CloudRoaring({ storage: new S3Storage(...) })` then fails to compile with `TS2322 ... Property '[STORAGE_BACKEND_BRAND]' is missing`, and `instanceof` does not hold across the copies (`errorKind(err)` still classifies an error). `npm ls @cloudbitmaps/core` shows the copies; `pnpm up --latest '@cloudbitmaps/*'`, or `npm install @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z` with the same `X.Y.Z`, aligns them. Mixed minor versions always did this; mixed patch versions now do too.
 
-Installed before allowing it? The package throws at `import` (the install exited 0, or 1 on pnpm 11 and later). Add the
-setting, then run `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
-[Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
-
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
 [CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
 

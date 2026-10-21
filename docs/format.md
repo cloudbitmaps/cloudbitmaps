@@ -165,7 +165,7 @@ its run list, so a payload is `16 + 2 · cardinality`, 8,208 or `11 + 4 · runs`
 with no ids is not written, and a writer of your own must not write a zero-length payload.
 
 **Reader rules (reader today).** A reader of this library refuses touching and overlapping runs in a payload it is
-given. It reads a zero-length payload as the empty bitmap (the native decoder does), so one that arrives is not refused
+given. It reads a zero-length payload as the empty bitmap (CRoaring's decoder does), so one that arrives is not refused
 here; a writer of your own should not rely on that.
 
 **Which shape the writer picks (writer today).** The choice is Roaring's, made on the size of the container *body*, not
@@ -195,7 +195,7 @@ ties and are stored as arrays (22 and 26 bytes).
   codec's own count is not compared with it when a payload is decoded: a payload whose bits disagree with its entry
   decodes to what it holds, and `count()` still answers the entry's number. A writer of your own must write them equal.
 - **Decoding limits.** A reader of this library refuses a payload longer than 1 MiB, and checks a payload's structure
-  before it hands the bytes to a decoder, because a native decoder checks only that it does not read past the buffer.
+  before it hands the bytes to a decoder, because a decoder that checks only that it does not read past the buffer (CRoaring's, for one) accepts shapes that are not a bitmap.
   **Reader today, refused:** containers out of ascending key order; array values not strictly ascending; runs that are
   not ascending, that overlap or touch, or that leave their container; a run container with no runs; a bitset whose
   popcount is not its stated cardinality; a run container whose stated cardinality is not what its runs cover; an entry

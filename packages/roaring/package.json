@@ -7,7 +7,6 @@
     "bitmap",
     "roaring-bitmap",
     "roaring-bitmaps",
-    "croaring",
     "bitset",
     "compressed-bitmap",
     "lambda",

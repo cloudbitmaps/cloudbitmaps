@@ -3,7 +3,7 @@
  *
  * `open()` fetches the object's tail in **one GET** (footer + usually the whole index), verifies the
  * footer/index CRCs, and parses the delta+varint index into parallel typed arrays. `getChunk()` then range-GETs a single
- * payload and verifies its CRC32C **before** any native deserialize — every byte from storage is
+ * payload and verifies its CRC32C **before** any deserialize — every byte from storage is
  * untrusted.
  *
  * **Encryption.** When the footer's `FLAG_ENCRYPTED` is set, a {@link CrbmCrypto} must be supplied:
@@ -657,7 +657,7 @@ export class CrbmReader {
 
   /**
    * Range-GET one chunk's payload, verifying its CRC32C before returning. Returns `null` if the chunk is
-   * absent. Throws `IntegrityError` on a CRC mismatch (the bytes must never reach the native
+   * absent. Throws `IntegrityError` on a CRC mismatch (the bytes must never reach the codec's
    * deserializer). The returned bytes may be shared (a small generation's chunks are kept by the reader and handed out
    * again), so callers must not change them.
    */

@@ -130,7 +130,7 @@ export interface EncodedChunk {
 
 /**
  * A pluggable bitmap codec — the factory the codec-agnostic engine constructs {@link CodecBitmap}s through.
- * Implementations **must** size-cap before handing untrusted bytes to any native decoder and use a safe
+ * Implementations **must** size-cap before handing untrusted bytes to a decoder and use a safe
  * (never a trusting/frozen) deserializer — hard invariant 5.
  */
 export interface CodecInterface {
@@ -140,7 +140,7 @@ export interface CodecInterface {
   fromValues(values: Iterable<number>): CodecBitmap;
   /**
    * Size-cap (`bytes.length <= maxBytes`) then portable-deserialize. Throws `IntegrityError` when the input
-   * exceeds the cap or fails to decode — the native decoder is never handed unbounded or unsafe-format input.
+   * exceeds the cap or fails to decode — the decoder is never handed unbounded or unsafe-format input.
    *
    * "Fails to decode" includes bytes that are the right length and the wrong shape. A bitmap this returns must
    * satisfy every invariant its own operations assume (for roaring: containers and values in order, runs

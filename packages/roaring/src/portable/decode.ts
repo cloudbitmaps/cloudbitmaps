@@ -1,29 +1,23 @@
 /**
  * A dependency-free **reader** for the portable RoaringBitmap serialization.
  *
- * WHY THIS EXISTS. `@cloudbitmaps/roaring` wraps `roaring`, a native N-API addon (`gypfile: true`). No V8
- * isolate — Cloudflare Workers, Deno Deploy, Vercel Edge — can load a native addon under any compatibility
- * flag, so the shipped flavor cannot answer a membership question at the edge no matter how the rest of the
- * stack is arranged. The engine seam is already portable (`packages/core/src/core/` imports zero node builtins
- * and core has zero runtime dependencies); the codec is the only thing in the way.
- *
- * WHY A READER IS ENOUGH. `SegmentEngine.has()` calls exactly two codec capabilities — deserialize a chunk, and
+ * WHY A READER IS ENOUGH. `SegmentEngine.has()` calls exactly two codec capabilities: deserialize a chunk, and
  * test one value in it. It never reaches `add`, `remove`, `orInPlace`, `andNotInPlace`, `optimize`, `clone` or
- * `serialize`. So read-only membership over a loaded generation needs a decoder, not a reimplementation of
- * CRoaring, and this file is deliberately the former.
+ * `serialize`. So read-only membership over a loaded generation needs a decoder, not a whole bitmap implementation,
+ * and this file is deliberately the former. It stands apart from the codec's own bitmap class (`ts-roaring/`), which
+ * also decodes and mutates, so a reader that answers membership alone stays small and checkable.
  *
- * WHAT IT IS NOT. There is no mutation here and there will not be. A set you can query is a much smaller and
- * much more verifiable artifact than a set you can modify, and the write path has a perfectly good native
- * implementation. Anything wanting `add` should use {@link SafeBitmap}.
+ * WHAT IT IS NOT. There is no mutation here and there will not be. A set you can query is a much smaller and much
+ * more verifiable artifact than a set you can modify. Anything wanting `add` should use the codec's bitmap.
  *
  * ON TRUSTING THIS FILE. It decodes **untrusted bytes** (hard invariant #5: every byte off a storage tier is
  * hostile until proven otherwise), so no reader exists until {@link parsePortableLayout} has bounded every field
  * against the buffer and checked the structure the lookups below rely on: keys and values ascending, runs
- * disjoint, cardinalities matching. That is the same check the native path runs, so the two decoders refuse the
- * same bytes. The format knowledge in `layout.ts` was written from the Roaring spec and then checked against
- * bytes actually produced by `roaring` — and the differential tests in `tests/roaring/portable-decode.test.ts`
- * and `tests/roaring/portable-layout.test.ts` are what make it trustworthy, not the prose. If the two ever
- * disagree, the native library is right.
+ * disjoint, cardinalities matching. That is the same check the codec's own decoder runs, so the two refuse the same
+ * bytes. The format knowledge in `layout.ts` was written from the Roaring spec and then checked against
+ * bytes actually produced by `roaring` (CRoaring), the reference the tests hold this to — and the differential tests
+ * in `tests/roaring/portable-decode.test.ts` and `tests/roaring/portable-layout.test.ts` are what make it
+ * trustworthy, not the prose. If the two ever disagree, CRoaring is right.
  *
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */
@@ -32,8 +26,8 @@ import { ARRAY, BITMAP, parsePortableLayout, type PortableContainer } from './la
 /**
  * A decoded portable-roaring bitmap that can be queried but not modified.
  *
- * Construction checks every container once, in {@link parsePortableLayout}, which is the same check the native
- * path runs; after that a membership test reads one container rather than materializing the set.
+ * Construction checks every container once, in {@link parsePortableLayout}, which is the same check the codec's
+ * own decoder runs; after that a membership test reads one container rather than materializing the set.
  */
 class PortableRoaringReader {
   private constructor(

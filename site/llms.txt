@@ -7,7 +7,7 @@
 
 ## A first example
 
-Save as a `.mjs` file (the packages are ESM-only, Node 22.12 or later) after `pnpm add @cloudbitmaps/roaring`. On npm 12 and pnpm 10 and later, allow `roaring`'s install script first or the package throws at import; pnpm 11 and later read it from `pnpm-workspace.yaml`, not `package.json` (https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#install):
+Save as a `.mjs` file (the packages are ESM-only, Node 22.12 or later) after `pnpm add @cloudbitmaps/roaring`. Nothing needs allowing first: no package here runs an install script or ships a native binary (https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#install):
 
 ```js
 import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
@@ -30,7 +30,7 @@ chunks that can possibly contribute, so intersecting two 2,000,000-id segments t
 and `count()` on a published segment does zero payload reads.
 
 Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3` (or `npm i` the
-same two; allow `roaring`'s install script first, as above). `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the storage interfaces) is a
+same two). `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the storage interfaces) is a
 dependency of both, installed directly only to name a driver port's type, such as IStorageDriver, which
 `@cloudbitmaps/core/driver-kit` exports (or derive it, as `CloudRoaringOptions['storage']`); it contains no cloud SDK at all. Four storage backends: S3
 (`@cloudbitmaps/s3`, which also serves an S3-compatible store such as R2 or MinIO, given its endpoint, if it

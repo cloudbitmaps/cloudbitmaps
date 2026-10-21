@@ -444,6 +444,57 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     ).rejects.toThrow(ValidationError);
   });
 
+  describe('whatever else an object with a serialize method is, it loads through serialize', () => {
+    const portable = (ids: number[]): Uint8Array => new RoaringBitmap32(ids).serialize('portable');
+    const chunk7 = async (): Promise<Buffer> => Buffer.from((await loadAndRead([7])).bytes);
+
+    it('a Uint8Array with its own serialize is not refused as a byte array: it loads as its serialize says', async () => {
+      const bytes = Object.assign(new Uint8Array([1, 2, 3]), { serialize: () => portable([7]) });
+      const { bytes: out } = await loadAndRead(bytes as unknown as LoadInput);
+      expect(Buffer.from(out).equals(await chunk7())).toBe(true);
+    });
+
+    it('an array with its own serialize is serialized, not iterated', async () => {
+      const ids = Object.assign([1, 2, 3], { serialize: () => portable([7]) });
+      const { bytes: out } = await loadAndRead(ids as unknown as LoadInput);
+      expect(Buffer.from(out).equals(await chunk7())).toBe(true);
+    });
+
+    it('{ serialized, serialize } loads as a bitmap: serialize decides, serialized is ignored', async () => {
+      const both = { serialized: portable([1, 2, 3]), serialize: () => portable([7]) };
+      const { bytes: out } = await loadAndRead(both as unknown as LoadInput);
+      expect(Buffer.from(out).equals(await chunk7())).toBe(true);
+    });
+
+    it('a serialize that throws fails the load with its own error', async () => {
+      const boom = new Error('caller serialize failed');
+      const store = new CloudRoaring({ storage: new MemoryStorage() });
+      const input = {
+        *[Symbol.iterator]() {
+          yield 1;
+        },
+        serialize: () => {
+          throw boom;
+        },
+      };
+      await expect(store.load(SEG, input as unknown as LoadInput)).rejects.toBe(boom);
+    });
+
+    it.each([
+      ['a string', () => 'abc'],
+      ['an array', () => [1, 2, 3]],
+      ['undefined', () => undefined],
+    ])(
+      'a serialize that returns %s is a ValidationError, before any request',
+      async (_name, serialize) => {
+        const store = new CloudRoaring({ storage: new MemoryStorage() });
+        await expect(store.load(SEG, { serialize } as unknown as LoadInput)).rejects.toThrow(
+          ValidationError,
+        );
+      },
+    );
+  });
+
   it('ids that are not objects with serialize still load as ids: arrays, typed arrays, sets, generators', async () => {
     const golden = Buffer.from(GOLDEN);
     for (const input of [

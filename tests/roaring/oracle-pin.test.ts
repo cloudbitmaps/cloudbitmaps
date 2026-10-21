@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
+import roaring from 'roaring';
+import { tsRoaringCodec } from '@/ts-roaring/bitmap';
+import { CODECS } from '../helpers/roaring-oracle';
 
 /**
  * The oracle is a pinned CRoaring, and moving it is a deliberate change.
@@ -54,5 +57,21 @@ describe('the codec oracle pin', () => {
         ).not.toContain('roaring');
       }
     }
+  });
+});
+
+describe('the oracle compares two different codecs', () => {
+  const [reference, subject] = CODECS;
+
+  it('holds the TypeScript codec as the subject and a distinct codec as the reference', () => {
+    expect(subject!.codec).toBe(tsRoaringCodec);
+    expect(reference!.codec).not.toBe(subject!.codec);
+    expect(reference!.codec.owns?.(tsRoaringCodec.fromValues([1]))).toBe(false);
+    expect(tsRoaringCodec.owns?.(reference!.codec.fromValues([1]))).toBe(false);
+  });
+
+  it("makes the reference's bitmaps with the roaring package's own class, so it is CRoaring and nothing of ours", () => {
+    const held = (reference!.codec.fromValues([1]) as unknown as { bitmap: unknown }).bitmap;
+    expect(held).toBeInstanceOf(roaring.RoaringBitmap32);
   });
 });

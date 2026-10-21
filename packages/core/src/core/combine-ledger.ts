@@ -1,15 +1,16 @@
 /**
  * The resident-bytes ledger of a batch combine. Pure: no I/O, time or randomness.
  *
- * It counts what is **resident**, not what a bitmap serializes to: a native bitmap costs a fixed amount over its
- * serialized bytes, so a million small chunks hold far more than their serialized size says. Measured on the shipped
- * codec with one bitmap per chunk, the cost over serialized size was about 440 bytes for a chunk of up to 50 ids,
+ * It counts what is **resident**, not what a bitmap serializes to: a bitmap costs a fixed amount over its
+ * serialized bytes, so a million small chunks hold far more than their serialized size says. Measured on the native
+ * (CRoaring) codec, before the store's codec became TypeScript and not re-measured since, with one bitmap per chunk, the cost over serialized size was about 440 bytes for a chunk of up to 50 ids,
  * rising to about 1,700 bytes around 3,000 ids (an array container's spare capacity) and falling to about 300 bytes for
  * a bitset. {@link residentBytes} is a model that stays above every measured point.
  */
 
 /**
- * The fixed resident cost of one native bitmap beyond its serialized bytes. Measured on the shipped codec, over 50,000
+ * The fixed resident cost of one bitmap beyond its serialized bytes. Measured on the native (CRoaring) codec, before the
+ * store's codec became TypeScript and not re-measured since, over 50,000
  * bitmaps of one chunk each, it was 430 to 450 bytes for a chunk of up to 50 ids on macOS (arm64) and 357 to 373 on Linux
  * (arm64, glibc 2.36), and 279 to 433 for a bitset; the constant sits above the highest of those.
  */

@@ -264,7 +264,7 @@ export function prepareLoadInput(
  * are copied first. An empty or detached buffer is the empty bitmap.
  *
  * @param what names the input in a refusal's message.
- * @throws {ValidationError} for anything that is not such bytes; nothing reaches the codec's native decoder then.
+ * @throws {ValidationError} for anything that is not such bytes; nothing reaches the codec's decoder then.
  */
 export function decodeSerialized(
   bytes: unknown,

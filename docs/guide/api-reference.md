@@ -286,7 +286,8 @@ are checked structurally and decoded by the safe deserializer before the first r
 bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then
 cut from the bitmap's own containers, with no per-id work, and the generation holds chunk for chunk what the same ids
 write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError` when the load runs
-(the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
+(the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`. One that carries a
+`serialize` method of its own is a bitmap instead, and loads as what its `serialize('portable')` returns.
 Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
 **`sorted: true` writes ascending ids one chunk at a time.** For ids that already ascend, the load writes each chunk
@@ -304,7 +305,7 @@ request; the `*Into` verbs do not take it
 
 `deserializePortable(bytes: Uint8Array): ReadonlyBitmap` decodes portable Roaring bytes you hold (a Node `Buffer`
 is one) through the check a `{ serialized }` load makes first: the 537,403,396-byte cap, the structural check, exactly
-one bitmap, and only then the native decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
+one bitmap, and only then the decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
 load refuses them; an empty buffer is the empty bitmap. Use it for bytes that crossed a process boundary, in place of
 `RoaringBitmap32.deserialize`, which checks nothing but its own reads.
 

@@ -13,7 +13,7 @@ import { safeDeserialize, assertConsistentDecode } from '../build/fuzz-codec.js'
  * Coverage guidance reaches both the structural check `safeDeserialize` runs first and the decoder behind it:
  * both are JS inside the instrumented `fuzz/build` bundle.
  *
- * jazzer contract: export `fuzz(data: Buffer)`; an uncaught throw (or a native abort libFuzzer traps) is a
+ * jazzer contract: export `fuzz(data: Buffer)`; an uncaught throw (or a process abort libFuzzer traps) is a
  * finding, and its reproducer is written under fuzz/crashes/.
  */
 export function fuzz(data) {

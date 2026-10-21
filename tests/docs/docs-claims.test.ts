@@ -26,10 +26,26 @@ const roaringPin = (
 ).devDependencies['roaring'];
 
 describe('install, cache, ReadonlyBitmap and grace claims', () => {
-  it('tells a reader of the samples that import roaring to install the version the repo pins', () => {
+  it('tells a reader of the samples that import roaring the version the samples are tested against, and that any version works', () => {
     expect(roaringPin).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(read('docs/guide/loading.md')).toContain(`pnpm add roaring@${roaringPin}`);
+    const loading = read('docs/guide/loading.md');
+    expect(loading).toContain(
+      `\`pnpm add roaring@${roaringPin}\` is the version the samples are tested against, and any version whose bitmaps have \`serialize('portable')\` works`,
+    );
+    // `@cloudbitmaps/roaring` has no `roaring` dependency: no shared copy, no fast path that depends on a version.
+    expect(loading).not.toMatch(
+      /share one copy|takes the fast path|version\s+`@cloudbitmaps\/roaring` uses/,
+    );
+    expect(loading).not.toMatch(/another copy loads as the ids/);
     expect(read('docs/guide/export.md')).toContain('add it to your own `package.json`');
+  });
+
+  it('does not tell an installer of @cloudbitmaps/roaring to allow or rebuild a native install script', () => {
+    expect(read('README.md')).not.toMatch(/rebuild roaring/);
+    expect(read('site/llms.txt')).not.toMatch(/allow `roaring`'s install script/);
+    expect(read('docs/guide/production.md')).not.toMatch(
+      /native \(C\+\+\) addon|install for the target/,
+    );
   });
 
   it('says the TS2550 report starts when the code imports roaring itself', () => {

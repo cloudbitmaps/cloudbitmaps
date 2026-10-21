@@ -282,8 +282,8 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   heap plus the soak's native-memory watch prove **no leak** on the read path. A store with a timed refresh also keeps each segment's resolution in a second cache bounded at 8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default), a few hundred bytes an entry; [what each reader holds](guide/sizing.md#what-each-reader-holds) gives the heap it takes.
 - **The hard RSS ceiling — measured.** A sustained read + combine + re-load workload over **400 segments**
   completes inside a hard **384 MiB** cgroup ceiling with swap disabled (`--memory-swap == --memory`), so the
-  limit is a true RSS bound rather than a heap one, and it covers the roaring addon's **off-heap** memory that
-  a JS heap sample cannot see. No OOM-kill; both creep verdicts inside their bands. `pnpm rss-gate` records the
+  limit is a true RSS bound rather than a heap one, and it covers **off-heap** memory that a JS heap sample
+  cannot see (the run predates the TypeScript codec, when the roaring addon held the bitmaps there). No OOM-kill; both creep verdicts inside their bands. `pnpm rss-gate` records the
   run to `bench/rss-gate-results.json`, which the site figure gate checks the published number against.
 
   **Why a ceiling and not an RSS reading.** The ceiling is a property of the workload; a reader-process RSS

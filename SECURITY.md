@@ -15,12 +15,12 @@ release.
 CloudBitmaps treats **all bytes read back from storage as untrusted input**. Every `.crbm` object — its chunk
 payloads, its index, its footer and, when its footer flags one, the extension block that carries a generation's
 metadata — is
-length-checked and CRC-verified, and deserialized with the **safe**
-RoaringBitmap reader (never the
-trusting variant) behind a hard size cap, before the decoder sees it. The cap is 1 MiB per chunk, and an
+length-checked and CRC-verified, and deserialized by the codec's own
+bounds-checked decoder (there is no trusting variant) behind a hard size cap, before the decoder sees it. The cap is 1 MiB per chunk, and an
 index entry above it (above 1 MiB plus the 28 bytes of nonce and tag, on an encrypted object) is refused when the
-object is opened, before any payload is read. That reader only keeps its reads inside
-the buffer, so each payload's **structure** is checked before the reader runs: containers and values in order,
+object is opened, before any payload is read. The decoder copies the bytes
+before it checks them and reads only the copy, and each payload's **structure** is checked before any container is
+built from it: containers and values in order,
 runs disjoint and inside their container, and every cardinality matching the bits. A payload that fails is
 rejected, not decoded into a bitmap whose `has`, `size` and iteration disagree, or, for some of those shapes, one
 that crashes the process when it is used. The decoded **values** are then range-checked too: a chunk payload holds
@@ -49,20 +49,22 @@ scenario (`pnpm dr-drill`).
 
 **Bytes a caller loads are untrusted the same way.** A load from `{ serialized }` portable Roaring bytes, or from a
 `{ bitmap }` through its own `serialize('portable')`, puts them behind a size cap of their own (537,403,396 bytes,
-more than any canonical 32-bit bitmap serializes to), the same structural check and the same safe reader before the
-decoder sees them, and refuses bytes after the bitmap's end. They are read through the typed array's own
+more than any canonical 32-bit bitmap serializes to), the same structural check and the same decoder before
+anything is built from them, and refuses bytes after the bitmap's end. They are read through the typed array's own
 accessors, so a subclass cannot show the check other bytes than the reader reads. Bytes in a `SharedArrayBuffer`
 are copied first. A plain buffer can still be written by another thread during the call (an unfinished `fs.read`,
-`crypto.randomFill` or asynchronous addon call into it), so the decode can see bytes the check did not: the load
-therefore checks every container of the bitmap again, by the same rules, as it writes it, and refuses one that does
-not hold what its header says with `IntegrityError`, before anything is published. Bytes that fail the first check
+`crypto.randomFill` or asynchronous call into it), so the bytes the caller meant can differ from the bytes the load
+read: the decoder checks and reads one private copy, so what it builds is consistent, and the load also checks every
+container of the bitmap again, by the same rules, as it writes it, as a second line of defence, and refuses one that
+does not hold what its header says with `IntegrityError`, before anything is published. Bytes that fail the first check
 are a `ValidationError`, since they are the caller's input rather than a stored object, and nothing is read or
 written.
 
 **A caller must not modify an input buffer while a load reads it.** The checks above hold for
 a buffer that stays as it was handed in. A buffer another thread, an unfinished `fs.read` or an asynchronous call
-is still writing can differ between the structural check and the decode, and the load's re-check of each container
-catches a difference only after the decoder has read it. Hand in a buffer that nothing else writes, or a copy of it.
+is still writing is read once, as a private copy, so the bitmap built is one the check saw, but which bytes that
+copy holds is whatever the buffer held at that instant: bytes that change into another valid bitmap load as that
+bitmap. Hand in a buffer that nothing else writes, or a copy of it.
 
 Encryption-at-rest (opt-in) is envelope AES-256-GCM with a per-segment DEK wrapped under operator-held KEK(s);
 the AEAD wiring is pinned to published known-answer vectors and the envelope/rotation/crypto-shred paths are

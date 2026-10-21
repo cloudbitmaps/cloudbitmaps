@@ -16,12 +16,17 @@ so, and so do the module headers in the code.
 - **A bitmap passed where ids go is recognised by its shape, not its class: an object with a `serialize` method loads
   as `{ bitmap }`.** `@cloudbitmaps/roaring` no longer imports the `roaring` package, so it cannot test for its
   `RoaringBitmap32` class. A `RoaringBitmap32` and a bitmap `deserializePortable` returned still load as `{ bitmap }`,
-  from their containers. Two edges change. A bitmap from another copy of `roaring` used to load as the ids it
-  iterated, and took `sorted: true`; it now loads as `{ bitmap }`, so `sorted: true` with it throws `ValidationError`
-  before any request. An iterable of your own that has a `serialize` method used to be iterated; it is now serialized,
-  and its `serialize('portable')` must return portable Roaring bytes. What a caller does: for a bitmap from another
-  copy, drop `sorted: true`; for an iterable with its own `serialize`, load `[...yours]` or `{ serialized }` to say
-  which one you mean.
+  from their containers. Whatever else the object is, a `serialize` method decides: a bitmap from another copy of
+  `roaring` used to load as the ids it iterated, and took `sorted: true`, and now loads as `{ bitmap }`, so
+  `sorted: true` with it throws `ValidationError` before any request; an iterable or an array of your own with a
+  `serialize` method used to be iterated and is now serialized; a `Uint8Array` or `Buffer` with a `serialize` method
+  used to be refused as a byte array and now loads as what its `serialize` returns; and `{ serialized, serialize }`
+  used to be refused for its two keys and now loads as `{ bitmap }`, with `serialized` ignored. In each, the
+  `serialize('portable')` it returns must be portable Roaring bytes: bytes that are not a `Uint8Array`, or not one
+  whole well-formed bitmap, throw `ValidationError` before any request, and a `serialize` that throws fails the load
+  with that error as it is, where the object used to be iterated without it being called. What a caller does: for a
+  bitmap from another copy, drop `sorted: true`; for any object with a `serialize` method that you meant as ids or as
+  `{ serialized }`, load `[...yours]` or `{ serialized: yours }` to say which one you mean.
 
 ### Changed
 

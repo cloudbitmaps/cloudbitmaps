@@ -1,12 +1,11 @@
 /**
  * The layout of a portable-roaring bitmap: parsed, and checked for the structure every reader of it assumes.
  *
- * WHY THIS EXISTS. `roaring` deserializes the portable format with CRoaring's
- * `roaring_bitmap_portable_deserialize_safe`, and that function makes exactly one promise: it never reads past the
- * buffer. CRoaring's header says the bitmap it returns must then pass `roaring_bitmap_internal_validate` before
- * anything uses it, and `roaring` neither calls that function nor exposes it. Every other invariant of the format
- * is therefore taken on trust from bytes that come off a storage tier, which hard invariant 5 says are hostile
- * until proven otherwise. What `roaring` 2.7.0 does with such bytes when nothing checks them first:
+ * WHY THIS EXISTS. A decoder that only promises never to read past the buffer (CRoaring's safe deserialize, which
+ * the `roaring` package calls, is one) takes every other invariant of the format on trust from bytes that come off a
+ * storage tier, which hard invariant 5 says are hostile until proven otherwise. This check is what the TypeScript
+ * decoder runs before it builds a bitmap, and the tests hold it to CRoaring's. What `roaring` 2.7.0, the native
+ * reference, does with such bytes when nothing checks them first:
  *
  * - **Containers out of order.** `maximum()` reads the last container, so a chunk payload listing container 1
  *   before container 0 passes the engine's 16-bit range check, and a read then yields container 1's values masked
@@ -18,28 +17,28 @@
  * - **A run container with no runs.** Iterating it, or intersecting or unioning with it, crashes the process.
  * - **A bitset whose header cardinality disagrees with its bits.** `size` answers the header. Where the header
  *   says fewer values than the bits hold, `remove()` converts the container into an array sized by the header and
- *   writes every bit into it: a heap overflow in the native addon, and then a crash.
+ *   writes every bit into it: a heap overflow in the native library, and then a crash.
  *
  * None of those is caught by a CRC, which proves only that the bytes are the bytes that were written. Anyone who
  * can write the bucket writes those.
  *
- * WHAT IT CHECKS, which is what `roaring_bitmap_internal_validate` checks, stated on the serialized form: container
+ * WHAT IT CHECKS, which is what CRoaring's `roaring_bitmap_internal_validate` checks, stated on the serialized form: container
  * keys strictly ascend; array values strictly ascend; runs ascend, stay inside their container, and neither overlap
  * nor touch (a writer merges touching runs); a run container has at least one run; a bitset's popcount is the
- * cardinality its header states. And two things the native deserializer ignores and the pure-JS reader uses: every
+ * cardinality its header states. And two things CRoaring's deserializer ignores and this library's readers use: every
  * offset in the offset header is where its container really starts, and a run container's header cardinality is
  * the number of values its runs cover. Anything a real writer produces passes, because a real writer produces
  * exactly this structure.
  *
  * WHAT IT COSTS. One pass over the bytes the decode is about to copy anyway, once per decode: never per id, and
- * never on a cache hit. Measured on an M3 Pro under Node 24, with the check, the native deserialize and a CRC32C
+ * never on a cache hit. Measured on an M3 Pro under Node 24, with the check, CRoaring's deserialize and a CRC32C
  * of the same bytes timed in alternating rounds: about 70 ns for a payload of one small container, 0.7 us for a
  * 2 KB array container, and 2.5 to 3.2 us for an 8 KB one of any kind. That is a third to a half of the CRC32C the
  * `.crbm` reader already computes over the stored payload before it gets here.
  *
- * Both decoders run it: `SafeBitmap.safeDeserialize` before the native addon sees a byte, and the pure-JS reader
- * in `decode.ts`, which builds on the layout it returns. One check in one place is what keeps the two decoders
- * from disagreeing about which bytes are a bitmap.
+ * Both decoders run it: the codec's bitmap decoder in `ts-roaring/`, before it builds a container, and the
+ * membership-only reader in `decode.ts`, which builds on the layout it returns. One check in one place is what
+ * keeps the two decoders from disagreeing about which bytes are a bitmap.
  *
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */
@@ -94,7 +93,7 @@ function overrun(bytes: Uint8Array, offset: number, length: number, what: string
 /**
  * Parse the portable-format bitmap in `bytes`, and check its structure.
  *
- * An empty buffer is the empty bitmap, as it is to the native addon, which returns one without reading a byte.
+ * An empty buffer is the empty bitmap, as it is to CRoaring, which returns one without reading a byte.
  *
  * @throws {IntegrityError} if the cookie is unrecognized, any field runs past the buffer, or the structure is not
  * one a writer produces (see the module header for the list).
@@ -125,12 +124,12 @@ const SINGLE_RUN_HEADER_BYTES = 9;
 /**
  * Each container of the portable bitmap in `bytes`, as the one-container portable bitmap a `.crbm` chunk stores:
  * its key moved to 0, its cardinality and kind kept, its body copied unchanged. These are exactly the bytes the
- * native serializer writes for a bitmap holding only that container's low 16 bits, so a chunk cut from a whole
+ * serializer writes for a bitmap holding only that container's low 16 bits, so a chunk cut from a whole
  * bitmap is the chunk built from its ids, provided the whole bitmap was encoded canonically first.
  *
  * Lazy, one container per step, and each container checked as it is copied, by the same rules as
  * {@link checkPortableLayout} (keys in order, and each body holding what its header says), so a stored chunk is
- * never one a reader refuses. The bytes are the native serializer's, of a bitmap decoded from bytes that passed the
+ * never one a reader refuses. The bytes are the serializer's, of a bitmap decoded from bytes that passed the
  * check, so on every honest input this finds nothing. It is what stands between a store and a bitmap decoded from a
  * buffer another thread was still writing during the load's call: the check saw the bytes as they were, the decode
  * as they became.
@@ -236,7 +235,7 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
   let pos = bodiesAt;
 
   let previousKey = -1;
-  // Containers lie back to back from here. That is how the native deserializer finds them (it never reads the
+  // Containers lie back to back from here. That is how CRoaring's deserializer finds them (it never reads the
   // offset header), so the offsets are checked against it rather than followed.
   for (let i = 0; i < count; i++) {
     const key = view.getUint16(descriptiveAt + i * 4, true);
@@ -303,7 +302,7 @@ function checkContainer(
   if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (run)`);
   const covered = checkRuns(view, pos + 2, runs, i);
   // A header cannot state zero values, so this is also what refuses a run container with no runs, the shape
-  // that crashes the native addon when anything iterates it.
+  // that crashes CRoaring when anything iterates it.
   if (covered !== cardinality) {
     throw new IntegrityError(
       `portable roaring: container ${i} (run) covers ${covered} values, but its header says ${cardinality}`,

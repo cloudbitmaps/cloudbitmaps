@@ -558,7 +558,7 @@
                    one as a headline invites it to be read as a spec. -->
               A sustained read + combine + re-load workload over <b>400</b> segments completes inside a hard
               <span class="m">384m</span> cgroup ceiling with swap disabled — so the limit is a true RSS bound
-              and covers the addon's off-heap memory. No OOM-kill, and both creep verdicts inside their bands.
+              and covers off-heap memory (measured before the TypeScript codec, when the addon held the bitmaps there). No OOM-kill, and both creep verdicts inside their bands.
               The ceiling is a property of the workload, so it is what is published; the RSS one machine reads
               under it is a property of that machine, and is not.
             </span>

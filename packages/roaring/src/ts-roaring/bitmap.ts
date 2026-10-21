@@ -1,7 +1,7 @@
 /**
  * A Roaring bitmap of unsigned 32-bit ids in TypeScript, behind the codec seam: {@link tsRoaringCodec} is a
- * `CodecInterface` that stores the same portable Roaring bytes as the native codec (CRoaring through `roaring`), with no
- * native addon.
+ * `CodecInterface` that stores the same portable Roaring bytes as CRoaring (through `roaring`, the reference the tests compare it
+ * against), with no native addon.
  *
  * It implements the data structure of Chambi, Lemire, Kaser and Godin, "Better bitmap performance with Roaring bitmaps"
  * (2016), with the run containers of Lemire, Ssi-Yan-Kai and Kaser, "Consistently faster and smaller compressed bitmaps
@@ -532,7 +532,7 @@ class TsBitmap implements CodecBitmap {
 /** Stands for a container {@link TsBitmap.removeMany} emptied, until the keys left empty are dropped. */
 const EMPTIED = arrayContainer(new Uint16Array(0), 0);
 
-/** The TypeScript Roaring codec: the same portable bytes as the native codec, with no native addon. */
+/** The TypeScript Roaring codec: the same portable bytes as CRoaring, with no native addon. */
 export const tsRoaringCodec: CodecInterface = {
   empty: () => TsBitmap.empty(),
   fromValues: (values) => TsBitmap.fromValues(values),
