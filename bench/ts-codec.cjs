@@ -42,7 +42,7 @@
  * on a warmed process are not a confidence interval. The two codecs share one process, so the native one's boundary
  * crossings and the TypeScript one's allocation both show up in the figures; neither is subtracted.
  *
- * Run: `pnpm bench:ts-codec` (builds nothing: it bundles the codec sources itself). `TS_CODEC_INJECT=1` also writes
+ * `--only=<text>` runs the cells whose names contain the text (`--only=iterate`, `--only=and `). Run: `pnpm bench:ts-codec` (builds nothing: it bundles the codec sources itself). `TS_CODEC_INJECT=1` also writes
  * bench/ts-codec-results.json. `pnpm bench:ts-codec:check` (`--check`) measures nothing: it runs every operation once
  * on both codecs and fails if their answers differ, or if a cell of the table is missing.
  */
@@ -406,7 +406,9 @@ function fmt(ns) {
 
 function main() {
   const codecs = loadCodecs();
-  const list = cells(codecs);
+  const only = process.argv.find((a) => a.startsWith('--only='));
+  const all = cells(codecs);
+  const list = only ? all.filter((c) => c.name.includes(only.slice(7))) : all;
   if (process.argv.includes('--check')) {
     const bad = check(codecs, list);
     if (bad.length > 0) {

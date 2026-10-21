@@ -145,6 +145,8 @@ export interface SegmentReader {
 
 const UTF8 = new TextEncoder();
 const DEFAULT_NDJSON_BATCH_BYTES = 64 * 1024;
+/** Ids added to the exported bitmap per call. */
+const EXPORT_BATCH = 1 << 16;
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -249,10 +251,19 @@ export async function runExport(
       writer = await sink.open(ref, ext);
       if (format === 'roaring') {
         const bm = requireCodec(options.codec, "runExport({ format: 'roaring' })").empty();
+        // The ids arrive ascending, so each batch is added in one call that touches each container once, not one
+        // `add` per id.
+        const batch = new Uint32Array(EXPORT_BATCH);
+        let held = 0;
         for await (const id of ids) {
-          bm.add(id);
+          batch[held++] = id;
           count += 1;
+          if (held === EXPORT_BATCH) {
+            bm.addMany(batch);
+            held = 0;
+          }
         }
+        if (held > 0) bm.addMany(batch.subarray(0, held));
         if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
         const out = bm.serialize(); // portable RoaringBitmap32 — the cross-language CRoaring format
         await writer.write(out);
