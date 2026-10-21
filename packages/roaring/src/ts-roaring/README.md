@@ -252,8 +252,8 @@ branch-free; else a merge. The 32 here is a floor on the second operand, where `
 - `filterByBits(a, b, keep)`: for each value of `a`, test its bit in `b`'s words, branch-free; `keep` flips whether a set
   or a clear bit is kept: `and` calls it with `keep = true`, `andNot` with `keep = false`.
 - `filterByRuns(a, b, keep)`: when `keep` and `a.len >= b.len`, walk the runs, skipping the values below each run and
-  copying those inside (one step per run and per value). Otherwise walk the values with a run pointer that only moves
-  forward (it skips the runs a sparse array does not need to visit). Dropping (`andNot`) always takes the value walk.
+  copying those inside (one step per run and per value). Otherwise walk the values with a run index that advances and never returns to an
+  earlier run (it skips the runs a sparse array does not need to visit). Dropping (`andNot`) always takes the value walk.
 
 ### Bitsets
 
@@ -451,7 +451,7 @@ Thrown only by decoding. `safeDeserialize` (bitmap.ts) throws it directly for th
 | `safeDeserialize` with `{ whole: true }` -> `trailingBytes` (wire.ts) | `portable roaring: N bytes follow the bitmap's last container, which ends at byte E. One buffer holds one bitmap...` | bytes after the last container; without `whole` they are ignored |
 | layout | `the cookie` / `the container count` / `the run-container bitmap` / `the descriptive header` / `the offset header` needs bytes [a, b) of a N-byte buffer | a header field runs past the buffer |
 | layout | `unrecognized cookie 0x..., not a portable-format bitmap` | the first four bytes are neither cookie |
-| layout | `container keys are not strictly ascending (K1 then K2 at index i)` | keys out of order or repeated |
+| layout | `container keys are not strictly ascending (previousKey then key at index i)` | keys out of order or repeated |
 | layout | `the offset header puts container i at byte S, but it starts at P` | an offset that is not where the container starts |
 | layout | `container i (array) needs bytes...` / `(bitmap)` / `(run count)` / `(run)` | a body runs past the buffer |
 | layout | `container i (array) is not strictly ascending at or after element e` | array values not strictly ascending |
