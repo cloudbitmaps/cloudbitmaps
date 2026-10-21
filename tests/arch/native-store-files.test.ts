@@ -30,7 +30,10 @@ const NATIVE_STORE_FILES: Readonly<Record<string, string>> = {
 };
 
 /** Files that define or re-export the switch rather than use it. */
-const DEFINES_SWITCH = new Set(['tests/helpers/codec-leg.ts', 'tests/arch/native-store-files.test.ts']);
+const DEFINES_SWITCH = new Set([
+  'tests/helpers/codec-leg.ts',
+  'tests/arch/native-store-files.test.ts',
+]);
 
 const SWITCH_USE = /\bwithNativeCodec\b|\bsetFlagshipCodec\b/;
 
@@ -64,7 +67,9 @@ const LISTED = new Set(Object.keys(NATIVE_STORE_FILES));
 
 describe('the store runs one codec in the tests, except where the native codec is the point', () => {
   it('the pattern finds the files it exists for (a control that must hit)', () => {
-    expect(ALL.filter((f) => !DEFINES_SWITCH.has(f) && SWITCH_USE.test(read(f))).length).toBeGreaterThan(2);
+    expect(
+      ALL.filter((f) => !DEFINES_SWITCH.has(f) && SWITCH_USE.test(read(f))).length,
+    ).toBeGreaterThan(2);
   });
 
   it('FORWARD: no file puts the native codec behind the store unless it is listed', () => {
@@ -74,17 +79,25 @@ describe('the store runs one codec in the tests, except where the native codec i
   it('BACKWARD: every listed file exists and still uses the switch, with a reason', () => {
     for (const [file, reason] of Object.entries(NATIVE_STORE_FILES)) {
       expect(ALL, `${file} is listed and missing`).toContain(file);
-      expect(SWITCH_USE.test(read(file)), `${file} is listed and no longer uses the switch`).toBe(true);
+      expect(SWITCH_USE.test(read(file)), `${file} is listed and no longer uses the switch`).toBe(
+        true,
+      );
       expect(reason.length, `${file} needs a reason`).toBeGreaterThan(10);
     }
   });
 
   it('fires at a planted stray native store, and stays quiet for the listed files and look-alikes', () => {
     const planted = new Map([
-      ['tests/x/stray.test.ts', "import { withNativeCodec } from '../helpers/codec-leg';\nit('x', withNativeCodec(() => {}));"],
-      ['tests/x/stray2.test.ts', "setFlagshipCodec(roaringCodec);"],
-      ['tests/x/oracle.test.ts', "import { roaringCodec } from '@/native-codec';\nroaringCodec.fromValues([1]);"],
-      ['tests/x/core.test.ts', "new SegmentEngine({ storage, codec: roaringCodec });"],
+      [
+        'tests/x/stray.test.ts',
+        "import { withNativeCodec } from '../helpers/codec-leg';\nit('x', withNativeCodec(() => {}));",
+      ],
+      ['tests/x/stray2.test.ts', 'setFlagshipCodec(roaringCodec);'],
+      [
+        'tests/x/oracle.test.ts',
+        "import { roaringCodec } from '@/native-codec';\nroaringCodec.fromValues([1]);",
+      ],
+      ['tests/x/core.test.ts', 'new SegmentEngine({ storage, codec: roaringCodec });'],
       ['tests/core/chunk-value-range.test.ts', 'withNativeCodec(() => {})'],
     ]);
     const files = [...planted.keys()];

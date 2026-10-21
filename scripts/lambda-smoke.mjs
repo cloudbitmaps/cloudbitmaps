@@ -27,7 +27,10 @@ function addons(dir) {
 
 const modules = fileURLToPath(new URL('./node_modules', import.meta.url));
 // The native `roaring` package is the dependency the flavor no longer has; its presence, or any addon, is a regression.
-const traces = [...addons(modules), ...(existsSync(join(modules, 'roaring')) ? [join(modules, 'roaring')] : [])];
+const traces = [
+  ...addons(modules),
+  ...(existsSync(join(modules, 'roaring')) ? [join(modules, 'roaring')] : []),
+];
 if (traces.length > 0) throw new Error(`a native addon is installed: ${traces.join(', ')}`);
 
 async function exercise(label, m) {
