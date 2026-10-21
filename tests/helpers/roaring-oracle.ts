@@ -20,6 +20,7 @@ import fc from 'fast-check';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import type { CodecInterface } from '@cloudbitmaps/core';
 import { roaringCodec } from '@/roaring-codec';
+import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 
 /** A codec the oracle suite holds to CRoaring's answers. */
 export interface CodecUnderTest {
@@ -28,11 +29,12 @@ export interface CodecUnderTest {
 }
 
 /**
- * Every codec the suite runs against. Today the native one, so the suite proves the oracle against itself and the
- * rule; a second codec is one more entry here.
+ * Every codec the suite runs against: the native one, which proves the oracle against itself and the rule, and the
+ * TypeScript codec, which is held to both. A further codec is one more entry here.
  */
 export const CODECS: readonly CodecUnderTest[] = [
   { name: 'native (CRoaring through roaring)', codec: roaringCodec },
+  { name: 'TypeScript', codec: tsRoaringCodec },
 ];
 
 // --- CRoaring, as the oracle --------------------------------------------------------------------------------------

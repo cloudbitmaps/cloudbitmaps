@@ -42,8 +42,8 @@ import { heavy } from '../helpers/strength';
  *   - results: `andInPlace`, `orInPlace`, `andNotInPlace`, `has`, `size`, `isEmpty`, `maximum`, iteration, `toArray`
  *     and `clone` agree in content. An operation result's container kind is not compared; only what is stored is.
  *
- * ADDING A CODEC is one line in `CODECS` (`helpers/roaring-oracle.ts`). Today the list holds the native codec, so this
- * file also proves the oracle against the rule and a plain `Set`: CRoaring is checked as well as used.
+ * ADDING A CODEC is one line in `CODECS` (`helpers/roaring-oracle.ts`). The list holds the native codec, so this file
+ * also proves the oracle against the rule and a plain `Set` (CRoaring is checked as well as used), and the TypeScript codec.
  */
 const CAP = 1 << 24;
 const FOUR_GIB = 0xffffffff;
