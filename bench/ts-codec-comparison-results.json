@@ -1,0 +1,580 @@
+{
+  "note": "Wall-clock and machine-dependent: recorded, not asserted. Medians of paired, interleaved rounds; the verdict of a cell is computed from the TypeScript median and the A/A control median.",
+  "commit": "f16ee47212fb318587a5b3c296f2e68995bd7c7f",
+  "node": "v24.18.1",
+  "cpu": "Apple M3 Pro",
+  "cores": 11,
+  "platform": "darwin arm64",
+  "rules": {
+    "rounds": 31,
+    "bar": 0.05,
+    "controlBand": 0.02,
+    "maxLoad": 6
+  },
+  "reads": {
+    "cells": [
+      {
+        "dataset": "dense",
+        "op": "has",
+        "rounds": 31,
+        "nativeNs": 484619,
+        "typescriptNs": 472464,
+        "typescriptVsNative": -0.0254,
+        "controlVsNative": 0.0029,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.69
+      },
+      {
+        "dataset": "dense",
+        "op": "count",
+        "rounds": 31,
+        "nativeNs": 1425,
+        "typescriptNs": 1422,
+        "typescriptVsNative": -0.0037,
+        "controlVsNative": -0.0011,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.64
+      },
+      {
+        "dataset": "dense",
+        "op": "iterate",
+        "rounds": 31,
+        "nativeNs": 154685708,
+        "typescriptNs": 155452625,
+        "typescriptVsNative": 0.0177,
+        "controlVsNative": 0.0017,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.1
+      },
+      {
+        "dataset": "dense",
+        "op": "intersect2",
+        "rounds": 31,
+        "nativeNs": 86072708,
+        "typescriptNs": 86298416,
+        "typescriptVsNative": 0.0018,
+        "controlVsNative": 0.0058,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.42
+      },
+      {
+        "dataset": "dense",
+        "op": "intersect4",
+        "rounds": 31,
+        "nativeNs": 18725583,
+        "typescriptNs": 19081250,
+        "typescriptVsNative": 0.0238,
+        "controlVsNative": 0.0037,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.3
+      },
+      {
+        "dataset": "dense",
+        "op": "andNot",
+        "rounds": 31,
+        "nativeNs": 86561166,
+        "typescriptNs": 84693875,
+        "typescriptVsNative": -0.0173,
+        "controlVsNative": -0.0022,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.3
+      },
+      {
+        "dataset": "sparse",
+        "op": "has",
+        "rounds": 31,
+        "nativeNs": 533769,
+        "typescriptNs": 529243,
+        "typescriptVsNative": -0.0069,
+        "controlVsNative": 0.0007,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.1
+      },
+      {
+        "dataset": "sparse",
+        "op": "count",
+        "rounds": 31,
+        "nativeNs": 1458,
+        "typescriptNs": 1460,
+        "typescriptVsNative": 0.0028,
+        "controlVsNative": 0.0026,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.09
+      },
+      {
+        "dataset": "sparse",
+        "op": "iterate",
+        "rounds": 31,
+        "nativeNs": 35607333,
+        "typescriptNs": 34863958,
+        "typescriptVsNative": 0.0046,
+        "controlVsNative": 0.0153,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2
+      },
+      {
+        "dataset": "sparse",
+        "op": "intersect2",
+        "rounds": 31,
+        "nativeNs": 3641131,
+        "typescriptNs": 4584472,
+        "typescriptVsNative": 0.2564,
+        "controlVsNative": -0.0151,
+        "verdict": "over the 5% bar",
+        "answersAgree": true,
+        "load": 1.92
+      },
+      {
+        "dataset": "sparse",
+        "op": "intersect4",
+        "rounds": 31,
+        "nativeNs": 3634524,
+        "typescriptNs": 4868225,
+        "typescriptVsNative": 0.3417,
+        "controlVsNative": 0.0168,
+        "verdict": "over the 5% bar",
+        "answersAgree": true,
+        "load": 1.92
+      },
+      {
+        "dataset": "sparse",
+        "op": "andNot",
+        "rounds": 31,
+        "nativeNs": 40769833,
+        "typescriptNs": 41241417,
+        "typescriptVsNative": 0.0582,
+        "controlVsNative": 0.0393,
+        "verdict": "inconclusive",
+        "answersAgree": true,
+        "load": 1.94
+      },
+      {
+        "dataset": "runs",
+        "op": "has",
+        "rounds": 31,
+        "nativeNs": 536495,
+        "typescriptNs": 518938,
+        "typescriptVsNative": -0.0495,
+        "controlVsNative": 0.0139,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.94
+      },
+      {
+        "dataset": "runs",
+        "op": "count",
+        "rounds": 31,
+        "nativeNs": 1367,
+        "typescriptNs": 1357,
+        "typescriptVsNative": -0.0057,
+        "controlVsNative": 0.0014,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.11
+      },
+      {
+        "dataset": "runs",
+        "op": "iterate",
+        "rounds": 31,
+        "nativeNs": 589901667,
+        "typescriptNs": 611155542,
+        "typescriptVsNative": 0.0414,
+        "controlVsNative": 0.024,
+        "verdict": "inconclusive",
+        "answersAgree": true,
+        "load": 2.02
+      },
+      {
+        "dataset": "runs",
+        "op": "intersect2",
+        "rounds": 31,
+        "nativeNs": 427336000,
+        "typescriptNs": 423610666,
+        "typescriptVsNative": -0.0067,
+        "controlVsNative": 0.0036,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.7
+      },
+      {
+        "dataset": "runs",
+        "op": "intersect4",
+        "rounds": 31,
+        "nativeNs": 159186541,
+        "typescriptNs": 160086916,
+        "typescriptVsNative": 0.0122,
+        "controlVsNative": 0.0049,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.5
+      },
+      {
+        "dataset": "runs",
+        "op": "andNot",
+        "rounds": 31,
+        "nativeNs": 268027250,
+        "typescriptNs": 270107584,
+        "typescriptVsNative": 0.0031,
+        "controlVsNative": -0.0054,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.6
+      },
+      {
+        "dataset": "mixed",
+        "op": "has",
+        "rounds": 31,
+        "nativeNs": 501758,
+        "typescriptNs": 495199,
+        "typescriptVsNative": -0.0166,
+        "controlVsNative": 0.0047,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.5
+      },
+      {
+        "dataset": "mixed",
+        "op": "count",
+        "rounds": 31,
+        "nativeNs": 1402,
+        "typescriptNs": 1392,
+        "typescriptVsNative": -0.0096,
+        "controlVsNative": -0.0031,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.5
+      },
+      {
+        "dataset": "mixed",
+        "op": "iterate",
+        "rounds": 31,
+        "nativeNs": 423034666,
+        "typescriptNs": 418522250,
+        "typescriptVsNative": -0.0055,
+        "controlVsNative": 0.0192,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.46
+      },
+      {
+        "dataset": "mixed",
+        "op": "intersect2",
+        "rounds": 31,
+        "nativeNs": 113218625,
+        "typescriptNs": 113437375,
+        "typescriptVsNative": -0.0014,
+        "controlVsNative": 0.0006,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.51
+      },
+      {
+        "dataset": "mixed",
+        "op": "intersect4",
+        "rounds": 31,
+        "nativeNs": 2957292,
+        "typescriptNs": 4239910,
+        "typescriptVsNative": 0.4339,
+        "controlVsNative": -0.012,
+        "verdict": "over the 5% bar",
+        "answersAgree": true,
+        "load": 1.51
+      },
+      {
+        "dataset": "mixed",
+        "op": "andNot",
+        "rounds": 31,
+        "nativeNs": 350455000,
+        "typescriptNs": 347228750,
+        "typescriptVsNative": -0.0123,
+        "controlVsNative": 0.0046,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.59
+      },
+      {
+        "dataset": "spread",
+        "op": "has",
+        "rounds": 31,
+        "nativeNs": 539871,
+        "typescriptNs": 542930,
+        "typescriptVsNative": 0.0055,
+        "controlVsNative": 0.0229,
+        "verdict": "inconclusive",
+        "answersAgree": true,
+        "load": 1.47
+      },
+      {
+        "dataset": "spread",
+        "op": "count",
+        "rounds": 31,
+        "nativeNs": 1462,
+        "typescriptNs": 1460,
+        "typescriptVsNative": 0.0008,
+        "controlVsNative": 0.0033,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 1.47
+      },
+      {
+        "dataset": "spread",
+        "op": "iterate",
+        "rounds": 31,
+        "nativeNs": 330642208,
+        "typescriptNs": 292425125,
+        "typescriptVsNative": -0.1168,
+        "controlVsNative": 0.0093,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.44
+      },
+      {
+        "dataset": "spread8k",
+        "op": "has",
+        "rounds": 31,
+        "nativeNs": 544783,
+        "typescriptNs": 543164,
+        "typescriptVsNative": -0.0026,
+        "controlVsNative": 0.0076,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.36
+      },
+      {
+        "dataset": "spread8k",
+        "op": "count",
+        "rounds": 31,
+        "nativeNs": 1632,
+        "typescriptNs": 1641,
+        "typescriptVsNative": 0.0043,
+        "controlVsNative": 0.0063,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.57
+      },
+      {
+        "dataset": "spread8k",
+        "op": "iterate",
+        "rounds": 31,
+        "nativeNs": 36189333,
+        "typescriptNs": 32256542,
+        "typescriptVsNative": -0.1025,
+        "controlVsNative": -0.0146,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.57
+      },
+      {
+        "dataset": "spread8k",
+        "op": "intersect2",
+        "rounds": 31,
+        "nativeNs": 36505541,
+        "typescriptNs": 32740750,
+        "typescriptVsNative": -0.1261,
+        "controlVsNative": -0.033,
+        "verdict": "inconclusive",
+        "answersAgree": true,
+        "load": 2.44
+      },
+      {
+        "dataset": "spread8k",
+        "op": "intersect4",
+        "rounds": 31,
+        "nativeNs": 62962417,
+        "typescriptNs": 59960500,
+        "typescriptVsNative": -0.0633,
+        "controlVsNative": 0.034,
+        "verdict": "inconclusive",
+        "answersAgree": true,
+        "load": 2.41
+      },
+      {
+        "dataset": "spread8k",
+        "op": "andNot",
+        "rounds": 31,
+        "nativeNs": 70408166,
+        "typescriptNs": 63032916,
+        "typescriptVsNative": -0.0909,
+        "controlVsNative": 0.0108,
+        "verdict": "within the 5% bar",
+        "answersAgree": true,
+        "load": 2.29
+      }
+    ],
+    "perOp": [
+      {
+        "op": "has",
+        "cells": 6,
+        "verdict": "inconclusive",
+        "worstTypescriptVsNative": 0.0055,
+        "worstControl": 0.0229
+      },
+      {
+        "op": "count",
+        "cells": 6,
+        "verdict": "within the 5% bar",
+        "worstTypescriptVsNative": 0.0043,
+        "worstControl": 0.0063
+      },
+      {
+        "op": "iterate",
+        "cells": 6,
+        "verdict": "inconclusive",
+        "worstTypescriptVsNative": 0.0414,
+        "worstControl": 0.024
+      },
+      {
+        "op": "intersect2",
+        "cells": 5,
+        "verdict": "over the 5% bar",
+        "worstTypescriptVsNative": 0.2564,
+        "worstControl": 0.033
+      },
+      {
+        "op": "intersect4",
+        "cells": 5,
+        "verdict": "over the 5% bar",
+        "worstTypescriptVsNative": 0.4339,
+        "worstControl": 0.034
+      },
+      {
+        "op": "andNot",
+        "cells": 5,
+        "verdict": "inconclusive",
+        "worstTypescriptVsNative": 0.0582,
+        "worstControl": 0.0393
+      }
+    ],
+    "attributionFailures": [],
+    "load": 2.19
+  },
+  "write": {
+    "ids": 1000000,
+    "chunks": 62500,
+    "rows": [
+      {
+        "op": "load",
+        "rounds": 15,
+        "nativeMs": 189.8,
+        "typescriptMs": 124.9,
+        "typescriptVsNative": -0.3418,
+        "controlVsNative": -0.0061,
+        "verdict": "faster"
+      },
+      {
+        "op": "erase",
+        "rounds": 15,
+        "nativeMs": 204.2,
+        "typescriptMs": 128.6,
+        "typescriptVsNative": -0.3688,
+        "controlVsNative": -0.003,
+        "verdict": "faster"
+      },
+      {
+        "op": "export",
+        "rounds": 15,
+        "nativeMs": 397.5,
+        "typescriptMs": 368.9,
+        "typescriptVsNative": -0.0756,
+        "controlVsNative": 0.008,
+        "verdict": "faster"
+      }
+    ],
+    "sameBytes": true,
+    "load": 2.19
+  },
+  "memory": {
+    "rows": [
+      {
+        "codec": "native",
+        "dataset": "sparse",
+        "chunks": 256,
+        "heapExternalPerChunk": 1444,
+        "rssPerChunk": 6464
+      },
+      {
+        "codec": "typescript",
+        "dataset": "sparse",
+        "chunks": 256,
+        "heapExternalPerChunk": 3910,
+        "rssPerChunk": 2880
+      },
+      {
+        "codec": "native",
+        "dataset": "mixed",
+        "chunks": 128,
+        "heapExternalPerChunk": 2493,
+        "rssPerChunk": 4992
+      },
+      {
+        "codec": "typescript",
+        "dataset": "mixed",
+        "chunks": 128,
+        "heapExternalPerChunk": 6671,
+        "rssPerChunk": 4352
+      }
+    ],
+    "perKind": [
+      {
+        "kind": "dense",
+        "nativeHeapExternal": 91,
+        "typescriptHeapExternal": 8605,
+        "nativeRss": 8583,
+        "typescriptRss": 11899
+      },
+      {
+        "kind": "sparse",
+        "nativeHeapExternal": 89,
+        "typescriptHeapExternal": 2465,
+        "nativeRss": 2068,
+        "typescriptRss": 2963
+      },
+      {
+        "kind": "run",
+        "nativeHeapExternal": 89,
+        "typescriptHeapExternal": 1051,
+        "nativeRss": 670,
+        "typescriptRss": 2365
+      }
+    ],
+    "load": 2.89
+  },
+  "startup": {
+    "moduleLoadMs": {
+      "runs": 15,
+      "native": 20.325,
+      "typescript": 1.655
+    },
+    "coldProcess": {
+      "runs": 11,
+      "native": {
+        "loadMs": 138.7,
+        "firstHasUs": 3126.3,
+        "first10HasMs": 3.794,
+        "first1000HasMs": 8.33,
+        "next1000HasMs": 1.57,
+        "firstIterateMs": 465.73,
+        "firstIntersectMs": 137.06
+      },
+      "typescript": {
+        "loadMs": 153.71,
+        "firstHasUs": 3251.9,
+        "first10HasMs": 4.02,
+        "first1000HasMs": 8.88,
+        "next1000HasMs": 1.6,
+        "firstIterateMs": 491.03,
+        "firstIntersectMs": 137.22
+      }
+    },
+    "load": 2.35
+  }
+}

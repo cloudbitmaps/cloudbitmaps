@@ -78,11 +78,13 @@ const WRITE_ROUNDS = CHECK ? 2 : 15;
 const STARTUP_RUNS = CHECK ? 1 : 11;
 const IMPORT_RUNS = CHECK ? 1 : 15;
 const CHUNK_SCALE = CHECK
-  ? { dense: 2, sparse: 4, runs: 2, mixed: 3, spread: 200 }
-  : { dense: 32, sparse: 256, runs: 128, mixed: 128, spread: 62500 };
+  ? { dense: 2, sparse: 4, runs: 2, mixed: 3, spread: 200, spread8k: 100 }
+  : { dense: 32, sparse: 256, runs: 128, mixed: 128, spread: 62500, spread8k: 8192 };
 const WRITE_CHUNKS = CHECK ? 300 : 62500;
-const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread'];
+const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread', 'spread8k'];
 const OPS = ['has', 'count', 'iterate', 'intersect2', 'intersect4', 'andNot'];
+/** The 62,500-chunk set takes seconds per combine, so it is timed on the point and scan reads only; the combines run on 8,192 chunks of the same shape. */
+const opsOfDataset = (dataset) => (dataset === 'spread' ? OPS.slice(0, 3) : OPS);
 const NODE_ARGS = ['--expose-gc'];
 
 const now = () => Number(process.hrtime.bigint());
@@ -158,7 +160,7 @@ function lowsOf(kind, next) {
 function idsOf(dataset, which, scale = CHUNK_SCALE) {
   const chunks = scale[dataset];
   const keys = [];
-  if (dataset === 'spread') {
+  if (dataset.startsWith('spread')) {
     const pick = prng(7);
     const all = Array.from({ length: 65536 }, (_, i) => i);
     for (let i = 0; i < chunks; i++) {
@@ -172,7 +174,8 @@ function idsOf(dataset, which, scale = CHUNK_SCALE) {
   const kinds = ['dense', 'sparse', 'runs'];
   const ids = [];
   keys.forEach((key, i) => {
-    const kind = dataset === 'mixed' ? kinds[(i + which) % 3] : dataset;
+    const kind =
+      dataset === 'mixed' ? kinds[(i + which) % 3] : dataset.replace('spread8k', 'spread');
     const next = prng(1000 * (which + 1) + i + 1);
     for (const low of lowsOf(kind, next)) ids.push(key * 65536 + low);
   });
@@ -321,13 +324,19 @@ async function calibrate(fn) {
 
 /** One cell: the three stores' rounds interleaved, the paired differences and the verdict. */
 async function measureCell(prepared, dataset, op, fnOf) {
+  const trace = (m) =>
+    process.env.TS_ENGINE_TRACE &&
+    console.error(`${(now() / 1e9).toFixed(1)} ${dataset} ${op} ${m}`);
+  trace('start');
   waitForQuietMachine();
   const { stores } = prepared;
   const answers = [];
   for (const s of stores) answers.push(await fnOf(s.seg));
   const agree = answers.every((a) => a === answers[0]);
+  trace('answers');
   const reps = [];
   for (const s of stores) reps.push(await calibrate(() => fnOf(s.seg)));
+  trace(`calibrated ${reps}`);
   let load = load1();
   const rounds = [];
   for (let r = 0; r < ROUNDS; r++) {
@@ -361,7 +370,7 @@ async function readsChild(dataset, only) {
   const ops = opsOf(prepared.idLists);
   const cells = [];
   const used = [];
-  for (const op of OPS) {
+  for (const op of opsOfDataset(dataset)) {
     if (only && !`${dataset} ${op}`.includes(only)) continue;
     cells.push(await measureCell(prepared, dataset, op, ops[op]));
     // One pass per store with the codecs' functions counted: a store must have used the codec it was built for.
@@ -489,7 +498,7 @@ async function memoryChild(codec, dataset) {
 
 function memoryMeasure() {
   const rows = [];
-  for (const dataset of ['spread', 'mixed']) {
+  for (const dataset of ['sparse', 'mixed']) {
     for (const codec of ['native', 'typescript']) {
       rows.push(JSON.parse(spawnLast([`--child-memory=${codec}:${dataset}`])));
     }
@@ -703,7 +712,7 @@ function environment() {
 function wellFormed(doc) {
   const bad = [];
   for (const dataset of DATASETS)
-    for (const op of OPS)
+    for (const op of opsOfDataset(dataset))
       if (!doc.reads.cells.some((c) => c.dataset === dataset && c.op === op))
         bad.push(`missing cell ${dataset} ${op}`);
   for (const c of doc.reads.cells) {
