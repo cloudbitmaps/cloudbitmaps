@@ -25,16 +25,29 @@ const CODECS = ['native', 'typescript'];
  * `tsconfig*.json`); `withS3` adds the S3 driver, whose SDK must then be installed beside `root`.
  */
 function bundleEngine({ root, withS3 = false }) {
-  const { buildSync } = require('esbuild');
-  const rr = path.join(root, 'packages/roaring');
   const entry = [
     `export * as roaring from './src/index';`,
     withS3 ? `export * as s3 from '../s3/src/index';` : '',
     `export { setFlagshipCodec, roaringCodec } from './src/roaring-codec';`,
     `export { tsRoaringCodec } from './src/ts-roaring/bitmap';`,
   ].join('\n');
+  const text = bundleText({ root, entry, sourcefile: 'codec-engine-entry.ts' });
+  const engine = evaluate(text, root);
+  // The text the engine runs from, which the calibration harness reads the engine's constants out of.
+  Object.defineProperty(engine, 'bundleText', { value: text, enumerable: false });
+  return engine;
+}
+
+/**
+ * One esbuild bundle of the roaring package's sources, as CommonJS text: `entry` is the TypeScript the bundle exports
+ * (resolved from `packages/roaring`), the native addon and the cloud SDK stay external. The one place the options live,
+ * for the engine and for the single-codec modules the start-up figures load.
+ */
+function bundleText({ root, entry, sourcefile }) {
+  const { buildSync } = require('esbuild');
+  const rr = path.join(root, 'packages/roaring');
   const out = buildSync({
-    stdin: { contents: entry, resolveDir: rr, sourcefile: 'codec-engine-entry.ts', loader: 'ts' },
+    stdin: { contents: entry, resolveDir: rr, sourcefile, loader: 'ts' },
     tsconfig: path.join(rr, 'tsconfig.json'),
     bundle: true,
     format: 'cjs',
@@ -44,7 +57,7 @@ function bundleEngine({ root, withS3 = false }) {
     write: false,
     logLevel: 'error',
   });
-  return evaluate(out.outputFiles[0].text, root);
+  return out.outputFiles[0].text;
 }
 
 /** Runs a bundle's text with a `require` that finds the native addon and the SDK wherever the install put them. */
@@ -95,4 +108,24 @@ async function packageFor(name, root) {
   return shared[name];
 }
 
-module.exports = { CODECS, bundleEngine, engineWith, evaluate, packageFor };
+/**
+ * The text the harness's stores run from, as `{ core, s3 }` for the engine-constant check: the bundle's own text when
+ * `CR_CALIBRATE_CODEC` names a codec (core and the S3 driver are inlined in it), and `null` when it is unset, where the
+ * installed packages' entry files are the text.
+ */
+function bundledSources(root) {
+  const codec = (process.env.CR_CALIBRATE_CODEC ?? '').trim();
+  if (codec === '') return null;
+  shared ??= engineWith(codec, { root, withS3: true });
+  return { core: shared.bundleText, s3: shared.bundleText };
+}
+
+module.exports = {
+  CODECS,
+  bundleEngine,
+  bundleText,
+  bundledSources,
+  engineWith,
+  evaluate,
+  packageFor,
+};

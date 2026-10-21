@@ -79,7 +79,7 @@ const {
   leftoversHint,
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
-const { CODECS, packageFor } = require('./lib/codec-engine.cjs');
+const { CODECS, packageFor, bundledSources } = require('./lib/codec-engine.cjs');
 const {
   LARGE_STAGES,
   LARGE_SIZES,
@@ -569,10 +569,11 @@ async function main() {
     } catch (err) {
       refuse(`${redact(err.message)}. Nothing was created.`);
     }
-    // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the installed packages
-    // are asked, and a run against others is refused.
+    // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the engine the
+    // stores come from is asked (the installed packages, or the bundle a codec was named for), and a run against
+    // others is refused.
     try {
-      const sources = installedSources(ROOT);
+      const sources = bundledSources(ROOT) ?? installedSources(ROOT);
       checkEngineConstants(constantsIn(sources.core, sources.s3));
     } catch (err) {
       refuse(`${redact(err.message)}. Nothing was created.`);
@@ -623,7 +624,12 @@ async function main() {
       largeSizes = [];
       for (const n of LARGE_SIZES) {
         const L = planLargeLayout(n);
-        const counts = await countSize({ layout: L, layoutIds, intos: largeKnobs.intos });
+        const counts = await countSize({
+          layout: L,
+          layoutIds,
+          intos: largeKnobs.intos,
+          engine: await packageOf('roaring'),
+        });
         largeSizes.push({
           n,
           layout: L,
