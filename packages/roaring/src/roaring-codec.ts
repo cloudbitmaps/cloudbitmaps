@@ -200,16 +200,14 @@ export class SafeBitmap implements CodecBitmap {
 }
 
 /**
- * Any object with a `serialize` method (the `PortableBitmap` shape), passed where ids go, loads as `{ bitmap }`: from
- * its containers, through the same check as any bytes, never id by id. It is a test by shape, not `instanceof`, so a
- * `RoaringBitmap32` of this package's `roaring`, a bitmap {@link deserializePortable} returned and a bitmap of
- * another copy of `roaring` all load the same way, under either codec. Anything else passes through unchanged.
+ * A bare `RoaringBitmap32` of this package's own `roaring`, or a bitmap {@link deserializePortable} returned, passed
+ * where ids go, loads as `{ bitmap }`: from its containers, through the same check as any bytes, never id by id. Any
+ * other input passes through unchanged, and a bitmap from another copy of `roaring` is loaded as the ids it
+ * iterates, which is correct and slower.
  */
 export function bitmapAsLoadInput(input: LoadInput): LoadInput {
-  return typeof input === 'object' &&
-    input !== null &&
-    typeof (input as { serialize?: unknown }).serialize === 'function'
-    ? { bitmap: input as unknown as PortableBitmap }
+  return input instanceof RoaringBitmap32 || input instanceof ReadonlyRoaringView
+    ? { bitmap: input as PortableBitmap }
     : input;
 }
 
