@@ -117,6 +117,10 @@ jobs:
       # bench/ts-codec.cjs times the TypeScript codec against the native one. This times nothing: it runs every operation
       # once on both and fails if their answers differ, so the instrument cannot rot unseen.
       - run: pnpm bench:ts-codec:check
+      # bench/ts-codec-engine.cjs times the store's own reads and writes under each codec. This times nothing a bound
+      # reads: it runs every cell once on tiny data and fails if the output is malformed, the codecs disagree, a store
+      # ran the wrong codec or the codecs wrote different bytes.
+      - run: pnpm bench:ts-codec-engine:check
       # The built package must import cleanly under BOTH module systems (guards the roaring CJS→ESM interop).
       - run: node scripts/smoke.cjs
       # Both secret scanners, HERE and not only in the release workflow.
