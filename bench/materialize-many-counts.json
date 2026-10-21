@@ -9,7 +9,7 @@
         "published": 68,
         "groups": 1,
         "chunkReads": 21443,
-        "ledgerHighWaterBytes": 70173473,
+        "ledgerHighWaterBytes": 93768433,
         "rangeReads": 20,
         "tailReads": 120,
         "rowReads": 204,

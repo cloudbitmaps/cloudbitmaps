@@ -16,7 +16,12 @@ const { partsOf } = require('./calibrate-large-stages.cjs');
 
 /** One storage and registry backend, with each request the engine makes of it counted. */
 async function countedBackend(engine) {
-  const { CloudRoaring, MemoryStorage } = engine ?? (await import('@cloudbitmaps/roaring'));
+  if (engine === undefined) {
+    throw new Error(
+      'countedBackend needs the engine whose requests it counts: the harness passes its own',
+    );
+  }
+  const { CloudRoaring, MemoryStorage } = engine;
   const backend = new MemoryStorage();
   const calls = {};
   const zero = () => {
@@ -92,8 +97,8 @@ const drain = async (stream) => {
 
 /**
  * Count the large suite's requests for one size: `layout` holds the two operand segments (`layoutIds(layout, 0)` and
- * `layoutIds(layout, 1)`), `engine` is the library's module (`CloudRoaring`, `MemoryStorage`; the installed package when
- * omitted), and each `*Into` runs `intos` times onto one destination, so the first is a first load and
+ * `layoutIds(layout, 1)`), `engine` is the library's module (`CloudRoaring`, `MemoryStorage`; required: the harness passes the
+ * one its stores come from, so a count is never taken from another engine than the one under test), and each `*Into` runs `intos` times onto one destination, so the first is a first load and
  * the rest are not.
  *
  * Returns the operands' object bytes; each cold read's requests by kind; and each `*Into`'s, per call: the requests of
