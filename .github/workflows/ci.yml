@@ -283,6 +283,13 @@ jobs:
           name: rss-gate
           files: scripts/rss-gate.sh
       - run: pnpm rss-gate
+      # The gate's record is the file this run wrote; the committed copy is taken from here, never edited by hand.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: rss-gate-results
+          path: bench/rss-gate-results.json
+          if-no-files-found: warn
       - uses: ./.github/actions/docker-images-save
 
   cross-os:

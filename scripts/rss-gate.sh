@@ -19,8 +19,8 @@
 # runtime working set (sharp), not inflated by staging.
 #
 # Usage: `pnpm rss-gate` (or `bash scripts/rss-gate.sh`). Needs Docker. Tunables (env):
-#   RSS_GATE_MEMORY=384m     hard cgroup RSS ceiling for the RUN phase (well above the ~170 MiB reader-phase
-#                            parent+child peak, well below a real regression; the build phase is uncapped)
+#   RSS_GATE_MEMORY=384m     hard cgroup RSS ceiling for the RUN phase (well above the reader-phase
+#                            parent+child peak the run records, well below a real regression; the build phase is uncapped)
 #   RSS_GATE_SECONDS=30      soak duration under the cap
 #   RSS_GATE_SEGMENTS=400    fleet size (sustained working set)
 #   RSS_GATE_CAP=64          storage reader-cache cap (the bound under test)

@@ -890,6 +890,25 @@ const specAnchors = [];
       `bench/rss-gate-results.json records verdict=${rss.verdict} oomKilled=${rss.oomKilled} — ` +
         'the site must not cite a failed run as an envelope',
     );
+  } else if (
+    ![rss.heapCreepMiB, rss.heapCreepLimitMiB, rss.externalCreepMiB, rss.externalCreepLimitMiB].every(
+      Number.isFinite,
+    ) ||
+    !Number.isFinite(rss.readerProcess?.rssMiB)
+  ) {
+    // The file is what `scripts/rss-gate.sh` writes: both creep verdicts and the reader process's RSS. One without
+    // them is a carried-over or hand-edited record, and the page says both creep verdicts held.
+    fail(
+      'bench/rss-gate-results.json lacks a creep figure or the reader process RSS — it is not what ' +
+        '`pnpm rss-gate` writes, so the page cannot cite it; take the record from a run of the gate',
+    );
+  } else if (
+    rss.heapCreepMiB > rss.heapCreepLimitMiB ||
+    rss.externalCreepMiB > rss.externalCreepLimitMiB
+  ) {
+    fail(
+      'bench/rss-gate-results.json records a creep above its limit — the page says both creep verdicts held',
+    );
   } else if (!(rss.combines > 0)) {
     // Same reasoning as the zero-combine soak check below: a run that performed no combines never exercised
     // the bound the envelope is about.
@@ -907,6 +926,14 @@ const specAnchors = [];
       } else {
         specAnchors.push([label, want]);
       }
+    }
+    // docs/benchmarks.md quotes the committed run's reader-process RSS, so a new record cannot leave it behind.
+    const wantReaderRss = `${rss.readerProcess.rssMiB} MiB`;
+    if (!fs.readFileSync(DOC, 'utf8').includes(wantReaderRss)) {
+      fail(
+        `docs/benchmarks.md does not state "${wantReaderRss}" (rss-gate · reader RSS) — update it with ` +
+          'the committed bench/rss-gate-results.json',
+      );
     }
   }
 
@@ -927,6 +954,8 @@ const specAnchors = [];
     for (const [label, want] of [
       ['soak · combines', String(soak.combines)],
       ['soak · external creep', `${soak.externalCreepMiB.toFixed(2)} MiB`],
+      ['soak · external creep limit', `${soak.externalCreepLimitMiB.toFixed(2)} MiB`],
+      ['soak · re-loads', String(soak.reloads)],
     ]) {
       if (!benchPage.includes(want)) {
         fail(

@@ -5,9 +5,10 @@
 # Proves the PACKED library loads on the flagship serverless target (AWS Lambda's Amazon Linux 2023 Node runtime).
 # The packages carry no native code, so there is nothing to build for the target: this packs core and the flavor,
 # unpacks them into a `node_modules` on the host, mounts that into the Lambda runtime image and, there, loads the
-# library under both ESM and CJS and round-trips a load (scripts/lambda-smoke.mjs). It also checks that no native
-# addon is installed. Catches a deploy regression the unit lane cannot see: a packed file missing from the tarball, an
-# `exports` map that does not resolve on the runtime's Node, a built-in the runtime lacks.
+# library under both ESM and CJS and round-trips a load (scripts/lambda-smoke.mjs). It also checks the packed manifests
+# and files for native code (scripts/check-no-native-package.cjs, on the host) and that no addon is installed. Catches
+# a deploy regression the unit lane cannot see: a packed file missing from the tarball, an `exports` map that does not
+# resolve on the runtime's Node, a built-in the runtime lacks.
 #
 # Usage: `pnpm lambda-smoke` (or `bash scripts/lambda-smoke.sh`). Needs Docker. Override the base image with
 # LAMBDA_SMOKE_IMAGE (e.g. `public.ecr.aws/lambda/nodejs:20`). Docker on the runner fixes the architecture tested
@@ -59,6 +60,8 @@ APP="$PACKDIR/app"
 mkdir -p "$APP/node_modules/@cloudbitmaps/core" "$APP/node_modules/@cloudbitmaps/roaring"
 tar -xzf "$CORE_TGZ"    --strip-components=1 -C "$APP/node_modules/@cloudbitmaps/core"
 tar -xzf "$ROARING_TGZ" --strip-components=1 -C "$APP/node_modules/@cloudbitmaps/roaring"
+# Nothing is installed, so a dependency on a native package would not show up as a file: read the packed manifests.
+node scripts/check-no-native-package.cjs "$APP/node_modules/@cloudbitmaps/core" "$APP/node_modules/@cloudbitmaps/roaring"
 cp scripts/lambda-smoke.mjs "$APP/lambda-smoke.mjs"
 
 # Mounted read-only: the smoke only reads. No install runs in the container, so it needs no network and no toolchain.

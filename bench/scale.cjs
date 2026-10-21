@@ -136,7 +136,7 @@ async function measureFleet(n) {
     // evicts the oldest). The bound we're proving is about RETAINED live memory, so the headline metric is
     // heapUsed AFTER a forced GC once the sweep ends — that reflects the live reader set, not the transient
     // per-iteration garbage a monotonic RSS high-water would fold in. rssPeak is kept as an informational
-    // high-water (native + transient), rssAfterGc as the settled resident size.
+    // high-water (including transient garbage), rssAfterGc as the settled resident size.
     gc();
     const heapBaselineMiB = process.memoryUsage().heapUsed / 1024 / 1024;
     const source = new CrbmStorageChunkSource(storage, { registry, maxOpenSegments: CAP });
@@ -180,7 +180,7 @@ async function measureFleet(n) {
       readAllMs: round(read.ms, 0),
       heapBaselineMiB: round(heapBaselineMiB, 1),
       heapRetainedMiB: round(heapRetainedMiB, 1), // headline: live memory after GC — the bound proof
-      rssPeakMiB: round(rssPeak, 1), // informational high-water (native + transient garbage)
+      rssPeakMiB: round(rssPeak, 1), // informational high-water (including transient garbage)
       rssAfterGcMiB: round(rssAfterGcMiB, 1),
       cap: CAP,
       discoveryMs: round(disc.ms, 1),

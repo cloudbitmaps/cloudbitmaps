@@ -57,7 +57,12 @@ mkdir -p "$LAYER/nodejs/node_modules/@cloudbitmaps/core" "$LAYER/nodejs/node_mod
 tar -xzf "$CORE_TGZ"    --strip-components=1 -C "$LAYER/nodejs/node_modules/@cloudbitmaps/core"
 tar -xzf "$ROARING_TGZ" --strip-components=1 -C "$LAYER/nodejs/node_modules/@cloudbitmaps/roaring"
 
-# A layer with an addon in it is the regression this script exists to prevent.
+# A layer with an addon in it is the regression this script exists to prevent. Nothing is installed here, so a
+# dependency on a native package would not show up as a file: the manifests are read as well.
+node scripts/check-no-native-package.cjs "$LAYER/nodejs/node_modules/@cloudbitmaps/core" "$LAYER/nodejs/node_modules/@cloudbitmaps/roaring" || {
+  echo "build-lambda-layer: the layer would bring native code" >&2
+  exit 1
+}
 if [ -n "$(find "$LAYER" -name '*.node' -print -quit)" ] || [ -e "$LAYER/nodejs/node_modules/roaring" ]; then
   echo "build-lambda-layer: the layer holds a native addon" >&2
   exit 1

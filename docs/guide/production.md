@@ -791,8 +791,8 @@ Serverless chunk-skipping intersection is what CloudBitmaps is for, so Lambda is
 needs nothing special. `@cloudbitmaps/roaring` has no native addon and no install script: the bitmap math is
 TypeScript, so nothing is built per architecture, no toolchain is needed, and a `node_modules` installed on a laptop
 and zipped up loads on Lambda the same as one installed anywhere else. Match only the **Node version**: every
-CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x` or a later runtime, on `arm64`
-(Graviton) or `x86_64` alike.
+CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x` or a later runtime. The library is the same JavaScript on `arm64`
+(Graviton) and `x86_64`, with nothing per architecture; CI exercises `x86_64` only.
 
 Package it however you already do: a zip of your bundle and `node_modules`, a container image
 (`FROM public.ecr.aws/lambda/nodejs:22`, `npm ci`), or a Lambda layer holding `node_modules`, reused across

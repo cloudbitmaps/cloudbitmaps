@@ -346,7 +346,7 @@ memory outside V8 altogether; none has been re-measured since.) So a process hol
 grows until the kernel kills it. Since ["bounded memory & cost, always"](../AGENTS.md#hard-correctness-invariants) is one of this project's
 hard invariants, a measurement that cannot see the allocator doing the most work would be evidence of nothing.
 
-RSS is the only figure that includes all of it. That is why the ceiling is expressed in RSS, and why
+RSS is the figure that includes all of it. That is why the ceiling is expressed in RSS, and why
 `--memory-swap` is pinned equal to `--memory`: with swap enabled a process that outgrows RAM merely spills to
 disk and keeps running, and the limit stops being a memory bound at all. With swap off it is a hard wall.
 
