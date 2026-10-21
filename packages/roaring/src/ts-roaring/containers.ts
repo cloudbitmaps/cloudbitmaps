@@ -90,7 +90,7 @@ export function bitsetContainer(words: Uint32Array, card: number): Container {
   return new Container(BITSET, words, 0, 0, card, false);
 }
 
-export function runContainer(pairs: Uint16Array, runs: number, card: number): Container {
+function runContainer(pairs: Uint16Array, runs: number, card: number): Container {
   return new Container(RUN, pairs, 0, runs, card, false);
 }
 
@@ -125,7 +125,7 @@ function popcount32(word: number): number {
  * Set bits in the {@link WORDS} words of a bitset: Harley-Seal, which adds sixteen words through a tree of carry-save
  * adders and counts the bits of one word in sixteen instead of every word. Plain 32-bit integer arithmetic, no `BigInt`.
  */
-export function popcountWords(d: Uint32Array): number {
+function popcountWords(d: Uint32Array): number {
   let total = 0;
   let ones = 0;
   let twos = 0;

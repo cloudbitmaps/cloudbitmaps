@@ -29,7 +29,7 @@
 import { requirePositiveInteger } from '../core/check';
 import { ValidationError } from '../core/errors';
 import { isReservedRow } from '../core/registry-scan';
-import type { CodecInterface } from '../core/codec';
+import type { CodecBitmap, CodecInterface } from '../core/codec';
 import { requireCodec } from '../core/codec';
 import type { IRegistryDriver, SegmentRef } from '../core/ports';
 import { validateUserNamespace, validateSegmentRef } from '../core/validate';
@@ -148,6 +148,26 @@ const DEFAULT_NDJSON_BATCH_BYTES = 64 * 1024;
 /** Ids added to the exported bitmap per call. */
 const EXPORT_BATCH = 1 << 16;
 
+/**
+ * Add every id to `bitmap` and return how many there were. The ids arrive ascending, so each batch goes in with one call
+ * that touches each container once, not one `add` per id.
+ */
+async function addAll(bitmap: CodecBitmap, ids: AsyncIterable<number>): Promise<number> {
+  const batch = new Uint32Array(EXPORT_BATCH);
+  let held = 0;
+  let count = 0;
+  for await (const id of ids) {
+    batch[held++] = id;
+    count += 1;
+    if (held === EXPORT_BATCH) {
+      bitmap.addMany(batch);
+      held = 0;
+    }
+  }
+  if (held > 0) bitmap.addMany(batch.subarray(0, held));
+  return count;
+}
+
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
@@ -251,19 +271,7 @@ export async function runExport(
       writer = await sink.open(ref, ext);
       if (format === 'roaring') {
         const bm = requireCodec(options.codec, "runExport({ format: 'roaring' })").empty();
-        // The ids arrive ascending, so each batch is added in one call that touches each container once, not one
-        // `add` per id.
-        const batch = new Uint32Array(EXPORT_BATCH);
-        let held = 0;
-        for await (const id of ids) {
-          batch[held++] = id;
-          count += 1;
-          if (held === EXPORT_BATCH) {
-            bm.addMany(batch);
-            held = 0;
-          }
-        }
-        if (held > 0) bm.addMany(batch.subarray(0, held));
+        count = await addAll(bm, ids);
         if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
         const out = bm.serialize(); // portable RoaringBitmap32 — the cross-language CRoaring format
         await writer.write(out);

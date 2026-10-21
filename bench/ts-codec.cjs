@@ -51,6 +51,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Buffer } = require('node:buffer');
 const { createRequire } = require('node:module');
 const { execFileSync } = require('node:child_process');
 
