@@ -4713,8 +4713,7 @@
       }
     ],
     "attributionFailures": [],
-    "coldStorageCalls": 40,
-    "load": 2.93
+    "coldStorageCalls": 40
   },
   "write": {
     "ids": 1000000,
@@ -5458,5 +5457,5 @@
     "loadStart": 2.89,
     "loadMax": 2.89
   },
-  "readsRetaken": "The reads were taken a second time, alone, on the same bench code, because another process on the machine may have overlapped the first run while the lock was missing; this is the second. The first run (write path, memory and start-up are from it) is not kept. The spread8k cells were taken a third time, alone, for the same reason, and replace the second run's."
+  "readsRetaken": "The reads were taken a second time, alone, on the same bench code, because another process on the machine may have overlapped the first run while the lock was missing; this is the second. The first run (write path, memory and start-up are from it) is not kept, and it carries no start or end time: the file records none for any part, and the second take no timestamps either. Other work committed and packed on the machine during the first run. The spread8k cells were taken a third time, alone, for the same reason, and replace the second run's."
 }

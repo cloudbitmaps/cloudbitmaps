@@ -11,7 +11,7 @@
  *            `CloudRoaring` store over `MemoryStorage` with a cache large enough to hold every chunk, warmed by time
  *            (300 ms of calls per store before timing). Six data sets: `dense` (a bitset in every chunk), `sparse`
  *            (arrays), `runs`, `mixed` (the three kinds in turn), `spread` (about a million ids over 62,500 chunks
- *            of 16 ids, the shape of the largest load the research used; point and scan reads only, because a combine
+ *            of 16 ids, the largest load this comparison times; point and scan reads only, because a combine
  *            of it takes seconds) and `spread8k` (the same shape over 8,192 chunks, every op). Each cell is measured
  *            twice, see below.
  *   write    a bulk `load` of 1,000,000 ids over 62,500 chunks, an `eraseSubject` of one id (the rewrite of that
@@ -24,10 +24,11 @@
  *            without the addon"; that is what a switch of the codec inside today's package would ship.
  *   memory   heap plus external memory, and resident-set growth, of a chunk cache holding every chunk of a data set,
  *            each codec in its own fresh process, the order alternating between repeats, seven repeats, the median
- *            and the range. The native codec's own allocations are invisible to V8's counters, so its heap figure is
- *            near zero; its resident-set growth is the only figure that includes them, and that figure is unreliable
- *            (it moves with the allocator, and a resident delta can read below the heap growth it contains): an order
- *            of magnitude, not a measurement.
+ *            and the range. Both codecs show a heap-plus-external figure; the figure to read is the difference
+ *            between them, row by row, not either codec's absolute number (the native codec's is near zero only on the
+ *            8,192-chunk set, and why it is not zero elsewhere is not measured). The resident-set growth includes
+ *            memory V8's counters cannot see, and it is unreliable (it moves with the allocator, and a resident delta
+ *            can read below the heap growth it contains): an order of magnitude, not a measurement.
  *
  * HOW A COMPARISON IS JUDGED
  *
@@ -67,8 +68,10 @@
  * A figure is taken only while the 1-minute load average is under 6 (a cell, or a round of processes, waits, then
  * refuses), and each round carries the load at its end. Beside the medians the file keeps the codec-call counts of the
  * stores that were timed (a store must have used the codec it was built for; `count` is expected to make none), and
- * the storage calls made during the timed rounds (a warm cache makes none of the object reads; a counter that has
- * never seen a call proves nothing, so a cold store's calls are counted once as the control).
+ * the storage calls made during the timed rounds, in-process and per-process alike (a warm cache makes none of the
+ * object reads; a counter that has never seen a call proves nothing, so a cold store's calls are counted once as the
+ * control). The file also records, for the whole run and for each part, its start and end time, the commit and whether
+ * the tree was clean when it started, so an overlap with other work on the machine can be placed in time.
  *
  * `--check` times nothing a threshold reads: it runs every part once at a tiny scale (reads in both ways, the write path,
  * start-up and the memory pass, whose output it parses) and fails only if the output is malformed, the codecs disagree on
@@ -427,18 +430,18 @@ function attributionFailures(used) {
   return wrong;
 }
 
-/** The warm cache's failures: an object read, a listing or any other storage call during a timed round. */
+/** The warm cache's failures: an object read, a listing or any other storage call during a timed round, either way. */
 function warmFailures(cells) {
-  return cells
-    .filter(
-      (c) =>
-        c.inProcess &&
-        Object.keys(c.inProcess.timedStorageCalls).some((k) => k.startsWith('storage.')),
-    )
-    .map(
-      (c) =>
-        `${c.dataset} ${c.op}: storage calls in timed rounds ${JSON.stringify(c.inProcess.timedStorageCalls)}`,
-    );
+  return cells.flatMap((c) =>
+    ['inProcess', 'perProcess']
+      .filter(
+        (b) => c[b] && Object.keys(c[b].timedStorageCalls).some((k) => k.startsWith('storage.')),
+      )
+      .map(
+        (b) =>
+          `${c.dataset} ${c.op} (${b}): storage calls in timed rounds ${JSON.stringify(c[b].timedStorageCalls)}`,
+      ),
+  );
 }
 
 // ---- reads, one codec per process ---------------------------------------------------------------------------------
@@ -458,8 +461,14 @@ async function procChild(codec, dataset, only) {
     const fn = () => ops[op](segs);
     const answer = await fn();
     const reps = await calibrate(fn);
-    const ns = await timeCalls(fn, reps);
-    out[op] = { ns: +ns.toFixed(0), answer };
+    const counter = countStorage(backend);
+    let ns;
+    try {
+      ns = await timeCalls(fn, reps);
+    } finally {
+      counter.stop();
+    }
+    out[op] = { ns: +ns.toFixed(0), answer, timedStorageCalls: counter.counts };
   }
   for (const op of Object.keys(out)) {
     // Cold again, so the decode and the combine are what the count sees (a warm read calls no codec function).
@@ -483,6 +492,7 @@ function perProcessMeasure(only) {
     const rounds = Object.fromEntries(ops.map((op) => [op, []]));
     const agree = Object.fromEntries(ops.map((op) => [op, true]));
     const codecCalls = Object.fromEntries(ops.map((op) => [op, null]));
+    const storageCalls = Object.fromEntries(ops.map((op) => [op, {}]));
     let loadStart = Infinity;
     let loadMax = 0;
     for (let r = 0; r < PROCESS_ROUNDS; r++) {
@@ -508,6 +518,9 @@ function perProcessMeasure(only) {
           twoDecimals(load),
         ]);
         if (!outs.every((o) => o.ops[op].answer === outs[0].ops[op].answer)) agree[op] = false;
+        for (const o of outs)
+          for (const [k, n] of Object.entries(o.ops[op].timedStorageCalls))
+            storageCalls[op][k] = (storageCalls[op][k] ?? 0) + n;
         const calls = outs.map((o, i) => ({
           store: VARIANTS[i].key,
           codec: VARIANTS[i].codec,
@@ -525,6 +538,7 @@ function perProcessMeasure(only) {
         answersAgree: agree[op],
         loadStart: twoDecimals(loadStart),
         loadMax: twoDecimals(loadMax),
+        timedStorageCalls: storageCalls[op],
         codecCalls: codecCalls[op],
       });
   }
@@ -909,6 +923,19 @@ function environment() {
   };
 }
 
+/** The commit and tree state now, and the time: what a part of a run records about where and when it started. */
+function stamp() {
+  const { commit, treeClean } = environment();
+  return { startedAt: new Date().toISOString(), commit, treeClean };
+}
+
+/** `fn`'s output with its start time, commit and tree state, and its end time, so a part can be placed in time. */
+function part(fn) {
+  const first = stamp();
+  const out = fn();
+  return { ...first, ...out, endedAt: new Date().toISOString() };
+}
+
 const finiteAll = (o, fields) => fields.every((f) => Number.isFinite(o[f]));
 
 /** The output's shape, for `--check`: every cell present and finite, every codec in agreement, every part parsed. */
@@ -942,6 +969,12 @@ function wellFormed(doc) {
     }
     if (c.verdict === 'malformed') bad.push(`${c.dataset} ${c.op}: no verdict`);
   }
+  for (const c of doc.reads.cells)
+    if (typeof c.perProcess?.timedStorageCalls !== 'object')
+      bad.push(`${c.dataset} ${c.op}: no per-process storage-call count`);
+  for (const k of ['reads', 'write', 'startup', 'memory'])
+    if (!doc[k].startedAt || !doc[k].endedAt || !doc[k].commit)
+      bad.push(`${k}: no start and end time or commit`);
   bad.push(...doc.reads.attributionFailures.map((f) => `wrong codec or cold cache: ${f}`));
   if (!(doc.reads.coldStorageCalls > 0)) bad.push('the storage counter saw no cold call');
   if (doc.write.rows.length !== 3 || doc.write.rows.some((r) => r.verdict === 'malformed'))
@@ -982,10 +1015,10 @@ async function main() {
     console.log(JSON.stringify(await writeMeasure()));
   } else if (CHECK) {
     const doc = {
-      reads: readsMeasure(),
-      write: writeViaChild(),
-      startup: startupMeasure(),
-      memory: memoryMeasure(),
+      reads: part(() => readsMeasure()),
+      write: part(writeViaChild),
+      startup: part(startupMeasure),
+      memory: part(memoryMeasure),
     };
     const bad = wellFormed(doc);
     if (bad.length > 0) {
@@ -1005,6 +1038,7 @@ async function main() {
     const doc = {
       note: 'Wall-clock and machine-dependent: recorded, not asserted. Every round of every figure is kept (roundFields says what each column of a round is); the medians, quartiles and verdicts beside them are computed from the rounds by bench/lib/codec-verdict.cjs, and tests/bench/ts-codec-verdict.test.ts recomputes them. A cell is measured in-process (three stores in one process) and per-process (three fresh processes, one codec each); its verdict is the per-process one.',
       ...environment(),
+      startedAt: new Date().toISOString(),
       rules: {
         rounds: ROUNDS,
         processRounds: PROCESS_ROUNDS,
@@ -1023,11 +1057,12 @@ async function main() {
         quartiles: 'the element at index floor(q * n) of the sorted paired differences',
         verdictBasis: 'per-process',
       },
-      reads: readsMeasure(),
-      write: writeViaChild(),
-      memory: memoryMeasure(),
-      startup: startupMeasure(),
+      reads: part(() => readsMeasure()),
+      write: part(writeViaChild),
+      memory: part(memoryMeasure),
+      startup: part(startupMeasure),
     };
+    doc.endedAt = new Date().toISOString();
     fs.writeFileSync(RESULTS, `${compactJson(doc)}\n`);
     console.log(`wrote ${path.relative(ROOT, RESULTS)}`);
   } else if (process.argv.includes('--reads-in-process')) {
