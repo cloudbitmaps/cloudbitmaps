@@ -2,369 +2,369 @@
   "note": "Wall-clock and machine-dependent: recorded, not asserted. Medians of 11 interleaved rounds after a 300 ms warm-up, each cell in its own process, ns per call (count and has: per read); ratio is typescript over native.",
   "cpu": "Apple M3 Pro",
   "node": "v24.18.1",
-  "commit": "01deba559a96c05191de5ef40e2b65bcd8aa37c3",
+  "commit": "7bf70e54c84395ec3bafd315937062afe542fb72",
   "typescriptFrom": "this checkout",
-  "loadBefore": 3.27,
-  "loadAfter": 2.98,
+  "loadBefore": 2.35,
+  "loadAfter": 2.56,
   "rows": [
     {
       "cell": "has dense",
       "nativeNs": 26.4,
-      "tsNs": 8.4,
+      "tsNs": 8.3,
       "ratio": 0.32,
-      "load": 3.97
+      "load": 2.48
     },
     {
       "cell": "decode dense",
-      "nativeNs": 3367.1,
-      "tsNs": 3675,
-      "ratio": 1.09,
-      "load": 3.97
+      "nativeNs": 3367.6,
+      "tsNs": 3648.9,
+      "ratio": 1.08,
+      "load": 2.48
     },
     {
       "cell": "serialize dense",
-      "nativeNs": 1774.6,
-      "tsNs": 1330.2,
+      "nativeNs": 1820.9,
+      "tsNs": 1362.3,
       "ratio": 0.75,
-      "load": 3.97
+      "load": 2.48
     },
     {
       "cell": "iterate dense",
-      "nativeNs": 310762.6,
-      "tsNs": 410679.8,
-      "ratio": 1.32,
-      "load": 3.97
+      "nativeNs": 304340.9,
+      "tsNs": 410229.2,
+      "ratio": 1.35,
+      "load": 2.48
     },
     {
       "cell": "toUint32 dense",
-      "nativeNs": 34540.3,
-      "tsNs": 31714,
-      "ratio": 0.92,
-      "load": 3.97
+      "nativeNs": 31967.7,
+      "tsNs": 31259.1,
+      "ratio": 0.98,
+      "load": 2.48
     },
     {
       "cell": "optimize dense",
-      "nativeNs": 1615.6,
-      "tsNs": 2031,
-      "ratio": 1.26,
-      "load": 3.73
+      "nativeNs": 1418.2,
+      "tsNs": 1734.1,
+      "ratio": 1.22,
+      "load": 2.48
     },
     {
       "cell": "count dense",
       "nativeNs": 15.7,
       "tsNs": 1.4,
       "ratio": 0.09,
-      "load": 3.73
+      "load": 2.44
     },
     {
       "cell": "clone dense",
-      "nativeNs": 1377.3,
-      "tsNs": 1691.3,
-      "ratio": 1.23,
-      "load": 3.73
+      "nativeNs": 1110.1,
+      "tsNs": 1205.6,
+      "ratio": 1.09,
+      "load": 2.44
     },
     {
       "cell": "build dense",
-      "nativeNs": 586653.8,
-      "tsNs": 222392.4,
+      "nativeNs": 583897.4,
+      "tsNs": 221223.4,
       "ratio": 0.38,
-      "load": 3.73
+      "load": 2.44
     },
     {
       "cell": "addMany dense",
-      "nativeNs": 18406.8,
-      "tsNs": 8354.9,
+      "nativeNs": 18336,
+      "tsNs": 8225.4,
       "ratio": 0.45,
-      "load": 3.73
+      "load": 2.44
     },
     {
       "cell": "has sparse",
-      "nativeNs": 39.2,
-      "tsNs": 29.3,
-      "ratio": 0.75,
-      "load": 3.73
+      "nativeNs": 39.4,
+      "tsNs": 29.1,
+      "ratio": 0.74,
+      "load": 2.44
     },
     {
       "cell": "decode sparse",
-      "nativeNs": 1278.7,
-      "tsNs": 1683.9,
-      "ratio": 1.32,
-      "load": 3.51
+      "nativeNs": 1256.3,
+      "tsNs": 1674.3,
+      "ratio": 1.33,
+      "load": 2.73
     },
     {
       "cell": "serialize sparse",
-      "nativeNs": 800.5,
-      "tsNs": 466.4,
-      "ratio": 0.58,
-      "load": 3.51
+      "nativeNs": 813.6,
+      "tsNs": 485.1,
+      "ratio": 0.6,
+      "load": 2.73
     },
     {
       "cell": "iterate sparse",
-      "nativeNs": 9221.4,
-      "tsNs": 8184.8,
-      "ratio": 0.89,
-      "load": 3.51
+      "nativeNs": 9434.9,
+      "tsNs": 8297.9,
+      "ratio": 0.88,
+      "load": 2.73
     },
     {
       "cell": "toUint32 sparse",
-      "nativeNs": 934.1,
-      "tsNs": 672.1,
-      "ratio": 0.72,
-      "load": 3.51
+      "nativeNs": 937.5,
+      "tsNs": 651.3,
+      "ratio": 0.69,
+      "load": 2.73
     },
     {
       "cell": "optimize sparse",
-      "nativeNs": 624.1,
-      "tsNs": 1116.4,
-      "ratio": 1.79,
-      "load": 3.39
+      "nativeNs": 694.8,
+      "tsNs": 1107.2,
+      "ratio": 1.59,
+      "load": 2.73
     },
     {
       "cell": "count sparse",
-      "nativeNs": 15.7,
-      "tsNs": 1.4,
-      "ratio": 0.09,
-      "load": 3.39
+      "nativeNs": 16.5,
+      "tsNs": 2.6,
+      "ratio": 0.16,
+      "load": 2.75
     },
     {
       "cell": "clone sparse",
-      "nativeNs": 539.5,
-      "tsNs": 410.7,
-      "ratio": 0.76,
-      "load": 3.39
+      "nativeNs": 449.7,
+      "tsNs": 471.5,
+      "ratio": 1.05,
+      "load": 2.75
     },
     {
       "cell": "build sparse",
-      "nativeNs": 20622.5,
-      "tsNs": 6179.1,
-      "ratio": 0.3,
-      "load": 3.39
+      "nativeNs": 20376.5,
+      "tsNs": 6258.9,
+      "ratio": 0.31,
+      "load": 2.75
     },
     {
       "cell": "addMany sparse",
-      "nativeNs": 48724.5,
-      "tsNs": 13865.4,
-      "ratio": 0.28,
-      "load": 3.39
+      "nativeNs": 49018.8,
+      "tsNs": 13996.4,
+      "ratio": 0.29,
+      "load": 2.75
     },
     {
       "cell": "has run",
-      "nativeNs": 33.2,
+      "nativeNs": 34.3,
       "tsNs": 21.5,
-      "ratio": 0.65,
-      "load": 3.39
+      "ratio": 0.63,
+      "load": 2.75
     },
     {
       "cell": "decode run",
-      "nativeNs": 898.6,
-      "tsNs": 1036.7,
-      "ratio": 1.15,
-      "load": 3.28
+      "nativeNs": 951.7,
+      "tsNs": 1036,
+      "ratio": 1.09,
+      "load": 2.93
     },
     {
       "cell": "serialize run",
-      "nativeNs": 604.4,
-      "tsNs": 352.6,
-      "ratio": 0.58,
-      "load": 3.28
+      "nativeNs": 556.9,
+      "tsNs": 350.5,
+      "ratio": 0.63,
+      "load": 2.93
     },
     {
       "cell": "iterate run",
-      "nativeNs": 249769.8,
-      "tsNs": 221813.6,
-      "ratio": 0.89,
-      "load": 3.28
+      "nativeNs": 252205.4,
+      "tsNs": 218546.2,
+      "ratio": 0.87,
+      "load": 2.93
     },
     {
       "cell": "toUint32 run",
-      "nativeNs": 6410.2,
-      "tsNs": 13798,
-      "ratio": 2.15,
-      "load": 3.28
+      "nativeNs": 6453.1,
+      "tsNs": 13823.7,
+      "ratio": 2.14,
+      "load": 2.93
     },
     {
       "cell": "optimize run",
-      "nativeNs": 2033.1,
-      "tsNs": 6522.3,
-      "ratio": 3.21,
-      "load": 3.28
+      "nativeNs": 1991.9,
+      "tsNs": 6598.5,
+      "ratio": 3.31,
+      "load": 2.93
     },
     {
       "cell": "count run",
       "nativeNs": 15.7,
       "tsNs": 1.4,
       "ratio": 0.09,
-      "load": 3.17
+      "load": 2.93
     },
     {
       "cell": "clone run",
-      "nativeNs": 341.9,
-      "tsNs": 296,
-      "ratio": 0.87,
-      "load": 3.17
+      "nativeNs": 336.5,
+      "tsNs": 305.4,
+      "ratio": 0.91,
+      "load": 2.77
     },
     {
       "cell": "build run",
-      "nativeNs": 116084.5,
-      "tsNs": 203792.7,
-      "ratio": 1.76,
-      "load": 3.17
+      "nativeNs": 116847.2,
+      "tsNs": 204522.4,
+      "ratio": 1.75,
+      "load": 2.77
     },
     {
       "cell": "addMany run",
-      "nativeNs": 29621.2,
-      "tsNs": 9992.5,
+      "nativeNs": 29889.1,
+      "tsNs": 10099.9,
       "ratio": 0.34,
-      "load": 3.17
+      "load": 2.77
     },
     {
       "cell": "and dense/dense",
-      "nativeNs": 1250,
-      "tsNs": 3047,
-      "ratio": 2.44,
-      "load": 3.17
+      "nativeNs": 1394.5,
+      "tsNs": 3050.1,
+      "ratio": 2.19,
+      "load": 2.77
     },
     {
       "cell": "or dense/dense",
-      "nativeNs": 1057.2,
-      "tsNs": 3192.2,
-      "ratio": 3.02,
-      "load": 3.08
+      "nativeNs": 1056,
+      "tsNs": 3124.2,
+      "ratio": 2.96,
+      "load": 2.77
     },
     {
       "cell": "andNot dense/dense",
-      "nativeNs": 1195.5,
-      "tsNs": 3022.6,
+      "nativeNs": 1184.1,
+      "tsNs": 2997.7,
       "ratio": 2.53,
-      "load": 3.08
+      "load": 2.71
     },
     {
       "cell": "and sparse/sparse",
-      "nativeNs": 1959.2,
-      "tsNs": 3152.7,
-      "ratio": 1.61,
-      "load": 3.08
+      "nativeNs": 1965.5,
+      "tsNs": 3123.5,
+      "ratio": 1.59,
+      "load": 2.71
     },
     {
       "cell": "or sparse/sparse",
-      "nativeNs": 1738.4,
-      "tsNs": 3783.5,
-      "ratio": 2.18,
-      "load": 3.08
+      "nativeNs": 1690.8,
+      "tsNs": 3758.7,
+      "ratio": 2.22,
+      "load": 2.71
     },
     {
       "cell": "andNot sparse/sparse",
-      "nativeNs": 1243,
-      "tsNs": 3415.5,
-      "ratio": 2.75,
-      "load": 3.08
+      "nativeNs": 1241.5,
+      "tsNs": 3420.7,
+      "ratio": 2.76,
+      "load": 2.71
     },
     {
       "cell": "and run/run",
-      "nativeNs": 839.2,
-      "tsNs": 2985.5,
-      "ratio": 3.56,
-      "load": 3.15
+      "nativeNs": 857.9,
+      "tsNs": 3064.5,
+      "ratio": 3.57,
+      "load": 2.71
     },
     {
       "cell": "or run/run",
-      "nativeNs": 1587.2,
-      "tsNs": 3732,
-      "ratio": 2.35,
-      "load": 3.15
+      "nativeNs": 1575.2,
+      "tsNs": 3782.1,
+      "ratio": 2.4,
+      "load": 2.71
     },
     {
       "cell": "andNot run/run",
-      "nativeNs": 931.6,
-      "tsNs": 1516.8,
+      "nativeNs": 949.5,
+      "tsNs": 1552.1,
       "ratio": 1.63,
-      "load": 3.15
+      "load": 2.65
     },
     {
       "cell": "and sparse/dense",
-      "nativeNs": 1117.7,
-      "tsNs": 2954.2,
-      "ratio": 2.64,
-      "load": 3.15
+      "nativeNs": 1135.1,
+      "tsNs": 2346.1,
+      "ratio": 2.07,
+      "load": 2.65
     },
     {
       "cell": "or sparse/dense",
-      "nativeNs": 2168.3,
-      "tsNs": 3521.8,
-      "ratio": 1.62,
-      "load": 3.15
+      "nativeNs": 2981.6,
+      "tsNs": 3625.6,
+      "ratio": 1.22,
+      "load": 2.65
     },
     {
       "cell": "andNot sparse/dense",
-      "nativeNs": 1084.8,
-      "tsNs": 2469.3,
-      "ratio": 2.28,
-      "load": 3.15
+      "nativeNs": 1130.7,
+      "tsNs": 2499.6,
+      "ratio": 2.21,
+      "load": 2.65
     },
     {
       "cell": "and run/dense",
-      "nativeNs": 2018.7,
-      "tsNs": 2935,
-      "ratio": 1.45,
-      "load": 3.06
+      "nativeNs": 2097,
+      "tsNs": 3123.6,
+      "ratio": 1.49,
+      "load": 2.65
     },
     {
       "cell": "or run/dense",
-      "nativeNs": 2592.6,
-      "tsNs": 2810.1,
-      "ratio": 1.08,
-      "load": 3.06
+      "nativeNs": 1828.6,
+      "tsNs": 2899.2,
+      "ratio": 1.59,
+      "load": 2.52
     },
     {
       "cell": "andNot run/dense",
-      "nativeNs": 1813.2,
-      "tsNs": 3931.2,
-      "ratio": 2.17,
-      "load": 3.06
+      "nativeNs": 1861.1,
+      "tsNs": 4480.3,
+      "ratio": 2.41,
+      "load": 2.52
     },
     {
       "cell": "and skew 64/4000",
-      "nativeNs": 2281,
-      "tsNs": 3092.6,
-      "ratio": 1.36,
-      "load": 3.06
+      "nativeNs": 2300.1,
+      "tsNs": 3085.1,
+      "ratio": 1.34,
+      "load": 2.52
     },
     {
       "cell": "or skew 64/4000",
-      "nativeNs": 3883.2,
-      "tsNs": 13914.4,
-      "ratio": 3.58,
-      "load": 3.06
+      "nativeNs": 3340.6,
+      "tsNs": 14098.8,
+      "ratio": 4.22,
+      "load": 2.52
     },
     {
       "cell": "andNot skew 64/4000",
-      "nativeNs": 3000.5,
-      "tsNs": 1617.2,
-      "ratio": 0.54,
-      "load": 3.06
+      "nativeNs": 3044.1,
+      "tsNs": 1584.8,
+      "ratio": 0.52,
+      "load": 2.52
     }
   ],
   "bytesPerDecodedChunk": [
     {
       "kind": "dense",
       "nativeHeapExternal": 91,
-      "nativeRss": 8651,
+      "nativeRss": 8666,
       "tsHeapExternal": 8605,
-      "tsRss": 12037
+      "tsRss": 11917
     },
     {
       "kind": "sparse",
       "nativeHeapExternal": 89,
-      "nativeRss": 2068,
+      "nativeRss": 2072,
       "tsHeapExternal": 2466,
-      "tsRss": 2881
+      "tsRss": 2990
     },
     {
       "kind": "run",
       "nativeHeapExternal": 89,
-      "nativeRss": 772,
+      "nativeRss": 782,
       "tsHeapExternal": 1051,
-      "tsRss": 2505
+      "tsRss": 2478
     }
   ]
 }
