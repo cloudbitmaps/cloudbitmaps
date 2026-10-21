@@ -393,36 +393,26 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
   });
 
-  it('a bitmap of another class with serialize is loaded by shape, serialized once and never iterated', async () => {
-    // A look-alike class: not this package's RoaringBitmap32, but it has serialize('portable'), the shape that counts.
-    const calls = { serialize: 0, iterate: 0 };
-    class Elsewhere {
-      constructor(private readonly ids: number[]) {}
-      serialize(format: 'portable'): Uint8Array {
-        calls.serialize++;
-        return new RoaringBitmap32(this.ids).serialize(format);
-      }
-      [Symbol.iterator](): Iterator<number> {
-        calls.iterate++;
-        return this.ids[Symbol.iterator]();
-      }
-    }
-    const { bytes } = await loadAndRead(new Elsewhere(IDS));
-    expect(calls).toEqual({ serialize: 1, iterate: 0 });
-    expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
-  });
-
-  it('an iterable whose serialize is not a function is loaded as the ids it iterates', async () => {
-    const lookalike = Object.assign(new Set(IDS), { serialize: 'not a function' });
-    const { bytes } = await loadAndRead(lookalike);
-    expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
-  });
-
   it('a bitmap deserializePortable returned loads as a bitmap, never iterated', async () => {
     const view = deserializePortable(new RoaringBitmap32(IDS).serialize('portable'));
     const iterate = vi.spyOn(view, Symbol.iterator);
     const { bytes } = await loadAndRead(view);
     expect(iterate).not.toHaveBeenCalled();
+    expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
+  });
+
+  it('a RoaringBitmap32 from another copy of roaring is loaded as the ids it iterates', async () => {
+    // A look-alike class: iterable, with serialize, but not this package's RoaringBitmap32.
+    class Elsewhere {
+      constructor(private readonly ids: number[]) {}
+      serialize(): Uint8Array {
+        throw new Error('not called: a bare bitmap of another class is ids');
+      }
+      [Symbol.iterator](): Iterator<number> {
+        return this.ids[Symbol.iterator]();
+      }
+    }
+    const { bytes } = await loadAndRead(new Elsewhere(IDS));
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
   });
 });
