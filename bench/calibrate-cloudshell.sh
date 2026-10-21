@@ -23,7 +23,8 @@
 #           store package's internal codec switch set to that codec, in place of the installed packages' stores. Run it
 #           once with each value, from the same clone, to put the two codecs side by side; give each run its own
 #           CR_CALIBRATE_RUN_ID. Set CR_CALIBRATE_PACKAGE_VERSION to a published release (the cost model comes from it:
-#           this clone's own version is not on npm until it ships). Any other value is refused.
+#           this clone's own version is not on npm until it ships). Any other value is refused, before anything is
+#           copied or installed.
 #           CR_CALIBRATE_SUITE=large runs the large suite (combines on operands of 10^6 to 10^7 ids) in place of the
 #           default one, and CR_CALIBRATE_LARGE_READS and CR_CALIBRATE_LARGE_INTOS size it; its evidence is written
 #           under bench/calibration/large/. Any other suite name is refused by the harness, before anything is created.
@@ -55,6 +56,19 @@ refuse_bad_suite() {
   esac
 }
 refuse_bad_suite
+
+# Only unset, empty, `native` or `typescript` name a codec. The harness refuses any other, but only after the clone's
+# sources are copied and the packages installed, so it is refused here first.
+refuse_bad_codec() {
+  case "${CR_CALIBRATE_CODEC:-}" in
+    '' | native | typescript) ;;
+    *)
+      echo "cloudshell: CR_CALIBRATE_CODEC must be native or typescript, or unset, not \"${CR_CALIBRATE_CODEC}\"" >&2
+      exit 2
+      ;;
+  esac
+}
+refuse_bad_codec
 
 # The workload client's socket limit, by the harness's own rule: digits, 1 to 1024 (beyond a process's usual
 # file-descriptor limit, 1,024 on Lambda for one, it cannot be held). Whitespace only is unset. Refused here, before
