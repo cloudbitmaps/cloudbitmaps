@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+const TESTS = fileURLToPath(new URL('./tests', import.meta.url));
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
 const S3 = fileURLToPath(new URL('./packages/s3/src', import.meta.url));
@@ -29,11 +30,13 @@ export default defineConfig({
     // module by one alias whichever package holds it. Order matters: the exact matches win over the `@/*`
     // catch-all.
     //   @/index          → the roaring facade (the package entry the tests mean)
-    //   @/roaring-codec  → the roaring codec
+    //   @/roaring-codec  → the roaring codec selection point
+    //   @/native-codec   → the native (CRoaring) codec, the oracle's reference
     //   @/*              → @cloudbitmaps/core internals
     alias: [
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },
       { find: /^@\/roaring-codec$/, replacement: ROARING + '/roaring-codec.ts' },
+      { find: /^@\/native-codec$/, replacement: TESTS + '/helpers/native-codec.ts' },
       // Kept in step with `vitest.config.ts`: two aliases were missing here, so an integration test
       // importing either would fall through the `@/(.*)` catch-all to a core path that does not exist.
       { find: /^@\/system-clock$/, replacement: ROARING + '/system-clock.ts' },
