@@ -151,6 +151,90 @@ describe('array intersection through a scratch bitset', () => {
   });
 });
 
+describe('array difference through a scratch bitset', () => {
+  const spread = (n: number, off: number) =>
+    Array.from({ length: n }, (_, i) => Math.min(65_535, Math.floor((i * 65_536) / n) + off));
+  it('either side of the minimum length of the subtrahend and of the gallop skew, with every overlap', () => {
+    for (const len of [1, 31, 32, 33, 64]) {
+      for (const mult of [1, 2, 15, 16, 17]) {
+        const a = spread(len * mult, 0);
+        const half = a.filter((_, i) => i % 2 === 0).slice(0, len);
+        for (const other of [spread(len, 1), spread(len, 0), half, a.slice(0, len)]) {
+          pair(a, other);
+          pair(other, a);
+        }
+      }
+    }
+  });
+  it('only the span of the subtrahend under the minuend is read: disjoint, touching, partial, inside', () => {
+    const a = thin(400, 10, 1000);
+    const b = (from: number) => thin(40, 10, from);
+    pair(a, b(0));
+    pair(a, b(5000));
+    pair(a, b(1000 - 390));
+    pair(a, b(1000 + 3990));
+    pair(a, b(1000 - 200));
+    pair(a, b(1000 + 3990 - 200));
+    pair(a, b(2000));
+    pair(thin(32, 1, 0), thin(32, 1, 31));
+    pair(thin(32, 1, 0), thin(32, 1, 32));
+    pair(thin(32, 1, 5), thin(32, 1, 0));
+    pair([0, 65_535, ...range(100, 130)], [0, 65_535, ...range(200, 230)]);
+    pair(range(0, 4096), range(0, 4096));
+  });
+  it('leaves nothing behind in the scratch: a later difference never sees an earlier one', () => {
+    const first = TS.fromValues(thin(100, 100));
+    first.andNotInPlace(TS.fromValues(thin(40, 100)));
+    expect([...first]).toEqual(thin(60, 100, 4000));
+    const second = TS.fromValues(thin(40, 100));
+    second.andNotInPlace(TS.fromValues(thin(40, 100, 9)));
+    expect([...second]).toEqual(thin(40, 100));
+    const third = TS.fromValues(thin(40, 100));
+    third.andInPlace(TS.fromValues(thin(40, 100, 9)));
+    expect([...third]).toEqual([]);
+  });
+});
+describe('a clone shares its containers until one side writes', () => {
+  const kinds: Record<string, () => number[]> = {
+    array: () => thin(500, 7),
+    bitset: () => thin(20_000, 3),
+    runs: () => range(100, 5000).concat(range(9000, 40_000)),
+  };
+  for (const [kn, ids] of Object.entries(kinds))
+    for (const [on, other] of Object.entries(kinds))
+      for (const op of ['andInPlace', 'orInPlace', 'andNotInPlace'] as const) {
+        it(`${kn} ${op} ${on}`, () => {
+          const mk = (v: number[]) => {
+            const m = TS.fromValues(v);
+            if (kn === 'runs' && v === ids()) m.optimize?.();
+            return m;
+          };
+          const source = mk(ids());
+          const bytes = hex(source.serialize());
+          const copy = source.clone();
+          const operand = TS.fromValues(other());
+          copy[op](operand);
+          expect([...source]).toEqual(ids());
+          expect(hex(source.serialize())).toBe(bytes);
+          expect([...operand]).toEqual(other());
+          const want = NA.fromValues(ids());
+          want[op](NA.fromValues(other()));
+          expect([...copy]).toEqual([...want]);
+          // A write to the source after the clone leaves the clone as it was.
+          const snapshot = [...copy];
+          source.removeMany(ids().slice(0, 10));
+          source.add(65_000);
+          expect([...copy]).toEqual(snapshot);
+          // A clone of a clone, and a combine on the original, leave every other holder's content alone.
+          const again = copy.clone();
+          copy[op](operand);
+          expect([...again]).toEqual(snapshot);
+          const cloneNow = [...copy];
+          source[op](operand);
+          expect([...copy]).toEqual(cloneNow);
+        });
+      }
+});
 describe('array intersection with runs, either side of the values-versus-runs choice', () => {
   const runsOf = (count: number, len: number, gap: number, start = 0) =>
     range(0, count).flatMap((r) => range(start + r * (len + gap), start + r * (len + gap) + len));

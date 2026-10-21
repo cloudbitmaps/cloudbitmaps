@@ -366,7 +366,13 @@ class TsBitmap implements CodecBitmap {
 
   clone(): TsBitmap {
     const conts = new Array<Container>(this.#conts.length);
-    for (let i = 0; i < conts.length; i++) conts[i] = cloneContainer(this.#conts[i] as Container);
+    // The copy shares each container with this bitmap and both mark it shared, so the first write on either side copies
+    // it; a clone that is only read, or combined into fresh containers, never pays for a copy.
+    for (let i = 0; i < conts.length; i++) {
+      const c = this.#conts[i] as Container;
+      c.shared = true;
+      conts[i] = c;
+    }
     return new TsBitmap(this.#keys.slice(), conts, this.#size);
   }
 
