@@ -3,6 +3,12 @@
  * method call and a result object, with no suspended frame and no scratch buffer of 65,536 entries per iterator. It
  * walks one container at a time in place: an array by index, a run container by run and value, a bitset by word and the
  * lowest set bit of what is left of it.
+ *
+ * It reads the bitmap's live storage and takes no snapshot, so mutating the bitmap while iterating it is not supported.
+ * Over a bitmap nothing changes it yields every id once, ascending, then ends. After a change it neither throws nor
+ * reads outside the storage it holds, but what it yields is unspecified: an id may be missed, repeated or out of order,
+ * and an id added or removed meanwhile may or may not appear. Collect the ids first (`toUint32Array`) or iterate a
+ * `clone()` to change a bitmap while walking it.
  */
 import { ARRAY, BITSET, WORDS, type Container } from './containers';
 

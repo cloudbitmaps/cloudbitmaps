@@ -60,17 +60,27 @@ function valueSets() {
   };
 }
 
-function seedSafeDeserialize() {
+/**
+ * Seeds for a safe-deserialize target. `runOptimized` also writes each set with its run containers (the plain
+ * serialization of a set has none), which reach the run paths of a decoder that has them.
+ */
+function seedSafeDeserialize(target, runOptimized) {
   const sets = valueSets();
   for (const [name, vals] of Object.entries(sets)) {
-    const ser = new RoaringBitmap32(vals).serialize(SerializationFormat.portable);
-    writeSeed('safe-deserialize', `valid-${name}.bin`, ser);
-    // A couple of near-miss mutants of each valid seed — great libFuzzer springboards toward the error paths.
-    if (ser.length > 4) {
-      writeSeed('safe-deserialize', `trunc-${name}.bin`, ser.subarray(0, ser.length >> 1));
-      const flipped = ser.slice();
-      flipped[0] = flipped[0] ^ 0xff; // corrupt the serialization cookie/header
-      writeSeed('safe-deserialize', `flip-${name}.bin`, flipped);
+    const forms = [['valid', false]];
+    if (runOptimized) forms.push(['runs', true]);
+    for (const [form, runs] of forms) {
+      const bitmap = new RoaringBitmap32(vals);
+      if (runs) bitmap.runOptimize();
+      const ser = bitmap.serialize(SerializationFormat.portable);
+      writeSeed(target, `${form}-${name}.bin`, ser);
+      // A couple of near-miss mutants of each valid seed — great libFuzzer springboards toward the error paths.
+      if (ser.length > 4) {
+        writeSeed(target, `trunc-${form}-${name}.bin`, ser.subarray(0, ser.length >> 1));
+        const flipped = ser.slice();
+        flipped[0] = flipped[0] ^ 0xff; // corrupt the serialization cookie/header
+        writeSeed(target, `flip-${form}-${name}.bin`, flipped);
+      }
     }
   }
 }
@@ -273,11 +283,14 @@ async function seedCrbmExt() {
 
 async function main() {
   const only = process.argv[2];
-  if (!only || only === 'safe-deserialize') seedSafeDeserialize();
+  if (!only || only === 'safe-deserialize') seedSafeDeserialize('safe-deserialize', false);
+  if (!only || only === 'ts-safe-deserialize') seedSafeDeserialize('ts-safe-deserialize', true);
   if (!only || only === 'crbm-reader') await seedCrbmReader();
   if (!only || only === 'crbm-index') seedCrbmIndex();
   if (!only || only === 'crbm-ext') await seedCrbmExt();
-  const targets = only ? [only] : ['safe-deserialize', 'crbm-reader', 'crbm-index', 'crbm-ext'];
+  const targets = only
+    ? [only]
+    : ['safe-deserialize', 'ts-safe-deserialize', 'crbm-reader', 'crbm-index', 'crbm-ext'];
   for (const t of targets) {
     const dir = path.join(CORPUS, t);
     const n = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;

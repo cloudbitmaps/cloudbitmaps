@@ -22,9 +22,10 @@
  * clear; that is safe because a clone or snapshot flags the container its bitmap holds at that moment, so a flagged
  * object never sits beside an unflagged one over the same storage.
  *
- * COMBINES, by the kinds of the pair (the result kind is a written rule: an array up to 4,096 values, a bitset above,
- * never a run, whatever the operands were; `optimize` picks runs before anything is stored, so stored bytes depend on
- * the set alone):
+ * COMBINES, by the kinds of the pair (the result kind of a pair is a written rule: an array up to 4,096 values, a bitset
+ * above, never a run, whatever the operands were; a container that has no partner in the other bitmap is not combined,
+ * and `TsBitmap` keeps it by reference, so a result bitmap can hold a run; `optimize` picks runs before anything is
+ * stored, so stored bytes depend on the set alone):
  *
  *            and                       or                         andNot
  *   A  A     merge, or gallop when     merge while the union      scratch bitset from 32 values,

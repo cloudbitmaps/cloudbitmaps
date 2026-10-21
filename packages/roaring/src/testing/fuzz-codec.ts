@@ -8,8 +8,15 @@
  * feed the fuzzer.
  */
 import { SafeBitmap } from '../roaring-codec';
+import { tsRoaringCodec } from '../ts-roaring/bitmap';
 
-export { SafeBitmap };
+export { SafeBitmap, tsRoaringCodec };
+
+/** What {@link assertConsistentDecode} reads of a decoded bitmap, which either codec's bitmap offers. */
+interface DecodedBitmap extends Iterable<number> {
+  readonly size: number;
+  has(value: number): boolean;
+}
 
 /**
  * What an accepted decode must be: it iterates strictly ascending, `size` is the number of values it iterates, and
@@ -22,7 +29,7 @@ export { SafeBitmap };
  * materialization it replaces, because a valid run-heavy bitmap is tiny on disk and can hold billions of ids, and it
  * asks `has` of the first 4,096 values only, which is enough to reach every container a small input can hold.
  */
-export function assertConsistentDecode(bm: SafeBitmap): void {
+export function assertConsistentDecode(bm: DecodedBitmap): void {
   if (bm.size > 1_000_000) return;
   let previous = -1;
   let seen = 0;
