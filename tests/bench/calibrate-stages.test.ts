@@ -348,7 +348,7 @@ describe('the sweep list', () => {
     const src = harnessSrc.slice(harnessSrc.indexOf('async function main'));
     expect(src.indexOf('parseSweep(process.env.CR_CALIBRATE_SWEEP)')).toBeGreaterThan(-1);
     expect(src.indexOf('parseSweep(process.env.CR_CALIBRATE_SWEEP)')).toBeLessThan(
-      src.indexOf("await import('@cloudbitmaps/roaring')"),
+      src.indexOf("await packageOf('roaring')"),
     );
   });
 });
@@ -1086,8 +1086,8 @@ describe('the steady-load stage', () => {
     );
     // The harness asks before it creates a bucket or reads a layout, and refuses with the release that collects by name.
     const at = (needle: string): number => harnessSrc.indexOf(needle);
-    expect(at('collectsByName(await import')).toBeGreaterThan(-1);
-    expect(at('collectsByName(await import')).toBeLessThan(at('layout = planLayout('));
+    expect(at('collectsByName(await packageOf')).toBeGreaterThan(-1);
+    expect(at('collectsByName(await packageOf')).toBeLessThan(at('layout = planLayout('));
     expect(harnessSrc).toContain('0.17.0 is the first release that does');
   });
 
@@ -1127,10 +1127,8 @@ describe('the steady-load stage', () => {
     // The harness asks before it creates anything, after the engine is known to collect by name, and records the answer
     // where the figures read it.
     const at = (needle: string): number => harnessSrc.indexOf(needle);
-    const asked = harnessSrc.search(
-      /readsRowAfterCollect\(\s*await import\('@cloudbitmaps\/roaring'\)/,
-    );
-    expect(asked).toBeGreaterThan(at('collectsByName(await import'));
+    const asked = harnessSrc.search(/readsRowAfterCollect\(\s*await packageOf\('roaring'\)/);
+    expect(asked).toBeGreaterThan(at('collectsByName(await packageOf'));
     expect(asked).toBeLessThan(at('layout = planLayout('));
     expect(harnessSrc).toContain('{ readsRowAfterCollect: readsAfterCollect }');
     expect(harnessSrc).toContain('steadyLoadRequestsOf(readsAfterCollect)[kind]');

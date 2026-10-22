@@ -1238,7 +1238,7 @@ describe('the machine it runs on', () => {
     expect(print).toBeGreaterThan(main);
     expect(harnessSrc.match(/resourcesNow\(\)/g)).toHaveLength(1);
     expect(print).toBeLessThan(check);
-    expect(check).toBeLessThan(harnessSrc.indexOf("await import('@cloudbitmaps/roaring')", main));
+    expect(check).toBeLessThan(harnessSrc.indexOf("await packageOf('roaring')", main));
     expect(check).toBeLessThan(harnessSrc.indexOf('new s3.CreateBucketCommand', main));
     expect(harnessSrc).toContain(
       "if (SUITE === 'large' && (MODE === 'rehearse' || MODE === 'run')) {",
@@ -1586,7 +1586,7 @@ describe('the engine the suite is run against', () => {
     const main = harnessSrc.indexOf('async function main');
     const check = harnessSrc.indexOf('checkEngineConstants(constantsIn(', main);
     expect(check).toBeGreaterThan(main);
-    expect(check).toBeLessThan(harnessSrc.indexOf("await import('@cloudbitmaps/roaring')", main));
+    expect(check).toBeLessThan(harnessSrc.indexOf("await packageOf('roaring')", main));
     expect(check).toBeLessThan(harnessSrc.indexOf('new s3.CreateBucketCommand', main));
     const block = harnessSrc.slice(
       harnessSrc.lastIndexOf("if (SUITE === 'large' &&", check),
