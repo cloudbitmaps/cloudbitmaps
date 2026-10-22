@@ -1487,7 +1487,7 @@ export class SegmentEngine {
    * The AND (or OR) of one chunk key across all operands, minus the excludes that hold it, or `null` if empty.
    * Operand chunks are fetched **in parallel** (the spec's parallel byte-range reads).
    *
-   * The accumulator is a **clone** of the first operand's chunk, and that clone is load-bearing: every other
+   * The accumulator is a **clone** of one operand's chunk (the first, or for a codec that asks the one with the fewest values), and that clone is load-bearing: every other
    * bitmap here is the cached, shared Storage instance and must never be mutated, or the cache is poisoned for
    * every later reader. The remaining operands and the excludes are only *read* by the in-place ops, so they are
    * used as-is — one clone per key, not one per operand.
