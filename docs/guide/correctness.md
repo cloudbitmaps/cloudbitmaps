@@ -807,12 +807,20 @@ below the pointer that its collection will delete. The current generation is nev
 is kept. Only then does it delete. So a rollback that read the row before the write loses its swap, and the collection,
 which spares every generation the row names when it reads the row before each delete, spares what a load or a rollback
 has made known since; a name that comes back that way, below the generation the call found current, is taken out of the
-ledger again before the call deletes it. The same write renews the row's `pointerId` when the call deletes by name. **A rollback without `allowUnknown` cannot bring an erased generation back, even when a delete fails** (an erasure that ends with an `error:` note because it could not remove a generation, or with `'superseded'`, or that crashes after the write): the generation is already out of the ledger, so the rollback is refused as unknown, above the pointer and below it. The two cases the pointer alone decides are the exception: a row with no usable `knownGens`, and a target below a full ledger's bound (its least recently current entry that no lease names), where a rollback below the pointer needs no flag. Re-run the erasure to delete what it could not. What the write does in a race:
+ledger again before the call deletes it. The same write renews the row's `pointerId` when the call deletes by name, and when it sweeps a holder it searched and the ledger names nothing to prune (a prune is itself a write of the row), so every load that read the row before the call began is refused, by this call's write or by a write that changed the row's `pointerId` or ledger since the call read it. **A rollback without `allowUnknown` cannot bring an erased generation back, even when a delete fails** (an erasure that ends with an `error:` note because it could not remove a generation, or with `'superseded'`, or that crashes after the write): the generation is already out of the ledger, so the rollback is refused as unknown, above the pointer and below it. The two cases the pointer alone decides are the exception: a row with no usable `knownGens`, and a target below a full ledger's bound (its least recently current entry that no lease names), where a rollback below the pointer needs no flag. Re-run the erasure to delete what it could not. What the write does in a race:
 
-- <a id="no-write-when-none-owed"></a>**No write when none is owed.** A ledger that names nothing to delete, and no renewal to make, costs no write. Neither
-  does a call whose renewal another erasure's write already made after this call listed the bucket and whose names that
-  write already took out: two erasures of different ids on one segment that delete the same generations write once
-  between them, and both report `erased: true`.
+- <a id="no-write-when-none-owed"></a>**No write when none is owed.** A call that found no holder writes nothing. One that found the id leaves the row written
+  before it deletes, so every load that read the row before it began is refused: the prune of a ledger that names a
+  holder is that write, and where the ledger names nothing (a holder below the pointer that no load named, such as a
+  crashed first load's object) the call renews the row's `pointerId` instead, one extra write. A call makes no write of
+  its own in two cases, because a change no later write can undo has already fenced every load that read the row before
+  the call began: the row's `pointerId` is new since the call read it (a load or a rollback moved the pointer, or another
+  erasure renewed it), or its ledger differs (another erasure pruned it; between two `pointerId`s a ledger only shrinks,
+  because every writer that adds an entry names the pointer). Two erasures of different ids on one segment that delete the
+  same generations write once between them, and both report `erased: true`. A write of the retention or the residency is
+  not such a change: a later write can put it back, and a load that read the row before the call would then
+  find it as it read it, so a call that finds only that renews the `pointerId`. A rewrite that a concurrent erasure's
+  renewal lands under is refused as `superseded`, and its caller runs it again.
 - <a id="erasure-load-lands-first"></a>**A load that lands first.** Holders below the pointer: the call prunes against the pointer it finds, keeping the
   generation it found clean, which the load's window names and the collection then spares as the load's grace
   generation, and reports `erased: true` with every holder gone. Holders above the pointer that the load's number has

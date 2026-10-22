@@ -100,7 +100,7 @@ again, the row changes a second time.
 
 Two of the rules while you erase. **Do not load a segment while erasing from it**: a load that lands after the rewrite carries whatever
 its source held, and the library cannot know that source was meant to exclude the id — fix the source first, or
-quiesce loads of the affected segments for the duration. A writer that lands *during* the rewrite is caught and
+quiesce loads of the affected segments for the duration, and let loads already running finish before you start. Every load that read the row before an erasure that found the id began is refused (`superseded`) and never publishes what its source held, whether by this erasure's own [write to the row](docs/guide/correctness.md#ledger-loses-what-it-deletes) or by an earlier write that changed the row's `pointerId` or its ledger since the erasure read it (a retention or residency write does not count); a load that starts during the erasure is not covered. A writer that lands *during* the rewrite is caught and
 the entry says `erased: false, note: 'superseded'` — because the publish was refused **by that fence**, because
 a racing **erasure** (which collects with `keep: 0`) deleted the generation the rewrite was still streaming, or
 because an operator's `rollback` moved the pointer while the call was deleting generations above it. When two

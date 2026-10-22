@@ -452,12 +452,6 @@
       "starts": "Beside the reads that search a segment's generations,"
     },
     {
-      "file": "docs/guide/cost.md",
-      "claim": "ledger-loses-what-it-deletes",
-      "sentence": "3310c067c0f5",
-      "starts": "An erasure that finds the id only in"
-    },
-    {
       "file": "docs/guide/dashboards.md",
       "claim": "keep-every-tombstone",
       "sentence": "d75e2e93fb91",
