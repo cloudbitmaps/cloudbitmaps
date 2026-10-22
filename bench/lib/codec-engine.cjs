@@ -91,6 +91,10 @@ function engineWith(codec, options) {
     throw new Error(`codec must be one of ${CODECS.join(', ')}, not ${JSON.stringify(codec)}`);
   }
   const engine = bundleEngine(options);
+  // A measurement knob: the native codec asking for the smallest-first intersect order, as the TypeScript codec does.
+  if (process.env.TS_ENGINE_NATIVE_SMALLEST_FIRST === '1') {
+    engine.roaringCodec.intersectSmallestFirst = true;
+  }
   engine.setFlagshipCodec(codec === 'typescript' ? engine.tsRoaringCodec : engine.roaringCodec);
   return engine;
 }

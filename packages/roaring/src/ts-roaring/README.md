@@ -267,8 +267,13 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
 
 - `andRuns`, `orRuns` (merges touching runs: `s <= end + 1`), `andNotRuns`: one walk over both run lists into
   `pairScratch`, then `fromRunPairs` builds an array (up to 4,096 values) or a bitset from the pairs.
-- `bitsetInRuns`: for each run, copy the bitset's words inside the run's bit range (head and tail masks) into a fresh
-  bitset, then count.
+- `bitsetInRuns`: reads only the bitset words each run covers, each masked to the run's ends. A run container of at
+  most 4,096 values cannot yield more than an array holds, so its result is written straight to a scratch array of
+  positions and copied out: no 8 KiB bitset, no popcount. A larger run container copies the covered words into a fresh
+  bitset and counts it once with Harley-Seal (counting each covered word with a 32-bit popcount instead measured the
+  same on a chunk whose runs cover about half the words, so the single count stays). The trade: the small branch pays one
+  bit-extraction step per result value, which is cheaper than the allocation and the 2,048-word count it replaces
+  whenever the result is at most 4,096 values, the only case it is taken for.
 - Run against array for `or`, and a run as the first operand of `andNot` with a non-run second operand: the run is
   expanded to words (`toWords`, which it owns), then the other operand's bits are set or cleared.
 
@@ -320,6 +325,14 @@ All of these are in `bitmap.ts`.
   galloping `this`'s keys; the other operations keep `this`'s container by reference. Where only `that` holds a key, a
   union adds a deep copy (`cloneContainer`); an intersection or difference skips it, galloping `that`'s keys for an
   intersection. `this`'s key list, container list and size are rebuilt. `that` is never changed.
+  The order operands meet in is the store's, not this class's: this codec sets `intersectSmallestFirst`, so for an
+  intersect of three or more operands the store's `combineChunk` clones the chunk with the fewest values and meets the
+  others in ascending size. A mixed chunk (a run container, a bitset and a sparse array) then starts from the sparse
+  array, and each later step is a filter of an array through the bitset's bit test or the runs' walk, never a bitset
+  built from runs. A pair of operands keeps its order. The cost is one `size` read per operand per chunk. The native
+  codec does not set it: its `size` crosses the addon boundary, and sorting by it made the native four-operand mixed
+  intersect 9% to 10% slower (measured, per process and in-process, 31 rounds, A/A control in band), for no gain, since
+  its combine is fast in any order.
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
   bitset a scan from the top word).

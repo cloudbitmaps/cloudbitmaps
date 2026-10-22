@@ -1010,10 +1010,39 @@ function andNotRuns(a: Container, b: Container): Container | null {
   return fromRunPairs(out, runs, card);
 }
 
-/** The values of bitset `a` inside the runs of `b`, as words. */
+/**
+ * The values of bitset `a` inside the runs of `b`. Only the words a run covers are read, each masked to the run's ends.
+ * A run container of at most 4,096 values cannot produce more than an array holds, so its result is written straight to
+ * an array (no 8 KiB bitset, no popcount); a larger one is built as words and counted once, with Harley-Seal, which
+ * beats counting each covered word when the runs cover many of them.
+ */
 function bitsetInRuns(a: Container, b: Container): Container | null {
   const words = words32(a);
   const pairs = lows16(b);
+  if (b.card <= ARRAY_MAX_CARDINALITY) {
+    const out = values16(b.card);
+    let n = 0;
+    for (let r = 0; r < b.len; r++) {
+      const start = pairs[b.off + 2 * r] as number;
+      const end = start + (pairs[b.off + 2 * r + 1] as number);
+      const first = start >>> 5;
+      const last = end >>> 5;
+      const head = (0xffff_ffff << (start & 31)) >>> 0;
+      const tail = 0xffff_ffff >>> (31 - (end & 31));
+      for (let i = first; i <= last; i++) {
+        let w = words[i] as number;
+        if (i === first) w &= head;
+        if (i === last) w &= tail;
+        const top = i * 32 + 31;
+        while (w !== 0) {
+          const lowest = w & -w;
+          out[n++] = top - Math.clz32(lowest);
+          w ^= lowest;
+        }
+      }
+    }
+    return arrayOfScratch(out, n);
+  }
   const out = new Uint32Array(WORDS);
   for (let r = 0; r < b.len; r++) {
     const start = pairs[b.off + 2 * r] as number;

@@ -155,6 +155,7 @@ export const ROUTED: readonly string[] = [
   'tests/roaring/codec-switch.test.ts',
   'tests/roaring/combine-refusals.test.ts',
   'tests/roaring/id-stream-batches.test.ts',
+  'tests/roaring/intersect-operand-order.test.ts',
   'tests/roaring/pin-lease.races.test.ts',
   'tests/roaring/pin-lease.test.ts',
   'tests/roaring/segment-handle.test.ts',

@@ -29,6 +29,11 @@ describe('the store package codec switch', () => {
     expect(flagshipCodec().owns!(roaringCodec.fromValues([1]))).toBe(false);
   });
 
+  it('names which codec asks for the smallest-first intersect order: the TypeScript codec, not the native one', () => {
+    expect(tsRoaringCodec.intersectSmallestFirst).toBe(true);
+    expect(roaringCodec.intersectSmallestFirst).not.toBe(true);
+  });
+
   it('flips and restores', () => {
     const was = setFlagshipCodec(roaringCodec === flagshipCodec() ? tsRoaringCodec : roaringCodec);
     try {
