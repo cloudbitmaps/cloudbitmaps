@@ -99,6 +99,189 @@ describe('gallop', () => {
       }
   });
 });
+describe('array intersection through a scratch bitset', () => {
+  // Spread values over the whole chunk, so word and bit extremes (0, 31, 32, 65535) are held.
+  const spread = (n: number, off: number) =>
+    Array.from({ length: n }, (_, i) => Math.min(65_535, Math.floor((i * 65_536) / n) + off));
+  it('either side of its minimum length and of the gallop skew, with every overlap', () => {
+    for (const small of [1, 31, 32, 33, 64]) {
+      for (const mult of [1, 2, 15, 16, 17]) {
+        const big = spread(small * mult, 0);
+        const half = big.filter((_, i) => i % 2 === 0).slice(0, small);
+        for (const other of [spread(small, 1), spread(small, 0), half, big.slice(0, small)]) {
+          pair(other, big);
+          pair(big, other);
+        }
+      }
+    }
+  });
+  it('4,096-value arrays, the full chunk edge of an array, and disjoint then equal operands', () => {
+    const a = thin(4096, 16);
+    const b = thin(4096, 16, 3);
+    pair(a, b);
+    pair(a, a);
+    pair(a, thin(4096, 16, 8));
+    pair(thin(4097, 15), a);
+    pair(range(0, 4096), range(61_440, 65_536));
+    pair([0, 65_535], [0, 65_535]);
+  });
+  it('only the span of the longer array under the shorter one is read: disjoint, touching, partial, inside', () => {
+    const big = thin(400, 10, 1000);
+    const small = (from: number) => thin(40, 10, from);
+    pair(small(0), big);
+    pair(big, small(0));
+    pair(small(5000), big);
+    pair(big, small(5000));
+    pair(small(1000 - 390), big);
+    pair(small(1000 + 3990 - 0), big);
+    pair(small(1000 - 200), big);
+    pair(small(1000 + 3990 - 200), big);
+    pair(small(2000), big);
+    pair(thin(32, 1, 0), thin(32, 1, 31));
+    pair(thin(32, 1, 0), thin(32, 1, 32));
+  });
+  it('leaves nothing behind in the scratch: a later intersection never sees an earlier one', () => {
+    // The first call sets bits the second one's longer array holds; the second's shorter array holds none of them.
+    const early = thin(40, 100);
+    const first = TS.fromValues(early);
+    first.andInPlace(TS.fromValues(early.concat(thin(200, 100, 7))));
+    const second = TS.fromValues(thin(40, 100, 9));
+    second.andInPlace(TS.fromValues(early.concat(thin(100, 100, 9).slice(40))));
+    expect([...second]).toEqual([]);
+  });
+});
+
+describe('array difference through a scratch bitset', () => {
+  const spread = (n: number, off: number) =>
+    Array.from({ length: n }, (_, i) => Math.min(65_535, Math.floor((i * 65_536) / n) + off));
+  it('either side of the minimum length of the subtrahend and of the gallop skew, with every overlap', () => {
+    for (const len of [1, 31, 32, 33, 64]) {
+      for (const mult of [1, 2, 15, 16, 17]) {
+        const a = spread(len * mult, 0);
+        const half = a.filter((_, i) => i % 2 === 0).slice(0, len);
+        for (const other of [spread(len, 1), spread(len, 0), half, a.slice(0, len)]) {
+          pair(a, other);
+          pair(other, a);
+        }
+      }
+    }
+  });
+  it('only the span of the subtrahend under the minuend is read: disjoint, touching, partial, inside', () => {
+    const a = thin(400, 10, 1000);
+    const b = (from: number) => thin(40, 10, from);
+    pair(a, b(0));
+    pair(a, b(5000));
+    pair(a, b(1000 - 390));
+    pair(a, b(1000 + 3990));
+    pair(a, b(1000 - 200));
+    pair(a, b(1000 + 3990 - 200));
+    pair(a, b(2000));
+    pair(thin(32, 1, 0), thin(32, 1, 31));
+    pair(thin(32, 1, 0), thin(32, 1, 32));
+    pair(thin(32, 1, 5), thin(32, 1, 0));
+    pair([0, 65_535, ...range(100, 130)], [0, 65_535, ...range(200, 230)]);
+    pair(range(0, 4096), range(0, 4096));
+  });
+  it('leaves nothing behind in the scratch: a later difference never sees an earlier one', () => {
+    const first = TS.fromValues(thin(100, 100));
+    first.andNotInPlace(TS.fromValues(thin(40, 100)));
+    expect([...first]).toEqual(thin(60, 100, 4000));
+    const second = TS.fromValues(thin(40, 100));
+    second.andNotInPlace(TS.fromValues(thin(40, 100, 9)));
+    expect([...second]).toEqual(thin(40, 100));
+    const third = TS.fromValues(thin(40, 100));
+    third.andInPlace(TS.fromValues(thin(40, 100, 9)));
+    expect([...third]).toEqual([]);
+  });
+});
+describe('a clone shares its containers until one side writes', () => {
+  // One container of each kind, written to while a clone still holds it: the array has spare room and starts at 0, so
+  // an add or remove could be done in place, and `runs` is a run container decoded from bytes.
+  const SOURCES: Record<string, { make: () => CodecBitmap; has: number; absent: number }> = {
+    array: {
+      make: () => {
+        const m = TS.fromValues(thin(500, 7));
+        m.remove(0);
+        return m;
+      },
+      has: 21,
+      absent: 22, // inside the array, so an in-place add would shift values the clone still reads
+    },
+    bitset: { make: () => TS.fromValues(thin(20_000, 3)), has: 21, absent: 65_001 },
+    runs: {
+      make: () => asRuns(TS.fromValues(range(100, 5000).concat(range(9000, 40_000)))),
+      has: 12_000,
+      absent: 65_001,
+    },
+  };
+  const OPERANDS: Record<string, number[]> = {
+    array: thin(300, 11, 5),
+    bitset: thin(25_000, 2),
+    runs: range(3000, 12_000),
+  };
+  const writers = (has: number, absent: number): Record<string, (b: CodecBitmap) => void> => ({
+    add: (b) => b.add(absent),
+    remove: (b) => b.remove(has),
+    addMany: (b) => b.addMany([absent, absent - 1, absent - 2]),
+    removeMany: (b) => b.removeMany([has, has + 3, has + 6]),
+    optimize: (b) => b.optimize?.(),
+    ...Object.fromEntries(
+      Object.entries(OPERANDS).flatMap(([on, other]) =>
+        (['andInPlace', 'orInPlace', 'andNotInPlace'] as const).map((op) => [
+          `${op} ${on}`,
+          (b: CodecBitmap) => b[op](TS.fromValues(other)),
+        ]),
+      ),
+    ),
+  });
+  for (const [kn, { make, has, absent }] of Object.entries(SOURCES))
+    for (const [wn, write] of Object.entries(writers(has, absent)))
+      for (const first of ['source', 'clone'] as const) {
+        it(`${kn} ${wn}, ${first} first`, () => {
+          const source = make();
+          const original = [...source];
+          const bytes = hex(source.serialize());
+          const model = make();
+          write(model);
+          const after = [...model];
+          const copy = source.clone();
+          const [one, two] = first === 'source' ? [source, copy] : [copy, source];
+          write(one);
+          expect([...one]).toEqual(after);
+          expect([...two]).toEqual(original);
+          if (first === 'clone') expect(hex(source.serialize())).toBe(bytes);
+          // A clone of the untouched holder, and then its own write, leave the first writer's result as it is.
+          const third = two.clone();
+          write(two);
+          expect([...two]).toEqual(after);
+          expect([...third]).toEqual(original);
+          expect([...one]).toEqual(after);
+        });
+      }
+});
+describe('array intersection with runs, either side of the values-versus-runs choice', () => {
+  const runsOf = (count: number, len: number, gap: number, start = 0) =>
+    range(0, count).flatMap((r) => range(start + r * (len + gap), start + r * (len + gap) + len));
+  it('fewer values than runs, as many, and more', () => {
+    const runs = runsOf(40, 10, 10);
+    for (const n of [1, 39, 40, 41, 80, 400]) {
+      pair(thin(n, 7, 3), runs);
+      pair(thin(n, 3, 9), runs);
+      pair(runs, thin(n, 5));
+    }
+  });
+  it('values below, between, inside and above the runs; the last run ending at 65535; none shared', () => {
+    const runs = runsOf(30, 20, 40, 100);
+    pair([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], runs);
+    pair(thin(100, 60, 120), runs);
+    pair(thin(100, 60, 130), runs);
+    pair(range(2000, 2100), runs);
+    const tail = range(65_000, 65_536);
+    pair([64_999, 65_000, 65_535, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17], tail);
+    pair(thin(600, 100, 5), tail.concat(range(100, 200)));
+  });
+});
+
 describe('bitset / popcount', () => {
   it('word counts and patterns', () => {
     const full = range(0, 65536);
@@ -283,13 +466,13 @@ describe('cow', () => {
           if (when === 'cloneMid') {
             take();
             const c = b.clone();
-            const cBefore = [...c];
             MUT[mn]!(c);
             MUT.add!(c);
             MUT.removeMany!(c);
+            const cAfter = [...c];
             expect([...b]).toEqual(BUILDS[bn]!().toArray()); // original untouched by clone mutation
             MUT[mn]!(b);
-            void cBefore;
+            expect([...c]).toEqual(cAfter); // the clone keeps what it held when the original changed
           }
           while (!take());
           expect(got).toEqual(want);

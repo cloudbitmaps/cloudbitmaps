@@ -181,7 +181,10 @@ function expectDerived(
   rule: ((a: number, b: number) => string) | null,
 ) {
   const again = cellFrom(cell.rounds, places, rule);
-  expect({ ...cell, rounds: [] }).toMatchObject({ ...again, rounds: [] });
+  // The file is JSON, which writes -0 as 0, so the figures derived from the rounds go through it too.
+  expect({ ...cell, rounds: [] }).toMatchObject(
+    JSON.parse(JSON.stringify({ ...again, rounds: [] })) as object,
+  );
 }
 
 describe('the committed evidence', () => {

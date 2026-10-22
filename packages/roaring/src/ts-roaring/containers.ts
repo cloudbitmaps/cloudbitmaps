@@ -17,15 +17,20 @@
  * at `off + 2 * i`), so the small containers of one decoded bitmap can sit side by side in a single `Uint16Array` (a
  * slab) instead of each holding a typed array of its own, which for a run of a few bytes costs many times its payload.
  * A BITSET always owns its 2,048 words. A container whose storage another holder can see (a slab neighbour, or a
- * snapshot taken for `encodeChunks`) has `shared` set, and a write copies it first; nothing writes to shared storage.
+ * snapshot taken for `encodeChunks`, or a `clone`) has `shared` set, and a write copies it first; nothing writes to
+ * shared storage. A write that may go in place returns a new container object over the same storage with `shared`
+ * clear; that is safe because a clone or snapshot flags the container its bitmap holds at that moment, so a flagged
+ * object never sits beside an unflagged one over the same storage.
  *
- * COMBINES, by the kinds of the pair (the result kind is a written rule: an array up to 4,096 values, a bitset above,
- * never a run, whatever the operands were; `optimize` picks runs before anything is stored, so stored bytes depend on
- * the set alone):
+ * COMBINES, by the kinds of the pair (the result kind of a pair is a written rule: an array up to 4,096 values, a bitset
+ * above, never a run, whatever the operands were; a container that has no partner in the other bitmap is not combined,
+ * and `TsBitmap` keeps it by reference, so a result bitmap can hold a run; `optimize` picks runs before anything is
+ * stored, so stored bytes depend on the set alone):
  *
  *            and                       or                         andNot
- *   A  A     merge, or gallop when     merge while the union      merge, or gallop when
- *            one side is 16x longer    fits an array, else bits   the second side is 16x longer
+ *   A  A     merge, or gallop when     merge while the union      scratch bitset from 32 values,
+ *            one side is 16x longer    fits an array, else bits   gallop when the second side is
+ *            (scratch bitset from 32)                             16x longer, else merge
  *   A  B     probe each value          copy the bitset, set bits  keep values whose bit is clear
  *   B  B     word loop                 word loop                  word loop
  *   R  R     interval intersection     interval union             interval difference
@@ -49,7 +54,7 @@ export const WORDS = 2_048;
 /** Bytes of a bitset container's body. */
 export const BITSET_BYTES = 8_192;
 
-/** How many times longer one array must be than the other for the shorter to gallop over it instead of a linear merge. */
+/** How many times longer one array must be than the other for the shorter to gallop over it instead of a linear merge (a larger factor gallops less often, which suits similar sizes better and skewed ones worse). */
 const GALLOP_SKEW = 16;
 
 /** Whether this machine stores a typed array's elements little-endian, as the wire does (so a body is a plain copy). */
@@ -642,6 +647,14 @@ function skewed(shorter: number, longer: number): boolean {
   return longer >= GALLOP_SKEW * shorter;
 }
 
+// Arrays shorter than this are merged; from here a similar-sized pair is intersected through a scratch bitset, which
+// reads both arrays once, in order, with no unpredictable branch. A lower value pays the bitset's set-and-clear for
+// pairs the merge finishes sooner; a higher one leaves mid-sized pairs on the slower merge.
+const PROBE_MIN = 32;
+
+// Scratch bitset for the array probe: all zero between calls (each call clears what it set).
+const probeWords = new Uint32Array(WORDS);
+
 /** Values both arrays hold. */
 function andArrays(a: Container, b: Container): Container | null {
   const small = a.len <= b.len ? a : b;
@@ -650,6 +663,29 @@ function andArrays(a: Container, b: Container): Container | null {
   const l = lows16(big);
   const out = values16(small.len);
   let n = 0;
+  if (small.len >= PROBE_MIN && !skewed(small.len, big.len)) {
+    const se = small.off + small.len;
+    const first = s[small.off] as number;
+    const last = s[se - 1] as number;
+    // Only the span of `big` between the shorter array's ends can hold a match.
+    const le = big.off + big.len;
+    if (last < (l[big.off] as number) || first > (l[le - 1] as number)) return null;
+    const from = gallop(l, 0, big.off, le, first);
+    const to = gallop(l, 0, from, le, last + 1);
+    const words = probeWords;
+    for (let i = small.off; i < se; i++) {
+      const v = s[i] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    for (let j = from; j < to; j++) {
+      const v = l[j] as number;
+      // The slot is written whether or not `v` is in the set; only a hit moves `n` past it.
+      out[n] = v;
+      n += ((words[v >>> 5] as number) >>> (v & 31)) & 1;
+    }
+    for (let i = small.off; i < se; i++) words[(s[i] as number) >>> 5] = 0;
+    return arrayOfScratch(out, n);
+  }
   if (skewed(small.len, big.len)) {
     let at = 0;
     const end = big.off + big.len;
@@ -683,10 +719,13 @@ function filterByBits(a: Container, b: Container, keep: boolean): Container | nu
   const u16 = lows16(a);
   const words = words32(b);
   const out = values16(a.len);
+  const flip = keep ? 0 : 1;
   let n = 0;
   for (let i = a.off; i < a.off + a.len; i++) {
     const v = u16[i] as number;
-    if ((((words[v >>> 5] as number) >>> (v & 31)) & 1) === (keep ? 1 : 0)) out[n++] = v;
+    // Written whether or not `v` is kept; only a kept value moves `n` past its slot (no unpredictable branch).
+    out[n] = v;
+    n += (((words[v >>> 5] as number) >>> (v & 31)) & 1) ^ flip;
   }
   return arrayOfScratch(out, n);
 }
@@ -697,6 +736,20 @@ function filterByRuns(a: Container, b: Container, keep: boolean): Container | nu
   const pairs = lows16(b);
   const out = values16(a.len);
   let n = 0;
+  // Walking the runs costs one step per run and per value, so it wins once values are at least as many as runs; with
+  // fewer values the per-value walk skips the runs it does not need to visit.
+  if (keep && a.len >= b.len) {
+    // At least as many values as runs: walk the runs, skipping the values below each and copying those inside it.
+    const ae = a.off + a.len;
+    let i = a.off;
+    for (let r = 0; r < b.len && i < ae; r++) {
+      const start = pairs[b.off + 2 * r] as number;
+      const end = start + (pairs[b.off + 2 * r + 1] as number);
+      while (i < ae && (u16[i] as number) < start) i++;
+      while (i < ae && (u16[i] as number) <= end) out[n++] = u16[i++] as number;
+    }
+    return arrayOfScratch(out, n);
+  }
   let r = 0;
   for (let i = a.off; i < a.off + a.len; i++) {
     const v = u16[i] as number;
@@ -727,6 +780,28 @@ function andNotArrays(a: Container, b: Container): Container | null {
       at = gallop(y, 0, at, je, v);
       if (at === je || y[at] !== v) out[n++] = v;
     }
+    return arrayOfScratch(out, n);
+  }
+  if (b.len >= PROBE_MIN) {
+    // Similar sizes: mark the part of `b` inside `a`'s span in the scratch bitset, then keep each value of `a` whose bit
+    // is clear. Both arrays are read once, in order, with no unpredictable branch.
+    const ae = a.off + a.len;
+    const first = x[a.off] as number;
+    const last = x[ae - 1] as number;
+    const from = gallop(y, 0, b.off, je, first);
+    const to = gallop(y, 0, from, je, last + 1);
+    const words = probeWords;
+    for (let j = from; j < to; j++) {
+      const v = y[j] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    for (let i = a.off; i < ae; i++) {
+      const v = x[i] as number;
+      // Written whether or not `v` is kept; only a kept value moves `n` past its slot.
+      out[n] = v;
+      n += (((words[v >>> 5] as number) >>> (v & 31)) & 1) ^ 1;
+    }
+    for (let j = from; j < to; j++) words[(y[j] as number) >>> 5] = 0;
     return arrayOfScratch(out, n);
   }
   let i = a.off;

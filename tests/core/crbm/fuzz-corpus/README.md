@@ -5,7 +5,7 @@ Committed reproducers for bugs in the untrusted-bytes boundary: found by the cov
 reached. [`../fuzz-corpus.test.ts`](../fuzz-corpus.test.ts) replays every file here on **every PR**, so a fixed
 bug stays fixed. A reproducer passes when it is refused with a typed error or decodes self-consistently.
 
-- `safe-deserialize/` — raw serialized-bitmap inputs, replayed through the roaring codec's safe deserialize.
+- `safe-deserialize/` — raw serialized-bitmap inputs, replayed through the native codec's safe deserialize and through the TypeScript codec's.
 - `crbm-index/` — raw `.crbm` index-region bytes, replayed through `parseIndex`.
 - `crbm-ext/` — raw sections of an extension block, replayed through `parseExtension`.
 - `crbm-reader/` — whole `.crbm` objects, replayed through the full `open → getChunk → safeDeserialize` chain.
