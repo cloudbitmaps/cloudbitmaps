@@ -11,6 +11,27 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **The TypeScript codec's four-operand intersect of mixed chunks is within 5% of the native codec's (one codec per process), and the codec seam gains an optional `intersectSmallestFirst`.**
+  A codec that sets it has the store meet the operands of an intersect of three or more smallest-first, per chunk; the
+  TypeScript codec sets it, the native codec does not (paired against native as shipped, the order made the native
+  codec's mixed four-operand intersect about 8% slower, measured: 7.7% one codec per process and 8.8% in one process), so the
+  native codec's behaviour is unchanged (one extra opt-in check per chunk). Measured one codec per process, which is how the package runs, the TypeScript
+  codec reads +2.9% against native on that cell (it read +13.7% before); in one process holding both codecs it reads
+  +3.5% in the latest run and read +10.2% in an earlier run of the same code, and why is not known. A bitset against a run container of at most 4,096 values is now written straight to an array.
+  The result of an intersect is the same in every order. The TypeScript codec is not what the package runs until the
+  codec switch lands, so nothing changes for a caller.
+
+- **The format page's chunk-payload section says what a writer of your own needs to reproduce the bytes, and both READMEs
+  credit the Roaring authors.** [`docs/format.md`](docs/format.md) section 3 now defines a run (a maximal sequence of
+  consecutive values), the bit order of a bitset (value `v` is bit `v mod 8` of byte `v div 8`), little-endian
+  integers, the three payload lengths, and that a payload is never empty. No byte a writer produces changes. The root
+  README and the `@cloudbitmaps/roaring` README gain a Credits section for the Roaring format and its authors, with the
+  specification and the three papers. The test suite now holds every bitmap codec to CRoaring and to that written rule
+  on every container boundary, and the nightly fuzz matrix gains a target for the TypeScript decoder. The TypeScript codec's
+  module README is documentation. None of this changes anything for a caller.
+
 ### Fixed
 
 - **An erasure that found the id now refuses every load that read the row before it began.**

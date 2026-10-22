@@ -138,7 +138,7 @@ import type {
   MaterializeManyStats,
 } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, deserializePortable, flagshipCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { systemEntropy } from './system-entropy';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
@@ -1216,7 +1216,7 @@ export class CloudRoaring {
     const deps: EngineDeps = {
       storage: wired.storage,
       cache,
-      codec: roaringCodec, // the facade injects the flagship codec; core stays codec-agnostic
+      codec: flagshipCodec(), // the facade injects the flagship codec; core stays codec-agnostic
       clock,
       metrics,
       budget: this.budget,
@@ -1270,7 +1270,7 @@ export class CloudRoaring {
       clock: this.clock,
       rng: this.rng,
       entropy: this.entropy,
-      codec: roaringCodec, // facade injects the flagship codec
+      codec: flagshipCodec(), // facade injects the flagship codec
       keystore: this.keystore,
       requireEncryption: this.requireEncryption,
       readRetry: this.retryOptions,
@@ -1813,7 +1813,7 @@ export class CloudRoaring {
       const final = rebindCombineMany(compiled, operandSpecs(pins));
       return runCombineMany(final, {
         source,
-        codec: roaringCodec,
+        codec: flagshipCodec(),
         clock: this.clock,
         ...(metricsOn ? { metrics: this.metrics } : {}),
       });
@@ -2920,7 +2920,7 @@ export class CloudRoaring {
           ? pinned
           : new RetryingStorageChunkSource(pinned, this.retryOptions),
       cache: this.cache,
-      codec: roaringCodec,
+      codec: flagshipCodec(),
       clock: this.clock,
       metrics: this.metrics,
       budget: this.budget,
@@ -3108,7 +3108,7 @@ export class CloudRoaring {
     const opts = picked(options, CALL_KEYS.exportSegments);
     const registry = this.requireRegistry('exportSegments');
     // The store's own codec builds the `'roaring'` format's bitmap: core's `runExport` is codec-agnostic and needs one.
-    return runExport(this, registry, sink, { ...opts, codec: roaringCodec });
+    return runExport(this, registry, sink, { ...opts, codec: flagshipCodec() });
   }
 }
 

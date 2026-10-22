@@ -12,6 +12,8 @@
  * calibration harness, which counts the layout it is about to load before it spends anything, so what it expects of a
  * real run is what the engine on the same layout does.
  */
+const path = require('node:path');
+const { packageFor } = require('./codec-engine.cjs');
 
 /** The ids of a segment that holds exactly the chunks `keys`, `idsPerChunk` each (so a chunk of about 2 B an id). */
 function* idsOfChunks(keys, idsPerChunk) {
@@ -25,7 +27,10 @@ function* idsOfChunks(keys, idsPerChunk) {
  * nothing, with the counts reset.
  */
 async function countedBackend() {
-  const { CloudRoaring, MemoryStorage } = await import('@cloudbitmaps/roaring');
+  const { CloudRoaring, MemoryStorage } = await packageFor(
+    'roaring',
+    path.resolve(__dirname, '../..'),
+  );
   const backend = new MemoryStorage();
   const calls = { getRange: 0, getTail: 0, pointer: 0, rangeBytes: 0 };
   // The backend's own drivers, counted in place: the library is installed alone where the calibration harness runs, so

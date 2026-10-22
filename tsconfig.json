@@ -14,6 +14,7 @@
       "@/system-entropy": ["./packages/roaring/src/system-entropy.ts"],
       "@/testing/*": ["./packages/roaring/src/testing/*"],
       "@/portable/*": ["./packages/roaring/src/portable/*"],
+      "@/ts-roaring/*": ["./packages/roaring/src/ts-roaring/*"],
       "@/bin/*": ["./packages/roaring/src/bin/*"],
       "@/*": ["./packages/core/src/*"],
       "@cloudbitmaps/core": ["./packages/core/src/index.ts"],

@@ -19,6 +19,12 @@
 #           the client it builds; the AWS SDK's own default is 50). A positive integer of at most 1024, refused otherwise.
 #           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script. Any
 #           other value than unset, 0 or 1 is refused.
+#           CR_CALIBRATE_CODEC=native|typescript runs the stores of a bundle built from this clone's sources, with the
+#           store package's internal codec switch set to that codec, in place of the installed packages' stores. Run it
+#           once with each value, from the same clone, to put the two codecs side by side; give each run its own
+#           CR_CALIBRATE_RUN_ID. Set CR_CALIBRATE_PACKAGE_VERSION to a published release (the cost model comes from it:
+#           this clone's own version is not on npm until it ships). Any other value is refused, before anything is
+#           copied or installed.
 #           CR_CALIBRATE_SUITE=large runs the large suite (combines on operands of 10^6 to 10^7 ids) in place of the
 #           default one, and CR_CALIBRATE_LARGE_READS and CR_CALIBRATE_LARGE_INTOS size it; its evidence is written
 #           under bench/calibration/large/. Any other suite name is refused by the harness, before anything is created.
@@ -50,6 +56,19 @@ refuse_bad_suite() {
   esac
 }
 refuse_bad_suite
+
+# Only unset, empty, `native` or `typescript` name a codec. The harness refuses any other, but only after the clone's
+# sources are copied and the packages installed, so it is refused here first.
+refuse_bad_codec() {
+  case "${CR_CALIBRATE_CODEC:-}" in
+    '' | native | typescript) ;;
+    *)
+      echo "cloudshell: CR_CALIBRATE_CODEC must be native or typescript, or unset, not \"${CR_CALIBRATE_CODEC}\"" >&2
+      exit 2
+      ;;
+  esac
+}
+refuse_bad_codec
 
 # The workload client's socket limit, by the harness's own rule: digits, 1 to 1024 (beyond a process's usual
 # file-descriptor limit, 1,024 on Lambda for one, it cannot be held). Whitespace only is unset. Refused here, before
@@ -117,7 +136,7 @@ harness_ref() {
   local ref
   ref="$(git rev-parse --short HEAD 2>/dev/null)" || { echo unknown; return; }
   if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib/aws-meter.cjs \
-    bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs \
+    bench/lib/calibrate-guards.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs \
     bench/lib/calibrate-large.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
     bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs \
     bench/lib/range-counts.cjs 2>/dev/null)" ]; then
@@ -263,7 +282,18 @@ run_harness() {
 
 mkdir -p "$WORK/bench/lib"
 cp bench/calibrate-aws.cjs "$WORK/bench/"
-cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs bench/lib/calibrate-large.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs bench/lib/range-counts.cjs "$WORK/bench/lib/"
+cp bench/lib/aws-meter.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs bench/lib/calibrate-large.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs bench/lib/range-counts.cjs "$WORK/bench/lib/"
+# With a codec named, the stores come from a bundle of this clone's sources (bench/lib/codec-engine.cjs): copy the
+# sources the bundle reads, and install the bundler beside them, at the version this clone's lockfile pins.
+if [ -n "${CR_CALIBRATE_CODEC:-}" ]; then
+  echo "cloudshell: the stores use the ${CR_CALIBRATE_CODEC} codec, bundled from this clone's sources"
+  for pkg in core roaring s3; do
+    mkdir -p "$WORK/packages/$pkg"
+    cp -R "packages/$pkg/src" "packages/$pkg/package.json" "packages/$pkg/tsconfig.json" "$WORK/packages/$pkg/"
+  done
+  cp tsconfig.base.json "$WORK/"
+  ESBUILD_VERSION="$(sed -n 's/^[[:space:]]*"esbuild":[[:space:]]*"[^0-9]*\([0-9][^"]*\)".*/\1/p' package.json | head -n 1)"
+fi
 echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 (
   cd "$WORK"
@@ -273,7 +303,7 @@ echo "cloudshell: installing the published packages at ${PKG_VERSION}"
   node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.allowScripts={roaring:true};fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
   npm i --no-audit --no-fund --loglevel=error \
     "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" "@cloudbitmaps/tools@${PKG_VERSION}" \
-    @aws-sdk/client-s3 @aws-sdk/client-sts
+    @aws-sdk/client-s3 @aws-sdk/client-sts ${CR_CALIBRATE_CODEC:+"esbuild@${ESBUILD_VERSION}"}
   # Fail here, before anything is created or spent, if the native binary did not arrive.
   node -e 'import("@cloudbitmaps/roaring").catch((e)=>{console.error("cloudshell: @cloudbitmaps/roaring does not load: "+e.message.split("\n")[0]);process.exit(2)})'
 )

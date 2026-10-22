@@ -154,8 +154,10 @@ export const ROUTED: readonly string[] = [
   'tests/drivers/s3/throttled-write.test.ts',
   'tests/engine.property.test.ts',
   'tests/flows.test.ts',
+  'tests/roaring/codec-switch.test.ts',
   'tests/roaring/combine-refusals.test.ts',
   'tests/roaring/id-stream-batches.test.ts',
+  'tests/roaring/intersect-operand-order.test.ts',
   'tests/roaring/pin-lease.races.test.ts',
   'tests/roaring/pin-lease.test.ts',
   'tests/roaring/segment-handle.test.ts',
@@ -165,6 +167,7 @@ export const ROUTED: readonly string[] = [
   'tests/roaring/warm-has.test.ts',
   'tests/roaring/config-refusals.test.ts',
   'tests/roaring/option-refusals.test.ts',
+  'tests/roaring/ts-roaring-fast-paths.test.ts',
 ];
 
 /** Run under ids only, each with the reason routing would change what the file tests. */

@@ -340,6 +340,21 @@ Using CloudBitmaps? Tell us in [`ADOPTERS.md`](ADOPTERS.md); questions go to
 canonical record of how we work. [`AGENTS.md`](AGENTS.md) is the AI-agent operating manual (`CLAUDE.md` is a symlink to
 it).
 
+## Credits
+
+The Roaring Bitmap format and its algorithms are the work of Daniel Lemire and colleagues. See
+[roaringbitmap.org](https://roaringbitmap.org/) and the [Roaring format specification](https://github.com/RoaringBitmap/RoaringFormatSpec),
+which defines the portable bytes every chunk of a `.crbm` object holds. CRoaring, through the `roaring` binding, does
+today's bit math here. The papers:
+
+- S. Chambi, D. Lemire, O. Kaser, R. Godin, "Better bitmap performance with Roaring bitmaps", *Software: Practice and
+  Experience* 46(5), 2016. [arXiv:1402.6407](https://arxiv.org/abs/1402.6407)
+- D. Lemire, G. Ssi-Yan-Kai, O. Kaser, "Consistently faster and smaller compressed bitmaps with Roaring", *Software:
+  Practice and Experience* 46(11), 2016. [arXiv:1603.06549](https://arxiv.org/abs/1603.06549)
+- D. Lemire, O. Kaser, N. Kurz, L. Deri, C. O'Hara, F. Saint-Jacques, G. Ssi-Yan-Kai, "Roaring Bitmaps: Implementation
+  of an Optimized Software Library", *Software: Practice and Experience* 48(4), 2018.
+  [arXiv:1709.07821](https://arxiv.org/abs/1709.07821)
+
 ## License
 
 **Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish. The license does not grant permission to use

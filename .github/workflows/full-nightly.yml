@@ -19,10 +19,10 @@ on:
   schedule:
     - cron: '0 4 * * *' # 04:00 UTC nightly, an hour before the fuzz campaign starts
   workflow_dispatch:
-  # A full-strength run (the whole unit suite, a few minutes a Node version) when this file, the switch or one of the
-  # heavy tests changes, so the pull request that touches them has run them at their full size. Without it nothing on a
-  # pull request would run a line of this workflow. `tests/ci/test-strength.test.ts` holds the list to the heavy tests
-  # `tests/helpers/strength.ts` names.
+  # A full-strength run (the whole unit suite, a quarter of an hour a Node version) when this file, the switch or one
+  # of the heavy tests changes, so the pull request that touches them has run them at their full size. Without it
+  # nothing on a pull request would run a line of this workflow. `tests/ci/test-strength.test.ts` holds the list to the
+  # heavy tests `tests/helpers/strength.ts` names.
   pull_request:
     paths:
       - .github/workflows/full-nightly.yml
@@ -35,6 +35,8 @@ on:
       - tests/core/erase-fence-fuzz.property.test.ts
       - tests/core/combine-ledger.test.ts
       - tests/core/load-sorted-heap.test.ts
+      - tests/roaring/codec-oracle.test.ts
+      - tests/roaring/codec-oracle-hostile.test.ts
 
 permissions:
   contents: read
@@ -49,7 +51,7 @@ jobs:
   full:
     name: full-strength tests (node ${{ matrix.node }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -69,5 +71,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
-        # A stalled test run ends the job in 15 minutes (a normal one takes 5 to 8), not at the job limit.
-        timeout-minutes: 15
+        # A stalled test run ends the job in 30 minutes, not at the job limit. A normal one takes 13 to 20 at full
+        # strength, Node 22 the slower: the store's suites run twice, once on each codec.
+        timeout-minutes: 30

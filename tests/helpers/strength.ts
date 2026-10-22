@@ -71,6 +71,16 @@ export const HEAVY_SIZES = {
     reduced: 1_000_000,
     file: 'core/load-sorted-heap.test.ts',
   },
+  /** Cases for each property of the codec oracle (sets, combines, operation sequences; the several-chunk one runs half). */
+  codecOracleProperties: { full: 200, reduced: 40, file: 'roaring/codec-oracle.test.ts' },
+  /** Subsets the codec oracle tries in each small window: 2^16 at full strength, 2^12 on a pull request. */
+  codecOracleSubsets: { full: 65_536, reduced: 4_096, file: 'roaring/codec-oracle.test.ts' },
+  /** Mutated payloads the hostile-bytes fuzz holds every codec to the structural check on. */
+  codecOracleMutations: {
+    full: 100_000,
+    reduced: 10_000,
+    file: 'roaring/codec-oracle-hostile.test.ts',
+  },
 } as const;
 
 export type HeavyName = keyof typeof HEAVY_SIZES;

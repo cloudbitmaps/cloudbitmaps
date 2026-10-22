@@ -224,6 +224,24 @@ export const roaringCodec: CodecInterface = {
   owns: (bitmap) => bitmap instanceof SafeBitmap,
 };
 
+let activeCodec: CodecInterface = roaringCodec;
+
+/**
+ * The codec the store hands to the engine at every site that injects one (`CloudRoaring`, a load, a pin, an export
+ * and {@link deserializePortable}): the native codec unless a harness has flipped it with {@link setFlagshipCodec}.
+ * Internal: no public entry exports it, and a store cannot be configured with a codec.
+ */
+export function flagshipCodec(): CodecInterface {
+  return activeCodec;
+}
+
+/** Flip the codec the store uses, for the whole process. Test and bench harnesses only; returns the previous one. */
+export function setFlagshipCodec(codec: CodecInterface): CodecInterface {
+  const previous = activeCodec;
+  activeCodec = codec;
+  return previous;
+}
+
 /**
  * A decoded bitmap that can only be read: what {@link deserializePortable} returns. Its ids come out ascending when
  * it is iterated, which is a promise. It is a `PortableBitmap`, so a load takes it as `{ bitmap }`, and the library
@@ -247,9 +265,9 @@ export interface ReadonlyBitmap extends PortableBitmap, Iterable<number> {
  * answering wrongly. The decoded bitmap sits in a private field. It is not exported from the package.
  */
 class ReadonlyRoaringView implements ReadonlyBitmap {
-  readonly #bitmap: SafeBitmap;
+  readonly #bitmap: CodecBitmap;
 
-  constructor(bitmap: SafeBitmap) {
+  constructor(bitmap: CodecBitmap) {
     this.#bitmap = bitmap;
   }
 
@@ -288,5 +306,5 @@ class ReadonlyRoaringView implements ReadonlyBitmap {
  * @throws {ValidationError} for bytes that are not exactly one well-formed portable bitmap, as a load refuses them.
  */
 export function deserializePortable(bytes: Uint8Array): ReadonlyBitmap {
-  return new ReadonlyRoaringView(decodeSerialized(bytes, roaringCodec) as SafeBitmap);
+  return new ReadonlyRoaringView(decodeSerialized(bytes, flagshipCodec()));
 }

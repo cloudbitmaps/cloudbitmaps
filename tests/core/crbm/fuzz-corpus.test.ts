@@ -5,7 +5,7 @@ import { CrbmReader, parseExtension, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { DEFAULT_MAX_BITMAP_BYTES, DEFAULT_MAX_PAYLOAD_BYTES } from '@/core/crbm/format';
 import { SafeBitmap } from '@/roaring-codec';
-import { assertConsistentDecode } from '@/testing/fuzz-codec';
+import { assertConsistentDecode, tsRoaringCodec } from '@/testing/fuzz-codec';
 import { CloudRoaringError, IntegrityError } from '@/core/errors';
 import type { BlobReader } from '@/core/blob';
 import type { CrbmCrypto } from '@/core/crypto';
@@ -37,6 +37,16 @@ function reproducers(sub: string): Array<{ name: string; bytes: Uint8Array }> {
 /** The native-deserializer target's contract (mirrors fuzz/targets/safe-deserialize.mjs). */
 function deserialize(bytes: Uint8Array): void {
   assertConsistentDecode(SafeBitmap.safeDeserialize(bytes, MAX_BYTES));
+}
+
+/** The TypeScript-decoder target's contract (mirrors fuzz/targets/ts-safe-deserialize.mjs, whole-buffer read included). */
+function deserializeTs(bytes: Uint8Array): void {
+  assertConsistentDecode(tsRoaringCodec.safeDeserialize(bytes, MAX_BYTES));
+  try {
+    assertConsistentDecode(tsRoaringCodec.safeDeserialize(bytes, MAX_BYTES, { whole: true }));
+  } catch (err) {
+    if (!(err instanceof CloudRoaringError)) throw err;
+  }
 }
 
 /** The index-parser target's contract: raw index bytes → self-consistent entries or a typed error. */
@@ -143,6 +153,18 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
       expect(() => {
         try {
           deserialize(bytes);
+        } catch (err) {
+          if (!(err instanceof CloudRoaringError)) throw err;
+        }
+      }).not.toThrow();
+    });
+  }
+
+  for (const { name, bytes } of deser) {
+    it(`safe-deserialize reproducer ${name} raises only a typed error, or decodes consistently, on the TypeScript decoder`, () => {
+      expect(() => {
+        try {
+          deserializeTs(bytes);
         } catch (err) {
           if (!(err instanceof CloudRoaringError)) throw err;
         }
