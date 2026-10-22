@@ -96,6 +96,15 @@ beforeEach(() => {
   log.andNotted.length = 0;
 });
 
+describe('a union is never reordered, even by a codec that asks', () => {
+  it('clones the first operand', async () => {
+    const sets = { a: range(0, 30), b: range(10, 13), c: range(5, 15) };
+    const out = await collect(engineOf(sets).union(refs('a', 'b', 'c')));
+    expect(out).toEqual(range(0, 30));
+    expect(log.cloned).toEqual([30]);
+  });
+});
+
 describe('a codec that does not ask keeps the operand order', () => {
   it('clones the first operand and meets the others as given, with the same answer', async () => {
     const sets = { a: range(0, 30), b: range(10, 13), c: range(5, 15), d: range(8, 28) };

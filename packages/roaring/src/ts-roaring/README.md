@@ -330,7 +330,8 @@ All of these are in `bitmap.ts`.
   array, and each later step is a filter of an array through the bitset's bit test or the runs' walk, never a bitset
   built from runs. A pair of operands keeps its order. The cost is one `size` read per operand per chunk. The native
   codec does not set it: its `size` crosses the addon boundary, and sorting by it made the native four-operand mixed
-  intersect about 6% slower (measured, six alternating runs), for no gain, since its combine is fast in any order.
+  intersect 9% to 10% slower (measured, per process and in-process, 31 rounds, A/A control in band), for no gain, since
+  its combine is fast in any order.
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
   bitset a scan from the top word).

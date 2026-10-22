@@ -489,15 +489,15 @@ function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uin
  * The operand chunks of one key by ascending cardinality, equal sizes in their given order; a new array, the operands
  * themselves are not touched. Each chunk's size is read once.
  */
-function smallestFirst<T extends { readonly size: number } | null>(chunks: readonly T[]): T[] {
+function smallestFirst(chunks: readonly CodecBitmap[]): CodecBitmap[] {
   const out = chunks.slice();
-  const sizes = out.map((c) => c?.size ?? 0);
+  const sizes = out.map((c) => c.size);
   for (let i = 1; i < out.length; i++) {
-    const c = out[i] as T;
+    const c = out[i] as CodecBitmap;
     const size = sizes[i] as number;
     let j = i - 1;
     while (j >= 0 && (sizes[j] as number) > size) {
-      out[j + 1] = out[j] as T;
+      out[j + 1] = out[j] as CodecBitmap;
       sizes[j + 1] = sizes[j] as number;
       j--;
     }
@@ -1520,7 +1520,7 @@ export class SegmentEngine {
     // filter and never builds a bitset). The answer is the same in any order.
     const ordered =
       mode === 'all' && chunks.length > 2 && this.codec.intersectSmallestFirst === true
-        ? smallestFirst(chunks)
+        ? smallestFirst(chunks as CodecBitmap[]) // none is null: 'all' returned above
         : chunks;
     const first = ordered[0];
     const acc = first ? first.clone() : this.codec.empty();

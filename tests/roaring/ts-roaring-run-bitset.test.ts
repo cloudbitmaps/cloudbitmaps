@@ -5,7 +5,7 @@ import { tsRoaringCodec as TS } from '@/ts-roaring/bitmap';
 /**
  * A bitset container intersected with a run container: the cases either side of each branch of that kernel, each
  * compared with a plain set and with the native codec's bytes. The branches: a run container of at most 4,096 values
- * writes an array directly, a larger one builds words and counts them as it goes; a result of at most 4,096 values is an
+ * writes an array directly, a larger one builds words and counts them once; a result of at most 4,096 values is an
  * array whichever way it was built, a larger one a bitset; runs at the chunk's ends, runs that share a word, and a run
  * that covers the whole chunk.
  */
