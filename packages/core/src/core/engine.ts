@@ -1515,10 +1515,13 @@ export class SegmentEngine {
     // A key the index lists but the source cannot produce bytes for reads as empty — and under AND an empty
     // operand empties the result.
     if (mode === 'all' && chunks.some((c) => c === null)) return null;
-    // An AND of three or more is taken smallest first: the clone is of the smallest, and the running result stays as
-    // small as the operands allow (one that is small, an array, meets a large bitset or run container as a filter and
-    // never builds a bitset). The answer is the same in any order.
-    const ordered = mode === 'all' && chunks.length > 2 ? smallestFirst(chunks) : chunks;
+    // For a codec that asks for it, an AND of three or more is taken smallest first: the clone is of the smallest, and the
+    // running result stays as small as the operands allow (a small array meets a large bitset or run container as a
+    // filter and never builds a bitset). The answer is the same in any order.
+    const ordered =
+      mode === 'all' && chunks.length > 2 && this.codec.intersectSmallestFirst === true
+        ? smallestFirst(chunks)
+        : chunks;
     const first = ordered[0];
     const acc = first ? first.clone() : this.codec.empty();
     for (let i = 1; i < ordered.length; i++) {

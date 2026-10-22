@@ -1,5 +1,5 @@
 /**
- * The intersect of three or more operands takes each chunk smallest first: the accumulator is a clone of the smallest
+ * For a codec that asks for it (`intersectSmallestFirst`), the intersect of three or more operands takes each chunk smallest first: the accumulator is a clone of the smallest
  * operand's chunk and the others meet it in ascending cardinality, equal sizes in operand order. The answer does not
  * depend on the order; what does is how much work the running result costs, and a chunk that comes out empty ends the
  * walk. A recording codec over plain sets shows the order, and the same sets give the answer a plain set gives.
@@ -66,21 +66,26 @@ class SetBitmap implements CodecBitmap {
   }
 }
 
-const setCodec: CodecInterface = {
+const plainCodec: CodecInterface = {
   empty: () => new SetBitmap(),
   fromValues: (vs) => new SetBitmap(new Set(vs)),
   safeDeserialize: (bytes) =>
     new SetBitmap(new Set(JSON.parse(new TextDecoder().decode(bytes)) as number[])),
 };
+/** The same codec, asking for the smallest-first order. */
+const setCodec: CodecInterface = { ...plainCodec, intersectSmallestFirst: true };
 
 const range = (from: number, to: number): number[] =>
   Array.from({ length: to - from }, (_, i) => from + i);
 
-function engineOf(segments: Record<string, number[]>): SegmentEngine {
+function engineOf(
+  segments: Record<string, number[]>,
+  codec: CodecInterface = setCodec,
+): SegmentEngine {
   const storage = new MemoryStorageChunkSource();
   for (const [segment, rems] of Object.entries(segments))
     storage.seed({ segment, chunkKey: 0 }, setCodec.fromValues(rems).serialize());
-  return new SegmentEngine({ storage, codec: setCodec });
+  return new SegmentEngine({ storage, codec });
 }
 
 const refs = (...names: string[]) => names.map((segment) => ({ segment }));
@@ -89,6 +94,16 @@ beforeEach(() => {
   log.cloned.length = 0;
   log.anded.length = 0;
   log.andNotted.length = 0;
+});
+
+describe('a codec that does not ask keeps the operand order', () => {
+  it('clones the first operand and meets the others as given, with the same answer', async () => {
+    const sets = { a: range(0, 30), b: range(10, 13), c: range(5, 15), d: range(8, 28) };
+    const out = await collect(engineOf(sets, plainCodec).intersect(refs('a', 'b', 'c', 'd')));
+    expect(out).toEqual([10, 11, 12]);
+    expect(log.cloned).toEqual([30]);
+    expect(log.anded).toEqual([3, 10, 20]);
+  });
 });
 
 describe('an intersect of three or more takes a chunk smallest first', () => {

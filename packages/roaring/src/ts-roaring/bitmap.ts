@@ -548,4 +548,5 @@ export const tsRoaringCodec: CodecInterface = {
   fromValues: (values) => TsBitmap.fromValues(values),
   safeDeserialize: (bytes, maxBytes, options) => TsBitmap.safeDeserialize(bytes, maxBytes, options),
   owns: (bitmap) => bitmap instanceof TsBitmap,
+  intersectSmallestFirst: true,
 };
