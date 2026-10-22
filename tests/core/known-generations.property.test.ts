@@ -223,6 +223,30 @@ function modelCap(
 }
 
 /**
+ * `entries` held to the cap after a rollback inserts a number the ledger lacks: the protected ones, then the others no
+ * lease holds, most recently current first, while fewer than 128 unleased are kept, then the leased ones, most recently
+ * current first, up to the cap. A leased entry is an extra, as it is for a publish, and `leased` is every generation the
+ * row's lease entries name, live or ended, since a rollback has no clock.
+ */
+function modelCapInsert(
+  entries: readonly number[],
+  protect: ReadonlySet<number>,
+  leased: ReadonlySet<number>,
+): number[] {
+  const keep = new Set(entries.filter((e) => protect.has(e)));
+  let unleased = [...keep].filter((e) => !leased.has(e)).length;
+  const recent = [...entries].reverse();
+  for (const e of recent) {
+    if (unleased >= FILL) break;
+    if (keep.has(e) || leased.has(e)) continue;
+    keep.add(e);
+    unleased += 1;
+  }
+  for (const e of recent) if (keep.size < CAP && leased.has(e)) keep.add(e);
+  return entries.filter((e) => keep.has(e));
+}
+
+/**
  * What a load that counts keeps below its new pointer when the row names nothing: the superseded generation first, when
  * it is there, then the newest of the rest by number, `keep` in all; ascending. The bucket's rule, written a second time.
  */
@@ -795,7 +819,11 @@ describe.each(registries)('the known-generations ledger against its model, over 
                       model.ledger =
                         known && moved.length <= CAP
                           ? moved
-                          : modelCap(moved, new Set([target, current]), new Set());
+                          : modelCapInsert(
+                              moved,
+                              new Set([target, current]),
+                              new Set((row.leases ?? []).map((e) => e.generation)),
+                            );
                     }
                     if (forward) counts.forwardRollbacks += 1;
                     model.pointer = target;
