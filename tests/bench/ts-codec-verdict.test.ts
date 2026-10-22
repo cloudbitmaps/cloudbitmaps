@@ -137,9 +137,29 @@ type MemoryFigures = {
   rssBelowHeap: number;
   samples: number[][];
 };
+type ReadsPart = {
+  commit: string;
+  treeClean: boolean;
+  startedAt: string;
+  endedAt: string;
+  attributionFailures: string[];
+  cells: {
+    dataset: string;
+    op: string;
+    inProcess: ReadBasis;
+    perProcess: ReadBasis;
+  }[];
+};
 type Doc = {
   rules: { minRounds: number; roundFields: string[]; orders: number[][] };
   commit: string;
+  treeClean: boolean;
+  startedAt: string;
+  endedAt: string;
+  nativeSmallestFirst: {
+    vsShipped: ReadsPart;
+    tsVsSmallestFirstNative: ReadsPart;
+  };
   reads: {
     attributionFailures: string[];
     cells: {
@@ -185,6 +205,84 @@ function expectDerived(
   expect({ ...cell, rounds: [] }).toMatchObject(
     JSON.parse(JSON.stringify({ ...again, rounds: [] })) as object,
   );
+}
+
+type Retake = {
+  dataset: string;
+  op: string;
+  basis: 'inProcess' | 'perProcess';
+  firstTakeVsNative: number;
+  firstTakeControl: number;
+  retakeVsNative: number;
+  retakeControl: number;
+  retakeLoadMax: number;
+};
+type RetakeBasis = ReadBasis & { firstTake?: ReadBasis };
+type RetakeDoc = {
+  reads: {
+    readsRetaken: { cells: Retake[] };
+    cells: { dataset: string; op: string; inProcess: RetakeBasis; perProcess: RetakeBasis }[];
+  };
+};
+const LOAD_LIMIT = 6;
+const four = (x: number) => Math.round(x * 1e4) / 1e4;
+
+/**
+ * What is wrong with the re-take bookkeeping of a results file, as a list of sentences (empty when it holds): the list
+ * of re-takes names exactly the bases that carry a first take; each first take is the figures its own rounds give, and
+ * a base was re-taken exactly when its first take had a control outside the band or a peak load of 6 or more; the
+ * figures the list gives for both takes are the ones in the cell and in its first take; and no kept round ran at a
+ * load of 6 or more.
+ */
+function retakeProblems(d: RetakeDoc): string[] {
+  const out: string[] = [];
+  const listed = new Map<string, Retake>(
+    d.reads.readsRetaken.cells.map((r) => [`${r.dataset} ${r.op} ${r.basis}`, r]),
+  );
+  if (listed.size !== d.reads.readsRetaken.cells.length) out.push('a base is listed twice');
+  const carrying = new Set<string>();
+  for (const c of d.reads.cells)
+    for (const basis of ['inProcess', 'perProcess'] as const) {
+      const key = `${c.dataset} ${c.op} ${basis}`;
+      const kept = c[basis];
+      const first = kept.firstTake;
+      for (const r of kept.rounds)
+        if ((r[4] ?? Number.NaN) >= LOAD_LIMIT)
+          out.push(`${key}: a kept round ran at load ${r[4]}`);
+      if (first === undefined) {
+        if (Math.abs(kept.controlVsNative) > verdict.CONTROL_BAND || kept.loadMax >= LOAD_LIMIT)
+          out.push(`${key}: control or load called for a re-take, and there is none`);
+        continue;
+      }
+      carrying.add(key);
+      const again = summarise(first.rounds);
+      if (
+        four(again.typescriptVsNative) !== first.typescriptVsNative ||
+        four(again.controlVsNative) !== first.controlVsNative
+      )
+        out.push(`${key}: the first take is not what its rounds give`);
+      if (Math.abs(first.controlVsNative) <= verdict.CONTROL_BAND && first.loadMax < LOAD_LIMIT)
+        out.push(`${key}: re-taken although its first take had a control in band and a low load`);
+      const r = listed.get(key);
+      if (r === undefined) {
+        out.push(`${key}: carries a first take and is not listed`);
+        continue;
+      }
+      if (
+        r.firstTakeVsNative !== first.typescriptVsNative ||
+        r.firstTakeControl !== first.controlVsNative
+      )
+        out.push(`${key}: the list's first take is not the cell's`);
+      if (
+        r.retakeVsNative !== kept.typescriptVsNative ||
+        r.retakeControl !== kept.controlVsNative ||
+        r.retakeLoadMax !== kept.loadMax
+      )
+        out.push(`${key}: the list's re-take is not the cell's figures`);
+    }
+  for (const key of listed.keys())
+    if (!carrying.has(key)) out.push(`${key}: listed and carries no first take`);
+  return out;
 }
 
 describe('the committed evidence', () => {
@@ -243,6 +341,112 @@ describe('the committed evidence', () => {
     expect(doc.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it('places every part of the run in time, on one commit and a clean tree, inside the run', () => {
+    const parts: [
+      string,
+      { commit: string; treeClean?: boolean; startedAt: string; endedAt: string },
+    ][] = [
+      ['reads', doc.reads as never],
+      ['write', doc.write as never],
+      ['memory', doc.memory as never],
+      ['startup', doc.startup as never],
+      ['vsShipped', doc.nativeSmallestFirst.vsShipped],
+      ['tsVsSmallestFirstNative', doc.nativeSmallestFirst.tsVsSmallestFirstNative],
+    ];
+    expect(doc.treeClean).toBe(true);
+    for (const [name, p] of parts) {
+      expect(p.commit, name).toBe(doc.commit);
+      if (p.treeClean !== undefined) expect(p.treeClean, name).toBe(true);
+      expect(Date.parse(p.startedAt), name).toBeGreaterThanOrEqual(Date.parse(doc.startedAt));
+      expect(Date.parse(p.endedAt), name).toBeLessThanOrEqual(Date.parse(doc.endedAt));
+      expect(Date.parse(p.startedAt), name).toBeLessThan(Date.parse(p.endedAt));
+    }
+  });
+
+  it('holds the re-take bookkeeping, and fails on a planted mismatch of each kind', () => {
+    const real = doc as unknown as RetakeDoc;
+    expect(real.reads.readsRetaken.cells.length).toBeGreaterThan(0);
+    expect(retakeProblems(real)).toEqual([]);
+
+    const plant = (edit: (d: RetakeDoc) => void): string[] => {
+      const copy = JSON.parse(JSON.stringify(real)) as RetakeDoc;
+      edit(copy);
+      return retakeProblems(copy);
+    };
+    const firstCarrying = (d: RetakeDoc): RetakeBasis => {
+      for (const c of d.reads.cells)
+        for (const b of ['inProcess', 'perProcess'] as const)
+          if (c[b].firstTake !== undefined) return c[b];
+      throw new Error('no re-taken base');
+    };
+    // a listed re-take with no first take kept in its cell
+    expect(
+      plant((d) => {
+        delete firstCarrying(d).firstTake;
+      }).join('\n'),
+    ).toMatch(/listed and carries no first take/);
+    // the list's re-take figure differs from the cell's
+    expect(
+      plant((d) => {
+        d.reads.readsRetaken.cells[0]!.retakeVsNative += 0.01;
+      }).join('\n'),
+    ).toMatch(/list's re-take is not the cell's/);
+    // a first take whose figure is not what its rounds give
+    expect(
+      plant((d) => {
+        firstCarrying(d).firstTake!.typescriptVsNative += 0.01;
+      }).join('\n'),
+    ).toMatch(/first take is not what its rounds give/);
+    // a kept round at a load of 6 or more
+    expect(
+      plant((d) => {
+        firstCarrying(d).rounds[0]![4] = 7;
+      }).join('\n'),
+    ).toMatch(/a kept round ran at load 7/);
+    // a cell with a control out of band and no re-take
+    expect(
+      plant((d) => {
+        const c = d.reads.cells.find((x) => x.perProcess.firstTake === undefined)!;
+        c.perProcess.controlVsNative = 0.05;
+      }).join('\n'),
+    ).toMatch(/called for a re-take, and there is none/);
+    // a re-take of a base whose first take needed none
+    expect(
+      plant((d) => {
+        const b = firstCarrying(d);
+        b.firstTake!.controlVsNative = 0;
+        b.firstTake!.loadMax = 1;
+      }).join('\n'),
+    ).toMatch(/re-taken although/);
+  });
+
+  it('names in the report the Node the run used', () => {
+    const node = (doc as unknown as { node: string }).node;
+    expect(node).toMatch(/^v\d+\.\d+\.\d+$/);
+    const report = readFileSync(join(ROOT, 'bench', 'ts-codec-comparison.md'), 'utf8');
+    expect(report).toContain(`Node ${node}`);
+  });
+
+  it('has the smallest-first sections’ cells recomputed from their rounds, in both ways, with agreeing answers', () => {
+    for (const section of Object.values(doc.nativeSmallestFirst).filter(
+      (x): x is ReadsPart => typeof x === 'object' && 'cells' in x,
+    )) {
+      expect(section.attributionFailures).toEqual([]);
+      expect(section.cells.map((c) => `${c.dataset} ${c.op}`)).toEqual([
+        'mixed intersect2',
+        'mixed intersect4',
+        'spread8k intersect2',
+        'spread8k intersect4',
+      ]);
+      for (const c of section.cells)
+        for (const basis of ['inProcess', 'perProcess'] as const) {
+          expectDerived(c[basis], 0, verdictOf);
+          expect(c[basis].rounds.length, `${c.dataset} ${c.op}`).toBeGreaterThanOrEqual(MIN_ROUNDS);
+          expect(c[basis].answersAgree).toBe(true);
+        }
+    }
+  });
+
   it('has every figure of the report’s tables, the module-load sentence and the memory differences in the file', () => {
     const report = readFileSync(join(ROOT, 'bench', 'ts-codec-comparison.md'), 'utf8');
     const rows = report
@@ -292,6 +496,28 @@ describe('the committed evidence', () => {
         ...worst('inProcess'),
       ]);
     }
+    // The smallest-first table: the order's effect on the native codec (paired in one run of three subjects) and the
+    // TypeScript codec against the smallest-first native (paired in the other run), both ways.
+    const ms2 = (ns: number) => `${(ns / 1e6).toFixed(2)} ms`;
+    const fair = doc.nativeSmallestFirst;
+    for (const c of fair.vsShipped.cells)
+      for (const [basis, label] of [
+        ['perProcess', 'per-process'],
+        ['inProcess', 'in-process'],
+      ] as const) {
+        const name = `${c.dataset} \`${c.op}\`, ${label}`;
+        const row = rows.find((r) => r[0] === name && r.length === 5);
+        expect(row, name).toBeDefined();
+        const other = fair.tsVsSmallestFirstNative.cells.find(
+          (x) => x.dataset === c.dataset && x.op === c.op,
+        )!;
+        expect(row!.slice(1), name).toEqual([
+          ms2(c[basis].nativeMedian),
+          ms2(c[basis].typescriptMedian),
+          `${ts(c[basis])} (${control(c[basis])})`,
+          `${ts(other[basis])} (${control(other[basis])})`,
+        ]);
+      }
     for (const w of doc.write.rows) {
       const row = rows.find((r) => r[0] === w.op && r.length === 6);
       expect(row, w.op).toBeDefined();
