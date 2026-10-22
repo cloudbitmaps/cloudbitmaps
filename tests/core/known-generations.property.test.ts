@@ -1024,8 +1024,9 @@ describe.each(registries)('the known-generations ledger against its model, over 
           numRuns:
             Math.max(3, Math.round(runs * reg.scale)) * Number(process.env.PROP_RUNS_FACTOR ?? 1),
           // Seeded so the coverage floors below are deterministic: the same histories on every pull-request run. Set
-          // PROP_SEED to explore other ones. A full-strength run draws a random seed unless PROP_SEED is set, and does
-          // not assert the floors (the model check still runs). The test prints its seed before the first run, and a
+          // PROP_SEED to explore other ones, or to replay a full-strength run's seed. A full-strength run draws a random
+          // seed unless PROP_SEED is set. The floors are tuned for the default seed, so a run on any other seed does
+          // not assert them (the model check still runs). The test prints its seed before the first run, and a
           // property that overruns 0.8 of the test's timeout fails naming it.
           ...(FULL_STRENGTH && process.env.PROP_SEED === undefined
             ? {}
@@ -1034,9 +1035,10 @@ describe.each(registries)('the known-generations ledger against its model, over 
       );
       // Not vacuous: each kind of publish and rollback was checked against the model. The shipped registries other than
       // the in-memory one run a tenth of the histories, so they are held to publishing alone.
-      const full = reg.scale === 1 && !(FULL_STRENGTH && process.env.PROP_SEED === undefined);
+      const otherSeed = FULL_STRENGTH || process.env.PROP_SEED !== undefined;
+      const full = reg.scale === 1 && !otherSeed;
       const at = (n: number | undefined): number => (full ? (n ?? -1) : -1);
-      if (FULL_STRENGTH && process.env.PROP_SEED === undefined) return;
+      if (otherSeed) return;
       expect(counts.published).toBeGreaterThan(Math.floor(floor.published * reg.scale));
       expect(counts.seeded).toBeGreaterThan(at(floor.seeded));
       expect(counts.byName).toBeGreaterThan(at(floor.byName));
