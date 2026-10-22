@@ -45,6 +45,12 @@ so, and so do the module headers in the code.
   apply. `roaring` stays a pinned development dependency: the tests hold the TypeScript codec to it, as the
   reference. A project that imports `roaring` itself (the samples that build a bitmap do) still installs and allows it.
 
+- **The TypeScript codec's four-operand intersect of mixed chunks is as fast as the native codec's, and the codec seam gains an optional `intersectSmallestFirst`.**
+  A codec that sets it has the store meet the operands of an intersect of three or more smallest-first, per chunk; the
+  TypeScript codec sets it, the native codec does not (it measured 9% to 10% slower with it), so the native path is
+  unchanged line for line. A bitset against a run container of at most 4,096 values is now written straight to an array.
+  The result of an intersect is the same in every order.
+
 - **The format page's chunk-payload section says what a writer of your own needs to reproduce the bytes, and both READMEs
   credit the Roaring authors.** [`docs/format.md`](docs/format.md) section 3 now defines a run (a maximal sequence of
   consecutive values), the bit order of a bitset (value `v` is bit `v mod 8` of byte `v div 8`), little-endian

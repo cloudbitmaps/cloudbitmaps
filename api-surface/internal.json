@@ -60,6 +60,7 @@
     "@cloudbitmaps/core CodecInterface": "interface CodecInterface",
     "@cloudbitmaps/core CodecInterface.empty": "empty(): CodecBitmap;",
     "@cloudbitmaps/core CodecInterface.fromValues": "fromValues(values: Iterable<number>): CodecBitmap;",
+    "@cloudbitmaps/core CodecInterface.intersectSmallestFirst": "readonly intersectSmallestFirst?: boolean;",
     "@cloudbitmaps/core CodecInterface.owns": "owns?(bitmap: unknown): boolean;",
     "@cloudbitmaps/core CodecInterface.safeDeserialize": "safeDeserialize(bytes: Uint8Array, maxBytes: number, options?: { readonly whole?: boolean; }): CodecBitmap;",
     "@cloudbitmaps/core CombineManyDeps": "interface CombineManyDeps",
