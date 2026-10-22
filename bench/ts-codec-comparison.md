@@ -64,7 +64,7 @@ sees calls), so every cell ran on a warm cache.
 
 | gate row | verdict (the per-process one) | evidence |
 |---|---|---|
-| Correctness: zero oracle differences | measured so far: none | `tests/roaring`, `tests/bench` and `tests/docs` pass on this tree (169 files, 14,410 tests, 4 skipped), the oracle, hostile-input and fast-path suites among them; the two codecs wrote the same exported bytes in all 31 write-path rounds |
+| Correctness: zero oracle differences | measured so far: none | `tests/roaring`, `tests/bench`, `tests/docs` and the combine and engine files of `tests/core` pass on this tree (189 files, 14,712 tests, 4 skipped), the oracle, hostile-input and fast-path suites among them; the two codecs wrote the same exported bytes in all 31 write-path rounds |
 | Correctness: a week of nightly fuzz with none | **cannot be judged yet** | the week starts at merge. Wiring (read from the workflows): `full-nightly.yml` runs the whole suite, the oracle files included, at 04:00 UTC every day; `fuzz-nightly.yml` fuzzes the four untrusted-bytes targets (`deser`, `crbm`, `index`, `ext`) at 05:00 UTC, all of them on the native deserializer: no fuzz target runs the TypeScript codec yet, so the week's fuzz evidence for it is the property tests' |
 | Hot path: `has` | within the 5% bar per-process in every cell, **with little power on the codec** | per-process worst ts vs native +1.0% (sparse), worst control +1.5% (spread8k); in-process worst -0.0%, worst control +1.2%. A call is 512 awaited probes at about 1 us each (0.96 to 1.09 us by cell median), of which the codec's `has` is about 26 to 39 ns native and 8 to 29 ns TypeScript on one chunk (`bench/ts-codec-results.json`, measured earlier): by that arithmetic (derived) the call reaches +5% only when the codec is about 2.4 times (sparse) to 2.9 times (dense) slower on the probe alone, so a codec up to that much slower would still land within 5% of the call. The per-operation `has` rows are the sensitive figure |
 | Hot path: `count` | within the 5% bar, **not informative: no codec call** | per-process worst +2.0%, worst control -0.7%; in-process worst +0.4%, worst control +0.8%. `count` is read from the generation's index; the file records zero codec calls in every cell |
@@ -265,7 +265,7 @@ would ship until `roaring` leaves the dependencies.
 
 ## Runtimes (measured)
 
-- Node 24.18.1: the oracle, hostile-input, pin, TypeScript-codec and fast-path suites pass (inside the 14,410 tests of the gate row above).
+- Node 24.18.1: the oracle, hostile-input, pin, TypeScript-codec and fast-path suites pass (inside the 14,712 tests of the gate row above).
 - Node 22.12.0: the suites could not run locally, because the checkout's native addon is built for Node 24 only (the
   failure is the addon failing to load, not a codec failure). CI runs both versions and is the evidence for the oracle on
   Node 22. What was run on 22.12.0 is a self-check of the bundled TypeScript codec with no native code: build, optimize,
