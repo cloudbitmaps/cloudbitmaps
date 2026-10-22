@@ -236,8 +236,8 @@ const four = (x: number) => Math.round(x * 1e4) / 1e4;
  */
 function retakeProblems(d: RetakeDoc): string[] {
   const out: string[] = [];
-  const listed = new Map(
-    d.reads.readsRetaken.cells.map((r) => [`${r.dataset} ${r.op} ${r.basis}`, r] as const),
+  const listed = new Map<string, Retake>(
+    d.reads.readsRetaken.cells.map((r) => [`${r.dataset} ${r.op} ${r.basis}`, r]),
   );
   if (listed.size !== d.reads.readsRetaken.cells.length) out.push('a base is listed twice');
   const carrying = new Set<string>();
