@@ -34,6 +34,8 @@ on:
       - tests/core/erase-namespace-bounded.test.ts
       - tests/core/combine-ledger.test.ts
       - tests/core/load-sorted-heap.test.ts
+      - tests/roaring/codec-oracle.test.ts
+      - tests/roaring/codec-oracle-hostile.test.ts
 
 permissions:
   contents: read
