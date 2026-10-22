@@ -8,7 +8,7 @@ the module-load sentence and the per-kind memory differences in the file; the ot
 rows, are not looked up). The instrument is `bench/ts-codec-engine.cjs` (`node --expose-gc bench/ts-codec-engine.cjs --all`, about an
 hour), with `bench/ts-codec.cjs` for the per-operation figures.
 
-Machine: Apple M3 Pro, 11 cores, macOS, Node v24.18.1. **Every figure in this file is one run of the bench's own `--all`
+Machine: Apple M3 Pro, 11 cores, macOS, Node v24.22.1 (the before figures, from `a7531fb1`, were taken on v24.18.1: absolute times do not compare across the two runs, and a before/after comparison mixes this branch's codec change with the Node update; the paired ratios inside one run, which are what the gate's verdict uses, do not depend on it). **Every figure in this file is one run of the bench's own `--all`
 on the committed tree `c387921b`** (the tree clean; its codec and store code is the code of this branch's head, whose
 last kernel change is older), started 2026-10-22 04:46 UTC and ended 05:58 UTC: the reads 04:46 to 05:37, the smallest-first
 native measurement 05:37 to 05:53, the write path 05:53 to 05:54, memory 05:54 to 05:55, start-up 05:55 to 05:58 (every
@@ -16,14 +16,17 @@ part's own start, end, commit and tree state are in the file, and `tests/bench/t
 run's commit, a clean tree and the run's window). The bench's load gate was off (`TS_ENGINE_ANY_LOAD=1`, recorded in the
 file), so every figure carries its own peak load beside it. **The A/A control decides whether a timed cell resolves.**
 In that run the per-process cells of the sparse and runs sets had a peak load of 11.0 and 15.3 (something else on the
-machine), and ten bases (cell and way) had a control outside +-2%. Each of those 22 bases was taken once more, in a run of
-those cells alone (the reads only, on the commit `6467779c`, started 05:58 UTC, ended 06:31 UTC, highest load 2.6), and
+machine), and eleven bases (cell and way) had a control outside +-2% (one of them also ran at a load of 10.96), so 12 were taken by load and 10 more by control alone. Each of those 22 bases was taken once more, in a run of
+those cells alone (the reads only, on the commit `6467779c`, started 05:58 UTC, ended 06:31 UTC, highest load of a kept round 2.33), and
 **the re-take replaces the figure**; the first take stays in the cell as `firstTake` and the list of re-takes, with
 both takes' figures and the reason, is in `reads.readsRetaken`. A re-take is not repeated: three bases (sparse
 `intersect2` and `andNot` in-process, spread8k `iterate` in-process) still have a control outside the band and read
 **inconclusive**, and are named so below. The re-takes are one process-and-machine state apart from the rest of the run;
-the first takes of the two sets that ran under a load of 11 to 15 differ from their re-takes by up to 5 points (sparse
-`andNot` per-process -3.5% against -0.8%, runs `iterate` -1.1% against -3.4%), which is what that load does to a figure.
+the bases whose first take ran at a load of 6 or more moved by at most 2.7 points (sparse `andNot` per-process -3.5%
+against -0.8%, runs `iterate` -1.1% against -3.4%), and the largest moves overall, 11.6 points (sparse `andNot`
+in-process, -8.3% to +3.2%, first take at load 2.2), 5.0 (spread8k `iterate` per-process) and 4.9 (spread8k `andNot`
+in-process), came at an ordinary load on bases whose control was out of band; the record does not establish why a figure
+moves that much, and no first take of any re-taken base was over the bar.
 The before figures quoted for comparison are the parent branch's committed ones (`a7531fb1`). Every figure is wall-clock on
 one machine, recorded and not asserted.
 
@@ -79,7 +82,7 @@ sees calls), so every cell ran on a warm cache.
 |---|---|---|
 | Correctness: zero oracle differences | measured so far: none | `tests/roaring`, `tests/bench`, `tests/docs` and the combine and engine files of `tests/core` passed on the head before this round, whose codec and kernel code this round does not touch (189 files, 14,712 tests, 4 skipped; this round adds two tests to `tests/bench`, which run in CI), the oracle, hostile-input and fast-path suites among them; the two codecs wrote the same exported bytes in all 31 write-path rounds |
 | Correctness: a week of nightly fuzz with none | **cannot be judged yet** | the week starts at merge. Wiring (read from the workflows): `full-nightly.yml` runs the whole suite, the oracle files included, at 04:00 UTC every day; `fuzz-nightly.yml` fuzzes the four untrusted-bytes targets (`deser`, `crbm`, `index`, `ext`) at 05:00 UTC, all of them on the native deserializer: no fuzz target runs the TypeScript codec yet, so the week's fuzz evidence for it is the property tests' |
-| Hot path: `has` | within the 5% bar per-process in every cell, **with little power on the codec** | per-process worst ts vs native +1.1% (dense), worst control -0.8% (spread8k); in-process worst +0.1%, worst control -1.5%. A call is 512 awaited probes at about 1 us each (0.96 to 1.09 us by cell median), of which the codec's `has` is about 26 to 39 ns native and 8 to 29 ns TypeScript on one chunk (`bench/ts-codec-results.json`, measured earlier): by that arithmetic (derived) the call reaches +5% only when the codec is about 2.4 times (sparse) to 2.9 times (dense) slower on the probe alone, so a codec up to that much slower would still land within 5% of the call. The per-operation `has` rows are the sensitive figure |
+| Hot path: `has` | within the 5% bar per-process in every cell, **with little power on the codec** | per-process worst ts vs native +1.1% (dense), worst control -0.8% (spread8k); in-process worst +0.1%, worst control -1.5%. A call is 512 awaited probes at about 1 us each (0.96 to 1.18 us by cell median per-process native, 0.95 to 1.10 TypeScript), of which the codec's `has` is about 26 to 39 ns native and 8 to 29 ns TypeScript on one chunk (`bench/ts-codec-results.json`, measured earlier): by that arithmetic (derived) the call reaches +5% only when the codec is about 2.2 to 3.3 times slower (the range over the probe times and codec times above) on the probe alone, so a codec up to that much slower would still land within 5% of the call. The per-operation `has` rows are the sensitive figure |
 | Hot path: `count` | within the 5% bar, **not informative: no codec call** | per-process worst +1.7% (spread8k), worst control -0.5%; in-process worst +1.0%, worst control +0.5%. The `count` cells make no codec call and still swing by about +-1.7% between the codecs per-process (controls within +-0.5%): that is the instrument's own noise on a ts-vs-native contrast, larger than its control shows. `count` is read from the generation's index; the file records zero codec calls in every cell |
 | Hot path: `iterate` | within the 5% bar per-process in every cell; in-process within it on every cell that resolves | per-process worst -0.0% (the codec is not slower in any cell), worst control +1.6%; in-process worst +3.9% (mixed) with the way's verdict inconclusive on one cell (spread8k, control -2.4%). The TypeScript codec is 9% to 12% faster on the spread sets per-process |
 | Hot path: `intersect` | **within the 5% bar per-process on every cell; within it in-process on every cell that resolves (sparse two operands is inconclusive, control -4.4%)** | per-process: two operands worst +0.2% (control +1.2%); four operands worst **+3.4% (dense, control +1.1%)**, mixed +2.9% (control -1.3%; before this branch +13.7%), runs +0.6%. In-process mixed four operands reads +3.5% (control -0.5%; before this branch +8.7%; the earlier run of this code read +10.2%, see the read bench). Sparse is faster than native (-40.2% and -37.0% per-process). Native here is the native codec as it ships, in the operand order it is given; the native codec with the smallest-first order is slower on mixed four operands by +7.7% per-process and +8.8% in-process, paired (below). Cells below |
@@ -151,7 +154,7 @@ What the table says, in the order of the gate:
 - `count` is answered in about 1.4 us in every cell by both codecs and made no codec call (measured, counts in the file):
   it is read from the generation's index, so it is not evidence about the codec.
 - `has` is dominated by the store's asynchronous call, about 1 us a probe. The codecs are within a few percent in both
-  directions (per-process worst +1.0%). Little power on the codec: see the gate row.
+  directions (per-process worst +1.1%). Little power on the codec: see the gate row.
 - `iterate` is within the bar in every cell per-process, and in-process in every cell that resolves (spread8k is inconclusive, control -2.4%). TypeScript is 9% to 12% faster on the spread sets per-process.
 - **`intersect`, mixed at four operands, the cell that was over the bar: per-process +2.9% (control -1.3%), from +13.7%;
   in-process +3.5% (control -0.5%), from +8.7%.** Both are within the bar. The same code read +0.2% and **+10.2%** in an
@@ -179,10 +182,11 @@ What the table says, in the order of the gate:
 
   Derived from the paired medians (not from a ratio across runs): **on mixed four operands the smallest-first order
   slows the native codec by +7.7% per-process (quartiles +5.2% to +10.6%) and +8.8% in-process (+5.5% to +11.4%)**, with
-  controls at -0.1% and +1.1%, because its `size` is a call across the addon boundary per operand per chunk and its
-  combine is fast in any order. On the other cells it does not help native either: mixed two operands +1.2% and +0.1%,
+  controls at -0.1% and +1.1%. Why is not measured: ordering native by size changes three things at once (the `size`
+  reads, which operand is cloned, and the order of the ANDs), and nothing in the record separates them; the `size` reads
+  across the addon boundary are one hypothesis. On the other cells it does not help native either: mixed two operands +1.2% and +0.1%,
   spread8k two operands -0.2% and -0.9%, spread8k four operands +2.8% and +3.8%. The spread8k four-operand in-process
-  control is -3.3%, outside the band, so that one cell is inconclusive; no cell shows native gaining from the order beyond
+  control is -3.3%, outside the band, so that one cell is inconclusive (as is TypeScript against smallest-first native on spread8k two operands in-process, control -2.02%); no cell shows native gaining from the order beyond
   its control. **The verdict uses the as-shipped native column**, because that is what a user running the native codec
   gets and it is the harder comparison on the cell that matters: against the smallest-first native the TypeScript codec
   reads -3.8% (per-process) and -1.4% (in-process) on mixed four operands. Those two columns come from two runs of rounds
@@ -205,7 +209,7 @@ What the table says, in the order of the gate:
 - **Cells that moved up since the committed run of the parent branch (`a7531fb1`) by 2 points or more, with both runs'
   controls in band** (per-process `has` dense +3.5 points; in-process `has` sparse +2.7 and runs +2.7, `intersect2` runs
   +2.5 and mixed +3.0, `iterate` mixed +4.2, `andNot` mixed +2.9; per-process `iterate` spread8k +2.3): none is over the
-  bar and none holds a kernel this branch changed; with the other cells they average -0.2 points over the 66 figures
+  bar and none holds a kernel this branch changed except in-process `intersect2` on mixed chunks, which meets run-against-bitset chunks through the one function this branch changed (its other branch does the same work plus one comparison); with the other cells they average -0.2 points over the 66 figures
   (cell and way), so they are read as the spread between two runs. Three more moved up by 2 points or more where one
   run's control was out of band (sparse `andNot` in-process, spread8k `intersect2` per-process and `andNot` in-process).
 
@@ -273,7 +277,7 @@ module (the addon and the codec) 19.5 ms, the TypeScript codec's module 1.1 ms (
 
 A cold row, kept apart from every warmed figure above: a fresh process, a store over a loaded mixed set of 128 chunks, a
 first `load` of two segments, then the first 2,000 `has` calls timed one by one, a first full `iterate` and a first
-`intersect`; median of 31 processes per subject, in a rotating order, load 1.7 at the start and 1.7 at the peak.
+`intersect`; median of 31 processes per subject, in a rotating order, load 1.7 at the start and 1.7 at the end of the part (its rounds carry loads up to 2.27).
 Milliseconds, except `firstHasUs`, which is microseconds.
 
 | | native | typescript | ts vs native | A/A control |
@@ -295,7 +299,7 @@ would ship until `roaring` leaves the dependencies.
 
 ## Runtimes (measured)
 
-- Node 24.18.1: the oracle, hostile-input, pin, TypeScript-codec and fast-path suites pass (inside the 14,712 tests of the gate row above).
+- Node 24.18.1 (the gate row's suites ran on it; the bench run above used v24.22.1): the oracle, hostile-input, pin, TypeScript-codec and fast-path suites pass (inside the 14,712 tests of the gate row above).
 - Node 22.12.0: the suites could not run locally, because the checkout's native addon is built for Node 24 only (the
   failure is the addon failing to load, not a codec failure). CI runs both versions and is the evidence for the oracle on
   Node 22. What was run on 22.12.0 is a self-check of the bundled TypeScript codec with no native code: build, optimize,
@@ -323,4 +327,4 @@ would ship until `roaring` leaves the dependencies.
   mind. The control is the rule for validity, as the bar is for the verdict; neither is a confidence interval.
 - A re-take replaces a figure whose control was out of band or whose load was high, and the first take stays in the file.
   Choosing a re-take after seeing a bad control is a selection; the file keeps both takes so the effect of the choice can
-  be read (the largest first-take to re-take moves are 5 points, on cells that ran at load 11 to 15).
+  be read (the largest first-take to re-take moves are 11.6, 5.0 and 4.9 points, on bases whose control was out of band at an ordinary load; the bases that ran at load 6 or more moved at most 2.7 points).

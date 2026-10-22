@@ -207,6 +207,84 @@ function expectDerived(
   );
 }
 
+type Retake = {
+  dataset: string;
+  op: string;
+  basis: 'inProcess' | 'perProcess';
+  firstTakeVsNative: number;
+  firstTakeControl: number;
+  retakeVsNative: number;
+  retakeControl: number;
+  retakeLoadMax: number;
+};
+type RetakeBasis = ReadBasis & { firstTake?: ReadBasis };
+type RetakeDoc = {
+  reads: {
+    readsRetaken: { cells: Retake[] };
+    cells: { dataset: string; op: string; inProcess: RetakeBasis; perProcess: RetakeBasis }[];
+  };
+};
+const LOAD_LIMIT = 6;
+const four = (x: number) => Math.round(x * 1e4) / 1e4;
+
+/**
+ * What is wrong with the re-take bookkeeping of a results file, as a list of sentences (empty when it holds): the list
+ * of re-takes names exactly the bases that carry a first take; each first take is the figures its own rounds give, and
+ * a base was re-taken exactly when its first take had a control outside the band or a peak load of 6 or more; the
+ * figures the list gives for both takes are the ones in the cell and in its first take; and no kept round ran at a
+ * load of 6 or more.
+ */
+function retakeProblems(d: RetakeDoc): string[] {
+  const out: string[] = [];
+  const listed = new Map(
+    d.reads.readsRetaken.cells.map((r) => [`${r.dataset} ${r.op} ${r.basis}`, r] as const),
+  );
+  if (listed.size !== d.reads.readsRetaken.cells.length) out.push('a base is listed twice');
+  const carrying = new Set<string>();
+  for (const c of d.reads.cells)
+    for (const basis of ['inProcess', 'perProcess'] as const) {
+      const key = `${c.dataset} ${c.op} ${basis}`;
+      const kept = c[basis];
+      const first = kept.firstTake;
+      for (const r of kept.rounds)
+        if ((r[4] ?? Number.NaN) >= LOAD_LIMIT)
+          out.push(`${key}: a kept round ran at load ${r[4]}`);
+      if (first === undefined) {
+        if (Math.abs(kept.controlVsNative) > verdict.CONTROL_BAND || kept.loadMax >= LOAD_LIMIT)
+          out.push(`${key}: control or load called for a re-take, and there is none`);
+        continue;
+      }
+      carrying.add(key);
+      const again = summarise(first.rounds);
+      if (
+        four(again.typescriptVsNative) !== first.typescriptVsNative ||
+        four(again.controlVsNative) !== first.controlVsNative
+      )
+        out.push(`${key}: the first take is not what its rounds give`);
+      if (Math.abs(first.controlVsNative) <= verdict.CONTROL_BAND && first.loadMax < LOAD_LIMIT)
+        out.push(`${key}: re-taken although its first take had a control in band and a low load`);
+      const r = listed.get(key);
+      if (r === undefined) {
+        out.push(`${key}: carries a first take and is not listed`);
+        continue;
+      }
+      if (
+        r.firstTakeVsNative !== first.typescriptVsNative ||
+        r.firstTakeControl !== first.controlVsNative
+      )
+        out.push(`${key}: the list's first take is not the cell's`);
+      if (
+        r.retakeVsNative !== kept.typescriptVsNative ||
+        r.retakeControl !== kept.controlVsNative ||
+        r.retakeLoadMax !== kept.loadMax
+      )
+        out.push(`${key}: the list's re-take is not the cell's figures`);
+    }
+  for (const key of listed.keys())
+    if (!carrying.has(key)) out.push(`${key}: listed and carries no first take`);
+  return out;
+}
+
 describe('the committed evidence', () => {
   it('rests every gate figure on at least 31 rounds', () => {
     expect(doc.rules.minRounds).toBe(MIN_ROUNDS);
@@ -283,6 +361,70 @@ describe('the committed evidence', () => {
       expect(Date.parse(p.endedAt), name).toBeLessThanOrEqual(Date.parse(doc.endedAt));
       expect(Date.parse(p.startedAt), name).toBeLessThan(Date.parse(p.endedAt));
     }
+  });
+
+  it('holds the re-take bookkeeping, and fails on a planted mismatch of each kind', () => {
+    const real = doc as unknown as RetakeDoc;
+    expect(real.reads.readsRetaken.cells.length).toBeGreaterThan(0);
+    expect(retakeProblems(real)).toEqual([]);
+
+    const plant = (edit: (d: RetakeDoc) => void): string[] => {
+      const copy = JSON.parse(JSON.stringify(real)) as RetakeDoc;
+      edit(copy);
+      return retakeProblems(copy);
+    };
+    const firstCarrying = (d: RetakeDoc): RetakeBasis => {
+      for (const c of d.reads.cells)
+        for (const b of ['inProcess', 'perProcess'] as const)
+          if (c[b].firstTake !== undefined) return c[b];
+      throw new Error('no re-taken base');
+    };
+    // a listed re-take with no first take kept in its cell
+    expect(
+      plant((d) => {
+        delete firstCarrying(d).firstTake;
+      }).join('\n'),
+    ).toMatch(/listed and carries no first take/);
+    // the list's re-take figure differs from the cell's
+    expect(
+      plant((d) => {
+        d.reads.readsRetaken.cells[0]!.retakeVsNative += 0.01;
+      }).join('\n'),
+    ).toMatch(/list's re-take is not the cell's/);
+    // a first take whose figure is not what its rounds give
+    expect(
+      plant((d) => {
+        firstCarrying(d).firstTake!.typescriptVsNative += 0.01;
+      }).join('\n'),
+    ).toMatch(/first take is not what its rounds give/);
+    // a kept round at a load of 6 or more
+    expect(
+      plant((d) => {
+        firstCarrying(d).rounds[0]![4] = 7;
+      }).join('\n'),
+    ).toMatch(/a kept round ran at load 7/);
+    // a cell with a control out of band and no re-take
+    expect(
+      plant((d) => {
+        const c = d.reads.cells.find((x) => x.perProcess.firstTake === undefined)!;
+        c.perProcess.controlVsNative = 0.05;
+      }).join('\n'),
+    ).toMatch(/called for a re-take, and there is none/);
+    // a re-take of a base whose first take needed none
+    expect(
+      plant((d) => {
+        const b = firstCarrying(d);
+        b.firstTake!.controlVsNative = 0;
+        b.firstTake!.loadMax = 1;
+      }).join('\n'),
+    ).toMatch(/re-taken although/);
+  });
+
+  it('names in the report the Node the run used', () => {
+    const node = (doc as unknown as { node: string }).node;
+    expect(node).toMatch(/^v\d+\.\d+\.\d+$/);
+    const report = readFileSync(join(ROOT, 'bench', 'ts-codec-comparison.md'), 'utf8');
+    expect(report).toContain(`Node ${node}`);
   });
 
   it('has the smallest-first sections’ cells recomputed from their rounds, in both ways, with agreeing answers', () => {
