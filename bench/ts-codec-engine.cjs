@@ -94,12 +94,19 @@
  *
  * `--all` writes `bench/ts-codec-comparison-results.json`. The other modes print their rows as JSON. `--reads` runs both
  * ways, `--reads-in-process` and `--reads-per-process` one; `--only=<text>` keeps the cells whose "<data set> <op>"
- * contains the text. `--check-scale` and every `--child-*` flag are this script's own, used when it runs itself in a
+ * contains the text (`--only=<a>|<b>` keeps those containing either). `--all` also measures the native codec with the
+ * smallest-first intersect order, on the intersect cells of the mixed and spread8k sets, and writes it under
+ * `nativeSmallestFirst`. `--check-scale` and every `--child-*` flag are this script's own, used when it runs itself in a
  * fresh process. The environment:
  *
  *   TS_ENGINE_RESULTS    the file `--all` writes, instead of `bench/ts-codec-comparison-results.json`.
  *   TS_ENGINE_ROUNDS     the rounds of a read cell, in-process and per-process (31 or more; fewer is raised to 31).
  *   TS_ENGINE_TRACE      any value: each cell's progress on standard error.
+ *   TS_ENGINE_FAIRNESS   `1`: the second subject of every cell is the native codec with the smallest-first order (set by
+ *                        `--all` for the child that takes `nativeSmallestFirst.vsShipped`).
+ *   TS_ENGINE_NATIVE_SMALLEST_FIRST
+ *                        `1`: every native subject asks for the smallest-first order (a knob of `bench/lib/codec-engine.cjs`;
+ *                        set by `--all` for `nativeSmallestFirst.tsVsSmallestFirstNative`).
  *   TS_ENGINE_ANY_LOAD   `1` turns the load gate off (a machine that is never quiet); the file records `anyLoad: true`
  *                        in its rules, so a figure taken that way is never mistaken for a gated one.
  */
@@ -152,6 +159,9 @@ const opsOfDataset = (dataset) => (dataset === 'spread' ? OPS.slice(0, 3) : OPS)
 const NODE_ARGS = ['--expose-gc'];
 const ROUND_FIELDS = ['order', 'native', 'typescript', 'control', 'load'];
 
+/** Whether `--only=<a>|<b>` keeps the cell labelled "<data set> <op>": any of its `|`-separated texts is in the label. */
+const wanted = (only, label) => !only || only.split('|').some((text) => label.includes(text));
+
 const now = () => Number(process.hrtime.bigint());
 const load1 = () => os.loadavg()[0];
 const twoDecimals = (x) => +x.toFixed(2);
@@ -165,9 +175,14 @@ function compactJson(doc) {
 
 // ---- the three subjects -------------------------------------------------------------------------------------------
 
+// The fairness measurement (`TS_ENGINE_FAIRNESS=1`, set by `--all` for its own child) swaps the second subject: the native
+// codec asking for the smallest-first intersect order, against native as shipped and a second native as the control.
+const FAIRNESS = process.env.TS_ENGINE_FAIRNESS === '1';
 const VARIANTS = [
   { key: 'native', codec: 'native' },
-  { key: 'typescript', codec: 'typescript' },
+  FAIRNESS
+    ? { key: 'nativeSmallestFirst', codec: 'native', smallestFirst: true }
+    : { key: 'typescript', codec: 'typescript' },
   { key: 'control', codec: 'native' },
 ];
 const ORDERS = [
@@ -186,9 +201,26 @@ function engineOf(codec) {
   return engineWith(codec, { root: ROOT });
 }
 
+const smallestFirstCodecs = new WeakMap();
+/** The native codec with the smallest-first order switched on, as its own object: the shipped native codec is untouched. */
+function smallestFirstNative(engine) {
+  if (!smallestFirstCodecs.has(engine))
+    smallestFirstCodecs.set(
+      engine,
+      Object.assign(Object.create(engine.roaringCodec), { intersectSmallestFirst: true }),
+    );
+  return smallestFirstCodecs.get(engine);
+}
+
 /** A store over `backend` built while the switch is on `codec`; its engine keeps that codec for its reads. */
-function storeOn(engine, backend, codec, cache) {
-  engine.setFlagshipCodec(codec === 'typescript' ? engine.tsRoaringCodec : engine.roaringCodec);
+function storeOn(engine, backend, codec, cache, smallestFirst = false) {
+  engine.setFlagshipCodec(
+    codec === 'typescript'
+      ? engine.tsRoaringCodec
+      : smallestFirst
+        ? smallestFirstNative(engine)
+        : engine.roaringCodec,
+  );
   return new engine.roaring.CloudRoaring({
     storage: backend,
     cache: { maxChunks: 70000, genTtlMs: 3_600_000, ...cache },
@@ -215,7 +247,7 @@ async function prepare(engine, dataset) {
   const idLists = await loadSegments(storeOn(engine, backend, 'native'), dataset);
   const names = segmentNames(dataset);
   const stores = VARIANTS.map((v) => {
-    const store = storeOn(engine, backend, v.codec);
+    const store = storeOn(engine, backend, v.codec, undefined, v.smallestFirst === true);
     return { v, store, seg: names.map((n) => store.segment(n)) };
   });
   return { engine, stores, idLists, backend };
@@ -412,7 +444,7 @@ async function readsChild(dataset, only) {
     throw new Error(`${dataset}: the storage counter saw no call of a cold read`);
   const cells = [];
   for (const op of opsOfDataset(dataset)) {
-    if (only && !`${dataset} ${op}`.includes(only)) continue;
+    if (!wanted(only, `${dataset} ${op}`)) continue;
     cells.push({ dataset, op, ...(await measureCell(prepared, dataset, op, ops[op])) });
   }
   return { cells, coldStorageCalls };
@@ -423,7 +455,7 @@ function attributionFailures(used) {
   const wrong = used
     .filter((u) => (u.codec === 'typescript' ? u.native > 0 : u.typescript > 0))
     .map((u) => `${u.label}: native ${u.native}, typescript ${u.typescript}`);
-  const tsUsed = used.some((u) => u.codec === 'typescript' && u.typescript > 0);
+  const tsUsed = FAIRNESS || used.some((u) => u.codec === 'typescript' && u.typescript > 0);
   const nativeUsed = used.some((u) => u.codec === 'native' && u.native > 0);
   if (!tsUsed) wrong.push('the typescript subject never ran the typescript codec');
   if (!nativeUsed) wrong.push('the native subjects never ran the native codec');
@@ -447,17 +479,18 @@ function warmFailures(cells) {
 // ---- reads, one codec per process ---------------------------------------------------------------------------------
 
 /** Every op of one data set, in a process that has only one codec (`--child-proc=<codec>:<dataset>`). */
-async function procChild(codec, dataset, only) {
+async function procChild(codec, dataset, only, smallestFirst) {
   const engine = engineOf(codec);
   const backend = new engine.roaring.MemoryStorage();
+  // The data is always written by the shipped native codec's order (a load does not use the intersect order).
   const idLists = await loadSegments(storeOn(engine, backend, codec), dataset);
-  const store = storeOn(engine, backend, codec);
+  const store = storeOn(engine, backend, codec, undefined, smallestFirst);
   const segs = segmentNames(dataset).map((n) => store.segment(n));
   const ops = opsOf(idLists);
   global.gc();
   const out = {};
   for (const op of opsOfDataset(dataset)) {
-    if (only && !`${dataset} ${op}`.includes(only)) continue;
+    if (!wanted(only, `${dataset} ${op}`)) continue;
     const fn = () => ops[op](segs);
     const answer = await fn();
     const reps = await calibrate(fn);
@@ -487,7 +520,7 @@ function perProcessMeasure(only) {
   const cells = [];
   const used = [];
   for (const dataset of DATASETS) {
-    const ops = opsOfDataset(dataset).filter((op) => !only || `${dataset} ${op}`.includes(only));
+    const ops = opsOfDataset(dataset).filter((op) => wanted(only, `${dataset} ${op}`));
     if (ops.length === 0) continue;
     const rounds = Object.fromEntries(ops.map((op) => [op, []]));
     const agree = Object.fromEntries(ops.map((op) => [op, true]));
@@ -503,7 +536,7 @@ function perProcessMeasure(only) {
       for (const i of ORDERS[r % 6])
         outs[i] = JSON.parse(
           spawnLast([
-            `--child-proc=${VARIANTS[i].codec}:${dataset}`,
+            `--child-proc=${VARIANTS[i].codec}:${dataset}${VARIANTS[i].smallestFirst ? ':smallest-first' : ''}`,
             ...(only ? [`--only=${only}`] : []),
           ]),
         );
@@ -886,13 +919,13 @@ function startupMeasure() {
 // ---- orchestration ------------------------------------------------------------------------------------------------
 
 /** Runs this script in a child process with `args` and returns the last line of its output. */
-function spawnLast(args) {
+function spawnLast(args, env = {}) {
   return execFileSync(
     process.execPath,
     [...NODE_ARGS, __filename, ...(CHECK ? ['--check-scale'] : []), ...args],
     {
       encoding: 'utf8',
-      env: process.env,
+      env: { ...process.env, ...env },
       maxBuffer: 1 << 28,
     },
   )
@@ -900,6 +933,29 @@ function spawnLast(args) {
     .split('\n')
     .pop();
 }
+
+/** The cells the fairness measurement covers: the intersects of the mixed set and of the spread set that has them. */
+const FAIRNESS_CELLS = 'mixed intersect|spread8k intersect';
+
+/**
+ * The reads of `FAIRNESS_CELLS` in a child process of their own, with `env` set for it and everything it starts. With
+ * `TS_ENGINE_FAIRNESS=1` the three subjects are native as shipped, native with the smallest-first order and a second
+ * native as the control (the column the file names `typescript` is then the smallest-first native); with
+ * `TS_ENGINE_NATIVE_SMALLEST_FIRST=1` they are native and the control both on that order against the TypeScript codec.
+ */
+const fairnessViaChild = (env) =>
+  JSON.parse(spawnLast(['--child-section', `--only=${FAIRNESS_CELLS}`], env));
+
+/** What the fairness section of the file says its subjects are, so a reader of the file need not read this script. */
+const FAIRNESS_NOTE =
+  'Cells of the mixed and spread8k intersects, measured both ways like every read cell. vsShipped: the subjects are native as shipped (the `native` column), native with the smallest-first operand order (the column named `typescript`, which here is that native codec) and a second native as shipped (the control); its typescriptVsNative is therefore the effect of the order on the native codec, paired round by round. tsVsSmallestFirstNative: the subjects are native with the smallest-first order, the TypeScript codec and a second smallest-first native (the control).';
+
+const fairnessPart = () => ({
+  note: FAIRNESS_NOTE,
+  cells: FAIRNESS_CELLS,
+  vsShipped: part(() => fairnessViaChild({ TS_ENGINE_FAIRNESS: '1' })),
+  tsVsSmallestFirstNative: part(() => fairnessViaChild({ TS_ENGINE_NATIVE_SMALLEST_FIRST: '1' })),
+});
 
 /** The write path, in a fresh process of its own, so the parent needs no `--expose-gc` and no heap of its own in the figures. */
 const writeViaChild = () => JSON.parse(spawnLast(['--child-write']));
@@ -972,6 +1028,16 @@ function wellFormed(doc) {
   for (const c of doc.reads.cells)
     if (typeof c.perProcess?.timedStorageCalls !== 'object')
       bad.push(`${c.dataset} ${c.op}: no per-process storage-call count`);
+  for (const k of ['vsShipped', 'tsVsSmallestFirstNative']) {
+    const f = doc.nativeSmallestFirst[k];
+    if (!f.startedAt || !f.endedAt || !f.commit) bad.push(`${k}: no start and end time or commit`);
+    if (f.cells.length === 0 || f.attributionFailures.length > 0)
+      bad.push(`${k}: no cells, or a wrong codec: ${f.attributionFailures.join('; ')}`);
+    for (const c of f.cells)
+      for (const basis of ['inProcess', 'perProcess'])
+        if (!c[basis]?.answersAgree || !Number.isFinite(c[basis].typescriptVsNative))
+          bad.push(`${k} ${c.dataset} ${c.op} (${basis}): disagreeing answers or no figure`);
+  }
   for (const k of ['reads', 'write', 'startup', 'memory'])
     if (!doc[k].startedAt || !doc[k].endedAt || !doc[k].commit)
       bad.push(`${k}: no start and end time or commit`);
@@ -1002,8 +1068,10 @@ async function main() {
   if (arg('child-reads')) {
     console.log(JSON.stringify(await readsChild(arg('child-reads'), arg('only'))));
   } else if (arg('child-proc')) {
-    const [codec, dataset] = arg('child-proc').split(':');
-    console.log(JSON.stringify(await procChild(codec, dataset, arg('only'))));
+    const [codec, dataset, order] = arg('child-proc').split(':');
+    console.log(
+      JSON.stringify(await procChild(codec, dataset, arg('only'), order === 'smallest-first')),
+    );
   } else if (arg('child-memory')) {
     const [codec, dataset] = arg('child-memory').split(':');
     console.log(JSON.stringify(await memoryChild(codec, dataset)));
@@ -1013,9 +1081,12 @@ async function main() {
     console.log(JSON.stringify(importChild(arg('child-import'))));
   } else if (process.argv.includes('--child-write')) {
     console.log(JSON.stringify(await writeMeasure()));
+  } else if (process.argv.includes('--child-section')) {
+    console.log(JSON.stringify(readsMeasure(arg('only'))));
   } else if (CHECK) {
     const doc = {
       reads: part(() => readsMeasure()),
+      nativeSmallestFirst: fairnessPart(),
       write: part(writeViaChild),
       startup: part(startupMeasure),
       memory: part(memoryMeasure),
@@ -1058,6 +1129,7 @@ async function main() {
         verdictBasis: 'per-process',
       },
       reads: part(() => readsMeasure()),
+      nativeSmallestFirst: fairnessPart(),
       write: part(writeViaChild),
       memory: part(memoryMeasure),
       startup: part(startupMeasure),

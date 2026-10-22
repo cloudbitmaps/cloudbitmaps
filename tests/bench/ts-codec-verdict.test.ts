@@ -137,9 +137,29 @@ type MemoryFigures = {
   rssBelowHeap: number;
   samples: number[][];
 };
+type ReadsPart = {
+  commit: string;
+  treeClean: boolean;
+  startedAt: string;
+  endedAt: string;
+  attributionFailures: string[];
+  cells: {
+    dataset: string;
+    op: string;
+    inProcess: ReadBasis;
+    perProcess: ReadBasis;
+  }[];
+};
 type Doc = {
   rules: { minRounds: number; roundFields: string[]; orders: number[][] };
   commit: string;
+  treeClean: boolean;
+  startedAt: string;
+  endedAt: string;
+  nativeSmallestFirst: {
+    vsShipped: ReadsPart;
+    tsVsSmallestFirstNative: ReadsPart;
+  };
   reads: {
     attributionFailures: string[];
     cells: {
@@ -243,6 +263,48 @@ describe('the committed evidence', () => {
     expect(doc.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it('places every part of the run in time, on one commit and a clean tree, inside the run', () => {
+    const parts: [
+      string,
+      { commit: string; treeClean?: boolean; startedAt: string; endedAt: string },
+    ][] = [
+      ['reads', doc.reads as never],
+      ['write', doc.write as never],
+      ['memory', doc.memory as never],
+      ['startup', doc.startup as never],
+      ['vsShipped', doc.nativeSmallestFirst.vsShipped],
+      ['tsVsSmallestFirstNative', doc.nativeSmallestFirst.tsVsSmallestFirstNative],
+    ];
+    expect(doc.treeClean).toBe(true);
+    for (const [name, p] of parts) {
+      expect(p.commit, name).toBe(doc.commit);
+      if (p.treeClean !== undefined) expect(p.treeClean, name).toBe(true);
+      expect(Date.parse(p.startedAt), name).toBeGreaterThanOrEqual(Date.parse(doc.startedAt));
+      expect(Date.parse(p.endedAt), name).toBeLessThanOrEqual(Date.parse(doc.endedAt));
+      expect(Date.parse(p.startedAt), name).toBeLessThan(Date.parse(p.endedAt));
+    }
+  });
+
+  it('has the smallest-first sections’ cells recomputed from their rounds, in both ways, with agreeing answers', () => {
+    for (const section of Object.values(doc.nativeSmallestFirst).filter(
+      (x): x is ReadsPart => typeof x === 'object' && 'cells' in x,
+    )) {
+      expect(section.attributionFailures).toEqual([]);
+      expect(section.cells.map((c) => `${c.dataset} ${c.op}`)).toEqual([
+        'mixed intersect2',
+        'mixed intersect4',
+        'spread8k intersect2',
+        'spread8k intersect4',
+      ]);
+      for (const c of section.cells)
+        for (const basis of ['inProcess', 'perProcess'] as const) {
+          expectDerived(c[basis], 0, verdictOf);
+          expect(c[basis].rounds.length, `${c.dataset} ${c.op}`).toBeGreaterThanOrEqual(MIN_ROUNDS);
+          expect(c[basis].answersAgree).toBe(true);
+        }
+    }
+  });
+
   it('has every figure of the report’s tables, the module-load sentence and the memory differences in the file', () => {
     const report = readFileSync(join(ROOT, 'bench', 'ts-codec-comparison.md'), 'utf8');
     const rows = report
@@ -292,6 +354,28 @@ describe('the committed evidence', () => {
         ...worst('inProcess'),
       ]);
     }
+    // The smallest-first table: the order's effect on the native codec (paired in one run of three subjects) and the
+    // TypeScript codec against the smallest-first native (paired in the other run), both ways.
+    const ms2 = (ns: number) => `${(ns / 1e6).toFixed(2)} ms`;
+    const fair = doc.nativeSmallestFirst;
+    for (const c of fair.vsShipped.cells)
+      for (const [basis, label] of [
+        ['perProcess', 'per-process'],
+        ['inProcess', 'in-process'],
+      ] as const) {
+        const name = `${c.dataset} \`${c.op}\`, ${label}`;
+        const row = rows.find((r) => r[0] === name && r.length === 5);
+        expect(row, name).toBeDefined();
+        const other = fair.tsVsSmallestFirstNative.cells.find(
+          (x) => x.dataset === c.dataset && x.op === c.op,
+        )!;
+        expect(row!.slice(1), name).toEqual([
+          ms2(c[basis].nativeMedian),
+          ms2(c[basis].typescriptMedian),
+          `${ts(c[basis])} (${control(c[basis])})`,
+          `${ts(other[basis])} (${control(other[basis])})`,
+        ]);
+      }
     for (const w of doc.write.rows) {
       const row = rows.find((r) => r[0] === w.op && r.length === 6);
       expect(row, w.op).toBeDefined();
