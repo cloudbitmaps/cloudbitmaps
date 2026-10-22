@@ -11,8 +11,28 @@
  *
  * A container keeps its cardinality; nothing recounts it per call. A container is a RUN only because it was decoded
  * from one or because {@link optimize} chose it: the first change to a run container turns it back into an array or a
- * bitset, so a mutating path never has to edit runs. This module is the simple form: a combine of two containers goes
- * through bitset words and picks the kind by cardinality. Speed work lands on top of it, not in it.
+ * bitset, so a mutating path never has to edit runs.
+ *
+ * STORAGE. An ARRAY or RUN container reads its values from `data[off, off + len)` (`len` values, or `len` run pairs
+ * at `off + 2 * i`), so the small containers of one decoded bitmap can sit side by side in a single `Uint16Array` (a
+ * slab) instead of each holding a typed array of its own, which for a run of a few bytes costs many times its payload.
+ * A BITSET always owns its 2,048 words. A container whose storage another holder can see (a slab neighbour, or a
+ * snapshot taken for `encodeChunks`) has `shared` set, and a write copies it first; nothing writes to shared storage.
+ *
+ * COMBINES, by the kinds of the pair (the result kind is a written rule: an array up to 4,096 values, a bitset above,
+ * never a run, whatever the operands were; `optimize` picks runs before anything is stored, so stored bytes depend on
+ * the set alone):
+ *
+ *            and                       or                         andNot
+ *   A  A     merge, or gallop when     merge while the union      merge, or gallop when
+ *            one side is 16x longer    fits an array, else bits   the second side is 16x longer
+ *   A  B     probe each value          copy the bitset, set bits  keep values whose bit is clear
+ *   B  B     word loop                 word loop                  word loop
+ *   R  R     interval intersection     interval union             interval difference
+ *   others   array or bitset against   through bitset words       through bitset words
+ *            runs: probe / range copy
+ *
+ * A combine takes `inPlace` when its first operand is a bitset nothing else can see: the words are written, not copied.
  */
 import { ARRAY_MAX_CARDINALITY } from '../portable/layout';
 
@@ -29,34 +49,76 @@ export const WORDS = 2_048;
 /** Bytes of a bitset container's body. */
 export const BITSET_BYTES = 8_192;
 
-const NO_U16 = new Uint16Array(0);
-const NO_WORDS = new Uint32Array(0);
+/** How many times longer one array must be than the other for the shorter to gallop over it instead of a linear merge. */
+const GALLOP_SKEW = 16;
+
+/** Whether this machine stores a typed array's elements little-endian, as the wire does (so a body is a plain copy). */
+export const LITTLE_ENDIAN = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
 
 /**
- * One container. Which of `u16` and `words` is in use follows `kind`: an array's values are `u16[0, len)` (`len` is
- * the cardinality, and `u16` may be longer), a bitset's bits are `words`, a run container's pairs are `u16[0, 2 * len)`
- * (`len` is the number of runs). `card` is the number of values in every kind.
+ * One container. `data` is a `Uint16Array` for an array or a run container and a `Uint32Array` of {@link WORDS} words
+ * for a bitset. An array's values are `data[off, off + len)` (`len` is its cardinality), a run container's pairs are
+ * `data[off, off + 2 * len)` (`len` is the number of runs), and `card` is the number of values in every kind. `shared`
+ * says another holder can see `data`: it is set once and a write copies instead.
  */
 export class Container {
   constructor(
     readonly kind: Kind,
-    readonly u16: Uint16Array,
-    readonly words: Uint32Array,
+    readonly data: Uint16Array | Uint32Array,
+    readonly off: number,
     readonly len: number,
     readonly card: number,
+    public shared: boolean,
   ) {}
 }
 
+/** The 16-bit storage of an array or run container. */
+function lows16(c: Container): Uint16Array {
+  return c.data as Uint16Array;
+}
+
+/** The words of a bitset container. */
+function words32(c: Container): Uint32Array {
+  return c.data as Uint32Array;
+}
+
 export function arrayContainer(values: Uint16Array, card: number): Container {
-  return new Container(ARRAY, values, NO_WORDS, card, card);
+  return new Container(ARRAY, values, 0, card, card, false);
 }
 
 export function bitsetContainer(words: Uint32Array, card: number): Container {
-  return new Container(BITSET, NO_U16, words, 0, card);
+  return new Container(BITSET, words, 0, 0, card, false);
 }
 
-export function runContainer(pairs: Uint16Array, runs: number, card: number): Container {
-  return new Container(RUN, pairs, NO_WORDS, runs, card);
+function runContainer(pairs: Uint16Array, runs: number, card: number): Container {
+  return new Container(RUN, pairs, 0, runs, card, false);
+}
+
+// Scratch for results whose size is known only after they are built: a combine writes into it and copies out exactly
+// what it wrote. Single-threaded and never held across a call that could run other code, so one of each is enough.
+let valueScratch = new Uint16Array(8_192);
+let pairScratch = new Uint16Array(8_192);
+// The most a scratch keeps for the life of the process: one container's worth of 16-bit values. A request above it
+// gets a fresh array that is not kept.
+const SCRATCH_KEEP = 65_536;
+
+function values16(n: number): Uint16Array {
+  if (valueScratch.length >= n) return valueScratch;
+  if (n > SCRATCH_KEEP) return new Uint16Array(n);
+  valueScratch = new Uint16Array(Math.max(n, Math.min(2 * valueScratch.length, SCRATCH_KEEP)));
+  return valueScratch;
+}
+
+function pairs16(n: number): Uint16Array {
+  if (pairScratch.length >= n) return pairScratch;
+  if (n > SCRATCH_KEEP) return new Uint16Array(n);
+  pairScratch = new Uint16Array(Math.max(n, Math.min(2 * pairScratch.length, SCRATCH_KEEP)));
+  return pairScratch;
+}
+
+/** An array container of the first `n` values of `scratch` (copied out), or `null` when there are none. */
+function arrayOfScratch(scratch: Uint16Array, n: number): Container | null {
+  return n === 0 ? null : arrayContainer(scratch.slice(0, n), n);
 }
 
 /** Set bits in one 32-bit word. */
@@ -64,6 +126,94 @@ function popcount32(word: number): number {
   let w = word - ((word >>> 1) & 0x5555_5555);
   w = (w & 0x3333_3333) + ((w >>> 2) & 0x3333_3333);
   return Math.imul((w + (w >>> 4)) & 0x0f0f_0f0f, 0x0101_0101) >>> 24;
+}
+
+/**
+ * Set bits in the {@link WORDS} words of a bitset: Harley-Seal, which adds sixteen words through a tree of carry-save
+ * adders and counts the bits of one word in sixteen instead of every word. Plain 32-bit integer arithmetic, no `BigInt`.
+ */
+function popcountWords(d: Uint32Array): number {
+  let total = 0;
+  let ones = 0;
+  let twos = 0;
+  let fours = 0;
+  let eights = 0;
+  for (let i = 0; i < WORDS; i += 16) {
+    let u: number;
+    let twosA: number;
+    let twosB: number;
+    let foursA: number;
+    let foursB: number;
+    let x = d[i] as number;
+    let y = d[i + 1] as number;
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = d[i + 2] as number;
+    y = d[i + 3] as number;
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursA = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    x = d[i + 4] as number;
+    y = d[i + 5] as number;
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = d[i + 6] as number;
+    y = d[i + 7] as number;
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursB = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    u = fours ^ foursA;
+    const eightsA = (fours & foursA) | (u & foursB);
+    fours = u ^ foursB;
+    x = d[i + 8] as number;
+    y = d[i + 9] as number;
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = d[i + 10] as number;
+    y = d[i + 11] as number;
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursA = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    x = d[i + 12] as number;
+    y = d[i + 13] as number;
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = d[i + 14] as number;
+    y = d[i + 15] as number;
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursB = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    u = fours ^ foursA;
+    const eightsB = (fours & foursA) | (u & foursB);
+    fours = u ^ foursB;
+    u = eights ^ eightsA;
+    const sixteens = (eights & eightsA) | (u & eightsB);
+    eights = u ^ eightsB;
+    total += popcount32(sixteens);
+  }
+  return (
+    16 * total +
+    8 * popcount32(eights) +
+    4 * popcount32(fours) +
+    2 * popcount32(twos) +
+    popcount32(ones)
+  );
 }
 
 /** Set the bits `start` to `end`, both inclusive, in `words`. */
@@ -81,24 +231,48 @@ function setRange(words: Uint32Array, start: number, end: number): void {
   words[last] = (words[last] as number) | tail;
 }
 
-/**
- * The container holding the ascending distinct remainders `lows[0, count)`: an array up to 4,096 values and a bitset
- * above. `lows` is kept as the array's storage when it becomes one.
- */
-export function fromSortedLows(lows: Uint16Array, count: number): Container {
-  if (count <= ARRAY_MAX_CARDINALITY) return arrayContainer(lows, count);
-  const words = new Uint32Array(WORDS);
-  for (let i = 0; i < count; i++) {
-    const v = lows[i] as number;
-    words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+/** Clear the bits `start` to `end`, both inclusive, in `words`. */
+function clearRange(words: Uint32Array, start: number, end: number): void {
+  const first = start >>> 5;
+  const last = end >>> 5;
+  const head = (0xffff_ffff << (start & 31)) >>> 0;
+  const tail = 0xffff_ffff >>> (31 - (end & 31));
+  if (first === last) {
+    words[first] = (words[first] as number) & ~(head & tail);
+    return;
   }
-  return bitsetContainer(words, count);
+  words[first] = (words[first] as number) & ~head;
+  for (let i = first + 1; i < last; i++) words[i] = 0;
+  words[last] = (words[last] as number) & ~tail;
 }
 
-/** The container holding the bits of `words` (kept as the bitset's storage when it becomes one), or `null` if none is set. */
-function fromWords(words: Uint32Array): Container | null {
-  let card = 0;
-  for (let i = 0; i < WORDS; i++) card += popcount32(words[i] as number);
+/**
+ * The container holding the ascending ids `ids[from, to)`, all of one key (only the low 16 bits are kept), duplicates
+ * allowed: an array up to 4,096 distinct values and a bitset above.
+ */
+export function fromSortedIds(ids: Uint32Array, from: number, to: number): Container {
+  const n = to - from;
+  if (n <= ARRAY_MAX_CARDINALITY) {
+    const lows = new Uint16Array(n);
+    let count = 0;
+    let previous = -1;
+    for (let i = from; i < to; i++) {
+      const low = (ids[i] as number) & 0xffff;
+      if (low !== previous) lows[count++] = low;
+      previous = low;
+    }
+    return arrayContainer(count === n ? lows : lows.slice(0, count), count);
+  }
+  const words = new Uint32Array(WORDS);
+  for (let i = from; i < to; i++) {
+    const v = (ids[i] as number) & 0xffff;
+    words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+  }
+  return fromWordsCard(words, popcountWords(words)) as Container;
+}
+
+/** The container holding `words` (kept as the bitset's storage when it becomes one) given its cardinality, or `null` when it is 0. */
+function fromWordsCard(words: Uint32Array, card: number): Container | null {
   if (card === 0) return null;
   if (card > ARRAY_MAX_CARDINALITY) return bitsetContainer(words, card);
   const out = new Uint16Array(card);
@@ -111,29 +285,91 @@ function wordsToLows(words: Uint32Array, out: Uint16Array): number {
   let k = 0;
   for (let i = 0; i < WORDS; i++) {
     let w = words[i] as number;
+    const base = i * 32 + 31;
     while (w !== 0) {
       const lowest = w & -w;
-      out[k++] = i * 32 + 31 - Math.clz32(lowest);
+      out[k++] = base - Math.clz32(lowest);
       w ^= lowest;
     }
   }
   return k;
 }
 
-/** Write the container's remainders, ascending, to `out` (which holds at least `card` of them); returns how many. */
-export function toLows(c: Container, out: Uint16Array): number {
+/** Write the container's remainders, ascending, to `out` (which holds at least `card` of them). */
+function writeLows(c: Container, out: Uint16Array): void {
   if (c.kind === ARRAY) {
-    out.set(c.u16.subarray(0, c.len));
-    return c.len;
+    out.set(lows16(c).subarray(c.off, c.off + c.len));
+  } else if (c.kind === BITSET) {
+    wordsToLows(words32(c), out);
+  } else {
+    const u16 = lows16(c);
+    let k = 0;
+    for (let r = 0; r < c.len; r++) {
+      const start = u16[c.off + 2 * r] as number;
+      const end = start + (u16[c.off + 2 * r + 1] as number);
+      for (let v = start; v <= end; v++) out[k++] = v;
+    }
   }
-  if (c.kind === BITSET) return wordsToLows(c.words, out);
-  let k = 0;
+}
+
+/**
+ * Write the container's ids, each plus `base`, ascending, to `out` from index `at`; returns the index after the last.
+ * The one step a `toUint32Array` takes per container.
+ */
+export function appendIds(c: Container, out: Uint32Array, at: number, base: number): number {
+  if (c.kind === ARRAY) {
+    const u16 = lows16(c);
+    const end = c.off + c.len;
+    if (base === 0) {
+      // One widening copy.
+      out.set(u16.subarray(c.off, end), at);
+      return at + c.len;
+    }
+    for (let i = c.off; i < end; i++) out[at++] = base + (u16[i] as number);
+    return at;
+  }
+  if (c.kind === BITSET) {
+    const words = words32(c);
+    for (let i = 0; i < WORDS; i++) {
+      let w = words[i] as number;
+      const top = base + i * 32 + 31;
+      while (w !== 0) {
+        const lowest = w & -w;
+        out[at++] = top - Math.clz32(lowest);
+        w ^= lowest;
+      }
+    }
+    return at;
+  }
+  const u16 = lows16(c);
   for (let r = 0; r < c.len; r++) {
-    const start = c.u16[2 * r] as number;
-    const end = start + (c.u16[2 * r + 1] as number);
-    for (let v = start; v <= end; v++) out[k++] = v;
+    const start = u16[c.off + 2 * r] as number;
+    const last = start + (u16[c.off + 2 * r + 1] as number);
+    if (last - start < LONG_RUN) {
+      for (let v = base + start; v <= base + last; v++) out[at++] = v;
+      continue;
+    }
+    // A long run is one widening copy of `start..last` out of a table of 0..65,535, then `base` added where it is not 0.
+    const from = at;
+    out.set(iota().subarray(start, last + 1), at);
+    at += last - start + 1;
+    if (base !== 0) for (let i = from; i < at; i++) out[i] = (out[i] as number) + base;
   }
-  return k;
+  return at;
+}
+
+/** A run of at least this many values (less one) is copied out of {@link iota} rather than counted out. */
+const LONG_RUN = 48;
+
+let iotaTable: Uint16Array | undefined;
+
+/** The numbers 0 to 65,535 as `u16`s, built when the first long run is expanded and kept. */
+function iota(): Uint16Array {
+  if (iotaTable === undefined) {
+    iotaTable = new Uint16Array(65_536);
+    for (let i = 0; i < 65_536; i++) iotaTable[i] = i;
+  }
+  return iotaTable;
 }
 
 /**
@@ -141,17 +377,18 @@ export function toLows(c: Container, out: Uint16Array): number {
  * Any other kind is expanded into a new array.
  */
 function toWords(c: Container): Uint32Array {
-  if (c.kind === BITSET) return c.words;
+  if (c.kind === BITSET) return words32(c);
   const words = new Uint32Array(WORDS);
+  const u16 = lows16(c);
   if (c.kind === ARRAY) {
-    for (let i = 0; i < c.len; i++) {
-      const v = c.u16[i] as number;
+    for (let i = c.off; i < c.off + c.len; i++) {
+      const v = u16[i] as number;
       words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
     }
   } else {
     for (let r = 0; r < c.len; r++) {
-      const start = c.u16[2 * r] as number;
-      setRange(words, start, start + (c.u16[2 * r + 1] as number));
+      const start = u16[c.off + 2 * r] as number;
+      setRange(words, start, start + (u16[c.off + 2 * r + 1] as number));
     }
   }
   return words;
@@ -162,51 +399,83 @@ function demote(c: Container): Container {
   if (c.kind !== RUN) return c;
   if (c.card > ARRAY_MAX_CARDINALITY) return bitsetContainer(toWords(c), c.card);
   const out = new Uint16Array(c.card);
-  toLows(c, out);
+  writeLows(c, out);
   return arrayContainer(out, c.card);
 }
 
 /** A copy that shares nothing with `c`. */
 export function cloneContainer(c: Container): Container {
-  if (c.kind === ARRAY) return arrayContainer(c.u16.slice(0, c.len), c.card);
-  if (c.kind === BITSET) return bitsetContainer(c.words.slice(), c.card);
-  return runContainer(c.u16.slice(0, 2 * c.len), c.len, c.card);
+  if (c.kind === BITSET) return bitsetContainer(words32(c).slice(), c.card);
+  const copy = lows16(c).slice(c.off, c.off + (c.kind === ARRAY ? c.len : 2 * c.len));
+  return new Container(c.kind, copy, 0, c.len, c.card, false);
 }
 
-/** The index of the first of `u16[0, len)` that is `>= low` (a run container's start is every second one: `stride` 2). */
-function lowerBound(u16: Uint16Array, len: number, low: number, stride: number): number {
+/** The words `c` may write to: its own, or a copy when another holder can see them. */
+function writableWords(c: Container): Uint32Array {
+  return c.shared ? words32(c).slice() : words32(c);
+}
+
+/** The index of the first of the `len` values at `data[off + i * stride]` that is `>= low`. */
+function lowerBound(
+  data: Uint16Array,
+  off: number,
+  len: number,
+  low: number,
+  stride: number,
+): number {
   let lo = 0;
   let hi = len;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    if ((u16[mid * stride] as number) < low) lo = mid + 1;
+    if ((data[off + mid * stride] as number) < low) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** The index in `[from, end)` of the first of `data[off + i]` that is `>= target`, by doubling steps then a binary search; `end` if none. */
+function gallop(data: Uint16Array, off: number, from: number, end: number, target: number): number {
+  let step = 1;
+  let lo = from;
+  let hi = from;
+  while (hi < end && (data[off + hi] as number) < target) {
+    lo = hi + 1;
+    hi += step;
+    step *= 2;
+  }
+  if (hi > end) hi = end;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((data[off + mid] as number) < target) lo = mid + 1;
     else hi = mid;
   }
   return lo;
 }
 
 export function containerHas(c: Container, low: number): boolean {
-  if (c.kind === BITSET) return (((c.words[low >>> 5] as number) >>> (low & 31)) & 1) === 1;
+  if (c.kind === BITSET)
+    return ((((c.data as Uint32Array)[low >>> 5] as number) >>> (low & 31)) & 1) === 1;
+  const u16 = c.data as Uint16Array;
   if (c.kind === ARRAY) {
-    const at = lowerBound(c.u16, c.len, low, 1);
-    return at < c.len && c.u16[at] === low;
+    const at = lowerBound(u16, c.off, c.len, low, 1);
+    return at < c.len && u16[c.off + at] === low;
   }
   // The last run starting at or before `low`.
-  const after = lowerBound(c.u16, c.len, low + 1, 2);
+  const after = lowerBound(u16, c.off, c.len, low + 1, 2);
   if (after === 0) return false;
-  const r = after - 1;
-  return low <= (c.u16[2 * r] as number) + (c.u16[2 * r + 1] as number);
+  const r = c.off + 2 * (after - 1);
+  return low <= (u16[r] as number) + (u16[r + 1] as number);
 }
 
 /**
- * Add `low`; returns the container that now holds it, which is `c` itself unless the kind changed. `c.card` is the
- * new cardinality either way.
+ * Add `low`; returns the container that now holds it, which is `c` itself unless the kind changed or the storage had to
+ * be copied. `c.card` of the result is the new cardinality either way.
  */
 export function containerAdd(c: Container, low: number): Container {
   if (containerHas(c, low)) return c;
   const plain = demote(c);
   if (plain.kind === BITSET) {
-    const words = plain.words;
+    const words = writableWords(plain);
     words[low >>> 5] = (words[low >>> 5] as number) | (1 << (low & 31));
     return bitsetContainer(words, plain.card + 1);
   }
@@ -215,71 +484,88 @@ export function containerAdd(c: Container, low: number): Container {
     words[low >>> 5] = (words[low >>> 5] as number) | (1 << (low & 31));
     return bitsetContainer(words, plain.card + 1);
   }
-  const at = lowerBound(plain.u16, plain.len, low, 1);
-  let u16 = plain.u16;
-  if (u16.length > plain.len) {
+  const old = lows16(plain);
+  const at = lowerBound(old, plain.off, plain.len, low, 1);
+  let u16 = old;
+  if (!plain.shared && plain.off === 0 && old.length > plain.len) {
     u16.copyWithin(at + 1, at, plain.len);
   } else {
     u16 = new Uint16Array(Math.min(ARRAY_MAX_CARDINALITY, Math.max(8, plain.len * 2)));
-    u16.set(plain.u16.subarray(0, at));
-    u16.set(plain.u16.subarray(at, plain.len), at + 1);
+    u16.set(old.subarray(plain.off, plain.off + at));
+    u16.set(old.subarray(plain.off + at, plain.off + plain.len), at + 1);
   }
   u16[at] = low;
   return arrayContainer(u16, plain.card + 1);
 }
 
 /**
- * Remove `low`; returns the container that now holds the rest, `c` itself unless the kind changed, or `null` when
- * nothing is left.
+ * Remove `low`; returns the container that now holds the rest, `c` itself unless the kind changed or the storage had
+ * to be copied, or `null` when nothing is left.
  */
 export function containerRemove(c: Container, low: number): Container | null {
   if (!containerHas(c, low)) return c;
   if (c.card === 1) return null;
   const plain = demote(c);
   if (plain.kind === BITSET) {
-    const words = plain.words;
+    const words = writableWords(plain);
     words[low >>> 5] = (words[low >>> 5] as number) & ~(1 << (low & 31));
-    const card = plain.card - 1;
-    if (card > ARRAY_MAX_CARDINALITY) return bitsetContainer(words, card);
-    const out = new Uint16Array(card);
-    wordsToLows(words, out);
-    return arrayContainer(out, card);
+    return fromWordsCard(words, plain.card - 1);
   }
-  const at = lowerBound(plain.u16, plain.len, low, 1);
-  plain.u16.copyWithin(at, at + 1, plain.len);
-  return arrayContainer(plain.u16, plain.card - 1);
+  const old = lows16(plain);
+  const at = lowerBound(old, plain.off, plain.len, low, 1);
+  if (!plain.shared && plain.off === 0) {
+    old.copyWithin(at, at + 1, plain.len);
+    return arrayContainer(old, plain.card - 1);
+  }
+  const u16 = new Uint16Array(plain.len - 1);
+  u16.set(old.subarray(plain.off, plain.off + at));
+  u16.set(old.subarray(plain.off + at + 1, plain.off + plain.len), at);
+  return arrayContainer(u16, plain.card - 1);
 }
 
 /** The largest remainder in the container. */
 export function containerMax(c: Container): number {
-  if (c.kind === ARRAY) return c.u16[c.len - 1] as number;
-  if (c.kind === RUN) return (c.u16[2 * c.len - 2] as number) + (c.u16[2 * c.len - 1] as number);
+  if (c.kind === ARRAY) return (c.data as Uint16Array)[c.off + c.len - 1] as number;
+  if (c.kind === RUN) {
+    const u16 = c.data as Uint16Array;
+    return (u16[c.off + 2 * c.len - 2] as number) + (u16[c.off + 2 * c.len - 1] as number);
+  }
+  const words = words32(c);
   for (let i = WORDS - 1; i >= 0; i--) {
-    const w = c.words[i] as number;
+    const w = words[i] as number;
     if (w !== 0) return i * 32 + 31 - Math.clz32(w);
   }
   throw new RangeError('a bitset container holds no bits');
 }
 
-/** The number of maximal runs of consecutive values the container's values form. */
-function runCount(c: Container): number {
+/**
+ * The number of maximal runs of consecutive values the container's values form, or any count at or above `stop` when
+ * it has that many (the caller only needs to know whether runs are few enough to be worth storing).
+ */
+function runCount(c: Container, stop: number): number {
   if (c.kind === RUN) return c.len;
+  let runs = 0;
   if (c.kind === ARRAY) {
-    let runs = 0;
+    const u16 = lows16(c);
     let previous = -2;
-    for (let i = 0; i < c.len; i++) {
-      const v = c.u16[i] as number;
-      if (v !== previous + 1) runs++;
+    for (let i = c.off; i < c.off + c.len; i++) {
+      const v = u16[i] as number;
+      if (v !== previous + 1 && ++runs >= stop) return runs;
       previous = v;
     }
     return runs;
   }
   // A run starts at each set bit whose lower neighbour (the previous word's top bit, for bit 0) is clear.
-  let runs = 0;
+  const words = words32(c);
   let carry = 0;
   for (let i = 0; i < WORDS; i++) {
-    const w = c.words[i] as number;
-    runs += popcount32((w & ~((w << 1) | carry)) >>> 0);
+    const w = words[i] as number;
+    const starts = w & ~((w << 1) | carry);
+    // Words of all ones or none, most of a run-shaped set's, have no start: no count to take.
+    if (starts !== 0) {
+      runs += popcount32(starts >>> 0);
+      if (runs >= stop) return runs;
+    }
     carry = w >>> 31;
   }
   return runs;
@@ -290,39 +576,47 @@ function toRun(c: Container, runs: number): Container {
   const pairs = new Uint16Array(2 * runs);
   let r = 0;
   if (c.kind === ARRAY) {
-    let i = 0;
-    while (i < c.len) {
+    const u16 = lows16(c);
+    const end = c.off + c.len;
+    let i = c.off;
+    while (i < end) {
       let j = i;
-      while (j + 1 < c.len && (c.u16[j + 1] as number) === (c.u16[j] as number) + 1) j++;
-      pairs[2 * r] = c.u16[i] as number;
+      while (j + 1 < end && (u16[j + 1] as number) === (u16[j] as number) + 1) j++;
+      pairs[2 * r] = u16[i] as number;
       pairs[2 * r + 1] = j - i;
       r++;
       i = j + 1;
     }
     return runContainer(pairs, runs, c.card);
   }
-  let start = -1;
-  const close = (end: number): void => {
-    pairs[2 * r] = start;
-    pairs[2 * r + 1] = end - start;
-    r++;
-    start = -1;
-  };
+  // A start is a set bit with a clear lower neighbour and an end a set bit with a clear upper one; read in order, the
+  // two alternate across words, and a run of one value is both at once.
+  const words = words32(c);
+  let start = 0;
+  let carry = 0;
   for (let i = 0; i < WORDS; i++) {
-    const w = c.words[i] as number;
-    if (w === 0) {
-      if (start >= 0) close(i * 32 - 1);
-    } else if (w === 0xffff_ffff) {
-      if (start < 0) start = i * 32;
-    } else {
-      for (let b = 0; b < 32; b++) {
-        const set = ((w >>> b) & 1) === 1;
-        if (set && start < 0) start = i * 32 + b;
-        else if (!set && start >= 0) close(i * 32 + b - 1);
+    const w = words[i] as number;
+    const next = i + 1 < WORDS ? (words[i + 1] as number) : 0;
+    let starts = (w & ~((w << 1) | carry)) >>> 0;
+    let ends = (w & ~((w >>> 1) | (next << 31))) >>> 0;
+    carry = w >>> 31;
+    let both = starts | ends;
+    while (both !== 0) {
+      const bit = both & -both;
+      both ^= bit;
+      const at = i * 32 + 31 - Math.clz32(bit);
+      if ((starts & bit) !== 0) {
+        starts ^= bit;
+        start = at;
+      }
+      if ((ends & bit) !== 0) {
+        ends ^= bit;
+        pairs[2 * r] = start;
+        pairs[2 * r + 1] = at - start;
+        r++;
       }
     }
   }
-  if (start >= 0) close(65_535);
   return runContainer(pairs, runs, c.card);
 }
 
@@ -332,36 +626,400 @@ function toRun(c: Container, runs: number): Container {
  * whatever kind the container had. It depends on the values alone, which is what makes stored bytes a function of the set.
  */
 export function optimize(c: Container): Container {
-  const runs = runCount(c);
   const plain = c.card <= ARRAY_MAX_CARDINALITY ? 2 * c.card : BITSET_BYTES;
+  // Smaller than the plain body needs `2 + 4 * runs < plain`, so a count at `stop` already settles it.
+  const runs = runCount(c, (plain - 2) / 4);
   if (2 + 4 * runs < plain) return c.kind === RUN ? c : toRun(c, runs);
   return demote(c);
 }
 
-/** `a` and `b` combined bit by bit; `null` when nothing is left. The result shares nothing with either. */
-function viaWords(
-  a: Container,
-  b: Container,
-  op: (x: number, y: number) => number,
-): Container | null {
-  const wa = toWords(a);
-  const wb = toWords(b);
+// ---------------------------------------------------------------------------------------------------------------
+// Combines
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Whether an array of `longer` values is at least {@link GALLOP_SKEW} times as long as one of `shorter`. */
+function skewed(shorter: number, longer: number): boolean {
+  return longer >= GALLOP_SKEW * shorter;
+}
+
+/** Values both arrays hold. */
+function andArrays(a: Container, b: Container): Container | null {
+  const small = a.len <= b.len ? a : b;
+  const big = small === a ? b : a;
+  const s = lows16(small);
+  const l = lows16(big);
+  const out = values16(small.len);
+  let n = 0;
+  if (skewed(small.len, big.len)) {
+    let at = 0;
+    const end = big.off + big.len;
+    for (let i = small.off; i < small.off + small.len; i++) {
+      const v = s[i] as number;
+      at = gallop(l, 0, Math.max(at, big.off), end, v);
+      if (at === end) break;
+      if (l[at] === v) out[n++] = v;
+    }
+    return arrayOfScratch(out, n);
+  }
+  let i = small.off;
+  let j = big.off;
+  const ie = small.off + small.len;
+  const je = big.off + big.len;
+  while (i < ie && j < je) {
+    const x = s[i] as number;
+    const y = l[j] as number;
+    // No branch on the comparison: it is unpredictable on random data, and a misprediction costs more than the
+    // three adds. The slot is written whether or not the values match; only a match moves `n` past it.
+    out[n] = x;
+    n += x === y ? 1 : 0;
+    i += x <= y ? 1 : 0;
+    j += x >= y ? 1 : 0;
+  }
+  return arrayOfScratch(out, n);
+}
+
+/** The values of array `a` whose membership in `b` (a bitset) is `keep`. */
+function filterByBits(a: Container, b: Container, keep: boolean): Container | null {
+  const u16 = lows16(a);
+  const words = words32(b);
+  const out = values16(a.len);
+  let n = 0;
+  for (let i = a.off; i < a.off + a.len; i++) {
+    const v = u16[i] as number;
+    if ((((words[v >>> 5] as number) >>> (v & 31)) & 1) === (keep ? 1 : 0)) out[n++] = v;
+  }
+  return arrayOfScratch(out, n);
+}
+
+/** The values of array `a` whose membership in the runs of `b` is `keep`. */
+function filterByRuns(a: Container, b: Container, keep: boolean): Container | null {
+  const u16 = lows16(a);
+  const pairs = lows16(b);
+  const out = values16(a.len);
+  let n = 0;
+  let r = 0;
+  for (let i = a.off; i < a.off + a.len; i++) {
+    const v = u16[i] as number;
+    // The first run that ends at or after `v`.
+    while (
+      r < b.len &&
+      (pairs[b.off + 2 * r] as number) + (pairs[b.off + 2 * r + 1] as number) < v
+    ) {
+      r++;
+    }
+    const inside = r < b.len && (pairs[b.off + 2 * r] as number) <= v;
+    if (inside === keep) out[n++] = v;
+  }
+  return arrayOfScratch(out, n);
+}
+
+/** The values of `a` that `b` lacks, both arrays. */
+function andNotArrays(a: Container, b: Container): Container | null {
+  const x = lows16(a);
+  const y = lows16(b);
+  const out = values16(a.len);
+  let n = 0;
+  const je = b.off + b.len;
+  if (skewed(a.len, b.len)) {
+    let at = b.off;
+    for (let i = a.off; i < a.off + a.len; i++) {
+      const v = x[i] as number;
+      at = gallop(y, 0, at, je, v);
+      if (at === je || y[at] !== v) out[n++] = v;
+    }
+    return arrayOfScratch(out, n);
+  }
+  let i = a.off;
+  let j = b.off;
+  const ie = a.off + a.len;
+  while (i < ie && j < je) {
+    const p = x[i] as number;
+    const q = y[j] as number;
+    out[n] = p;
+    n += p < q ? 1 : 0;
+    i += p <= q ? 1 : 0;
+    j += p >= q ? 1 : 0;
+  }
+  while (i < ie) out[n++] = x[i++] as number;
+  return arrayOfScratch(out, n);
+}
+
+/** The values either array holds. */
+function orArrays(a: Container, b: Container): Container {
+  const x = lows16(a);
+  const y = lows16(b);
+  const ie = a.off + a.len;
+  const je = b.off + b.len;
+  if (a.len + b.len > ARRAY_MAX_CARDINALITY) {
+    const words = new Uint32Array(WORDS);
+    for (let i = a.off; i < ie; i++) {
+      const v = x[i] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    for (let j = b.off; j < je; j++) {
+      const v = y[j] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    return fromWordsCard(words, popcountWords(words)) as Container;
+  }
+  const out = values16(a.len + b.len);
+  let n = 0;
+  let i = a.off;
+  let j = b.off;
+  while (i < ie && j < je) {
+    const p = x[i] as number;
+    const q = y[j] as number;
+    out[n++] = p < q ? p : q;
+    i += p <= q ? 1 : 0;
+    j += p >= q ? 1 : 0;
+  }
+  while (i < ie) out[n++] = x[i++] as number;
+  while (j < je) out[n++] = y[j++] as number;
+  return arrayOfScratch(out, n) as Container;
+}
+
+/** `dest` (a bitset) or `other`, into words: `dest`'s own words when `inPlace`, else a copy. */
+function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Container {
+  const words = inPlace ? words32(dest) : words32(dest).slice();
+  if (other.kind === ARRAY) {
+    const u16 = lows16(other);
+    let card = dest.card;
+    for (let i = other.off; i < other.off + other.len; i++) {
+      const v = u16[i] as number;
+      const w = words[v >>> 5] as number;
+      const bit = 1 << (v & 31);
+      if ((w & bit) === 0) {
+        words[v >>> 5] = w | bit;
+        card++;
+      }
+    }
+    return bitsetContainer(words, card);
+  }
+  if (other.kind === BITSET) {
+    const o = words32(other);
+    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
+  } else {
+    const pairs = lows16(other);
+    for (let r = 0; r < other.len; r++) {
+      const start = pairs[other.off + 2 * r] as number;
+      setRange(words, start, start + (pairs[other.off + 2 * r + 1] as number));
+    }
+  }
+  return bitsetContainer(words, popcountWords(words));
+}
+
+/** A result built from the first `runs` pairs of `pairs`, whose values number `card`: an array up to 4,096 values, else a bitset. */
+function fromRunPairs(pairs: Uint16Array, runs: number, card: number): Container | null {
+  if (card === 0) return null;
+  if (card <= ARRAY_MAX_CARDINALITY) {
+    const out = new Uint16Array(card);
+    let k = 0;
+    for (let r = 0; r < runs; r++) {
+      const start = pairs[2 * r] as number;
+      const end = start + (pairs[2 * r + 1] as number);
+      for (let v = start; v <= end; v++) out[k++] = v;
+    }
+    return arrayContainer(out, card);
+  }
+  const words = new Uint32Array(WORDS);
+  for (let r = 0; r < runs; r++) {
+    const start = pairs[2 * r] as number;
+    setRange(words, start, start + (pairs[2 * r + 1] as number));
+  }
+  return bitsetContainer(words, card);
+}
+
+/** The values both run containers hold. */
+function andRuns(a: Container, b: Container): Container | null {
+  const x = lows16(a);
+  const y = lows16(b);
+  const out = pairs16(2 * (a.len + b.len));
+  let runs = 0;
+  let card = 0;
+  let i = 0;
+  let j = 0;
+  while (i < a.len && j < b.len) {
+    const as = x[a.off + 2 * i] as number;
+    const ae = as + (x[a.off + 2 * i + 1] as number);
+    const bs = y[b.off + 2 * j] as number;
+    const be = bs + (y[b.off + 2 * j + 1] as number);
+    const lo = as > bs ? as : bs;
+    const hi = ae < be ? ae : be;
+    if (lo <= hi) {
+      out[2 * runs] = lo;
+      out[2 * runs + 1] = hi - lo;
+      runs++;
+      card += hi - lo + 1;
+    }
+    if (ae < be) i++;
+    else j++;
+  }
+  return fromRunPairs(out, runs, card);
+}
+
+/** The values either run container holds. */
+function orRuns(a: Container, b: Container): Container {
+  const x = lows16(a);
+  const y = lows16(b);
+  const out = pairs16(2 * (a.len + b.len));
+  let runs = 0;
+  let card = 0;
+  let i = 0;
+  let j = 0;
+  let start = -1;
+  let end = -1;
+  const flush = (): void => {
+    if (start < 0) return;
+    out[2 * runs] = start;
+    out[2 * runs + 1] = end - start;
+    runs++;
+    card += end - start + 1;
+  };
+  while (i < a.len || j < b.len) {
+    let s: number;
+    let e: number;
+    if (j >= b.len || (i < a.len && (x[a.off + 2 * i] as number) <= (y[b.off + 2 * j] as number))) {
+      s = x[a.off + 2 * i] as number;
+      e = s + (x[a.off + 2 * i + 1] as number);
+      i++;
+    } else {
+      s = y[b.off + 2 * j] as number;
+      e = s + (y[b.off + 2 * j + 1] as number);
+      j++;
+    }
+    if (start >= 0 && s <= end + 1) {
+      if (e > end) end = e;
+    } else {
+      flush();
+      start = s;
+      end = e;
+    }
+  }
+  flush();
+  return fromRunPairs(out, runs, card) as Container;
+}
+
+/** The values of `a` that `b` lacks, both run containers. */
+function andNotRuns(a: Container, b: Container): Container | null {
+  const x = lows16(a);
+  const y = lows16(b);
+  const out = pairs16(2 * (a.len + b.len + 1));
+  let runs = 0;
+  let card = 0;
+  let j = 0;
+  for (let i = 0; i < a.len; i++) {
+    let s = x[a.off + 2 * i] as number;
+    const e = s + (x[a.off + 2 * i + 1] as number);
+    while (j < b.len && (y[b.off + 2 * j] as number) + (y[b.off + 2 * j + 1] as number) < s) j++;
+    let k = j;
+    while (s <= e) {
+      if (k >= b.len || (y[b.off + 2 * k] as number) > e) {
+        out[2 * runs] = s;
+        out[2 * runs + 1] = e - s;
+        runs++;
+        card += e - s + 1;
+        break;
+      }
+      const bs = y[b.off + 2 * k] as number;
+      const be = bs + (y[b.off + 2 * k + 1] as number);
+      if (bs > s) {
+        out[2 * runs] = s;
+        out[2 * runs + 1] = bs - 1 - s;
+        runs++;
+        card += bs - s;
+      }
+      s = be + 1;
+      k++;
+    }
+  }
+  return fromRunPairs(out, runs, card);
+}
+
+/** The values of bitset `a` inside the runs of `b`, as words. */
+function bitsetInRuns(a: Container, b: Container): Container | null {
+  const words = words32(a);
+  const pairs = lows16(b);
   const out = new Uint32Array(WORDS);
-  for (let i = 0; i < WORDS; i++) out[i] = op(wa[i] as number, wb[i] as number);
-  return fromWords(out);
+  for (let r = 0; r < b.len; r++) {
+    const start = pairs[b.off + 2 * r] as number;
+    const end = start + (pairs[b.off + 2 * r + 1] as number);
+    const first = start >>> 5;
+    const last = end >>> 5;
+    const head = (0xffff_ffff << (start & 31)) >>> 0;
+    const tail = 0xffff_ffff >>> (31 - (end & 31));
+    if (first === last) {
+      out[first] = (out[first] as number) | ((words[first] as number) & head & tail);
+    } else {
+      out[first] = (out[first] as number) | ((words[first] as number) & head);
+      for (let i = first + 1; i < last; i++) out[i] = words[i] as number;
+      out[last] = (out[last] as number) | ((words[last] as number) & tail);
+    }
+  }
+  return fromWordsCard(out, popcountWords(out));
 }
 
-/** `a` and `b` together; neither is changed. */
-export function containerOr(a: Container, b: Container): Container {
-  return viaWords(a, b, (x, y) => x | y) as Container;
+/** The values both hold, or `null` when there are none. Neither operand is changed unless `inPlace` and `a` is a bitset (see the module comment). */
+export function containerAnd(a: Container, b: Container, inPlace = false): Container | null {
+  if (a.kind === BITSET && b.kind === BITSET) {
+    const x = words32(a);
+    const y = words32(b);
+    const out = inPlace ? x : new Uint32Array(WORDS);
+    for (let i = 0; i < WORDS; i++) out[i] = (x[i] as number) & (y[i] as number);
+    return fromWordsCard(out, popcountWords(out));
+  }
+  // Commutative: put the lower kind first (array, bitset, run).
+  if (a.kind > b.kind) return containerAnd(b, a);
+  if (a.kind === ARRAY) {
+    if (b.kind === ARRAY) return andArrays(a, b);
+    return b.kind === BITSET ? filterByBits(a, b, true) : filterByRuns(a, b, true);
+  }
+  return b.kind === RUN && a.kind === RUN ? andRuns(a, b) : bitsetInRuns(a, b);
 }
 
-/** The values both hold, or `null` when there are none. */
-export function containerAnd(a: Container, b: Container): Container | null {
-  return viaWords(a, b, (x, y) => x & y);
+/** The values either holds. */
+export function containerOr(a: Container, b: Container, inPlace = false): Container {
+  if (a.kind === BITSET) return orIntoBitset(a, b, inPlace);
+  if (b.kind === BITSET) return orIntoBitset(b, a, false);
+  if (a.kind === ARRAY && b.kind === ARRAY) return orArrays(a, b);
+  if (a.kind === RUN && b.kind === RUN) return orRuns(a, b);
+  const words = toWords(a.kind === RUN ? a : b);
+  return orIntoBitsetWords(words, a.kind === RUN ? b : a);
+}
+
+/** An array's values added to `words` (owned by the caller), as a container. */
+function orIntoBitsetWords(words: Uint32Array, array: Container): Container {
+  const u16 = lows16(array);
+  for (let i = array.off; i < array.off + array.len; i++) {
+    const v = u16[i] as number;
+    words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+  }
+  return fromWordsCard(words, popcountWords(words)) as Container;
 }
 
 /** The values of `a` that `b` lacks, or `null` when there are none. */
-export function containerAndNot(a: Container, b: Container): Container | null {
-  return viaWords(a, b, (x, y) => x & ~y);
+export function containerAndNot(a: Container, b: Container, inPlace = false): Container | null {
+  if (a.kind === ARRAY) {
+    if (b.kind === ARRAY) return andNotArrays(a, b);
+    return b.kind === BITSET ? filterByBits(a, b, false) : filterByRuns(a, b, false);
+  }
+  if (a.kind === RUN && b.kind === RUN) return andNotRuns(a, b);
+  // A bitset, or a run container expanded to words (which it owns).
+  const words = a.kind === BITSET ? (inPlace ? words32(a) : words32(a).slice()) : toWords(a);
+  if (b.kind === ARRAY) {
+    const u16 = lows16(b);
+    for (let i = b.off; i < b.off + b.len; i++) {
+      const v = u16[i] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) & ~(1 << (v & 31));
+    }
+  } else if (b.kind === BITSET) {
+    const y = words32(b);
+    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) & ~(y[i] as number);
+  } else {
+    const pairs = lows16(b);
+    for (let r = 0; r < b.len; r++) {
+      const start = pairs[b.off + 2 * r] as number;
+      clearRange(words, start, start + (pairs[b.off + 2 * r + 1] as number));
+    }
+  }
+  return fromWordsCard(words, popcountWords(words));
 }

@@ -115,6 +115,9 @@ jobs:
       # "How fast a bitmap loads" figures are not what bench/load-input-results.json says, or, while nothing is
       # recorded, if the guide quotes any. It measures nothing; re-measure by hand with `pnpm bench:load-input`.
       - run: pnpm bench:load-input:check
+      # bench/ts-codec.cjs times the TypeScript codec against the native one. This times nothing: it runs every operation
+      # once on both and fails if their answers differ, so the instrument cannot rot unseen.
+      - run: pnpm bench:ts-codec:check
       # The built package must import cleanly under BOTH module systems (guards the roaring CJS→ESM interop).
       - run: node scripts/smoke.cjs
       # Both secret scanners, HERE and not only in the release workflow.

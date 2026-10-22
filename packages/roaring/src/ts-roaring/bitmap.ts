@@ -26,14 +26,21 @@
  *   - a combine builds its result into fresh containers, shares nothing with its operand and never changes it.
  *
  * Writing an id that is not an integer from 0 to 4,294,967,295 throws `ValidationError`; reading one (`has`) says no
- * and removing one does nothing. This is the simple form: a combine goes through bitset words, and speed work is
- * layered on after the contract holds.
+ * and removing one does nothing. A combine works on each pair of containers by their kinds (`containers.ts` has the
+ * table), `addMany` and `removeMany` group sorted ids by key and touch each container once, and iteration is a class
+ * that walks the containers where they are (`iterator.ts`).
+ *
+ * `encodeChunks` takes a snapshot of the containers and marks each shared, so the bitmap may change while the chunks
+ * are read: a change copies a shared container first, and the chunks stay what they were when it was called. It
+ * optimizes and serializes one container per step, so a writer can yield between steps; it leaves the bitmap as it was.
  *
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */
 import type { CodecBitmap, CodecInterface, EncodedChunk } from '@cloudbitmaps/core';
 import { IntegrityError, ValidationError } from '@cloudbitmaps/core';
 import {
+  Container,
+  appendIds,
   arrayContainer,
   cloneContainer,
   containerAdd,
@@ -43,11 +50,10 @@ import {
   containerMax,
   containerOr,
   containerRemove,
-  fromSortedLows,
+  fromSortedIds,
   optimize,
-  toLows,
-  type Container,
 } from './containers';
+import { BitmapIterator } from './iterator';
 import { decodeContainers, serializeContainers, trailingBytes } from './wire';
 
 const MAX_ID = 0xffff_ffff;
@@ -56,23 +62,72 @@ function isId(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= MAX_ID;
 }
 
+function badId(value: unknown): ValidationError {
+  return new ValidationError(`${String(value)} is not an integer from 0 to ${MAX_ID}`);
+}
+
 function checkedId(value: number): number {
-  if (!isId(value))
-    throw new ValidationError(`${String(value)} is not an integer from 0 to ${MAX_ID}`);
+  if (!isId(value)) throw badId(value);
   return value;
 }
 
-/** The ids of `values`, checked, as one `Uint32Array`. */
+/**
+ * The ids of `values`, checked, as a `Uint32Array`: `values` itself when it is one (every element of it is an id), else
+ * a new one the caller may sort. An array is read once; another iterable is read once into a buffer that doubles, so no
+ * intermediate array of the ids is built.
+ */
 function collect(values: Iterable<number>): Uint32Array {
-  const list = Array.isArray(values) ? (values as number[]) : Array.from(values);
-  const out = new Uint32Array(list.length);
-  for (let i = 0; i < list.length; i++) out[i] = checkedId(list[i] as number);
-  return out;
+  if (values instanceof Uint32Array) return values;
+  if (Array.isArray(values)) {
+    const list = values as number[];
+    const out = new Uint32Array(list.length);
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i] as number;
+      // `v >>> 0 === v` is an integer from 0 to 2^32 - 1 and nothing else (NaN, fractions, strings and null fail it).
+      if (v >>> 0 !== v) throw badId(v);
+      out[i] = v;
+    }
+    return out;
+  }
+  let out = new Uint32Array(1_024);
+  let n = 0;
+  for (const v of values) {
+    if (n === out.length) {
+      const grown = new Uint32Array(2 * n);
+      grown.set(out);
+      out = grown;
+    }
+    out[n++] = checkedId(v);
+  }
+  return out.subarray(0, n);
 }
 
-/** The index of the first of the ascending `keys` that is `>= key`. */
-function lowerBound(keys: readonly number[], key: number): number {
-  let lo = 0;
+/** The ids of `values` that are ids, in a new `Uint32Array`: what a removal acts on, which ignores the rest. */
+function collectLenient(values: Iterable<number>): Uint32Array {
+  const list = Array.isArray(values) ? (values as number[]) : Array.from(values);
+  const out = new Uint32Array(list.length);
+  let n = 0;
+  for (let i = 0; i < list.length; i++) {
+    const v = list[i] as number;
+    if (v >>> 0 === v) out[n++] = v;
+  }
+  return out.subarray(0, n);
+}
+
+/**
+ * `ids` ascending: itself when it already is, else sorted, in place when `owned` (a new array that is the caller's own)
+ * and in a copy when it is the caller's.
+ */
+function sortedIds(ids: Uint32Array, owned: boolean): Uint32Array {
+  for (let i = 1; i < ids.length; i++) {
+    if ((ids[i - 1] as number) > (ids[i] as number)) return (owned ? ids : ids.slice()).sort();
+  }
+  return ids;
+}
+
+/** The index of the first of the ascending `keys`, from index `from`, that is `>= key`. */
+function lowerBound(keys: readonly number[], key: number, from = 0): number {
+  let lo = from;
   let hi = keys.length;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
@@ -80,6 +135,41 @@ function lowerBound(keys: readonly number[], key: number): number {
     else hi = mid;
   }
   return lo;
+}
+
+/** Like {@link lowerBound}, but by doubling steps from `from`, so it costs the log of the distance, not of the length. */
+function gallopKeys(keys: readonly number[], key: number, from: number): number {
+  let step = 1;
+  let lo = from;
+  let hi = from;
+  while (hi < keys.length && (keys[hi] as number) < key) {
+    lo = hi + 1;
+    hi += step;
+    step *= 2;
+  }
+  return lowerBoundIn(keys, key, lo, Math.min(hi, keys.length));
+}
+
+function lowerBoundIn(keys: readonly number[], key: number, from: number, to: number): number {
+  let lo = from;
+  let hi = to;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((keys[mid] as number) < key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+const OR = 0;
+const AND = 1;
+const AND_NOT = 2;
+type Combine = typeof OR | typeof AND | typeof AND_NOT;
+
+function combineContainers(op: Combine, a: Container, b: Container): Container | null {
+  if (op === OR) return containerOr(a, b, !a.shared);
+  if (op === AND) return containerAnd(a, b, !a.shared);
+  return containerAndNot(a, b, !a.shared);
 }
 
 class TsBitmap implements CodecBitmap {
@@ -122,11 +212,9 @@ class TsBitmap implements CodecBitmap {
     if (options.whole === true && end !== bytes.byteLength) {
       throw trailingBytes(bytes.byteLength, end);
     }
-    return new TsBitmap(
-      keys,
-      conts,
-      conts.reduce((sum, c) => sum + c.card, 0),
-    );
+    let size = 0;
+    for (let i = 0; i < conts.length; i++) size += (conts[i] as Container).card;
+    return new TsBitmap(keys, conts, size);
   }
 
   serialize(): Uint8Array {
@@ -135,21 +223,33 @@ class TsBitmap implements CodecBitmap {
 
   /** Re-encode each container canonically; membership is untouched. */
   optimize(): void {
-    this.#conts = this.#conts.map(optimize);
+    const conts = this.#conts;
+    for (let i = 0; i < conts.length; i++) conts[i] = optimize(conts[i] as Container);
   }
 
   /**
-   * The set as storage chunks, optimized first: each payload is the portable bytes of a one-container bitmap holding
-   * that chunk's low 16 bits. Every payload is written before this returns, so a change to the bitmap while the
-   * chunks are read cannot alter bytes already promised.
+   * The set as storage chunks: each payload is the portable bytes of a one-container bitmap holding that chunk's low 16
+   * bits, optimized the way {@link optimize} does. Nothing is built until a chunk is asked for, so a writer that yields
+   * between chunks runs this in slices. The call snapshots the containers and marks each shared, so a change to the
+   * bitmap while the chunks are read copies a container instead of altering what the chunks will say. The bitmap's own
+   * containers are not optimized by it.
    */
   encodeChunks(): Iterable<EncodedChunk> {
-    this.optimize();
-    return this.#conts.map((c, i) => ({
-      chunkKey: this.#keys[i] as number,
-      payload: serializeContainers([0], [c]),
-      cardinality: c.card,
-    }));
+    const keys = this.#keys.slice();
+    const conts = this.#conts.slice();
+    for (let i = 0; i < conts.length; i++) (conts[i] as Container).shared = true;
+    return {
+      *[Symbol.iterator](): Iterator<EncodedChunk> {
+        for (let i = 0; i < conts.length; i++) {
+          const c = optimize(conts[i] as Container);
+          yield {
+            chunkKey: keys[i] as number,
+            payload: serializeContainers([0], [c]),
+            cardinality: c.card,
+          };
+        }
+      },
+    };
   }
 
   maximum(): number | undefined {
@@ -175,22 +275,32 @@ class TsBitmap implements CodecBitmap {
     this.#size += after.card - before.card;
   }
 
+  /**
+   * Add the ids. They are grouped by key in ascending order, so each container is touched once, a key already held is
+   * merged where it is, and the new keys are put in with one pass over the key list however many there are.
+   */
   addMany(values: Iterable<number>): void {
-    const ids = collect(values).sort();
+    const ids = sortedIds(collect(values), !(values instanceof Uint32Array));
+    const fresh: Array<{ key: number; group: Container }> = [];
+    let at = 0;
     for (let i = 0; i < ids.length;) {
       const key = (ids[i] as number) >>> 16;
-      let end = i;
+      let end = i + 1;
       while (end < ids.length && (ids[end] as number) >>> 16 === key) end++;
-      const lows = new Uint16Array(end - i);
-      let count = 0;
-      let previous = -1;
-      for (; i < end; i++) {
-        const low = (ids[i] as number) & 0xffff;
-        if (low !== previous) lows[count++] = low;
-        previous = low;
+      const group = fromSortedIds(ids, i, end);
+      i = end;
+      at = gallopKeys(this.#keys, key, at);
+      if (this.#keys[at] === key) {
+        const before = this.#conts[at] as Container;
+        const after = containerOr(before, group, !before.shared);
+        this.#conts[at] = after;
+        this.#size += after.card - before.card;
+      } else {
+        fresh.push({ key, group });
+        this.#size += group.card;
       }
-      this.#merge(key, fromSortedLows(lows, count));
     }
+    if (fresh.length > 0) this.#insertAll(fresh);
   }
 
   remove(value: number): void {
@@ -210,8 +320,33 @@ class TsBitmap implements CodecBitmap {
     this.#size += after.card - before.card;
   }
 
+  /** Remove the ids (anything that is not an id is ignored), grouped by key; the keys left empty go in one pass. */
   removeMany(values: Iterable<number>): void {
-    for (const value of values) this.remove(value);
+    const ids = sortedIds(collectLenient(values), true);
+    const keys = this.#keys;
+    const conts = this.#conts;
+    let at = 0;
+    let emptied = 0;
+    for (let i = 0; i < ids.length;) {
+      const key = (ids[i] as number) >>> 16;
+      let end = i + 1;
+      while (end < ids.length && (ids[end] as number) >>> 16 === key) end++;
+      const from = i;
+      i = end;
+      at = gallopKeys(keys, key, at);
+      if (keys[at] !== key) continue;
+      const before = conts[at] as Container;
+      if (before.card === 0) continue;
+      const after = containerAndNot(before, fromSortedIds(ids, from, end), !before.shared);
+      this.#size -= before.card - (after === null ? 0 : after.card);
+      if (after === null) {
+        conts[at] = EMPTIED;
+        emptied++;
+      } else {
+        conts[at] = after;
+      }
+    }
+    if (emptied > 0) this.#dropEmptied();
   }
 
   has(value: number): boolean {
@@ -230,31 +365,25 @@ class TsBitmap implements CodecBitmap {
   }
 
   clone(): TsBitmap {
-    return new TsBitmap(this.#keys.slice(), this.#conts.map(cloneContainer), this.#size);
+    const conts = new Array<Container>(this.#conts.length);
+    for (let i = 0; i < conts.length; i++) conts[i] = cloneContainer(this.#conts[i] as Container);
+    return new TsBitmap(this.#keys.slice(), conts, this.#size);
   }
 
   orInPlace(other: CodecBitmap): void {
-    const that = TsBitmap.#of(other);
-    this.#combine(that, containerOr, true, true, (c) => cloneContainer(c));
+    this.#combine(TsBitmap.#of(other), OR);
   }
 
   andInPlace(other: CodecBitmap): void {
-    const that = TsBitmap.#of(other);
-    this.#combine(that, containerAnd, false, false, () => null);
+    this.#combine(TsBitmap.#of(other), AND);
   }
 
   andNotInPlace(other: CodecBitmap): void {
-    const that = TsBitmap.#of(other);
-    this.#combine(that, containerAndNot, true, false, () => null);
+    this.#combine(TsBitmap.#of(other), AND_NOT);
   }
 
-  *[Symbol.iterator](): IterableIterator<number> {
-    const scratch = new Uint16Array(65_536);
-    for (let i = 0; i < this.#conts.length; i++) {
-      const base = (this.#keys[i] as number) * 65_536;
-      const n = toLows(this.#conts[i] as Container, scratch);
-      for (let k = 0; k < n; k++) yield base + (scratch[k] as number);
-    }
+  [Symbol.iterator](): IterableIterator<number> {
+    return new BitmapIterator(this.#keys, this.#conts);
   }
 
   toArray(): number[] {
@@ -264,12 +393,9 @@ class TsBitmap implements CodecBitmap {
   /** The ids as a new ascending `Uint32Array`. */
   toUint32Array(): Uint32Array {
     const out = new Uint32Array(this.#size);
-    const scratch = new Uint16Array(65_536);
     let at = 0;
     for (let i = 0; i < this.#conts.length; i++) {
-      const base = (this.#keys[i] as number) * 65_536;
-      const n = toLows(this.#conts[i] as Container, scratch);
-      for (let k = 0; k < n; k++) out[at++] = base + (scratch[k] as number);
+      at = appendIds(this.#conts[i] as Container, out, at, (this.#keys[i] as number) * 65_536);
     }
     return out;
   }
@@ -291,63 +417,120 @@ class TsBitmap implements CodecBitmap {
     }
   }
 
-  /** Union `group` (the values of one key, owned by the caller) into the container under `key`. */
-  #merge(key: number, group: Container): void {
-    const at = lowerBound(this.#keys, key);
-    if (this.#keys[at] !== key) {
-      this.#insert(at, key, group);
-      this.#size += group.card;
+  /** Put the new keys, ascending and none held, in: after the last key by pushing, else in one merge pass. */
+  #insertAll(fresh: ReadonlyArray<{ key: number; group: Container }>): void {
+    const keys = this.#keys;
+    const conts = this.#conts;
+    if (
+      keys.length === 0 ||
+      (keys[keys.length - 1] as number) < (fresh[0] as { key: number }).key
+    ) {
+      for (const { key, group } of fresh) {
+        keys.push(key);
+        conts.push(group);
+      }
       return;
     }
-    const before = this.#conts[at] as Container;
-    const after = containerOr(before, group);
-    this.#conts[at] = after;
-    this.#size += after.card - before.card;
+    const outKeys: number[] = [];
+    const outConts: Container[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < keys.length || j < fresh.length) {
+      if (
+        j === fresh.length ||
+        (i < keys.length && (keys[i] as number) < (fresh[j] as { key: number }).key)
+      ) {
+        outKeys.push(keys[i] as number);
+        outConts.push(conts[i++] as Container);
+      } else {
+        const next = fresh[j++] as { key: number; group: Container };
+        outKeys.push(next.key);
+        outConts.push(next.group);
+      }
+    }
+    this.#keys = outKeys;
+    this.#conts = outConts;
+  }
+
+  /** Remove the keys whose container was emptied by {@link removeMany}, in one pass. */
+  #dropEmptied(): void {
+    let kept = 0;
+    for (let i = 0; i < this.#conts.length; i++) {
+      if (this.#conts[i] === EMPTIED) continue;
+      this.#keys[kept] = this.#keys[i] as number;
+      this.#conts[kept++] = this.#conts[i] as Container;
+    }
+    this.#keys.length = kept;
+    this.#conts.length = kept;
   }
 
   /**
-   * Walk both key lists and rebuild this one: where both hold a key, `both` of the two containers; where only this
-   * does, its container if `keepOurs`; where only `that` does, `theirs` of its container if `keepTheirs`. A `null`
-   * drops the key.
+   * Walk both key lists and rebuild this one: where both hold a key, the combine of the two containers; where only this
+   * does, its container, unless the operation is an intersection; where only `that` does, a copy of its container for a
+   * union and nothing otherwise. A combine that leaves no value drops the key. An intersection jumps over a stretch of
+   * keys the other side lacks by doubling steps, so a few keys against many cost the few.
    */
-  #combine(
-    that: TsBitmap,
-    both: (a: Container, b: Container) => Container | null,
-    keepOurs: boolean,
-    keepTheirs: boolean,
-    theirs: (c: Container) => Container | null,
-  ): void {
-    const keys: number[] = [];
-    const conts: Container[] = [];
-    const push = (key: number, c: Container | null): void => {
-      if (c === null) return;
-      keys.push(key);
-      conts.push(c);
-    };
+  #combine(that: TsBitmap, op: Combine): void {
     const a = this.#keys;
     const b = that.#keys;
+    const ca = this.#conts;
+    const cb = that.#conts;
+    const keys: number[] = [];
+    const conts: Container[] = [];
+    let size = 0;
     let i = 0;
     let j = 0;
-    while (i < a.length || j < b.length) {
-      const ka = i < a.length ? (a[i] as number) : Infinity;
-      const kb = j < b.length ? (b[j] as number) : Infinity;
+    while (i < a.length && j < b.length) {
+      const ka = a[i] as number;
+      const kb = b[j] as number;
       if (ka === kb) {
-        push(ka, both(this.#conts[i] as Container, that.#conts[j] as Container));
-        i++;
-        j++;
+        const c = combineContainers(op, ca[i++] as Container, cb[j++] as Container);
+        if (c !== null) {
+          keys.push(ka);
+          conts.push(c);
+          size += c.card;
+        }
       } else if (ka < kb) {
-        if (keepOurs) push(ka, this.#conts[i] as Container);
-        i++;
+        if (op === AND) {
+          i = gallopKeys(a, kb, i + 1);
+        } else {
+          keys.push(ka);
+          conts.push(ca[i] as Container);
+          size += (ca[i++] as Container).card;
+        }
+      } else if (op === AND) {
+        j = gallopKeys(b, ka, j + 1);
       } else {
-        if (keepTheirs) push(kb, theirs(that.#conts[j] as Container));
+        if (op === OR) {
+          keys.push(kb);
+          conts.push(cloneContainer(cb[j] as Container));
+          size += (cb[j] as Container).card;
+        }
         j++;
+      }
+    }
+    if (op !== AND) {
+      for (; i < a.length; i++) {
+        keys.push(a[i] as number);
+        conts.push(ca[i] as Container);
+        size += (ca[i] as Container).card;
+      }
+    }
+    if (op === OR) {
+      for (; j < b.length; j++) {
+        keys.push(b[j] as number);
+        conts.push(cloneContainer(cb[j] as Container));
+        size += (cb[j] as Container).card;
       }
     }
     this.#keys = keys;
     this.#conts = conts;
-    this.#size = conts.reduce((sum, c) => sum + c.card, 0);
+    this.#size = size;
   }
 }
+
+/** Stands for a container {@link TsBitmap.removeMany} emptied, until the keys left empty are dropped. */
+const EMPTIED = arrayContainer(new Uint16Array(0), 0);
 
 /** The TypeScript Roaring codec: the same portable bytes as the native codec, with no native addon. */
 export const tsRoaringCodec: CodecInterface = {
