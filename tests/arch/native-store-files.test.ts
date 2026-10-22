@@ -51,6 +51,8 @@ const NATIVE_ORACLE_FILES: Readonly<Record<string, string>> = {
     'holds the TypeScript codec to the native one as the reference',
   'tests/roaring/ts-roaring-fast-paths.test.ts':
     'differential tests of the fast paths against the native codec',
+  'tests/roaring/ts-roaring-run-bitset.test.ts':
+    'differential tests of the bitset-against-runs kernel against the native codec',
 };
 
 const NATIVE_BYTES_FILES: Readonly<Record<string, string>> = {
