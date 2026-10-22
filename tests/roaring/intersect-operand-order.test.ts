@@ -48,7 +48,7 @@ async function collect(stream: AsyncIterable<number>): Promise<number[]> {
 async function setup(sets: number[][]) {
   const store = new CloudRoaring({ storage: new MemoryStorage() });
   for (const [i, ids] of sets.entries()) {
-    await store.load({ segment: `s${i}` }, ids, { sorted: true });
+    await store.load({ segment: `s${i}` }, ids);
   }
   return { store, seg: sets.map((_, i) => store.segment(`s${i}`)) };
 }
