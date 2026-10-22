@@ -74,6 +74,7 @@ export default defineConfig({
       { find: /^@\/system-entropy$/, replacement: ROARING + '/system-entropy.ts' },
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },
       { find: /^@\/portable\/(.*)$/, replacement: ROARING + '/portable/$1' },
+      { find: /^@\/ts-roaring\/(.*)$/, replacement: ROARING + '/ts-roaring/$1' },
       { find: /^@\/bin\/(.*)$/, replacement: ROARING + '/bin/$1' },
       // The driver packages' own sources, for the white-box unit tests. Same idea as `@/index` above:
       // `@/…` addresses workspace sources, and which package a path lands in follows the topology.

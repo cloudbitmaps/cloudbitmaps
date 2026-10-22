@@ -47,16 +47,16 @@ import { IntegrityError } from '@cloudbitmaps/core';
 import type { EncodedChunk } from '@cloudbitmaps/core';
 
 /** Cookie for a bitmap with no run containers. Followed by a u32 container count. */
-const SERIAL_COOKIE_NO_RUNCONTAINER = 12_346;
+export const SERIAL_COOKIE_NO_RUNCONTAINER = 12_346;
 /** Cookie (low 16 bits) for a bitmap that may contain run containers; the high 16 bits hold `count - 1`. */
-const SERIAL_COOKIE = 12_347;
+export const SERIAL_COOKIE = 12_347;
 /**
  * Below this many containers, a run-cookie bitmap omits the offset header and containers must be located by
  * walking their sizes. At or above it the header is present. (A `NO_RUNCONTAINER` bitmap always has it.)
  */
-const NO_OFFSET_THRESHOLD = 4;
+export const NO_OFFSET_THRESHOLD = 4;
 /** A container holding more than this many values is stored as a flat 8 KiB bitset rather than a u16 array. */
-const ARRAY_MAX_CARDINALITY = 4_096;
+export const ARRAY_MAX_CARDINALITY = 4_096;
 /** 65,536 bits, flat. */
 const BITMAP_CONTAINER_BYTES = 8_192;
 /** The largest value a container holds: its low 16 bits. */
