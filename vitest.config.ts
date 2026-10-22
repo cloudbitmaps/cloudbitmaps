@@ -9,6 +9,20 @@ import {
   SORTED_SETUP,
 } from './tests/helpers/load-input-routes';
 
+// The suites the `ts-codec` project runs: the flavor's own, core's (which go through the store), the engine's
+// end-to-end files, and the memory and local-files drivers. A test that cannot run on the TypeScript codec (it spies on
+// the native binding, say) skips itself with `codecLeg()`; no whole file is excluded.
+const TS_CODEC_SUITES = [
+  'tests/roaring/**/*.test.ts',
+  'tests/core/**/*.test.ts',
+  'tests/drivers/localfs/**/*.test.ts',
+  'tests/drivers/lifecycle-memory-localfs.test.ts',
+  'tests/conformance/**/*.test.ts',
+  'tests/engine.*.test.ts',
+  'tests/flows.test.ts',
+  'tests/index.test.ts',
+];
+
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
 const S3 = fileURLToPath(new URL('./packages/s3/src', import.meta.url));
@@ -25,12 +39,13 @@ export default defineConfig({
     setupFiles: ['tests/setup-fast-check.ts'],
     exclude: ['tests/integration/**', 'node_modules/**'],
     passWithNoTests: false,
-    // Three runs. `ids` is every test as written. `serialized` re-runs each load test with core's load handed
+    // Four runs. `ids` is every test as written. `serialized` re-runs each load test with core's load handed
     // `{ serialized }` in place of the ids it was given, which is how a load from portable Roaring bytes is held to
     // every guarantee an id load has without a copy of any test. `sorted` re-runs them with the same ids sorted and
     // `sorted: true`, which holds the sorted load to the same guarantees. Which files, and why the rest are ids-only or
     // not sorted, is in `tests/helpers/load-input-routes.ts`; `tests/arch/load-input-coverage.test.ts` holds those
-    // lists to the tree.
+    // lists to the tree. `ts-codec` re-runs the store's own suites with the store package's internal codec switch on
+    // the TypeScript codec (`tests/setup-codec-ts.ts`); `TS_CODEC_SUITES` is the list.
     projects: [
       {
         extends: true,
@@ -52,6 +67,16 @@ export default defineConfig({
           include: [...SORTED],
           setupFiles: [SORTED_SETUP],
           provide: { loadInput: SORTED_PROJECT },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'ts-codec',
+          include: [...TS_CODEC_SUITES],
+          exclude: ['tests/integration/**', 'node_modules/**'],
+          setupFiles: ['tests/setup-codec-ts.ts'],
+          provide: { codec: 'ts' },
         },
       },
     ],
