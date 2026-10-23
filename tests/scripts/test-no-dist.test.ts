@@ -6,11 +6,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import os, { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -45,6 +46,13 @@ test('runs until it is stopped', async () => {
 }, 120000);
 `;
 
+// Takes long enough that two runs started together overlap.
+const SLOW = `
+test('runs for a while', async () => {
+  await new Promise((resolve) => setTimeout(resolve, 4000));
+});
+`;
+
 let root: string;
 const dist = (pkg = 'p') => join(root, 'packages', pkg, 'dist', 'index.js');
 const aside = () => join(root, '.no-dist-aside');
@@ -72,7 +80,7 @@ const addPackage = (pkg: string) => {
 // The state a SIGKILL leaves: a package's dist under the aside folder, and a lock naming a process that is gone.
 const leaveHidden = (pkg = 'p') => {
   mkdirSync(join(aside(), 'hidden', pkg), { recursive: true });
-  spawnSync('mv', [join(root, 'packages', pkg, 'dist'), hiddenDist(pkg)]);
+  renameSync(join(root, 'packages', pkg, 'dist'), hiddenDist(pkg));
   writeFileSync(join(aside(), 'lock'), '2147483646');
 };
 
@@ -132,8 +140,21 @@ describe('pnpm test:no-dist', () => {
     const run = noDist('plant.test.ts');
     expect(run.status).toBe(1);
     expect(text(run)).toMatch(/Cannot find module|Failed to load/);
+    // The build that could not go back is named, not moved aside in silence.
+    expect(text(run)).toMatch(/kept a hidden dist for p /);
     expect(readFileSync(dist(), 'utf8')).toBe('export const answer = 0;\n');
     expect(readdirSync(join(aside(), 'kept'))).toHaveLength(1);
+
+    // A package folder that is gone is named too, by a run and not only by --restore.
+    rmSync(aside(), { recursive: true });
+    mkdirSync(join(aside(), 'hidden', 'gone', 'dist'), { recursive: true });
+    writeFileSync(join(aside(), 'hidden', 'gone', 'dist', 'index.js'), BUILT);
+    writeFileSync(join(aside(), 'lock'), '2147483646');
+    plant("test('runs', () => {});");
+    const gone = noDist('plant.test.ts');
+    expect(gone.status).toBe(0);
+    expect(text(gone)).toMatch(/kept a hidden dist for gone /);
+    plant(PLANT);
 
     // With no build in between the leftover itself goes back, and the plant that needs it passes on a plain run.
     rmSync(aside(), { recursive: true });
@@ -218,6 +239,82 @@ describe('pnpm test:no-dist', () => {
       expect(existsSync(aside())).toBe(false);
     },
   );
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'names a build it could not put back when hiding failed and the put-back failed too',
+    () => {
+      addPackage('a');
+      // p's dist cannot be renamed (its folder is read-only), and the put-back of a's is made to fail as well.
+      chmodSync(join(root, 'packages', 'p'), 0o555);
+      const hook = join(root, 'fail-restore.cjs');
+      writeFileSync(
+        hook,
+        `const fs = require('node:fs');
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  if (String(to).endsWith('packages/a/dist')) throw Object.assign(new Error('injected'), { code: 'EIO' });
+  return rename(from, to);
+};
+`,
+      );
+      const run = spawnSync(process.execPath, [SCRIPT, '--globals', 'plant.test.ts'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 120000,
+        env: { ...env(), NODE_OPTIONS: `--require ${hook}` },
+      });
+      chmodSync(join(root, 'packages', 'p'), 0o755);
+      expect(run.status).toBe(2);
+      expect(text(run)).toMatch(/EACCES|EPERM/);
+      expect(text(run)).toMatch(/could not restore dist for a \(EIO/);
+      expect(existsSync(hiddenDist('a'))).toBe(true);
+      // The next run, with nothing failing, puts it back.
+      expect(restoreOnly().status).toBe(0);
+      expect(existsSync(dist('a'))).toBe(true);
+    },
+  );
+
+  it('refuses --restore with another argument', () => {
+    const run = sync(SCRIPT, ['--restore', '--globals']);
+    expect(run.status).toBe(2);
+    expect(existsSync(aside())).toBe(false);
+  });
+
+  it('takes a lock of a reused process id, and one older than the last boot', () => {
+    mkdirSync(aside(), { recursive: true });
+    const lock = join(aside(), 'lock');
+    plant("test('runs', () => {});");
+    // Written after the last boot but before the process now holding that id started: the id was reused.
+    writeFileSync(lock, String(process.ppid));
+    const afterBoot = new Date(Date.now() - os.uptime() * 1000 + 500);
+    utimesSync(lock, afterBoot, afterBoot);
+    expect(noDist('plant.test.ts').status).toBe(0);
+    // A live process id, a lock from before the boot.
+    mkdirSync(aside(), { recursive: true });
+    writeFileSync(lock, String(process.ppid));
+    const beforeBoot = new Date(Date.now() - os.uptime() * 1000 - 60000);
+    utimesSync(lock, beforeBoot, beforeBoot);
+    expect(restoreOnly().status).toBe(0);
+    expect(existsSync(aside())).toBe(false);
+  });
+
+  it('lets only one of two runs started together take a stale lock', async () => {
+    plant(SLOW);
+    mkdirSync(aside(), { recursive: true });
+    writeFileSync(join(aside(), 'lock'), '2147483646');
+    const start = () =>
+      new Promise<number | null>((resolve) => {
+        const child = spawn(process.execPath, [SCRIPT, '--globals', 'plant.test.ts'], {
+          cwd: root,
+          env: env(),
+          stdio: 'ignore',
+        });
+        child.on('close', (code) => resolve(code));
+      });
+    const codes = (await Promise.all([start(), start()])).sort();
+    expect(codes).toEqual([0, 2]);
+    expect(existsSync(dist())).toBe(true);
+  }, 90000);
 
   it.each(['SIGINT', 'SIGTERM'] as const)(
     'restores the dist when a %s stops it mid-run',

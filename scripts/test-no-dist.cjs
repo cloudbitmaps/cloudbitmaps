@@ -30,6 +30,10 @@ const report = (result) => {
   return result.failed.length ? 1 : 0;
 };
 
+if (args.includes('--restore') && args.length > 1) {
+  console.error('--restore takes no other argument');
+  process.exit(2);
+}
 if (args.length === 1 && args[0] === '--restore') {
   try {
     const result = restore(root);
@@ -54,8 +58,18 @@ let signals = 0;
 let code = 1;
 const finish = (exitCode) => {
   try {
-    if (put) code = report(put()) || exitCode;
-    else code = exitCode;
+    if (put) {
+      const result = put();
+      code = report(result) || exitCode;
+      if (result.kept.length && !code) {
+        // A dist came back during the run (a build elsewhere, a test writing one) or a package folder went: the run did
+        // not have CI's state, so a pass proves nothing.
+        console.error(
+          "the run did not have CI's state throughout, so its result cannot be trusted: run it again",
+        );
+        code = 1;
+      }
+    } else code = exitCode;
   } catch (err) {
     console.error(err.message);
     code = 1;
@@ -82,12 +96,15 @@ process.on('exit', () => {
 });
 
 try {
-  put = hide(root);
+  const hidden = hide(root);
+  put = hidden.put;
+  report(hidden.before);
 } catch (err) {
   console.error(err.message);
+  if (err.before) report(err.before);
+  if (err.restore) report(err.restore);
   process.exit(2);
 }
-if (signals) finish(130);
 
 child = spawn(process.execPath, [vitest, 'run', ...args], { cwd: root, stdio: 'inherit' });
 child.on('error', (err) => {

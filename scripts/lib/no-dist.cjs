@@ -16,7 +16,9 @@
 // created exclusively, so two runs cannot both hide; a lock whose process is gone, or that holds no process id, is stale.
 // Restoring never deletes a build: a `dist/` that cannot go back where it came from is moved to `kept/` and reported.
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const ASIDE = '.no-dist-aside';
 const STALE_EMPTY_LOCK_MS = 5000;
@@ -78,30 +80,86 @@ const lockHolder = (lock) => {
   return Number.isInteger(pid) && pid > 0 ? pid : 0;
 };
 
-const busy = (pid) =>
+const busy = (who) =>
   new Error(
-    `another no-dist run (process ${pid}) has the dist folders hidden; wait for it to finish. ` +
-      'If that process is gone, `node scripts/test-no-dist.cjs --restore` puts them back',
+    `another no-dist run (${who}) has the dist folders hidden; wait for it to finish. If no run is going, ` +
+      '`node scripts/test-no-dist.cjs --restore` puts them back, and deleting `.no-dist-aside/lock` clears a lock it refuses',
   );
 
-// Takes the lock, or throws when a live run holds it.
-const acquire = (lock) => {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
-      return;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-    }
-    const pid = lockHolder(lock);
-    if (pid === null) continue;
-    if (pid > 0 && pid !== process.pid && alive(pid)) throw busy(pid);
-    // No process id: another run may be between creating the file and writing it, so only an old file is stale.
-    if (pid === 0 && Date.now() - fs.statSync(lock).mtimeMs < STALE_EMPTY_LOCK_MS)
-      throw busy('starting');
-    fs.rmSync(lock, { force: true });
+// When a process started, from `ps` (only the start time is asked for), or null where that cannot be read.
+const startedAt = (pid) => {
+  if (process.platform === 'win32') return null;
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const ms = Date.parse(out.trim());
+    return Number.isFinite(ms) ? ms : null;
+  } catch {
+    return null;
   }
-  throw busy('unknown');
+};
+
+// Whether the lock names a run that is over: its process is gone, the lock is older than the last boot, or the process
+// that now has that id started after the lock was written (the id was reused).
+const stale = (lock, pid) => {
+  if (!alive(pid)) return true;
+  const written = fs.statSync(lock).mtimeMs;
+  if (written < Date.now() - os.uptime() * 1000 - 1000) return true;
+  const started = startedAt(pid);
+  return started !== null && started > written + 2000;
+};
+
+// Takes the lock, or throws when a live run holds it. A stale lock is taken over under a second exclusive file, so only
+// one process at a time judges it, removes it and creates its own.
+const acquire = (lock) => {
+  const claim = (flag) => fs.writeFileSync(lock, String(process.pid), { flag });
+  try {
+    claim('wx');
+    return;
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+  }
+  const verdict = () => {
+    let pid;
+    try {
+      pid = lockHolder(lock);
+      if (pid === null) return 'free';
+      if (pid === 0)
+        return Date.now() - fs.statSync(lock).mtimeMs < STALE_EMPTY_LOCK_MS ? 'starting' : 'stale';
+      return pid !== process.pid && !stale(lock, pid) ? pid : 'stale';
+    } catch (err) {
+      if (err.code === 'ENOENT') return 'free';
+      throw err;
+    }
+  };
+  let first = verdict();
+  if (first !== 'free' && first !== 'stale')
+    throw busy(first === 'starting' ? 'one is starting' : `process ${first}`);
+  const takeover = `${lock}.takeover`;
+  try {
+    fs.writeFileSync(takeover, String(process.pid), { flag: 'wx' });
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+    // Left by a process that died while taking over: only an old file is stale.
+    try {
+      if (Date.now() - fs.statSync(takeover).mtimeMs > STALE_EMPTY_LOCK_MS)
+        fs.rmSync(takeover, { force: true });
+    } catch {
+      // gone already
+    }
+    throw busy('one is starting');
+  }
+  try {
+    first = verdict();
+    if (first !== 'free' && first !== 'stale')
+      throw busy(first === 'starting' ? 'one is starting' : `process ${first}`);
+    fs.rmSync(lock, { force: true });
+    claim('wx');
+  } finally {
+    fs.rmSync(takeover, { force: true });
+  }
 };
 
 // Puts back every hidden `dist/`, each entry on its own: one that fails does not stop the rest. A package whose
@@ -117,7 +175,7 @@ const restoreHidden = (root) => {
     const to = path.join(root, 'packages', pkg, 'dist');
     try {
       if (!fs.existsSync(from)) {
-        fs.rmSync(path.join(p.hidden, pkg), { recursive: true, force: true });
+        fs.rmdirSync(path.join(p.hidden, pkg));
       } else if (fs.existsSync(path.join(root, 'packages', pkg)) && !fs.existsSync(to)) {
         rename(from, to);
         fs.rmdirSync(path.join(p.hidden, pkg));
@@ -151,7 +209,8 @@ const tidy = (root) => {
 };
 
 // Hides every `dist/`, after restoring what an earlier run left. Throws if a live run holds them. Returns the function
-// that puts them back and releases the lock (safe to call twice); it returns what restoreHidden does.
+// `put`, which puts them back and releases the lock (safe to call twice; it returns what restoreHidden does), and
+// `before`, what the restore before the run did. A throw carries the same two as `restore` and `before`.
 const hide = (root) => {
   const p = paths(root);
   fs.mkdirSync(p.aside, { recursive: true });
@@ -169,8 +228,9 @@ const hide = (root) => {
     tidy(root);
     return result;
   };
+  let before;
   try {
-    restoreHidden(root);
+    before = restoreHidden(root);
     for (const pkg of packageDirs(root)) {
       const dist = path.join(root, 'packages', pkg, 'dist');
       if (!fs.existsSync(dist)) continue;
@@ -178,18 +238,19 @@ const hide = (root) => {
       rename(dist, path.join(p.hidden, pkg, 'dist'));
     }
   } catch (err) {
-    put();
+    err.restore = put();
+    err.before = before;
     throw err;
   }
-  return put;
+  return { put, before };
 };
 
-// Puts back what a run that was killed left hidden. Refuses while a live run holds the lock, since it would un-hide the
-// folders under that run.
+// Puts back what a run that was killed left hidden. It takes the lock, so it refuses while a live run holds it (it would
+// un-hide the folders under that run) and while another restore is going.
 const restore = (root) => {
   const p = paths(root);
-  const pid = lockHolder(p.lock);
-  if (pid && pid !== process.pid && alive(pid)) throw busy(pid);
+  if (!fs.existsSync(p.aside)) return { restored: [], kept: [], failed: [] };
+  acquire(p.lock);
   const result = restoreHidden(root);
   if (!result.failed.length) fs.rmSync(p.lock, { force: true });
   tidy(root);
