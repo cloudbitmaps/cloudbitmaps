@@ -820,7 +820,8 @@ async function runLoad(
   let unanswered = false;
 
   // Best-effort, where it is called: the refusal or the publish's own error is the answer, and a fault in the cleanup
-  // must not replace it. An object left behind is an orphan, which a later load's collection takes once a generation
+  // must not replace it. That holds for a fault of the
+  // read that proves the object its own too: it keeps the object, and a fault is never taken for a delete. An object left behind is an orphan, which a later load's collection takes once a generation
   // above it is current. The one answer it gives is the generation the pointer names after the reclaim deleted it,
   // which a refusal turns into an error: the segment no longer reads.
   const tidy = (): Promise<number | undefined> => reclaim().catch(() => undefined);

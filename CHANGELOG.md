@@ -34,6 +34,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A refused erasure no longer reads a faulted read of its own object as "not mine" and leaves the object without a word.**
+  When an erasure's rewrite lost a race and the winner's pointer stopped below the rewrite's object, the erasure
+  proves the object is its own with one read of its footer before it deletes it. A timeout, a throttle or a server
+  error on that read was taken for "another object": the object, which can hold an id another erasure reported gone,
+  stayed and the call returned `superseded` with nothing to say it was there. The read is now retried under the store's
+  read retry and, if it still fails, the call throws that error and the object stays; an object that is gone or is
+  another write's is kept as before. A caller that ran an erasure through a storage fault and saw `superseded` now
+  sees the fault, and runs the erasure again. A refused load's reclaim is best-effort and still swallows the fault.
+
 - **An erasure that found the id now refuses every load that read the row before it began.**
   When the only holder was an object below the pointer that the row's ledger never named (a crashed load's
   object), the erasure wrote nothing to the row, so a load already in flight, whose own input held the id,

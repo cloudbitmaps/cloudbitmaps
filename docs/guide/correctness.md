@@ -962,6 +962,12 @@ repaired. These limits hold on every driver:
   whatever its ids: the footer does not match, and the discard keeps it, including when a rollback has moved the
   pointer below that generation before the call reads the row. A generation whose identity field is all zero is the
   exception, as above.
+- The footer read that matches the object is not an answer when it faults. A timeout, a throttle or a server error does
+  not say the object is another's, so the discard retries it under the store's read retry and, when it still fails,
+  throws that error in place of the refusal (`'superseded'`), and the object stays: it may hold an id another erasure has
+  reported gone, so the caller is told it may remain and can run the erasure again. Only an object that is gone, or whose
+  footer is another write's, is kept without an error. A refused load's reclaim reads its own object the same way and
+  swallows a fault, as it does every fault of its cleanup: the object stays an orphan for a later load's collection.
 - A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
   its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
   no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load
