@@ -136,6 +136,20 @@ and gates no pull request; a red run shows on the Actions tab. It also runs on a
 before changing one of the heavy tests or the code under it. [`tests/README.md`](tests/README.md#full-strength) lists
 them and their sizes.
 
+Every other job runs the cloud SDKs at the version `pnpm-lock.yaml` holds, the newest, while a user's install can resolve
+any version a driver's range admits. [`.github/workflows/sdk-floor.yml`](.github/workflows/sdk-floor.yml) runs each driver's
+unit tests and its integration file at the **lowest** version of each alternative of its range (a range written with `||` gets one leg per alternative, so a break at the lowest version of a later alternative cannot hide behind a pass at an earlier one; today none has one) (`@aws-sdk/client-s3` `>=3.700.0 <4`,
+`@google-cloud/storage` `^8.1.0`, `@azure/storage-blob` `^12.23.0`) every night at 03:00 UTC, on demand, and on a pull
+request that touches a driver package, `packages/core/src/drivers/` or `driver-kit.ts`, a driver's tests, the shared test
+helpers, the lockfile, the root `package.json`, the vitest configs, the emulators' start or the script or the workflow. It also
+runs the S3 driver one release below its floor (3.699.0) and requires it to fail with the registry's refusal of a client
+that does not send `If-Match`, which proves the job can see a dropped `If-Match` at all. It is not a required check; a red
+run shows on the Actions tab. It holds no secret and cannot write the cache: it installs third-party packages fresh and runs them on the runner, so the
+workflow sets `cache-mode: read`, and the cache service refuses every write from it (restores still work). Run one leg with
+`node scripts/sdk-floor.cjs --driver s3` (unit tests, no Docker) or add `--integration` with the driver's emulator up
+(`docker compose up -d minio`); `--version <v>` tests another version. `scripts/README.md` says what it does and does
+not show. A change to a driver's SDK range moves the floor: run the leg before changing it.
+
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
 **no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools want a
 current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 10, the version

@@ -1002,6 +1002,47 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     }
     return found;
   };
+  /**
+   * Jobs that only RESTORE the images the `integration` job in ci.yml keeps and never save any: the SDK-floor workflow
+   * runs on a schedule and on a pull request that touches a driver, starts one emulator each, and must not write a cache
+   * entry (it installs third-party packages fresh and runs them on the runner, so what it could save might be restored by
+   * a job that holds a secret). Not saving is a property of its steps; the cache service refusing writes (`cache-mode:
+   * read` on the workflow, no job overriding it) is a property of the job, and is what holds whatever runs in it. The save rules of `problemsOf` do not apply to them; `restoreOnlyProblems` is the rule that does.
+   */
+  const RESTORE_ONLY = [
+    '.github/workflows/sdk-floor.yml › floor',
+    '.github/workflows/sdk-floor.yml › negative-control',
+  ];
+  /** What is wrong with a job that must only restore the `integration` job's images: one entry per fault. */
+  const restoreOnlyProblems = (
+    job: Job,
+    read = repoFile,
+    workflow: { 'cache-mode'?: string } = { 'cache-mode': 'read' },
+  ): string[] => {
+    const steps = job.steps ?? [];
+    const found: string[] = [];
+    if (workflow['cache-mode'] !== 'read') found.push('its workflow does not set cache-mode: read');
+    if (job['cache-mode'] !== undefined) found.push('sets a cache-mode of its own');
+    const firstPull = steps.findIndex((s) => pullingScriptsIn(s.run ?? '', read).length > 0);
+    const restore = steps.findIndex((s) => s.uses === RESTORE);
+    if (restore < 0 || firstPull < 0 || restore > firstPull) {
+      found.push('restores no cache before its first pull');
+    } else {
+      const step = steps[restore];
+      if (step?.if !== undefined) found.push('restores its cache only sometimes');
+      if (step?.with?.name !== 'integration' || step.with.files !== 'docker-compose.yml') {
+        found.push("restores something other than the integration job's entry");
+      }
+    }
+    // `actions/cache@` restores and saves (its post step saves); only `actions/cache/restore@` is restore-only.
+    if (steps.some((s) => s.uses === SAVE || /(^|\/)cache(\/save)?@/.test(s.uses ?? ''))) {
+      found.push('saves a cache');
+    }
+    if (steps.some((s) => Object.keys(s.with ?? {}).some((k) => k.startsWith('cache')))) {
+      found.push('turns a tool cache on');
+    }
+    return found;
+  };
   /** Pairs of names one of which an older entry's prefix would find the other's under. */
   const prefixClashes = (names: string[]): string[] =>
     names.flatMap((a) =>
@@ -1287,12 +1328,97 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     ).toHaveLength(1);
   });
 
-  it.each(pulling.map((j) => [j.where, j.job] as const))(
+  it.each(
+    pulling.filter((j) => !RESTORE_ONLY.includes(j.where)).map((j) => [j.where, j.job] as const),
+  )(
     '%s restores before its first pull, and saves after its last, only from a run that passed',
     (_where, job) => {
       expect(problemsOf(job)).toEqual([]);
     },
   );
+
+  it.each(RESTORE_ONLY)(
+    "%s only restores the integration job's images: it is in the sweep and saves nothing",
+    (where) => {
+      const found = pulling.find((j) => j.where === where);
+      expect(found, `${where} is not a job that pulls an image`).toBeDefined();
+      const file = where.split(' › ')[0] ?? '';
+      const workflow = readYaml<{ 'cache-mode'?: string }>(file);
+      expect(restoreOnlyProblems(found?.job ?? {}, repoFile, workflow)).toEqual([]);
+    },
+  );
+
+  it('reads a restore-only job: restoring the integration entry and never saving passes; anything else is a fault', () => {
+    const pin = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1';
+    const restore: Step = {
+      uses: RESTORE,
+      with: { name: 'integration', files: 'docker-compose.yml' },
+    };
+    const pull: Step = { run: 'scripts/ci-backend-images.sh "$RUNNER_TEMP/o.yml"' };
+    const job = (...steps: Step[]): Job => ({ steps: [{ uses: pin }, ...steps] });
+    expect(restoreOnlyProblems(job(restore, pull))).toEqual([]);
+    expect(restoreOnlyProblems(job(restore, pull, { run: 'docker compose down' }))).toEqual([]);
+    // Restoring through the cache action's restore-only form, and a tool's cache switched off, are legitimate.
+    expect(
+      restoreOnlyProblems(
+        job(restore, pull, { uses: 'actions/cache/restore@v6', with: { key: 'k', path: 'p' } }),
+      ),
+    ).toEqual([]);
+    expect(
+      restoreOnlyProblems(
+        job(restore, pull, {
+          uses: 'actions/setup-node@v7',
+          with: { 'package-manager-cache': 'false' },
+        }),
+      ),
+    ).toEqual([]);
+    const wrong: [string, Job][] = [
+      ['a save after the pull', job(restore, pull, { uses: SAVE })],
+      ['a save through the cache action', job(restore, pull, { uses: 'actions/cache/save@v6' })],
+      [
+        'the full cache action, whose post step saves',
+        job(restore, pull, { uses: 'actions/cache@v6' }),
+      ],
+      [
+        'a tool cache switched on',
+        job(restore, pull, { uses: 'actions/setup-node@v7', with: { cache: 'pnpm' } }),
+      ],
+      [
+        'a tool cache path',
+        job(restore, pull, {
+          uses: 'actions/setup-node@v7',
+          with: { 'cache-dependency-path': 'x' },
+        }),
+      ],
+      ['no restore', job(pull)],
+      ['the restore after the pull', job(pull, restore)],
+      ['a restore only sometimes', job({ ...restore, if: 'always()' }, pull)],
+      [
+        "another job's entry",
+        job({ ...restore, with: { name: 'lambda-smoke', files: 'docker-compose.yml' } }, pull),
+      ],
+      [
+        'a key hashing another file',
+        job({ ...restore, with: { name: 'integration', files: 'scripts/rss-gate.sh' } }, pull),
+      ],
+    ];
+    for (const [what, j] of wrong) expect(restoreOnlyProblems(j), what).toHaveLength(1);
+    // The cache service's refusal of writes: the workflow's `cache-mode: read`, and no job overriding it.
+    const ok = job(restore, pull);
+    for (const mode of [undefined, 'write', 'Read', '']) {
+      const workflow = mode === undefined ? {} : { 'cache-mode': mode };
+      expect(
+        restoreOnlyProblems(ok, repoFile, workflow),
+        `workflow cache-mode ${String(mode)}`,
+      ).toEqual(['its workflow does not set cache-mode: read']);
+    }
+    for (const mode of ['read', 'write']) {
+      expect(
+        restoreOnlyProblems({ ...ok, 'cache-mode': mode }, repoFile, { 'cache-mode': 'read' }),
+        `job cache-mode ${mode}`,
+      ).toEqual(['sets a cache-mode of its own']);
+    }
+  });
 
   it('keys each job apart: an older entry is found by the name and a dash, so no name begins another', () => {
     expect(prefixClashes(['lambda', 'lambda-smoke', 'rss-gate'])).toEqual([
@@ -1303,9 +1429,9 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       prefixClashes(['rss', 'rssx']),
       'a name and a dash begin another, not a name alone',
     ).toEqual([]);
-    const names = pulling.map(
-      ({ job }) => (job.steps ?? []).find((s) => s.uses === RESTORE)?.with?.name ?? '',
-    );
+    const names = pulling
+      .filter((j) => !RESTORE_ONLY.includes(j.where))
+      .map(({ job }) => (job.steps ?? []).find((s) => s.uses === RESTORE)?.with?.name ?? '');
     expect(new Set(names).size).toBe(names.length);
     expect(prefixClashes(names)).toEqual([]);
   });

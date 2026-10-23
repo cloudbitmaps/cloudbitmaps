@@ -208,7 +208,8 @@ const DEFAULT_MAX_SOCKETS = 128;
 /**
  * Cap the sockets the SDK's own request handler opens, and change nothing else about it. The handler stays the SDK's
  * default one, so its other defaults hold: its defaults-mode connection timeout, keep-alive, and a request that
- * sends `Expect: 100-continue` (a part of 2 MiB or more) still goes on its own connection outside this pool. Only the
+ * sends `Expect: 100-continue` (a part of 2 MiB or more) still goes on its own connection outside this pool (SDK 3.723.0
+ * and later; before it those uploads share the pool, so the cap limits them too). Only the
  * `maxSockets` of its two pooled agents is set, before the first request goes out. The handler makes its agents on
  * that first request (the http one even later, per request, so a first burst to a plain-http endpoint would get one
  * pool each), so the first request first runs an aborted one through it, which makes them, then sets the limit on

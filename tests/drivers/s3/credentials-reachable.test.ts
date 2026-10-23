@@ -278,6 +278,10 @@ function canonicalOf(req: IncomingMessage): string {
   return `${req.method}\n${req.url}\n\n${lines.join('\n')}\n\n${signed.join(';')}\nUNSIGNED-PAYLOAD`;
 }
 
+/** Text as an XML element's content, as S3 writes it: a quoted request carries `&` between its query parameters. */
+const xml = (text: string): string =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 /** The body the server answers `req` with. */
 function bodyOf(req: IncomingMessage, body: Body, code: string): string {
   const auth = String(req.headers.authorization ?? '');
@@ -288,9 +292,9 @@ function bodyOf(req: IncomingMessage, body: Body, code: string): string {
     const toSign = `AWS4-HMAC-SHA256\n${String(req.headers['x-amz-date'])}\nscope\nhash`;
     return (
       `<Error><Code>${code}</Code><Message>The request signature we calculated does not match the signature ` +
-      `you provided.</Message><AWSAccessKeyId>${KEY_ID}</AWSAccessKeyId><StringToSign>${toSign}</StringToSign>` +
+      `you provided.</Message><AWSAccessKeyId>${KEY_ID}</AWSAccessKeyId><StringToSign>${xml(toSign)}</StringToSign>` +
       `<SignatureProvided>${signature}</SignatureProvided><StringToSignBytes>${hex(toSign)}</StringToSignBytes>` +
-      `<CanonicalRequest>${canonical}</CanonicalRequest>` +
+      `<CanonicalRequest>${xml(canonical)}</CanonicalRequest>` +
       `<CanonicalRequestBytes>${hex(canonical)}</CanonicalRequestBytes><RequestId>r</RequestId></Error>`
     );
   }

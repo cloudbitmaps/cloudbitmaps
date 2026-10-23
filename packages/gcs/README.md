@@ -25,7 +25,7 @@ Install the same version of every `@cloudbitmaps/*` package: they release togeth
 
 [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-`@google-cloud/storage` (`^7 || ^8`) is a real dependency of this package, so installing it is the whole step.
+`@google-cloud/storage` (`^8.1.0`) is a real dependency of this package, so installing it is the whole step. A `client` you pass must come from 8.1.0 or later: the driver's own tests pass on 8.1.0 and fail on every older release tried (8.0.1, 8.0.0, and 7.x from 7.0.0 to 7.22.0). On 8.0.1 the unit tests pass, but the integration test of a resumable upload's tail size against the emulator fails with a reset connection. On 8.0.0 and on 7.x the unit tests fail: a read the driver cuts off at `readTimeoutMs` leaves its connection open, a read whose first answer is cut off part-way is not retried to success (the call never settles), and a read the driver refuses does not release its request.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use
@@ -71,8 +71,8 @@ It builds its own client from Application Default Credentials. Any other key is 
   `unchecked`. It needs `storage.buckets.get`, which a load never uses, `store.preflight()`'s lifecycle step does, and `roles/storage.objectAdmin` does
   not include: without it the answer is `unchecked`, naming the permission
   ([check the lifecycle rules from code](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#check-the-lifecycle-rules-from-code)).
-- **The SDK does not retry downloads; the driver does.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and
-  8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process
+- **The SDK does not retry downloads; the driver does.** In `@google-cloud/storage` 8.x (checked on 8.1.0) and 7.x (checked on
+  7.22.0, a release outside this driver's range), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process
   with `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
   `GcsStorage` builds therefore sends each download once, and the driver runs a download again itself, up to three more
   times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429,
@@ -105,8 +105,9 @@ It builds its own client from Application Default Credentials. Any other key is 
 - **A read that times out before its server answers leaves its connection open.** The SDK cannot cancel a request
   whose response has not begun, so that request holds its connection until the server answers or closes it, and until
   then keeps a Node process from exiting: one per driver read, up to four per call through the store's retry, so an
-  outage at N reads a second adds about 4N held connections each second. On 8.x a read cut off after its response
-  began closes its own; on 7.x (checked on 7.22.0) it stays open too. A 404 whose error body arrives after the
+  outage at N reads a second adds about 4N held connections each second. On every version this driver's range admits
+  (8.1.0 and later) a read cut off after its response began closes its own; on 8.0.0 and 7.x (checked on 7.22.0), both
+  outside the range, it stays open too. A 404 whose error body arrives after the
   deadline is reported as a `TransientError`, not `NotFoundError`.
 - **Downloads go out on Node's global agent, so one the driver cuts off or refuses resets nothing else.** When a
   download fails part-way, the SDK destroys the HTTP agent it went out on, and its own agent is one keep-alive pool the

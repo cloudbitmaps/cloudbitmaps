@@ -87,9 +87,25 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'claim about our release',
   ],
   [
+    '8.0.1',
+    "the @google-cloud/storage release below the floor of @cloudbitmaps/gcs's dependency: it passes the driver's unit " +
+      'tests and fails one integration test, in the package README. A third-party version, not a claim about our release',
+  ],
+  [
+    '8.0.0',
+    "the @google-cloud/storage release below the floor of @cloudbitmaps/gcs's dependency, which fails the driver's own " +
+      'unit tests, in the package README. A third-party version, not a claim about our release',
+  ],
+  [
+    '7.0.0',
+    "the oldest @google-cloud/storage 7.x release the driver's unit tests were run on (the newest, 7.22.0, is below), " +
+      'in the package README. A third-party version, not a claim about our release',
+  ],
+  [
     '8.1.0',
-    'the other @google-cloud/storage release the GCS download-retry crash was checked on (with 7.22.0). A third-party ' +
-      'version, not a claim about our release',
+    "the floor of @cloudbitmaps/gcs's dependency on @google-cloud/storage (the lowest version its unit and integration " +
+      'tests pass on), the version the lockfile resolves, and the release the GCS download-retry crash was checked on ' +
+      '(with 7.22.0). A third-party version, not a claim about our release',
   ],
   [
     '7.22.0',
@@ -117,6 +133,36 @@ const FOREIGN_VERSIONS = new Map<string, string>([
     'the first @aws-sdk/client-s3 version whose DeleteObject serializer sends If-Match, named in the production guide as ' +
       'the header the registry checks for before it removes a row with a conditional delete. A third-party version, not ' +
       'a claim about our release',
+  ],
+  [
+    '12.0.0',
+    "an @azure/storage-blob release below the floor of @cloudbitmaps/azure-blob's dependency that the driver's own " +
+      'unit tests were run on and fail, listed in the package README. A third-party version, not a claim about our release',
+  ],
+  [
+    '12.12.0',
+    "an @azure/storage-blob release below the floor of @cloudbitmaps/azure-blob's dependency that the driver's own " +
+      'unit tests were run on and fail, listed in the package README. A third-party version, not a claim about our release',
+  ],
+  [
+    '12.17.0',
+    "an @azure/storage-blob release below the floor of @cloudbitmaps/azure-blob's dependency that the driver's own " +
+      'unit tests were run on and fail, listed in the package README. A third-party version, not a claim about our release',
+  ],
+  [
+    '12.18.0',
+    "the newest @azure/storage-blob release below the floor of @cloudbitmaps/azure-blob's dependency, which fails the " +
+      "driver's own unit tests, in the package README. A third-party version, not a claim about our release",
+  ],
+  [
+    '12.23.0',
+    "the floor of @cloudbitmaps/azure-blob's dependency on @azure/storage-blob: the lowest version the driver's own " +
+      'unit tests pass on, in the package README and the site. A third-party version, not a claim about our release',
+  ],
+  [
+    '3.723.0',
+    'the first @aws-sdk/client-s3 version whose request handler sends an `Expect: 100-continue` upload outside the ' +
+      'pool `maxSockets` sets, in the s3 README. A third-party version, not a claim about our release',
   ],
   [
     '3.700.0',
