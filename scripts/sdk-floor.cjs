@@ -284,6 +284,13 @@ function summarize({ out, text }) {
     lines.push(
       `  ${path.relative(path.dirname(out), file.name).split('/repo/').pop()}: ${failedTests.length} failed: ${String(first).split('\n')[0].slice(0, 160)}`,
     );
+    for (const t of failedTests.slice(0, 6)) {
+      lines.push(
+        `    - ${String(t.fullName).slice(0, 160)}: ${String(t.failureMessages?.[0] ?? '')
+          .split('\n')[0]
+          .slice(0, 160)}`,
+      );
+    }
   }
   return lines.join('\n');
 }
@@ -491,6 +498,7 @@ module.exports = {
   assertOutside,
   checkInstalled,
   classifyFailure,
+  summarize,
   pinSdk,
 };
 

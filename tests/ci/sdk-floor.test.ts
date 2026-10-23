@@ -50,6 +50,7 @@ const sdkFloor = createRequire(import.meta.url)(SCRIPT) as {
     floorIndex: string | undefined,
   ) => string;
   floorOf: (root: string, driver: string) => string;
+  summarize: (run: { out: string; text: string }) => string;
   assertOutside: (root: string, dir: string) => void;
   checkInstalled: (
     copy: string,
@@ -662,6 +663,41 @@ describe('the SDK-floor script: the verdict of the negative control', () => {
     const verdict = sdkFloor.classifyFailure(r, TEXT_);
     expect(verdict.ok).toBe(false);
     expect(verdict.reason).toContain(reason);
+  });
+});
+
+describe('the SDK-floor script: the account of a failed run', () => {
+  it('names each failing test with its first message line, up to six a file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sdk-floor-summary-'));
+    try {
+      const out = join(dir, 'report.json');
+      const failing = Array.from({ length: 8 }, (_, i) => ({
+        status: 'failed',
+        fullName: `suite case ${i}`,
+        failureMessages: [`AssertionError: wanted ${i}\n    at somewhere`],
+      }));
+      writeFileSync(
+        out,
+        JSON.stringify({
+          numTotalTests: 10,
+          numFailedTests: 8,
+          testResults: [
+            { name: '/x/repo/tests/a.test.ts', status: 'failed', assertionResults: failing },
+            { name: '/x/repo/tests/b.test.ts', status: 'passed', assertionResults: [] },
+          ],
+        }),
+      );
+      const text = sdkFloor.summarize({ out, text: '' });
+      expect(text).toContain('8 of 10 tests failed');
+      expect(text).toContain('tests/a.test.ts: 8 failed');
+      expect(text).toContain('- suite case 0: AssertionError: wanted 0');
+      expect(text).toContain('- suite case 5: AssertionError: wanted 5');
+      expect(text).not.toContain('suite case 6');
+      expect(text).not.toContain('somewhere');
+      expect(text).not.toContain('b.test.ts');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
