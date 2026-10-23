@@ -1,0 +1,44 @@
+name: Pull request text
+
+# A pull request's title, body and commit messages are public, and a squash merge copies the commit subjects into
+# `main`'s history. This fails a pull request whose text names who or what did the work, or that the leak scan
+# would refuse in a tracked file (a credential, a local path, a private reference, a private needle). The rules and
+# what they miss are in scripts/pr-text-scan.cjs.
+#
+# Its own workflow, with `edited` among the types: editing a title or a body triggers none of the types `ci.yml`
+# runs on. Nothing is installed (the scripts use Node's builtins), no cache is read or written, and the text
+# reaches the script through `env`, never spliced into a `run:` script.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-text:
+    name: pull request text
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          # No cache: this job installs nothing, so there is nothing to restore or save.
+          package-manager-cache: false
+      - name: Scan the title, body and commit messages
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LEAK_SCAN_EXTRA: ${{ secrets.LEAK_SCAN_EXTRA }}
+        run: node scripts/pr-text-scan.cjs
