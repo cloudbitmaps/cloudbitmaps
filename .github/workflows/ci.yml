@@ -190,6 +190,52 @@ jobs:
       - run: pnpm build
       - run: node scripts/smoke.cjs
 
+  consumer-install:
+    name: consumer install (node ${{ matrix.node }})
+    # Packs the six packages as a release does, installs the tarballs with npm into a clean project, and runs code
+    # against them under ESM and CommonJS. `smoke` loads the built packages from inside the workspace, where pnpm
+    # links them and neither `files` nor the rewrite of `workspace:*` is exercised; this reads only what a tarball
+    # holds, so a file missing from `files`, an `exports` path that resolves only in the workspace, a dependency in
+    # the wrong field or a blocked install script fails here and not for a user.
+    #
+    # The npm install resolves the cloud SDKs and their dependencies fresh from the registry, with no lockfile, and
+    # runs their install scripts. That is third-party code, so it runs only inside a throwaway container of the
+    # official Node image (pulled from a mirror first, then the ECR mirror, then Docker Hub, since each throttles the runners' shared addresses at times): the
+    # tarballs and the script mounted read-only, nothing else mounted, no environment passed in. Packing, which
+    # runs only the workspace's own locked dependencies, stays on the runner.
+    #
+    # No cache of any kind here: no `cache:` on setup-node, no cache action. Code that ran in this job could
+    # otherwise write an entry a later job, one that holds a secret, would restore and run. No secret here either.
+    # The npm is the one each Node image ships with: 10 on 22, 11 on 24. Under a minute.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      # Each image is pinned by the digest of its manifest list, which a mirror of it serves under the same digest;
+      # refresh them as scripts/README.md says.
+      matrix:
+        include:
+          - node: 22
+            digest: sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
+          - node: 24
+            digest: sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node }}
+          # Off whatever `packageManager` says: this job restores and saves no cache.
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: >-
+          node scripts/consumer-install.cjs
+          --image mirror.gcr.io/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}
+          --image public.ecr.aws/docker/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}
+          --image docker.io/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}
+
   integration:
     name: integration (MinIO + fake-gcs-server + Azurite)
     runs-on: ubuntu-latest # needs Docker on the runner

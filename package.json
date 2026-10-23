@@ -23,6 +23,7 @@
     "typecheck": "tsc --noEmit && pnpm run typecheck:pkgs && pnpm run typecheck:next",
     "typecheck:next": "node node_modules/typescript-next/bin/tsc --noEmit && node node_modules/typescript-next/bin/tsc -p packages/core --noEmit && node node_modules/typescript-next/bin/tsc -p packages/roaring --noEmit && node node_modules/typescript-next/bin/tsc -p packages/s3 --noEmit && node node_modules/typescript-next/bin/tsc -p packages/gcs --noEmit && node node_modules/typescript-next/bin/tsc -p packages/azure-blob --noEmit && node node_modules/typescript-next/bin/tsc -p packages/tools --noEmit",
     "test": "vitest run",
+    "test:no-dist": "node scripts/test-no-dist.cjs",
     "test:watch": "vitest",
     "test:integration": "vitest run -c vitest.integration.config.ts",
     "site:screenshots": "node scripts/site-screenshots.mjs",

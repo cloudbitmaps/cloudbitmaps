@@ -79,8 +79,12 @@ export function ownedTail(tail: TailRead): TailRead {
 /**
  * The object under `key`, when one read of its footer matches `fingerprint` ({@link CrbmReader.fingerprint}), with the
  * version the driver reported on that read (`undefined` from a driver that reports none). `null` when it is another
- * object, when it is gone, and when the read fails in any way. A fingerprint names the object's bytes, the write identity in its footer included, so
- * another writer's object under the number matches only when it carries the same identity (an all-zero one does). A caller that deletes what this
+ * object or is gone. A read that cannot tell is thrown as it is, never taken for "not this object": a timeout, a
+ * throttle or a server error, and an {@link IntegrityError} (a footer that fails its own checks, which a torn or
+ * flipped read of the genuine object can produce, and which says nothing about which object is there). A caller
+ * decides what each means; a caller that treats a persistent {@link IntegrityError} as not proven says so itself.
+ * A fingerprint names the object's bytes, the write identity in its footer included, so another writer's object under
+ * the number matches only when it carries the same identity (an all-zero one does). A caller that deletes what this
  * matches passes the version as the delete's `ifVersion`, so a number taken again between the read and the delete keeps
  * the object put under it since.
  */
@@ -95,15 +99,17 @@ export async function provenObject(
       version ??= tail.version;
     });
     return (await CrbmReader.sameObject(blob, fingerprint)) ? { version } : null;
-  } catch {
-    return null;
+  } catch (err) {
+    if (isNotFoundError(err)) return null;
+    throw err;
   }
 }
 
 /**
  * Whether the object under `key` is still the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one read
- * of its footer. Unlike {@link provenObject}, a fault is not an answer: `NotFoundError` when the key holds no object,
- * and any other failure of the read, thrown as it is.
+ * of its footer. A read that cannot tell is not an answer, as for {@link provenObject}; unlike it, an object that is gone
+ * is not one either: `NotFoundError` when the key holds no object, and any other failure of the read, thrown as it is,
+ * and no version is reported.
  */
 export function sameObjectUnder(
   storage: IStorageDriver,
@@ -215,20 +221,15 @@ export async function footerCrcUnder(storage: IStorageDriver, key: GenKey): Prom
 
 /**
  * Whether the object under `key` is the one `fingerprint` names, from one read of its footer: false when it is another
- * object or gone. Unlike {@link provenObject}, a read that cannot tell throws, for a caller that must not take "could
- * not look" for "not this object".
+ * object or gone, as {@link provenObject} answers, and a read that cannot tell throws, for a caller that must not take
+ * "could not look" for "not this object".
  */
 export async function provesOwnObject(
   storage: IStorageDriver,
   key: GenKey,
   fingerprint: string,
 ): Promise<boolean> {
-  try {
-    return await CrbmReader.sameObject(storageBlobReader(storage, key), fingerprint);
-  } catch (err) {
-    if (isNotFoundError(err)) return false;
-    throw err;
-  }
+  return (await provenObject(storage, key, fingerprint)) !== null;
 }
 
 /** The version the driver reported for the object each reader {@link openGenerationReader} opened. */

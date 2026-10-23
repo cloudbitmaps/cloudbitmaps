@@ -10,7 +10,7 @@
 
 - [ ] Full gate green locally: `lint` · `lint:arch` · `format:check` · `typecheck` · `test` · `build` · `api:surface:check` · `smoke`
 - [ ] Touches a driver? `pnpm test:integration` green against the docker-compose backends
-- [ ] **Adversarial review gate run** — multiple parallel subagents, one per lens, against the whole
+- [ ] **Adversarial review gate run** — multiple parallel reviewers, one per lens, against the whole
       component end to end; real findings fixed here, or recorded with a severity and a deferral
 - [ ] Docs updated in the same change (see [CONTRIBUTING → Documentation](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CONTRIBUTING.md#documentation--keeping-it-current)):
       README / `docs/guide/` / `CHANGELOG.md` (top of its `[Unreleased]` subsection, newest-first) / roadmap

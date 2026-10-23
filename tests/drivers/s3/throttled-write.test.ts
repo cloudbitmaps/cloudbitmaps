@@ -570,7 +570,9 @@ describe('S3: reads answered with a bare 429, through the real SDK', () => {
     expect(errorKind(err)).toBe('TransientError');
     // The store's read retry ran it again past the SDK's own three attempts.
     expect(bucket.count('GetObject', isRow) - before).toBeGreaterThan(3);
-  });
+    // The real SDK backs off between its own attempts on real timers, at its throttling base, for each store attempt:
+    // a few seconds on an idle machine, so the default 5 s limit fails it on a loaded runner.
+  }, 30_000);
 
   it('a pointer refresh answered 429 rides out on the generation already read', async () => {
     const bucket = new StubS3Bucket();
