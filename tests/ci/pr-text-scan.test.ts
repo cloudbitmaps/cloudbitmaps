@@ -242,19 +242,41 @@ describe('look-alikes stay quiet', () => {
     expect(r.out).toContain(`"Co-Authored-By" in the commit ${dirty}, line 3`);
   });
 
-  it('commits a merge of the base branch brought in, and commits before the base, are not scanned', () => {
+  it("a commit that arrives through a merge's second parent is scanned", () => {
+    // A side branch holding a listed trailer, merged into the pull request's branch: the base is the base branch's
+    // tip when the branch was last pushed, which is where the side branch forked.
     const { dir, commit, merge } = repo();
     const base = commit('base');
+    git(dir, 'branch', 'side');
+    git(dir, 'checkout', '-q', '-b', 'pr');
+    commit('Add a thing');
+    git(dir, 'checkout', '-q', 'side');
+    const side = commit(
+      'Side work\n\nCo-authored-by: claude[bot] <1+claude[bot]@users.noreply.github.com>',
+    );
+    git(dir, 'checkout', '-q', 'pr');
+    const head = merge();
+    const r = run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"Co-Authored-By" in the commit ${side}, line 3`);
+  });
+
+  it("commits a merge of the base branch brought in are not scanned, with the base at that branch's tip", () => {
+    const { dir, commit, merge } = repo();
+    commit('base');
     git(dir, 'branch', 'side');
     git(dir, 'checkout', '-q', '-b', 'pr');
     commit('Add a thing');
     // The base branch ("side" here) moves on with a commit this pull request does not own, then is merged in.
     git(dir, 'checkout', '-q', 'side');
     commit('an old subagent commit');
+    const baseTip = git(dir, 'rev-parse', 'HEAD').stdout.trim();
     git(dir, 'checkout', '-q', 'pr');
     const head = merge();
-    expect(git(dir, 'log', '--format=%s', `${base}..${head}`).stdout).toContain('subagent');
-    expect(run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head }).status).toBe(0);
+    expect(git(dir, 'log', '--format=%s', `${baseTip}..${head}`).stdout).not.toContain('subagent');
+    expect(run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: baseTip, HEAD_SHA: head }).status).toBe(
+      0,
+    );
   });
 
   it('a commit authored or committed by an AI identity fails; a person and the named bots pass', () => {
@@ -267,6 +289,7 @@ describe('look-alikes stay quiet', () => {
     for (const author of [
       'claude[bot] <1+claude[bot]@users.noreply.github.com>',
       `Claude <noreply@${'anthropic'}.com>`,
+      `Alex Smith <noreply@${'anthropic'}.com>`,
       'Alex Smith (aider) <alex@example.com>',
       `Some Tool <noreply@${'anthropic'}.com>`,
     ]) {
@@ -279,6 +302,11 @@ describe('look-alikes stay quiet', () => {
     expect(committer.status).toBe(1);
     expect(committer.out).toContain('"bot identity" in the committer of commit');
     expect(asIdentity({ author: 'Alex Smith <alex@example.com>' }).status).toBe(0);
+    // A person whose name is Claude has no honest rewording: only the tools' own identities fail.
+    expect(asIdentity({ author: 'Claude Dupont <claude@example.com>' }).status).toBe(0);
+    expect(asIdentity({ author: 'Claude <claude@example.com>', committer: 'Claude' }).status).toBe(
+      0,
+    );
     expect(
       asIdentity({
         author: 'dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>',
@@ -294,6 +322,16 @@ describe('look-alikes stay quiet', () => {
     expect(r.status).toBe(0);
   });
 });
+
+/** The output of a run whose last commit has an AI author. */
+function asIdentityOut(): string {
+  const { dir, commit } = repo();
+  const base = commit('base');
+  const head = commit('Add a thing', {
+    author: 'claude[bot] <1+claude[bot]@users.noreply.github.com>',
+  });
+  return run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head }).out;
+}
 
 describe('the leak-scan half', () => {
   // Built at run time, so this file holds no local path or private-repo reference itself (the leak scan reads it).
@@ -385,6 +423,25 @@ describe('the leak-scan half', () => {
     expect(r.out).toContain('<text withheld>');
     expect(r.out).not.toContain('someone/project');
     expect(r.out).not.toContain('1234'.repeat(3));
+  });
+
+  it('the redaction holds across every line-break form inside a refused line', () => {
+    for (const brk of ['\u2028', '\u2029', '\r', '\v', '\f', '\u0085']) {
+      const r = scan({ body: `${localPath}${brk}tail-after-break more` });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('<text withheld>');
+      expect(r.out).not.toContain('tail-after-break');
+    }
+  });
+
+  it('the advice for a leak is apart from the advice for a phrase', () => {
+    const phrase = scan({ commit: 'Subject\n\nwritten by Claude' });
+    expect(phrase.out).toContain('git rebase -i origin/main');
+    expect(phrase.out).toContain('--force-with-lease --force-if-includes');
+    const leak = scan({ commit: `Subject\n\n${localPath}` });
+    expect(leak.out).toContain('does not unpublish');
+    const who = asIdentityOut();
+    expect(who).toContain('--reset-author');
   });
 });
 

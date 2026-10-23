@@ -18,9 +18,13 @@
 //
 //   PR_TITLE   required, non-empty            PR_BODY   required (may be empty: a PR can have no body)
 //   BASE_SHA / HEAD_SHA   both or neither; with both, the messages, the author and the committer of every commit of
-//                         `git log --first-parent BASE..HEAD` are scanned: the pull request's own commits and its
-//                         merges, never the commits a merge of the base branch brought in (those are already public).
-//   LEAK_SCAN_EXTRA   the private needles, passed on to the leak scan (absent on a fork's pull request).
+//                         `git log BASE..HEAD` are scanned: the pull request's own commits, those that reached its
+//                         branch through a merge's second parent, and its merges. BASE_SHA is the base branch's tip
+//                         when the branch was last pushed, so the commits a merge of the base branch brought in are
+//                         already behind it and are not read. Locally, use `git merge-base origin/main HEAD`.
+//   LEAK_SCAN_EXTRA   the private needles, passed on to the leak scan (absent on a fork's pull request). Without it
+//                     the leak scan reads a `.leak-needles` file when the checkout has one (a linked worktree with none
+//                     of its own reads the main checkout's), so a local run applies needles only where that file exists.
 //   REQUIRE_NEEDLES   `true` when the needles must be there (the workflow sets it for a pull request from this
 //                     repository): the check then fails with exit 2 instead of running without them.
 //
@@ -39,7 +43,8 @@
 //
 // What it does not catch: a phrase that is not on the list below, a leak that is reworded (a path written with a
 // space in it, an id described in other words), the name of the branch, an author whose identity names no tool, and
-// anything in a pull request comment or review, which this script never reads.
+// anything in a pull request comment or review, which this script never reads. An author's or committer's name and
+// address are not run through the private needles (the leak scan's email rule would refuse every human address).
 
 const { execFileSync, spawnSync } = require('node:child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
@@ -66,7 +71,9 @@ const ROOT = resolve(__dirname, '..');
 //     `Co-authored-by: renovate[bot] <...>`, the same for `github-actions[bot]`) is removed from a commit message
 //     before it is scanned: GitHub writes it, and its address is not ours to leak. Any other `[bot]` trailer is
 //     scanned, and an AI app's co-author trailer is caught by the `Co-Authored-By` entry.
-//   * `Claude` is a case-sensitive whole word, so `CLAUDE.md` and a lower-case path do not match.
+//   * `Claude` is a case-sensitive whole word, so `CLAUDE.md` and a lower-case path do not match. In an author or
+//     committer it is not a finding by itself (a person can be named Claude): only a `[bot]` login outside the
+//     allowlist, `(aider)` and a vendor no-reply address are.
 //
 // A phrase wrapped across two lines is found too: each pair of adjacent lines is also tested, joined with a space.
 //
@@ -103,7 +110,6 @@ const IDENTITY_RULES = [
     name: 'bot identity',
     test: (t) => [...t.matchAll(/([\w.-]+)\[bot\]/gi)].some((m) => !BOT_ALLOWED.test(m[1])),
   },
-  { name: 'Claude', test: (t) => /\bClaude\b/.test(t) },
   { name: 'aider', test: (t) => /\(aider\)/i.test(t) },
   { name: 'anthropic address', test: (t) => /noreply@anthropic\.com/i.test(t) },
 ];
@@ -139,11 +145,6 @@ function identityFindings(source, identity) {
     source,
     line: 0,
   }));
-  for (const p of PHRASES) {
-    if (p.re.test(identity) && !out.some((f) => f.phrase === p.name)) {
-      out.push({ phrase: p.name, source, line: 0 });
-    }
-  }
   return out;
 }
 
@@ -154,8 +155,9 @@ const BOT_TRAILER =
   /^(?:Signed-off-by|Co-authored-by):\s*(?:dependabot|renovate|github-actions)\[bot\]\s*</i;
 
 /**
- * The pull request's own commits, `[{ sha, author, committer, message }]`: the first-parent line from the base, so a
- * merge commit of the PR is read and the base branch's commits a merge brought in are not.
+ * The pull request's own commits, `[{ sha, author, committer, message }]`: every commit reachable from the head and
+ * not from the base, merges included, so a commit that reached the branch through a merge's second parent is read.
+ * The base is the base branch's tip, so what a merge of that branch brought in is behind it and is not listed.
  */
 function commits(base, head) {
   const SHA = /^[0-9a-f]{7,40}$/i;
@@ -165,7 +167,7 @@ function commits(base, head) {
   try {
     raw = execFileSync(
       'git',
-      ['log', '--first-parent', '--format=%x1e%H%n%an <%ae>%n%cn <%ce>%n%B', `${base}..${head}`],
+      ['log', '--format=%x1e%H%n%an <%ae>%n%cn <%ce>%n%B', `${base}..${head}`],
       {
         cwd: ROOT,
         encoding: 'utf8',
@@ -199,7 +201,7 @@ function commits(base, head) {
 /** The leak scan's report with each finding's text withheld (the location stays), and the needle's index dropped. */
 function redact(report) {
   return report
-    .replace(/^(\s{4}\S+:\d+)\s{2}.*$/gm, '$1  <text withheld>')
+    .replace(/^(\s{4}\S+:\d+)\s{2}[^\n]*$/gm, '$1  <text withheld>')
     .replace(/extra needle #\d+/g, 'extra needle');
 }
 
@@ -300,9 +302,13 @@ function main(env) {
   }
   if (findings.length > 0) {
     console.error(`pr-text-scan: ${FIX}`);
-    if (findings.some((f) => f.source.includes('commit ')))
+    if (findings.some((f) => f.source.includes('commit ') && f.line > 0))
       console.error(
-        'pr-text-scan: to fix a commit: reword it (`git rebase -i`) and push with `--force-with-lease`; the text of a title or a body is edited on the pull request',
+        "pr-text-scan: to fix a commit message: reword it with `git rebase -i origin/main`, then `git push --force-with-lease --force-if-includes` on the pull request's own branch; the text of a title or a body is edited on the pull request",
+      );
+    if (findings.some((f) => f.line === 0))
+      console.error(
+        'pr-text-scan: to fix an author or committer of the last commit: `git commit --amend --no-edit --reset-author` with the right identity configured (an earlier commit: mark it `edit` in `git rebase -i origin/main`, amend it the same way, then `git rebase --continue`)',
       );
   }
 
@@ -314,6 +320,9 @@ function main(env) {
       '\npr-text-scan: the leak scan refused this text (file names: title.txt, body.txt, commit-<sha>.txt):',
     );
     console.error(leak.out);
+    console.error(
+      'pr-text-scan: a leak (a secret or private text) is handled apart from a phrase: a force-push does not unpublish what was already pushed. Rotate a credential first; for other private text, open a new pull request from a clean branch and ask the maintainer about removing the old one.',
+    );
   }
 
   if (findings.length > 0 || !leak.ok) {

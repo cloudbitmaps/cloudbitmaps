@@ -330,14 +330,17 @@ order:
      copies the commit subjects into `main`'s history, so the `pull request text` check scans all three, and the
      author and committer of each commit. It fails text that says who or what did the work (state what was done
      instead) and anything `scripts/leak-scan.cjs` would refuse in a tracked file. It prints the phrase, the source and
-     the line number, never the line. Run it before you push (a local run has no private needles, so it is weaker
-     than CI):
+     the line number, never the line. Run it before you push (a local run applies the private needles only when a
+     `.leak-needles` file exists in the checkout, so without one it is weaker than CI):
      `BASE_SHA=$(git merge-base origin/main HEAD) HEAD_SHA=$(git rev-parse HEAD) PR_TITLE="the title" PR_BODY="$(gh pr view N --json body -q .body)" node scripts/pr-text-scan.cjs`
      (leave out `BASE_SHA` and `HEAD_SHA` to skip the commits). It cannot catch a phrase that is not on its list or a
      leak that is reworded, so it does not replace reading the text. To fix a hit in a title or a body, edit the text
      on the pull request: that triggers the check again, and a re-run from the Actions tab would scan the old text. To
-     fix one in a commit message, reword the commit (`git rebase -i`) and push with `--force-with-lease`; a commit
-     already pushed to a branch others use is better left, with the fix made in a new branch. `scripts/README.md` lists
+     fix one in a commit message, reword the commit (`git rebase -i origin/main`) and push with
+     `git push --force-with-lease --force-if-includes` on the pull request's own branch; a commit already pushed to a
+     branch others use is better left, with the fix made in a new branch. A leak (a secret or private text) is handled
+     apart from a phrase: a force-push does not unpublish what was already pushed, so rotate a credential first and
+     ask the maintainer about anything else. `scripts/README.md` lists
      what it checks and the known false positives, each with its rewording.
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
 
