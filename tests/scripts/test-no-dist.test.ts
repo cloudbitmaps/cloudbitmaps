@@ -293,17 +293,24 @@ fs.renameSync = (from, to) => {
     expect(existsSync(aside())).toBe(false);
   });
 
-  it('takes a lock of a reused process id, and one older than the last boot', () => {
+  // The holder must have started more than ten minutes after the lock was written, which needs a machine up for a while
+  // (a fresh CI runner is not).
+  it.skipIf(os.uptime() < 7200)(
+    'takes a lock whose process id was reused after it was written',
+    () => {
+      mkdirSync(aside(), { recursive: true });
+      const lock = join(aside(), 'lock');
+      plant("test('runs', () => {});");
+      writeFileSync(lock, String(process.ppid));
+      const afterBoot = new Date(Date.now() - os.uptime() * 1000 + 500);
+      utimesSync(lock, afterBoot, afterBoot);
+      expect(noDist('plant.test.ts').status).toBe(0);
+    },
+  );
+
+  it('takes a lock of a live process id that is older than the last boot', () => {
     mkdirSync(aside(), { recursive: true });
     const lock = join(aside(), 'lock');
-    plant("test('runs', () => {});");
-    // Written after the last boot but before the process now holding that id started: the id was reused.
-    writeFileSync(lock, String(process.ppid));
-    const afterBoot = new Date(Date.now() - os.uptime() * 1000 + 500);
-    utimesSync(lock, afterBoot, afterBoot);
-    expect(noDist('plant.test.ts').status).toBe(0);
-    // A live process id, a lock from before the boot.
-    mkdirSync(aside(), { recursive: true });
     writeFileSync(lock, String(process.ppid));
     const beforeBoot = new Date(Date.now() - os.uptime() * 1000 - 60000);
     utimesSync(lock, beforeBoot, beforeBoot);
