@@ -13,7 +13,9 @@
 //
 // A hidden `dist/` is restored by the run itself (normal end, failure, SIGINT, SIGTERM, SIGHUP, an error while hiding),
 // and by the next call of `hide` or `restore` for the one case no handler covers (SIGKILL, power loss). The lock is
-// created exclusively, so two runs cannot both hide; a lock whose process is gone, or that holds no process id, is stale.
+// created exclusively; a stale one (its process is gone, it is older than the last boot, the process now holding that id
+// started after the lock was written, or it holds no process id and is five seconds old) is taken over under a second
+// exclusive file, so one process at a time judges and replaces it. A clock step can still misjudge a lock.
 // Restoring never deletes a build: a `dist/` that cannot go back where it came from is moved to `kept/` and reported.
 const fs = require('node:fs');
 const os = require('node:os');
@@ -22,6 +24,9 @@ const { execFileSync } = require('node:child_process');
 
 const ASIDE = '.no-dist-aside';
 const STALE_EMPTY_LOCK_MS = 5000;
+// How much later than the lock a process may have started and still be its writer. `ps` derives a start time from the boot
+// time on Linux, which moves when the clock is stepped, so a few seconds would misjudge a live run after a step.
+const REUSE_TOLERANCE_MS = 10 * 60 * 1000;
 
 const paths = (root) => {
   const aside = path.join(root, ASIDE);
@@ -108,7 +113,7 @@ const stale = (lock, pid) => {
   const written = fs.statSync(lock).mtimeMs;
   if (written < Date.now() - os.uptime() * 1000 - 1000) return true;
   const started = startedAt(pid);
-  return started !== null && started > written + 2000;
+  return started !== null && started > written + REUSE_TOLERANCE_MS;
 };
 
 // Takes the lock, or throws when a live run holds it. A stale lock is taken over under a second exclusive file, so only
@@ -155,10 +160,29 @@ const acquire = (lock) => {
     first = verdict();
     if (first !== 'free' && first !== 'stale')
       throw busy(first === 'starting' ? 'one is starting' : `process ${first}`);
-    fs.rmSync(lock, { force: true });
+    if (first === 'stale') fs.rmSync(lock, { force: true });
     claim('wx');
   } finally {
     fs.rmSync(takeover, { force: true });
+  }
+};
+
+// Removes a package's folder under `hidden/` once its `dist` is out of it. Anything else in it (a `.DS_Store` that Finder
+// writes when someone opens the folder) goes too; a `dist` never does, so it throws if one is still there.
+const dropFolder = (dir) => {
+  for (const name of fs.readdirSync(dir)) {
+    if (name !== 'dist') fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+  }
+  fs.rmdirSync(dir);
+};
+
+// The same after a build went back: the build is safe by then, so a folder that will not go is no failure; the next run
+// clears it.
+const dropFolderQuietly = (dir) => {
+  try {
+    dropFolder(dir);
+  } catch {
+    // left for the next restore
   }
 };
 
@@ -175,16 +199,16 @@ const restoreHidden = (root) => {
     const to = path.join(root, 'packages', pkg, 'dist');
     try {
       if (!fs.existsSync(from)) {
-        fs.rmdirSync(path.join(p.hidden, pkg));
+        dropFolder(path.join(p.hidden, pkg));
       } else if (fs.existsSync(path.join(root, 'packages', pkg)) && !fs.existsSync(to)) {
         rename(from, to);
-        fs.rmdirSync(path.join(p.hidden, pkg));
+        dropFolderQuietly(path.join(p.hidden, pkg));
         out.restored.push(pkg);
       } else {
         const dest = path.join(p.kept, `${stamp}-${pkg}`);
         fs.mkdirSync(dest, { recursive: true });
         rename(from, path.join(dest, 'dist'));
-        fs.rmdirSync(path.join(p.hidden, pkg));
+        dropFolderQuietly(path.join(p.hidden, pkg));
         out.kept.push(pkg);
       }
     } catch (err) {

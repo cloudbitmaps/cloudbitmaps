@@ -274,6 +274,19 @@ fs.renameSync = (from, to) => {
     },
   );
 
+  it('ignores litter in a hidden package folder and never removes a build there', () => {
+    // A Finder file beside a build that goes back, and beside nothing at all.
+    leaveHidden();
+    writeFileSync(join(aside(), 'hidden', 'p', '.DS_Store'), 'x');
+    mkdirSync(join(aside(), 'hidden', 'q'), { recursive: true });
+    writeFileSync(join(aside(), 'hidden', 'q', '.DS_Store'), 'x');
+    const run = restoreOnly();
+    expect(text(run)).not.toMatch(/could not restore/);
+    expect(run.status).toBe(0);
+    expect(readFileSync(dist(), 'utf8')).toBe(BUILT);
+    expect(existsSync(aside())).toBe(false);
+  });
+
   it('refuses --restore with another argument', () => {
     const run = sync(SCRIPT, ['--restore', '--globals']);
     expect(run.status).toBe(2);
