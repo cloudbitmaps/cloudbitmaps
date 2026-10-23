@@ -68,7 +68,9 @@ package: doing so would put that SDK back into every install.
 **Every call checks its options.** An options bag that is not an object, a key the call does not take, and a switch
 (`dryRun`, `allowEmpty`, `purgeTombstones` and the like) that is not a boolean throw `ValidationError` naming what is
 wrong, before anything is read or written, so a misspelt key or a scope passed as a bare string never silently widens
-what a call does. A key whose value is `undefined` reads as absent, so a spread of options keeps working. A `null`
+what a call does. The keys checked are the bag's own: a key it inherits through a prototype (a bag made with
+`Object.create`, or a class instance whose options are getters) is not checked, so pass options as an object literal
+or a spread to have every key checked. A key whose value is `undefined` reads as absent, so a spread of options keeps working. A `null`
 throws where a number, a switch or a name is taken (`concurrency`, `keep`, `budget`, `now`, `dryRun`, `namespace`,
 `limit` and the like), since it would otherwise read as the default; it still reads as absent for a sink or an object:
 `audit`, `guard`, `exclude`, `metrics`, a backend's `client` or `containerClient`, and the cost model's `workload`, its
