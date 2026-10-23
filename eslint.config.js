@@ -9,6 +9,7 @@ export default tseslint.config(
       'dist',
       'packages/*/dist',
       'fuzz/build',
+      '.no-dist-aside',
       'coverage',
       'node_modules',
       '.worktrees',
