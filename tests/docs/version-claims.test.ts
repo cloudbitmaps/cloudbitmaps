@@ -135,6 +135,11 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'a claim about our release',
   ],
   [
+    '12.18.0',
+    "the newest @azure/storage-blob release below the floor of @cloudbitmaps/azure-blob's dependency, which fails the " +
+      "driver's own unit tests, in the package README. A third-party version, not a claim about our release",
+  ],
+  [
     '12.23.0',
     "the floor of @cloudbitmaps/azure-blob's dependency on @azure/storage-blob: the lowest version the driver's own " +
       'unit tests pass on, in the package README and the site. A third-party version, not a claim about our release',
