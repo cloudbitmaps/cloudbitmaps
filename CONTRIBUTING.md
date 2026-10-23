@@ -18,6 +18,7 @@ Every change must pass these locally, and CI runs each of them on every pull req
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm api:surface:check` · `pnpm smoke`
+- `pnpm test:no-dist [vitest arguments]` is `pnpm test` with every `packages/*/dist` hidden, as CI's test step has it (CI runs the tests before the build). Run it, on the file if you like (`pnpm test:no-dist tests/bin`), when a test or a script you touched resolves a package through its `dist/`, a spawned CLI included; a stale local build hides that failure until CI.
 - `pnpm lint` also runs the function-length gate (`pnpm lint:fn-length`, `scripts/function-length.cjs`): no function in
   `packages/*/src` may be over 100 code lines (blank lines and comment-only lines are not counted), and the ones that
   already were are listed with their sizes in `scripts/function-length-baseline.json`, a ratchet that can only go

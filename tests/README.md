@@ -14,6 +14,7 @@ resolves.
 | command | runs |
 |---|---|
 | `pnpm test` | everything below **except** `integration/` — no containers, no network. It does need the git history: `docs/calibration-reports.test.ts` checks that each calibration evidence file was committed once and never edited, so a shallow clone fails it |
+| `pnpm test:no-dist` | the same suite as `pnpm test`, with every `packages/*/dist` hidden for the run and put back afterwards (a normal end, a failure and an interrupt all restore; the next run restores what a kill left). It takes vitest's arguments (`pnpm test:no-dist tests/bin/x.test.ts -t name --maxWorkers=2`). CI runs the tests before the build, so no `dist/` exists there; a stale local one hides a test that needs it. The aliases in `vitest.config.ts` point at sources, so what reaches a `dist/` is a `package.json` `exports` path, a spawned CLI and a script that imports a built entry |
 | `pnpm lint:arch` | `arch/` only |
 | `pnpm test:integration` | `integration/` only, against real backends — start them first with `docker compose up -d`, and run `pnpm build` first too |
 | `pnpm vitest run tests/docs` | one directory, while working on it |
