@@ -29,7 +29,10 @@ const days = (n = 30): string => `<Expiration><Days>${n}</Days></Expiration>`;
 
 async function verdict(rules: string[], prefix: string | null = 'cr') {
   const bucket = new StubBucket();
-  bucket.lifecycleXml = `<LifecycleConfiguration>${rules.join('')}</LifecycleConfiguration>`;
+  // A bucket with no rule has no configuration: S3 answers `NoSuchLifecycleConfiguration`, never an empty document.
+  if (rules.length > 0) {
+    bucket.lifecycleXml = `<LifecycleConfiguration>${rules.join('')}</LifecycleConfiguration>`;
+  }
   const store = new S3Storage({
     bucket: 'b',
     client: bucket.client(),

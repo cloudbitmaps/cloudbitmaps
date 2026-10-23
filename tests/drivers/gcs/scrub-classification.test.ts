@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { types } from 'node:util';
 import { createRequire } from 'node:module';
-import { ApiError, type Storage } from '@google-cloud/storage';
+import type { Storage } from '@google-cloud/storage';
 import {
   isTransportFault as isNodeTransportFault,
   toTransient,
@@ -39,6 +39,7 @@ import {
   startLoopback,
   type Answer,
 } from '../../helpers/gcs-error-answers';
+import { ApiError } from '../../helpers/gcs-api-error';
 
 /**
  * The scrubbed copy of a GCS SDK error classifies exactly as the raw error does, so the driver maps every GCS answer to

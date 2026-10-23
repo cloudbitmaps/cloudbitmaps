@@ -16,7 +16,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/azure-blob
 
 Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
 
-`@azure/storage-blob` (`^12`) is a real dependency of this package, so installing it is the whole step.
+`@azure/storage-blob` (`^12.23.0`) is a real dependency of this package, so installing it is the whole step. A `containerClient` you pass must come from 12.23.0 or later: the driver's own tests fail on each older version they were run on, 12.0.0, 12.12.0, 12.17.0 and 12.18.0 (no stable 12.19 to 12.22 exists): the oldest 12.x lacks members the driver calls, such as `deleteIfExists`, and on 12.18.0, the newest release below the floor, a read that drops part-way surfaces as the read's timeout or does not end within the test's limit, and a refused pointer read does not release its request.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use

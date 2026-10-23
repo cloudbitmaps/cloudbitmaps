@@ -1,0 +1,158 @@
+name: SDK floor (nightly)
+
+# Each storage driver's tests, run against the OLDEST cloud SDK its dependency range allows.
+#
+# A driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.700.0 <4`, `@google-cloud/storage` `^8.1.0`,
+# `@azure/storage-blob` `^12.23.0`), and a user's install can resolve any version in it: npm reuses one the application
+# already has. Every other job here runs the version in `pnpm-lock.yaml`, the newest, so the lowest version a range
+# admits is never run, and a driver that quietly came to need a newer SDK member passes every check. The S3 floor
+# matters most: an SDK that predates `If-Match` on `PutObject` sends the registry's compare-and-swap as a plain
+# overwrite.
+#
+# A range written with `||` is run at the lowest version of each alternative, one leg each: a break at 8.0.0 must not
+# hide behind a pass at 7.4.0.
+#
+# `scripts/sdk-floor.cjs` does the work for one driver: it exports the committed tree to a directory outside the
+# checkout, pins the SDK to the range's lowest version with a `pnpm.overrides` entry, installs there, checks that the
+# installed version is exactly the one asked for, and runs the driver's unit tests and its integration file against the
+# emulator this job started. Its header says what it does not show.
+#
+# `negative-control` runs the S3 driver on 3.699.0, one release below the floor, and requires it to FAIL with the
+# registry's refusal of a client that does not send `If-Match`. A green floor run alone cannot tell "the old SDK
+# works" from "the job cannot see a dropped `If-Match`"; this is what proves it can.
+#
+# Not a required check. A scheduled run that fails shows red on the Actions tab for `main`; GitHub notifies one user for
+# it, whoever last changed the cron line, as that user's notification settings allow. A pull request that touches a
+# driver, the script or this file runs it too, so a change that breaks a floor fails where it is made.
+#
+# No secret, and no cache writes. Two things hold, and they are different claims. The steps save nothing: the Docker
+# images are restored, never saved, from the entry the `integration` job in ci.yml keeps, and setup-node's cache is off.
+# And the job cannot write the cache whatever runs in it: the installs here resolve third-party packages fresh and run
+# them on the runner, where the cache token can be reached, so the workflow sets `cache-mode: read` and the cache service
+# refuses every write. What a job holding a secret restores (the Docker image entries, the pnpm store) cannot come
+# from here.
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # 03:00 UTC nightly: the full-strength tests follow at 04:00 and the fuzz campaign at 05:00
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/actions/docker-images-restore/**
+      - .github/workflows/sdk-floor.yml
+      - docker-compose.yml
+      - package.json
+      - packages/azure-blob/**
+      - packages/core/src/core/errors.ts
+      - packages/core/src/driver-kit.ts
+      - packages/core/src/drivers/**
+      - packages/gcs/**
+      - packages/roaring/src/testing/conformance.ts
+      - packages/s3/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - scripts/ci-backend-images.sh
+      - scripts/lib/docker-pull.sh
+      - scripts/sdk-floor.cjs
+      - tests/drivers/_shared/**
+      - tests/drivers/azure/**
+      - tests/drivers/gcs/**
+      - tests/drivers/s3/**
+      - tests/helpers/**
+      - tests/integration/azure.test.ts
+      - tests/integration/gcs.test.ts
+      - tests/integration/s3.test.ts
+      - tests/setup-fast-check.ts
+      - vitest.config.ts
+      - vitest.integration.config.ts
+
+permissions:
+  contents: read
+
+# Restoring still works; only writing is refused. A job must not set its own `cache-mode`: a job's setting overrides this.
+cache-mode: read
+
+# Per event, as in ci.yml, and a run is cancelled only on a pull request: a manual dispatch on `main` must not cancel the
+# night's scheduled run, which would end grey with no failure notice.
+concurrency:
+  group: sdk-floor-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  floor:
+    name: ${{ matrix.driver }} at its SDK floor (${{ matrix.floor }})
+    runs-on: ubuntu-latest # needs Docker on the runner
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One leg for each alternative of the driver's range, `floor` counting from the lowest (0): a range written
+          # with `||` gets one for each side. A test reads the packages and requires exactly these legs.
+          - driver: s3
+            service: minio
+            floor: 0
+          - driver: gcs
+            service: fake-gcs
+            floor: 0
+          - driver: azure-blob
+            service: azurite
+            floor: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          # Off whatever `packageManager` says: setup-node's own cache is not used here.
+          package-manager-cache: false
+      # The images are restored from the entry the `integration` job keeps, and never saved from here.
+      - uses: ./.github/actions/docker-images-restore
+        with:
+          name: integration
+          files: docker-compose.yml
+      - name: Load or pull backend images (serial, with backoff)
+        run: scripts/ci-backend-images.sh "$RUNNER_TEMP/backend-images.yml"
+      - name: Start this driver's emulator
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300 "$SERVICE"
+      - name: Run the driver's tests at its SDK floor
+        env:
+          DRIVER: ${{ matrix.driver }}
+          FLOOR: ${{ matrix.floor }}
+        run: node scripts/sdk-floor.cjs --driver "$DRIVER" --floor "$FLOOR" --integration
+      - if: always()
+        run: docker compose down
+
+  negative-control:
+    name: negative control (s3 below its floor must fail)
+    runs-on: ubuntu-latest # needs Docker on the runner
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          # Off whatever `packageManager` says: setup-node's own cache is not used here.
+          package-manager-cache: false
+      - uses: ./.github/actions/docker-images-restore
+        with:
+          name: integration
+          files: docker-compose.yml
+      - name: Load or pull backend images (serial, with backoff)
+        run: scripts/ci-backend-images.sh "$RUNNER_TEMP/backend-images.yml"
+      - name: Start MinIO
+        run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300 minio
+      # 3.699.0 is the release below the floor, and one the docs name as sending `If-None-Match` but not `If-Match` on a
+      # PutObject. The run must fail, and for this reason: the registry refuses a write the SDK would send unfenced.
+      # A run that passes, or fails to install, or fails for another reason, fails this step.
+      - name: Run S3 one release below its floor, expecting the refusal of an unfenced write
+        run: node scripts/sdk-floor.cjs --driver s3 --version 3.699.0 --integration-only --expect-failure "does not send If-Match"
+      - if: always()
+        run: docker compose down

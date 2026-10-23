@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@cloudbitmaps/core": "workspace:*",
-    "@azure/storage-blob": "^12"
+    "@azure/storage-blob": "^12.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

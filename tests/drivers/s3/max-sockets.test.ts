@@ -9,6 +9,7 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { S3Storage, limitSockets } from '@/s3/backend';
 import { ValidationError } from '@/core/errors';
+import { s3SdkMinor, S3_STRONG_MINOR } from '../../helpers/s3-sdk-version';
 
 /**
  * The client the store builds opens up to `maxSockets` connections at once (128 by default; the SDK's own default is
@@ -185,10 +186,16 @@ describe('S3Storage maxSockets, on the client it builds', { timeout: 30_000 }, (
         }),
     );
     expect(plain.expect.has('100-continue')).toBe(true);
-    // With a pool of 2, uploads that went through it would open 2 connections; the SDK's own route opens one each.
     const mine = await send((endpoint) => built(endpoint, { maxSockets: 2 }));
     expect(mine.expect.has('100-continue')).toBe(true);
-    expect(mine.opened).toBe(plain.opened);
+    // From 3.723.0 the SDK's handler keeps these uploads off the pool.
+    if (s3SdkMinor() >= S3_STRONG_MINOR) {
+      // With a pool of 2, uploads that went through it would open 2 connections; the SDK's own route opens one each.
+      expect(mine.opened).toBe(plain.opened);
+    } else {
+      // Before 3.723.0 the SDK's handler pools these uploads too, so the cap limits them: 2 connections, not 40.
+      expect(mine.opened).toBe(2);
+    }
   });
 
   it('keeps the SDK defaults-mode connection timeout', async () => {

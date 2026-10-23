@@ -66,12 +66,15 @@ const respond = (statusCode: number, headers: Record<string, string>, body = '')
   body: Readable.from([Buffer.from(body)]),
 });
 
+/** An answer with the code: an error document, as S3 writes one. A 2xx status carries no body, as S3's 204 does not. */
 const s3Error = (statusCode: number, code: string): StubResponse =>
-  respond(
-    statusCode,
-    { 'content-type': 'application/xml' },
-    `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`,
-  );
+  statusCode < 300
+    ? respond(statusCode, {})
+    : respond(
+        statusCode,
+        { 'content-type': 'application/xml' },
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`,
+      );
 
 /** What a dropped connection looks like to the SDK: Node's socket error, which the SDK counts as transient. */
 const connectionReset = (): Error =>

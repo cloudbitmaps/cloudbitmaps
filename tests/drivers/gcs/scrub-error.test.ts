@@ -1,11 +1,11 @@
 import { PassThrough } from 'node:stream';
 import { types } from 'node:util';
 import { createRequire } from 'node:module';
-import { ApiError } from '@google-cloud/storage';
 import { TransientError, ValidationError, errorKind } from '@cloudbitmaps/core/driver-kit';
 import { scrubCredentials } from '@/gcs/scrub-error';
 import { isMissingBucket, isTransient } from '@/gcs/gcs-errors';
 import { ReadTimedOut } from '@/gcs/read-timeout';
+import { ApiError } from '../../helpers/gcs-api-error';
 
 // Every credential-looking value is built at run time, so the leak scan never reads one in this file.
 const TOKEN = ['ya29', 'stand-in-access-token-0123456789'].join('.');
@@ -58,7 +58,7 @@ function streamResponse(status: number): PassThrough {
   });
 }
 
-type Sdk = ApiError & Record<string, unknown>;
+type Sdk = InstanceType<typeof ApiError> & Record<string, unknown>;
 /** An error shaped as the SDK raises one for a JSON API call: the code and errors from the body, the live response. */
 function apiError(code = 503, fields: Record<string, unknown> = {}): Sdk {
   const errors = [{ message: 'backend', domain: 'global', reason: 'backendError' }];
