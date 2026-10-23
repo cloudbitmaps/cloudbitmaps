@@ -80,7 +80,7 @@ the data: what a cold intersect, an `andNot` and a load cost, and how long they 
 
 ### The in-region run — run `2026-10-13-b329d`
 
-> **Codec:** the native codec (packages 0.21.0). The TypeScript codec has not been run in region; to be re-measured.
+> **Codec:** the native codec (the release the run installed, named by the evidence's `packageVersion`). The TypeScript codec has not been run in region; to be re-measured.
 >
 > **Measured** against real S3 in `us-east-1` on 2026-10-13 (UTC), from AWS CloudShell in the same region, with the
 > packages then published (the evidence names the version, as `packageVersion`) and a client of 128 sockets, the number this release's own client allows: a round-trip
@@ -195,7 +195,7 @@ real ids are often denser, and the guide counts larger chunks.
 
 ## Large operands — run `2026-10-07-88cd3`
 
-> **Codec:** the native codec (packages 0.18.3). The TypeScript codec has not been run on these operands; to be re-measured.
+> **Codec:** the native codec (the release the run installed, named by the evidence's `packageVersion`). The TypeScript codec has not been run on these operands; to be re-measured.
 >
 > **Measured** against real S3 in `us-east-1` on 2026-10-07 (UTC), from AWS CloudShell in the same region (2 CPUs, a
 > round-trip floor of 4.7 ms to the region, so in-region), through the packages then published (the evidence names the version, as `packageVersion`). This is the first run of
@@ -261,7 +261,7 @@ them run-encoded.
 
 ## At scale — measured (1K → 10K → 100K segments)
 
-> **Codec:** the native codec (the results file's last commit predates 0.24.0). Not re-run on the TypeScript codec: the retained-heap column is the reader cache's heap, which the codec does not change, but the chunk-skipping intersect row does run the codec. To be re-measured.
+> **Codec:** the native codec (the results file was last committed before the switch to the TypeScript codec). Not re-run on the TypeScript codec: the retained-heap column is the reader cache's heap, which the codec does not change, but the chunk-skipping intersect row does run the codec. To be re-measured.
 >
 > **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
@@ -455,7 +455,7 @@ backend's upload buffer comes on top of all of it:
 > their load were out of band (each first take is kept beside the figure that replaced it).
 > [`tests/bench/ts-codec-verdict.test.ts`](../tests/bench/ts-codec-verdict.test.ts) recomputes every verdict from the
 > rounds. The report is [`bench/ts-codec-comparison.md`](../bench/ts-codec-comparison.md). These are wall-clock figures
-> from one machine, recorded and not asserted; they are the figures of 0.24.0's switch, and CI does not re-measure them.
+> from one machine, recorded and not asserted; they are the figures taken for the switch to the TypeScript codec, and CI does not re-measure them.
 
 **How.** Each cell times the same call on three subjects, in an order that rotates through the six permutations: the native
 codec, the TypeScript codec, and the native codec again as an A/A control. A cell's figure is the median over 31 rounds of

@@ -146,6 +146,11 @@ const FOREIGN_VERSIONS = new Map<string, string>([
     '24.18.1',
     'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
   ],
+  [
+    '24.22.1',
+    'the Node version the TypeScript-codec comparison ran on, in the benchmarks page, the site benchmarks page and the codec ' +
+      'page — a fact about the measurement, not a release',
+  ],
 ]);
 
 /**

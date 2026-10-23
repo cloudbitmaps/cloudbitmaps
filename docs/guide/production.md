@@ -770,8 +770,8 @@ queueing behind the whole load. Without a clock to yield through, the two column
 1M-id load holds the loop for **~519 ms straight** (median), long enough for a health check to time out and the
 instance to be pulled from its load balancer.
 
-**These are the native codec's figures, to be re-measured on the TypeScript codec.** The store runs the TypeScript codec
-from 0.24.0, and its bulk load measured faster than the native one's in a warm process (see [the codec's costs and
+**These are the native codec's figures, to be re-measured on the TypeScript codec.** The store runs the TypeScript codec,
+and its bulk load measured faster than the native one's in a warm process (see [the codec's costs and
 gains](roaring-codec.md#what-it-costs-and-gains-against-native)), so ~526 ms is not what a load costs on it; no event-loop
 run exists on it yet, and the stall column is likewise native's.
 
