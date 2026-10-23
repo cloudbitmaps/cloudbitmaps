@@ -126,6 +126,18 @@ describe('release workflow shape', () => {
     expect(iPriv).toBeLessThan(iReal);
   });
 
+  it('verifies the native oracle binary it installs before any test loads it', () => {
+    const runs = job('publish').steps.map((s) => s.run ?? '');
+    const iInstall = runs.findIndex((r) => /^pnpm install\b/.test(r));
+    const iVerify = runs.findIndex((r) =>
+      /^node scripts\/verify-roaring-prebuilt\.cjs --strict$/.test(r),
+    );
+    const iTest = runs.findIndex((r) => /^pnpm test$/.test(r));
+    expect(iInstall, 'the install step is missing').toBeGreaterThan(-1);
+    expect(iVerify, 'the strict checksum step is missing').toBeGreaterThan(iInstall);
+    expect(iVerify).toBeLessThan(iTest);
+  });
+
   it('runs EVERY recoverable precondition before the irreversible step', () => {
     // The ordering rule this file exists to defend, stated once for all of them: an npm publish cannot be
     // undone outside a 72-hour window, so anything that can still be FIXED has to fail first. The

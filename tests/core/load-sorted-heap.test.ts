@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
 import { getHeapStatistics, setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import roaring from 'roaring';
 import type { CodecInterface } from '@/core/codec';
 import { NotFoundError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import type { BlobSink } from '@/core/blob';
 import type { GenKey, IStorageDriver, SegmentRef, StorageCaps } from '@/core/ports';
 import { MemoryRegistryDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counterEntropy } from '../helpers/entropy';
 import { heavy } from '../helpers/strength';
 
@@ -25,8 +24,7 @@ import { heavy } from '../helpers/strength';
  * tier writes one of exactly 64 KiB, and the two smallest on a pull request do, so the threshold is half of it and
  * leaves a margin, and no chunk's payload comes near it), the test lets a turn of the event loop pass, forces several
  * synchronous major collections (`--expose-gc` is switched on at run time, so no runner flag is needed), and reads the
- * JS heap, external memory (a typed array's backing store) and the native memory roaring's bitmaps hold, by roaring's
- * own count. The figure is the highest such reading over the one taken just before the load.
+ * JS heap and external memory (a typed array's backing store); the TypeScript codec's bitmaps live in both. The figure is the highest such reading over the one taken just before the load.
  *
  * These are samples after collection, not a high-water mark: what lives between two readings and is gone by the next
  * is not in them. The index's encoding writes into one buffer sized to the index, so the footer adds no temporary
@@ -84,17 +82,13 @@ function settledBytes(): number {
   // Backing stores are freed when their owner is swept, so several synchronous major collections settle them.
   for (let i = 0; i < 4; i++) gc({ type: 'major', execution: 'sync' });
   const stats = getHeapStatistics();
-  // roaring tells V8 what its native bitmaps allocate, and on Node 24 the heap statistics' external figure does not
-  // include it (measured: 2,000 bitmaps of 4,000 ids, 16 MiB native, moved it by 0.1 MiB), so roaring's own count is
-  // added. A Node that did include it would count the native part twice; a sorted load holds next to none of it.
-  return stats.used_heap_size + stats.external_memory + roaring.getRoaringUsedMemory();
+  return stats.used_heap_size + stats.external_memory;
 }
 
 /** What one load's readings found. */
 interface Peak {
   readonly bytes: number;
   readonly liveBitmaps: number;
-  readonly nativeBytes: number;
   readonly readings: number;
   readonly sha256: string;
 }
@@ -105,15 +99,14 @@ class Readings {
   private refs: WeakRef<object>[] = [];
   peak = 0;
   liveBitmaps = 0;
-  nativeBytes = 0;
   count = 0;
 
   /** The codec, with every bitmap it makes registered. */
   codec(): CodecInterface {
     return {
-      ...roaringCodec,
+      ...storeCodec,
       fromValues: (values) => {
-        const bitmap = roaringCodec.fromValues(values);
+        const bitmap = storeCodec.fromValues(values);
         this.refs.push(new WeakRef(bitmap));
         return bitmap;
       },
@@ -126,7 +119,6 @@ class Readings {
     this.count++;
     this.peak = Math.max(this.peak, bytes);
     this.liveBitmaps = Math.max(this.liveBitmaps, this.refs.length);
-    this.nativeBytes = Math.max(this.nativeBytes, roaring.getRoaringUsedMemory());
   }
 }
 
@@ -215,7 +207,6 @@ async function measure(n: number, sorted: boolean): Promise<Peak> {
   return {
     bytes: readings.peak,
     liveBitmaps: readings.liveBitmaps,
-    nativeBytes: readings.nativeBytes,
     readings: readings.count,
     sha256: result.sha256,
   };
@@ -223,7 +214,7 @@ async function measure(n: number, sorted: boolean): Promise<Peak> {
 
 const mib = (bytes: number): string => `${(bytes / MiB).toFixed(2)} MiB`;
 const shown = (p: Peak): string =>
-  `${mib(p.bytes)} (${p.readings} readings, ${p.liveBitmaps} live bitmaps, roaring ${mib(p.nativeBytes)})`;
+  `${mib(p.bytes)} (${p.readings} readings, ${p.liveBitmaps} live bitmaps)`;
 
 describe("a sorted load holds one chunk and the writer's index, whatever the segment holds", () => {
   it('peaks flat across 100 times the ids, under a cap, and far under an unsorted load', async () => {

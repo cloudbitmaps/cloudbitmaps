@@ -756,7 +756,8 @@ billion members. `maxScanSegments`, an option of `store.retireExpired` and `stor
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
 is network-bound and irrelevant here — a `has()` spends a negligible fraction of its time on bit math — but a
 **load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation.
-Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process:
+Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process, **on the native codec of
+0.23.0**:
 
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
@@ -771,6 +772,11 @@ median run and 47 ms in the worst — with the loop free in between: other reque
 queueing behind the whole load. Without a clock to yield through, the two columns are the same number: the same
 1M-id load holds the loop for **~519 ms straight** (median), long enough for a health check to time out and the
 instance to be pulled from its load balancer.
+
+**These are the native codec's figures, to be re-measured on the TypeScript codec.** The store runs the TypeScript codec,
+and its bulk load measured faster than the native one's in a warm process (see [the codec's costs and
+gains](roaring-codec.md#what-it-costs-and-gains-against-native)), so ~526 ms is not what a load costs on it; no event-loop
+run exists on it yet, and the stall column is likewise native's.
 
 **Read these as a loaded machine's figures.** The machine was not idle: its one-minute load average was about 5
 at the start and the end of the run, so the cost column in particular is likely higher than an idle machine would
@@ -794,19 +800,22 @@ Serverless chunk-skipping intersection is what CloudBitmaps is for, so Lambda is
 needs nothing special. `@cloudbitmaps/roaring` has no native addon and no install script: the bitmap math is
 TypeScript, so nothing is built per architecture, no toolchain is needed, and a `node_modules` installed on a laptop
 and zipped up loads on Lambda the same as one installed anywhere else. Match only the **Node version**: every
-CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x` or a later runtime, on `arm64`
-(Graviton) or `x86_64` alike.
+CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x` or a later runtime. The library is the same JavaScript on `arm64`
+(Graviton) and `x86_64`, with nothing per architecture; CI exercises `x86_64` only.
 
 Package it however you already do: a zip of your bundle and `node_modules`, a container image
 (`FROM public.ecr.aws/lambda/nodejs:22`, `npm ci`), or a Lambda layer holding `node_modules`, reused across
 functions.
 
-The repository's CI still checks this path end to end today: the `pnpm lambda-smoke` gate installs the packages in an
-Amazon Linux 2023 container and loads them under both ESM and CJS, and `pnpm build-lambda-layer` from a clone produces
-`dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring flavor. The layer script still installs the
-`roaring` package into the layer as well, compiled from source in the container. Nothing in the layer loads it, and a
-later change removes it. `pnpm lambda-smoke` installs it the same way, and loads only the two packages. The layer script is in the repository, not a published artifact: nothing on npm or on a GitHub
-release carries it, though a manually dispatched CI run can build one and attach it to that run.
+The repository's CI checks this path on every push: the `pnpm lambda-smoke` gate packs core and the flavor, unpacks
+them into a `node_modules`, mounts it into the Amazon Linux 2023 Lambda runtime image (nothing is installed or built
+inside it), checks that no native addon is present, and loads and round-trips the library under both ESM and CJS. It
+runs on `x86_64`; the packages are the same JavaScript on `arm64`, which no job runs. `pnpm build-lambda-layer` from a
+clone produces `dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring flavor and nothing compiled,
+and loads the unzipped layer from `/opt/nodejs/node_modules` in the same image through `NODE_PATH`, which Lambda sets
+for a layer and which resolves `require()` and not an ESM `import`. The layer script is in the repository, not a
+published artifact: nothing on npm or on a GitHub release carries it, though a manually dispatched CI run can build one
+and attach it to that run.
 
 ## How it stays correct
 

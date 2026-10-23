@@ -1,7 +1,7 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CloudRoaring } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type {
@@ -66,7 +66,7 @@ describe('an erasure whose holder above the pointer is deleted and its number ta
   it('the delete it sends names the object it searched', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps);
@@ -98,7 +98,7 @@ function replacingBeforeDelete(storage: MemoryStorageDriver, n: number, ids: num
       // Another writer, by number: the object goes, and its own takes the number.
       const theirs: GenKey = { ...key };
       await storage.delete(theirs);
-      await bulkLoadCrbmGeneration(storage, theirs, ids, { codec: roaringCodec });
+      await bulkLoadCrbmGeneration(storage, theirs, ids, { codec: storeCodec });
     }
     return storage.delete(key, options);
   };
@@ -109,7 +109,7 @@ describe('an erasure whose delete of a holder is refused for another object unde
   it('with the row unchanged and the object now there still holding the id: superseded, not a failed delete', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps); // generation 1, above the pointer, holds X
@@ -133,7 +133,7 @@ describe('an erasure whose delete of a holder is refused for another object unde
   it('with several holders: the deletes stop at the first refused one, and what was deleted before it is reported', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps, { keep: 9 });
     await loadSegment(REF, [1, 2, 3, X], deps, { keep: 9 }); // 1
     await loadSegment(REF, [1, 2, 3, X, 4], deps, { keep: 9 }); // 2
@@ -171,7 +171,7 @@ describe('an erasure over a storage driver that reports no version', () => {
   it('sends its delete with no version, and the delete removes the holder', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps);
@@ -186,7 +186,7 @@ describe('an erasure over a storage driver that reports no version', () => {
   it('through store.eraseSubject with no budget, which hands the erasure the driver itself', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     await loadSegment(REF, [1, 2, 3], deps);
     await loadSegment(REF, [1, 2, 3, X], deps);
     await rollbackSegment(REF, 0, deps);
@@ -216,7 +216,7 @@ async function idsAt(storage: IStorageDriver, generation: number): Promise<numbe
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
       out.push(chunkKey * 65_536 + r);
     }
   }

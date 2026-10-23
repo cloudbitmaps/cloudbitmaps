@@ -5,9 +5,9 @@ import { brandAsBackend } from '@/core/ports';
 import { CloudRoaring } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IRegistryDriver, IStorageDriver, RegistryPatch } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
 import { testEntropy } from '../helpers/entropy';
+import { storeCodec } from '../helpers/store-codec';
 
 /**
  * The read that proves an object is the one a writer wrote is not an answer when it faults: a timeout, a throttle or a
@@ -60,7 +60,7 @@ async function refusedErasure(
 ) {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
   await loadSegment(REF, [1, 2, X], deps);
   const l1AtPublish = gate();
   const l1Registry = Object.create(registry) as IRegistryDriver;
@@ -201,7 +201,7 @@ describe('a refused load whose proving read of its own object faults', () => {
     async (_kind, fault) => {
       const storage = new MemoryStorageDriver();
       const registry: IRegistryDriver = new MemoryRegistryDriver();
-      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+      const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
       // A load that read no row publishes on that absence; a row created under it refuses the publish and, being
       // another writer's, leaves the object for collection without a proof. Deleting the row it read after its object is
       // written leaves the refusal reading an absent row, which is the one place the load proves its object.

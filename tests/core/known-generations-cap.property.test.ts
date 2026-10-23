@@ -19,7 +19,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CountingObjectStore } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
@@ -71,7 +71,7 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
   it('300 `loadSegment` publishes with the `keep` an `*Into` call publishes with all land: the ledger is the 128 most recently published', async () => {
     const storage = new MemoryStorageDriver();
     const registry = makeRegistry();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     for (let n = 1; n <= 300; n++) {
       const r = await loadSegment(SEG, [n], deps, { keep: Number.MAX_SAFE_INTEGER });
       expect(r, `publish ${n}`).toMatchObject({ published: true, generation: n - 1 });
@@ -89,7 +89,7 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
   it('300 `loadSegment` loads with keep 100 all land, the bucket keeps the 100 most recently current and the current one', async () => {
     const storage = new MemoryStorageDriver();
     const registry = makeRegistry();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     for (let n = 1; n <= 300; n++) {
       const r = await loadSegment(SEG, [n], deps, { keep: 100 });
       expect(r, `publish ${n}`).toMatchObject({ published: true, generation: n - 1 });
@@ -109,7 +109,7 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
     const storage = new MemoryStorageDriver();
     const registry = makeRegistry();
     const clock = { now: () => FAR, sleep: () => Promise.resolve() };
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     const next = stream(0x5eed);
     let loads = 0;
     let rollbacks = 0;
@@ -193,7 +193,7 @@ describe('the most a real writer leaves in a ledger', () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const clock = { now: () => FAR, sleep: () => Promise.resolve() };
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     for (let g = 0; g < 64; g++) {
       await loadSegment(SEG, [g], deps, { keep: 64 });
       const row = (await registry.get(SEG))!;

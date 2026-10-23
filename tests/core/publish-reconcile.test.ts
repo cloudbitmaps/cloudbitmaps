@@ -20,7 +20,7 @@ import { setSegmentRetention } from '@/core/retention';
 import { usableSummary } from '@/core/summary';
 import { incarnationOf } from '@/core/token';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CloudRoaring, RecordingAuditSink } from '@/index';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
 import { brandAsBackend } from '@/core/ports';
@@ -175,7 +175,7 @@ function world(
     // A load hands the loop back through this, and it is not a wait: only the publish's backoff is recorded.
     yieldNow: async (): Promise<void> => {},
   };
-  const bare = { storage: faultyStorage, registry, entropy: testEntropy, codec: roaringCodec };
+  const bare = { storage: faultyStorage, registry, entropy: testEntropy, codec: storeCodec };
   return {
     storage,
     base,
@@ -192,7 +192,7 @@ function world(
     bare,
     /** The same with the store's random source, which spreads each wait. */
     withRng: (next: () => number) => ({ ...bare, clock, readRetry: { clock, rng: { next } } }),
-    plain: { storage, registry: base, entropy: testEntropy, codec: roaringCodec },
+    plain: { storage, registry: base, entropy: testEntropy, codec: storeCodec },
     /** Make the next `times` registry writes do `f`. */
     arm: (f: Fault, times = 1) => {
       for (let i = 0; i < times; i++) faults.push(f);
@@ -214,7 +214,7 @@ async function idsOf(storage: IStorageDriver, generation: number): Promise<numbe
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
       out.push((chunkKey << 16) + r);
     }
   }

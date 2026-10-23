@@ -3,13 +3,10 @@
  * Package smoke test — the built library must import cleanly under BOTH module systems, on real Node,
  * through the paths a consumer actually resolves.
  *
- * Guards the `roaring` CJS→ESM interop: `roaring` is a CommonJS native addon, and a *named* ESM import of
- * it crashes Node's ESM loader (its static lexer can't see the CJS exports). We load the package **by name**
- * — so the package.json `exports` map and its `import`/`require` conditions are exercised too, not just the
- * dist files — via dynamic `import()` (ESM) and `require()` (CJS) for every entry of every package, then run
- * the roaring-backed load/read path. The roaring interop is exercised specifically by the flavor's main `.`
- * entry (only it pulls in the SafeBitmap); the three driver packages additionally guard their own exports
- * maps and their cloud-SDK interop. The bin is a separate build with its own `roaring` import, so it's loaded
+ * We load each package **by name**, so the package.json `exports` map and its `import`/`require` conditions are
+ * exercised too, not just the dist files, via dynamic `import()` (ESM) and `require()` (CJS) for every entry of every
+ * package, then run the load/read path. The flavor's main `.` entry carries the codec; the three driver packages
+ * additionally guard their own exports maps and their cloud-SDK interop. The bin is a separate build, so it's loaded
  * too. Any regression fails the build. Run via `pnpm smoke` (builds first) or `node scripts/smoke.cjs`.
  */
 const path = require('node:path');
@@ -525,7 +522,7 @@ function entriesOf(pkgDir) {
 
 // The loaded store's whole write path in one call: `store.load()` encodes the ids into one immutable
 // `.crbm` generation and publishes it forward-only, and only then can a read see them. So this is also the
-// narrowest round-trip that actually exercises the native codec through the built bundle — the ids span two
+// narrowest round-trip that actually exercises the codec through the built bundle — the ids span two
 // 16-bit chunks, so chunk routing and the roaring encode/decode both run rather than a single-container no-op.
 async function exerciseCore(label, m) {
   for (const name of ['CloudRoaring', 'MemoryStorage']) {

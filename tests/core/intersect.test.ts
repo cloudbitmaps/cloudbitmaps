@@ -1,7 +1,7 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import fc from 'fast-check';
 import { CloudRoaring, type Clock } from '@/index';
-import { roaringCodec, SafeBitmap } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { SegmentEngine } from '@/core/engine';
 import { joinId } from '@/core/bit-route';
 import { ValidationError } from '@/core/errors';
@@ -146,7 +146,7 @@ describe('chunk-skipping intersection', () => {
   // an accidental index-level skip.
   it('drops a common chunk whose payload is empty in one operand (fetched, then skipped)', async () => {
     const { storage, store, seed } = harness();
-    storage.inner.seed({ segment: 'a', chunkKey: 3 }, SafeBitmap.fromValues([]).serialize()); // listed, empty
+    storage.inner.seed({ segment: 'a', chunkKey: 3 }, storeCodec.fromValues([]).serialize()); // listed, empty
     seed('b', [joinId(3, 10)]); // b shares chunk key 3
     expect(await collect(store.segment('a').intersect([store.segment('b')]))).toEqual([]); // no phantom id
     // The common chunk WAS fetched on both operands (keys aligned) — the drop is the empty-payload
@@ -170,7 +170,7 @@ describe('chunk-skipping intersection', () => {
 
   it('rejects an empty operand list and a bad concurrency at the engine boundary', async () => {
     const engine = new SegmentEngine({
-      codec: roaringCodec,
+      codec: storeCodec,
       storage: new MemoryStorageChunkSource(),
     });
     // The public Segment.intersect always includes `this`; exercise the engine guards directly.

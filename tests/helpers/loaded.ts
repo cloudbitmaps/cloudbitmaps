@@ -15,7 +15,7 @@
 import { MemoryStorageChunkSource } from './memory-chunk-source';
 import { MemoryStorage, CloudRoaring } from '@/index';
 import type { CloudRoaringOptions, SegmentRef } from '@/index';
-import { SafeBitmap } from '@/native-codec';
+import { storeCodec } from './store-codec';
 import { bulkLoadCrbmGeneration } from './bulk-load';
 import type { BulkLoadResult } from './bulk-load';
 import { splitId } from '@cloudbitmaps/core';
@@ -45,7 +45,7 @@ export function seedSegment(
   }
   const keys = [...byChunk.keys()].sort((a, b) => a - b);
   for (const chunkKey of keys) {
-    storage.seed({ ...ref, chunkKey }, SafeBitmap.fromValues(byChunk.get(chunkKey)!).serialize());
+    storage.seed({ ...ref, chunkKey }, storeCodec.fromValues(byChunk.get(chunkKey)!).serialize());
   }
   return keys;
 }

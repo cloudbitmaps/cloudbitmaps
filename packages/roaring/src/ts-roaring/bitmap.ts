@@ -22,7 +22,7 @@
  *   - `optimize()` re-encodes each container canonically (a run only when strictly smaller than the plain body), so
  *     `serialize()` afterwards depends on the set alone;
  *   - `safeDeserialize` runs the layout check first (`portable/layout.ts`), so the structure every operation assumes is
- *     proven before a container is built, and refuses what the native path refuses, with `IntegrityError`;
+ *     proven before a container is built, and refuses what CRoaring's validator refuses, with `IntegrityError`;
  *   - a combine never changes its operand. A key only this bitmap holds keeps its container by reference (it can be a
  *     run), an unshared bitset's words are reused in place, and a key only the operand holds is copied in for a union;
  *     a pair of containers combines into an array or a bitset, never a run.

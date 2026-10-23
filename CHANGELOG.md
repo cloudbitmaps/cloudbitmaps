@@ -29,6 +29,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The Lambda layer the repository builds holds JavaScript only, and the CI jobs that held the native addon now check the packages.** `pnpm build-lambda-layer` used to compile `roaring` for Amazon Linux 2023 inside a container, so
+  a layer was one architecture; it now unpacks the packed core and flavor into `nodejs/node_modules`, refuses a layer
+  that holds an addon, zips it, and loads it from `/opt` in the Lambda runtime image, so the layer is the same JavaScript on `x86_64` and
+  `arm64` (nothing is built per architecture; CI runs `x86_64` only). `pnpm lambda-smoke` no longer installs a toolchain or builds anything in the container: it checks that the packed manifests name no native package, that no addon is installed and that the packed library loads and round-trips under ESM and CJS. The layer script is not a
+  published artifact. The cross-OS CI job is named `cross-os`; it no longer claims an addon build.
 - **A batch combine's buffer budget charges more for each bitmap it holds.** The resident-bytes model behind
   `maxBufferedBytes` was measured on the native codec and is now measured on the TypeScript codec the store uses: the
   fixed cost of a bitmap over its serialized bytes is 832 bytes where it was 512 (435 to 803 measured), and a chunk of
@@ -40,9 +45,8 @@ so, and so do the module headers in the code.
   byte what the `roaring` package wrote, so nothing is migrated, and a store can have readers and writers on either
   codec at once. No package of this family depends on `roaring` now, so there is no install script to allow
   (npm 12 `allowScripts`, pnpm `onlyBuiltDependencies` or `allowBuilds`), no binary to download, nothing to rebuild
-  when Node's major version changes, and the install is the same under `--ignore-scripts` (and, there being no native code to build, on Alpine, which was not measured). The two
-  troubleshooting entries for `Cannot find module './build/Release/roaring.node'` and `DEP0169` say they no longer
-  apply. `roaring` stays a pinned development dependency: the tests hold the TypeScript codec to it, as the
+  when Node's major version changes, and the install is the same under `--ignore-scripts` (and, there being no native code to build, on Alpine, which was not measured). The guide's two
+  troubleshooting entries for `Cannot find module './build/Release/roaring.node'` and `DEP0169` are removed. `roaring` stays a pinned development dependency: the tests hold the TypeScript codec to it, as the
   reference. A project that imports `roaring` itself (the samples that build a bitmap do) still installs and allows it.
 
 - **The TypeScript codec's four-operand intersect of mixed chunks is within 5% of the native codec's (one codec per process), and the codec seam gains an optional `intersectSmallestFirst`.**

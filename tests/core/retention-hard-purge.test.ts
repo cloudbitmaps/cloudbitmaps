@@ -26,7 +26,7 @@ import { segmentKey, shardOf } from '@/core/keys';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { registryListPrefix, registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CloudRoaring } from '@/index';
 import { CountingObjectStore } from '../helpers/counting';
 import { tokenParts } from '../helpers/tokens';
@@ -1236,7 +1236,7 @@ describe('a load that collects by name meets a row the purge removed', () => {
       const r = await loadSegment(ref, idsOf(g), {
         ...w.deps,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       });
       expect(r).toMatchObject({ generation: g, published: true });
     }
@@ -1266,7 +1266,7 @@ describe('a load that collects by name meets a row the purge removed', () => {
       storage: w.storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await present(w)).toEqual([3, 4, 5]);
@@ -1283,7 +1283,7 @@ describe('a load that collects by name meets a row the purge removed', () => {
       storage: w.storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await present(w)).toEqual([3, 4, 5]);
@@ -1305,7 +1305,7 @@ describe('a load that collects by name meets a row the purge removed', () => {
       storage: w.storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await present(w)).toEqual([]); // the drop took them all, and the by-name pass found no row to act on

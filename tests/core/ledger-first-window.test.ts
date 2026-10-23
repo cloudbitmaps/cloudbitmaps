@@ -6,7 +6,7 @@ import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -28,7 +28,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 type W = ReturnType<typeof world>;

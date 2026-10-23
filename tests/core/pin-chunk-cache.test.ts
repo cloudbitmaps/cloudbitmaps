@@ -22,7 +22,7 @@ import { rowVersionOf } from '@/core/crbm-storage-source';
 import type { PinnedObject } from '@/core/crbm-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
@@ -381,7 +381,7 @@ describe('a pin keeps entries of its own, and no other read pays for them', () =
     const { source, calls } = recording(new CrbmStorageChunkSource(storage, { registry }));
     const engine = new SegmentEngine({
       storage: source,
-      codec: roaringCodec,
+      codec: storeCodec,
       ...(withCache
         ? { cache: new BoundedLru<string, never>({ maxEntries: 64, clock: { now: () => 0 } }) }
         : {}),

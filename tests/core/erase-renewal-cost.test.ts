@@ -4,7 +4,7 @@ import type { SegmentRef } from '@/core/ports';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
@@ -27,7 +27,7 @@ function world() {
   let t = 1_000;
   const registry = new ObjectStoreRegistry(store, 'p', () => (t += 1));
   const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
   const counted = async (run: () => Promise<unknown>) => {
     const reads = store.reads;
     const writes = store.writes;

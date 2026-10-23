@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { SegmentEngine, BoundedLru } from '@cloudbitmaps/core';
 import type { CodecBitmap, IMetricsSink, MetricEvent } from '@cloudbitmaps/core';
 import { chunkGenKey } from '@/core/keys';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { joinId } from '@/core/bit-route';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
 import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
@@ -52,7 +52,7 @@ function setup(segments: Record<string, readonly number[]>) {
   for (const [name, chunks] of Object.entries(segments)) seedSegment(storage, name, ids(chunks));
   const cache = new SpyLru({ maxEntries: 10_000, clock });
   const events = new Events();
-  const engine = new SegmentEngine({ storage, codec: roaringCodec, cache, metrics: events });
+  const engine = new SegmentEngine({ storage, codec: storeCodec, cache, metrics: events });
   return { storage, engine, cache, events };
 }
 

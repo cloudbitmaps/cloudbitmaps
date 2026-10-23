@@ -11,7 +11,7 @@
 import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/bulk-load';
 import { DecodedLoadInput, SortedLoadInput, prepareLoadInput } from '@/core/load-input';
 import type { LoadInput } from '@/core/load-input';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from './store-codec';
 import { SystemClock } from '@/system-clock';
 import { testEntropy } from './entropy';
 import {
@@ -32,7 +32,7 @@ export const bulkLoadCrbmGeneration: typeof coreBulkLoad = async (
   ids,
   options = {},
 ) => {
-  const codec = options.codec ?? roaringCodec;
+  const codec = options.codec ?? storeCodec;
   let input = ids;
   if (routedProject() && !(ids instanceof DecodedLoadInput)) {
     const converted = await toSerialized(ids);

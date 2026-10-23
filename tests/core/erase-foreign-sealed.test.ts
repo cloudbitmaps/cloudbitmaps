@@ -12,7 +12,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -36,7 +36,7 @@ function world() {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
   const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
   return { storage, registry, keystore, deps };
 }
 type W = ReturnType<typeof world>;
@@ -119,7 +119,7 @@ async function* chunksOf(ids: number[]): AsyncGenerator<{ chunkKey: number; bitm
   const byChunk = new Map<number, number[]>();
   for (const id of ids) byChunk.set(id >>> 16, [...(byChunk.get(id >>> 16) ?? []), id & 0xffff]);
   for (const chunkKey of [...byChunk.keys()].sort((a, b) => a - b)) {
-    yield { chunkKey, bitmap: roaringCodec.fromValues(byChunk.get(chunkKey)!) };
+    yield { chunkKey, bitmap: storeCodec.fromValues(byChunk.get(chunkKey)!) };
   }
 }
 
@@ -376,7 +376,7 @@ describe('an encrypted object under a cleartext row with a pointer', () => {
     storage: w.storage,
     registry: w.registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
   });
 
   it('below the pointer: it is a holder the erasure cannot search, and goes', async () => {

@@ -1,29 +1,29 @@
 {
   "note": "Written by scripts/rss-gate.sh. The ceiling is this gate parameter; the rest is the soak verdict run under it. Regenerate with `pnpm rss-gate`.",
   "ceiling": "384m",
-  "swap": "disabled (--memory-swap == --memory), so the ceiling is a true RSS bound and covers the roaring addon off-heap memory",
+  "swap": "disabled (--memory-swap == --memory), so the ceiling is a true RSS bound",
   "seconds": 30,
   "segments": 400,
   "readerCacheCap": 64,
   "oomKilled": false,
   "verdict": "PASS",
-  "heapCreepMiB": -0.7,
-  "heapCreepLimitMiB": 2.13,
-  "nativeCreepMiB": 0,
-  "nativeCreepLimitMiB": 0.28,
+  "heapCreepMiB": 0.4,
+  "heapCreepLimitMiB": 2.51,
+  "externalCreepMiB": 0.17,
+  "externalCreepLimitMiB": 1.34,
   "samples": 14,
-  "combines": 3822,
-  "reloads": 1532,
+  "combines": 7332,
+  "reloads": 2936,
   "readerProcess": {
-    "heapMiB": 6.8,
-    "nativeMiB": 0.24,
-    "rssMiB": 69.5,
+    "heapMiB": 8.8,
+    "externalMiB": 2.1,
+    "rssMiB": 68.2,
     "combines": 133,
-    "combineIds": 72
+    "combineIds": 80
   },
   "env": {
-    "node": "v22.23.2",
-    "arch": "arm64",
-    "cpu": "unknown"
+    "node": "v22.23.4",
+    "arch": "x64",
+    "cpu": "AMD EPYC 7763 64-Core Processor"
   }
 }

@@ -5,7 +5,7 @@ import { rollbackSegment } from '@/core/rollback';
 import { TransientError } from '@/core/errors';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -52,7 +52,7 @@ function recording(inner: IStorageDriver): { storage: IStorageDriver; calls: Cal
 function world(registry: IRegistryDriver = new MemoryRegistryDriver()) {
   const memory = new MemoryStorageDriver();
   const { storage, calls } = recording(memory);
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
   const reset = () => calls.splice(0, calls.length);
   return { memory, storage, registry, calls, deps, reset };
 }

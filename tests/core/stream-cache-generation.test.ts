@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { BoundedLru, SegmentEngine } from '@cloudbitmaps/core';
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { joinId } from '@/core/bit-route';
 import { chunkKeyUnder, segmentPrefix } from '@/core/keys';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
@@ -35,7 +35,7 @@ function setup(onResolve?: (engine: SegmentEngine) => void) {
     },
   };
   const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
-  const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+  const engine = new SegmentEngine({ storage, codec: storeCodec, cache });
   return { inner, cache, engine, listed };
 }
 
@@ -148,7 +148,7 @@ describe('a streaming source that names generations and not versions', () => {
         },
       };
       const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
-      const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+      const engine = new SegmentEngine({ storage, codec: storeCodec, cache });
       /** A later read of `a` at generation 8 must hold generation 8's ids alone. */
       const readAt8 = async (): Promise<number[]> => {
         const later = await collect(engine.iterate(ref('a')));

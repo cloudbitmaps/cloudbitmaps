@@ -22,7 +22,7 @@ It reads and writes no store, and runs with nothing else installed: plan a deplo
 dependency is `@cloudbitmaps/core`, for the `ValidationError` every refusal throws, so a caller that also installs
 `@cloudbitmaps/roaring` classifies a refusal with its `errorKind(err) === 'ValidationError'` or `instanceof ValidationError`,
 as it does the library's, and a caller with this package alone can read `err.name === 'ValidationError'`. No cloud SDK, no
-native addon.
+native code.
 
 ## Plan: `estimateCost`
 

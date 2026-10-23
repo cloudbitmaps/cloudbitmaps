@@ -16,7 +16,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore } from '../helpers/counting';
 import { FULL_STRENGTH } from '../helpers/strength';
@@ -491,7 +491,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
             const storage = new MemoryStorageDriver();
             const registry = reg.make(() => t);
             const keeps = [keepA, keepB] as const;
-            const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+            const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
             const model: ModelState = { ledger: undefined, pointer: undefined, leases: new Map() };
             let snapshot: { row: RegistryRecord | null; model: ModelState } | null = null;
             let holders = 0;

@@ -4,7 +4,7 @@ import { RecordingAuditSink } from '@/core/audit';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../../helpers/store-codec';
 import { StubBlobService, xmlError } from '../../helpers/azure-blob-stub';
 import { testEntropy } from '../../helpers/entropy';
 
@@ -85,7 +85,7 @@ function swapErrors(registry: AzureBlobRegistryDriver): unknown[] {
 
 async function threeGenerations() {
   const d = make();
-  const load = { ...d, entropy: testEntropy, codec: roaringCodec };
+  const load = { ...d, entropy: testEntropy, codec: storeCodec };
   for (let i = 0; i < 3; i++) await loadSegment(SEG, [i + 1], load, { keep: 9 });
   return { d, load };
 }

@@ -1,5 +1,5 @@
 import { writeCrbmGeneration } from '../helpers/crbm-write';
-import { SafeBitmap } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CountingMetricsSink, type Clock } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
@@ -83,8 +83,8 @@ describe('cheap count', () => {
     const storage = new CrbmStorageChunkSource(driver);
     expect(await storage.cardinalities({ segment: 'missing' })).toBeNull();
     await writeCrbmGeneration(driver, { segment: 's', generation: 0 }, [
-      { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3]) },
-      { chunkKey: 5, bitmap: SafeBitmap.fromValues([10, 20]) },
+      { chunkKey: 0, bitmap: storeCodec.fromValues([1, 2, 3]) },
+      { chunkKey: 5, bitmap: storeCodec.fromValues([10, 20]) },
     ]);
     const cards = await storage.cardinalities({ segment: 's' });
     expect(cards).not.toBeNull();

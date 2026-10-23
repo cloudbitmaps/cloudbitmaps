@@ -8,7 +8,7 @@ import { dropSegment as coreDropSegment } from '@/core/erasure';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
@@ -170,7 +170,7 @@ describe('the core entries that take requireEncryption hold it to a boolean', ()
   const coreDeps = () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    return { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    return { storage, registry, entropy: testEntropy, codec: storeCodec };
   };
 
   it('judgeLoad refuses it', async () => {

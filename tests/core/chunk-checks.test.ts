@@ -10,7 +10,7 @@ import type { CodecBitmap } from '@/core/codec';
 import { SegmentEngine } from '@/core/engine';
 import { IntegrityError } from '@/core/errors';
 import type { StorageChunkSource } from '@/core/ports';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { collect } from '../helpers/loaded';
 
@@ -92,18 +92,18 @@ describe('decodeChunkBytes', () => {
     new RoaringBitmap32(values).serialize(SerializationFormat.portable);
 
   it('decodes a payload whose maximum is exactly 65,535', () => {
-    const bitmap = decodeChunkBytes(roaringCodec, bytes([0, 65_535]), 1, 1 << 20);
+    const bitmap = decodeChunkBytes(storeCodec, bytes([0, 65_535]), 1, 1 << 20);
     expect(bitmap.maximum?.()).toBe(65_535);
   });
 
   it('refuses a payload above 65,535', () => {
-    expect(() => decodeChunkBytes(roaringCodec, bytes([65_536]), 2, 1 << 20)).toThrow(
+    expect(() => decodeChunkBytes(storeCodec, bytes([65_536]), 2, 1 << 20)).toThrow(
       /chunk 2 payload holds value 65536/,
     );
   });
 
   it('applies the size cap before decoding', () => {
-    expect(() => decodeChunkBytes(roaringCodec, bytes([1, 2, 3]), 0, 4)).toThrow();
+    expect(() => decodeChunkBytes(storeCodec, bytes([1, 2, 3]), 0, 4)).toThrow();
   });
 });
 
@@ -116,7 +116,7 @@ describe('the engine reaches each check', () => {
       listChunkKeys: () => Promise.resolve([]),
       cardinalities: () => Promise.resolve(new Map([[65_536, 1]])),
     };
-    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage, codec: storeCodec });
     await expect(engine.count({ segment: 's' })).rejects.toThrow(
       'chunk key from a tier is out of range: 65536',
     );
@@ -129,7 +129,7 @@ describe('the engine reaches each check', () => {
         listChunkKeys: () => Promise.resolve([]),
         cardinalities: () => Promise.resolve(new Map([[3, n]])),
       };
-      const engine = new SegmentEngine({ storage, codec: roaringCodec });
+      const engine = new SegmentEngine({ storage, codec: storeCodec });
       await expect(engine.count({ segment: 's' })).rejects.toThrow(
         `chunk cardinality from a tier is out of range: ${n}`,
       );
@@ -148,7 +148,7 @@ describe('the engine reaches each check', () => {
           ]),
         ),
     };
-    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage, codec: storeCodec });
     expect(await engine.count({ segment: 's' })).toBe(65_536);
   });
 
@@ -158,14 +158,14 @@ describe('the engine reaches each check', () => {
       listChunkKeys: () => Promise.resolve([2, 2]),
     };
     await expect(
-      collect(new SegmentEngine({ storage: dup, codec: roaringCodec }).iterate({ segment: 's' })),
+      collect(new SegmentEngine({ storage: dup, codec: storeCodec }).iterate({ segment: 's' })),
     ).rejects.toThrow('chunk key from a tier is listed twice: 2');
     const wide: StorageChunkSource = {
       getChunk: never,
       listChunkKeys: () => Promise.resolve([-3]),
     };
     await expect(
-      collect(new SegmentEngine({ storage: wide, codec: roaringCodec }).iterate({ segment: 's' })),
+      collect(new SegmentEngine({ storage: wide, codec: storeCodec }).iterate({ segment: 's' })),
     ).rejects.toThrow('chunk key from a tier is out of range: -3');
   });
 
@@ -176,7 +176,7 @@ describe('the engine reaches each check', () => {
         listChunkKeys: () => Promise.resolve([0]),
         cardinalities: () => Promise.resolve(new Map([[0, c]])),
       };
-      const engine = new SegmentEngine({ storage, codec: roaringCodec });
+      const engine = new SegmentEngine({ storage, codec: storeCodec });
       await expect(collect(engine.everyNth({ segment: 's' }, 2))).rejects.toThrow(
         `chunk cardinality from a tier is out of range: ${c}`,
       );
@@ -190,7 +190,7 @@ describe('the engine reaches each check', () => {
       new RoaringBitmap32([65_536]).serialize(SerializationFormat.portable),
     );
     await expect(
-      collect(new SegmentEngine({ storage: bad, codec: roaringCodec }).iterate({ segment: 's' })),
+      collect(new SegmentEngine({ storage: bad, codec: storeCodec }).iterate({ segment: 's' })),
     ).rejects.toThrow(/outside the 16-bit remainder range/);
 
     const ok = new MemoryStorageChunkSource();
@@ -198,7 +198,7 @@ describe('the engine reaches each check', () => {
       { segment: 's', chunkKey: 1 },
       new RoaringBitmap32([65_535]).serialize(SerializationFormat.portable),
     );
-    const engine = new SegmentEngine({ storage: ok, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: ok, codec: storeCodec });
     expect(await collect(engine.iterate({ segment: 's' }))).toEqual([131_071]);
   });
 });

@@ -14,7 +14,7 @@ import { rollbackSegment } from '@/core/rollback';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { type Unanswered, recordedWaits, unansweredRegistry } from '../helpers/unanswered-registry';
 import { testEntropy } from '../helpers/entropy';
@@ -39,7 +39,7 @@ function world(options: { keystore?: InProcessKeystore } = {}) {
     storage,
     registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     ...(options.keystore === undefined ? {} : { keystore: options.keystore }),
   };
   return { storage, registry, deps };
@@ -683,11 +683,11 @@ describe('an eraseSubject of an id no segment holds, beside first loads in fligh
     });
     const sealedDeps = {
       storage: backend.storage,
-      codec: roaringCodec,
+      codec: storeCodec,
       keystore: ks,
       entropy: testEntropy,
     };
-    const plainDeps = { storage: backend.storage, codec: roaringCodec, entropy: testEntropy };
+    const plainDeps = { storage: backend.storage, codec: storeCodec, entropy: testEntropy };
     const ns = 'fleet';
     const ref = (segment: string): SegmentRef => ({ namespace: ns, segment });
 

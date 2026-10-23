@@ -5,7 +5,7 @@ import type { AuditEvent, SegmentRef } from '@/index';
 import type { IKeystore } from '@cloudbitmaps/core/driver-kit';
 import { NOOP_AUDIT, safeAudit } from '@/core/audit';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -33,7 +33,7 @@ function world(keystore?: IKeystore) {
   const registry = new MemoryRegistryDriver();
   // Wide enough for every emitter here: `{ registry }` is all the crypto-shred paths need, and the erasure
   // rewrite additionally reads/writes objects, and core's `eraseIdFromSegment` takes the codec it builds bitmaps with.
-  const deps = { storage, registry, keystore, entropy: testEntropy, codec: roaringCodec };
+  const deps = { storage, registry, keystore, entropy: testEntropy, codec: storeCodec };
   const store = (): CloudRoaring =>
     new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore }),

@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 /*
- * `@cloudbitmaps/roaring`'s one third-party dependency, `roaring`, is a native addon that node-pre-gyp
- * downloads as a prebuilt binary at install time (compiling from source if no prebuilt matches). Our
- * provenance-signed publish does not cover it — it is not in our tarball — so this records what we got,
- * per platform, and fails when it changes.
+ * Records the checksum of the native binary of `roaring`, per platform, and fails when it changes.
+ *
+ * WHY IT REMAINS. `@cloudbitmaps/roaring` has no native dependency: its Roaring codec is TypeScript. `roaring` is
+ * still installed in CI as the root devDependency the oracle compares the codec against, and node-pre-gyp downloads its
+ * prebuilt binary (compiling from source if no prebuilt matches) on every runner that installs, the release job's
+ * install included. That binary runs there, so a changed upstream artifact would run unverified code on the runners,
+ * the release runner among them. It is not in our tarball, so the signed publish never covers it. The check runs in
+ * the cross-OS job, the one place a table row exists for every OS and Node ABI the runners use, and in the release
+ * job right after its install, because that job's `pnpm test` loads the binary before anything is published.
+ * WHEN IT GOES. When the oracle no longer installs `roaring`: delete this script, its checksum table, the CI and
+ * release steps that run it and `tests/ci/prebuilt-checksums.test.ts` together.
  *
  * Modes:
  *   - key known in scripts/roaring-prebuilt-checksums.json → sha256 must match, else exit 1;

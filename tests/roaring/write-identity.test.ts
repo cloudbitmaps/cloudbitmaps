@@ -10,7 +10,7 @@ import { ValidationError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { collect } from '../helpers/loaded';
 import { counterEntropy, fixedEntropy, recordingEntropy } from '../helpers/entropy';
 
@@ -163,7 +163,7 @@ describe('a writer with no entropy source', () => {
     const registry = new MemoryRegistryDriver();
     const ref = { segment: 's' };
     await expect(
-      loadSegment(ref, IDS, { storage, registry, codec: roaringCodec } as never),
+      loadSegment(ref, IDS, { storage, registry, codec: storeCodec } as never),
     ).rejects.toBeInstanceOf(ValidationError);
     const gens: number[] = [];
     for await (const k of storage.list(ref)) gens.push(k.generation);
@@ -172,11 +172,11 @@ describe('a writer with no entropy source', () => {
     await loadSegment(ref, IDS, {
       storage,
       registry,
-      codec: roaringCodec,
+      codec: storeCodec,
       entropy: counterEntropy(),
     });
     await expect(
-      eraseIdFromSegment(ref, 3, { storage, registry, codec: roaringCodec } as never),
+      eraseIdFromSegment(ref, 3, { storage, registry, codec: storeCodec } as never),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -292,7 +292,7 @@ describe('a missing entropy source refuses before any round trip', () => {
     const deps = {
       storage: spy(storage, 'storage'),
       registry: spy(registry, 'registry'),
-      codec: roaringCodec,
+      codec: storeCodec,
     } as never;
     await expect(loadSegment({ segment: 's' }, IDS, deps)).rejects.toBeInstanceOf(ValidationError);
     await expect(eraseIdFromSegment({ segment: 's' }, 3, deps)).rejects.toBeInstanceOf(

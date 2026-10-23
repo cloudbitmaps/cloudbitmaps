@@ -11,8 +11,8 @@ import { parse } from 'yaml';
  * of runner time before anyone learns anything, and on a matrix it burns that per leg. Nothing about that is
  * visible while jobs are healthy, so a job with no bound goes unnoticed until the day it hangs.
  *
- * The values are sized to observed durations (roughly 10x), not to the default, so a slow or oversubscribed
- * runner never trips one. The fuzz job is the deliberate exception: its weekly soak budgets 3600s per target,
+ * The values are sized from observed durations, not from the default: about 2x to 3x for the test jobs, more for
+ * the short ones, so a slow or oversubscribed runner never trips one. The fuzz job is the deliberate exception: its weekly soak budgets 3600s per target,
  * so it is sized to the work rather than to its siblings.
  *
  * This checks only that a bound EXISTS. Whether it is the right number is a judgement a test cannot make —

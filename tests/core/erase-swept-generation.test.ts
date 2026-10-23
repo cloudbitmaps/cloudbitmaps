@@ -1,7 +1,7 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import type { SegmentRef } from '@/index';
 import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { loadedStore } from '../helpers/loaded';
 import { testEntropy } from '../helpers/entropy';
 
@@ -31,7 +31,7 @@ async function world() {
   const w = await loadedStore({}, { retry: false });
   return {
     ...w,
-    deps: { storage: w.storage, registry: w.registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage: w.storage, registry: w.registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 

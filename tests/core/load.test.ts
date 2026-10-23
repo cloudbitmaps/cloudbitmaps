@@ -9,7 +9,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { RecordingAuditSink } from '@/index';
 import type { SegmentRef } from '@/index';
 import type { GenKey, IStorageDriver, StorageDeleteOptions } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -34,7 +34,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 
@@ -50,7 +50,7 @@ async function idsOf(storage: IStorageDriver, generation: number): Promise<numbe
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
       out.push((chunkKey << 16) + r);
     }
   }
@@ -356,7 +356,7 @@ describe('loadSegment — racing writers', () => {
       // Its object is deleted, and another writer puts its own under the number.
       await w.storage.delete({ ...SEG, generation: 1 });
       await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [77], {
-        codec: roaringCodec,
+        codec: storeCodec,
       });
     });
     const r = await loadSegment(SEG, [2], { ...w.deps, storage: driver });
@@ -384,7 +384,7 @@ describe('loadSegment — racing writers', () => {
             replaced = true; // the proving footer read has landed: another writer takes the number now
             await w.storage.delete({ ...SEG, generation: 1 });
             await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [77], {
-              codec: roaringCodec,
+              codec: storeCodec,
             });
           }
           return read;
@@ -415,7 +415,7 @@ describe('loadSegment — racing writers', () => {
             await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 9 }, [99], {
               registry: w.registry,
               entropy: testEntropy,
-              codec: roaringCodec,
+              codec: storeCodec,
             });
           }
           return out;
@@ -537,7 +537,7 @@ describe('loadSegment — encryption', () => {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       keystore,
       requireEncryption: true,
     };

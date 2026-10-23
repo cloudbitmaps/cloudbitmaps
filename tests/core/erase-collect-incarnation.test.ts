@@ -8,7 +8,7 @@ import { retireExpired } from '@/core/retention-sweep';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IAuditSink, SegmentRef } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -89,7 +89,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
   it('an erasure whose tombstone is purged and loaded again before its collection reads the row refuses, and the new row keeps its generations', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, X], { registry });
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1], { registry });
     await destroySegment(SEG, { registry }, { confirmSegment: 's', allowCleartext: true });
@@ -116,7 +116,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
   it('a retention sweep whose tombstone was purged and loaded again before its collection reads the row leaves the new row alone and reports a lost race', async () => {
     const registry = new MemoryRegistryDriver({ now: () => T0 });
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     await stampedTombstones(registry, storage, ['s']);
 
     const racing = interleave({ storage, registry }, 'list', async () => {
@@ -139,7 +139,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
     let t = 1_000;
     const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const asked = (await registry.get(SEG))!;
     const listing = Object.create(storage) as IStorageDriver;
@@ -159,7 +159,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
     let t = 1_000;
     const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const asked = (await registry.get(SEG))!;
     const listing = Object.create(storage) as IStorageDriver;
@@ -178,7 +178,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
     let t = 1_000;
     const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const asked = (await registry.get(SEG))!;
     await registry.delete(SEG);
@@ -199,7 +199,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
   it('on a registry whose tokens carry no incarnation id and whose rows share a creation stamp, an erasure still refuses a re-created row', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, X], { registry });
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1], { registry });
     await destroySegment(SEG, { registry }, { confirmSegment: 's', allowCleartext: true });
@@ -238,7 +238,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
     let t = 1_000;
     const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const asked = (await registry.get(SEG))!;
     // Reads: the first, the re-read after the listing, then the re-proof before the first delete. The new row's pointer
@@ -269,7 +269,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
     let t = 1_000;
     const registry = new MemoryRegistryDriver({ now: () => (t += 1) });
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const asked = (await registry.get(SEG))!;
     // Reads: the first, the re-read, the re-proof before generation 1, then the re-proof before generation 0.
@@ -298,7 +298,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
   it('a pass asked for an active row refuses the row once it is a tombstone, before it lists or deletes', async () => {
     const registry = new MemoryRegistryDriver();
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const asked = (await registry.get(SEG))!;
     await destroySegment(SEG, { registry }, { confirmSegment: 's', allowCleartext: true });
@@ -314,7 +314,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
   it('a pass given an incarnation resolves empty when the row is already gone at its first read', async () => {
     const registry = new MemoryRegistryDriver();
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const asked = (await registry.get(SEG))!;
     await registry.delete(SEG);
@@ -325,7 +325,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
   it('collectBelowPointer passes skipKnown on: a name the row knows is spared and reported', async () => {
     const registry = new MemoryRegistryDriver();
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, deps, { keep: 3 });
     const res = await collectBelowPointer(SEG, deps, { keep: 0, skipKnown: true });
     expect(res.deleted).toEqual([]);
@@ -336,7 +336,7 @@ describe('a collection under a tombstone is held to the incarnation its caller r
   it('a quiet pass given an incarnation is refused before it reads anything', async () => {
     const registry = new MemoryRegistryDriver();
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, entropy: testEntropy };
+    const deps = { storage, registry, codec: storeCodec, entropy: testEntropy };
     await loadSegment(SEG, [1], deps, { keep: 1 });
     const asked = (await registry.get(SEG))!;
     let reads = 0;

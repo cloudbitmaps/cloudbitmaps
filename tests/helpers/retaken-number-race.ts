@@ -2,7 +2,7 @@ import { expect } from 'vitest';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from './store-codec';
 import { CloudRoaring } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { Clock, SegmentRef } from '@/index';
@@ -94,7 +94,7 @@ export const byFreeFunction: StalledErasure = async (storage, registry) => {
     storage,
     registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     clock,
   });
   return () => expect(result).toMatchObject({ erased: true, fromGeneration: 1, collected: [] });
@@ -106,7 +106,7 @@ export async function raceStaleHolderDelete(
   registry: IRegistryDriver,
   stalled: StalledErasure,
 ): Promise<void> {
-  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+  const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
   await loadSegment(REF, [1, 2, 3], deps); // generation 0
   await loadSegment(REF, [1, 2, 3, X], deps); // generation 1 holds X; `keep: 1` keeps 0
   await rollbackSegment(REF, 0, deps); // 1 is above the pointer now, and holds X

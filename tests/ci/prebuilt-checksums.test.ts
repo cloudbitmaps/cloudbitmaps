@@ -4,14 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 
 /**
- * The native-addon checksum table covers every platform CI claims to verify, at the version we ship.
+ * The checksum table of the oracle's `roaring` binary covers every platform CI verifies, at the version the root pins.
  *
  * WHY THIS EXISTS. `scripts/verify-roaring-prebuilt.cjs` keys its table on `<roaring version>/<platform dir>`
  * and, without `--strict`, prints `RECORD …` and **exits 0** for a key it has never seen. Every key carries
- * the version — so a `roaring` version bump makes all six keys unknown at once, and all six `native addon`
+ * the version — so a `roaring` version bump makes all six keys unknown at once, and all six `cross-os`
  * jobs pass having verified nothing at all. Dependabot groups minor+patch monthly under `patterns: ['*']`,
  * which is precisely how that bump arrives: inside a routine PR that goes green while shipping an unverified
- * native binary.
+ * native binary on the runners.
  *
  * CI passes `--strict`, which turns an unknown key into a failure. This test covers the other half, which
  * `--strict` cannot see from inside a single job: that the table has a row for every (OS, node ABI) pair the
@@ -42,7 +42,7 @@ const nativeJob = Object.values(ci.jobs).find((j) =>
   (j.steps ?? []).some((s) => (s.run ?? '').includes('verify-roaring-prebuilt')),
 );
 
-describe('the native-addon checksum table matches what CI verifies', () => {
+describe('the oracle binary checksum table matches what CI verifies', () => {
   it('found the job that runs the verifier', () => {
     expect(nativeJob, 'no CI job runs verify-roaring-prebuilt any more').toBeDefined();
     expect(Object.keys(table).length).toBeGreaterThan(0);

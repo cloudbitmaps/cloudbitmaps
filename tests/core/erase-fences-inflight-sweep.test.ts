@@ -4,7 +4,7 @@ import { NotFoundError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
@@ -129,7 +129,7 @@ async function served(
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray())
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray())
       out.push((chunkKey << 16) + r);
   }
   return out.sort((a, b) => a - b);
@@ -154,14 +154,14 @@ async function race(
     storage: heldWrites(storage, mayWrite.promise),
     registry: firstRead(registry, readRow.resolve),
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
   });
   await readRow.promise; // the load has read the row: the erasure begins after every load's read
   const erased = await eraseIdFromSegment(SEG, id, {
     storage: eraseStorage,
     registry: eraseRegistry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
   });
   await afterErase();
   mayWrite.resolve(); // the load's object lands after the erasure's last look at the bucket
@@ -250,7 +250,7 @@ describe('an erasure that answers erased: true, and a load that read the row bef
       storage,
       registry: counting(registry, counts),
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
 
     const after = (await registry.get(SEG))!;

@@ -17,7 +17,7 @@ import type { GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage, RecordingAuditSink } from '@/index';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counterEntropy } from '../helpers/entropy';
 
 /**
@@ -39,7 +39,7 @@ function world(storage: IStorageDriver = new MemoryStorageDriver()) {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: counterEntropy(), codec: roaringCodec },
+    deps: { storage, registry, entropy: counterEntropy(), codec: storeCodec },
   };
 }
 
@@ -55,7 +55,7 @@ async function idsOf(storage: IStorageDriver, generation: number): Promise<numbe
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray())
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray())
       out.push(chunkKey * CHUNK + r);
   }
   return out;
@@ -579,7 +579,7 @@ describe('sorted is refused wherever it would do nothing, before any request', (
   it("refuses it on loadSegmentChunks, whose chunks ascend already, and the *Into verbs don't take it", async () => {
     const { w, calls } = untouched();
     async function* chunks() {
-      yield { chunkKey: 0, bitmap: roaringCodec.fromValues([1]) };
+      yield { chunkKey: 0, bitmap: storeCodec.fromValues([1]) };
     }
     const err = await rejection(loadSegmentChunks(SEG, chunks(), w.deps, { sorted: true }));
     expect(err).toBeInstanceOf(ValidationError);
@@ -643,7 +643,7 @@ describe("a load hands on a WriteConflictError its source raised, sorted or not,
     const w = world();
     const raised = raisedBy('chunks');
     async function* chunks() {
-      yield { chunkKey: 0, bitmap: roaringCodec.fromValues([1]) };
+      yield { chunkKey: 0, bitmap: storeCodec.fromValues([1]) };
       throw raised;
     }
     expect(await loadSegmentChunks(SEG, chunks(), w.deps).catch((e: unknown) => e)).toBe(raised);

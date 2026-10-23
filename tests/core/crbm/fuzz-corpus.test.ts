@@ -16,7 +16,7 @@ import type { CrbmCrypto } from '@/core/crypto';
  * committed here and this test — which DOES run in the normal suite on every PR — locks the fix in.
  *
  * The contract mirrors the fuzz targets exactly: arbitrary bytes fed through the real read path either succeed
- * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/native crash/hang is a bug,
+ * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/hang is a bug,
  * and so is a decode that is not self-consistent (see {@link assertConsistentDecode}). Four corpora mirror the four
  * targets: raw serialized bitmaps (the TypeScript decoder), raw index regions, raw extension-block sections, and whole
  * `.crbm` objects.

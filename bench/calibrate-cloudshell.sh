@@ -292,19 +292,25 @@ if [ -n "${CR_CALIBRATE_CODEC:-}" ]; then
     cp -R "packages/$pkg/src" "packages/$pkg/package.json" "packages/$pkg/tsconfig.json" "$WORK/packages/$pkg/"
   done
   cp tsconfig.base.json "$WORK/"
+  if [ "$CR_CALIBRATE_CODEC" = native ]; then
+    ROARING_VERSION="$(sed -n 's/^[[:space:]]*"roaring":[[:space:]]*"[^0-9]*\([0-9][^"]*\)".*/\1/p' package.json | head -n 1)"
+  fi
   ESBUILD_VERSION="$(sed -n 's/^[[:space:]]*"esbuild":[[:space:]]*"[^0-9]*\([0-9][^"]*\)".*/\1/p' package.json | head -n 1)"
 fi
 echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 (
   cd "$WORK"
   npm init -y >/dev/null
-  # npm 12 runs a dependency's install script only where the project allows it, and roaring's is the one that fetches
-  # its native binary; without this the install exits 0 and the first import throws. npm 10 and 11 run it anyway.
-  node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.allowScripts={roaring:true};fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
+  # The published packages carry no native code. Only the native comparison needs the oracle's `roaring` addon, at the
+  # version this clone's oracle uses, and npm 12 runs its install script (it fetches the binary) only where the project
+  # allows it; npm 10 and 11 run it anyway.
+  if [ "${CR_CALIBRATE_CODEC:-}" = native ]; then
+    node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.allowScripts={roaring:true};fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
+  fi
   npm i --no-audit --no-fund --loglevel=error \
     "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" "@cloudbitmaps/tools@${PKG_VERSION}" \
-    @aws-sdk/client-s3 @aws-sdk/client-sts ${CR_CALIBRATE_CODEC:+"esbuild@${ESBUILD_VERSION}"}
-  # Fail here, before anything is created or spent, if the native binary did not arrive.
+    @aws-sdk/client-s3 @aws-sdk/client-sts ${CR_CALIBRATE_CODEC:+"esbuild@${ESBUILD_VERSION}"} ${ROARING_VERSION:+"roaring@${ROARING_VERSION}"}
+  # Fail here, before anything is created or spent, if the packages did not arrive.
   node -e 'import("@cloudbitmaps/roaring").catch((e)=>{console.error("cloudshell: @cloudbitmaps/roaring does not load: "+e.message.split("\n")[0]);process.exit(2)})'
 )
 

@@ -4,7 +4,7 @@ import { loadSegment } from '@/core/load';
 import type { GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { objectFingerprint } from '../helpers/fingerprint';
 import { testEntropy } from '../helpers/entropy';
@@ -31,7 +31,7 @@ function world(encrypted: boolean) {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec, keystore },
   };
 }
 type W = ReturnType<typeof world>;

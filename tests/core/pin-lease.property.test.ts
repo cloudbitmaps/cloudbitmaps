@@ -16,7 +16,7 @@ import { rollbackSegment } from '@/core/rollback';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { testEntropy } from '../helpers/entropy';
 
 /**
@@ -98,7 +98,7 @@ describe('leases among loads, erasures, rollbacks and drops (property)', () => {
           const clock = { now: () => t, sleep: () => Promise.resolve() };
           const storage = new MemoryStorageDriver();
           const registry = new MemoryRegistryDriver({ now: () => t });
-          const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+          const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
           const model = new Map<string, Held>();
           let holders = 0;
 
