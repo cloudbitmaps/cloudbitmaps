@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-10-23
+
 ### Breaking
 
 - **A bitmap passed where ids go is recognised by its shape, not its class: an iterable with a `serialize` method loads
