@@ -180,11 +180,11 @@ produced the package they installed**. The controls:
   from a branch, it skips the tag/version check and the release-notes check and ships whatever versions the
   manifests declare, and from any ref it creates no GitHub Release.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
-  on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile. The one
-  install that has no lockfile is CI's consumer check, which installs the packed tarballs with `npm` the way a user
-  does, so the cloud SDKs resolve fresh from the registry. It, and the programs it runs against them, execute only
-  inside a throwaway container with no environment passed in and the tarballs mounted read-only; the job holds no
-  secret and uses no cache, and the release workflow does not run it.
+  on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile. Three CI jobs
+  install from the registry without a lockfile, each inside a container: the consumer install (the six packed tarballs
+  and the cloud SDKs), and `lambda-smoke` and `rss-gate` (`roaring` at its locked version, with its own dependencies
+  resolved fresh). The consumer install's container mounts nothing writable from the host and passes no environment
+  in, and its job holds no secret and restores and saves no cache; the release workflow does not run it.
 - **SHA-pinned GitHub Actions.** Every third-party `uses:`, in every workflow and in the composite actions under
   `.github/actions/`, is pinned to a **full commit SHA** (with a `# vX` comment for readability), so a hijacked or
   force-moved tag on a third-party Action cannot inject code into our build. A local action
@@ -195,9 +195,10 @@ produced the package they installed**. The controls:
   from the Actions cache, and runs what it restores. Only runs on `main` write entries every run can restore; a pull
   request's runs write entries only its own later runs read. So after anything untrusted has run in a workflow on
   `main`, such as a compromised dependency or Action, delete every cache entry (`gh cache delete --all`) as well as
-  reverting it: an entry it wrote would be restored by later runs. The one job that runs unpinned registry code, the
-  consumer install, runs it inside a container and shares no cache with any other job (it restores none and saves none),
-  so nothing it ran can become an entry another job restores.
+  reverting it: an entry it wrote would be restored by later runs. Three jobs run unpinned registry code, each inside a
+  container: the consumer install, `lambda-smoke` and `rss-gate`. The consumer install shares no cache with any other job
+  (it restores none and saves none), so nothing it ran can become an entry another job restores; the other two restore
+  the pnpm cache and save the container-image cache, and a container escape from either is the risk this section accepts.
 - **The native addon, from source (optional, for the most cautious).** CloudBitmaps ships **pure JS/TS** — the
   only native code is its runtime dependency **`roaring`** (CRoaring), which the *consumer* installs. Consumers
   who prefer not to trust `roaring`'s prebuilt binary can build it **from source** at install time

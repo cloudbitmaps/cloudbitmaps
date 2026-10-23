@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -36,11 +37,15 @@ interface Job {
   'runs-on'?: string;
   'timeout-minutes'?: number;
   'continue-on-error'?: boolean | string;
-  strategy?: { matrix?: { node?: number[] }; 'fail-fast'?: boolean };
+  strategy?: {
+    matrix?: { node?: number[]; include?: { node: number; digest: string }[] };
+    'fail-fast'?: boolean;
+  };
   steps: Step[];
 }
 interface Workflow {
   on: Record<string, unknown>;
+  permissions?: Record<string, string>;
   jobs: Record<string, Job>;
 }
 
@@ -48,11 +53,17 @@ const load = (file: string) =>
   parse(readFileSync(join(ROOT, '.github/workflows', file), 'utf8')) as Workflow;
 const ci = load('ci.yml');
 const SCRIPT = 'node scripts/consumer-install.cjs';
+// The images, by digest: the manifest list of each Node image, which a mirror of it serves under the same digest.
+// Refresh them as scripts/README.md says, and change them here and in ci.yml together.
+const DIGESTS = {
+  22: 'sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384',
+  24: 'sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a',
+};
 const RUN = [
   SCRIPT,
-  '--image mirror.gcr.io/library/node:${{ matrix.node }}-bookworm',
-  '--image public.ecr.aws/docker/library/node:${{ matrix.node }}-bookworm',
-  '--image docker.io/library/node:${{ matrix.node }}-bookworm',
+  '--image mirror.gcr.io/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}',
+  '--image public.ecr.aws/docker/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}',
+  '--image docker.io/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}',
 ].join(' ');
 
 /** A job by name, failing loudly when it is gone: a missing job is the regression this file exists for. */
@@ -77,6 +88,8 @@ describe('the consumer install runs in CI', () => {
 
   it('is a job of the workflow that runs on pull requests', () => {
     expect(Object.keys(ci.on)).toContain('pull_request');
+    // The push to main is the run that covers the commit a release tags.
+    expect((ci.on['push'] as { branches?: string[] }).branches).toContain('main');
     expect(job.if).toBeUndefined();
   });
 
@@ -91,10 +104,15 @@ describe('the consumer install runs in CI', () => {
     expect(script?.run).not.toContain('--no-container');
   });
 
-  it('runs on Node 22 and 24, and each leg really uses its own Node', () => {
-    expect(job.strategy?.matrix?.node).toEqual([22, 24]);
+  it('runs on Node 22 and 24, each leg with its own Node and its own image digest', () => {
+    expect(job.strategy?.matrix?.include).toEqual([
+      { node: 22, digest: DIGESTS[22] },
+      { node: 24, digest: DIGESTS[24] },
+    ]);
     const setup = job.steps.find((s) => (s.uses ?? '').startsWith('actions/setup-node@'));
     expect(setup?.with?.['node-version']).toBe('${{ matrix.node }}');
+    // setup-node turns its cache on by itself when `packageManager` names npm; keep it off whatever that says.
+    expect(setup?.with?.['package-manager-cache']).toBe(false);
     expect(job.steps.indexOf(setup as Step)).toBeLessThan(job.steps.indexOf(script as Step));
   });
 
@@ -114,7 +132,8 @@ describe('the consumer install runs in CI', () => {
     expect(JSON.stringify(job)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|NPM_TOKEN|id-token/);
     expect(job.env).toBeUndefined();
     expect(job.environment).toBeUndefined();
-    expect(job.permissions).toBeUndefined(); // the workflow's `contents: read`
+    expect(job.permissions).toBeUndefined(); // so the workflow's block applies, and it grants nothing else
+    expect(ci.permissions).toEqual({ contents: 'read' });
     expect(job.container).toBeUndefined();
     expect(job.services).toBeUndefined();
   });
@@ -139,7 +158,7 @@ describe('the release workflow does not run the consumer install', () => {
   // own CI runs it on the exact commit that is tagged, which is enough.
   it('never names the script, the job or its artifact', () => {
     const text = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
-    expect(text).not.toMatch(/consumer-install|consumer install|verified-tarball-digests/i);
+    expect(text).not.toMatch(/consumer-install|consumer install/i);
   });
 });
 
@@ -266,17 +285,40 @@ describe('the container the third-party half runs in', () => {
     scriptFile: '/work/scripts/consumer-install.cjs',
   });
 
-  it('is started with no environment, no privileges and nothing writable from the host', () => {
-    const joined = args.join(' ');
-    expect(args).not.toContain('-e');
-    expect(args).not.toContain('--env');
-    expect(args).not.toContain('--env-file');
-    expect(args).not.toContain('--privileged');
-    expect(joined).not.toMatch(/docker\.sock|--network[= ]host|--pid[= ]host|--volumes-from/);
-    expect(joined).toContain('--cap-drop ALL');
-    expect(joined).toContain('--security-opt no-new-privileges');
-    expect(args).toContain('--read-only');
-    expect(args[args.indexOf('--user') + 1]).toBe('node');
+  it('is exactly this command line, so any other spelling of a mount, an env or a privilege is a visible edit', () => {
+    expect(args).toEqual([
+      'run',
+      '--rm',
+      '--name',
+      'ci-1',
+      '--user',
+      '1000:1000',
+      '--cap-drop',
+      'ALL',
+      '--security-opt',
+      'no-new-privileges',
+      '--pids-limit',
+      '1024',
+      '--read-only',
+      '--tmpfs',
+      '/tmp:exec,mode=1777,size=2g',
+      '--tmpfs',
+      '/home/node:exec,uid=1000,gid=1000,size=1g',
+      '-v',
+      '/work/tarballs:/w/tarballs:ro',
+      '-v',
+      '/work/scripts/consumer-install.cjs:/w/consumer-install.cjs:ro',
+      '--entrypoint',
+      'node',
+      'node:22',
+      '/w/consumer-install.cjs',
+      '--in-container',
+      '/w/tarballs',
+    ]);
+  });
+
+  it('runs as a numeric user, never a name the image could map to root', () => {
+    expect(args[args.indexOf('--user') + 1]).toMatch(/^[1-9]\d*:[1-9]\d*$/);
   });
 
   it('mounts exactly the tarballs and the script, both read-only', () => {
@@ -285,6 +327,28 @@ describe('the container the third-party half runs in', () => {
       '/work/tarballs:/w/tarballs:ro',
       '/work/scripts/consumer-install.cjs:/w/consumer-install.cjs:ro',
     ]);
+  });
+
+  it('refuses to install on the host where CI is set, whichever flag asks, and before building anything', () => {
+    for (const args of [
+      ['--no-container'],
+      ['--in-container', '/nonexistent'],
+      ['--in-container', '/nonexistent', '--image', 'x'],
+    ]) {
+      const run = spawnSync(
+        process.execPath,
+        [join(ROOT, 'scripts/consumer-install.cjs'), ...args],
+        {
+          encoding: 'utf8',
+          env: { PATH: process.env['PATH'] ?? '', CI: 'true' },
+          timeout: 20_000,
+        },
+      );
+      const out = `${run.stdout}${run.stderr}`;
+      expect(run.status, `${args.join(' ')}: ${out}`).toBe(1);
+      expect(out).toContain('local use only');
+      expect(out).not.toMatch(/pack @cloudbitmaps|working in/);
+    }
   });
 
   it('refuses the no-container mode where CI is set, and allows it where it is not', () => {

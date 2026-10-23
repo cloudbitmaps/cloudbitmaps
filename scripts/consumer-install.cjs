@@ -184,7 +184,7 @@ function packAll(pkgs, dest) {
   return tarballs;
 }
 
-/** The tarballs in `dir` (searched one level down too), for `--tarballs`. */
+/** The tarballs in `dir` (searched one level down too), for `--in-container`. */
 function tarballsIn(dir) {
   const found = [];
   const walk = (d, depth) => {
@@ -410,8 +410,9 @@ function dockerRunArgs({ image, name, tarballDir, scriptFile }) {
     '--name',
     name,
     // Nothing from the host is passed in: no `-e`, no `--env-file`, no home or workspace mount, no socket.
+    // A number, not the name: an image's own user table could map a name to root.
     '--user',
-    'node',
+    '1000:1000',
     '--cap-drop',
     'ALL',
     '--security-opt',
@@ -567,7 +568,12 @@ function installAndRun(tarballDir, keep) {
 
 function main() {
   const inContainer = option('--in-container');
-  if (inContainer !== undefined) return installAndRun(inContainer, false);
+  if (inContainer !== undefined) {
+    // The container's own entry, and the same install as `--no-container`: on a runner it would run third-party
+    // install scripts on the host. A container passes: no environment reaches it, so `CI` is unset there.
+    refuseLocalModeInCi(process.env);
+    return installAndRun(inContainer, false);
+  }
   const images = options('--image');
   const local = process.argv.includes('--no-container');
   if ((images.length === 0) === !local)

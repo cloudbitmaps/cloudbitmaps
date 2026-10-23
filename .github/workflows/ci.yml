@@ -211,8 +211,14 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
+      # Each image is pinned by the digest of its manifest list, which a mirror of it serves under the same digest;
+      # refresh them as scripts/README.md says.
       matrix:
-        node: [22, 24]
+        include:
+          - node: 22
+            digest: sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
+          - node: 24
+            digest: sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -221,12 +227,14 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ matrix.node }}
+          # Off whatever `packageManager` says: this job restores and saves no cache.
+          package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: >-
           node scripts/consumer-install.cjs
-          --image mirror.gcr.io/library/node:${{ matrix.node }}-bookworm
-          --image public.ecr.aws/docker/library/node:${{ matrix.node }}-bookworm
-          --image docker.io/library/node:${{ matrix.node }}-bookworm
+          --image mirror.gcr.io/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}
+          --image public.ecr.aws/docker/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}
+          --image docker.io/library/node:${{ matrix.node }}-bookworm@${{ matrix.digest }}
 
   integration:
     name: integration (MinIO + fake-gcs-server + Azurite)
