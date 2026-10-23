@@ -69,6 +69,21 @@ so, and so do the module headers in the code.
   trailing-bytes refusal. The TypeScript codec's
   module README is documentation. None of this changes anything for a caller.
 
+### Fixed
+
+- **An erasure that found the id now refuses every load that read the row before it began.**
+  When the only holder was an object below the pointer that the row's ledger never named (a crashed load's
+  object), the erasure wrote nothing to the row, so a load already in flight, whose own input held the id,
+  published it and the id was served again after `erased: true`; on every other path the same load was refused
+  as `superseded`. The erasure now renews the row's `pointerId` (one extra registry write, on that path only)
+  so the guarantee is the same everywhere: every load that read the row before the erasure began is refused, by the
+  erasure's write or by a write that changed the row's `pointerId` or its ledger since the call read it (the renewal
+  is skipped when a prune is made, when a load or a rollback moved the pointer or another erasure renewed or pruned
+  since the call read the row; a write of the retention or residency is not such a write, since a later write can undo
+  it). A load that does this is refused as `superseded`, as on the other
+  paths. Loads that start during an erasure are still not covered: pause them, and let running loads finish before
+  you start.
+
 ## [0.23.0] — 2026-10-20
 
 ### Breaking

@@ -54,6 +54,7 @@ sample reaches less often; those shapes are pinned as examples that run at every
 | `core/combine-many.feed.property.test.ts` | cases, fed operands; cases, fed operands under a range | 60; 30 | 15; 8 |
 | `core/retention-hard-purge.test.ts` | segments created, retired and purged (`docs/guide/correctness.md` quotes the full size) | 10,000 | 1,000 |
 | `core/erase-namespace-bounded.test.ts` | rows in the listing admitted exactly at the ceiling and destroyed one by one (full passes no ceiling, so it is the shared default of 250,000); the refusal one row over the default runs at 250,001 rows on every run | 250,000 | 25,000 |
+| `core/erase-fence-fuzz.property.test.ts` | seeded interleavings of an erasure and the loads in flight, each checked for the erased id served after `erased: true` (the unfenced erasure failed 133 of 4,000 of them, 3.3%, so a pull request's 1,000 miss it with a chance of about 2 in 10^15) | 40,000 | 1,000 |
 | `core/combine-ledger.test.ts` | bitmaps measured per cardinality, at 3,000 and 20,000 ids a chunk only (the smaller cardinalities, which have the least headroom and cost the least, always use 8,000) | 8,000 | 4,000 |
 | `core/load-sorted-heap.test.ts` | ids in the largest of the sorted load's three heap tiers (the others are a tenth and a hundredth of it), and in the unsorted load it is contrasted with | 10,000,000 | 1,000,000 |
 | `roaring/codec-oracle.test.ts` | cases for each oracle property (the several-chunk one runs half); and subsets tried in each small window, 2^12 or 2^16 | 200; 65,536 | 40; 4,096 |

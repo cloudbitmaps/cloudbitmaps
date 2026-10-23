@@ -24,6 +24,7 @@ const SIZES_BEFORE_THE_REDUCTION: Record<HeavyName, number> = {
   codecOracleProperties: 200,
   codecOracleSubsets: 65_536,
   codecOracleMutations: 100_000,
+  eraseFenceFuzzRuns: 40_000,
 };
 
 const TESTS = fileURLToPath(new URL('..', import.meta.url));
