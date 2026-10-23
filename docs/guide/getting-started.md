@@ -310,11 +310,11 @@ keys of encrypted segments all live there. There is no second service to run.
   read that succeeds as proof the object is there, and an erasure's check that no generation still holds the id, a
   drop's `generationsRemaining` and the retention sweep prove a delete by listing. Preflight checks a read and a listing
   right after a write, and not after a delete. Check yours.
-- **If you pass your own `client`, use `@aws-sdk/client-s3` 3.700.0 or later.** Older versions drop a conditional
+- **If you pass your own `client`, use `@aws-sdk/client-s3` 3.974.0 or later.** The package declares that floor because its own tests fail on every older version (the lowest that passes is 3.974.0); the correctness floor under it is 3.700.0. Versions before that drop a conditional
   header they do not model, without an error: they overwrite an existing object, which loses a published generation,
   or send the registry's compare-and-swap unconditionally. The registry refuses such an SDK on the first registry write it would send without its precondition. Preflight shows an
   SDK of 3.640.0 or older as a `write-once` problem, but cannot see one from 3.641.0 to 3.699.0, which keeps `If-None-Match` but drops
-  `If-Match`: its registry check is read-only, so this floor stays yours to check. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
+  `If-Match`: its registry check is read-only, so the floor stays yours to check. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
 - **GCS and Azure Blob** pass the same conformance suites as S3 and sit outside the validated envelope, which covers
   S3 storage only. They are the right choice if you are on that cloud, but you are an early user. The
   [roadmap](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) states the exact claim.

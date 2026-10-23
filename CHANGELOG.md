@@ -11,6 +11,23 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The three storage drivers now require a newer cloud SDK: `@aws-sdk/client-s3` 3.974.0 (was 3.700.0), `@google-cloud/storage` 8.1.0 (was 7.0.0 or 8.0.0) and `@azure/storage-blob` 12.23.0 (was 12.0.0).**
+  Each driver's own unit tests now run, every night, against the lowest SDK its range admits, and every old floor
+  failed them. 3.974.0, 8.1.0 and 12.23.0 are the lowest versions that pass (3.972.0, 8.0.1 and 12.18.0 do not). What an
+  older SDK broke for a caller, from the driver's side: on Google Cloud Storage 7.x the driver's read path and its
+  read timeout and retry did not work (a read that never settles, a stalled body not cut off at `readTimeoutMs`, a
+  fault not retried once), and 8.0.x still failed one retry setting; on Azure Blob 12.0.0 the driver's delete
+  (`deleteIfExists`) and its lifecycle message (the container's name) failed, and on 12.18.0 and older a read whose
+  connection drops part-way was not timed out or read again as a `TransientError`, a pointer read was not cut off
+  correctly, and a scrubbed connection fault classified differently from the raw one; on S3 3.700.0 a socket limit
+  reached uploads that wait for `100-continue`, an empty lifecycle answer read as `unchecked`, and a conditional delete
+  of an absent object was refused. A fresh install already resolves far above all three floors. What a caller does:
+  nothing, unless you pin an older SDK or pass your own `client` or `containerClient`: upgrade it to the new floor. The
+  S3 correctness floor under it, 3.700.0 (3.699.0 and older drop `If-Match` on `PutObject`), is unchanged, and the
+  registry still refuses a client that does not send it.
+
 ### Changed
 
 - **The TypeScript codec's four-operand intersect of mixed chunks is within 5% of the native codec's (one codec per process), and the codec seam gains an optional `intersectSmallestFirst`.**

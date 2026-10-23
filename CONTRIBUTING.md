@@ -138,10 +138,10 @@ them and their sizes.
 
 Every other job runs the cloud SDKs at the version `pnpm-lock.yaml` holds, the newest, while a user's install can resolve
 any version a driver's range admits. [`.github/workflows/sdk-floor.yml`](.github/workflows/sdk-floor.yml) runs each driver's
-unit tests and its integration file at the **lowest** version of its range (`@aws-sdk/client-s3` `>=3.700.0 <4`,
-`@google-cloud/storage` `^7 || ^8`, `@azure/storage-blob` `^12`) every night at 03:00 UTC, on demand, and on a pull
+unit tests and its integration file at the **lowest** version of its range (`@aws-sdk/client-s3` `>=3.974.0 <4`,
+`@google-cloud/storage` `^8.1.0`, `@azure/storage-blob` `^12.23.0`) every night at 03:00 UTC, on demand, and on a pull
 request that touches a driver package, `packages/core/src/drivers/`, the lockfile, the script or the workflow. It also
-runs the S3 driver one release below its floor (3.699.0) and requires it to fail with the registry's refusal of a client
+runs the S3 driver on 3.699.0, the last release that omits `If-Match` on `PutObject`, and requires it to fail with the registry's refusal of a client
 that does not send `If-Match`, which proves the job can see a dropped `If-Match` at all. It is not a required check; a red
 run shows on the Actions tab. It holds no secret and saves no cache. Run one leg with
 `node scripts/sdk-floor.cjs --driver s3` (unit tests, no Docker) or add `--integration` with the driver's emulator up
