@@ -35,6 +35,9 @@ reports/
 .stryker-tmp/
 dist-lambda/
 
+# builds `pnpm test:no-dist` has hidden for a run (scripts/lib/no-dist.cjs)
+.no-dist-aside/
+
 # transient tarball staging for the Lambda deployability checks
 .pack-tmp/
 .rss-stage/
