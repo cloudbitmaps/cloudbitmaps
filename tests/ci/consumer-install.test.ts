@@ -174,6 +174,7 @@ const lib = createRequire(import.meta.url)('../../scripts/consumer-install.cjs')
     scriptFile: string;
   }) => string[];
   refuseLocalModeInCi: (env: Record<string, string | undefined>) => void;
+  consumerManifest: () => Record<string, unknown>;
 };
 
 const temps: string[] = [];
@@ -356,6 +357,20 @@ describe('the container the third-party half runs in', () => {
     expect(() => lib.refuseLocalModeInCi({ CI: '1' })).toThrow(/local use only/);
     expect(() => lib.refuseLocalModeInCi({})).not.toThrow();
     expect(() => lib.refuseLocalModeInCi({ CI: 'false' })).not.toThrow();
+  });
+});
+
+describe('the project the tarballs are installed into', () => {
+  it('is bare: nothing in it allows or blocks an install script', () => {
+    const manifest = lib.consumerManifest();
+    expect(manifest).toEqual({ name: 'consumer-project', version: '0.0.0', private: true });
+    expect(Object.keys(manifest).filter((key) => /script|allow/i.test(key))).toEqual([]);
+  });
+
+  it('is written by a script that names no addon and allows no dependency script', () => {
+    const source = readFileSync(join(ROOT, 'scripts/consumer-install.cjs'), 'utf8');
+    expect(source).not.toMatch(/allowScripts/);
+    expect(source).not.toMatch(/NATIVE_ADDON/);
   });
 });
 
