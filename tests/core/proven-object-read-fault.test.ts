@@ -1,6 +1,8 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { NotFoundError, TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
+import { brandAsBackend } from '@/core/ports';
+import { CloudRoaring } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IRegistryDriver, IStorageDriver, RegistryPatch } from '@cloudbitmaps/core/driver-kit';
 import { roaringCodec } from '@/roaring-codec';
@@ -26,7 +28,7 @@ function faultingFooter(
   gen: number,
   times: number,
   armed: () => boolean,
-  fault: Fault = new TransientError('the footer read timed out'),
+  faultOrSequence: Fault | readonly Fault[] = new TransientError('the footer read timed out'),
 ): { storage: IStorageDriver; faults: () => number } {
   const out = Object.create(storage) as IStorageDriver;
   let faults = 0;
@@ -34,6 +36,9 @@ function faultingFooter(
     if (!(armed() && key.generation === gen && maxBytes > 0 && faults < times)) {
       return storage.getTail(key, maxBytes);
     }
+    const fault = Array.isArray(faultOrSequence)
+      ? (faultOrSequence[faults] ?? faultOrSequence[faultOrSequence.length - 1]!)
+      : (faultOrSequence as Fault);
     faults += 1;
     if (fault === 'other-object') return storage.getTail({ ...key, generation: 1 }, maxBytes);
     if (fault !== 'corrupt') throw fault;
@@ -47,7 +52,12 @@ function faultingFooter(
 }
 
 /** A refused erasure of X (its rewrite is generation 2, the first load published 1): its discard's footer read faults. */
-async function refusedErasure(times: number, readRetry: typeof NO_WAIT | undefined, fault?: Fault) {
+async function refusedErasure(
+  times: number,
+  readRetry: (typeof NO_WAIT & { onRetry?: (info: { err: unknown }) => void }) | undefined,
+  fault?: Fault | readonly Fault[],
+  via: 'erase-id' | 'erase-subject' = 'erase-id',
+) {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
   const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
@@ -76,12 +86,18 @@ async function refusedErasure(times: number, readRetry: typeof NO_WAIT | undefin
     return registry.compareAndSwap(ref, expected, patch, options);
   };
   const faulty = faultingFooter(storage, 2, times, () => refused, fault);
-  const erasure = eraseIdFromSegment(REF, X, {
-    ...deps,
-    storage: faulty.storage,
-    registry: erasureRegistry,
-    ...(readRetry === undefined ? {} : { readRetry }),
-  });
+  const erasure =
+    via === 'erase-id'
+      ? eraseIdFromSegment(REF, X, {
+          ...deps,
+          storage: faulty.storage,
+          registry: erasureRegistry,
+          ...(readRetry === undefined ? {} : { readRetry }),
+        })
+      : new CloudRoaring({
+          storage: brandAsBackend({ storage: faulty.storage, registry: erasureRegistry }),
+          retry: false,
+        }).eraseSubject(X, { allNamespaces: true });
   return { erasure, storage, registry, faults: faulty.faults };
 }
 
@@ -133,6 +149,36 @@ describe('a refused erasure whose proving read does not prove the object', () =>
     const run = await refusedErasure(Infinity, undefined, 'corrupt');
     await expect(run.erasure).resolves.toMatchObject({ erased: false, reason: 'superseded' });
     expect(run.faults()).toBe(1);
+    expect(await generations(run.storage)).toEqual([0, 1, 2]);
+  });
+
+  it('faults followed by one failing footer are thrown, not read as not proven', async () => {
+    const t = new TransientError('the footer read timed out');
+    const run = await refusedErasure(4, NO_WAIT, [t, t, t, 'corrupt']);
+    await expect(run.erasure).rejects.toBeInstanceOf(TransientError);
+    expect(run.faults()).toBe(4);
+    expect(await generations(run.storage)).toEqual([0, 1, 2]);
+  });
+
+  it('a footer that fails its checks is not reported as a transient retry', async () => {
+    const seen: unknown[] = [];
+    const retry = { ...NO_WAIT, onRetry: (info: { err: unknown }) => seen.push(info.err) };
+    const run = await refusedErasure(2, retry, ['corrupt', new TransientError('slow')]);
+    await run.erasure;
+    expect(run.faults()).toBe(2);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(TransientError);
+  });
+
+  it('through eraseSubject, a persistent fault is the segment error note, and the object is kept', async () => {
+    const run = await refusedErasure(Infinity, undefined, undefined, 'erase-subject');
+    const ledger = (await run.erasure) as { erasedFrom: { erased: boolean; note?: string }[] };
+    expect(ledger.erasedFrom).toEqual([
+      expect.objectContaining({
+        erased: false,
+        note: expect.stringMatching(/^error: TransientError:/),
+      }),
+    ]);
     expect(await generations(run.storage)).toEqual([0, 1, 2]);
   });
 

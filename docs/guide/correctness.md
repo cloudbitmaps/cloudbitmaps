@@ -908,6 +908,19 @@ not forward-only, for the reason given in [which fence a publish carries](#how-a
   with no usable ledger, can name the object in the ledger it seeds; after the delete that entry names a
   missing generation, which takes a place in the window until a later load's collection drops it, and fails no read.
 
+A refused rewrite's footer read is not an answer when it faults. A timeout, a throttle or a server error does not say
+the object is another's, so the discard repeats a transient fault under the store's read retry and, when it still fails, throws
+that error in place of the refusal (`'superseded'`), and the object stays: it may hold an id another erasure has
+reported gone, so the caller is told it may remain and can run the erasure again. `eraseIdFromSegment` rejects with the
+fault; `eraseSubject` records it as that segment's `error:` note (`erased: false`) and goes on to the next segment. A
+footer that fails its own checks is repeated under the read retry as well, since a torn read of the object can produce
+one, though that repeat is not counted as a transient retry in `onRetry` or the `retry` metric. One that fails its checks
+on every read is not proven, so the object is kept and the refusal reported, as for an object that is gone or whose
+footer is another write's; if any read faulted in another way, that fault is thrown instead. With no read retry configured the read is made once. A refused
+load's reclaim reads its own object once, without the read retry, and swallows any fault, as it does every fault of its
+cleanup: the object stays an orphan for a later load's collection. Nothing is deleted on a read that did not prove the
+object.
+
 <a id="erasure-number-taken-again"></a>**A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
 a call deletes a holder by name, above the pointer or on a segment with no generation yet, another erasure of the same
 id can delete that holder first, and a load that read the row after both erasures renewed it can then take the
@@ -921,9 +934,9 @@ call deletes nothing more, and it reports `erased: true` when nothing left holds
 writers above) meets the same race, another erasure deleting that object as a holder and a load taking its number, and
 one more: a rewrite is deleted on the strength of a read of its footer. The footer carries the write identity the
 rewrite drew, so it names that write: a load of the ids the rewrite holds, in the clear, writes the same chunks but
-another identity, and its object does not match. So the call first reads the footer of the object under its number (one read, repeated on a fault) and
-keeps one that is gone, is another object or keeps failing its footer checks. A read that faults is repeated
-under the read retry and thrown when it still fails, as the paragraph below says. Then it renews the row it read, as it does before deleting a holder, so a
+another identity, and its object does not match. So the call first reads the footer of the object under its number (one read, repeated on a transient fault) and
+keeps one that is gone, is another object or keeps failing its footer checks. A read that faults is retried
+under the read retry and thrown when it still fails, as the paragraph above says. Then it renews the row it read, as it does before deleting a holder, so a
 load that wrote an object that read matched (only one with an all-zero identity can), which read the row before writing it, is refused at its publish. A
 renewal that loses means another write landed since: the call reads the row and decides again. One lost to a write of
 leases alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; after
@@ -941,18 +954,6 @@ thrown in place of the answer, as any storage delete fault of an erasure is. A l
 | `S3Storage` | yes when its client sends to an AWS S3 host, by default: a `DeleteObject` under `If-Match`. Read from the client on the first such delete, so `capabilities()` says `false` until then, and stays `false` when the client cannot be resolved (no region). Off for any other host, MinIO included, unless you set `conditionalDelete: true` |
 | `GcsStorage` | only with `conditionalDelete: true`: a delete under `ifGenerationMatch`. Off by default, since no run against GCS has shown it applies the precondition to a delete, so on GCS the window below stays open unless you set it |
 | `LocalFsStorage` | no: a filesystem has no delete conditioned on which file is under a path |
-
-A refused rewrite's footer read is not an answer when it faults. A timeout, a throttle or a server error does not say
-the object is another's, so the discard repeats the read under the store's read retry and, when it still fails, throws
-that error in place of the refusal (`'superseded'`), and the object stays: it may hold an id another erasure has
-reported gone, so the caller is told it may remain and can run the erasure again. `eraseIdFromSegment` rejects with the
-fault; `eraseSubject` records it as that segment's `error:` note (`erased: false`) and goes on to the next segment. A
-footer that fails its own checks is read the same way, since a torn read of the object can produce one: it is repeated
-under the read retry, and one that keeps failing is not proven, so the object is kept and the refusal reported, as for an
-object that is gone or whose footer is another write's. With no read retry configured the read is made once. A refused
-load's reclaim reads its own object once, without the read retry, and swallows any fault, as it does every fault of its
-cleanup: the object stays an orphan for a later load's collection. Nothing is deleted on a read that did not prove the
-object.
 
 On a driver that does not report it, a delete in that window removes the load's generation, and the pointer names a
 missing object, which `checkConsistency()` reports: the race of two erasures and a load stays open there, above the

@@ -107,8 +107,9 @@ export async function provenObject(
 
 /**
  * Whether the object under `key` is still the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one read
- * of its footer. Unlike {@link provenObject}, a fault is not an answer: `NotFoundError` when the key holds no object,
- * and any other failure of the read, thrown as it is.
+ * of its footer. A read that cannot tell is not an answer, as for {@link provenObject}; unlike it, an object that is gone
+ * is not one either: `NotFoundError` when the key holds no object, and any other failure of the read, thrown as it is,
+ * and no version is reported.
  */
 export function sameObjectUnder(
   storage: IStorageDriver,
@@ -220,20 +221,15 @@ export async function footerCrcUnder(storage: IStorageDriver, key: GenKey): Prom
 
 /**
  * Whether the object under `key` is the one `fingerprint` names, from one read of its footer: false when it is another
- * object or gone. Unlike {@link provenObject}, a read that cannot tell throws, for a caller that must not take "could
- * not look" for "not this object".
+ * object or gone, as {@link provenObject} answers, and a read that cannot tell throws, for a caller that must not take
+ * "could not look" for "not this object".
  */
 export async function provesOwnObject(
   storage: IStorageDriver,
   key: GenKey,
   fingerprint: string,
 ): Promise<boolean> {
-  try {
-    return await CrbmReader.sameObject(storageBlobReader(storage, key), fingerprint);
-  } catch (err) {
-    if (isNotFoundError(err)) return false;
-    throw err;
-  }
+  return (await provenObject(storage, key, fingerprint)) !== null;
 }
 
 /** The version the driver reported for the object each reader {@link openGenerationReader} opened. */

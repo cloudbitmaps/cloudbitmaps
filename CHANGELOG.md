@@ -34,7 +34,7 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **A refused erasure whose read of its own object faults now reports the fault instead of answering `superseded` and leaving the object.**
+- **A refused erasure whose read of its own object faults now reports the fault instead of answering `superseded` with nothing to say the object stayed.**
   When an erasure's rewrite lost a race and the winner's pointer stopped below the rewrite's object, the erasure
   proves the object is its own with one read of its footer before it deletes it. A timeout, a throttle or a server
   error on that read (a `TransientError`, usually) was taken for "another object": the object, which can hold an id
