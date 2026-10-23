@@ -72,3 +72,6 @@ __pycache__/
 
 # Written and removed by a test that builds an older registry parser
 tests/**/*.generated.ts
+
+# The tarballs and the work folder of scripts/consumer-install.cjs
+.consumer-install-tmp-*/

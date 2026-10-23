@@ -36,6 +36,18 @@ Every change must pass these locally, and CI runs each of them on every pull req
   `Function` constructor, and on dynamic `import()`; and the
   detectors the build, `pnpm smoke` and the Node-floor gate rely on are fired at planted inputs in both
   directions.
+- `node scripts/consumer-install.cjs --image <image>` packs the six packages as a release does, then installs the tarballs
+  with npm into a clean project and runs code against them (both module systems, both local drivers, the `export-segments`
+  bin), and fails on a file a manifest names that the tarball lacks. The install and the run, which are third-party code,
+  happen inside a throwaway container of that Node image, so **it needs Docker**. CI uses `node:22-bookworm` and
+  `node:24-bookworm`, each pinned by digest, from a mirror with two fallback registries; `scripts/README.md` says where the
+  digests come from and how to refresh them. The script builds first, needs the registry for the cloud SDKs (a failed
+  install is retried twice) and takes under a minute on CI. `--no-container` runs the second half on your own machine
+  instead, for local use only: it runs registry install scripts with your access, and refuses to run when `CI` is set.
+  `--keep` leaves the tarballs behind. Run it after a change to a `package.json` (`files`, `exports`, `bin`,
+  dependencies) or to the build. CI runs it on every pull request and every push to `main` as `consumer install`, on
+  Node 22 and 24, with the npm each image ships. It does not compile types in the project (`pnpm smoke` does), run npm 12
+  or install with pnpm or yarn.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
   the entry list is derived from each manifest, so a declared entry that does not load fails the build. It checks
   that `errorKind`, from the flavor and from driver-kit, classifies an error the built `@cloudbitmaps/s3` throws, and that the store takes a
