@@ -41,6 +41,7 @@ arrives on its own, and you install it only to name a driver port's type, such a
 `@cloudbitmaps/core/driver-kit` exports ([the storage interfaces](docs/guide/api-reference.md#the-storage-interfaces-used-to-type-storage--registry) say how, or how to
 derive the type instead). Install one copy of `@cloudbitmaps/roaring` in a process; a combine
 refuses a segment of another store, and a segment of another copy always belongs to another store.
+The store's Roaring is written in TypeScript, with no native code: [what that means](docs/guide/roaring-codec.md).
 The family is six packages, released together at one version:
 
 | Package | What it is | Install it |
@@ -329,7 +330,7 @@ it).
 The Roaring Bitmap format and its algorithms are the work of Daniel Lemire and colleagues. See
 [roaringbitmap.org](https://roaringbitmap.org/) and the [Roaring format specification](https://github.com/RoaringBitmap/RoaringFormatSpec),
 which defines the portable bytes every chunk of a `.crbm` object holds. The store's codec implements that format and those
-algorithms in TypeScript; CRoaring, through the `roaring` binding, is the reference its tests compare it against. The papers:
+algorithms in TypeScript ([how it is held to CRoaring](docs/guide/roaring-codec.md#the-guarantee-the-same-bytes)); CRoaring, through the `roaring` binding, is the reference its tests compare it against. The papers:
 
 - S. Chambi, D. Lemire, O. Kaser, R. Godin, "Better bitmap performance with Roaring bitmaps", *Software: Practice and
   Experience* 46(5), 2016. [arXiv:1402.6407](https://arxiv.org/abs/1402.6407)

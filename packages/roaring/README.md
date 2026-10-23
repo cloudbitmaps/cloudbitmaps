@@ -19,6 +19,8 @@ pnpm add @cloudbitmaps/tools                # optional: price a store, offline
 
 Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
 
+The store's Roaring is written in TypeScript, with no native code: [what that means](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/roaring-codec.md).
+
 ## Use
 
 No setup needed: `MemoryStorage` keeps everything in the process, which is right for a first look and for tests.
@@ -129,7 +131,7 @@ says what else differs.
 The Roaring Bitmap format and its algorithms are the work of Daniel Lemire and colleagues. See
 [roaringbitmap.org](https://roaringbitmap.org/) and the [Roaring format specification](https://github.com/RoaringBitmap/RoaringFormatSpec),
 which defines the portable bytes every chunk of a `.crbm` object holds. The store's codec implements that format and those
-algorithms in TypeScript; CRoaring, through the `roaring` binding, is the reference its tests compare it against. The papers:
+algorithms in TypeScript ([how it is held to CRoaring](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/roaring-codec.md#the-guarantee-the-same-bytes)); CRoaring, through the `roaring` binding, is the reference its tests compare it against. The papers:
 
 - S. Chambi, D. Lemire, O. Kaser, R. Godin, "Better bitmap performance with Roaring bitmaps", *Software: Practice and
   Experience* 46(5), 2016. [arXiv:1402.6407](https://arxiv.org/abs/1402.6407)

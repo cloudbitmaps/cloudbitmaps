@@ -174,7 +174,7 @@ export interface CodecInterface {
    * **Optional, and off by default.** A codec whose combine cost depends on the order, because an early operand that is
    * large and of one container kind makes the running result expensive, sets it; the engine then pays one `size` read per
    * operand per chunk to put the sparsest first. A codec whose combines cost about the same in any order, or whose
-   * `size` is a call across a native boundary, leaves it out and keeps the operand order it was given. The answer is the
+   * `size` is expensive to read, leaves it out and keeps the operand order it was given. The answer is the
    * same either way.
    */
   readonly intersectSmallestFirst?: boolean;

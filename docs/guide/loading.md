@@ -240,7 +240,7 @@ export async function loadParts(
   with `roaring`, which is the second line of the map. Passing the `ReadonlyBitmap` itself to a method of the `roaring` package from npm answers
   wrongly, and `JSON.stringify` of one gives `"{}"`: write `JSON.stringify([...bitmap])`
   ([why](api-reference.md#decode-portable-bytes--deserializeportablebytes)).
-- **The recipe costs about four passes over a part where a native decode makes one.** Each part's bytes are checked,
+- **The recipe costs about four passes over a part where `RoaringBitmap32.deserialize` alone makes one.** Each part's bytes are checked,
   decoded twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the
   bytes you were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library
   copies a shared buffer only for its own decode. A single part that needs no joining goes straight to

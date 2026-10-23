@@ -6,10 +6,12 @@
 > sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the estimator's own numbers. The
 > polished, shareable version lives on the [site](../site/benchmarks.html).
 
-> **Which figures are on which codec.** Re-measured on the TypeScript codec on 2026-10-21: the soak ([limitation 04](../site/benchmarks.html#limits)) and
-> the hard RSS ceiling, whose record is the file CI's gate wrote that day. Still measured before the store's codec moved to
-> TypeScript: the read, fleet-memory and at-scale figures. The cost model and the crossover do not depend on the codec; the
-> codec comparison is in [`bench/ts-codec-comparison.md`](../bench/ts-codec-comparison.md).
+> **Which figures are on which codec.** The soak ([limitation 04](../site/benchmarks.html#limits)) and the hard RSS
+> ceiling were measured on the TypeScript codec, the one the store uses, on 2026-10-21; the file CI's gate wrote that day
+> is the ceiling's record. The in-region run, the large-operand run, the read, fleet-memory and at-scale figures were
+> measured on the native codec, in the release each section names, and are to be re-measured. The cost model and the
+> crossover do not depend on the codec. [The TypeScript codec against native](#the-typescript-codec-against-native)
+> has the comparison.
 
 CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
 sustained read rate, pay-per-use is far cheaper; above it, the cluster wins. This is that crossover.
@@ -78,6 +80,8 @@ the data: what a cold intersect, an `andNot` and a load cost, and how long they 
 
 ### The in-region run — run `2026-10-13-b329d`
 
+> **Codec:** the native codec (packages 0.21.0). The TypeScript codec has not been run in region; to be re-measured.
+>
 > **Measured** against real S3 in `us-east-1` on 2026-10-13 (UTC), from AWS CloudShell in the same region, with the
 > packages then published (the evidence names the version, as `packageVersion`) and a client of 128 sockets, the number this release's own client allows: a round-trip
 > floor of 8 ms (7.63 ms). The run's report explains every figure:
@@ -191,6 +195,8 @@ real ids are often denser, and the guide counts larger chunks.
 
 ## Large operands — run `2026-10-07-88cd3`
 
+> **Codec:** the native codec (packages 0.18.3). The TypeScript codec has not been run on these operands; to be re-measured.
+>
 > **Measured** against real S3 in `us-east-1` on 2026-10-07 (UTC), from AWS CloudShell in the same region (2 CPUs, a
 > round-trip floor of 4.7 ms to the region, so in-region), through the packages then published (the evidence names the version, as `packageVersion`). This is the first run of
 > the harness's [large suite](../bench/README.md#the-large-suite): combines on operands of about a million, five million
@@ -255,6 +261,8 @@ them run-encoded.
 
 ## At scale — measured (1K → 10K → 100K segments)
 
+> **Codec:** the native codec (the results file's last commit predates 0.24.0). Not re-run on the TypeScript codec: the retained-heap column is the reader cache's heap, which the codec does not change, but the chunk-skipping intersect row does run the codec. To be re-measured.
+>
 > **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
 > disk and reads across all of it, and intersects two large segments on in-memory storage. They're
@@ -330,9 +338,8 @@ number the kernel consults when a container hits its memory limit and something 
 ### Why RSS and not the JavaScript heap
 
 CloudBitmaps keeps a bitmap's containers in typed arrays, whose backing memory V8 allocates outside its JavaScript
-object heap, and a `Buffer` read from storage is the same kind of memory. (The read, fleet-memory and at-scale figures on this page were measured
-before the store's codec moved from the `roaring` native addon to TypeScript, where the containers sat in `malloc`
-memory outside V8 altogether; the soak and the RSS gate were re-run on the TypeScript codec on 2026-10-21.) So a process holding a large bitmap looks like this:
+object heap, and a `Buffer` read from storage is the same kind of memory. (The read, fleet-memory and at-scale figures on this page were measured on the native codec, whose containers sat in `malloc`
+memory outside V8 altogether; the soak and the RSS gate were measured on the TypeScript codec on 2026-10-21.) So a process holding a large bitmap looks like this:
 
 ```
 ┌──────────────── RSS — what the OS sees ────────────────┐
@@ -436,6 +443,121 @@ holds about 4 or 6.3 MiB of it at the end (3.98 MiB for `load`, 6.25 MiB for `wi
 7 MiB at the peak (4.55 and 6.96 MiB). A
 backend's upload buffer comes on top of all of it:
 [memory, and where a load runs](guide/loading.md#memory-and-where-a-load-runs).
+
+## The TypeScript codec against native
+
+> **Measured**, on one machine, on 2026-10-22, by `node --expose-gc bench/ts-codec-engine.cjs --all` (about an hour),
+> through the store (`CloudRoaring` over `MemoryStorage`, warm cache). The machine was an Apple M3 Pro with 11 cores
+> running macOS and Node v24.22.1, with the bench's load gate off, so every figure in the record carries the load beside
+> it (the reads' peaks run from 1.96 to 2.33 in the figures below). The record is
+> [`bench/ts-codec-comparison-results.json`](../bench/ts-codec-comparison-results.json): every round of every figure,
+> from the clean tree at commit `c387921b`, with 22 read figures re-taken at commit `6467779c` because their controls or
+> their load were out of band (each first take is kept beside the figure that replaced it).
+> [`tests/bench/ts-codec-verdict.test.ts`](../tests/bench/ts-codec-verdict.test.ts) recomputes every verdict from the
+> rounds. The report is [`bench/ts-codec-comparison.md`](../bench/ts-codec-comparison.md). These are wall-clock figures
+> from one machine, recorded and not asserted; they are the figures of 0.24.0's switch, and CI does not re-measure them.
+
+**How.** Each cell times the same call on three subjects, in an order that rotates through the six permutations: the native
+codec, the TypeScript codec, and the native codec again as an A/A control. A cell's figure is the median over 31 rounds of
+`typescript / native - 1`, and a negative number means the TypeScript codec was faster. The bar was "no more than 5% slower
+with the control within +-2%". Reads are measured in two ways, and the table gives the first: **one codec per process**
+(three fresh processes, each timing every operation once per round, which is how a store runs in production, and what the
+verdict uses), and in one process (three stores in one process; its figures agree on every cell that resolves and are in the
+report). The write path is measured in one process only. Data sets: `dense` is 32 chunks of 32,768 ids, `sparse` 256 chunks
+of 1,000, `runs` 128 chunks of 150 runs, `mixed` 128 chunks of the three kinds in turn, `spread8k` 8,192 chunks of 16 ids (a
+`spread` set of the same shape over 62,500 chunks is timed on `has`, `count` and `iterate` only, since its combines take
+seconds, and is in the report: `has` -1.7%, `count` -1.5%, `iterate` -11.7%).
+
+**Reads through the store, one codec per process** (the TypeScript codec against native; negative is faster):
+
+| operation | dense | sparse | runs | mixed | spread8k |
+|---|---|---|---|---|---|
+| `has` (512 probes a call) | +1.1% | -2.5% | -1.3% | -2.2% | -8.2% |
+| `count` (read from the index) | -0.1% | +1.1% | +0.4% | +0.6% | +1.7% |
+| `iterate` (a full stream) | -0.0% | -2.5% | -3.4% | -0.9% | -9.3% |
+| `intersect`, two operands | +0.2% | -40.2% | -0.6% | -5.4% | -17.2% |
+| `intersect`, four operands | +3.4% | -37.0% | +0.6% | +2.9% | -9.5% |
+| `andNot` | -0.6% | -0.8% | -0.6% | -2.9% | -12.9% |
+
+Every cell is inside the 5% bar. The worst is dense `intersect` with four operands, +3.4% (17.9 ms native, 18.6 ms
+TypeScript). `count` makes no codec call, so its row measures the noise of the comparison (about +-2%), not the codec; `has`
+is dominated by the store's own asynchronous call (about 1 microsecond a probe), so it has little power to show a codec
+difference. The TypeScript codec's `intersect` takes operands smallest-first; the native path keeps the order it is given.
+Given the same smallest-first order, native is itself 7.7% slower per process on the mixed four-operand cell than native as
+shipped, and the TypeScript codec reads -3.8% against that reordered native (both measured), so the +2.9% in the table is
+not purely a codec difference.
+
+**There is no union row, and the reason matters.** The store comparison times `intersect` and `andNot`, not `union`: no
+union cell was measured through the store. The per-operation microbenchmark (one operation on one chunk, medians of 11
+interleaved rounds after a warm-up, Apple M3 Pro, Node v24.18.1, commit `7bf70e54`, a load of about 2.5, record
+[`bench/ts-codec-results.json`](../bench/ts-codec-results.json)) is the only union figure, and it is not a win for the
+TypeScript codec: `or` on one pair of containers took 1,056 ns native and 3,124 ns TypeScript on dense/dense (2.96 times),
+1,691 and 3,759 on sparse/sparse (2.22), 1,575 and 3,782 on run/run (2.40), and 3,341 against 14,099 on a skewed pair of
+64 and 4,000 values (4.22), the worst pair measured. Its `and` and `andNot` on one pair are 1.3 to 3.6 times slower in the
+same record, except `andNot` on the skewed pair (0.52). Through the store, the combines above are inside the bar or faster
+anyway, because a store combine is dominated by chunk handling and the store's own work, not the pair kernel; that is a
+measured result for `intersect` and `andNot`, and an expectation, not a measurement, for `union`.
+
+**The write path** (in one process, 1,000,000 ids over 62,500 chunks, a fresh store per round, a garbage collection before
+each timed call, 31 rounds, load 1.3 to 1.4):
+
+| operation | native | TypeScript | change | A/A control |
+|---|---|---|---|---|
+| `store.load()` | 183.1 ms | 117.2 ms | -35.6% | -0.4% |
+| an erasure's rewrite of one id | 195.6 ms | 129.9 ms | -33.8% | +0.3% |
+| an export | 406.8 ms | 350.5 ms | -14.1% | +0.1% |
+
+The exported bytes were identical in all 31 rounds. That is a warm process.
+
+**A cold process is slower.** The cold row (a fresh process, a mixed set of 128 chunks, a first load of two segments, then
+the first `has` calls; the median of 31 processes per codec, load 1.7) is where the TypeScript codec loses:
+
+| first use in a fresh process | native | TypeScript | change | A/A control |
+|---|---|---|---|---|
+| the first `load` of two segments | 135.02 ms | 153.0 ms | +13.1% | +0.3% |
+| the first `has` | 3,076.6 us | 3,262.3 us | +6.6% | +0.4% |
+| the first ten `has` calls | 3.747 ms | 4.033 ms | +8.3% | +0.3% |
+| the first thousand `has` calls | 8.32 ms | 8.90 ms | +7.0% | +0.1% |
+| the next thousand `has` calls | 1.59 ms | 1.61 ms | +1.3% | +0.0% |
+| the first full `iterate` | 465.91 ms | 483.88 ms | +1.5% | +1.5% |
+| the first `intersect` | 136.43 ms | 132.91 ms | -2.8% | -0.1% |
+
+A bulk load that is 35.6% faster warm is 13.1% slower the first time a process runs it, and the first few thousand `has`
+calls are 7% to 8% slower; the cost is the first decode of each chunk. The TypeScript row's process still loaded the native
+addon (the bundle it ran then carried both), so it is not a measurement of a process without the addon.
+
+**Start-up.** Loading the codec's module in a fresh process took 19.5 ms for the native addon and its codec and 1.1 ms for
+the TypeScript codec (-94.2%, control +0.4%; median of 31 processes).
+
+**Memory** (bytes per cached chunk, heap plus external as V8 counts them, median of seven repeats with each codec in a fresh
+process; the native codec keeps part of its memory outside V8's counters, and how much is not measured):
+
+| data set | native | TypeScript | TypeScript minus native (derived) |
+|---|---|---|---|
+| dense (64 chunks) | 4,207 | 13,082 | 8,875 |
+| sparse (256) | 1,443 | 3,911 | 2,468 |
+| runs (256) | 1,473 | 2,503 | 1,030 |
+| mixed (192) | 1,823 | 5,915 | 4,092 |
+| spread8k (8,192) | -52 | 363 | 415 |
+
+A cache of N chunks holds N times the figure for its kind, and the chunk cache is bounded by a count of chunks. Resident
+growth, which includes what V8's counters cannot see, is unreliable (an order of magnitude): its TypeScript-to-native ratio
+was 1.08 on dense, 0.86 on sparse, 1.18 on runs, 1.26 on mixed and 0.95 on spread8k, with the two codecs' ranges overlapping
+on all but spread8k, where every TypeScript sample is below every native one. No multiple of native's memory is claimed.
+
+**One container pair at a time is slower, and a few operations a lot.** In the per-operation record (one chunk, ratio of
+TypeScript to native): `optimize` on a run chunk 3.31 times (1,992 ns to 6,599 ns), `build` on a run chunk 1.75 times,
+`iterate` of a dense chunk 1.35 times; the other way, `build` of a dense chunk is 0.38 times, `serialize` 0.60 to 0.75 times,
+and a dense `has` 0.32 times.
+
+**What was not measured.** The TypeScript codec has not been run in region against real S3 (the in-region comparison is
+prepared in [`bench/README.md`](../bench/README.md#the-codec-comparison-in-region) and not run), so the latencies in region are
+expected to move as little as the in-memory ones, not measured. The request counts the engine makes were measured to be
+identical on both codecs (`bench/range-counts.json`, held to the engine in CI). Alpine and arm64 Lambda were not run. Only Node 22 and 24 run in CI;
+Bun and Deno ran a local self-check only, so no edge-runtime claim is made. A week of nightly fuzz on the TypeScript codec had
+not run when these figures were taken. A load of a bitmap, `{ bitmap }`, has no figure (its guide section says so).
+
+[Our own Roaring](guide/roaring-codec.md) says what the codec guarantees and what it can be used for alone.
 
 ## Caveats
 

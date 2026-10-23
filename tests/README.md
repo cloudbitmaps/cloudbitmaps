@@ -21,7 +21,7 @@ resolves.
 ## Full strength
 
 A few tests are heavy: property suites that draw many cases, a namespace listing of a quarter-million rows, thousands of
-native bitmaps measured, each cardinality in a fresh process. On a pull request they run a reduced size, so a push stays
+bitmaps measured (the TypeScript codec's, and the native one's as the reference), each cardinality in a fresh process. On a pull request they run a reduced size, so a push stays
 cheap; a scheduled run keeps the coverage by running each at the size it always had.
 
 | | runs | how |

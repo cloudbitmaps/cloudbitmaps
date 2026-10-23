@@ -6,6 +6,8 @@ same portable Roaring bytes as CRoaring (through the `roaring` package, which on
 reference), byte for byte: a `.crbm` generation written through one is read by the other, and the same set written
 twice is the same object.
 
+Users of the package: [docs/guide/roaring-codec.md](../../../../docs/guide/roaring-codec.md) says what this codec guarantees, what it costs and what can be used by itself.
+
 Where a statement below is about a test, a bench or a workflow rather than the module, it says so.
 
 ## Contents
