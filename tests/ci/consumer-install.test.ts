@@ -48,7 +48,12 @@ const load = (file: string) =>
   parse(readFileSync(join(ROOT, '.github/workflows', file), 'utf8')) as Workflow;
 const ci = load('ci.yml');
 const SCRIPT = 'node scripts/consumer-install.cjs';
-const RUN = `${SCRIPT} --image public.ecr.aws/docker/library/node:\${{ matrix.node }}-bookworm`;
+const RUN = [
+  SCRIPT,
+  '--image mirror.gcr.io/library/node:${{ matrix.node }}-bookworm',
+  '--image public.ecr.aws/docker/library/node:${{ matrix.node }}-bookworm',
+  '--image docker.io/library/node:${{ matrix.node }}-bookworm',
+].join(' ');
 
 /** A job by name, failing loudly when it is gone: a missing job is the regression this file exists for. */
 function jobOf(wf: Workflow, name: string): Job {

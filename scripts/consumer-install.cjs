@@ -42,7 +42,8 @@
  * yarn install.
  *
  * Usage:  node scripts/consumer-install.cjs (--image <image> | --no-container) [--keep]
- *   --image <image>  run the second half in this image, which needs Docker
+ *   --image <image>  run the second half in this image, which needs Docker; give it more than once to name
+ *                    fallbacks, tried in order when a registry throttles or refuses a pull
  *   --no-container   run it on this machine; local use only
  *   --keep           leave the tarballs (and, with --no-container, the project) behind and print where
  *   --in-container <dir>  the second half itself, over the tarballs in <dir>; what the container runs
@@ -94,6 +95,18 @@ function option(name) {
   const value = process.argv[i + 1];
   if (value === undefined || value.startsWith('--')) fail(`${name} needs a value`);
   return value;
+}
+
+/** Every value of a repeatable `--name <value>`, in order. */
+function options(name) {
+  const found = [];
+  process.argv.forEach((arg, i) => {
+    if (arg !== name) return;
+    const value = process.argv[i + 1];
+    if (value === undefined || value.startsWith('--')) fail(`${name} needs a value`);
+    found.push(value);
+  });
+  return found;
 }
 
 /** The environment of a child process: the allowed variables of this one, then `extra`. */
@@ -423,19 +436,25 @@ function dockerRunArgs({ image, name, tarballDir, scriptFile }) {
   ];
 }
 
-/** Pull an image, trying again after a pause: a registry throttle is not a fault of the packages. */
-function pullWithRetry(image) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      run('docker', ['pull', image], { cwd: ROOT, timeout: INSTALL_MS });
-      return;
-    } catch (error) {
-      const wait = INSTALL_BACKOFF_MS[attempt - 1];
-      if (wait === undefined) throw error;
-      console.log(`  docker pull failed (attempt ${attempt}); trying again in ${wait / 1000}s`);
-      pause(wait);
+/**
+ * Pull the first of `images` that can be had, so that one registry's throttle or quota does not fail the run: each
+ * is tried twice, after a short pause, and the one that comes down is the one that runs. Returns it.
+ */
+function pullFirst(images) {
+  const errors = [];
+  for (const image of images) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        run('docker', ['pull', image], { cwd: ROOT, timeout: INSTALL_MS });
+        return image;
+      } catch (error) {
+        errors.push(`${image}: ${String(error.message).split('\n').slice(0, 3).join(' ')}`);
+        console.log(`  docker pull of ${image} failed (attempt ${attempt} of 2)`);
+        if (attempt === 1) pause(INSTALL_BACKOFF_MS[0]);
+      }
     }
   }
+  fail(`no image could be pulled:\n  ${errors.join('\n  ')}`);
 }
 
 /** Refuse the no-container mode where a runner holds a token: it runs registry code on the host. */
@@ -549,10 +568,10 @@ function installAndRun(tarballDir, keep) {
 function main() {
   const inContainer = option('--in-container');
   if (inContainer !== undefined) return installAndRun(inContainer, false);
-  const image = option('--image');
+  const images = options('--image');
   const local = process.argv.includes('--no-container');
-  if ((image === undefined) === !local)
-    fail('give exactly one of --image <image> and --no-container');
+  if ((images.length === 0) === !local)
+    fail('give --image <image> (one or more), or --no-container, not both');
   if (local) refuseLocalModeInCi(process.env);
 
   const pkgs = workspacePackages();
@@ -561,7 +580,7 @@ function main() {
   const work = fs.mkdtempSync(path.join(ROOT, '.consumer-install-tmp-'));
   const name = `consumer-install-${process.pid}`;
   const cleanup = () => {
-    if (image !== undefined) spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
+    if (!local) spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
     if (!KEEP) fs.rmSync(work, { recursive: true, force: true });
   };
   for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -579,7 +598,7 @@ function main() {
       installAndRun(path.join(work, 'tarballs'), KEEP);
       return;
     }
-    stage('pull', () => pullWithRetry(image));
+    const image = stage('pull', () => pullFirst(images));
     console.log(`  install and run inside ${image}`);
     const args = dockerRunArgs({
       image,

@@ -38,8 +38,7 @@ Every change must pass these locally, and CI runs each of them on every pull req
 - `node scripts/consumer-install.cjs --image <image>` packs the six packages as a release does, then installs the tarballs
   with npm into a clean project and runs code against them (both module systems, both local drivers, the `export-segments`
   bin), and fails on a file a manifest names that the tarball lacks. The install and the run, which are third-party code,
-  happen inside a throwaway container of that Node image (CI uses `public.ecr.aws/docker/library/node:22-bookworm` and
-  `...:24-bookworm`), so **it needs Docker**. It builds first, needs the registry for the cloud SDKs (a failed install is
+  happen inside a throwaway container of that Node image (CI uses `node:22-bookworm` and `node:24-bookworm`, from a mirror with two fallback registries), so **it needs Docker**. It builds first, needs the registry for the cloud SDKs (a failed install is
   retried twice) and takes under a minute on CI. `--no-container` runs the second half on your own machine instead, for
   local use only: it runs registry install scripts with your access, and refuses to run when `CI` is set. `--keep` leaves
   the tarballs behind. Run it after a change to a `package.json` (`files`, `exports`, `bin`, dependencies) or to the
