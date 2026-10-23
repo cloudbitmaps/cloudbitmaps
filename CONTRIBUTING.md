@@ -326,6 +326,12 @@ order:
    README, CHANGELOG, roadmap), *in the same change*.
 6. **Commit and push always.** Commit logically, push the branch to `origin` (don't sit on local-only
    work). Open/update the PR.
+   The title, the body and the commit messages are public, and a squash merge copies the commit subjects into
+   `main`'s history, so a `pull request text` check scans all three: it fails text that says who or what did the work
+   (state what was done instead) and anything `scripts/leak-scan.cjs` would refuse in a tracked file. Run it before you
+   push, with `PR_TITLE=… PR_BODY=… node scripts/pr-text-scan.cjs` (add `BASE_SHA=… HEAD_SHA=…` to include the
+   commits). It cannot catch a phrase that is not on its list or a leak that is reworded, so it does not replace
+   reading the text. `scripts/README.md` lists what it checks.
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
 
 ## Documentation — keeping it current

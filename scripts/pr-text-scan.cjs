@@ -39,31 +39,48 @@ const ROOT = resolve(__dirname, '..');
 // Each entry says who or what did the work, which public text never does. The list is deliberately narrow:
 //
 //   * `agent` is NOT here: the docs say a scrubber removes an SDK's `agent`, and "user agent" is ordinary English.
-//   * `builder` is only a phrase about the work (`this builder`, `the builder`, `a builder`): an image builder, a
-//     query builder or `docker buildx` builder is legitimate, so the word alone is not listed.
+//   * `builder` is only a phrase about the work (`this builder`, `a builder`, `the builder's`, `the builder ran`,
+//     `by the builder`): an image builder, a query builder or `docker buildx` builder is legitimate, and so is a
+//     sentence about the build tool ("the builder inlines error classes"), so the word alone, and `the builder`
+//     before any other verb, are not listed. `a builder pattern` is a known false positive of `a builder`.
+//   * `coordinator` is not matched inside a compound (`coordinator-free` is a protocol property).
+//   * A trailer a bot's own commit carries (`Signed-off-by: dependabot[bot] <...>`, `Co-authored-by: ...[bot]`) is
+//     removed from a commit message before it is scanned: GitHub writes it, and its address is not ours to leak.
 //   * `Claude` is a case-sensitive whole word, so `CLAUDE.md` and a lower-case path do not match.
 //
 // Fix a hit by stating what was done, not who did it. Never widen a phrase to excuse one text: name the look-alike
 // narrower, or reword the text.
 const PHRASES = [
   { name: 'subagent', re: /\bsub-?agents?\b/i },
-  { name: 'coordinator', re: /\bcoordinators?\b/i },
+  { name: 'coordinator', re: /(?<![\w-])coordinators?(?![\w-])/i },
   { name: 'this session', re: /\bthis session\b/i },
   { name: 'cannot spawn', re: /\b(?:could|can) ?(?:not|n['’]t) spawn/i },
   { name: 'Generated with', re: /\bGenerated with\b/i },
   { name: 'Co-Authored-By', re: /\bCo-Authored-By\b/i },
   { name: 'Claude', re: /\bClaude\b/ },
-  { name: 'this/the/a builder', re: /\b(?:this|the|a) builder\b/i },
+  {
+    name: 'builder (the one who did the work)',
+    re: new RegExp(
+      [
+        String.raw`\b(?:this|a) builder\b`,
+        String.raw`\bthe builder(?:['\u2019]s\b| (?:ran|read|killed|re-?checked|wrote|added|found|did|made|had|was|has|reran|restored|caught|first|before|again)\b)`,
+        String.raw`\b(?:by|from|and|with|then|which|where) the builder\b`,
+      ].join('|'),
+      'i',
+    ),
+  },
 ];
 
-const FIX = 'fix: say what was done, not who or what did it (public text names the change, never its author)';
+const FIX =
+  'fix: say what was done, not who or what did it (public text names the change, never its author)';
 
 /** Phrase findings in one text: `{ phrase, source, line, text }`. */
 function phraseFindings(source, text) {
   const out = [];
   text.split(/\r?\n/).forEach((t, i) => {
     for (const p of PHRASES) {
-      if (p.re.test(t)) out.push({ phrase: p.name, source, line: i + 1, text: t.trim().slice(0, 160) });
+      if (p.re.test(t))
+        out.push({ phrase: p.name, source, line: i + 1, text: t.trim().slice(0, 160) });
     }
   });
   return out;
@@ -74,23 +91,32 @@ class InputError extends Error {}
 /** The messages of the pull request's own commits, `[{ sha, message }]`. */
 function commitMessages(base, head) {
   const SHA = /^[0-9a-f]{7,40}$/i;
-  if (!SHA.test(base) || !SHA.test(head)) throw new InputError('BASE_SHA and HEAD_SHA must be commit ids');
+  if (!SHA.test(base) || !SHA.test(head))
+    throw new InputError('BASE_SHA and HEAD_SHA must be commit ids');
   let raw;
   try {
-    raw = execFileSync(
-      'git',
-      ['log', '--no-merges', '--format=%x1e%H%n%B', `${base}..${head}`],
-      { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    raw = execFileSync('git', ['log', '--no-merges', '--format=%x1e%H%n%B', `${base}..${head}`], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   } catch (err) {
-    throw new InputError(`git log ${base}..${head} failed: ${String(err.stderr || err.message).trim()}`);
+    throw new InputError(
+      `git log ${base}..${head} failed: ${String(err.stderr || err.message).trim()}`,
+    );
   }
   return raw
     .split('\x1e')
     .filter((c) => c.trim() !== '')
     .map((c) => {
       const nl = c.indexOf('\n');
-      return { sha: c.slice(0, nl).trim(), message: c.slice(nl + 1) };
+      const message = c
+        .slice(nl + 1)
+        .split('\n')
+        .filter((l) => !/^(?:Signed-off-by|Co-authored-by):.*\[bot\]/i.test(l))
+        .join('\n');
+      return { sha: c.slice(0, nl).trim(), message };
     });
 }
 
@@ -120,7 +146,12 @@ function leakScan(texts) {
       r = run([]);
     }
     const out = `${r.stdout || ''}${r.stderr || ''}`;
-    if (r.error !== undefined || r.status === null || (r.status !== 0 && r.status !== 1)) {
+    // A node crash also exits 1, so a verdict is an exit code together with the scan's own report: its header line
+    // on a pass, its closing "FAILED" line on a refusal.
+    const verdict =
+      (r.status === 0 && /^leak-scan: directory /m.test(r.stdout || '')) ||
+      (r.status === 1 && /leak-scan: FAILED/.test(r.stderr || ''));
+    if (r.error !== undefined || !verdict) {
       throw new InputError(
         `the leak scan did not run to a verdict (${r.error ? r.error.message : `exit ${r.status}`})\n${out}`,
       );
@@ -134,11 +165,14 @@ function leakScan(texts) {
 function main(env) {
   const title = env.PR_TITLE;
   const body = env.PR_BODY;
-  if (title === undefined || title.trim() === '') throw new InputError('PR_TITLE is missing or empty');
-  if (body === undefined) throw new InputError('PR_BODY is not set (set it to an empty string for no body)');
+  if (title === undefined || title.trim() === '')
+    throw new InputError('PR_TITLE is missing or empty');
+  if (body === undefined)
+    throw new InputError('PR_BODY is not set (set it to an empty string for no body)');
   const hasBase = env.BASE_SHA !== undefined && env.BASE_SHA !== '';
   const hasHead = env.HEAD_SHA !== undefined && env.HEAD_SHA !== '';
-  if (hasBase !== hasHead) throw new InputError('BASE_SHA and HEAD_SHA go together: one is missing');
+  if (hasBase !== hasHead)
+    throw new InputError('BASE_SHA and HEAD_SHA go together: one is missing');
 
   const texts = [
     { file: 'title.txt', source: 'title', text: title },
@@ -173,13 +207,17 @@ function main(env) {
     );
     return 1;
   }
-  console.log(`pr-text-scan: clean (${texts.length} text(s): title, body, ${texts.length - 2} commit message(s))`);
+  console.log(
+    `pr-text-scan: clean (${texts.length} text(s): title, body, ${texts.length - 2} commit message(s))`,
+  );
   return 0;
 }
 
 try {
   process.exitCode = main(process.env);
 } catch (err) {
-  console.error(`pr-text-scan: FAILED to run: ${err instanceof InputError ? err.message : err && err.stack}`);
+  console.error(
+    `pr-text-scan: FAILED to run: ${err instanceof InputError ? err.message : err && err.stack}`,
+  );
   process.exitCode = 2;
 }
