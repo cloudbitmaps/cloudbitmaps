@@ -13,16 +13,22 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-- **`@cloudbitmaps/gcs` now requires `@google-cloud/storage` 8.1.0 (was 7.0.0 or 8.0.0) and `@cloudbitmaps/azure-blob` requires `@azure/storage-blob` 12.23.0 (was 12.0.0).**
-  Each driver's own unit tests now run every night against the lowest SDK its range admits, and both old floors failed
-  them; 8.1.0 and 12.23.0 are the lowest versions that pass (8.0.1 and 12.18.0 do not). What an older SDK broke for a
-  caller, measured on the old floors: on Google Cloud Storage 7.x the driver's reads, its `readTimeoutMs` and its single
-  retry of a cut read did not work (a read never settled, a stalled body was not cut off); on Azure Blob 12.0.0 the
-  driver's delete (`deleteIfExists`) and the container name in its lifecycle message failed, and on 12.18.0 and older a
-  read whose connection drops part-way was not timed out or read again as a `TransientError`, and a pointer read was
-  not cut off correctly. A fresh install already resolves far above both floors. What a caller does: nothing, unless
-  you pin an older SDK or pass your own `containerClient`: upgrade it to the new floor. `@cloudbitmaps/s3` keeps
-  `@aws-sdk/client-s3` 3.700.0 (3.699.0 and older drop `If-Match` on `PutObject`; the registry refuses such a client).
+- **`@cloudbitmaps/gcs` now requires `@google-cloud/storage` 8.0.1 (was 7.0.0 or 8.0.0) and `@cloudbitmaps/azure-blob` requires `@azure/storage-blob` 12.23.0 (was 12.0.0).**
+  Each driver's own unit tests now run every night against the lowest SDK each alternative of its range admits, and the
+  old floors failed them. On Google Cloud Storage the unit tests pass on 8.0.1 and fail on 8.0.0 and on every 7.x release
+  tried (7.0.0, 7.12.0, 7.17.3, 7.18.0, 7.19.0, 7.21.0 and 7.22.0), in the same three tests: a read the driver cuts off at
+  `readTimeoutMs` leaves its connection open, a read whose first answer is cut off part-way never settles instead of
+  being read again, and a read the driver refuses does not release its request. Why the older SDKs behave so is not
+  traced past those tests. On Azure Blob 12.0.0 the driver's delete (`deleteIfExists`) and the container name in its
+  lifecycle message failed (the SDK lacks the member the driver calls); on 12.18.0 a read whose connection drops
+  part-way surfaced as the read's timeout, or never ended, rather than as the connection fault, a refused pointer read
+  did not release its request, and a pointer body cut off part-way never ended; 12.23.0 is the lowest release that passes
+  (no stable release lies between 12.18.0 and 12.23.0), and why 12.18.0 differs is not traced past those tests. Ten of
+  12.18.0's failures compare a scrubbed error's classification with the raw error's for a reset connection, and which
+  field differs was not traced. A fresh install already resolves far above both floors. What a caller does: nothing,
+  unless you pin an older SDK or pass your own `client` (GCS) or `containerClient` (Azure): upgrade it to the new floor.
+  `@cloudbitmaps/s3` keeps `@aws-sdk/client-s3` 3.700.0 (3.699.0 and older drop `If-Match` on `PutObject`; the registry
+  refuses such a client).
 
 ### Changed
 
