@@ -263,6 +263,13 @@ async function run(seed: number): Promise<{ erased: boolean; refused: boolean }>
   return { erased: erasedTrue(res), refused };
 }
 
+/**
+ * Seeds of `run` that end in a refusal (no hook, no lost answer, the id found and not erased). A run is a function of
+ * its seed alone, so this is a fact about the generator, not about a random draw. If the generator changes and one
+ * stops refusing, the test below names it: pick new seeds by running `run` over a range.
+ */
+const REFUSED_SEEDS: readonly number[] = [261, 285, 321, 337, 929, 960];
+
 describe('an erasure and the loads that read the row before it began, in a random interleaving', () => {
   it('never serves the erased id after erased: true', async () => {
     let runs = 0;
@@ -279,7 +286,19 @@ describe('an erasure and the loads that read the row before it began, in a rando
     );
     // The run is not vacuous: most runs erase.
     expect(erased).toBeGreaterThan(runs / 10);
-    // And some runs end in the refusal assertion 2 checks.
-    if (runs >= 1000) expect(refused).toBeGreaterThan(0);
+    // Whether a random draw reaches a refused history is chance (one run in a few hundred), so this property
+    // asserts no floor on `refused`: the committed seeds below hold that floor, and this property keeps only the
+    // exploration for counterexamples.
+    expect(refused).toBeGreaterThanOrEqual(0);
   }, 900_000);
+
+  it('reaches a refused history: each committed seed ends in the refusal assertion 2 checks', async () => {
+    expect(REFUSED_SEEDS.length).toBeGreaterThanOrEqual(3);
+    for (const seed of REFUSED_SEEDS) {
+      const out = await run(seed);
+      expect(out.refused, `seed ${seed} no longer ends in a refusal: the generator changed`).toBe(
+        true,
+      );
+    }
+  }, 60_000);
 });
