@@ -449,7 +449,7 @@ backend's upload buffer comes on top of all of it:
 > **Measured**, on one machine, on 2026-10-22, by `node --expose-gc bench/ts-codec-engine.cjs --all` (about an hour),
 > through the store (`CloudRoaring` over `MemoryStorage`, warm cache). The machine was an Apple M3 Pro with 11 cores
 > running macOS and Node v24.22.1, with the bench's load gate off, so every figure in the record carries the load beside
-> it (the reads' peaks run from 1.96 to 2.33 in the figures below). The record is
+> it (the reads' peaks run from 1.96 to 2.62 per process in the figures below). The record is
 > [`bench/ts-codec-comparison-results.json`](../bench/ts-codec-comparison-results.json): every round of every figure,
 > from the clean tree at commit `c387921b`, with 22 read figures re-taken at commit `6467779c` because their controls or
 > their load were out of band (each first take is kept beside the figure that replaced it).
@@ -487,9 +487,9 @@ Given the same smallest-first order, native is itself 7.7% slower per process on
 shipped, and the TypeScript codec reads -3.8% against that reordered native (both measured), so the +2.9% in the table is
 not purely a codec difference.
 
-**There is no union row, and the reason matters.** The store comparison times `intersect` and `andNot`, not `union`: no
+**There is no union row, and the reason matters.** Every per-operation figure on this page (here and in the paragraph after the memory table) was taken at commit `7bf70e54`, before later kernel changes (clone sharing, intersect of three or more operands smallest-first, the similar-sized array difference, the bitset-in-runs result); those figures describe the code at that commit, not the code the store comparison ran, and are to be re-measured. The store comparison is on the final kernels and is the headline. The store comparison times `intersect` and `andNot`, not `union`: no
 union cell was measured through the store. The per-operation microbenchmark (one operation on one chunk, medians of 11
-interleaved rounds after a warm-up, Apple M3 Pro, Node v24.18.1, commit `7bf70e54`, a load of about 2.5, record
+interleaved rounds after a warm-up, Apple M3 Pro, Node v24.18.1, commit `7bf70e54` of 2026-10-21, a load of about 2.5, record
 [`bench/ts-codec-results.json`](../bench/ts-codec-results.json)) is the only union figure, and it is not a win for the
 TypeScript codec: `or` on one pair of containers took 1,056 ns native and 3,124 ns TypeScript on dense/dense (2.96 times),
 1,691 and 3,759 on sparse/sparse (2.22), 1,575 and 3,782 on run/run (2.40), and 3,341 against 14,099 on a skewed pair of
@@ -523,7 +523,7 @@ the first `has` calls; the median of 31 processes per codec, load 1.7) is where 
 | the first `intersect` | 136.43 ms | 132.91 ms | -2.8% | -0.1% |
 
 A bulk load that is 35.6% faster warm is 13.1% slower the first time a process runs it, and the first few thousand `has`
-calls are 7% to 8% slower; the cost is the first decode of each chunk. The TypeScript row's process still loaded the native
+calls are 7% to 8% slower; the record does not say why, and the first decode of each chunk is the likely cause (an expectation, not measured). The TypeScript row's process still loaded the native
 addon (the bundle it ran then carried both), so it is not a measurement of a process without the addon.
 
 **Start-up.** Loading the codec's module in a fresh process took 19.5 ms for the native addon and its codec and 1.1 ms for
@@ -540,12 +540,12 @@ process; the native codec keeps part of its memory outside V8's counters, and ho
 | mixed (192) | 1,823 | 5,915 | 4,092 |
 | spread8k (8,192) | -52 | 363 | 415 |
 
-A cache of N chunks holds N times the figure for its kind, and the chunk cache is bounded by a count of chunks. Resident
+Derived: a cache of N chunks holds about N times the figure for its kind (spread8k's native figure is below the counters' resolution, a negative count, so no ratio is meaningful there), and the chunk cache is bounded by a count of chunks. Resident
 growth, which includes what V8's counters cannot see, is unreliable (an order of magnitude): its TypeScript-to-native ratio
 was 1.08 on dense, 0.86 on sparse, 1.18 on runs, 1.26 on mixed and 0.95 on spread8k, with the two codecs' ranges overlapping
 on all but spread8k, where every TypeScript sample is below every native one. No multiple of native's memory is claimed.
 
-**One container pair at a time is slower, and a few operations a lot.** In the per-operation record (one chunk, ratio of
+**One container pair at a time is slower, and a few operations a lot.** In the per-operation record (commit `7bf70e54`, before later kernel changes, to be re-measured; one chunk, ratio of
 TypeScript to native): `optimize` on a run chunk 3.31 times (1,992 ns to 6,599 ns), `build` on a run chunk 1.75 times,
 `iterate` of a dense chunk 1.35 times; the other way, `build` of a dense chunk is 0.38 times, `serialize` 0.60 to 0.75 times,
 and a dense `has` 0.32 times.

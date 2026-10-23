@@ -675,7 +675,7 @@
           </li>
           <li>
             <span class="rl-mark">03</span>
-            <span class="rl-what">Bulk load, first in a fresh process</span>
+            <span class="rl-what">First load of two small segments, fresh process</span>
             <span class="rl-fig">+13.1%</span>
             <span class="rl-note">
               Slower, not faster: 135.02 ms to 153.0 ms, and the first <span class="m">has</span> is +6.6%. Module load is
@@ -687,7 +687,7 @@
             <span class="rl-what">One container pair</span>
             <span class="rl-fig">up to 4.2&times; slower</span>
             <span class="rl-note">
-              In the per-operation record, a union of a skewed pair of containers took 3,341 ns native and 14,099 ns
+              In the per-operation record (2026-10-21, Apple M3 Pro, Node v24.18.1, commit <span class="m">7bf70e54</span>, before later kernel changes; to be re-measured), a union of a skewed pair of containers took 3,341 ns native and 14,099 ns
               TypeScript. Through the store the combines above are inside the bar anyway.
             </span>
           </li>

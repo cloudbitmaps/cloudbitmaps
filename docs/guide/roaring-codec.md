@@ -55,15 +55,15 @@ CRoaring versions, so the pin moves only by a deliberate edit and the rule does 
 | claim | evidence (all in this repository) |
 |---|---|
 | the same bytes as CRoaring for every set tried | the differential oracle [`tests/roaring/codec-oracle.test.ts`](../../tests/roaring/codec-oracle.test.ts), with its helper [`tests/helpers/roaring-oracle.ts`](../../tests/helpers/roaring-oracle.ts): per case, build then `optimize()` then `serialize()` is byte-identical to CRoaring's stored bytes and to the rule written from the format document alone, and contents and results agree with a plain `Set`. The generators are biased to container boundaries and run ties. 40 properties on a pull request, 200 at full strength (nightly) |
-| the same refusals as the structural check, and the same set from every accepted input | [`tests/roaring/codec-oracle-hostile.test.ts`](../../tests/roaring/codec-oracle-hostile.test.ts): `IntegrityError` exactly where the layout check throws, a refusal over the size cap before any byte is read, trailing bytes refused when one bitmap is required, and the same set CRoaring decodes from every accepted input; mutated payloads, 10,000 on a pull request and 100,000 at full strength |
+| the same refusals as the repository's structural check, and the same set from every accepted input | [`tests/roaring/codec-oracle-hostile.test.ts`](../../tests/roaring/codec-oracle-hostile.test.ts): `IntegrityError` exactly where the layout check throws, a refusal over the size cap before any byte is read, trailing bytes refused when one bitmap is required, and the same set CRoaring decodes from every accepted input; mutated payloads, 10,000 on a pull request and 100,000 at full strength |
 | the reference has not moved | [`tests/roaring/oracle-pin.test.ts`](../../tests/roaring/oracle-pin.test.ts) checks the pinned `roaring` version and the CRoaring version it bundles |
-| hostile bytes do not crash or corrupt | the coverage-guided target [`fuzz/targets/safe-deserialize.mjs`](../../fuzz/targets/safe-deserialize.mjs) feeds adversarial bytes to this codec's safe decode every night ([`fuzz-nightly.yml`](../../.github/workflows/fuzz-nightly.yml)); the committed reproducers are replayed on every pull request by [`tests/core/crbm/fuzz-corpus.test.ts`](../../tests/core/crbm/fuzz-corpus.test.ts); the other targets fuzz the readers over it ([`fuzz/README.md`](../../fuzz/README.md)) |
+| hostile bytes do not crash or corrupt | the coverage-guided target [`fuzz/targets/safe-deserialize.mjs`](../../fuzz/targets/safe-deserialize.mjs) feeds adversarial bytes to this codec's safe decode every night ([`fuzz-nightly.yml`](../../.github/workflows/fuzz-nightly.yml)); the committed reproducers are replayed on every pull request by [`tests/core/crbm/fuzz-corpus.test.ts`](../../tests/core/crbm/fuzz-corpus.test.ts); only `deser` fuzzes the codec's decode, and `crbm` reaches it through `CrbmReader.open` on valid seeds; the `index` and `ext` targets fuzz the parsers beside it, not the codec ([`fuzz/README.md`](../../fuzz/README.md)) |
 | the store works on it | the flavor, core, engine and driver suites run on this codec by default, and [`tests/roaring/codec-switch.test.ts`](../../tests/roaring/codec-switch.test.ts) fails if another codec is in force; [`full-nightly.yml`](../../.github/workflows/full-nightly.yml) runs the whole suite at full strength |
 
 **What is still open.** The oracle proves what CRoaring writes for the pinned version, not what every other Roaring
 library writes. "A codec no more than 5% slower" is a measured bar, not a bound. A week of nightly fuzz with no difference
-on this codec was not yet judged when the comparison was taken: the nightly target runs from the switch, and the
-comparison's report says so.
+on this codec was not yet judged when the comparison was taken, and as of 2026-10-23 the switch has not merged, so that
+judgement is still pending; the comparison's report says so.
 
 ### Mixing codecs and tools
 
@@ -92,13 +92,13 @@ wall-clock, recorded and not asserted:
 - **Reads** (`has`, `count`, `iterate`, `intersect`, `andNot`, one codec per process): every cell inside the 5% bar. The
   worst is dense four-operand `intersect` at +3.4%. Sparse `intersect` is 37% to 40% faster, and the spread sets about 8% to 17%.
 - **Bulk load, warm:** 183.1 ms to 117.2 ms (-35.6%) for a million ids; an erasure's rewrite -33.8%; an export -14.1%.
-- **Bulk load, first in a fresh process:** 13.1% slower (135.02 ms to 153.0 ms), and the first `has` +6.6%. This is a loss.
+- **First `load` of two small segments (128 mixed chunks) in a fresh process:** 13.1% slower (135.02 ms to 153.0 ms), and the first `has` +6.6%. This is a loss.
 - **Start-up:** the codec's module loads in 1.1 ms against 19.5 ms (-94.2%).
 - **Memory:** in V8's counters, a cached dense chunk holds about 8.9 KB more than the native codec's V8-visible figure (the
   native codec keeps part of its memory outside those counters, and how much is not measured); no multiple of native's
   memory is claimed.
 - **No union cell:** the store comparison times `intersect` and `andNot`, not `union`. One container pair of `or` is 1.2 to
-  4.2 times slower in the per-operation record, and that does not show in the combines that were timed through the store.
+  4.2 times slower in the per-operation record (measured on 2026-10-21 on an Apple M3 Pro under Node v24.18.1 at commit `7bf70e54`; the kernels changed after that commit (clone sharing, intersect and difference paths), so this figure is to be re-measured), and that does not show in the combines that were timed through the store.
   What a store `union` costs on this codec is expected to be inside the same bar, and is not measured.
 - **Not measured:** in region against real S3, Alpine, arm64 Lambda; Bun and Deno ran a local self-check only. CI runs Node
   22 and 24.
