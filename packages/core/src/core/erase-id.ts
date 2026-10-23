@@ -1700,8 +1700,9 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
  * a footer that fails its own checks can be a bad read of the object this call wrote. The repeat of an
  * {@link IntegrityError} is not reported to the retry's `onRetry`, which stays the hook of transient faults.
  *
- * "Not proven" (`null`, the object is kept) needs every read that was made to have failed its checks, since a corrupt
- * object under the number is not one this call can prove its own. A fault of any other kind, on any attempt, is thrown
+ * "Not proven" (`null`, the object is kept) is the answer for an object that is gone or is another write's, and for one
+ * whose footer failed its checks on every read that was made, since a corrupt object under the number is not one this
+ * call can prove its own. A fault of any other kind, on any attempt, is thrown
  * in place of that answer: the object may remain, and the caller must be told. With no read retry the read is made once.
  */
 async function provenOwn(
