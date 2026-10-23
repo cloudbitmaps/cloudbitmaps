@@ -23,6 +23,9 @@
 // Exit 0 clean; 1 a finding; 2 an input or a tool that could not be read or run. The check fails closed: a missing
 // input, a git error, a scan that crashes or exits in a way this script does not know is a failure, never a pass.
 //
+// Text that quotes the leak scan's own examples (a sample connection string with a password, an `arn:aws:` prefix,
+// a property read like `credentials: options.credentials`) is refused by the rule it quotes: reword it.
+//
 // What it does not catch: a phrase that is not on the list below, a leak that is reworded (a path written with a
 // space in it, an id described in other words), and anything in a pull request comment or review, which this
 // script never reads.
@@ -128,7 +131,14 @@ function commitMessages(base, head) {
 function leakScan(texts) {
   const dir = mkdtempSync(join(tmpdir(), 'pr-text-'));
   try {
-    for (const t of texts) writeFileSync(join(dir, t.file), t.text);
+    // A GitHub Actions run or job id in a link is a 12-digit run the account-id rule would refuse, and a link to a
+    // failing job is ordinary pull request text, so the ids in that one URL shape are replaced before the scan.
+    for (const t of texts) {
+      writeFileSync(
+        join(dir, t.file),
+        t.text.replace(/\/actions\/runs\/\d+(?:\/job\/\d+)?/g, '/actions/runs/ID'),
+      );
+    }
     const run = (flags) =>
       spawnSync(process.execPath, [join(__dirname, 'leak-scan.cjs'), ...flags, '--dir', dir], {
         cwd: ROOT,

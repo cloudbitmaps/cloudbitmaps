@@ -193,6 +193,14 @@ describe('the leak-scan half', () => {
     expect(r.out).not.toContain('zz-test-needle-42');
   });
 
+  it('a link to a CI run and job is not an account id; a bare 12-digit run still is', () => {
+    const link = 'see https://github.com/o/r/actions/runs/38185387783/job/' + '123456789012';
+    expect(scan({ body: link }).status).toBe(0);
+    const bare = scan({ body: `account ${'123456789012'}` });
+    expect(bare.status).toBe(1);
+    expect(bare.out).toContain('AWS account id');
+  });
+
   it('passes clean text, with and without needles', () => {
     expect(scan({}).status).toBe(0);
     expect(scan({}, { LEAK_SCAN_EXTRA: FAKE_NEEDLE }).status).toBe(0);
