@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable. Checked by `store.preflight()` where the backend can read the rules and the identity may (otherwise its `lifecycle` check is `unchecked`: look yourself) | [Bucket lifecycle](#bucket-lifecycle) |
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
-| The bucket honors conditional writes and is strongly consistent, and the S3 SDK is 3.974.0 or later | Otherwise a write-once generation can be silently overwritten, and a check that a delete landed can be wrong. `store.preflight()` checks that a second write is refused and that a read and a listing see a write, not the registry's `If-Match` or a read after a delete | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
+| The bucket honors conditional writes and is strongly consistent, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten, and a check that a delete landed can be wrong. `store.preflight()` checks that a second write is refused and that a read and a listing see a write, not the registry's `If-Match` or a read after a delete | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
 | Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing, and times the [lifecycle check](#check-the-lifecycle-rules-from-code)'s one read only when `readTimeoutMs` is set: at the default of `0` that read is untimed, and `store.preflight()` gives up on it after 30 seconds | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | A write is sent again for you only where that is safe: a [throttled S3 or GCS object](correctness.md#object-write-resent), and the registry write of a `load`, an `*Into` verb, an erasure's rewrite or an erasure's write to the row when the row shows it did not land. Every other write that gets no answer is [settled by reading back](correctness.md#row-write-settled) its row or its object, and one that landed is reported as landed ([what each settles](correctness.md#settle-by-read-back)). A `TransientError` reaches you for a write the read-back shows did not land, when the read-back failed too, or on a registry that reports no write tokens, which reads nothing back: run the call again. | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
@@ -98,7 +98,7 @@ its backup, which a first load fails early and typed on; and an S3 SDK from 3.64
 older drops `If-None-Match`, which shows as a `write-once` problem. One from 3.641.0 to 3.699.0 keeps `If-None-Match` but drops `If-Match` on
 `PutObject`, which the registry's compare-and-swap needs; preflight cannot see that, because its registry check
 only reads and only a registry write refuses such an SDK. An SDK from 3.641.0 to 3.697.0 also drops `If-Match` on `DeleteObject`,
-which turns the conditional delete off without a word. So the SDK floor stays yours to check for a client you pass in; CI runs the S3 driver, and the other two, at the lowest SDK version each declared range allows every night.
+which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check for a client you pass in; CI runs the S3 driver, and the other two, at the lowest SDK version each declared range allows every night.
 [Permissions](#permissions), [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and
 backups](#versioning-and-backups) cover the rest.
 
@@ -307,11 +307,11 @@ object and `If-Match` for the pointer.
   A rollback takes a read of its target that succeeds as proof the object is there, and an erasure's check that no
   generation still holds the id, a drop's `generationsRemaining` and the retention sweep prove a delete by listing.
   AWS S3 is; check another S3-compatible service.
-- **Use `@aws-sdk/client-s3` 3.974.0 or later if you pass your own `client`.** 3.974.0 is the lowest version the package's own unit tests pass on (the correctness floor under it, 3.700.0, is below). An SDK drops a conditional header it
+- **Use `@aws-sdk/client-s3` 3.700.0 or later if you pass your own `client`.** An SDK drops a conditional header it
   does not model, without an error. Measured against MinIO, 3.640.0 drops `If-None-Match` and silently overwrites an
   existing object, which loses a published generation; up to 3.699.0 the serializer drops `If-Match` on `PutObject`,
   so the registry's compare-and-swap goes out unconditionally. `@cloudbitmaps/s3` never resolves its own SDK below
-  the floor, 3.974.0. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
+  the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
 - **The registry checks the SDK it is given for the headers it sends.** The floor above covers the compare-and-swap's
   `If-Match` on `PutObject` (3.700.0) and the conditional delete's on `DeleteObject` (3.698.0), and a `client` you pass,
   or an SDK your package manager pins, can still be older. Before its first request the registry serialises each of the

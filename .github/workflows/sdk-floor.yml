@@ -2,7 +2,7 @@ name: SDK floor (nightly)
 
 # Each storage driver's tests, run against the OLDEST cloud SDK its dependency range allows.
 #
-# A driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.974.0 <4`, `@google-cloud/storage` `^8.1.0`,
+# A driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.700.0 <4`, `@google-cloud/storage` `^8.1.0`,
 # `@azure/storage-blob` `^12.23.0`), and a user's install can resolve any version in it: npm reuses one the application
 # already has. Every other job here runs the version in `pnpm-lock.yaml`, the newest, so the lowest version a range
 # admits is never run, and a driver that quietly came to need a newer SDK member passes every check. The S3 floor
@@ -14,8 +14,8 @@ name: SDK floor (nightly)
 # installed version is exactly the one asked for, and runs the driver's unit tests and its integration file against the
 # emulator this job started. Its header says what it does not show.
 #
-# `negative-control` runs the S3 driver on 3.699.0, the last release that omits `If-Match` on `PutObject`, and requires
-# it to FAIL with the registry's refusal of a client that does not send `If-Match`. A green floor run alone cannot tell "the old SDK
+# `negative-control` runs the S3 driver on 3.699.0, one release below the floor, and requires it to FAIL with the
+# registry's refusal of a client that does not send `If-Match`. A green floor run alone cannot tell "the old SDK
 # works" from "the job cannot see a dropped `If-Match`"; this is what proves it can.
 #
 # Not a required check. A scheduled run that fails shows red on the Actions tab for `main`; GitHub notifies one user for
@@ -114,10 +114,10 @@ jobs:
         run: scripts/ci-backend-images.sh "$RUNNER_TEMP/backend-images.yml"
       - name: Start MinIO
         run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300 minio
-      # 3.699.0 is below the floor, and one the docs name as sending `If-None-Match` but not `If-Match` on a
+      # 3.699.0 is the release below the floor, and one the docs name as sending `If-None-Match` but not `If-Match` on a
       # PutObject. The run must fail, and for this reason: the registry refuses a write the SDK would send unfenced.
       # A run that passes, or fails to install, or fails for another reason, fails this step.
-      - name: Run S3 on a release that omits If-Match, expecting the refusal of an unfenced write
+      - name: Run S3 one release below its floor, expecting the refusal of an unfenced write
         run: node scripts/sdk-floor.cjs --driver s3 --version 3.699.0 --integration-only --expect-failure "does not send If-Match"
       - if: always()
         run: docker compose down

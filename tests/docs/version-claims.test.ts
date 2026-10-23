@@ -120,18 +120,13 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'a claim about our release',
   ],
   [
-    '3.974.0',
-    "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3: the lowest version the driver's own unit " +
-      'tests pass on, in the package README, the guides and the site. A third-party version, not a claim about our release',
-  ],
-  [
     '12.23.0',
     "the floor of @cloudbitmaps/azure-blob's dependency on @azure/storage-blob: the lowest version the driver's own " +
       'unit tests pass on, in the package README and the site. A third-party version, not a claim about our release',
   ],
   [
     '3.700.0',
-    "the correctness floor under @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
+    "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
       'correctness floor, not a preference: an SDK drops a conditional header it does not model, and up to ' +
       "3.699.0 PutObject's serializer omits If-Match, so the registry's compare-and-swap goes out " +
       'unconditionally; 3.700.0 is the first version that sends it',

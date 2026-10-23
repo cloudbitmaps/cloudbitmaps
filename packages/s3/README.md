@@ -25,7 +25,7 @@ Install the same version of every `@cloudbitmaps/*` package: they release togeth
 
 [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-`@aws-sdk/client-s3` (`>=3.974.0 <4`) is a real dependency of this package, so installing it is the whole step.
+`@aws-sdk/client-s3` (`>=3.700.0 <4`) is a real dependency of this package, so installing it is the whole step.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use
@@ -67,14 +67,13 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   pointer. AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service that ignores the headers
   turns write-once into overwrite, so check yours before you depend on it. It must also be strongly consistent: a read
   or a listing made after a write or a delete returns sees it. AWS S3 is.
-- **Use `@aws-sdk/client-s3` 3.974.0 or later** if you pin the SDK or pass your own `client`. 3.974.0 is the lowest
-  version this package's own unit tests pass on, and CI runs them at it every night. Under it sits a
-  correctness floor, 3.700.0: an SDK sends only the conditional headers it models, and drops one it does
+- **Use `@aws-sdk/client-s3` 3.700.0 or later** if you pin the SDK or pass your own `client`. This floor is a
+  correctness floor, not a preference. An SDK sends only the conditional headers it models, and drops one it does
   not, without an error. `If-None-Match`, which write-once is built on, is modelled from 3.641.0: measured against
   MinIO, 3.640.0 silently overwrites an existing object, which loses a published generation. `If-Match` on
   `PutObject`, which the registry's compare-and-swap is built on, is modelled from 3.700.0: 3.699.0's serializer
   omits it, so a fenced row write goes out unconditionally and can land over a concurrent writer's. This package's
-  own range never resolves below 3.974.0. The registry also checks, before its first request, that the client it is given sends `If-None-Match` and
+  own range never resolves below 3.700.0. The registry also checks, before its first request, that the client it is given sends `If-None-Match` and
   `If-Match` on `PutObject`, and refuses a registry write it would send without its precondition; a client that does
   not send `If-Match` on `DeleteObject` turns `conditionalDelete` off.
 - **Grant `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload` and `s3:ListBucket`.** Without

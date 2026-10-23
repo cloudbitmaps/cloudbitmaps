@@ -4,7 +4,7 @@
 /*
  * SDK floor: run one storage driver's tests against the oldest cloud SDK its dependency range allows.
  *
- * Each driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.974.0 <4`, `@google-cloud/storage`
+ * Each driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.700.0 <4`, `@google-cloud/storage`
  * `^8.1.0`, `@azure/storage-blob` `^12.23.0`), and a user's install can resolve any version in it: npm reuses one the
  * application already has. CI's ordinary jobs run only the version in `pnpm-lock.yaml`, the newest, so the lowest
  * version a range admits is never run, and a driver that quietly came to need a newer SDK member passes every check.

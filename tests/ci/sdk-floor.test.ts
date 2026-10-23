@@ -17,7 +17,7 @@ import { parse } from 'yaml';
 // Holds the SDK-floor job in place, and fires the script's checks at planted inputs.
 //
 // The workflow half: a nightly job that runs each storage driver at the lowest cloud SDK its range allows, and a
-// negative control that must see the S3 driver fail on 3.699.0, which omits `If-Match`. Neither can be seen to be missing
+// negative control that must see the S3 driver fail one release below its floor. Neither can be seen to be missing
 // or loosened: every other check passes without them, since none runs a version other than the lockfile's. A
 // control that stops requiring the failure turns the job into one that cannot tell "the old SDK works" from "the job
 // cannot see a dropped If-Match", and a cache saved from a job that installs third-party packages fresh could be
@@ -176,7 +176,7 @@ describe('the SDK-floor workflow', () => {
     expect(run?.['continue-on-error']).toBeUndefined();
   });
 
-  it('runs the S3 driver on 3.699.0 and requires it to fail for the refusal of an unfenced write', () => {
+  it('runs the S3 driver one release below its floor and requires it to fail for the refusal of an unfenced write', () => {
     const run = stepRunning(control, 'scripts/sdk-floor.cjs');
     expect(run?.run).toBe(
       'node scripts/sdk-floor.cjs --driver s3 --version 3.699.0 --integration-only --expect-failure "does not send If-Match"',
@@ -194,7 +194,7 @@ describe('the SDK-floor workflow', () => {
     const floor = sdkFloor.floorOf(ROOT, 's3').split('.').map(Number);
     expect(pinned).toHaveLength(3);
     expect(pinned[0]).toBe(floor[0]);
-    expect(pinned[1]).toBeLessThan(floor[1] ?? 0); // below the floor, on the last release that omits the header
+    expect(pinned[1]).toBe((floor[1] ?? 0) - 1); // the minor just under the floor's
     const registry = readFileSync(join(ROOT, 'packages/s3/src/registry.ts'), 'utf8');
     // The registry names the header the way the control looks for it.
     expect(registry).toContain('`the S3 client does not send ${header} on a PutObject');
@@ -204,11 +204,11 @@ describe('the SDK-floor workflow', () => {
 
 describe('the SDK-floor script: reading a floor from a range', () => {
   it('reads the three declared ranges from the packages, not from a list of its own', () => {
-    expect(sdkFloor.floorOf(ROOT, 's3')).toBe('3.974.0');
+    expect(sdkFloor.floorOf(ROOT, 's3')).toBe('3.700.0');
     expect(sdkFloor.floorOf(ROOT, 'gcs')).toBe('8.1.0');
     expect(sdkFloor.floorOf(ROOT, 'azure-blob')).toBe('12.23.0');
     const source = readFileSync(SCRIPT, 'utf8');
-    for (const v of ['3.974.0', '8.1.0', '12.23.0']) {
+    for (const v of ['3.700.0', '8.1.0', '12.23.0']) {
       expect(
         source.replace(/\/\*[\s\S]*?\*\//g, ''),
         `${v} is written in the script`,
