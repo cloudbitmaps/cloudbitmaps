@@ -157,6 +157,10 @@ runs, and then, in order (a run started by hand skips some of these; see [A manu
   for the tag. The notes are *used* later, by the `github-release` job; they are *checked* here, before the
   publish, because that is the last moment a missing section is still a two-line edit rather than a permanent
   gap next to an immutable tarball.
+- **Does not repeat the consumer install.** The packed packages are installed with npm into a clean project and run on
+  every pull request and on every push to `main`, and the tag goes on a `main` commit whose push run is green (the TL;DR
+  waits for it), so the tagged commit has been through it. It is not in this workflow because it runs third-party install
+  scripts, which do not belong beside the job that can publish.
 - **Leak-scans the packed tarballs** (`pnpm leak-scan:tarballs`) — the built `.tgz` for each package is packed,
   unpacked and scanned. This is a different surface from the everyday `pnpm leak-scan`: `dist/` is gitignored,
   so the tracked-file and history modes structurally cannot see the bytes a consumer downloads, and the

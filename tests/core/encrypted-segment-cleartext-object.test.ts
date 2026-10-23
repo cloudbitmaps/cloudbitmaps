@@ -8,7 +8,7 @@ import { nextGeneration } from '@/core/generation-gc';
 import { provenObject } from '@/core/crbm-open';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
+import { IntegrityError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { publishGeneration } from '../helpers/publish';
 import { storeCodec } from '../helpers/store-codec';
@@ -75,6 +75,16 @@ describe('a cleartext object under an encrypted segment', () => {
       version: (await storage.getTail(key, 0)).version,
     });
     expect(await provenObject(storage, key, `${size}:1`)).toBeNull();
+    const faulty = Object.create(storage) as typeof storage;
+    faulty.getTail = () => Promise.reject(new TransientError('timed out'));
+    await expect(provenObject(faulty, key, fingerprint)).rejects.toBeInstanceOf(TransientError);
+    const corrupt = Object.create(storage) as typeof storage;
+    corrupt.getTail = (k, max) =>
+      storage.getTail(k, max).then((t) => ({ ...t, bytes: t.bytes.map((b) => b ^ 0xff) }));
+    // A footer that fails its own checks says nothing about which object is there: thrown, for the caller to decide.
+    await expect(provenObject(corrupt, key, fingerprint)).rejects.toBeInstanceOf(IntegrityError);
+    await storage.delete(key);
+    expect(await provenObject(storage, key, fingerprint)).toBeNull();
   });
 
   it('a forgery in place of the current generation is refused by every read of the object', async () => {

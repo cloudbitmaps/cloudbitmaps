@@ -18,6 +18,7 @@ Every change must pass these locally, and CI runs each of them on every pull req
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm api:surface:check` · `pnpm smoke`
+- `pnpm test:no-dist [vitest arguments]` is `pnpm test` with every `packages/*/dist` hidden, as CI's test step has it (CI runs the tests before the build). Run it, on the file if you like (`pnpm test:no-dist path/to/the.test.ts`), when a test or a script you touched resolves a package through its `dist/` (an `exports` path, a spawned `node` that resolves a package, a built entry imported by path); a stale local build hides that failure until CI. It does not cover a test that spawns a built CLI only when `CB_REQUIRE_BUILT_BIN=1` is set (`tests/bin`): CI runs that one in a step after the build. The `dist/` folders are absent for the whole run, in every terminal, so build nothing and run nothing against `dist/` meanwhile; one run at a time per checkout. A run restores them when it ends or is interrupted; after a kill, `pnpm test:no-dist --restore` (or the next run) puts them back, and until then they sit in `.no-dist-aside/`, which `git clean -x` or `-X` would delete (`pnpm build` regenerates a lost one). A build that could not go back is moved to `.no-dist-aside/kept/` and named; delete that folder when you no longer need it. Stop a run with Ctrl-C or `kill` (SIGINT, SIGTERM and SIGHUP restore); `kill -9` on the wrapper alone leaves its vitest running with `dist/` hidden, and the next run or `--restore` puts the folders back under it.
 - `pnpm lint` also runs the function-length gate (`pnpm lint:fn-length`, `scripts/function-length.cjs`): no function in
   `packages/*/src` may be over 100 code lines (blank lines and comment-only lines are not counted), and the ones that
   already were are listed with their sizes in `scripts/function-length-baseline.json`, a ratchet that can only go
@@ -35,6 +36,18 @@ Every change must pass these locally, and CI runs each of them on every pull req
   `Function` constructor, and on dynamic `import()`; and the
   detectors the build, `pnpm smoke` and the Node-floor gate rely on are fired at planted inputs in both
   directions.
+- `node scripts/consumer-install.cjs --image <image>` packs the six packages as a release does, then installs the tarballs
+  with npm into a clean project and runs code against them (both module systems, both local drivers, the `export-segments`
+  bin), and fails on a file a manifest names that the tarball lacks. The install and the run, which are third-party code,
+  happen inside a throwaway container of that Node image, so **it needs Docker**. CI uses `node:22-bookworm` and
+  `node:24-bookworm`, each pinned by digest, from a mirror with two fallback registries; `scripts/README.md` says where the
+  digests come from and how to refresh them. The script builds first, needs the registry for the cloud SDKs (a failed
+  install is retried twice) and takes under a minute on CI. `--no-container` runs the second half on your own machine
+  instead, for local use only: it runs registry install scripts with your access, and refuses to run when `CI` is set.
+  `--keep` leaves the tarballs behind. Run it after a change to a `package.json` (`files`, `exports`, `bin`,
+  dependencies) or to the build. CI runs it on every pull request and every push to `main` as `consumer install`, on
+  Node 22 and 24, with the npm each image ships. It does not compile types in the project (`pnpm smoke` does), run npm 12
+  or install with pnpm or yarn.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
   the entry list is derived from each manifest, so a declared entry that does not load fails the build. It checks
   that `errorKind`, from the flavor and from driver-kit, classifies an error the built `@cloudbitmaps/s3` throws, and that the store takes a
@@ -286,8 +299,8 @@ order:
    (`typecheck:next`); `typecheck` collapses to TypeScript 7 alone once `typescript-eslint` supports it. A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
    mandatory, never deferred or `// @ts-ignore`-d away. CI runs the same set and more; a fresh clone must pass it
    with no manual setup. Don't open/merge a PR on a red gate.
-4. **Run the adversarial review gate (every pull request).** Spawn **multiple parallel
-   adversarial subagents**, each with a distinct lens, to hunt for flaws in what was built **end to end**
+4. **Run the adversarial review gate (every pull request).** Run **multiple parallel
+   adversarial reviewers**, one per distinct lens, to hunt for flaws in what was built **end to end**
    (not just the diff). Standard lenses — use all that apply, add domain-specific ones:
    - **correctness/logic, end-to-end** — trace the whole data/control flow vs the specs + named invariants
      (races, lost writes, a torn read, a pointer that moves backwards, a live generation collected, divergence
@@ -313,6 +326,22 @@ order:
    README, CHANGELOG, roadmap), *in the same change*.
 6. **Commit and push always.** Commit logically, push the branch to `origin` (don't sit on local-only
    work). Open/update the PR.
+   - **The pull request text check.** The title, the body and the commit messages are public, and a squash merge
+     copies the commit subjects into `main`'s history, so the `pull request text` check scans all three, and the
+     author and committer of each commit. It fails text that says who or what did the work (state what was done
+     instead) and anything `scripts/leak-scan.cjs` would refuse in a tracked file. It prints the phrase, the source and
+     the line number, never the line. Run it before you push (a local run applies the private needles only when a
+     `.leak-needles` file exists in the checkout, so without one it is weaker than CI):
+     `BASE_SHA=$(git merge-base origin/main HEAD) HEAD_SHA=$(git rev-parse HEAD) PR_TITLE="the title" PR_BODY="$(gh pr view N --json body -q .body)" node scripts/pr-text-scan.cjs`
+     (leave out `BASE_SHA` and `HEAD_SHA` to skip the commits). It cannot catch a phrase that is not on its list or a
+     leak that is reworded, so it does not replace reading the text. To fix a hit in a title or a body, edit the text
+     on the pull request: that triggers the check again, and a re-run from the Actions tab would scan the old text. To
+     fix one in a commit message, reword the commit (`git rebase -i origin/main`) and push with
+     `git push --force-with-lease --force-if-includes` on the pull request's own branch; a commit already pushed to a
+     branch others use is better left, with the fix made in a new branch. A leak (a secret or private text) is handled
+     apart from a phrase: a force-push does not unpublish what was already pushed, so rotate a credential first and
+     ask the maintainer about anything else. `scripts/README.md` lists
+     what it checks and the known false positives, each with its rewording.
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
 
 ## Documentation — keeping it current
