@@ -139,7 +139,7 @@ them and their sizes.
 Every other job runs the cloud SDKs at the version `pnpm-lock.yaml` holds, the newest, while a user's install can resolve
 any version a driver's range admits. [`.github/workflows/sdk-floor.yml`](.github/workflows/sdk-floor.yml) runs each driver's
 unit tests and its integration file at the **lowest** version of each alternative of its range (a range written with `||` gets one leg per alternative, so a break at the lowest version of a later alternative cannot hide behind a pass at an earlier one; today none has one) (`@aws-sdk/client-s3` `>=3.700.0 <4`,
-`@google-cloud/storage` `^8.0.1`, `@azure/storage-blob` `^12.23.0`) every night at 03:00 UTC, on demand, and on a pull
+`@google-cloud/storage` `^8.1.0`, `@azure/storage-blob` `^12.23.0`) every night at 03:00 UTC, on demand, and on a pull
 request that touches a driver package, `packages/core/src/drivers/` or `driver-kit.ts`, a driver's tests, the shared test
 helpers, the lockfile, the root `package.json`, the vitest configs, the emulators' start or the script or the workflow. It also
 runs the S3 driver one release below its floor (3.699.0) and requires it to fail with the registry's refusal of a client

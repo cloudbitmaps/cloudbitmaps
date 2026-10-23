@@ -88,9 +88,8 @@ const FOREIGN_VERSIONS = new Map<string, string>([
   ],
   [
     '8.0.1',
-    "the floor of @cloudbitmaps/gcs's dependency on @google-cloud/storage: the lowest version its own unit tests pass " +
-      'on (8.0.0 and every 7.x release tried fail them), in the package README, the site and the guides. A ' +
-      'third-party version, not a claim about our release',
+    "the @google-cloud/storage release below the floor of @cloudbitmaps/gcs's dependency: it passes the driver's unit " +
+      'tests and fails one integration test, in the package README. A third-party version, not a claim about our release',
   ],
   [
     '8.0.0',
@@ -104,8 +103,9 @@ const FOREIGN_VERSIONS = new Map<string, string>([
   ],
   [
     '8.1.0',
-    'the @google-cloud/storage release the GCS download-retry crash was checked on (with 7.22.0), and the version the ' +
-      'lockfile resolves. A third-party version, not a claim about our release',
+    "the floor of @cloudbitmaps/gcs's dependency on @google-cloud/storage (the lowest version its unit and integration " +
+      'tests pass on), the version the lockfile resolves, and the release the GCS download-retry crash was checked on ' +
+      '(with 7.22.0). A third-party version, not a claim about our release',
   ],
   [
     '7.22.0',

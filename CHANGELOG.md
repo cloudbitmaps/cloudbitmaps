@@ -13,10 +13,12 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-- **`@cloudbitmaps/gcs` now requires `@google-cloud/storage` 8.0.1 (was 7.0.0 or 8.0.0) and `@cloudbitmaps/azure-blob` requires `@azure/storage-blob` 12.23.0 (was 12.0.0).**
+- **`@cloudbitmaps/gcs` now requires `@google-cloud/storage` 8.1.0 (was 7.0.0 or 8.0.0) and `@cloudbitmaps/azure-blob` requires `@azure/storage-blob` 12.23.0 (was 12.0.0).**
   Each driver's own unit tests now run every night against the lowest SDK each alternative of its range admits, and the
-  old floors failed them. On Google Cloud Storage the unit tests pass on 8.0.1 and fail on 8.0.0 and on every 7.x release
-  tried (7.0.0, 7.12.0, 7.17.3, 7.18.0, 7.19.0, 7.21.0 and 7.22.0), in the same three tests: a read the driver cuts off at
+  old floors failed them. On Google Cloud Storage 8.1.0 is the lowest release whose unit and integration tests pass. 8.0.1 passes the unit tests
+  and fails one integration test, the tail size of a resumable upload against the emulator, with a reset connection
+  (not traced further). 8.0.0 and every 7.x release tried (7.0.0, 7.12.0, 7.17.3, 7.18.0, 7.19.0, 7.21.0 and 7.22.0)
+  fail the unit tests, in the same three tests: a read the driver cuts off at
   `readTimeoutMs` leaves its connection open, a read whose first answer is cut off part-way never settles instead of
   being read again, and a read the driver refuses does not release its request. Why the older SDKs behave so is not
   traced past those tests. On Azure Blob 12.0.0 the driver's delete (`deleteIfExists`) and the container name in its

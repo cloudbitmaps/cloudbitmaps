@@ -25,7 +25,7 @@ Install the same version of every `@cloudbitmaps/*` package: they release togeth
 
 [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-`@google-cloud/storage` (`^8.0.1`) is a real dependency of this package, so installing it is the whole step. A `client` you pass must come from 8.0.1 or later: the driver's own unit tests pass on 8.0.1, and fail on 8.0.0 and on every 7.x release tried (from 7.0.0 to 7.22.0): a read the driver cuts off at `readTimeoutMs` leaves its connection open, a read whose first answer is cut off part-way is not retried to success (the call never settles), and a read the driver refuses does not release its request.
+`@google-cloud/storage` (`^8.1.0`) is a real dependency of this package, so installing it is the whole step. A `client` you pass must come from 8.1.0 or later: the driver's own tests pass on 8.1.0 and fail on every older release tried (8.0.1, 8.0.0, and 7.x from 7.0.0 to 7.22.0). On 8.0.1 the unit tests pass, but the integration test of a resumable upload's tail size against the emulator fails with a reset connection. On 8.0.0 and on 7.x the unit tests fail: a read the driver cuts off at `readTimeoutMs` leaves its connection open, a read whose first answer is cut off part-way is not retried to success (the call never settles), and a read the driver refuses does not release its request.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use

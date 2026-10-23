@@ -289,10 +289,10 @@ describe('the SDK-floor workflow', () => {
 describe('the SDK-floor script: reading a floor from a range', () => {
   it('reads the three declared ranges from the packages, not from a list of its own', () => {
     expect(sdkFloor.floorOf(ROOT, 's3')).toBe('3.700.0');
-    expect(sdkFloor.floorOf(ROOT, 'gcs')).toBe('8.0.1');
+    expect(sdkFloor.floorOf(ROOT, 'gcs')).toBe('8.1.0');
     expect(sdkFloor.floorOf(ROOT, 'azure-blob')).toBe('12.23.0');
     const source = readFileSync(SCRIPT, 'utf8');
-    for (const v of ['3.700.0', '8.0.1', '12.23.0']) {
+    for (const v of ['3.700.0', '8.1.0', '12.23.0']) {
       expect(
         source.replace(/\/\*[\s\S]*?\*\//g, ''),
         `${v} is written in the script`,
