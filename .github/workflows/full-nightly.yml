@@ -32,6 +32,7 @@ on:
       - tests/core/combine-many.feed.property.test.ts
       - tests/core/retention-hard-purge.test.ts
       - tests/core/erase-namespace-bounded.test.ts
+      - tests/core/erase-fence-fuzz.property.test.ts
       - tests/core/combine-ledger.test.ts
       - tests/core/load-sorted-heap.test.ts
       - tests/roaring/codec-oracle.test.ts

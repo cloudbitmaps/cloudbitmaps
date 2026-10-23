@@ -317,6 +317,18 @@ export function rollbackKnown(
   return capInsert(moved, new Set([target.generation, prev.currentGen!]), leasedByRow(prev));
 }
 
+/** Whether two rows' ledgers (`knownGens`, or the absence of one) are the same entries in the same order. */
+export function sameKnownGens(
+  a: readonly KnownGeneration[] | undefined,
+  b: readonly KnownGeneration[] | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.length === b.length &&
+    a.every((e, i) => e.generation === b[i]!.generation && e.footerCrc === b[i]!.footerCrc)
+  );
+}
+
 /**
  * The row's ledger with the entries numbered in `doomed` removed, which a write that is about to delete those
  * generations makes first: the entries left keep their order, and the current generation is never removed (the ledger

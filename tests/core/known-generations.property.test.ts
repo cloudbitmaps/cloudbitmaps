@@ -223,6 +223,30 @@ function modelCap(
 }
 
 /**
+ * `entries` held to the cap after a rollback inserts a number the ledger lacks: the protected ones, then the others no
+ * lease holds, most recently current first, while fewer than 128 unleased are kept, then the leased ones, most recently
+ * current first, up to the cap. A leased entry is an extra, as it is for a publish, and `leased` is every generation the
+ * row's lease entries name, live or ended, since a rollback has no clock.
+ */
+function modelCapInsert(
+  entries: readonly number[],
+  protect: ReadonlySet<number>,
+  leased: ReadonlySet<number>,
+): number[] {
+  const keep = new Set(entries.filter((e) => protect.has(e)));
+  let unleased = [...keep].filter((e) => !leased.has(e)).length;
+  const recent = [...entries].reverse();
+  for (const e of recent) {
+    if (unleased >= FILL) break;
+    if (keep.has(e) || leased.has(e)) continue;
+    keep.add(e);
+    unleased += 1;
+  }
+  for (const e of recent) if (keep.size < CAP && leased.has(e)) keep.add(e);
+  return entries.filter((e) => keep.has(e));
+}
+
+/**
  * What a load that counts keeps below its new pointer when the row names nothing: the superseded generation first, when
  * it is there, then the newest of the rest by number, `keep` in all; ascending. The bucket's rule, written a second time.
  */
@@ -795,7 +819,11 @@ describe.each(registries)('the known-generations ledger against its model, over 
                       model.ledger =
                         known && moved.length <= CAP
                           ? moved
-                          : modelCap(moved, new Set([target, current]), new Set());
+                          : modelCapInsert(
+                              moved,
+                              new Set([target, current]),
+                              new Set((row.leases ?? []).map((e) => e.generation)),
+                            );
                     }
                     if (forward) counts.forwardRollbacks += 1;
                     model.pointer = target;
@@ -996,8 +1024,9 @@ describe.each(registries)('the known-generations ledger against its model, over 
           numRuns:
             Math.max(3, Math.round(runs * reg.scale)) * Number(process.env.PROP_RUNS_FACTOR ?? 1),
           // Seeded so the coverage floors below are deterministic: the same histories on every pull-request run. Set
-          // PROP_SEED to explore other ones. A full-strength run draws a random seed unless PROP_SEED is set, and does
-          // not assert the floors (the model check still runs). The test prints its seed before the first run, and a
+          // PROP_SEED to explore other ones, or to replay a full-strength run's seed. A full-strength run draws a random
+          // seed unless PROP_SEED is set. The floors are tuned for the default seed, so a run on any other seed does
+          // not assert them (the model check still runs). The test prints its seed before the first run, and a
           // property that overruns 0.8 of the test's timeout fails naming it.
           ...(FULL_STRENGTH && process.env.PROP_SEED === undefined
             ? {}
@@ -1006,9 +1035,10 @@ describe.each(registries)('the known-generations ledger against its model, over 
       );
       // Not vacuous: each kind of publish and rollback was checked against the model. The shipped registries other than
       // the in-memory one run a tenth of the histories, so they are held to publishing alone.
-      const full = reg.scale === 1 && !(FULL_STRENGTH && process.env.PROP_SEED === undefined);
+      const otherSeed = FULL_STRENGTH || process.env.PROP_SEED !== undefined;
+      const full = reg.scale === 1 && !otherSeed;
       const at = (n: number | undefined): number => (full ? (n ?? -1) : -1);
-      if (FULL_STRENGTH && process.env.PROP_SEED === undefined) return;
+      if (otherSeed) return;
       expect(counts.published).toBeGreaterThan(Math.floor(floor.published * reg.scale));
       expect(counts.seeded).toBeGreaterThan(at(floor.seeded));
       expect(counts.byName).toBeGreaterThan(at(floor.byName));
