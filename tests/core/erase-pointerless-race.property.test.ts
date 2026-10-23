@@ -9,7 +9,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -195,7 +195,7 @@ async function idsServed(
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
     if (bytes === null) continue;
-    for (const r of roaringCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
+    for (const r of storeCodec.safeDeserialize(bytes, 1 << 20).toArray()) {
       out.push((chunkKey << 16) + r);
     }
   }
@@ -299,7 +299,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
                   },
                 ),
                 entropy: testEntropy,
-                codec: roaringCodec,
+                codec: storeCodec,
                 ...keyed,
               },
               spec.guarded ? {} : { allowEmpty: true },
@@ -358,7 +358,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
                   }
                 }),
                 entropy: testEntropy,
-                codec: roaringCodec,
+                codec: storeCodec,
                 ...keyed,
               }).then(
                 (r): { r: EraseIdResult } | { err: unknown } => ({ r }),
@@ -405,7 +405,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
                   storage: scheduled(s, storage, STORAGE_CALLS, 'late load', check),
                   registry: scheduled(s, registry, REGISTRY_CALLS, 'late load', check),
                   entropy: testEntropy,
-                  codec: roaringCodec,
+                  codec: storeCodec,
                   ...keyed,
                 },
                 lateSpec.guarded ? {} : { allowEmpty: true },

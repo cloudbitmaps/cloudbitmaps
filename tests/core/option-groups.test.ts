@@ -1,4 +1,4 @@
-import { SafeBitmap } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 vi.mock('@/core/crbm/reader', async (original) =>
   (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
 );
@@ -290,7 +290,7 @@ describe('a partial retry policy fills from the default, even for an explicit un
 
   const sleepsFor = async (retry: Record<string, unknown>): Promise<number[]> => {
     const inner = new MemoryStorageChunkSource();
-    inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([42]).serialize());
+    inner.seed({ segment: 's', chunkKey: 0 }, storeCodec.fromValues([42]).serialize());
     const clock = recordingClock();
     const store = new CloudRoaring({
       storage: new FlakyOnce(inner, 2),
@@ -325,7 +325,7 @@ describe('a partial retry policy fills from the default, even for an explicit un
   it('`maxAttempts` actually bounds the attempts', async () => {
     const build = (retry: Record<string, unknown>, failTimes: number): CloudRoaring => {
       const inner = new MemoryStorageChunkSource();
-      inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([42]).serialize());
+      inner.seed({ segment: 's', chunkKey: 0 }, storeCodec.fromValues([42]).serialize());
       return new CloudRoaring({
         storage: new FlakyOnce(inner, failTimes),
         retry: retry as { maxAttempts?: number },

@@ -6,7 +6,7 @@ import { loadSegment } from '@/core/load';
 import type { SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver } from '@/drivers/memory';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../../helpers/store-codec';
 import { counterEntropy } from '../../helpers/entropy';
 import { guardLoopback } from '../../helpers/loopback-guard';
 
@@ -195,7 +195,7 @@ describe('GCS: an upload abandoned past the simple-upload threshold', () => {
       storage: driver(),
       registry: new MemoryRegistryDriver(),
       entropy: counterEntropy(),
-      codec: roaringCodec,
+      codec: storeCodec,
     };
     const err = await loadSegment(SEG, ids(), deps, { sorted: true }).catch((e: unknown) => e);
     expect(err).toBe(raised);

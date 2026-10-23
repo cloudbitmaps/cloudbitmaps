@@ -57,7 +57,7 @@ export interface CodecBitmap {
   toArray(): number[];
   /**
    * The set's values as one ascending `Uint32Array` the caller owns: what a batch read converts a chunk with, in one
-   * native step instead of one iterator step per value.
+   * step instead of one iterator step per value.
    *
    * **Optional.** A codec without it is read through its iterator, which is correct and slower.
    *
@@ -130,7 +130,7 @@ export interface EncodedChunk {
 
 /**
  * A pluggable bitmap codec — the factory the codec-agnostic engine constructs {@link CodecBitmap}s through.
- * Implementations **must** size-cap before handing untrusted bytes to any native decoder and use a safe
+ * Implementations **must** size-cap before handing untrusted bytes to a decoder and use a safe
  * (never a trusting/frozen) deserializer — hard invariant 5.
  */
 export interface CodecInterface {
@@ -140,7 +140,7 @@ export interface CodecInterface {
   fromValues(values: Iterable<number>): CodecBitmap;
   /**
    * Size-cap (`bytes.length <= maxBytes`) then portable-deserialize. Throws `IntegrityError` when the input
-   * exceeds the cap or fails to decode — the native decoder is never handed unbounded or unsafe-format input.
+   * exceeds the cap or fails to decode — the decoder is never handed unbounded or unsafe-format input.
    *
    * "Fails to decode" includes bytes that are the right length and the wrong shape. A bitmap this returns must
    * satisfy every invariant its own operations assume (for roaring: containers and values in order, runs
@@ -174,7 +174,7 @@ export interface CodecInterface {
    * **Optional, and off by default.** A codec whose combine cost depends on the order, because an early operand that is
    * large and of one container kind makes the running result expensive, sets it; the engine then pays one `size` read per
    * operand per chunk to put the sparsest first. A codec whose combines cost about the same in any order, or whose
-   * `size` is a call across a native boundary, leaves it out and keeps the operand order it was given. The answer is the
+   * `size` is expensive to read, leaves it out and keeps the operand order it was given. The answer is the
    * same either way.
    */
   readonly intersectSmallestFirst?: boolean;

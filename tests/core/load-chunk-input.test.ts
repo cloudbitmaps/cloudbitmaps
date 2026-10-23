@@ -4,7 +4,7 @@ import { ValidationError } from '@/core/errors';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import roaring from 'roaring';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { counterEntropy } from '../helpers/entropy';
@@ -23,7 +23,7 @@ const chunk = (
   ...remainders: number[]
 ): { chunkKey: number; bitmap: CodecBitmap } => ({
   chunkKey,
-  bitmap: roaringCodec.fromValues(remainders),
+  bitmap: storeCodec.fromValues(remainders),
 });
 
 async function* of<T>(...items: T[]): AsyncGenerator<T> {
@@ -47,7 +47,7 @@ function world() {
       storage: storage as IStorageDriver,
       registry: registry as IRegistryDriver,
       entropy: counterEntropy(),
-      codec: roaringCodec,
+      codec: storeCodec,
     },
   };
 }
@@ -105,7 +105,7 @@ describe('a load of a combine’s chunks', () => {
 
   it('refuses a chunk holding a value above 65,535, which no remainder can be', async () => {
     const w = world();
-    const wide = { chunkKey: 0, bitmap: roaringCodec.fromValues([1, 70_000]) };
+    const wide = { chunkKey: 0, bitmap: storeCodec.fromValues([1, 70_000]) };
     const err = await loadSegmentChunks(
       SEG,
       of(chunk(0, 1), { ...wide, chunkKey: 1 }),
@@ -201,7 +201,7 @@ describe('only bitmaps the codec made are written', () => {
 
   it('a chunk whose bitmap changes between reads is checked and written as one value', async () => {
     const w = world();
-    const real = roaringCodec.fromValues([1]);
+    const real = storeCodec.fromValues([1]);
     const fake = {
       isEmpty: false,
       size: 999,
@@ -237,7 +237,7 @@ describe('only bitmaps the codec made are written', () => {
 
   it('a codec that cannot vouch for its bitmaps has every chunk refused', async () => {
     const w = world();
-    const mute: CodecInterface = { ...roaringCodec, owns: undefined };
+    const mute: CodecInterface = { ...storeCodec, owns: undefined };
     const err = await loadSegmentChunks(SEG, of(chunk(0, 1)), { ...w.deps, codec: mute }).catch(
       (e: unknown) => e,
     );

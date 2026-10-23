@@ -16,15 +16,6 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/azure-blob
 
 Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
 
-`roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if you allow it. Allow it before you install:
-
-- **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
-- **pnpm 11 and later:** put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside your `package.json`. Those versions no longer read the `package.json` `pnpm` key. Without it the install exits 1 with `ERR_PNPM_IGNORED_BUILDS`.
-- **pnpm 10:** add `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`.
-- **pnpm 9:** nothing extra.
-
-[Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
-
 `@azure/storage-blob` (`^12.23.0`) is a real dependency of this package, so installing it is the whole step. A `containerClient` you pass must come from 12.23.0 or later: the driver's own tests fail on each older version they were run on, 12.0.0, 12.12.0, 12.17.0 and 12.18.0 (no stable 12.19 to 12.22 exists): the oldest 12.x lacks members the driver calls, such as `deleteIfExists`, and on 12.18.0, the newest release below the floor, a read that drops part-way surfaces as the read's timeout or does not end within the test's limit, and a refused pointer read does not release its request.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 

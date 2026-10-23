@@ -5,7 +5,7 @@ import { GcsStorageDriver } from '@/gcs/storage';
 import { loadSegment } from '@/core/load';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../../helpers/store-codec';
 import { STUB_GCS_BUCKET, StubGcsService } from '../../helpers/gcs-stub';
 import { testEntropy } from '../../helpers/entropy';
 
@@ -222,7 +222,7 @@ describe('GCS: a load whose writes are throttled, through the real SDK', () => {
       }),
       registry: new GcsRegistryDriver({ storage: client, bucket: STUB_GCS_BUCKET }),
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       // What a store wires: the publish waits on it before a fresh write, as the driver does before a re-send.
       clock: {
         now: () => 0,

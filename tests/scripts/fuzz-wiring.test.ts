@@ -50,14 +50,8 @@ function exportedNames(source: string): Set<string> {
 }
 
 describe('the fuzz campaign is wired end to end', () => {
-  it('finds the five campaigns', () => {
-    expect(campaigns.map((c) => c.name).sort()).toEqual([
-      'crbm',
-      'deser',
-      'deser-ts',
-      'ext',
-      'index',
-    ]);
+  it('finds the four campaigns', () => {
+    expect(campaigns.map((c) => c.name).sort()).toEqual(['crbm', 'deser', 'ext', 'index']);
   });
 
   it.each(campaigns.map((c) => [c.name, c] as const))(

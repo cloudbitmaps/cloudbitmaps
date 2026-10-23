@@ -2,7 +2,7 @@ import { carriesWindow, windowOf } from '@/core/known-generations';
 import { loadSegment } from '@/core/load';
 import type { RegistryRecord, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
@@ -26,7 +26,7 @@ describe.each([129, 200])(
       const registry = new MemoryRegistryDriver();
       const calls: Record<string, number> = {};
       const storage = counting(memory, calls);
-      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+      const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
       for (let i = 0; i < n; i++) {
         await loadSegment(SEG, [i], deps, { keep: Number.MAX_SAFE_INTEGER });
       }

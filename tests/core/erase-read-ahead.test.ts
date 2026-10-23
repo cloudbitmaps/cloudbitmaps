@@ -9,7 +9,7 @@ import type { CodecBitmap } from '@/core/codec';
 import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IStorageDriver } from '@/core/ports';
 import { CloudRoaring, TransientError } from '@/index';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { collect } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -52,7 +52,7 @@ async function probe(
   const registry = new MemoryRegistryDriver();
   const chunks = Array.from({ length: n }, (_, k) => ({
     chunkKey: k,
-    bitmap: opts.bitmaps?.(k) ?? SafeBitmap.fromValues([1 + k, 2 + k]),
+    bitmap: opts.bitmaps?.(k) ?? storeCodec.fromValues([1 + k, 2 + k]),
   }));
   if (opts.keystore === undefined) {
     await writeCrbmGeneration(inner, { ...SEG, generation: 0 }, chunks);
@@ -102,7 +102,7 @@ const erase = (p: Probe, id: number, deps: object = {}) =>
     storage: p.storage,
     registry: p.registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     ...deps,
   });
 
@@ -172,8 +172,8 @@ describe('the erasure rewrite reads through the coalesced chunk stream', () => {
     const p = await probe(30, {
       bitmaps: (k) =>
         k === 6 || k === 20
-          ? SafeBitmap.fromValues([1, 70_000 + k])
-          : SafeBitmap.fromValues([1 + k]),
+          ? storeCodec.fromValues([1, 70_000 + k])
+          : storeCodec.fromValues([1 + k]),
     });
     await expect(erase(p, joinId(0, 1))).rejects.toThrow(/chunk 6 payload holds value 70006/);
     expect((await p.registry.get(SEG))!.currentGen).toBe(0);
@@ -190,8 +190,8 @@ describe('the erasure rewrite reads through the coalesced chunk stream', () => {
       k === bad
         ? garbage()
         : k === over
-          ? SafeBitmap.fromValues([1, 70_000])
-          : SafeBitmap.fromValues([1 + k]);
+          ? storeCodec.fromValues([1, 70_000])
+          : storeCodec.fromValues([1 + k]);
 
     const undecodableFirst = await probe(20, { bitmaps: bitmaps(3, 12) });
     const err = await erase(undecodableFirst, joinId(0, 1)).catch((e: unknown) => e);
@@ -218,9 +218,9 @@ describe('the erasure rewrite reads through the coalesced chunk stream', () => {
     // Chunks 4 and 8 are the only ones of 400 values, so a read of that length is theirs: both fail, and 8 is read
     // ahead (and fails) before the writer ever reaches 4's error.
     const big = (k: number) =>
-      SafeBitmap.fromValues(Array.from({ length: 400 }, (_, i) => i * 3 + k));
+      storeCodec.fromValues(Array.from({ length: 400 }, (_, i) => i * 3 + k));
     const probeLen = await probe(12, {
-      bitmaps: (k) => (k === 4 || k === 8 ? big(k) : SafeBitmap.fromValues([1])),
+      bitmaps: (k) => (k === 4 || k === 8 ? big(k) : storeCodec.fromValues([1])),
     });
     const len = await (async () => {
       const lens: number[] = [];
@@ -237,7 +237,7 @@ describe('the erasure rewrite reads through the coalesced chunk stream', () => {
     process.on('unhandledRejection', onUnhandled);
     try {
       const p = await probe(12, {
-        bitmaps: (k) => (k === 4 || k === 8 ? big(k) : SafeBitmap.fromValues([1])),
+        bitmaps: (k) => (k === 4 || k === 8 ? big(k) : storeCodec.fromValues([1])),
         failLength: len,
       });
       await expect(erase(p, joinId(0, 1))).rejects.toThrow('read failed');
@@ -267,9 +267,9 @@ describe('the erasure rewrite reads through the coalesced chunk stream', () => {
     try {
       let decodes = 0;
       const codec = {
-        ...roaringCodec,
+        ...storeCodec,
         safeDeserialize: (b: Uint8Array, max: number) => {
-          const bitmap = roaringCodec.safeDeserialize(b, max);
+          const bitmap = storeCodec.safeDeserialize(b, max);
           // The target is decode 1; the writer then breaks on the third chunk it is handed.
           return ++decodes === 4
             ? ({

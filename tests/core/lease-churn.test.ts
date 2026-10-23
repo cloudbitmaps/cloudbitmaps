@@ -22,7 +22,7 @@ import { rollbackSegment } from '@/core/rollback';
 import type { Clock } from '@/core/determinism';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
@@ -71,7 +71,7 @@ async function loadN(
         storage: w.storage,
         registry: w.registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: w.clock,
       },
       {
@@ -246,7 +246,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
       storage: w.storage,
       registry: racing,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock: w.clock,
     });
     expect(res).toMatchObject({ erased: true, generation: 1 });
@@ -267,7 +267,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
       storage: w.storage,
       registry: racing,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock: w.clock,
     });
     expect(res).toMatchObject({ erased: false, reason: 'superseded' });
@@ -290,7 +290,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
       storage: w.storage,
       registry: racing,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock: w.clock,
     });
     expect(res.erased).toBe(true);
@@ -316,7 +316,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
       storage: w.storage,
       registry: racing,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock: w.clock,
     });
     expect(res.erased).toBe(false);
@@ -339,7 +339,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
         storage: w.storage,
         registry: racing,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: w.clock,
       },
       {
@@ -367,7 +367,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
         storage: w.storage,
         registry: racing,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: w.clock,
       },
       {
@@ -397,7 +397,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
         storage: w.storage,
         registry: racing,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: w.clock,
       },
       {
@@ -420,7 +420,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
       storage: w.storage,
       registry: racing,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock: w.clock,
     });
     expect(r).toMatchObject({ published: false, reason: 'empty' });
@@ -772,7 +772,7 @@ describe('64 holders taking and releasing while a writer works', () => {
             storage: w.storage,
             registry: counted,
             entropy: testEntropy,
-            codec: roaringCodec,
+            codec: storeCodec,
             clock: w.clock,
           },
           { keep: 5 },

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { destroySegment } from '@/core/erasure';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -31,7 +31,7 @@ async function cleartextTombstone() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 
@@ -73,7 +73,7 @@ describe('an erasure looks under a tombstone', () => {
         registry,
         keystore,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       }),
     ).toMatchObject({ erased: false, reason: 'destroyed' });
   });

@@ -26,16 +26,15 @@
  *
  * It also reports an **isolated read-path footprint**: a FRESH reader-only child opens the fleet (its post-soak
  * on-disk state) and reads across all of it (count + has, so it DECODES bitmaps) with no seed-phase arena
- * contamination, then runs a burst of combines. Post-GC *heap* is one bound to watch. But JS heap misses the
- * roaring bitmaps' **native/off-heap** memory (the addon allocates its containers outside V8), so the verdict
- * watches **both**: post-GC JS heap AND `getRoaringUsedMemory()` (the addon's live native bytes, decremented on
- * free/GC-finalize) — a run PASSes only if neither creeps.
+ * contamination, then runs a burst of combines. The store's bitmaps live in JavaScript: object heap plus typed
+ * arrays, whose backing stores V8 counts as **external** memory. So the verdict watches **both** post-GC `heapUsed`
+ * and post-GC `external` (which includes `ArrayBuffer`s) — a run PASSes only if neither creeps.
  *
- * SCOPE (be honest): live-native proves **no off-heap leak** — it does NOT prove **RSS is bounded**. The malloc
- * allocator can retain freed arenas, so RSS climbs while live heap+native stay flat; the counter can't see that
- * retention. The definitive RSS ceiling is `scripts/rss-gate.sh`, which copies THIS file into a container and
+ * SCOPE (be honest): flat heap and external prove **no leak** — they do NOT prove **RSS is bounded**. The malloc
+ * allocator can retain freed arenas, so RSS climbs while live heap and external stay flat; the counters can't see
+ * that retention. The definitive RSS ceiling is `scripts/rss-gate.sh`, which copies THIS file into a container and
  * runs it under a hard cgroup `--memory` limit (swap off) in CI — an OOM kill there is exit 137. RSS is reported
- * here only as a floor sanity-check (dominated by the fixed Node + addon floor).
+ * here only as a floor sanity-check (dominated by the fixed Node floor).
  *
  * LocalFs drivers, not memory ones, on purpose: the fleet must live on disk so the reader child can open the
  * same post-soak state in a fresh process, and so a re-load is a real durable object write + pointer CAS.
@@ -56,9 +55,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { CloudRoaring, LocalFsStorage } = require('@cloudbitmaps/roaring');
-// The roaring addon allocates bitmap containers OUTSIDE the V8 heap, so heapUsed can't see them. This is the
-// process-wide live native byte count — the off-heap component the memory verdict must watch.
-const { getRoaringUsedMemory } = require('roaring');
 
 const ROOT = path.resolve(__dirname, '..');
 const SECONDS = int(process.env.SOAK_SECONDS, 90);
@@ -82,9 +78,9 @@ function heapMiB() {
 function rssMiB() {
   return process.memoryUsage().rss / 1048576;
 }
-/** Live native bytes held by the roaring addon (off-heap) — invisible to heapUsed; drives RSS. */
-function nativeMiB() {
-  return getRoaringUsedMemory() / 1048576;
+/** External memory V8 tracks (typed arrays' backing stores, so the buffers the store holds) — not in heapUsed. */
+function externalMiB() {
+  return process.memoryUsage().external / 1048576;
 }
 function gc() {
   if (typeof global.gc === 'function') global.gc();
@@ -165,7 +161,7 @@ async function readerChild() {
   process.stdout.write(
     `SOAK_READER:${JSON.stringify({
       heapMiB: round(heapMiB(), 1),
-      nativeMiB: round(nativeMiB(), 2),
+      externalMiB: round(externalMiB(), 2),
       rssMiB: round(rssMiB(), 1),
       combines,
       combineIds,
@@ -249,7 +245,7 @@ async function soak() {
         samples.push({
           tSec: round(elapsed / 1000, 1),
           heapMiB: round(heapMiB(), 1),
-          nativeMiB: round(nativeMiB(), 2),
+          externalMiB: round(externalMiB(), 2),
           rssMiB: round(rssMiB(), 1),
           iters,
         });
@@ -288,9 +284,9 @@ async function soak() {
 }
 
 /**
- * Creep verdict: compare first-third vs last-third medians for BOTH post-GC JS heap AND the roaring addon's
- * live native bytes; PASS only if neither grows past its band. Watching native memory too is what makes this
- * evidence for the RSS envelope, not just the heap (a native creep slips a heap-only gate).
+ * Creep verdict: compare first-third vs last-third medians for BOTH post-GC JS heap AND post-GC external memory;
+ * PASS only if neither grows past its band. Watching external memory too is what makes this evidence for the RSS
+ * envelope, not just the object heap (a leak of typed arrays slips a heap-only gate).
  */
 function analyze(samples, iters, reader, work) {
   const median = (xs) => {
@@ -300,10 +296,16 @@ function analyze(samples, iters, reader, work) {
   const third = Math.max(1, Math.floor(samples.length / 3));
   // Band = 15% of this run's baseline (a *relative* tolerance that scales with the working set) PLUS a small
   // absolute floor for the sampling/allocator noise that does NOT scale with size. The floor is metric-specific
-  // so it stays anchored to each axis's real working set: heap sits at MiB scale (1 MiB floor), but post-GC
-  // native jitter is sub-MiB (empirically ~0, since global.gc() reclaims dropped roaring memory fully), so a
-  // 1 MiB native floor would rubber-stamp a ~10× leak on a ~0.1 MiB native baseline — native gets a 0.25 MiB
-  // floor instead. Miss direction is fail-safe (a real leak compounds well past the band).
+  // so it stays anchored to each axis's real working set. Both axes sit at MiB scale, so each gets a 1 MiB floor.
+  // The external floor is kept at 1 MiB on evidence, not by habit. External memory is bimodal at the sample level
+  // (the recorded run swings between 2.6 and 3.9 MiB from one sample to the next), so the first-third and
+  // last-third medians can land on different modes. Over every contiguous sub-run of the recorded series (at least
+  // 14 samples) the creep measure spans -0.85 to +0.60 MiB, and CI's run measured +0.17. A floor under about 0.9 MiB
+  // would trip an honest run, which is the worse failure for a gate that runs inside the RSS job. At the 1 MiB floor
+  // a growth of about 60% of the baseline over a run still passes and one of about 80% fails (the recorded samples
+  // with a linear ramp added, run through this function), so a leak of a quarter of the baseline is below what this
+  // measure can tell from its own noise; a smaller leak is for the longer nightly run and the RSS ceiling to catch.
+  // Miss direction is fail-safe (a real leak compounds well past the band).
   const creepOf = (pickSample, floorMiB) => {
     const xs = samples.map(pickSample);
     const firstMed = median(xs.slice(0, third));
@@ -313,18 +315,18 @@ function analyze(samples, iters, reader, work) {
     return { firstMed, lastMed, creep, limit, ok: creep <= limit };
   };
   const heap = creepOf((s) => s.heapMiB, 1);
-  const native = creepOf((s) => s.nativeMiB, 0.25);
+  const external = creepOf((s) => s.externalMiB, 1);
   // A run that performed no combines, or no re-loads, is INCONCLUSIVE, never PASS — regardless of how flat the
   // samples were. The verdict refuses to claim coverage it does not have, so removing either phase breaks the
   // build instead of quietly narrowing what PASS means.
   const verdict =
     samples.length < 3 || work.combines === 0 || work.reloads === 0
       ? 'inconclusive'
-      : heap.ok && native.ok
+      : heap.ok && external.ok
         ? 'PASS'
         : 'CREEP';
   return {
-    note: 'Generated by `pnpm soak`. Measured (wall-clock + heap/native/RSS) — machine-dependent, not a gate.',
+    note: 'Generated by `pnpm soak`. Measured (wall-clock + heap/external/RSS) — machine-dependent, not a gate.',
     env: {
       node: process.version,
       arch: process.arch,
@@ -353,12 +355,12 @@ function analyze(samples, iters, reader, work) {
     lastThirdHeapMiB: heap.lastMed,
     creepMiB: heap.creep,
     creepLimitMiB: heap.limit,
-    firstThirdNativeMiB: native.firstMed,
-    lastThirdNativeMiB: native.lastMed,
-    nativeCreepMiB: native.creep,
-    nativeCreepLimitMiB: native.limit,
+    firstThirdExternalMiB: external.firstMed,
+    lastThirdExternalMiB: external.lastMed,
+    externalCreepMiB: external.creep,
+    externalCreepLimitMiB: external.limit,
     verdict,
-    readerProcess: reader, // isolated read-path footprint (heap + native + RSS), or null if the child failed
+    readerProcess: reader, // isolated read-path footprint (heap + external + RSS), or null if the child failed
   };
 }
 
@@ -388,9 +390,9 @@ function round(n, d) {
   );
   const r = await soak();
   console.log(
-    `\nsoak: verdict=${r.verdict} · heap creep=${r.creepMiB}MiB (${r.firstThirdHeapMiB}→${r.lastThirdHeapMiB}, limit ${r.creepLimitMiB}) · native creep=${r.nativeCreepMiB}MiB (${r.firstThirdNativeMiB}→${r.lastThirdNativeMiB}, limit ${r.nativeCreepLimitMiB}) over ${r.samples.length} samples · ${r.iters} iters (${r.itersPerSec}/s) · ${r.reloads} re-loads · ${r.combines} combines (${r.combineIds} ids) · ${r.iterated} iterated` +
+    `\nsoak: verdict=${r.verdict} · heap creep=${r.creepMiB}MiB (${r.firstThirdHeapMiB}→${r.lastThirdHeapMiB}, limit ${r.creepLimitMiB}) · external creep=${r.externalCreepMiB}MiB (${r.firstThirdExternalMiB}→${r.lastThirdExternalMiB}, limit ${r.externalCreepLimitMiB}) over ${r.samples.length} samples · ${r.iters} iters (${r.itersPerSec}/s) · ${r.reloads} re-loads · ${r.combines} combines (${r.combineIds} ids) · ${r.iterated} iterated` +
       (r.readerProcess
-        ? ` · reader-child heap=${r.readerProcess.heapMiB}MiB native=${r.readerProcess.nativeMiB}MiB (bounds) rss=${r.readerProcess.rssMiB}MiB (~Node floor) after ${r.readerProcess.combines} isolated combines`
+        ? ` · reader-child heap=${r.readerProcess.heapMiB}MiB external=${r.readerProcess.externalMiB}MiB rss=${r.readerProcess.rssMiB}MiB (~Node floor) after ${r.readerProcess.combines} isolated combines`
         : ''),
   );
   if (process.env.SOAK_INJECT === '1') {

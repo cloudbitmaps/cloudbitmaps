@@ -16,15 +16,6 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/gcs
 
 Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
 
-`roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if you allow it. Allow it before you install:
-
-- **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
-- **pnpm 11 and later:** put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside your `package.json`. Those versions no longer read the `package.json` `pnpm` key. Without it the install exits 1 with `ERR_PNPM_IGNORED_BUILDS`.
-- **pnpm 10:** add `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`.
-- **pnpm 9:** nothing extra.
-
-[Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
-
 `@google-cloud/storage` (`^8.1.0`) is a real dependency of this package, so installing it is the whole step. A `client` you pass must come from 8.1.0 or later: the driver's own tests pass on 8.1.0 and fail on every older release tried (8.0.1, 8.0.0, and 7.x from 7.0.0 to 7.22.0). On 8.0.1 the unit tests pass, but the integration test of a resumable upload's tail size against the emulator fails with a reset connection. On 8.0.0 and on 7.x the unit tests fail: a read the driver cuts off at `readTimeoutMs` leaves its connection open, a read whose first answer is cut off part-way is not retried to success (the call never settles), and a read the driver refuses does not release its request.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 

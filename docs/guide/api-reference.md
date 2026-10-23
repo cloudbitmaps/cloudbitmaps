@@ -282,14 +282,15 @@ The `store.load` row lists the guards and what throws instead.
 format, or `{ bitmap }`, any `PortableBitmap` (an object with `serialize('portable')`, such as `roaring`'s
 `RoaringBitmap32`, and optionally `getSerializationSizeInBytes('portable')`, which lets a load refuse one over the cap
 before serializing it), which is loaded as `{ serialized: bitmap.serialize('portable') }`, serialized once at the
-call. A bare `RoaringBitmap32` from the `roaring` this package uses, or a bitmap `deserializePortable` returned, passed
-as ids, is loaded as `{ bitmap }`. Bitmap bytes are capped at 537,403,396 bytes (more than any canonical 32-bit bitmap
+call. An iterable with a `serialize` method (a `RoaringBitmap32` from the `roaring` package, another copy's bitmap, or a bitmap `deserializePortable` returned) passed
+as ids is loaded as `{ bitmap }` and not iterated; a byte array is refused as ids even with a `serialize` of its own. Bitmap bytes are capped at 537,403,396 bytes (more than any canonical 32-bit bitmap
 serializes to), must hold exactly one bitmap, and
 are checked structurally and decoded by the safe deserializer before the first request; malformed or oversized
 bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then
 cut from the bitmap's own containers, with no per-id work, and the generation holds chunk for chunk what the same ids
 write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError` when the load runs
-(the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
+(the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`. One that carries a
+`serialize` method of its own is a bitmap instead, and loads as what its `serialize('portable')` returns.
 Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
 **`sorted: true` writes ascending ids one chunk at a time.** For ids that already ascend, the load writes each chunk
@@ -299,8 +300,7 @@ whatever the segment's size, and writes the same object an unsorted load of the 
 id lower than the one before throws `ValidationError` naming its position. The row, the number and the key are settled
 before the first id is read. An error the ids raise reaches the caller as the very object raised, never seen by the
 storage driver, and a storage driver that runs its write again gets `IntegrityError`. With `{ serialized }`, `{ bitmap
-}`, a bitmap `deserializePortable` returned or a `RoaringBitmap32` of this package's `roaring` (one from another copy
-loads as its ids, and takes `sorted`), and as a value that is not a boolean, it throws `ValidationError` before any
+}`, a bitmap `deserializePortable` returned or any other iterable with a `serialize` method, and as a value that is not a boolean, it throws `ValidationError` before any
 request; the `*Into` verbs do not take it
 ([ids that already ascend](loading.md#what-a-load-accepts)).
 
@@ -308,7 +308,7 @@ request; the `*Into` verbs do not take it
 
 `deserializePortable(bytes: Uint8Array): ReadonlyBitmap` decodes portable Roaring bytes you hold (a Node `Buffer`
 is one) through the check a `{ serialized }` load makes first: the 537,403,396-byte cap, the structural check, exactly
-one bitmap, and only then the native decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
+one bitmap, and only then the decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
 load refuses them; an empty buffer is the empty bitmap. Use it for bytes that crossed a process boundary, in place of
 `RoaringBitmap32.deserialize`, which checks nothing but its own reads.
 
@@ -329,11 +329,11 @@ check:
 <!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32`, `bytes`, `deserializePortable` to the reader -->
 ```ts
 const checked = deserializePortable(bytes); // ValidationError if malformed
-const native = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
+const bitmap32 = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
 ```
 
 Decode `checked`'s bytes, not the original ones: a `SharedArrayBuffer` can change between the check and a decode of
-the original. [The parts recipe](loading.md#parts-of-one-segment-built-separately) uses this.
+the original. [The parts recipe](loading.md#parts-of-one-segment-built-separately) uses this. See also [what you can use by itself](roaring-codec.md#what-you-can-use-by-itself).
 
 ### The segment verbs (the ~90% of daily use)
 

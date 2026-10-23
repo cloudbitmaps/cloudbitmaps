@@ -5,7 +5,7 @@ import { DEFAULT_RETRY_POLICY } from '@/core/retry';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -126,7 +126,7 @@ function coreDeps(w: Awaited<ReturnType<typeof world>>, retried: boolean) {
     storage: w.flaky.storage,
     registry: w.backend.registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     ...(retried
       ? {
           readRetry: {

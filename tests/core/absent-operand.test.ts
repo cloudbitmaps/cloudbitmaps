@@ -8,7 +8,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { SegmentEngine } from '@/core/engine';
 import { compileCombineMany, runCombineMany } from '@/core/combine-many';
 import type { StorageChunkSource } from '@/core/ports';
-import { roaringCodec, SafeBitmap } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { joinId } from '@/core/bit-route';
 
 /**
@@ -245,7 +245,7 @@ class LoadedEverywhere implements StorageChunkSource {
   /** Version lookups made once the first chunk was read: the looks of a running read. */
   readonly looks = new InFlight();
   private reading = false;
-  private readonly bytes = SafeBitmap.fromValues([1]).serialize();
+  private readonly bytes = storeCodec.fromValues([1]).serialize();
   constructor(private readonly keys: number) {}
   async getChunk(): Promise<Uint8Array | null> {
     this.reading = true;
@@ -271,7 +271,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
 
   it('lists at most 16 operands at once, asks after at most 16, and names every one that is absent', async () => {
     const source = new AbsentEverywhere();
-    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: source, codec: storeCodec });
     const error = await failure(collect(engine.intersect(refs)));
     expect(error).toBeInstanceOf(ValidationError);
     expect(source.listing.asked).toHaveLength(WIDE);
@@ -285,7 +285,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
 
   it('lists and asks after an exclude list the same way, includes first', async () => {
     const source = new AbsentEverywhere();
-    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: source, codec: storeCodec });
     await expect(collect(engine.andNot(refs[0]!, refs.slice(1)))).rejects.toThrow(
       /^andNot: operands "gone-0", "gone-1",/,
     );
@@ -297,7 +297,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
 
   it('looks up at most 16 operand versions at once when a running union looks', async () => {
     const source = new LoadedEverywhere(12);
-    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: source, codec: storeCodec });
     const ops = Array.from({ length: WIDE }, (_, i): SegmentRef => ({ segment: `s${i}` }));
     const ids = await collect(engine.union(ops, { concurrency: 4 }));
     expect(ids).toEqual(Array.from({ length: 12 }, (_, k) => joinId(k, 1)));
@@ -322,7 +322,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
         },
       },
     });
-    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: source, codec: storeCodec });
     // Settles while the read of gone-1 is still in flight: the refusal does not wait for it.
     expect(await failure(collect(engine.intersect(refs)))).toBe(boom);
     expect(source.existing.now).toBeGreaterThan(0);
@@ -348,7 +348,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
         },
       },
     });
-    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: source, codec: storeCodec });
     expect(await failure(collect(engine.intersect(refs)))).toBe(boom);
     expect(source.listing.now).toBeGreaterThan(0);
     const listed = source.listing.asked.length;
@@ -360,7 +360,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
   });
 
   it('says, word for word, which operands of a combine are absent and what to do', async () => {
-    const engine = new SegmentEngine({ storage: new AbsentEverywhere(), codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: new AbsentEverywhere(), codec: storeCodec });
     const error = await failure(
       collect(
         engine.intersect([{ namespace: 'suppression', segment: 'opt-out' }, { segment: 'typo' }]),
@@ -375,7 +375,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
   });
 
   it('names one absent operand in the singular', async () => {
-    const engine = new SegmentEngine({ storage: new AbsentEverywhere(), codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: new AbsentEverywhere(), codec: storeCodec });
     const error = await failure(collect(engine.union([{ segment: 'typo' }])));
     expect((error as Error).message).toMatch(
       /^union: operand "typo" names a segment that does not exist or was dropped, so it would contribute nothing — /,
@@ -401,7 +401,7 @@ describe('a combine reads its operands a bounded number at a time', () => {
     const error = await failure(
       runCombineMany(compiled, {
         source,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: { now: () => 0, sleep: async () => {} },
       }),
     );

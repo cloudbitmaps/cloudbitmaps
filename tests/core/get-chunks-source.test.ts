@@ -16,7 +16,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { segmentKey } from '@/core/keys';
-import { SafeBitmap } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect, expectSameBytes } from '../helpers/chunk-stream';
 import { Gate, Watched, turns, worstWhileWaiting } from '../helpers/live-buffers';
@@ -52,7 +52,7 @@ const idsOf = (parity: 0 | 1, chunks = CHUNKS): number[] =>
   );
 
 const remaindersOf = (bytes: Uint8Array): number[] =>
-  SafeBitmap.safeDeserialize(bytes, 1 << 20).toArray();
+  storeCodec.safeDeserialize(bytes, 1 << 20).toArray();
 const parityOf = (bytes: Uint8Array | null): number => remaindersOf(bytes!)[0]! % 2;
 
 function manualClock(): Clock & { advance(ms: number): void } {

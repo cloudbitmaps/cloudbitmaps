@@ -7,7 +7,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 
@@ -29,7 +29,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 type World = ReturnType<typeof world>;
@@ -328,7 +328,7 @@ describe('a lease on the restored generation', () => {
     const w = {
       storage,
       registry,
-      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+      deps: { storage, registry, entropy: testEntropy, codec: storeCodec, clock },
     };
     await loadEach(w, 4, { keep: 9 });
     await rollbackSegment(SEG, 1, w.deps);

@@ -3,7 +3,7 @@ import { TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IRegistryDriver, IStorageDriver, RegistryPatch } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
 import { testEntropy } from '../helpers/entropy';
 
@@ -18,7 +18,7 @@ describe('a refused rewrite whose discard faults', () => {
     async (refusedAt) => {
       const storage = new MemoryStorageDriver();
       const registry: IRegistryDriver = new MemoryRegistryDriver();
-      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+      const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
       await loadSegment(REF, [1, 2, X], deps);
       const l1AtPublish = gate();
       const l1Registry = Object.create(registry) as IRegistryDriver;

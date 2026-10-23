@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { IntegrityError, ValidationError } from '@cloudbitmaps/core';
 import type { CodecBitmap } from '@cloudbitmaps/core';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 import { crPlainBytes, prng } from '../helpers/roaring-oracle';
 

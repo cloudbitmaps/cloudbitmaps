@@ -11,9 +11,10 @@ import type { DecodedLoadInput } from '@/core/load-input';
 import { MemoryStorageDriver } from '@/drivers/memory';
 import { aadFor } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { checkPortableLayout, containerPayloads } from '@/portable/layout';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, ValidationError } from '@/core/errors';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { bitsetOf, craftPortable } from '../helpers/portable-bytes';
@@ -401,19 +402,161 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
   });
 
-  it('a RoaringBitmap32 from another copy of roaring is loaded as the ids it iterates', async () => {
-    // A look-alike class: iterable, with serialize, but not this package's RoaringBitmap32.
-    class Elsewhere {
-      constructor(private readonly ids: number[]) {}
-      serialize(): Uint8Array {
-        throw new Error('not called: a bare bitmap of another class is ids');
-      }
-      [Symbol.iterator](): Iterator<number> {
-        return this.ids[Symbol.iterator]();
-      }
+  /** A look-alike class from "another copy" of a roaring library: iterable, and with `serialize('portable')`. */
+  class Elsewhere {
+    readonly serialized: number[] = [];
+    readonly iterated: number[] = [];
+    constructor(private readonly ids: number[]) {}
+    serialize(format: string): Uint8Array {
+      this.serialized.push(this.serialized.length);
+      expect(format).toBe('portable');
+      return new RoaringBitmap32(this.ids).serialize('portable');
     }
-    const { bytes } = await loadAndRead(new Elsewhere(IDS));
+    [Symbol.iterator](): Iterator<number> {
+      this.iterated.push(0);
+      return this.ids[Symbol.iterator]();
+    }
+  }
+
+  it('a bitmap from another copy of roaring loads by its shape: serialized once, never iterated', async () => {
+    const other = new Elsewhere(IDS);
+    const { bytes } = await loadAndRead(other as unknown as LoadInput);
+    expect(other.serialized).toHaveLength(1);
+    expect(other.iterated).toHaveLength(0);
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
+  });
+
+  it('an iterable with its own serialize is serialized, not iterated', async () => {
+    // Its serialize decides what loads, even where it disagrees with what it iterates.
+    const other = new Elsewhere([7]);
+    const { bytes } = await loadAndRead(other as unknown as LoadInput);
+    const chunk = await loadAndRead([7]);
+    expect(Buffer.from(bytes).equals(Buffer.from(chunk.bytes))).toBe(true);
+    expect(other.iterated).toHaveLength(0);
+  });
+
+  it('sorted: true with a bitmap of another copy throws ValidationError, as it does for any bitmap', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await expect(
+      store.load(SEG, new Elsewhere(IDS) as unknown as LoadInput, { sorted: true }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      store.load(SEG, new RoaringBitmap32(IDS) as unknown as LoadInput, { sorted: true }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  describe('an iterable with a serialize method loads through serialize; nothing else changes', () => {
+    const portable = (ids: number[]): Uint8Array => new RoaringBitmap32(ids).serialize('portable');
+    const chunk7 = async (): Promise<Buffer> => Buffer.from((await loadAndRead([7])).bytes);
+    const refused = async (input: unknown): Promise<void> => {
+      const store = new CloudRoaring({ storage: new MemoryStorage() });
+      await expect(store.load(SEG, input as LoadInput)).rejects.toThrow(ValidationError);
+    };
+
+    it('a Uint8Array with its own serialize is still refused as a byte array', async () => {
+      await refused(Object.assign(new Uint8Array([1, 2, 3]), { serialize: () => portable([7]) }));
+    });
+
+    it('a Buffer with its own serialize is still refused as a byte array', async () => {
+      await refused(Object.assign(Buffer.from([1, 2, 3]), { serialize: () => portable([7]) }));
+    });
+
+    it('a Uint8ClampedArray with its own serialize is still refused as a byte array', async () => {
+      await refused(
+        Object.assign(new Uint8ClampedArray([1, 2, 3]), { serialize: () => portable([7]) }),
+      );
+    });
+
+    it('another typed array with a serialize is a bitmap, as any iterable with serialize is', async () => {
+      const ids = Object.assign(new Uint32Array([1, 2, 3]), { serialize: () => portable([7]) });
+      const { bytes: out } = await loadAndRead(ids as unknown as LoadInput);
+      expect(Buffer.from(out).equals(await chunk7())).toBe(true);
+    });
+
+    it('{ serialized, serialize } is still refused for its two keys', async () => {
+      await refused({ serialized: portable([1, 2, 3]), serialize: () => portable([7]) });
+    });
+
+    it('{ bitmap, serialize } is still refused for its two keys', async () => {
+      await refused({ bitmap: new RoaringBitmap32([1]), serialize: () => portable([7]) });
+    });
+
+    it('an object that is not iterable and has only a serialize method is still refused', async () => {
+      await refused({ serialize: () => portable([7]) });
+    });
+
+    it('sorted: true throws for an iterable with a serialize method and for an array with one', async () => {
+      const store = new CloudRoaring({ storage: new MemoryStorage() });
+      const array = Object.assign([1, 2, 3], { serialize: () => portable([7]) });
+      await expect(
+        store.load(SEG, array as unknown as LoadInput, { sorted: true }),
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('an array with its own serialize is serialized, not iterated', async () => {
+      const ids = Object.assign([1, 2, 3], { serialize: () => portable([7]) });
+      const { bytes: out } = await loadAndRead(ids as unknown as LoadInput);
+      expect(Buffer.from(out).equals(await chunk7())).toBe(true);
+    });
+
+    it('a look-alike whose serialize returns malformed bytes is a ValidationError, before any request', async () => {
+      const lookAlike = {
+        *[Symbol.iterator]() {
+          yield 1;
+        },
+        serialize: () => new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+      };
+      await refused(lookAlike);
+    });
+
+    it('a serialize that throws fails the load with its own error', async () => {
+      const boom = new Error('caller serialize failed');
+      const store = new CloudRoaring({ storage: new MemoryStorage() });
+      const input = {
+        *[Symbol.iterator]() {
+          yield 1;
+        },
+        serialize: () => {
+          throw boom;
+        },
+      };
+      await expect(store.load(SEG, input as unknown as LoadInput)).rejects.toBe(boom);
+    });
+
+    it.each([
+      ['a string', () => 'abc'],
+      ['an array', () => [1, 2, 3]],
+      ['undefined', () => undefined],
+    ])(
+      'a serialize that returns %s is a ValidationError, before any request',
+      async (_name, serialize) => {
+        const store = new CloudRoaring({ storage: new MemoryStorage() });
+        const input = {
+          *[Symbol.iterator]() {
+            yield 1;
+          },
+          serialize,
+        };
+        await expect(store.load(SEG, input as unknown as LoadInput)).rejects.toThrow(
+          ValidationError,
+        );
+      },
+    );
+  });
+
+  it('ids that are not objects with serialize still load as ids: arrays, typed arrays, sets, generators', async () => {
+    const golden = Buffer.from(GOLDEN);
+    for (const input of [
+      IDS,
+      Uint32Array.from(IDS),
+      new Set(IDS),
+      (function* () {
+        yield* IDS;
+      })(),
+    ]) {
+      const { bytes } = await loadAndRead(input as LoadInput);
+      expect(Buffer.from(bytes).equals(golden)).toBe(true);
+    }
   });
 });
 
@@ -485,9 +628,9 @@ describe('a bitmap load reports the fingerprint of the object it wrote', () => {
     // A refused load deletes its object only once the footer proves it its own, by this fingerprint.
     const storage = new MemoryStorageDriver();
     const key = { ...SEG, generation: 0 };
-    const decoded = prepareLoadInput(input, roaringCodec) as DecodedLoadInput;
+    const decoded = prepareLoadInput(input, storeCodec) as DecodedLoadInput;
     const written = await bulkLoadCrbmGeneration(storage, key, decoded, {
-      codec: roaringCodec,
+      codec: storeCodec,
       entropy: testEntropy,
     });
     const reader = await openGenerationReader(storage, key, undefined);

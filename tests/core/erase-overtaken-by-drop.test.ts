@@ -2,7 +2,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { dropSegment } from '@/core/erasure';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import type { SegmentRef } from '@/index';
 import type { GenKey, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -67,7 +67,7 @@ describe('an erasure rewrite a drop overtakes deletes its own object', () => {
         storage: wrapped,
         registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       });
 
       expect(drop?.dropped).toBe(true);
@@ -98,7 +98,7 @@ describe('a rewrite whose publish a drop refuses reports the row, not a race', (
       storage,
       registry: racing,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
 
     expect(fired).toBe(true);
@@ -131,7 +131,7 @@ describe('a segment tombstoned while its rewrite runs is searched as a fresh cal
       storage: wrapped,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
 
     expect((await registry.get(REF))?.status).toBe('destroyed');
@@ -142,7 +142,7 @@ describe('a segment tombstoned while its rewrite runs is searched as a fresh cal
   it('what both passes deleted is reported, and the newest holder', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     // Generations 0 and 2 hold the id; the pointer is rolled back to 1, which does not.
     await loadSegment(REF, [1, 9], deps, { keep: 5 });
     await loadSegment(REF, [1], deps, { keep: 5 });

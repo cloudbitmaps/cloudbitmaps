@@ -98,6 +98,12 @@
               off our own arithmetic. Every money figure and rate below is checked against its source by a build gate, so a
               regression <em>or an overclaim</em> fails the build.
             </p>
+            <p class="hero-lede">
+              The soak and the hard RSS ceiling were measured on the TypeScript codec, the one the store uses, on 2026-10-21 (the
+              ceiling's record is the file CI's gate wrote that day). The in-region run, the large-operand run, the read,
+              fleet-memory and at-scale figures were measured on the native codec, in the release each section names, and
+              are to be re-measured. The cost model and the crossover do not depend on the codec. The comparison is
+              <a href="#codec">the TypeScript codec against native</a>.</p>
             <p class="actions">
               <a class="btn btn-primary" href="#anchors">The cost anchors →</a>
               <a class="btn" href="#limits">What they do not establish</a>
@@ -558,7 +564,7 @@
                    one as a headline invites it to be read as a spec. -->
               A sustained read + combine + re-load workload over <b>400</b> segments completes inside a hard
               <span class="m">384m</span> cgroup ceiling with swap disabled — so the limit is a true RSS bound
-              and covers the addon's off-heap memory. No OOM-kill, and both creep verdicts inside their bands.
+              and covers memory a heap sample cannot see; the gate runs the built packages as they are, with no native addon. No OOM-kill, and both creep verdicts (heap and external memory) inside their bands.
               The ceiling is a property of the workload, so it is what is published; the RSS one machine reads
               under it is a property of that machine, and is not.
             </span>
@@ -588,7 +594,7 @@
           claim — memory is a function of the cap you set, not of how much data you own.
         </p>
         <!-- BENCH:SCALE:START -->
-<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><td>1,000 segments</td><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><td>10,000 segments</td><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><td>100,000 segments</td><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">Across a <strong>100&times;</strong> larger fleet, retained heap stayed inside a <strong>0.9 MiB</strong> band. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms against the in-memory drivers. Fleet seeded by writing and publishing each generation at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
+<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured on the native codec &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><td>1,000 segments</td><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><td>10,000 segments</td><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><td>100,000 segments</td><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">Across a <strong>100&times;</strong> larger fleet, retained heap stayed inside a <strong>0.9 MiB</strong> band. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms against the in-memory drivers. Fleet seeded by writing and publishing each generation at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
 <!-- BENCH:SCALE:END -->
         <ul class="rowlist">
           <li>
@@ -632,6 +638,57 @@
               sharded across workers — but a shard filter is applied <em>after</em> the enumeration, so each
               worker still walks every row and that walk stays O(total). An indexed cursor for the general case
               would bound it, and has not been built.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <section id="codec">
+        <h2>The TypeScript codec against native</h2>
+        <p class="lede">
+          Measured on one Apple M3 Pro under Node v24.22.1 on 2026-10-22, through the store with a warm cache, 31 rounds a
+          figure, each figure against an A/A control (the native codec twice), one codec per process for reads. Negative
+          means the TypeScript codec was faster. The record is
+          <code>bench/ts-codec-comparison-results.json</code> and the per-operation tables are on the
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#the-typescript-codec-against-native" target="_blank" rel="noopener" aria-label="The TypeScript codec against native, on the benchmarks page (opens in a new tab)">benchmarks page in the repository</a>.
+          Wall-clock, one machine, recorded and not asserted.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">Reads</span>
+            <span class="rl-fig">+3.4% worst</span>
+            <span class="rl-note">
+              <span class="m">has</span>, <span class="m">count</span>, <span class="m">iterate</span>,
+              <span class="m">intersect</span> and <span class="m">andNot</span> on five data sets are all inside the 5% bar:
+              dense four-operand <span class="m">intersect</span> is the worst cell at +3.4%, and sparse
+              <span class="m">intersect</span> is 37% to 40% faster. No <span class="m">union</span> was timed through the store.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Bulk load, warm</span>
+            <span class="rl-fig">&minus;35.6%</span>
+            <span class="rl-note">
+              183.1 ms to 117.2 ms for a million ids; an erasure's rewrite &minus;33.8%, an export &minus;14.1%.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">First load of two small segments, fresh process</span>
+            <span class="rl-fig">+13.1%</span>
+            <span class="rl-note">
+              Slower, not faster: 135.02 ms to 153.0 ms, and the first <span class="m">has</span> is +6.6%. Module load is
+              19.5 ms against 1.1 ms (&minus;94.2%).
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">04</span>
+            <span class="rl-what">One container pair</span>
+            <span class="rl-fig">up to 4.2&times; slower</span>
+            <span class="rl-note">
+              In the per-operation record (2026-10-21, Apple M3 Pro, Node v24.18.1, commit <span class="m">7bf70e54</span>, before later kernel changes; to be re-measured), a union of a skewed pair of containers took 3,341 ns native and 14,099 ns
+              TypeScript. Through the store the combines above are inside the bar anyway.
             </span>
           </li>
         </ul>
@@ -797,11 +854,11 @@
               <strong>concurrency &times; operands</strong> range requests &mdash; <strong>8&times; the chunks gives the same
               peak</strong>, which is the claim that matters, since it is residency not scaling with segment
               size that makes a 2,000-chunk intersection fit in a small runtime. And the long-running soak
-              issues combines: <strong>7262</strong> of them over 90 s, alongside <strong>2908</strong>
+              issues combines: <strong>11632</strong> of them over 90 s, alongside <strong>4656</strong>
               re-loads — each re-load publishes a new generation, which is what makes the reader cache's
               generation refresh and the cache's generation-keyed entries do real work instead of sitting
-              idle — after which the roaring engine's live off-heap bytes had moved by
-              <strong>0.00 MiB</strong> — where anything above 0.28 MiB would have failed the run. What stays local is
+              idle — after which the store's external memory (the typed arrays its bitmaps live in)
+              had moved by <strong>-0.36 MiB</strong> — where anything above 1.49 MiB would have failed the run. What stays local is
               the <em>driver</em>: both run against local storage, so this bounds our own bookkeeping and says
               nothing about a real S3 round trip. The <a href="demo.html">measured run</a> remains a single
               operation, not a duration.

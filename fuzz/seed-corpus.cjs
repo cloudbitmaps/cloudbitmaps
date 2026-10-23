@@ -15,7 +15,7 @@
  * driving the `.crbm` writer class directly. That class is not public — and this is the better seed anyway,
  * because the bytes then come off exactly the code path that writes a real generation, so a corpus entry
  * cannot drift from the format the library actually emits. The bitmaps for the `safe-deserialize` target come
- * from the native `roaring` addon's portable serializer, which is what the library's codec calls.
+ * from the `roaring` package's portable serializer, the same bytes the library's TypeScript codec writes.
  *
  * Objects with an extension block, which carry a generation's metadata, come from the `.crbm` writer itself, through the fuzz
  * build (`fuzz/build/fuzz-core.js`): a load is not given metadata, so it writes format 1.0 only.
@@ -61,14 +61,14 @@ function valueSets() {
 }
 
 /**
- * Seeds for a safe-deserialize target. `runOptimized` also writes each set with its run containers (the plain
- * serialization of a set has none), which reach the run paths of a decoder that has them.
+ * Seeds for the safe-deserialize target. Each set is written plain and with its run containers (the plain
+ * serialization of a set has none), which reach the decoder's run paths.
  */
-function seedSafeDeserialize(target, runOptimized) {
+function seedSafeDeserialize(target) {
   const sets = valueSets();
   for (const [name, vals] of Object.entries(sets)) {
     const forms = [['valid', false]];
-    if (runOptimized) forms.push(['runs', true]);
+    forms.push(['runs', true]);
     for (const [form, runs] of forms) {
       const bitmap = new RoaringBitmap32(vals);
       if (runs) bitmap.runOptimize();
@@ -283,14 +283,11 @@ async function seedCrbmExt() {
 
 async function main() {
   const only = process.argv[2];
-  if (!only || only === 'safe-deserialize') seedSafeDeserialize('safe-deserialize', false);
-  if (!only || only === 'ts-safe-deserialize') seedSafeDeserialize('ts-safe-deserialize', true);
+  if (!only || only === 'safe-deserialize') seedSafeDeserialize('safe-deserialize');
   if (!only || only === 'crbm-reader') await seedCrbmReader();
   if (!only || only === 'crbm-index') seedCrbmIndex();
   if (!only || only === 'crbm-ext') await seedCrbmExt();
-  const targets = only
-    ? [only]
-    : ['safe-deserialize', 'ts-safe-deserialize', 'crbm-reader', 'crbm-index', 'crbm-ext'];
+  const targets = only ? [only] : ['safe-deserialize', 'crbm-reader', 'crbm-index', 'crbm-ext'];
   for (const t of targets) {
     const dir = path.join(CORPUS, t);
     const n = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;

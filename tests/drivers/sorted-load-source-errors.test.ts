@@ -9,7 +9,7 @@ import type { GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { S3StorageDriver } from '@/s3/storage';
 import { StubBlobService } from '../helpers/azure-blob-stub';
 import { counterEntropy } from '../helpers/entropy';
@@ -178,7 +178,7 @@ describe.each(Object.keys(BACKENDS))('a sorted load on %s', (name) => {
     storage: backend.storage,
     registry: new MemoryRegistryDriver(),
     entropy: counterEntropy(),
-    codec: roaringCodec,
+    codec: storeCodec,
   });
 
   it.each(Object.keys(SHAPES))(
@@ -247,10 +247,10 @@ describe.each(Object.keys(BACKENDS))('a sorted load on %s', (name) => {
       });
       let made = 0;
       const codec = {
-        ...roaringCodec,
+        ...storeCodec,
         fromValues: (values: Iterable<number>) => {
           if (++made === at) throw failure;
-          return roaringCodec.fromValues(values);
+          return storeCodec.fromValues(values);
         },
       };
       const ids = [1, 70_000, 140_000, 210_000];
@@ -309,7 +309,7 @@ describe('a sorted load on S3 that fails after its parts went up', () => {
       storage,
       registry: new MemoryRegistryDriver(),
       entropy: counterEntropy(),
-      codec: roaringCodec,
+      codec: storeCodec,
     };
     expect(await thrown(loadSegment(SEG, ids(), d, { sorted: true }))).toBe(raised);
     expect(bucket.count('UploadPart')).toBeGreaterThanOrEqual(2);

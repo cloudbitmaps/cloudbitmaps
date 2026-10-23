@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 #
-# Build a ready-to-attach AWS Lambda **layer** for CloudRoaring. The layer bundles the library + its runtime deps with the native `roaring` addon **compiled for the
-# Amazon Linux 2023 Lambda runtime**, so a function can `import '@cloudbitmaps/roaring'` with zero build step at deploy.
+# Build a ready-to-attach AWS Lambda **layer** for CloudRoaring: the flavor and the engine under `nodejs/node_modules/`.
+# A Node Lambda layer is a zip whose contents live under `nodejs/node_modules/...`, which the runtime puts on
+# NODE_PATH. The packages carry no native code, so the layer holds only JavaScript and is the same for x64 and arm64:
+# nothing is compiled for the target. The script packs the two packages, unpacks them into `nodejs/node_modules`, zips
+# that, and then loads the unpacked layer from `/opt/nodejs/node_modules` in the Amazon Linux 2023 Lambda image, the
+# path a function sees it at, under CJS (NODE_PATH resolves `require`, not an ESM `import`).
 #
-# A Node Lambda layer is a zip whose contents live under `nodejs/node_modules/…` (that path is prepended to
-# NODE_PATH by the runtime). We build it the same way `lambda-smoke` proves deployability: inside an AL2023
-# container, install the packed tarball with `npm_config_build_from_source=true` (compile roaring for the
-# target, no reliance on a prebuilt), then zip `nodejs/`.
-#
-# Usage: `pnpm build-lambda-layer`. Needs Docker. Output: dist-lambda/cloudbitmaps-lambda-layer.zip.
-# Override the base image with LAMBDA_LAYER_IMAGE (its arch decides the layer's arch — arm64/Graviton on an
-# Apple-Silicon host, x64 on a GitHub-hosted runner; publish one layer per arch you target).
+# Usage: `pnpm build-lambda-layer`. Needs Docker and `zip`. Output: dist-lambda/cloudbitmaps-lambda-layer.zip.
+# Override the base image with LAMBDA_LAYER_IMAGE.
 
 set -euo pipefail
 
@@ -20,6 +18,10 @@ cd "$ROOT"
 
 command -v docker >/dev/null 2>&1 || {
   echo "build-lambda-layer: docker is required" >&2
+  exit 1
+}
+command -v zip >/dev/null 2>&1 || {
+  echo "build-lambda-layer: zip is required" >&2
   exit 1
 }
 
@@ -32,15 +34,15 @@ RUN_IMAGE="$(docker_image_run_name "$IMAGE")" # a copy loaded from the cache run
 
 echo "build-lambda-layer: build + pack"
 pnpm build >/dev/null
-# Pack the codec and the engine (pnpm rewrites `workspace:*` to a concrete version, so these are
-# publish-shaped) into a REPO-LOCAL dir — Docker Desktop shares /Users, not /var/folders — then place them
-# into the layer's node_modules by hand, since the `@cloudbitmaps/core` version pinned in THIS tree is
-# generally not on the registry yet. The three driver packages are deliberately NOT in the layer: a layer exists
-# to hold the expensive native `roaring` addon, and which storage a function talks to is the function's own
-# choice — bundling all three would put every cloud SDK into every deployment, the exact cost separate driver
-# packages exist to avoid.
+# Pack the flavor and the engine (pnpm rewrites `workspace:*` to a concrete version, so these are publish-shaped) into a
+# REPO-LOCAL dir (Docker Desktop shares /Users, not /var/folders), then unpack them into the layer's node_modules by
+# hand, since the `@cloudbitmaps/core` version pinned in THIS tree is generally not on the registry yet. The three
+# driver packages are deliberately NOT in the layer: which storage a function talks to is the function's own choice, and
+# bundling all three would put every cloud SDK into every deployment, the exact cost separate driver packages exist to
+# avoid.
 PACKDIR="$ROOT/.pack-tmp"
 rm -rf "$PACKDIR" && mkdir -p "$PACKDIR"
+trap 'rm -rf "$PACKDIR"' EXIT
 ( cd packages/core    && pnpm pack --pack-destination "$PACKDIR" >/dev/null )
 ( cd packages/roaring && pnpm pack --pack-destination "$PACKDIR" >/dev/null )
 CORE_TGZ="$(ls "$PACKDIR"/cloudbitmaps-core-*.tgz | head -1)"
@@ -49,50 +51,39 @@ ROARING_TGZ="$(ls "$PACKDIR"/cloudbitmaps-roaring-*.tgz | head -1)"
   echo "build-lambda-layer: pnpm pack produced no tarballs" >&2
   exit 1
 }
-ROARING_VER="$(node -p "require('./node_modules/roaring/package.json').version")"
 
-trap 'rm -rf "$PACKDIR"' EXIT
+LAYER="$PACKDIR/layer"
+mkdir -p "$LAYER/nodejs/node_modules/@cloudbitmaps/core" "$LAYER/nodejs/node_modules/@cloudbitmaps/roaring"
+tar -xzf "$CORE_TGZ"    --strip-components=1 -C "$LAYER/nodejs/node_modules/@cloudbitmaps/core"
+tar -xzf "$ROARING_TGZ" --strip-components=1 -C "$LAYER/nodejs/node_modules/@cloudbitmaps/roaring"
+
+# A layer with an addon in it is the regression this script exists to prevent. Nothing is installed here, so a
+# dependency on a native package would not show up as a file: the manifests are read as well.
+node scripts/check-no-native-package.cjs "$LAYER/nodejs/node_modules/@cloudbitmaps/core" "$LAYER/nodejs/node_modules/@cloudbitmaps/roaring" || {
+  echo "build-lambda-layer: the layer would bring native code" >&2
+  exit 1
+}
+if [ -n "$(find "$LAYER" -name '*.node' -print -quit)" ] || [ -e "$LAYER/nodejs/node_modules/roaring" ]; then
+  echo "build-lambda-layer: the layer holds a native addon" >&2
+  exit 1
+fi
 
 OUT="$ROOT/dist-lambda"
 rm -rf "$OUT"
 mkdir -p "$OUT"
+( cd "$LAYER" && zip -qr "$OUT/cloudbitmaps-lambda-layer.zip" nodejs )
 
-# Mount the tarball read-only and an output dir read-write; build + zip the layer inside the AL2023 runtime.
-echo "build-lambda-layer: install (from source) + zip inside $IMAGE"
-docker run --rm --entrypoint bash \
-  -e ROARING_VER="$ROARING_VER" -v "$CORE_TGZ:/w/core.tgz:ro" -v "$ROARING_TGZ:/w/roaring.tgz:ro" -v "$OUT:/out" "$RUN_IMAGE" -lc '
-    set -e
-    # Same treatment as the npm line below, and for the same reason: this is a network fetch from a
-    # shared runner IP, and suppressed-with-no-retry is how a throttled AL2023 mirror reds the gate
-    # with a bare exit and zero bytes of explanation. dnf.conf here sets no retries of its own.
-    dnf install -y gcc-c++ make python3 tar gzip zip >/dev/null 2>&1 || {
-      echo "dnf install failed; re-running with output so the real error is visible" >&2
-      dnf install -y gcc-c++ make python3 tar gzip zip
-    }
-    build="$(mktemp -d)"; cd "$build"
-    mkdir -p nodejs && cd nodejs
-    # --omit=dev: ship only runtime deps (the library + roaring); build roaring FROM SOURCE for AL2023.
-    npm init -y >/dev/null 2>&1
-    # npm has its own retry; this raises it from the default of 2. It covers the REGISTRY legs of the install
-    # (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
-    # its headers separately and retries those on its own schedule, which this setting does not reach. Each
-    # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface the image pull
-    # above meets with docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
-    # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
-    export npm_config_fetch_retries=5
-    npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --omit=dev --no-audit --no-fund >/dev/null 2>&1 || {
-      # Re-run once WITHOUT suppressing output, so the log carries the registry real error instead of a bare
-      # non-zero exit. Same rule as scripts/lib/docker-pull.sh: a retry that hides a bad version or a
-      # genuinely missing package is worse than no retry.
-      echo "npm install failed; re-running with output so the real error is visible" >&2
-      npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --omit=dev --no-audit --no-fund
-    }
-    mkdir -p node_modules/@cloudbitmaps/core node_modules/@cloudbitmaps/roaring
-    tar -xzf /w/core.tgz    --strip-components=1 -C node_modules/@cloudbitmaps/core
-    tar -xzf /w/roaring.tgz --strip-components=1 -C node_modules/@cloudbitmaps/roaring
-    cd "$build"
-    zip -qr /out/cloudbitmaps-lambda-layer.zip nodejs
-  '
+# Load the layer where a function finds it: mounted at /opt, resolved through NODE_PATH.
+echo "build-lambda-layer: load the layer from /opt inside $IMAGE"
+docker run --rm --entrypoint node -e NODE_PATH=/opt/nodejs/node_modules -v "$LAYER/nodejs:/opt/nodejs:ro" "$RUN_IMAGE" -e "
+  const m = require('@cloudbitmaps/roaring');
+  const store = new m.CloudRoaring({ storage: new m.MemoryStorage({ now: () => 0 }) });
+  store.load({ segment: 'layer' }, [42, 70000]).then(async () => {
+    const seg = store.segment('layer');
+    if (!(await seg.has(42)) || (await seg.count()) !== 2) throw new Error('the layer round-trip returned a wrong result');
+    console.log('  layer loads + round-trips on ' + process.platform + '/' + process.arch);
+  });
+"
 
 SIZE="$(du -h "$OUT/cloudbitmaps-lambda-layer.zip" | cut -f1)"
-echo "build-lambda-layer: PASS — $OUT/cloudbitmaps-lambda-layer.zip ($SIZE, $IMAGE)"
+echo "build-lambda-layer: PASS: $OUT/cloudbitmaps-lambda-layer.zip ($SIZE, $IMAGE)"

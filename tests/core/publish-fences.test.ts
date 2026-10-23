@@ -17,7 +17,7 @@ import type {
   IStorageDriver,
   IKeystore,
 } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
@@ -58,7 +58,7 @@ async function world(keystore?: IKeystore) {
     storage: w.storage,
     registry: w.registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     keystore,
   };
   /** A FRESH store: the fixture has no clock, so nothing refreshes a store's generation on a timer. */

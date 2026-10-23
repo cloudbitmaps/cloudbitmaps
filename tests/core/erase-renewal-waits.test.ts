@@ -3,7 +3,7 @@ import { TransientError } from '@/core/errors';
 import type { Clock } from '@/core/determinism';
 import type { SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { unansweredRegistry } from '../helpers/unanswered-registry';
 import { testEntropy } from '../helpers/entropy';
@@ -30,7 +30,7 @@ async function run(extra: (clock: Clock) => object) {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock,
       ...extra(clock),
     }),

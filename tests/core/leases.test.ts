@@ -35,7 +35,7 @@ import { setSegmentRetention } from '@/core/retention';
 import type { Clock } from '@/core/determinism';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
@@ -78,7 +78,7 @@ function world() {
     storage,
     registry: counted,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     clock,
   };
   return { clock, memory, registry, counted, storage, storageCalls, registryCalls, deps };
@@ -531,7 +531,7 @@ describe('a load collects around a lease', () => {
       storage: w.storage,
       registry: w.counted,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     };
     await loadSegment(
       SEG,
@@ -635,7 +635,7 @@ describe('what always wins over a lease', () => {
       storage: w.storage,
       registry: w.registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res.erased).toBe(true);
     expect(await generations(w.memory)).toEqual([1]);
@@ -650,7 +650,7 @@ describe('what always wins over a lease', () => {
       storage: w.storage,
       registry: w.registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res).toMatchObject({ erased: true, generation: 2 });
     expect(await generations(w.memory)).toEqual([2]);

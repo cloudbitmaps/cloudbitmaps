@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudRoaring } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { SafeBitmap } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import type { SegmentRef } from '@/index';
 import type { GenKey } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -135,7 +135,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     // A long-lived source keeps gen 0, resolved on its first read: with no clock it has no timed refresh.
     const source = new CrbmStorageChunkSource(storage, { registry });
     const first = await source.getChunk({ segment: 's', chunkKey: 0 });
-    expect(SafeBitmap.safeDeserialize(first!, 1 << 20).toArray()).toEqual([1, 2]);
+    expect(storeCodec.safeDeserialize(first!, 1 << 20).toArray()).toEqual([1, 2]);
 
     // A load commits gen 1 and GC sweeps gen 0 — the exact object this source still points at.
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], { registry });
@@ -143,7 +143,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
 
     // The next read against the (now-vanished) pinned gen 0 must NOT throw: it re-resolves to gen 1.
     const healed = await source.getChunk({ segment: 's', chunkKey: 0 });
-    expect(SafeBitmap.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+    expect(storeCodec.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
     expect((await source.listChunkKeys({ segment: 's' })).sort((a, b) => a - b)).toEqual([0]);
   });
 });

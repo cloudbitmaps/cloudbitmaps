@@ -1,4 +1,4 @@
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { IntegrityError } from '@/core/errors';
 
 describe('SafeBitmap', () => {

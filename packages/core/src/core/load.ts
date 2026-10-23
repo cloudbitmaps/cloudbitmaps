@@ -265,8 +265,8 @@ export interface LoadOptions {
    * `ValidationError`, naming its position and never the id. The object is the same, byte for byte, as an unsorted load
    * of the same ids writes under the same write identity.
    *
-   * For ids only (an iterable or an async iterable): with `{ serialized }`, `{ bitmap }` or a `RoaringBitmap32` of the
-   * flavor's own `roaring` (one from another copy loads as its ids, and takes `sorted`), and on core's
+   * For ids only (an iterable or an async iterable): with `{ serialized }`, `{ bitmap }` or a bitmap itself (an
+   * iterable with a `serialize` method, which a flavor loads as `{ bitmap }`), and on core's
    * `loadSegmentChunks`, it throws `ValidationError`, as does a value that is not a boolean, before any request.
    *
    * The ids are read after the segment's row is read and judged, and after its number and key are settled, so a load

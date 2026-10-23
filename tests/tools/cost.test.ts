@@ -3,7 +3,7 @@ vi.mock('@/core/crbm/reader', async (original) =>
   (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
 );
 
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { CloudRoaring, ValidationError, type Segment } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';

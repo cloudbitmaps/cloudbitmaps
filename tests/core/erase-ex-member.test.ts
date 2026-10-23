@@ -2,7 +2,7 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import { MemoryStorage, CloudRoaring } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-open';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import type { SegmentRef } from '@/index';
 import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -23,7 +23,7 @@ const REF: SegmentRef = { namespace: 'audiences', segment: 'active-30d' };
 async function heldIn(storage: IStorageDriver, generation: number, id: number): Promise<boolean> {
   const reader = await openGenerationReader(storage, { ...REF, generation }, undefined);
   const bytes = await reader.getChunk(0);
-  return bytes === null ? false : roaringCodec.safeDeserialize(bytes, 1 << 20).has(id);
+  return bytes === null ? false : storeCodec.safeDeserialize(bytes, 1 << 20).has(id);
 }
 
 async function generations(storage: IStorageDriver): Promise<number[]> {
@@ -46,7 +46,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res.erased).toBe(true);
     expect(res.fromGeneration).toBe(0); // found in the retained generation, not the current one
@@ -79,7 +79,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res).toMatchObject({ erased: false, reason: 'not-member' });
     expect(res.collected).toEqual([]);
@@ -95,7 +95,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(res.collected).toEqual([0]);
@@ -124,7 +124,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res).toMatchObject({ erased: false, reason: 'not-member' });
     expect(opens).toBe(1); // the current generation only — no superseded generation to look in
@@ -156,7 +156,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res).toMatchObject({ erased: false, reason: 'not-member' }); // nothing left holding it
     expect(await generations(real)).toEqual([1]);
@@ -179,7 +179,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     };
 
     await expect(
-      eraseIdFromSegment(REF, 7, { storage, registry, entropy: testEntropy, codec: roaringCodec }),
+      eraseIdFromSegment(REF, 7, { storage, registry, entropy: testEntropy, codec: storeCodec }),
     ).rejects.toThrow('storage unavailable');
   });
 });

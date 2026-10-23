@@ -159,7 +159,7 @@
                     Ids are sparse or clustered and adaptive containers do real compression work. The default:
                     if you are moving off Redis sets, start here.
                   </td>
-                  <td class="from">A native dependency and its platform matrix.</td>
+                  <td class="from">Dense data gives containers nothing to compress.</td>
                 </tr>
                 <tr>
                   <td>
@@ -283,7 +283,6 @@
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
             <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
-<span class="c"># npm 12 and pnpm 10+: allow roaring's install script first (see the install guide)</span>
 
 <span class="c"># the codec, and the storage you have —</span>
 <span class="c"># or @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span>

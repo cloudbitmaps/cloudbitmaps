@@ -14,7 +14,7 @@ import { takeLease } from '@/core/leases';
 import { rollbackSegment } from '@/core/rollback';
 import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { collect } from '../helpers/loaded';
 import { testEntropy } from '../helpers/entropy';
@@ -266,7 +266,7 @@ describe('a lease write against the other writers of the row', () => {
       storage: x.memory.storage,
       registry: racing,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     };
     const first = await eraseIdFromSegment(REF, 7, deps);
     expect(first).toMatchObject({ erased: true, generation: 1 });
@@ -293,7 +293,7 @@ describe('a lease write against the other writers of the row', () => {
       storage: x.memory.storage,
       registry: x.memory.registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     expect(res.erased).toBe(true);
     expect(await generationsIn(x.memory.storage)).toEqual([2]);

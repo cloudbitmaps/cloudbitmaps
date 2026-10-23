@@ -23,7 +23,7 @@ import { brandAsBackend } from '@/core/ports';
 import { BudgetExceededError } from '@/core/errors';
 import { joinId } from '@/core/bit-route';
 import { chunkKeyUnder, segmentPrefix } from '@/core/keys';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
 import type { OpenedStream } from '../helpers/stream-chunk-source';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
@@ -370,7 +370,7 @@ function setup(
   const metrics = new CountingMetricsSink();
   const engine = new SegmentEngine({
     storage,
-    codec: roaringCodec,
+    codec: storeCodec,
     ...(cache ? { cache } : {}),
     metrics,
     ...(options.budget === undefined ? {} : { budget: { maxRequests: options.budget } }),
@@ -455,7 +455,7 @@ describe('which keys an exclude batch holds', () => {
     const gets: string[] = [];
     const engine = new SegmentEngine({
       storage,
-      codec: roaringCodec,
+      codec: storeCodec,
       metrics: {
         onEvent: (e) => {
           if (e.kind === 'storage.get') gets.push(e.segment);
@@ -471,7 +471,7 @@ describe('which keys an exclude batch holds', () => {
     seedSegment(plain, 'a', ids(KEYS));
     seedSegment(plain, 'b', ids([3, 4, 5, 90]));
     seedSegment(plain, 'x', ids([4]));
-    const engine = new SegmentEngine({ storage: plain, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage: plain, codec: storeCodec });
     expect(await collect(engine.intersect([ref('a'), ref('b')], { exclude: [ref('x')] }))).toEqual(
       ids([3, 5]),
     );
@@ -1043,7 +1043,7 @@ describe('a call that stops leaves the reads another call joined to finish', () 
       range(1, 40).map((k) => joinId(k, 1)),
     );
     const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 10_000, clock });
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache });
     storage.gated.add('x');
     const first = engine.intersect([ref('a'), ref('b')], WITH_X)[Symbol.asyncIterator]();
     await first.next();

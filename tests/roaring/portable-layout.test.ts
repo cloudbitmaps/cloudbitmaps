@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import { IntegrityError } from '@cloudbitmaps/core';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { decodePortableRoaring } from '@/portable/decode';
 import { bitsetOf, craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
 

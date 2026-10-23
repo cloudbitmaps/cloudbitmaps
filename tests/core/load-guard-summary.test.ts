@@ -6,7 +6,7 @@ import type { IRegistryDriver, IStorageDriver, RegistrySummary, SegmentRef } fro
 import { sealSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
@@ -54,7 +54,7 @@ function world(keystore?: InProcessKeystore) {
     registryCalls,
     tails,
     reset,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec, keystore },
   };
 }
 type World = ReturnType<typeof world>;

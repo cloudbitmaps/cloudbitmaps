@@ -9,7 +9,7 @@ import type {
   CombineManyRequest,
   CombineManyRun,
 } from '@/core/combine-many';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from './store-codec';
 import { collecting, request, seed } from './combine-many';
 import type { OutputSpec, Published, Setup } from './combine-many';
 
@@ -162,7 +162,7 @@ export async function runFed(
     ),
     {
       source: setup.source,
-      codec: roaringCodec,
+      codec: storeCodec,
       clock: o.clock ?? { now: () => 0, sleep: async () => {} },
     },
   );

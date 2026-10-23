@@ -9,15 +9,6 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the store, and the storage y
 
 Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
 
-`roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if you allow it. Allow it before you install:
-
-- **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
-- **pnpm 11 and later:** put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside your `package.json`. Those versions no longer read the `package.json` `pnpm` key. Without it the install exits 1 with `ERR_PNPM_IGNORED_BUILDS`.
-- **pnpm 10:** add `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` to your `package.json`. Without it the install exits 0 and the package throws at `import`.
-- **pnpm 9:** nothing extra.
-
-[Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
-
 Depend on `@cloudbitmaps/core` directly only to write a driver, through `@cloudbitmaps/core/driver-kit`.
 
 > **The main entry of this package, and `@cloudbitmaps/core/node`, are internal.** The main entry is the engine `@cloudbitmaps/roaring` and the driver packages are built on, and `/node` holds the backends and keystore that need a Node builtin. Both are outside the stability promise: they can change in any minor release, and a change to either gets no CHANGELOG Breaking entry. Install `@cloudbitmaps/roaring` and a driver. The public entry here is `@cloudbitmaps/core/driver-kit`, the contract for writing a driver.

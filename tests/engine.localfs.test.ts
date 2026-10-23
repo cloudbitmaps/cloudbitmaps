@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudRoaring } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import { splitId } from '@/core/bit-route';
 import { collect } from './helpers/loaded';
 import { bulkLoadCrbmGeneration } from './helpers/bulk-load';

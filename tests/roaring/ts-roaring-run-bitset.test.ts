@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { roaringCodec as NA } from '@/roaring-codec';
+import { roaringCodec as NA } from '@/native-codec';
 import { tsRoaringCodec as TS } from '@/ts-roaring/bitmap';
 
 /**

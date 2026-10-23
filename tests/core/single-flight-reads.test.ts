@@ -10,7 +10,7 @@ import { BoundedLru } from '@/core/lru';
 import { CountingMetricsSink } from '@/index';
 import type { CodecBitmap } from '@/core/codec';
 import type { ChunkRef } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { seedSegment } from '../helpers/loaded';
 
@@ -79,7 +79,7 @@ describe('concurrent cold reads of one chunk share one request', () => {
       seedSegment(storage, 'a', [5, 9]);
       const engine = new SegmentEngine({
         storage,
-        codec: roaringCodec,
+        codec: storeCodec,
         cache: cached ? lru() : undefined,
       });
       const answers = await Promise.all(
@@ -94,7 +94,7 @@ describe('concurrent cold reads of one chunk share one request', () => {
   it('an absent chunk is shared too', async () => {
     const storage = new ParkedSource();
     seedSegment(storage, 'a', [5]);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage, codec: storeCodec });
     const answers = await Promise.all(
       Array.from({ length: 20 }, () => engine.has({ segment: 'a' }, 3 * K + 1)),
     );
@@ -108,7 +108,7 @@ describe('concurrent cold reads of one chunk share one request', () => {
       seedSegment(storage, 'a', [5]);
       const engine = new SegmentEngine({
         storage,
-        codec: roaringCodec,
+        codec: storeCodec,
         cache: cached ? lru() : undefined,
       });
       await engine.has({ segment: 'a' }, 5);
@@ -125,7 +125,7 @@ describe('concurrent cold reads of one chunk share one request', () => {
       'a',
       Array.from({ length: n }, (_, k) => k * K + 7),
     );
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache: lru() });
     const out = await drain(engine.andNot({ segment: 'a' }, [{ segment: 'a' }]));
     expect(out).toEqual([]);
     expect([...storage.requests].sort((x, y) => x - y)).toEqual([0, 1, 2, 3, 4, 5]);
@@ -139,7 +139,7 @@ describe('concurrent cold reads of one chunk share one request', () => {
     seedSegment(v2, 'a', [2]);
     storage.byVersion.set('v1', v1);
     storage.byVersion.set('v2', v2);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache: lru() });
 
     storage.version = 'v1';
     const first = engine.has({ segment: 'a' }, 1);
@@ -155,7 +155,7 @@ describe('concurrent cold reads of one chunk share one request', () => {
     const storage = new ParkedSource();
     seedSegment(storage, 'a', [5]);
     storage.failNext = new Error('boom');
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache: lru() });
     const settled = await Promise.allSettled(
       Array.from({ length: 10 }, () => engine.has({ segment: 'a' }, 5)),
     );
@@ -172,7 +172,7 @@ describe('concurrent cold reads of one chunk share one request', () => {
   it('a read that began before invalidate() is not joined by a call made after it', async () => {
     const storage = new ParkedSource();
     seedSegment(storage, 'a', [5]);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache: lru() });
     const before = engine.has({ segment: 'a' }, 5);
     await sleep(2);
     engine.invalidate({ segment: 'a' });
@@ -196,7 +196,7 @@ describe('isolation between segments', () => {
     seedSegment(storage, x, [1]);
     seedSegment(storage, a, [2]);
     seedSegment(storage, b, [3]);
-    return { storage, engine: new SegmentEngine({ storage, codec: roaringCodec }) };
+    return { storage, engine: new SegmentEngine({ storage, codec: storeCodec }) };
   }
 
   it('callers of segments that differ by namespace or name each get their own data, one request each', async () => {
@@ -242,7 +242,7 @@ describe('a read that began before invalidate()', () => {
     seedSegment(fresh, 'a', [6]);
     storage.byVersion.set('old', old);
     storage.byVersion.set('fresh', fresh);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache: lru() });
     storage.version = 'old';
     storage.delays.push(40, 5);
     const stale = engine.has({ segment: 'a' }, 5);
@@ -262,7 +262,7 @@ describe('invalidating one segment', () => {
     const storage = new ParkedSource();
     seedSegment(storage, 'a', [2]);
     seedSegment(storage, 'b', [3]);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache: lru() });
     const openB = engine.has({ segment: 'b' }, 3);
     await sleep(2);
     engine.invalidate({ segment: 'a' });
@@ -276,7 +276,7 @@ describe('an invalidated read settling', () => {
   it('leaves the read that replaced it open for later callers to join', async () => {
     const storage = new ParkedSource(40);
     seedSegment(storage, 'a', [5]);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage, codec: storeCodec });
     const first = engine.has({ segment: 'a' }, 5);
     await sleep(10);
     engine.invalidate({ segment: 'a' });
@@ -293,7 +293,7 @@ describe('metrics under sharing', () => {
     const storage = new ParkedSource();
     seedSegment(storage, 'a', [5]);
     const metrics = new CountingMetricsSink();
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru(), metrics });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache: lru(), metrics });
     await Promise.all(Array.from({ length: 8 }, () => engine.has({ segment: 'a' }, 5)));
     let snap = metrics.snapshot();
     expect(snap.storage.gets).toBe(1);
@@ -308,7 +308,7 @@ describe('metrics under sharing', () => {
     const storage = new ParkedSource();
     seedSegment(storage, 'a', [5]);
     const metrics = new CountingMetricsSink();
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, metrics });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, metrics });
     await Promise.all(Array.from({ length: 8 }, () => engine.has({ segment: 'a' }, 5)));
     const snap = metrics.snapshot();
     expect(snap.storage.gets).toBe(1);

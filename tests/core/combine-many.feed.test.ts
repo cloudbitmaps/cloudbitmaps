@@ -650,7 +650,7 @@ describe('memory', () => {
     expect(ok(run.outputs[1]!).ids.length).toBeGreaterThan(0);
     const { highWaterBytes } = run.stats.memory;
     // The whole feed would be five keys of 31 MB: the ledger held about two (the key in hand and the one that proved it whole).
-    const oneKey = operands * 3_098;
+    const oneKey = operands * 3_418;
     expect(highWaterBytes).toBeLessThanOrEqual(budget);
     expect(highWaterBytes).toBeGreaterThan(oneKey);
     expect(highWaterBytes).toBeLessThan(2.2 * oneKey);
@@ -679,7 +679,7 @@ describe('memory', () => {
     expect(error(run.outputs[0]!)).toMatchObject({
       option: 'maxBufferedBytes',
       limit: budget,
-      spent: 128010,
+      spent: 126562,
     });
     expect(pulled.taken).toBeLessThan(30);
     expect(pulled.returnedEarly).toBe(true);
@@ -712,7 +712,7 @@ describe('memory', () => {
       expect(error(run.outputs[i]!)).toMatchObject({
         option: 'maxBufferedBytes',
         limit: budget,
-        spent: 251422,
+        spent: 257254,
       });
     }
     expect(pulled.returnedEarly).toBe(true);
@@ -746,7 +746,7 @@ describe('memory', () => {
     expect(error(run.outputs[0]!)).toMatchObject({
       option: 'maxBufferedBytes',
       limit: budget,
-      spent: 474052,
+      spent: 495172,
     });
     expect(ok(run.outputs[1]!).ids.length).toBe(3000 * keys);
     expect(ok(run.outputs[2]!).ids).toEqual(at(2, [1, 2]));

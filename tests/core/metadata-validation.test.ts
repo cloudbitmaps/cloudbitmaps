@@ -4,7 +4,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { ValidationError } from '@/core/errors';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { objectFingerprint } from '../helpers/fingerprint';
 import { testEntropy } from '../helpers/entropy';
@@ -34,7 +34,7 @@ function counted() {
     [storageCalls, registryCalls].flatMap((c) => Object.values(c)).reduce((a, b) => a + b, 0);
   return {
     backend,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
     store: new CloudRoaring({ storage: brandAsBackend({ storage, registry }), retry: false }),
     reset,
     total,

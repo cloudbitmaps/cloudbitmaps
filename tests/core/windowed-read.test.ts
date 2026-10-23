@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SegmentEngine } from '@cloudbitmaps/core';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { seedSegment } from '../helpers/loaded';
 import type { ChunkRef } from '@/core/ports';
@@ -102,7 +102,7 @@ function build(chunks: number) {
   const ids: number[] = [];
   for (let k = 0; k < chunks; k++) ids.push(...idsOf(k));
   seedSegment(storage, 'a', ids);
-  const engine = new SegmentEngine({ storage, codec: roaringCodec });
+  const engine = new SegmentEngine({ storage, codec: storeCodec });
   return { storage, engine, ids };
 }
 

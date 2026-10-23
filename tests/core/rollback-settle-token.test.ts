@@ -11,7 +11,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import type { ObjectRegistryStore, ObjectRow } from '@/drivers/_shared/object-registry';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { testEntropy } from '../helpers/entropy';
 import { withoutTokenReports } from '../helpers/no-token-reports';
@@ -31,7 +31,7 @@ const RETENTION = { expiresAt: MIN_EXPIRES_AT_MS * 4 };
 
 function world(registry: IRegistryDriver = new MemoryRegistryDriver()) {
   const storage = new MemoryStorageDriver();
-  const load = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+  const load = { storage, registry, entropy: testEntropy, codec: storeCodec };
   return { storage, registry, load, deps: { storage, registry } };
 }
 type World = ReturnType<typeof world>;

@@ -11,7 +11,7 @@ import { BufferReader } from '@/core/blob';
 import { IntegrityError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { publishGeneration } from '../helpers/publish';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { SegmentRef } from '@/index';
@@ -150,7 +150,7 @@ describe('a cleartext object under an encrypted segment', () => {
       await loadSegment(
         SEG,
         [1, 2, 3],
-        { storage: racing, registry, entropy: testEntropy, codec: roaringCodec },
+        { storage: racing, registry, entropy: testEntropy, codec: storeCodec },
         { allowEmpty: true },
       ),
     ).toMatchObject({ generation: 1, published: false, reason: 'superseded' });

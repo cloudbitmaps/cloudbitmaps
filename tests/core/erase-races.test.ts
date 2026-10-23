@@ -16,7 +16,7 @@ import type {
   IStorageDriver,
   RegistryRecord,
 } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy, zeroEntropy } from '../helpers/entropy';
 import { gate } from '../helpers/retaken-number-race';
@@ -36,7 +36,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, codec: roaringCodec, entropy: testEntropy },
+    deps: { storage, registry, codec: storeCodec, entropy: testEntropy },
   };
 }
 
@@ -554,7 +554,7 @@ async function recreatedHolding(
 async function holdsX(storage: IStorageDriver, generation: number): Promise<boolean> {
   const reader = await openGenerationReader(storage, { ...SEG, generation }, undefined);
   const bytes = await reader.getChunk(0);
-  return bytes !== null && roaringCodec.safeDeserialize(bytes, 1 << 20).has(X);
+  return bytes !== null && storeCodec.safeDeserialize(bytes, 1 << 20).has(X);
 }
 
 /** A registry for one load, whose first write of the row (its publish, once its object is written) waits at `at`. */
@@ -652,7 +652,7 @@ describe('two erasures of different ids on one segment', () => {
     expect(await generationsOf(w.storage)).toEqual([2]);
     const reader = await openGenerationReader(w.storage, { ...SEG, generation: 2 }, undefined, {});
     const bytes = await reader.getChunk(0);
-    const ids = roaringCodec.safeDeserialize(bytes as Uint8Array, 1 << 20);
+    const ids = storeCodec.safeDeserialize(bytes as Uint8Array, 1 << 20);
     expect([ids.has(X), ids.has(Y)]).toEqual([false, false]);
   });
 

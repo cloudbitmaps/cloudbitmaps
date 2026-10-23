@@ -9,7 +9,7 @@ import { TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
@@ -291,7 +291,7 @@ describe.each<Kind>(['memory', 'localfs'])(
           storage,
           registry,
           entropy: testEntropy,
-          codec: roaringCodec,
+          codec: storeCodec,
           clock: { now: () => 1_800_000_000_000, sleep: () => Promise.resolve() },
         };
         await loadSegment(REF, [1, 2, 9], deps);
@@ -406,7 +406,7 @@ describe.each<Kind>(['memory', 'localfs'])(
         storage: w.storage,
         registry: w.registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock: w.waits.clock,
         rng: w.waits.rng,
       });

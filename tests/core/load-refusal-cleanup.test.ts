@@ -5,7 +5,7 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { KeyUnavailableError, NotFoundError, ValidationError } from '@/core/errors';
 import { rollbackSegment } from '@/core/rollback';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { RecordingAuditSink, TransientError } from '@/index';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
@@ -42,14 +42,14 @@ describe('a refused load whose cleanup fails is still a refusal', () => {
         storage,
         registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       },
     );
     const audit = new RecordingAuditSink();
     const res = await loadSegment(
       REF,
       [1],
-      { storage: deletesFail(storage), registry, entropy: testEntropy, codec: roaringCodec },
+      { storage: deletesFail(storage), registry, entropy: testEntropy, codec: storeCodec },
       { guard: { minRetained: 0.5 }, audit },
     );
     expect(res).toMatchObject({ published: false, reason: 'min-retained' });
@@ -91,7 +91,7 @@ describe('a refusal the publish raises as an error', () => {
             storage,
             registry: createThrows(registry, err),
             entropy: testEntropy,
-            codec: roaringCodec,
+            codec: storeCodec,
           },
           { allowEmpty: true, audit },
         ),
@@ -114,7 +114,7 @@ describe('a refusal the publish raises as an error', () => {
           storage,
           registry: createThrows(registry, err),
           entropy: testEntropy,
-          codec: roaringCodec,
+          codec: storeCodec,
         },
         { allowEmpty: true },
       ),
@@ -145,7 +145,7 @@ describe('a refused load whose row another writer changed', () => {
     return {
       storage,
       registry,
-      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+      deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
     };
   };
   const consistent = async (w: ReturnType<typeof world>): Promise<void> => {

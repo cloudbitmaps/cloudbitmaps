@@ -21,7 +21,7 @@
  *
  * `require()` loads @cloudbitmaps/tools, which ships ESM only, through Node's `require(esm)` — unflagged from 22.12,
  * the floor the packages declare. There is no CJS build. The tools package, not the flavor: this is arithmetic, and
- * the flavor would load the native addon for nothing.
+ * the flavor would load the whole store for nothing.
  */
 'use strict';
 const fs = require('node:fs');

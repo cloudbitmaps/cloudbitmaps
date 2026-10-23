@@ -1,7 +1,7 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { CloudRoaring, TransientError, type Clock, type Rng, type SegmentRef } from '@/index';
 import type { ChunkRef, StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
-import { SafeBitmap } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { loadedStore, seedSegment } from '../helpers/loaded';
 
 function fakeClock(): Clock & { advance: (ms: number) => void } {
@@ -39,8 +39,8 @@ class CountingStorage implements StorageChunkSource {
 describe('the bounded cache — wired through the engine', () => {
   it('serves a cache hit, re-reads after TTL, and evicts past the ceiling', async () => {
     const inner = new MemoryStorageChunkSource();
-    inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([1]).serialize());
-    inner.seed({ segment: 's', chunkKey: 1 }, SafeBitmap.fromValues([0]).serialize()); // id 65536
+    inner.seed({ segment: 's', chunkKey: 0 }, storeCodec.fromValues([1]).serialize());
+    inner.seed({ segment: 's', chunkKey: 1 }, storeCodec.fromValues([0]).serialize()); // id 65536
     const storage = new CountingStorage(inner);
     const clock = fakeClock();
     const s = new CloudRoaring({

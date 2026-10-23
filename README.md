@@ -23,19 +23,7 @@ Three words appear everywhere:
 
 ## Install & entry points
 
-`roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if
-you allow it. Allow it first (create a `package.json` with `pnpm init` or `npm init -y` if you have none):
-
-- **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and
-  the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
-- **pnpm 11 and later:** put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside your `package.json`.
-  Those versions no longer read the `package.json` `pnpm` key. Without it the install exits 1 with
-  `ERR_PNPM_IGNORED_BUILDS`.
-- **pnpm 10:** add `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` to your `package.json`. Without it the
-  install exits 0 and the package throws at `import`.
-- **pnpm 9:** nothing extra.
-
-Then install:
+Install:
 
 ```bash
 pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
@@ -43,10 +31,6 @@ pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, 
 ```
 
 Install the same version of every `@cloudbitmaps/*` package. The six release together at one version, and each one pins the exact version of `@cloudbitmaps/core` it was built with, so a flavor and a driver of different versions are two copies of `core`. A mix, such as a later `pnpm add @cloudbitmaps/s3` run beside an older `roaring`, installs with no warning and puts two copies of `core` in your tree. `new CloudRoaring({ storage: new S3Storage(...) })` then fails to compile with `TS2322 ... Property '[STORAGE_BACKEND_BRAND]' is missing`, and `instanceof` does not hold across the copies (`errorKind(err)` still classifies an error). `npm ls @cloudbitmaps/core` shows the copies; `pnpm up --latest '@cloudbitmaps/*'`, or `npm install @cloudbitmaps/roaring@X.Y.Z @cloudbitmaps/s3@X.Y.Z` with the same `X.Y.Z`, aligns them. Mixed minor versions always did this; mixed patch versions now do too.
-
-Installed before allowing it? The package throws at `import` (the install exited 0, or 1 on pnpm 11 and later). Add the
-setting, then run `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
-[Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
 
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
 [CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
@@ -57,6 +41,7 @@ arrives on its own, and you install it only to name a driver port's type, such a
 `@cloudbitmaps/core/driver-kit` exports ([the storage interfaces](docs/guide/api-reference.md#the-storage-interfaces-used-to-type-storage--registry) say how, or how to
 derive the type instead). Install one copy of `@cloudbitmaps/roaring` in a process; a combine
 refuses a segment of another store, and a segment of another copy always belongs to another store.
+The store's Roaring is written in TypeScript, with no native code: [what that means](docs/guide/roaring-codec.md).
 The family is six packages, released together at one version:
 
 | Package | What it is | Install it |
@@ -344,8 +329,8 @@ it).
 
 The Roaring Bitmap format and its algorithms are the work of Daniel Lemire and colleagues. See
 [roaringbitmap.org](https://roaringbitmap.org/) and the [Roaring format specification](https://github.com/RoaringBitmap/RoaringFormatSpec),
-which defines the portable bytes every chunk of a `.crbm` object holds. CRoaring, through the `roaring` binding, does
-today's bit math here. The papers:
+which defines the portable bytes every chunk of a `.crbm` object holds. The store's codec implements that format and those
+algorithms in TypeScript ([how it is held to CRoaring](docs/guide/roaring-codec.md#the-guarantee-the-same-bytes)); CRoaring, through the `roaring` binding, is the reference its tests compare it against. The papers:
 
 - S. Chambi, D. Lemire, O. Kaser, R. Godin, "Better bitmap performance with Roaring bitmaps", *Software: Practice and
   Experience* 46(5), 2016. [arXiv:1402.6407](https://arxiv.org/abs/1402.6407)

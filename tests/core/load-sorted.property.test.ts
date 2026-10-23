@@ -4,7 +4,7 @@ import type { IKeystore } from '@/core/crypto';
 import type { LoadResult } from '@/core/load';
 import type { GenerationMetadata, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CounterNonceAead } from '../helpers/crbm-extension';
 import { counterEntropy } from '../helpers/entropy';
 
@@ -137,7 +137,7 @@ async function load(
     storage: new MemoryStorageDriver(),
     registry: new MemoryRegistryDriver(),
     entropy: counterEntropy(),
-    codec: roaringCodec,
+    codec: storeCodec,
     ...(options.encrypted ? { keystore: counterKeystore() } : {}),
   };
   return loadSegment(SEG, input, deps, {

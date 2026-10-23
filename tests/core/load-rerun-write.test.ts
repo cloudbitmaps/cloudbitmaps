@@ -6,7 +6,7 @@ import { loadSegment, loadSegmentChunks } from '@/core/load';
 import { type GenKey, type IStorageDriver, type SegmentRef, brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counterEntropy, withoutWriteIdentity } from '../helpers/entropy';
 
 /**
@@ -58,7 +58,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: counterEntropy(), codec: roaringCodec },
+    deps: { storage, registry, entropy: counterEntropy(), codec: storeCodec },
   };
 }
 
@@ -75,7 +75,7 @@ async function once(input: Parameters<typeof loadSegment>[1]): Promise<string> {
     storage,
     registry: new MemoryRegistryDriver(),
     entropy: counterEntropy(),
-    codec: roaringCodec,
+    codec: storeCodec,
   };
   const r = await loadSegment(SEG, input, deps);
   return objectHex(storage, r.generation);
@@ -106,7 +106,7 @@ describe('a driver that runs write again after a failed attempt', () => {
     const w = world();
     async function* chunks() {
       for (let c = 0; c < 12; c++)
-        yield { chunkKey: c, bitmap: roaringCodec.fromValues([1, 7, 300]) };
+        yield { chunkKey: c, bitmap: storeCodec.fromValues([1, 7, 300]) };
     }
     const r = await loadSegmentChunks(SEG, chunks(), w.deps);
     expect(w.storage.runs).toBe(2);

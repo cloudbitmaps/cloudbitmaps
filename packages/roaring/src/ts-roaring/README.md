@@ -2,8 +2,11 @@
 
 `packages/roaring/src/ts-roaring/` is a Roaring bitmap written in TypeScript on typed arrays, with no native addon. It
 sits behind core's codec seam (`packages/core/src/core/codec.ts`) and reads and writes the
-same portable Roaring bytes as the native codec (CRoaring through the `roaring` package), byte for byte: a `.crbm`
-generation written through one codec is read by the other, and the same set written twice is the same object.
+same portable Roaring bytes as CRoaring (through the `roaring` package, which only the tests and benches load, as the
+reference), byte for byte: a `.crbm` generation written through one is read by the other, and the same set written
+twice is the same object.
+
+Users of the package: [docs/guide/roaring-codec.md](../../../../docs/guide/roaring-codec.md) says what this codec guarantees, what it costs and what can be used by itself.
 
 Where a statement below is about a test, a bench or a workflow rather than the module, it says so.
 
@@ -34,9 +37,9 @@ Where a statement below is about a test, a bench or a workflow rather than the m
                                    v
                            the codec seam                        (core/codec.ts)
                               |                       |
-              native codec ---+                       +--- THIS MODULE: tsRoaringCodec
-              a bitmap class over CRoaring                  TsBitmap -> Container (array | bitset | run)
-              (roaring-codec.ts)
+   native codec (tests only) ---+                       +--- THIS MODULE: tsRoaringCodec, the store's codec
+   a bitmap class over CRoaring                         TsBitmap -> Container (array | bitset | run)
+   (tests/helpers/native-codec.ts)
 
   An id splits in two 16-bit halves:
 
@@ -58,11 +61,11 @@ which is what `fromValues`, `add`, `addMany`, the combines and a whole-bitmap `s
 stored chunk into a one-container `TsBitmap`, combines such bitmaps with `orInPlace` / `andInPlace` / `andNotInPlace`,
 and writes a load through `encodeChunks()`.
 
-**Which codec runs.** The shipped store uses the native codec. `flagshipCodec()` in `roaring-codec.ts` returns it unless
-a harness has called `setFlagshipCodec(tsRoaringCodec)`, which is internal: no public entry exports it and a store cannot
-be configured with a codec. The tests (a `ts-codec` project that re-runs the store's suites with the switch flipped) and
-the benches flip it; nothing else does. This module is therefore the TypeScript implementation held ready behind the
-seam and measured against the native one, not the default.
+**Which codec runs.** The shipped store uses this codec. `flagshipCodec()` in `roaring-codec.ts` returns it unless a
+harness has called `setFlagshipCodec(...)`, which is internal: no public entry exports it and a store cannot be
+configured with a codec. The native codec (`tests/helpers/native-codec.ts`) exists only in the tests and benches, as the
+reference the oracle and the comparisons hold this codec to, and the tests that compare the two flip the switch to it
+for the length of one test. Nothing in `packages/` loads CRoaring.
 
 ## 2. The four files
 
@@ -77,7 +80,7 @@ seam and measured against the native one, not the default.
   tsRoaringCodec.safeDeserialize(bytes, maxBytes, { whole? })
        |  size cap
        v
-  wire.decodeContainers --> portable/layout.parsePortableLayout   (the one structural check, shared with the native path)
+  wire.decodeContainers --> portable/layout.parsePortableLayout   (the one structural check, which the tests' native codec runs too)
        |  copies bytes the layout vouched for
        v
   TsBitmap { keys[], conts[], size }  <---- bitmap.ts ---->  containers.ts kernels
@@ -509,7 +512,7 @@ throws `TypeError` on anything that is not a typed array. The caller-facing entr
 Everything here is a test, a workflow or a bench, not part of the module.
 
 - **The oracle against CRoaring** (`tests/roaring/codec-oracle.test.ts`, with the shared helper `tests/helpers/roaring-oracle.ts`).
-  Every codec in the helper's `CODECS` list (the native one, which proves the oracle against itself, and this one) is held
+  Every codec in the helper's `CODECS` list (the native one, which proves the oracle against itself, and this one, the store's) is held
   to three answers: CRoaring through the pinned `roaring` package (contents, operation results, and the bytes it stores
   after `removeRunCompression()` and `runOptimize()`); the stored-byte rule written from `docs/format.md` section 3
   alone (`ruleBytes`); and a plain `Set`. For each case: `fromValues` then `optimize()` then `serialize()` is
@@ -531,21 +534,23 @@ Everything here is a test, a workflow or a bench, not part of the module.
   copy-on-write against every mutator (before, during and with a clone during an `encodeChunks`), a bitmap combined with
   itself, and decodes that must not alias their input (a `Uint8Array`, a `Buffer`, a pooled `Buffer`, a
   `SharedArrayBuffer`, an offset subarray).
-- **The store's suites on this codec.** A vitest project, `ts-codec`, re-runs the flavor's, core's, the engine's
-  end-to-end and the memory and local-file drivers' suites with the internal switch flipped to this codec
-  (`tests/setup-codec-ts.ts`); a first test (`tests/roaring/codec-switch.test.ts`) fails if the flip did not take effect,
-  and the setup fails a test in which the native codec ran when it was not meant to. A test that cannot run on this codec
+- **The store's suites on this codec.** Every suite runs on this codec by default. A vitest project, `ts-codec`, re-runs
+  the flavor's, core's, the engine's end-to-end and the memory and local-file drivers' suites with the switch pinned to
+  this codec (`tests/setup-codec-ts.ts`); a first test (`tests/roaring/codec-switch.test.ts`) fails if this codec is not
+  the one in force, and the setup fails a test in which the native codec ran when it was not meant to. A test that
+  compares the two, or needs the native binding, runs under `withNativeCodec`, and one that cannot run on this codec
   skips itself with `codecLeg()`.
 - **Strength and nightly runs.** The oracle's property counts, its small-window subset counts and the hostile-byte
   mutation count are reduced on a pull request and full strength when `CB_TEST_STRENGTH=full`, which the nightly
   full-strength workflow sets (`tests/helpers/strength.ts`: oracle properties 40 reduced, 200 full; subsets 4,096 and
   65,536; mutated payloads 10,000 and 100,000). The nightly workflow also names the two oracle test files among its
   triggers.
-- **Fuzz.** Two coverage-guided targets feed adversarial bytes to a safe deserializer and hold what it accepts to
-  `assertConsistentDecode` (a self-consistent bitmap, or a typed `CloudRoaringError`). `fuzz/targets/safe-deserialize.mjs`
-  runs the native codec's. `fuzz/targets/ts-safe-deserialize.mjs` runs this codec's, so it also reaches `decodeContainers`,
-  the slab and the aliasing paths, after the shared structural check (`portable/layout.ts`). Both are in the nightly fuzz
-  matrix (`pnpm fuzz:deser`, `pnpm fuzz:deser-ts`); `fuzz/README.md` describes them.
+- **Fuzz.** One coverage-guided target, `fuzz/targets/safe-deserialize.mjs` (`pnpm fuzz:deser`, in the nightly fuzz
+  matrix), feeds adversarial bytes to this codec's `safeDeserialize`, each input read with and without `whole`, and holds
+  what it accepts to `assertConsistentDecode` (a self-consistent bitmap, or a typed `CloudRoaringError`). All of it is
+  instrumented JavaScript, so guidance reaches `decodeContainers`, the slab and the aliasing paths after the shared
+  structural check (`portable/layout.ts`). The committed reproducers are replayed through the same decoder on every pull
+  request (`tests/core/crbm/fuzz-corpus.test.ts`); `fuzz/README.md` describes the target.
 - **The benches** (recorded, never asserted). `bench/ts-codec.cjs` times one operation at a time on one chunk against the
   native codec (`has`, `decode`, `serialize`, `iterate`, `toUint32`, `optimize`, `count`, `clone`, `build`, `addMany`; and,
   or, andNot on six operand pairs; `--memory` adds bytes per decoded chunk by kind). `bench/ts-codec-engine.cjs` compares

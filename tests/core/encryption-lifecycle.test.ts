@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { CloudRoaring, destroySegment, eraseNamespace } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import type { IKeystore } from '@cloudbitmaps/core/driver-kit';
@@ -33,7 +33,7 @@ function world(keystore?: IKeystore) {
     registry,
     keystore,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
   };
   const store = (ks = keystore): CloudRoaring =>
     new CloudRoaring({

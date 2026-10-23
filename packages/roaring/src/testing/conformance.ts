@@ -13,7 +13,9 @@
  * stays out of the published runtime bundle either way.
  */
 import { describe, expect, it } from 'vitest';
-import { SafeBitmap } from '../roaring-codec';
+import type { CodecBitmap } from '@cloudbitmaps/core';
+import { tsRoaringCodec } from '../ts-roaring/bitmap';
+
 import { createHash } from 'node:crypto';
 import type {
   ChunkRef,
@@ -98,7 +100,7 @@ async function expectValidationReject(p: Promise<unknown>, what?: string): Promi
 export function storageChunkSourceConformance(
   label: string,
   makeSource: (
-    chunks: Array<{ chunkKey: number; bitmap: SafeBitmap }>,
+    chunks: Array<{ chunkKey: number; bitmap: CodecBitmap }>,
   ) => Promise<StorageChunkSource>,
 ): void {
   describe(`StorageChunkSource conformance: ${label}`, () => {
@@ -106,10 +108,13 @@ export function storageChunkSourceConformance(
       // Distinct bitmaps spanning array-container, single-value, dense (>4096 → bitmap container), and
       // the max chunk key — so a source that mixes payloads up between chunks fails here.
       const seed = [
-        { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3]) },
-        { chunkKey: 5, bitmap: SafeBitmap.fromValues([7]) },
-        { chunkKey: 42, bitmap: SafeBitmap.fromValues(Array.from({ length: 5000 }, (_v, i) => i)) },
-        { chunkKey: 65_535, bitmap: SafeBitmap.fromValues([0, 65_535]) },
+        { chunkKey: 0, bitmap: tsRoaringCodec.fromValues([1, 2, 3]) },
+        { chunkKey: 5, bitmap: tsRoaringCodec.fromValues([7]) },
+        {
+          chunkKey: 42,
+          bitmap: tsRoaringCodec.fromValues(Array.from({ length: 5000 }, (_v, i) => i)),
+        },
+        { chunkKey: 65_535, bitmap: tsRoaringCodec.fromValues([0, 65_535]) },
       ];
       const source = await makeSource(seed);
 
@@ -117,18 +122,18 @@ export function storageChunkSourceConformance(
       for (const { chunkKey, bitmap } of seed) {
         const got = await source.getChunk(ref(chunkKey));
         expect(got).not.toBeNull();
-        expect(SafeBitmap.safeDeserialize(got!, 1 << 20).toArray()).toEqual(bitmap.toArray());
+        expect(tsRoaringCodec.safeDeserialize(got!, 1 << 20).toArray()).toEqual(bitmap.toArray());
       }
     });
 
     it('returns null for an absent chunk and [] for an unknown segment', async () => {
-      const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
+      const source = await makeSource([{ chunkKey: 0, bitmap: tsRoaringCodec.fromValues([1]) }]);
       expect(await source.getChunk(ref(999))).toBeNull();
       expect(await source.listChunkKeys({ segment: 'ghost' })).toEqual([]);
     });
 
     it('rejects only the two names no encoding can fix', async () => {
-      const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
+      const source = await makeSource([{ chunkKey: 0, bitmap: tsRoaringCodec.fromValues([1]) }]);
       for (const name of BAD_NAMES) {
         await expectValidationReject(source.getChunk({ segment: name, chunkKey: 0 }));
         await expectValidationReject(
@@ -139,7 +144,7 @@ export function storageChunkSourceConformance(
     });
 
     it('accepts a sample of names outside the plain alphabet, and the Windows hazards', async () => {
-      const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
+      const source = await makeSource([{ chunkKey: 0, bitmap: tsRoaringCodec.fromValues([1]) }]);
       for (const name of NASTY_NAMES) {
         // A miss is fine — the point is that it VALIDATES and resolves rather than throwing ValidationError.
         await expect(

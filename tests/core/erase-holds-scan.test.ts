@@ -6,7 +6,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { joinId } from '@/core/bit-route';
 import type { GenKey, IStorageDriver } from '@/core/ports';
 import { TransientError, WriteConflictError, destroySegment } from '@/index';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { zeroEntropy } from '../helpers/entropy';
 
@@ -43,7 +43,7 @@ async function build(
   for (let g = 0; g < layout.holds.length; g++) {
     const key = { ...SEG, generation: g };
     await writeCrbmGeneration(inner, key, [
-      { chunkKey: 0, bitmap: SafeBitmap.fromValues(layout.holds[g] ? [1, 2] : [2]) },
+      { chunkKey: 0, bitmap: storeCodec.fromValues(layout.holds[g] ? [1, 2] : [2]) },
     ]);
     if (g <= layout.from) await publishGeneration(registry, key);
   }
@@ -76,7 +76,7 @@ const erase = (p: Probe) =>
   eraseIdFromSegment(SEG, ID, {
     storage: p.storage,
     registry: p.registry,
-    codec: roaringCodec,
+    codec: storeCodec,
     entropy: zeroEntropy,
   });
 
@@ -86,7 +86,7 @@ async function holdersLeft(p: Probe): Promise<number[]> {
   for await (const key of p.storage.list(SEG)) {
     const reader = await openGenerationReader(p.storage, key, undefined);
     const bytes = await reader.getChunk(0);
-    if (bytes !== null && roaringCodec.safeDeserialize(bytes, 1 << 20).has(1)) {
+    if (bytes !== null && storeCodec.safeDeserialize(bytes, 1 << 20).has(1)) {
       left.push(key.generation);
     }
   }
@@ -246,7 +246,7 @@ describe('an id erasure under a tombstone reads few generations once one holds t
     for (let g = 0; g < GENERATIONS; g++) {
       const key = { ...SEG, generation: g };
       await writeCrbmGeneration(inner, key, [
-        { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2]) },
+        { chunkKey: 0, bitmap: storeCodec.fromValues([1, 2]) },
       ]);
       await publishGeneration(registry, key);
     }
@@ -266,7 +266,7 @@ describe('an id erasure under a tombstone reads few generations once one holds t
       delete: async () => {},
     };
     await expect(
-      eraseIdFromSegment(SEG, ID, { storage, registry, codec: roaringCodec, entropy: zeroEntropy }),
+      eraseIdFromSegment(SEG, ID, { storage, registry, codec: storeCodec, entropy: zeroEntropy }),
     ).rejects.toBeInstanceOf(WriteConflictError);
     // Two searches (the one that finds a holder, and the one for what the collection left), each at most a window of
     // reads deep, not one read per generation.

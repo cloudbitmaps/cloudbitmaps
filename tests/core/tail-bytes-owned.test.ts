@@ -18,7 +18,7 @@ import type {
 import { ownedTail, provenObject } from '@/core/crbm-open';
 import { loadSegment } from '@/core/load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect } from '../helpers/chunk-stream';
 import { objectFingerprint } from '../helpers/fingerprint';
@@ -221,7 +221,7 @@ describe("a refused load's reclaim over a driver that answers with a class insta
   it('sends its delete conditioned on the version the getter reports', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     await loadSegment(SEG, [1, 2, 3], deps);
 
     const sent: { generation: number; ifVersion: string | undefined }[] = [];

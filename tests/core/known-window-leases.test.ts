@@ -5,7 +5,7 @@ import type { IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
@@ -31,7 +31,7 @@ function world(start = T0) {
     storage,
     registry,
     clock,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec, clock },
     advance: (ms: number) => {
       t += ms;
     },

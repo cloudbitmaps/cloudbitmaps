@@ -13,6 +13,20 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A bitmap passed where ids go is recognised by its shape, not its class: an iterable with a `serialize` method loads
+  as `{ bitmap }`.** `@cloudbitmaps/roaring` no longer imports the `roaring` package, so it cannot test for its
+  `RoaringBitmap32` class. A `RoaringBitmap32` and a bitmap `deserializePortable` returned still load as `{ bitmap }`,
+  from their containers. Two inputs behave differently from before. A bitmap from another copy of `roaring` used to
+  load as the ids it iterated, and took `sorted: true`; it now loads as `{ bitmap }`. An iterable or an array of your
+  own with a `serialize` method used to be iterated; it is now serialized, and not iterated. `sorted: true` with
+  either, as with any bitmap, throws `ValidationError` before any request. The `serialize('portable')` such an input
+  returns must be portable Roaring bytes: bytes that are not a `Uint8Array`, or not one whole well-formed bitmap, throw
+  `ValidationError` before any request, and a `serialize` that throws fails the load with that error as it is, where
+  the object used to be iterated without it being called. A `Uint8Array` or `Buffer` with a `serialize` method is still
+  refused as a byte array, and `{ serialized, serialize }` is still refused for its two keys. What a caller does: for
+  a bitmap from another copy, drop `sorted: true`; for an iterable with a `serialize` method that you meant as ids,
+  load `[...yours]` to say so.
+
 - **`@cloudbitmaps/gcs` now requires `@google-cloud/storage` 8.1.0 (was 7.0.0 or 8.0.0) and `@cloudbitmaps/azure-blob` requires `@azure/storage-blob` 12.23.0 (was 12.0.0).**
   Each driver's own unit tests now run every night against the lowest SDK each alternative of its range admits, and the
   old floors failed them. On Google Cloud Storage 8.1.0 is the lowest release whose unit and integration tests pass. 8.0.1 passes the unit tests
@@ -34,6 +48,26 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The Lambda layer the repository builds holds JavaScript only, and the CI jobs that held the native addon now check the packages.** `pnpm build-lambda-layer` used to compile `roaring` for Amazon Linux 2023 inside a container, so
+  a layer was one architecture; it now unpacks the packed core and flavor into `nodejs/node_modules`, refuses a layer
+  that holds an addon, zips it, and loads it from `/opt` in the Lambda runtime image, so the layer is the same JavaScript on `x86_64` and
+  `arm64` (nothing is built per architecture; CI runs `x86_64` only). `pnpm lambda-smoke` no longer installs a toolchain or builds anything in the container: it checks that the packed manifests name no native package, that no addon is installed and that the packed library loads and round-trips under ESM and CJS. The layer script is not a
+  published artifact. The cross-OS CI job is named `cross-os`; it no longer claims an addon build.
+- **A batch combine's buffer budget charges more for each bitmap it holds.** The resident-bytes model behind
+  `maxBufferedBytes` was measured on the native codec and is now measured on the TypeScript codec the store uses: the
+  fixed cost of a bitmap over its serialized bytes is 832 bytes where it was 512 (435 to 803 measured), and a chunk of
+  about 3,000 ids is priced a little higher. The same `maxBufferedBytes` therefore fits slightly fewer buffered chunks
+  and a combine over a large plan may regroup into more groups; raise `maxBufferedBytes` if you need the old grouping.
+
+- **`@cloudbitmaps/roaring` has no native dependency.** The store's codec is Roaring written in TypeScript, which reads
+  and writes the same portable bytes as before: a stored object, a `{ serialized }` input and an export are byte for
+  byte what the `roaring` package wrote, so nothing is migrated, and a store can have readers and writers on either
+  codec at once. No package of this family depends on `roaring` now, so there is no install script to allow
+  (npm 12 `allowScripts`, pnpm `onlyBuiltDependencies` or `allowBuilds`), no binary to download, nothing to rebuild
+  when Node's major version changes, and the install is the same under `--ignore-scripts` (and, there being no native code to build, on Alpine, which was not measured). The guide's two
+  troubleshooting entries for `Cannot find module './build/Release/roaring.node'` and `DEP0169` are removed. `roaring` stays a pinned development dependency: the tests hold the TypeScript codec to it, as the
+  reference. A project that imports `roaring` itself (the samples that build a bitmap do) still installs and allows it.
+
 - **The TypeScript codec's four-operand intersect of mixed chunks is within 5% of the native codec's (one codec per process), and the codec seam gains an optional `intersectSmallestFirst`.**
   A codec that sets it has the store meet the operands of an intersect of three or more smallest-first, per chunk; the
   TypeScript codec sets it, the native codec does not (paired against native as shipped, the order made the native
@@ -41,8 +75,7 @@ so, and so do the module headers in the code.
   native codec's behaviour is unchanged (one extra opt-in check per chunk). Measured one codec per process, which is how the package runs, the TypeScript
   codec reads +2.9% against native on that cell (it read +13.7% before); in one process holding both codecs it reads
   +3.5% in the latest run and read +10.2% in an earlier run of the same code, and why is not known. A bitset against a run container of at most 4,096 values is now written straight to an array.
-  The result of an intersect is the same in every order. The TypeScript codec is not what the package runs until the
-  codec switch lands, so nothing changes for a caller.
+  The result of an intersect is the same in every order.
 
 - **The format page's chunk-payload section says what a writer of your own needs to reproduce the bytes, and both READMEs
   credit the Roaring authors.** [`docs/format.md`](docs/format.md) section 3 now defines a run (a maximal sequence of
@@ -50,7 +83,8 @@ so, and so do the module headers in the code.
   integers, the three payload lengths, and that a payload is never empty. No byte a writer produces changes. The root
   README and the `@cloudbitmaps/roaring` README gain a Credits section for the Roaring format and its authors, with the
   specification and the three papers. The test suite now holds every bitmap codec to CRoaring and to that written rule
-  on every container boundary, and the nightly fuzz matrix gains a target for the TypeScript decoder. The TypeScript codec's
+  on every container boundary, and the nightly bitmap-decoder fuzz target runs the TypeScript decoder, each input read with and without the
+  trailing-bytes refusal. The TypeScript codec's
   module README is documentation. None of this changes anything for a caller.
 
 ### Fixed

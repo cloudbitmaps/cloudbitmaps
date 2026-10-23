@@ -3,7 +3,7 @@ import { loadSegment } from '@/core/load';
 import { ValidationError } from '@/core/errors';
 import { CloudRoaring, MemoryStorage, RecordingAuditSink } from '@/index';
 import type { SegmentRef } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { collect, loadedStore } from '../helpers/loaded';
 import { testEntropy } from '../helpers/entropy';
@@ -27,7 +27,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 

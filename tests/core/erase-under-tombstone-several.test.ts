@@ -3,7 +3,7 @@ import { WriteConflictError } from '@/core/errors';
 import { destroySegment } from '@/core/erasure';
 import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 import { zeroEntropy } from '../helpers/entropy';
@@ -34,7 +34,7 @@ describe('an erasure under a tombstone, with several objects', () => {
     ]);
     const out = await eraseIdFromSegment(REF, 2, {
       ...w,
-      codec: roaringCodec,
+      codec: storeCodec,
       entropy: zeroEntropy,
     });
     expect(out).toMatchObject({ erased: true, fromGeneration: 2, collected: [0, 1, 2] });
@@ -50,7 +50,7 @@ describe('an erasure under a tombstone, with several objects', () => {
         storage: st,
         registry: w.registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       }),
     ).rejects.toBeInstanceOf(WriteConflictError);
   });

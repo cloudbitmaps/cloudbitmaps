@@ -11,7 +11,7 @@ import { brandAsBackend } from '@/core/ports';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
@@ -34,7 +34,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 

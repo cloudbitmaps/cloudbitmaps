@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { BoundedLru, SegmentEngine, ValidationError } from '@cloudbitmaps/core';
 import type { CodecBitmap, SegmentRef } from '@cloudbitmaps/core';
 import type { StorageChunkSource } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { joinId } from '@/core/bit-route';
 import { REMEMBERED_INVALIDATIONS } from '@/core/invalidation-scope';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
@@ -28,7 +28,7 @@ function setup() {
     Array.from({ length: CHUNKS }, (_, c) => joinId(c, 1)),
   );
   const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 10_000, clock });
-  const engine = new SegmentEngine({ storage: source, codec: roaringCodec, cache });
+  const engine = new SegmentEngine({ storage: source, codec: storeCodec, cache });
   return { source, cache, engine };
 }
 
@@ -128,7 +128,7 @@ describe('an invalidation while a read resolves its generation, on a source with
       },
     };
     const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
-    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+    const engine = new SegmentEngine({ storage, codec: storeCodec, cache });
     return { cache, engine, listed };
   }
   const fireOnce = () => {
@@ -187,7 +187,7 @@ describe('sharesInvalidationsWith validation', () => {
       () =>
         new SegmentEngine({
           storage: source,
-          codec: roaringCodec,
+          codec: storeCodec,
           cache,
           sharesInvalidationsWith: { cache } as unknown as SegmentEngine,
         }),

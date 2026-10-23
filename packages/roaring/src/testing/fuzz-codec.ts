@@ -1,22 +1,17 @@
 /**
  * Internal surface for the coverage-guided fuzz harness, CODEC half.
  *
- * The concrete bitmap codec, and the one property the harness holds every decode it accepts to. The core half
+ * The store's bitmap decoder (the TypeScript codec's), and the one property the harness holds every decode it accepts to. The core half
  * (`CrbmReader`, the non-public `parseIndex`, `BufferReader`, `CloudRoaringError`, `DEFAULT_MAX_PAYLOAD_BYTES`, `DEFAULT_MAX_BITMAP_BYTES`) is
  * built from `@cloudbitmaps/core`'s own `src/testing/fuzz-core.ts` to `fuzz/build/fuzz-core.js`. Splitting it this
  * way keeps the published entries of both packages free of test-only exports: neither widened its public API to
  * feed the fuzzer.
  */
-import { SafeBitmap } from '../roaring-codec';
+import type { CodecBitmap } from '@cloudbitmaps/core';
 import { tsRoaringCodec } from '../ts-roaring/bitmap';
 
-export { SafeBitmap, tsRoaringCodec };
-
-/** What {@link assertConsistentDecode} reads of a decoded bitmap, which either codec's bitmap offers. */
-interface DecodedBitmap extends Iterable<number> {
-  readonly size: number;
-  has(value: number): boolean;
-}
+/** The store's decoder: its `safeDeserialize` is a size cap, the structural check, then the decode, and a typed error for anything else. */
+export { tsRoaringCodec };
 
 /**
  * What an accepted decode must be: it iterates strictly ascending, `size` is the number of values it iterates, and
@@ -29,7 +24,7 @@ interface DecodedBitmap extends Iterable<number> {
  * materialization it replaces, because a valid run-heavy bitmap is tiny on disk and can hold billions of ids, and it
  * asks `has` of the first 4,096 values only, which is enough to reach every container a small input can hold.
  */
-export function assertConsistentDecode(bm: DecodedBitmap): void {
+export function assertConsistentDecode(bm: CodecBitmap): void {
   if (bm.size > 1_000_000) return;
   let previous = -1;
   let seen = 0;

@@ -1,3 +1,4 @@
+import type { CodecBitmap } from '@cloudbitmaps/core';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { publishGeneration } from '../helpers/publish';
@@ -9,7 +10,7 @@ import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IStorageDriver } from '@/core/ports';
 import { CloudRoaring, MemoryStorage, TransientError } from '@/index';
 import { IntegrityError } from '@/core/errors';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { openGenerationReader } from '@/core/crbm-open';
@@ -97,10 +98,10 @@ function countStreamRanges(): { ranges: () => number; keys: () => number[][] } {
 afterEach(() => vi.restoreAllMocks());
 
 /** A well-formed bitmap of about 8 KiB serialized (4,096 values), distinct per chunk. */
-const typical = (k: number): SafeBitmap =>
-  SafeBitmap.fromValues(Array.from({ length: 4096 }, (_, i) => (i * 16 + (k % 16) + 1) % 65_536));
+const typical = (k: number): CodecBitmap =>
+  storeCodec.fromValues(Array.from({ length: 4096 }, (_, i) => (i * 16 + (k % 16) + 1) % 65_536));
 
-async function packed(n: number, bitmaps: (k: number) => SafeBitmap = typical) {
+async function packed(n: number, bitmaps: (k: number) => CodecBitmap = typical) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
   await writeCrbmGeneration(
@@ -116,7 +117,7 @@ const eraseFrom = (
   w: { storage: IStorageDriver; registry: MemoryRegistryDriver },
   id: number,
   deps: object = {},
-) => eraseIdFromSegment(SEG, id, { ...w, entropy: testEntropy, codec: roaringCodec, ...deps });
+) => eraseIdFromSegment(SEG, id, { ...w, entropy: testEntropy, codec: storeCodec, ...deps });
 
 /** Every chunk of the current generation, by key, through a reader. */
 async function chunksOf(
@@ -132,7 +133,7 @@ async function chunksOf(
   const byChunk = new Map<number, number[]>();
   for (const id of ids) byChunk.set(id >>> 16, [...(byChunk.get(id >>> 16) ?? []), id & 0xffff]);
   return new Map(
-    [...byChunk].map(([k, values]) => [k, SafeBitmap.fromValues(values).serialize()] as const),
+    [...byChunk].map(([k, values]) => [k, storeCodec.fromValues(values).serialize()] as const),
   );
 }
 
@@ -158,7 +159,7 @@ describe('request counts of an erasure', () => {
   );
 
   it('reads a segment of 2,000 tiny chunks in one range request', async () => {
-    const w = await packed(2000, (k) => SafeBitmap.fromValues([1 + (k % 7), 100]));
+    const w = await packed(2000, (k) => storeCodec.fromValues([1 + (k % 7), 100]));
     const seen = countStreamRanges();
     await eraseFrom(w, joinId(1000, 1 + (1000 % 7)));
     expect(seen.ranges()).toBe(1);
@@ -176,15 +177,15 @@ describe('what the rewrite writes', () => {
     void keystore;
     const out = new Map<number, Uint8Array>();
     for (const k of [...reader.chunkKeys()].sort((a, b) => a - b)) {
-      const bitmap = roaringCodec.safeDeserialize((await reader.getChunk(k))!, 1 << 20);
+      const bitmap = storeCodec.safeDeserialize((await reader.getChunk(k))!, 1 << 20);
       if (k === id >>> 16) bitmap.remove(id & 0xffff);
       if (!bitmap.isEmpty) out.set(k, bitmap.serialize());
     }
     return out;
   }
 
-  const sparse = (k: number): SafeBitmap =>
-    k % 9 === 4 ? SafeBitmap.fromValues([77]) : SafeBitmap.fromValues([1 + k, 2 + k, 900 + k]);
+  const sparse = (k: number): CodecBitmap =>
+    k % 9 === 4 ? storeCodec.fromValues([77]) : storeCodec.fromValues([1 + k, 2 + k, 900 + k]);
 
   it.each([
     { name: 'an id in the middle of a chunk', id: joinId(14, 2 + 14) },
@@ -295,10 +296,10 @@ async function wide(n: number, size = 300 * KIB) {
 
 /** Decodes any payload as the two values its chunk holds, so a payload can be as large as the test needs. */
 const stub = (counter?: { decodes: number }) => ({
-  ...roaringCodec,
+  ...storeCodec,
   safeDeserialize: (b: Uint8Array) => {
     if (counter) counter.decodes++;
-    return SafeBitmap.fromValues([1 + (b[0]! | (b[1]! << 8)), 2]);
+    return storeCodec.fromValues([1 + (b[0]! | (b[1]! << 8)), 2]);
   },
 });
 

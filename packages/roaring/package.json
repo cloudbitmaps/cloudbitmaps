@@ -7,7 +7,6 @@
     "bitmap",
     "roaring-bitmap",
     "roaring-bitmaps",
-    "croaring",
     "bitset",
     "compressed-bitmap",
     "lambda",
@@ -69,8 +68,7 @@
     "build": "node ../../scripts/build.mjs"
   },
   "dependencies": {
-    "@cloudbitmaps/core": "workspace:*",
-    "roaring": "2.7.0"
+    "@cloudbitmaps/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

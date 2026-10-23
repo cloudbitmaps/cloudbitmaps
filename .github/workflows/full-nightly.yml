@@ -51,7 +51,7 @@ jobs:
   full:
     name: full-strength tests (node ${{ matrix.node }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +71,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
-        # A stalled test run ends the job in 30 minutes, not at the job limit. A normal one takes 13 to 20 at full
-        # strength, Node 22 the slower: the store's suites run twice, once on each codec.
-        timeout-minutes: 30
+        # A stalled test run ends the job in 25 minutes, not at the job limit. A normal one takes 10 to 16 at full
+        # strength (measured: 11.4 and 10.5 minutes on Node 22 and 24 on the latest run,
+        # so the limit is 2.2 times the slower).
+        timeout-minutes: 25

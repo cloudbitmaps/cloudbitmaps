@@ -12,7 +12,7 @@ import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
 import type { IRegistryDriver, IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect } from '../helpers/loaded';
 import {
@@ -70,7 +70,7 @@ async function race(
     storage: r.storage,
     registry: r.registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     clock,
     ...(r.keystore === undefined ? {} : { keystore: r.keystore }),
   };
@@ -166,7 +166,7 @@ describe('two erasures of one id, and a load that takes the number the second on
       storage: r.storage,
       registry: r.registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       keystore: ks,
     });
     // A first load's under a key it made and never stored, above the pointer: no read of the segment opens it.
@@ -274,7 +274,7 @@ describe('an object replaced under its number while an erasure searches it', () 
         storage: replacedAtFirstRange(storage, 0, anotherObject(storage, ids)),
         registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock,
       });
 
@@ -308,7 +308,7 @@ describe('an object replaced under its number while an erasure searches it', () 
         storage: replacedAtFirstRange(storage, 0, flipped),
         registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
         clock,
       }),
     ).rejects.toSatisfy(

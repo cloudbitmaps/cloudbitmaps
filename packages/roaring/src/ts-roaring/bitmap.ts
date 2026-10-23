@@ -1,7 +1,7 @@
 /**
  * A Roaring bitmap of unsigned 32-bit ids in TypeScript, behind the codec seam: {@link tsRoaringCodec} is a
- * `CodecInterface` that stores the same portable Roaring bytes as the native codec (CRoaring through `roaring`), with no
- * native addon.
+ * `CodecInterface` that stores the same portable Roaring bytes as CRoaring (through `roaring`, the reference the tests compare it
+ * against), with no native addon.
  *
  * It implements the data structure of Chambi, Lemire, Kaser and Godin, "Better bitmap performance with Roaring bitmaps"
  * (2016), with the run containers of Lemire, Ssi-Yan-Kai and Kaser, "Consistently faster and smaller compressed bitmaps
@@ -22,7 +22,7 @@
  *   - `optimize()` re-encodes each container canonically (a run only when strictly smaller than the plain body), so
  *     `serialize()` afterwards depends on the set alone;
  *   - `safeDeserialize` runs the layout check first (`portable/layout.ts`), so the structure every operation assumes is
- *     proven before a container is built, and refuses what the native path refuses, with `IntegrityError`;
+ *     proven before a container is built, and refuses what CRoaring's validator refuses, with `IntegrityError`;
  *   - a combine never changes its operand. A key only this bitmap holds keeps its container by reference (it can be a
  *     run), an unshared bitset's words are reused in place, and a key only the operand holds is copied in for a union;
  *     a pair of containers combines into an array or a bitset, never a run.
@@ -542,7 +542,7 @@ class TsBitmap implements CodecBitmap {
 /** Stands for a container {@link TsBitmap.removeMany} emptied, until the keys left empty are dropped. */
 const EMPTIED = arrayContainer(new Uint16Array(0), 0);
 
-/** The TypeScript Roaring codec: the same portable bytes as the native codec, with no native addon. */
+/** The TypeScript Roaring codec: the same portable bytes as CRoaring, with no native addon. */
 export const tsRoaringCodec: CodecInterface = {
   empty: () => TsBitmap.empty(),
   fromValues: (values) => TsBitmap.fromValues(values),

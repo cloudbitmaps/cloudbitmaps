@@ -9,7 +9,7 @@ import { loadSegment } from '@/core/load';
 import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver } from '@/drivers/memory';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { S3StorageDriver } from '@/s3/storage';
 import { counterEntropy } from '../helpers/entropy';
 
@@ -114,7 +114,7 @@ const depsOver = (storage: IStorageDriver) => ({
   storage,
   registry: new MemoryRegistryDriver(),
   entropy: counterEntropy(),
-  codec: roaringCodec,
+  codec: storeCodec,
 });
 
 async function generations(storage: IStorageDriver): Promise<number[]> {

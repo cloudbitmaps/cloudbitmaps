@@ -116,15 +116,8 @@
               <a class="btn" href="../demo.html">See the intersection</a>
             </p>
             <p class="meta">
-              npm i @cloudbitmaps/roaring · 1 third-party dependency · wraps CRoaring via
-              roaring-node · npm 12 and pnpm 10+:
-              <a
-                href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#install"
-                target="_blank"
-                rel="noopener"
-                aria-label="allow its install script first (opens in a new tab)"
-                >allow its install script first</a
-              >
+              npm i @cloudbitmaps/roaring · no third-party dependency · Roaring in TypeScript, no
+              native addon
             </p>
           </div>
 
@@ -587,17 +580,21 @@
             </p>
           </div>
           <div class="limit">
-            <p class="label">A native dependency</p>
+            <p class="label">Pure TypeScript, no edge claim</p>
             <p>
-              This flavor wraps CRoaring through <span class="m">roaring-node</span>, so it brings a
-              platform matrix and something to compile. That is the honest cost of choosing this
-              row: a prebuilt exists for common Linux and macOS targets, and anything else &mdash;
-              Graviton, an unusual libc, a locked-down build that forbids compilation &mdash;
-              compiles from source or does not install. Native addons <em>do</em> load on Deno, Bun
-              and Lambda; what they cannot enter is an isolate runtime such as Cloudflare Workers.
-              The codec is what stops it there, not the engine: core's main entry imports no Node
-              builtin. Edge runtimes are not supported, and none will be claimed until CI runs the
-              suite inside one.
+              This flavor implements the Roaring format and algorithms in TypeScript, so it has no
+              native addon, no install script and no platform matrix. It loads where Node does. Edge
+              runtimes are not supported, and none will be claimed until CI runs the suite inside
+              one.
+              <a
+                href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/roaring-codec.md"
+                target="_blank"
+                rel="noopener"
+                aria-label="Our own Roaring (opens in a new tab)"
+                >Our own Roaring</a
+              >
+              says what it guarantees (the same portable bytes as CRoaring), what it costs and what
+              can be used by itself.
             </p>
           </div>
           <div class="limit">

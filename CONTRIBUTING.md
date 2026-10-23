@@ -126,7 +126,7 @@ CI runs more than these. Its `build & test` job also holds the site and the benc
 for leaks, runs the spawned `export-segments` tests against the built bin
 (`CB_REQUIRE_BUILT_BIN=1 pnpm exec vitest run tests/bin/export-segments-cli.test.ts`, after `pnpm build`), and checks
 the fuzz lockfile; separate jobs run the dependency audit, the smoke test on the declared Node
-floor, the Lambda deployability smoke, the hard RSS ceiling and the native addon on Linux, Windows and macOS.
+floor, the Lambda deployability smoke, the hard RSS ceiling and the install, build and smoke on Linux, Windows and macOS.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) says why each one is there.
 
 `pnpm test` runs a few heavy tests at a reduced size, so a push stays cheap. A scheduled run keeps the coverage:
@@ -171,7 +171,7 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit`, and from core's main entry the S3 and GCS drivers take only the types `Clock` and `Rng`, type-only imports the build erases — never a flavor, never a sibling |
 | `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
-| `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
+| `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec selection point, `@/native-codec` → the native reference codec in `tests/helpers`, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | the benchmarks ([`bench/README.md`](bench/README.md)), fuzz targets ([`fuzz/README.md`](fuzz/README.md)), the build, release and gate scripts ([`scripts/README.md`](scripts/README.md)), the static site ([`site/README.md`](site/README.md)), and the docs trees below |
 
 A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
@@ -236,7 +236,7 @@ Third-party runtime dependencies are counted **per package**, and each one is de
 | package | third-party runtime deps |
 |---|---|
 | `@cloudbitmaps/core` | **none** |
-| `@cloudbitmaps/roaring` | `roaring` — the native codec, the reason a flavor is a package |
+| `@cloudbitmaps/roaring` | **none** — its one dependency is `@cloudbitmaps/core`, ours; `roaring` is a dev dependency, the oracle its tests compare the TypeScript codec against |
 | `@cloudbitmaps/s3` · `/gcs` · `/azure-blob` | its own cloud SDK, and only its own |
 | `@cloudbitmaps/tools` | **none** — its one dependency is `@cloudbitmaps/core`, ours |
 

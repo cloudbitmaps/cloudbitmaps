@@ -14,7 +14,7 @@ import type {
   IStorageDriver,
   RegistryRecord,
 } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';
 import { testEntropy } from '../helpers/entropy';
@@ -39,7 +39,7 @@ function world() {
     storage,
     registry,
     deps: { storage, registry },
-    load: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    load: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 
@@ -110,7 +110,7 @@ describe('rollbackSegment', () => {
     const w = world();
     await loadSegment(SEG, [1, 2, 3], w.load);
     // An orphan above the pointer, never published — exactly what a crashed loader leaves behind.
-    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [], { codec: roaringCodec });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [], { codec: storeCodec });
 
     await expect(rollbackSegment(SEG, 7, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await expect(rollbackSegment(SEG, 7, w.deps)).rejects.toThrow(
@@ -226,7 +226,7 @@ describe('rollbackSegment', () => {
           route === 'crypto-shred'
             ? new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' })
             : undefined;
-        const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
+        const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, keystore };
         await loadSegment(SEG, [1], deps);
         await loadSegment(SEG, [2], deps, { keep: 9 });
         if (route === 'drop')
@@ -625,7 +625,7 @@ async function holdersOf(storage: IStorageDriver, id: number): Promise<number[]>
   const out: number[] = [];
   for await (const key of storage.list(SEG)) {
     const bytes = await (await openGenerationReader(storage, key, undefined)).getChunk(0);
-    if (bytes !== null && roaringCodec.safeDeserialize(bytes, 1 << 20).has(id)) {
+    if (bytes !== null && storeCodec.safeDeserialize(bytes, 1 << 20).has(id)) {
       out.push(key.generation);
     }
   }
@@ -721,7 +721,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1); // same instance
     const stray = 7;
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: stray }, [5, 6], {
-      codec: roaringCodec,
+      codec: storeCodec,
     });
     await expect(store.rollback(SEG, stray)).rejects.toBeInstanceOf(ValidationError);
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);

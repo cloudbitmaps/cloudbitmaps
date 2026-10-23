@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SegmentEngine } from '@cloudbitmaps/core';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { seedSegment } from '../helpers/loaded';
 import type { ChunkRef } from '@/core/ports';
@@ -87,7 +87,7 @@ const range = (n: number): number[] => [...Array(n).keys()];
 function build(segments: Record<string, Iterable<number>>) {
   const storage = new HeldChunkSource();
   for (const [name, ids] of Object.entries(segments)) seedSegment(storage, name, chunks(ids));
-  const engine = new SegmentEngine({ storage, codec: roaringCodec });
+  const engine = new SegmentEngine({ storage, codec: storeCodec });
   return { storage, engine };
 }
 
@@ -246,7 +246,7 @@ describe('an exclude is read in the same round as the includes when the include 
     seedSegment(storage, 'a', [1]);
     seedSegment(storage, 'b', [2]); // same chunk key 0, no id in common
     seedSegment(storage, 'x', [3]);
-    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    const engine = new SegmentEngine({ storage, codec: storeCodec });
     const { state, finished } = consume(engine.intersect([A, { segment: 'b' }], { exclude: [X] }));
     await storage.run(() => state.done);
     await finished;

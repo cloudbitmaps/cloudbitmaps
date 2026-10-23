@@ -6,7 +6,7 @@ import { rollbackSegment } from '@/core/rollback';
 import { loadSegment } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { REF, clock, gate, generations } from '../helpers/retaken-number-race';
 import { testEntropy } from '../helpers/entropy';
@@ -26,7 +26,7 @@ function world() {
   return {
     storage,
     registry,
-    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
   };
 }
 type World = ReturnType<typeof world>;
@@ -186,7 +186,7 @@ describe('a ledger seeded at its birth names the leases the row holds when it is
       storage,
       registry,
       clock,
-      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+      deps: { storage, registry, entropy: testEntropy, codec: storeCodec, clock },
     };
   };
   const lease = async (w: ReturnType<typeof aWorld>, generation: number): Promise<void> => {
@@ -263,7 +263,7 @@ describe("a same-bytes publish by another load is not this load's", () => {
   it('keep 0: the load is superseded, and its collection spares the generation the ledger names', async () => {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
     expect(await loadSegment(REF, [9], deps)).toMatchObject({ generation: 0, published: true });
 
     const bAtPublish = gate();

@@ -3,7 +3,7 @@ import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { RecordingAuditSink } from '@/core/audit';
 import { TransientError, WriteConflictError, isUnsettledConflict } from '@/core/errors';
 import { loadSegment } from '@/core/load';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../../helpers/store-codec';
 import { StubBlobService, xmlError } from '../../helpers/azure-blob-stub';
 import { testEntropy } from '../../helpers/entropy';
 
@@ -32,7 +32,7 @@ const make = () => ({
   storage: new AzureBlobStorageDriver({ containerClient: stub.client(QUICK) }),
   registry: new AzureBlobRegistryDriver({ containerClient: stub.client(QUICK) }),
 });
-const deps = () => ({ ...make(), entropy: testEntropy, codec: roaringCodec });
+const deps = () => ({ ...make(), entropy: testEntropy, codec: storeCodec });
 
 async function twoGenerations() {
   const d = deps();

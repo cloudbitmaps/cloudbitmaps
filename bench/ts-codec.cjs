@@ -87,7 +87,7 @@ function loadCodecs() {
   const out = buildSync({
     stdin: {
       contents:
-        `export { roaringCodec } from './src/roaring-codec';\n` +
+        `export { roaringCodec } from ${JSON.stringify(path.join(ROOT, 'tests/helpers/native-codec'))};\n` +
         `export { tsRoaringCodec } from ${JSON.stringify(
           SRC_DIR ? path.join(SRC_DIR, 'src/ts-roaring/bitmap') : './src/ts-roaring/bitmap',
         )};\n`,

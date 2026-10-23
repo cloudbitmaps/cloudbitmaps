@@ -16,7 +16,7 @@ import { runConsistencyCheck } from '@/core/consistency';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
 import { setSegmentRetention } from '@/core/retention';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
@@ -148,7 +148,7 @@ async function loadMany(
     const r = await loadSegment(
       segment,
       Array.from({ length: g + 1 }, (_, i) => i),
-      { ...deps, entropy: testEntropy, codec: roaringCodec },
+      { ...deps, entropy: testEntropy, codec: storeCodec },
       keep === undefined ? {} : { keep },
     );
     expect(r).toMatchObject({ generation: g, published: true });

@@ -3,7 +3,7 @@ import { runInNewContext } from 'node:vm';
 import { BoundedLru, SegmentEngine, ValidationError } from '@cloudbitmaps/core';
 import type { CodecBitmap, SegmentRef } from '@cloudbitmaps/core';
 import type { ChunkRead, ReadChunksOptions } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { joinId } from '@/core/bit-route';
 import { REMEMBERED_INVALIDATIONS } from '@/core/invalidation-scope';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
@@ -49,7 +49,7 @@ function setup() {
     Array.from({ length: CHUNKS }, (_, c) => joinId(c, 1)),
   );
   const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 10_000, clock });
-  const engine = new SegmentEngine({ storage: source, codec: roaringCodec, cache });
+  const engine = new SegmentEngine({ storage: source, codec: storeCodec, cache });
   return { source, cache, engine };
 }
 
@@ -166,7 +166,7 @@ describe('engines that share invalidations', () => {
     const { source, cache, engine } = setup();
     const other = new SegmentEngine({
       storage: source,
-      codec: roaringCodec,
+      codec: storeCodec,
       cache,
       sharesInvalidationsWith: engine,
     });
@@ -214,7 +214,7 @@ describe('engines that share invalidations', () => {
       () =>
         new SegmentEngine({
           storage: source,
-          codec: roaringCodec,
+          codec: storeCodec,
           cache: elsewhere,
           sharesInvalidationsWith: engine,
         }),

@@ -7,7 +7,7 @@ import { loadSegment } from '@/core/load';
 import { clearSegmentRetention, setSegmentRetention } from '@/core/retention';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
 import { faultyRegistry } from '../helpers/lost-answer';
@@ -104,7 +104,7 @@ async function servedIds(storage: IStorageDriver, registry: IRegistryDriver): Pr
   for (const ck of reader.chunkKeys()) {
     const b = await reader.getChunk(ck);
     if (b === null) continue;
-    for (const r of roaringCodec.safeDeserialize(b, 1 << 20).toArray()) out.push((ck << 16) + r);
+    for (const r of storeCodec.safeDeserialize(b, 1 << 20).toArray()) out.push((ck << 16) + r);
   }
   return out;
 }
@@ -168,7 +168,7 @@ async function run(seed: number): Promise<{ erased: boolean; refused: boolean }>
         storage: heldPuts(storage, mayWrite.promise),
         registry: tracked,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       }).catch((e: unknown) => ({ threw: String(e) })),
     );
     await read.promise;
@@ -213,7 +213,7 @@ async function run(seed: number): Promise<{ erased: boolean; refused: boolean }>
     storage,
     registry: reg,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
   });
   let other: Promise<Answer> = Promise.resolve({ threw: 'none' });
   const faulty = faultyRegistry(registry);

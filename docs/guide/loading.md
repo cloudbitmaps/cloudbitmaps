@@ -99,10 +99,9 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
 - **Ascending, with repeats.** An id equal to the one before it is skipped. An id lower than the one before it throws
   `ValidationError` naming its position and never the id (`ids[41]: lower than the id before it; …`): sort at the
   source, or leave `sorted` off. A bad id is refused as it is without the option, at its position.
-- **For ids only.** With `{ serialized }`, `{ bitmap }`, a bitmap `deserializePortable` returned, or a
-  `RoaringBitmap32` of the `roaring` this package uses, `sorted: true` throws `ValidationError` before any request:
-  those are held whole already and written from their own containers. A bitmap from another copy of `roaring` loads as
-  the ids it iterates, which ascend, so it takes `sorted`. A `sorted` that is not a boolean throws too. The `*Into`
+- **For ids only.** With `{ serialized }`, `{ bitmap }`, a bitmap `deserializePortable` returned, or
+  any iterable with a `serialize` method (a `RoaringBitmap32` is one), `sorted: true` throws `ValidationError` before any request:
+  those are held whole already and written from their own containers. A `sorted` that is not a boolean throws too. The `*Into`
   verbs do not take it.
 - **The segment is judged before an id is read.** The row and its refusals (a destroyed segment, an encrypted one the
   load has no keystore for, `requireEncryption` on a cleartext one), the generation number and the key are all settled
@@ -127,11 +126,11 @@ rather than its ids. `{ bitmap }` takes anything with `serialize('portable')`, s
 `{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
 export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
 
-The samples that build a bitmap import the `roaring` package from npm, the native bitmap library (not
-`@cloudbitmaps/roaring`), so add it to your own `package.json`: `pnpm add roaring@2.7.0` is the version
-`@cloudbitmaps/roaring` uses, so the two share one copy and a bare bitmap takes the fast path (another
-version works, slower). Under pnpm a package your own
-`package.json` does not list cannot be imported.
+The samples that build a bitmap import the `roaring` package from npm, a native bitmap library of your own (not
+`@cloudbitmaps/roaring`, which uses none), so add it to your own `package.json`: `pnpm add roaring@2.7.0` is the
+version the samples are tested against, and any version whose bitmaps have `serialize('portable')` works, since a
+load recognises a bitmap by that method. `roaring` has an install script of its own, so allow it as that package
+documents. Under pnpm a package your own `package.json` does not list cannot be imported.
 
 <!-- typecheck: store -->
 ```ts
@@ -162,26 +161,28 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
   container and per byte: the structural check, which reads an array container's values once, and the checksum the
   write computes anyway.
 - **It yields, except for two whole-bitmap steps.** Two steps do not yield, each for a time that grows with the
-  bitmap's bytes: the input check and the native decode, which run at the call, before the load's first request;
+  bitmap's bytes: the input check and the decode, which run at the call, before the load's first request;
   and re-encoding the bitmap before the write. The load yields on each side of the re-encode, and every 1,024
   containers while it cuts, re-checks and writes them. At the 537,403,396-byte cap they take about 400 ms or more and
   about 250 ms (derived: twice a load of 256 MiB of bitsets on an Apple M3 Pro, where the decode alone took 189–211 ms
   and the re-encode 113–136 ms; a smaller load understates them, since their time grows faster than the bytes).
 - **The bytes must not change while the call runs.** A buffer that another thread is still writing (an `fs.read`
-  or a `crypto.randomFill` into it that has not finished, say) can be decoded as bytes the check never saw. The load
-  checks every container again as it writes it, so such a load throws `IntegrityError` and publishes nothing rather
-  than a generation readers refuse; but bytes that change into another valid bitmap load as that bitmap. Await the
-  write before you load the buffer.
+  or a `crypto.randomFill` into it that has not finished, say) is copied once, and the copy is checked and decoded, so
+  no generation readers refuse is published (the load also checks every container again as it writes it, and throws
+  `IntegrityError` on one that fails); but bytes that change into another valid bitmap load as that bitmap, and which
+  bytes the copy holds is whatever the buffer held at that instant. Await the write before you load the buffer.
 - **It holds more than the bitmap.** At its peak a bitmap load holds a decoded copy of the bitmap and its
   re-encoded bytes, each about the size of the serialization, on top of the bytes you passed and what the backend
   buffers of the object it writes (one 8 MiB part on S3).
-- **A bare bitmap `deserializePortable` returned takes the same path where ids go, and so does a bare
-  `RoaringBitmap32` from the copy of `roaring` that `@cloudbitmaps/roaring` uses.** A `RoaringBitmap32` from another
-  copy loads as the ids it iterates, which is correct and slower; `{ bitmap }` works with either.
+- **A bare bitmap takes the same path where ids go.** An iterable with a `serialize` method (a `RoaringBitmap32` from
+  any copy of `roaring`, or a bitmap `deserializePortable` returned) passed where ids go loads as `{ bitmap }`: its
+  `serialize` decides, and it is not iterated. Its `serialize('portable')` must return portable Roaring bytes. An
+  object that is not iterable is not read this way: it is `{ serialized }` or `{ bitmap }` as the only key, or refused.
 - **A byte array is not ids.** A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids is refused with
   `ValidationError`, because each byte would be loaded as an id. Pass bytes as `{ serialized }`, and ids as a
   `Uint32Array` or an array of numbers. Every other typed array is ids. The refusal is made when the load runs: a byte
-  array is an iterable of numbers, so the compiler accepts one as ids.
+  array is an iterable of numbers, so the compiler accepts one as ids. A byte array that carries a `serialize` method of its own is refused
+  too.
 - **Parts of one segment, built separately.** Join them in one process and load the union once: a load writes one
   generation from one process. [The recipe](#parts-of-one-segment-built-separately) is below.
 
@@ -230,7 +231,7 @@ export async function loadParts(
 ```
 
 - **Check with `deserializePortable`, then decode with `roaring`.** Parts that cross between processes are untrusted
-  input, as stored bytes are. `RoaringBitmap32.deserialize` hands the bytes to the native decoder, which bounds its
+  input, as stored bytes are. `RoaringBitmap32.deserialize` hands the bytes to roaring's native decoder, which bounds its
   reads and checks nothing else: bytes of the wrong shape decode into a bitmap whose sizes and answers are wrong, and
   some shapes crash the process. `deserializePortable(bytes)` makes the check a `{ serialized }` load makes first (the
   size cap, the structural check, exactly one bitmap) and throws `ValidationError` for bytes that fail it. It takes a
@@ -239,7 +240,7 @@ export async function loadParts(
   with `roaring`, which is the second line of the map. Passing the `ReadonlyBitmap` itself to a method of the `roaring` package from npm answers
   wrongly, and `JSON.stringify` of one gives `"{}"`: write `JSON.stringify([...bitmap])`
   ([why](api-reference.md#decode-portable-bytes--deserializeportablebytes)).
-- **The recipe costs about four passes over a part where a native decode makes one.** Each part's bytes are checked,
+- **The recipe costs about four passes over a part where `RoaringBitmap32.deserialize` alone makes one.** Each part's bytes are checked,
   decoded twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the
   bytes you were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library
   copies a shared buffer only for its own decode. A single part that needs no joining goes straight to
@@ -952,9 +953,10 @@ read of the call and not a snapshot of one instant. `stats.outputs[i]` gives the
 computed it and when it ran.
 
 **Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass counts
-as **resident**, which is not what it serializes to: a native bitmap costs a fixed amount over its serialized bytes
-(about 440 bytes for a sparse chunk on macOS and about 360 on Linux, measured on the shipped codec on arm64 only; the model
-sits above both), so the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size
+as **resident**, which is not what it serializes to: a bitmap costs a fixed amount over its serialized bytes
+(832 bytes in the model, measured on the TypeScript codec as the live heap plus external memory after a forced collection,
+over 50,000 bitmaps of one chunk each on macOS arm64: 435 to 452 bytes for a bitmap decoded from stored bytes and 674 to
+803 for one built by adds; the model sits above both), so the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size
 where the source knows it, capped at the window the call asked for, since an index is not trusted to say how much a stream
 holds; for a source that cannot say its size, which no shipped one is, the index's own cardinalities are the estimate), each
 chunk being evaluated, and the plan itself: the root keys and expression of every output and the operand indexes (2 bytes a root key, 320 a node and 3,700 an output, so about 10 KB an output of 8 nodes over 2,000

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/core/audit';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment, type LoadOptions } from '@/core/load';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
 import type { IRegistryDriver } from '@cloudbitmaps/core/driver-kit';
@@ -33,7 +33,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('the load is refused, and the row names only what is in the bucket', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     await loadSegment(REF, [1, 2, 3], deps);
 
     // Hold the load at its publish, with its object already in the bucket.
@@ -76,7 +76,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('the load publishes before the fence lands: the erasure deletes nothing, and a re-run erases from the new generation', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     let reachLoad!: () => void;
     const loadReached = new Promise<void>((resolve) => (reachLoad = resolve));
@@ -128,7 +128,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('pins written while the fence is written are waited out, not reported as another writer', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     let reach!: () => void;
     const reached = new Promise<void>((resolve) => (reach = resolve));
@@ -172,7 +172,7 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   it('the erasure that loses to the publish reports it, and a re-run erases from the new generation', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     await loadSegment(REF, [1, 2, 3], deps);
     // The load lands first: the erasure finds 9 in the current generation and rewrites it.
     await loadSegment(REF, [1, 2, 3, 9], deps);
@@ -189,7 +189,7 @@ describe('the fence above the pointer gets no answer', () => {
   async function rolledBack() {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     await loadSegment(REF, [1, 2], deps);
     await loadSegment(REF, [1, 2, 9], deps);
     await rollbackSegment(REF, 0, deps); // generation 1, holding 9, is above the pointer
@@ -304,7 +304,7 @@ describe('an erasure and a first load that found no row', () => {
       const load = loadSegment(
         REF_NS,
         [X, 7],
-        { storage: backend.storage, registry: gated, entropy: testEntropy, codec: roaringCodec },
+        { storage: backend.storage, registry: gated, entropy: testEntropy, codec: storeCodec },
         { ...options, audit },
       );
 
@@ -361,7 +361,7 @@ describe('a row with no pointer, over an object a first load wrote and never pub
     return {
       storage,
       registry,
-      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+      deps: { storage, registry, entropy: testEntropy, codec: storeCodec },
     };
   }
 
@@ -405,7 +405,7 @@ describe('a row with no pointer, on a store that requires encryption', () => {
       storage,
       registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
       keystore,
       requireEncryption: true,
     };

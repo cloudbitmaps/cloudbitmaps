@@ -8,8 +8,8 @@
  * `scripts/smoke.cjs` loads the built packages from inside the workspace, where pnpm links them, `files` is not
  * consulted and `workspace:*` is never rewritten. This is the other half: it reads only what `pnpm pack` put in
  * a tarball. A file left out of `files`, an `exports` target that resolves only inside the workspace, a
- * dependency in the wrong field, a `workspace:*` left unrewritten, or an install script npm refuses to run
- * shows here as a failed install or a failed import, and nowhere earlier.
+ * dependency in the wrong field or a `workspace:*` left unrewritten shows here as a failed install or a failed
+ * import, and nowhere earlier.
  *
  * Where each half runs
  *   host        builds the workspace and runs `pnpm pack` on each package under packages/ (the workspace's pnpm and
@@ -25,8 +25,8 @@
  *               install scripts on the machine with this user's access, and it refuses to run when `CI` is set.
  *
  * What the second half does
- *   1. Creates a temporary project whose package.json allows the `roaring` install script, as the README's
- *      install steps say.
+ *   1. Creates a temporary project with a bare package.json: the packages have no install script, so the
+ *      README's install steps ask for nothing beyond `npm install`.
  *   2. `npm install`s all the tarballs together. A failed install is tried again, twice, after a pause: a registry
  *      or binary-download blip is not a packaging fault.
  *   3. Checks the installed tree: no `workspace:` in a packed manifest, one copy of each package, every `exports`
@@ -38,8 +38,7 @@
  * The cloud drivers are imported, never used, so nothing contacts a cloud.
  *
  * What it does not show: that the types compile in a consumer's project (smoke.cjs does that, in the
- * workspace), anything about npm 12 (the `allowScripts` key is written but only npm 12 enforces it), or a pnpm or
- * yarn install.
+ * workspace), anything about npm 12, or a pnpm or yarn install.
  *
  * Usage:  node scripts/consumer-install.cjs (--image <image> | --no-container) [--keep]
  *   --image <image>  run the second half in this image, which needs Docker; give it more than once to name
@@ -117,8 +116,10 @@ function childEnv(extra) {
   return { ...env, ...extra };
 }
 
-/** The dependency whose install script the README tells a consumer to allow. A blocked script shows as an import error. */
-const NATIVE_ADDON = 'roaring';
+/** The package.json of the project the tarballs are installed into: nothing in it allows or blocks a script. */
+function consumerManifest() {
+  return { name: 'consumer-project', version: '0.0.0', private: true };
+}
 
 function fail(message) {
   throw new Error(message);
@@ -489,20 +490,9 @@ function installAndRun(tarballDir, keep) {
     console.log(`consumer-install: ${pkgs.length} package(s), working in ${work}`);
     const project = path.join(work, 'project');
     fs.mkdirSync(project);
-    // What the README tells a user to put in package.json before installing. npm 12 skips a dependency's
-    // install script unless this allows it; npm 10 and 11 ignore the key or warn.
     fs.writeFileSync(
       path.join(project, 'package.json'),
-      JSON.stringify(
-        {
-          name: 'consumer-project',
-          version: '0.0.0',
-          private: true,
-          allowScripts: { [NATIVE_ADDON]: true },
-        },
-        null,
-        2,
-      ),
+      JSON.stringify(consumerManifest(), null, 2),
     );
     // A user-level npmrc must not change what is being tested, and nothing here may reach a private registry.
     const emptyRc = path.join(work, 'empty.npmrc');
@@ -643,5 +633,6 @@ if (require.main === module) {
     childEnv,
     dockerRunArgs,
     refuseLocalModeInCi,
+    consumerManifest,
   };
 }

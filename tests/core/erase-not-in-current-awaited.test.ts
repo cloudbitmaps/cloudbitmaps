@@ -2,7 +2,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { NotFoundError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import type { IStorageDriver } from '@cloudbitmaps/core/driver-kit';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { loadedStore } from '../helpers/loaded';
 import { testEntropy } from '../helpers/entropy';
 
@@ -41,7 +41,7 @@ describe('an erasure that sweeps the other generations translates a NotFoundErro
       storage,
       registry: w.registry,
       entropy: testEntropy,
-      codec: roaringCodec,
+      codec: storeCodec,
     });
 
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 1 });
@@ -65,7 +65,7 @@ describe('an erasure that sweeps the other generations translates a NotFoundErro
         storage,
         registry: w.registry,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });

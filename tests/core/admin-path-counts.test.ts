@@ -9,7 +9,7 @@ import { sealSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { counting } from '../helpers/counting';
 import { testEntropy } from '../helpers/entropy';
 
@@ -498,7 +498,7 @@ describe('a load that needs the current size takes it from count()', () => {
     const registry = new MemoryRegistryDriver();
     const calls: Record<string, number> = {};
     const storage = counting<IStorageDriver>(memory, calls);
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     for (const n of [3, 5]) {
       const r = await loadSegment(
         SEG,

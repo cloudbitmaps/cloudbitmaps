@@ -5,7 +5,7 @@ import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { loadSegment } from '@/core/load';
 import { TransientError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../../helpers/store-codec';
 import { StubBlobService, xmlError, type Answer } from '../../helpers/azure-blob-stub';
 import { testEntropy } from '../../helpers/entropy';
 
@@ -124,7 +124,7 @@ describe('Azure Blob: a load whose row write is throttled', () => {
     storage: new AzureBlobStorageDriver({ containerClient: stub.client(QUICK) }),
     registry: new AzureBlobRegistryDriver({ containerClient: stub.client(QUICK) }),
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     // What a store wires: the publish waits on it before a fresh write.
     clock: {
       now: () => 0,

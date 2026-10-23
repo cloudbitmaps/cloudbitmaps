@@ -10,7 +10,7 @@ import { openSummary, summaryAgrees, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { FINGERPRINT } from '../helpers/fingerprint';
 import { counterEntropy, testEntropy } from '../helpers/entropy';
@@ -206,7 +206,7 @@ describe('a cleartext load with metadata', () => {
 
   it('writes the summary on a first load, an advancing load and a load onto a row with no pointer', async () => {
     const { registry, storage } = cleartext();
-    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: storeCodec };
     // A policy recorded ahead of the first load leaves a row with no pointer.
     await registry.create(SEG, { currentGen: null, retention: { expiresAt: 4_102_444_800_000 } });
     expect((await registry.get(SEG))!.currentGen).toBeNull();

@@ -7,9 +7,8 @@
  *                                   fleet (the answer to "it OOMs a long-running server"). (Process RSS also
  *                                   grows with the in-process seed phase and isn't the bound — see render().)
  *                                   NB: M1's read loop parses `.crbm` INDICES (JS-heap objects) — it does not
- *                                   decode payloads — so JS heap IS the right metric here; the roaring addon's
- *                                   OFF-HEAP native memory (the read/intersect path with decoded bitmaps) is
- *                                   proved bounded over time by the soak (`getRoaringUsedMemory()`).
+ *                                   decode payloads — so JS heap IS the right metric here; external memory
+ *                                   (typed arrays, which the decoded bitmaps use) is proved bounded over time by the soak.
  *   M2  Fleet-scan cost             time the one bounded drain of `registry.list()` — what every
  *                                   fleet-wide admin pass (`checkConsistency`, `retireExpired`, `eraseSubject`)
  *                                   pays before it does any work across fleet sizes: the honest O(total)
@@ -137,7 +136,7 @@ async function measureFleet(n) {
     // evicts the oldest). The bound we're proving is about RETAINED live memory, so the headline metric is
     // heapUsed AFTER a forced GC once the sweep ends — that reflects the live reader set, not the transient
     // per-iteration garbage a monotonic RSS high-water would fold in. rssPeak is kept as an informational
-    // high-water (native + transient), rssAfterGc as the settled resident size.
+    // high-water (including transient garbage), rssAfterGc as the settled resident size.
     gc();
     const heapBaselineMiB = process.memoryUsage().heapUsed / 1024 / 1024;
     const source = new CrbmStorageChunkSource(storage, { registry, maxOpenSegments: CAP });
@@ -181,7 +180,7 @@ async function measureFleet(n) {
       readAllMs: round(read.ms, 0),
       heapBaselineMiB: round(heapBaselineMiB, 1),
       heapRetainedMiB: round(heapRetainedMiB, 1), // headline: live memory after GC — the bound proof
-      rssPeakMiB: round(rssPeak, 1), // informational high-water (native + transient garbage)
+      rssPeakMiB: round(rssPeak, 1), // informational high-water (including transient garbage)
       rssAfterGcMiB: round(rssAfterGcMiB, 1),
       cap: CAP,
       discoveryMs: round(disc.ms, 1),
@@ -375,7 +374,7 @@ function render(r) {
     // The cap is already in the heap column's own header, where it qualifies the column it applies to —
     // repeating it here would say "1024" twice on one panel. The head carries the axis instead.
     `<div class="tpanel-head"><span class="label">Memory at fleet scale</span>` +
-    `<span class="label">Measured &middot; ${fleetLo.toLocaleString('en-US')} &rarr; ` +
+    `<span class="label">Measured on the native codec &middot; ${fleetLo.toLocaleString('en-US')} &rarr; ` +
     `${fleetHi.toLocaleString('en-US')} segments</span></div>` +
     `<div class="tscroll"><table><thead><tr>` +
     header.map((h, i) => `<th${i > 0 ? ' class="num"' : ''}>${esc(h)}</th>`).join('') +

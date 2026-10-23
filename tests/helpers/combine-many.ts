@@ -12,7 +12,7 @@ import type {
   CombineManyRun,
 } from '@/core/combine-many';
 import { joinId } from '@/core/bit-route';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from './store-codec';
 import { StreamChunkSource } from './stream-chunk-source';
 import { seedSegment } from './loaded';
 
@@ -116,7 +116,7 @@ export async function runBatch(
   const setup = seed(sets, source);
   const run = await runCombineMany(
     compileCombineMany(request(setup, specs.map(collecting), extra)),
-    { source: setup.source, codec: roaringCodec, clock: { now: () => 0, sleep: async () => {} } },
+    { source: setup.source, codec: storeCodec, clock: { now: () => 0, sleep: async () => {} } },
   );
   return { run, setup };
 }

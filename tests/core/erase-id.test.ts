@@ -12,7 +12,7 @@ import type {
   IKeystore,
   StorageDeleteOptions,
 } from '@cloudbitmaps/core/driver-kit';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';
@@ -27,7 +27,7 @@ import { testEntropy } from '../helpers/entropy';
  * contract — what the rewrite *writes* (every other chunk carried through byte-for-byte, an emptied chunk
  * dropped, keys ascending) and what it *reports* (the `reason` for each way nothing gets rewritten).
  *
- * The codec is passed explicitly: this is the core module, which is codec-agnostic; the facade binds `roaringCodec`
+ * The codec is passed explicitly: this is the core module, which is codec-agnostic; the facade binds `storeCodec`
  * for applications.
  */
 
@@ -46,7 +46,7 @@ async function world(keystore?: IKeystore) {
     storage: w.storage,
     registry: w.registry,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
     keystore,
   };
   /** A FRESH store: the fixture has no clock, so nothing refreshes a store's generation on a timer. */
@@ -76,7 +76,7 @@ async function chunksOf(storage: IStorageDriver, key: GenKey): Promise<Map<numbe
 }
 
 const decode = (bytes: Uint8Array): number[] =>
-  SafeBitmap.safeDeserialize(bytes, 1 << 20).toArray();
+  storeCodec.safeDeserialize(bytes, 1 << 20).toArray();
 
 describe('eraseIdFromSegment — the reasons nothing is rewritten', () => {
   it("'absent': no registry row", async () => {

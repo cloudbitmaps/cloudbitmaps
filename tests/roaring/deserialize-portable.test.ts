@@ -1,14 +1,14 @@
 import roaring from 'roaring';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage, ValidationError, deserializePortable } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap } from '@/native-codec';
 import type { LoadInput, PortableBitmap, ReadonlyBitmap } from '@/index';
 import { MAX_SERIALIZED_LOAD_BYTES, decodeSerialized } from '@/core/load-input';
 import type { CodecInterface } from '@/core/codec';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec } from '@/native-codec';
 import { craftPortable } from '../helpers/portable-bytes';
 import { zeroEntropy } from '../helpers/entropy';
-import { codecLeg } from '../helpers/codec-leg';
+import { withNativeCodec } from '../helpers/codec-leg';
 
 /**
  * `deserializePortable` decodes bytes a caller holds through the check a `{ serialized }` load makes first, so the
@@ -39,10 +39,10 @@ async function loadRefuses(bytes: unknown): Promise<boolean> {
 }
 
 describe('deserializePortable: bytes that are one well-formed bitmap', () => {
-  // The TypeScript leg's `serialize` returns a plain `Uint8Array`, where this compares with a native `Buffer`.
-  it.skipIf(codecLeg() === 'ts')(
+  // The TypeScript codec's `serialize` returns a plain `Uint8Array`, where this compares with a native `Buffer`: the native codec goes behind the store.
+  it(
     'give the ids RoaringBitmap32.deserialize gives, as written and run-optimized',
-    () => {
+    withNativeCodec(() => {
       const optimized = sample();
       optimized.runOptimize();
       for (const b of [sample(), optimized, new RoaringBitmap32()]) {
@@ -52,7 +52,7 @@ describe('deserializePortable: bytes that are one well-formed bitmap', () => {
         expect(decoded.size).toBe(b.size);
         expect(decoded.serialize('portable')).toEqual(bytes);
       }
-    },
+    }),
   );
 
   it('is not a RoaringBitmap32 at run time', () => {
@@ -106,9 +106,9 @@ describe('deserializePortable: bytes that are one well-formed bitmap', () => {
   });
 
   // Spies on the native decoder, which the TypeScript leg does not call.
-  it.skipIf(codecLeg() === 'ts')(
+  it(
     'are read from a SharedArrayBuffer as a copy no other thread can change',
-    () => {
+    withNativeCodec(() => {
       const bytes = sample().serialize('portable');
       const shared = new Uint8Array(new SharedArrayBuffer(bytes.length));
       shared.set(bytes);
@@ -118,7 +118,7 @@ describe('deserializePortable: bytes that are one well-formed bitmap', () => {
       const handed = native.mock.calls[0]?.[0] as Uint8Array;
       expect(handed.buffer instanceof SharedArrayBuffer).toBe(false);
       expect(Buffer.from(handed)).toEqual(Buffer.from(bytes));
-    },
+    }),
   );
 
   it('are accepted by a load too, and an empty buffer is the empty bitmap in both', async () => {
@@ -158,13 +158,13 @@ describe('deserializePortable: bytes it refuses, as a load refuses them, before 
   });
 
   // Spies on the native decoder, which the TypeScript leg does not call.
-  it.skipIf(codecLeg() === 'ts')(
+  it(
     'the spy sees the native decoder when the bytes are good (a control for the cases above)',
-    () => {
+    withNativeCodec(() => {
       const native = vi.spyOn(RoaringBitmap32, 'deserialize');
       deserializePortable(good());
       expect(native).toHaveBeenCalledTimes(1);
-    },
+    }),
   );
 
   it('every prefix of a bitmap shorter than the bitmap, except the empty one, is refused', () => {

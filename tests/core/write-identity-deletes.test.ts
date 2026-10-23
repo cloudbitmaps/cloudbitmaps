@@ -6,7 +6,7 @@ import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { collect } from '../helpers/loaded';
 import { counterEntropy, zeroEntropy } from '../helpers/entropy';
 import { withoutTokenReports } from '../helpers/no-token-reports';
@@ -55,7 +55,7 @@ describe('the gone-row reclaim across a purge', () => {
       const storage = new MemoryStorageDriver();
       const registry = new MemoryRegistryDriver();
       const entropy = zero ? zeroEntropy : counterEntropy();
-      const deps = { storage, registry, codec: roaringCodec, clock, entropy };
+      const deps = { storage, registry, codec: storeCodec, clock, entropy };
 
       // The first load: its write lands, then its first read of the row after it is answered and held.
       const atReclaim = gate();
@@ -165,7 +165,7 @@ describe("a refused rewrite's discard on a driver whose versions derive from the
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
     const entropy = zero ? zeroEntropy : counterEntropy();
-    const deps = { storage, registry, codec: roaringCodec, clock, entropy };
+    const deps = { storage, registry, codec: storeCodec, clock, entropy };
     await loadSegment(REF, [1, 2, X, Y], deps);
 
     const l1AtPublish = gate();
@@ -240,7 +240,7 @@ describe('a publish that gets no answer, on a registry that reports no write tok
       const storage = new MemoryStorageDriver();
       const registry = withoutTokenReports(new MemoryRegistryDriver());
       const entropy = zero ? zeroEntropy : counterEntropy();
-      const deps = { storage, registry, codec: roaringCodec, clock, entropy };
+      const deps = { storage, registry, codec: storeCodec, clock, entropy };
       expect(await loadSegment(REF, [9], deps)).toMatchObject({ generation: 0, published: true });
 
       let armed = true;

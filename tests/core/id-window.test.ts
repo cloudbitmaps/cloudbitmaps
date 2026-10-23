@@ -22,7 +22,7 @@ import type { IdWindow } from '@/core/id-window';
 /** The window for a read that no error is expected of: the verb only matters to a refusal. */
 const windowOf = (range: Parameters<typeof windowOfVerb>[0]) => windowOfVerb(range, 'iterate');
 import { ValidationError } from '@/core/errors';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 
 const inWindow = (id: number, after: number | undefined, through: number | undefined): boolean =>
   (after === undefined || id > after) && (through === undefined || id <= through);
@@ -192,10 +192,10 @@ describe('the edge chunks of a window', () => {
         const w = windowOf({ after, through });
         if (w === null || w === 'empty' || key < w.loKey || key > w.hiKey) return;
         const want = rem.filter((r) => inWindow(joinId(key, r), after, through));
-        const chunk = roaringCodec.fromValues(Uint32Array.from(rem));
+        const chunk = storeCodec.fromValues(Uint32Array.from(rem));
         expect([...edgeIds(chunk, key, w)]).toEqual(want.map((r) => joinId(key, r)));
         expect([...remaindersWithin(Uint32Array.from(rem), key, w)]).toEqual(want);
-        expect([...cutToWindow(roaringCodec, chunk, key, w)]).toEqual(want);
+        expect([...cutToWindow(storeCodec, chunk, key, w)]).toEqual(want);
       }),
     );
   });

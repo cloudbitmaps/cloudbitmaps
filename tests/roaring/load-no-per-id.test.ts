@@ -6,18 +6,26 @@ import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { YIELD_EVERY } from '@/core/cooperative';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/native-codec';
 import { SystemClock } from '@/system-clock';
+import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 import { testEntropy } from '../helpers/entropy';
-import { codecLeg } from '../helpers/codec-leg';
+import { withNativeCodec } from '../helpers/codec-leg';
 
 /**
  * A load of a 12M-member bitmap runs no JavaScript per id: counted, not timed, so it holds on any machine.
  *
  * Every route by which an id could reach JavaScript is counted: each of `RoaringBitmap32`'s iterating and
  * array-producing methods, the codec building a bitmap from values, and core's `splitId`, which the id path calls
- * once per id. What a bitmap load does instead (serialize, the structural check, the native deserialize, the
- * header walk, the CRC32C of the written bytes) is per container or per byte, and is not counted here.
+ * once per id. The routes of both the `roaring` package's class (the caller's own bitmap) and the TypeScript codec's
+ * bitmap (the class the store now decodes into) are counted, so a per-id loop in the codec's decode or encode shows
+ * up. What a bitmap load does instead (serialize, the structural check, the decode, the header walk, the CRC32C of
+ * the written bytes) is per container or per byte, and is not counted here.
+ *
+ * Limit: the control for the codec's bitmap moves its counters through direct calls, and the planted iterator walk
+ * is what proves a per-id loop in a load would be seen. A per-id loop written in the module-level container helpers
+ * of `ts-roaring/containers.ts` or `ts-roaring/iterator.ts`, which no method of the bitmap class calls, is not
+ * counted.
  *
  * The fixture is the worst case for that per-byte work: 65,536 array containers, every chunk of the id space in
  * use, 184 ids in each.
@@ -68,18 +76,31 @@ const PER_ID = [
   'addMany',
 ] as const;
 
+/** The TypeScript codec's bitmap class, which is not exported: reached through an instance. */
+const TsBitmap = tsRoaringCodec.empty().constructor as unknown as {
+  prototype: Record<PropertyKey, () => unknown>;
+  fromValues: (values: Iterable<number>) => unknown;
+};
+/** The routes by which a TypeScript-codec bitmap hands out or takes in ids one at a time or as an array. */
+const TS_PER_ID = [Symbol.iterator, 'toArray', 'add', 'addMany', 'remove', 'removeMany'] as const;
+
 /** Spy every per-id route; returns a function that reads the total calls made through them. */
 function countPerIdCalls(): () => Record<string, number> {
   const proto = RoaringBitmap32.prototype as unknown as Record<PropertyKey, () => unknown>;
   const spies = PER_ID.filter((m) => typeof proto[m] === 'function').map(
     (m) => [String(m), vi.spyOn(proto, m as never)] as const,
   );
+  const tsSpies = TS_PER_ID.map(
+    (m) => [`ts.${String(m)}`, vi.spyOn(TsBitmap.prototype, m as never)] as const,
+  );
   const fromValues = vi.spyOn(SafeBitmap, 'fromValues');
+  const tsFromValues = vi.spyOn(TsBitmap, 'fromValues');
   splitIdCalls.n = 0;
   return () => {
     const out: Record<string, number> = { splitId: splitIdCalls.n };
     out.fromValues = fromValues.mock.calls.length;
-    for (const [name, spy] of spies) out[name] = spy.mock.calls.length;
+    out['ts.fromValues'] = tsFromValues.mock.calls.length;
+    for (const [name, spy] of [...spies, ...tsSpies]) out[name] = spy.mock.calls.length;
     return out;
   };
 }
@@ -108,10 +129,55 @@ describe('a 12M-member bitmap load runs no per-id JavaScript', () => {
     expect(nonzero(counts())).toEqual({});
   });
 
-  // Counts the native codec's `fromValues`, which the TypeScript leg does not call.
-  it.skipIf(codecLeg() === 'ts')(
+  it('control: the counters see the TypeScript codec: a load from ids, a bitmap it must load through its ids', async () => {
+    const counts = countPerIdCalls();
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 'small' }, [1, 2, 3, 70_000]);
+    expect(counts().splitId).toBe(4);
+
+    // The counters see the codec's own routes when they are used directly.
+    const own = tsRoaringCodec.fromValues([1, 2, 3]) as unknown as Iterable<number> & {
+      toArray(): number[];
+      addMany(v: number[]): void;
+    };
+    own.toArray();
+    expect([...own]).toHaveLength(3);
+    own.addMany([4]);
+    expect(counts()['ts.toArray']).toBeGreaterThanOrEqual(1);
+    expect(counts()['ts.addMany']).toBeGreaterThanOrEqual(1);
+    expect(counts()['ts.fromValues']).toBeGreaterThanOrEqual(1);
+    expect(counts()['ts.Symbol(Symbol.iterator)']).toBeGreaterThanOrEqual(1);
+
+    // A codec without `encodeChunks` loads a bitmap through its ids: the path a missing seam would fall back to.
+    const without: CodecInterface = {
+      ...tsRoaringCodec,
+      safeDeserialize: (bytes, max, options) => {
+        const decoded = tsRoaringCodec.safeDeserialize(bytes, max, options);
+        // Methods are bound to the target: the class keeps its state in private fields a proxy cannot reach.
+        return new Proxy(decoded, {
+          get: (t, prop) => {
+            if (prop === 'encodeChunks') return undefined;
+            const v: unknown = Reflect.get(t, prop, t);
+            return typeof v === 'function' ? (v as () => unknown).bind(t) : v;
+          },
+        }) as CodecBitmap;
+      },
+    };
+    const before = splitIdCalls.n;
+    const deps = {
+      storage: new MemoryStorageDriver(),
+      registry: new MemoryRegistryDriver(),
+      codec: without,
+      entropy: testEntropy,
+    };
+    await loadSegment({ segment: 'fallback' }, { bitmap: new RoaringBitmap32([1, 2, 3]) }, deps);
+    expect(splitIdCalls.n - before).toBe(3);
+  });
+
+  // Counts the native codec's `fromValues`, which the TypeScript codec does not call: the native codec goes behind the store.
+  it(
     'control: the same counters see a load from ids, and a codec that cannot encode its own chunks',
-    async () => {
+    withNativeCodec(async () => {
       const counts = countPerIdCalls();
       const store = new CloudRoaring({ storage: new MemoryStorage() });
       await store.load({ segment: 'small' }, [1, 2, 3, 70_000]);
@@ -136,7 +202,7 @@ describe('a 12M-member bitmap load runs no per-id JavaScript', () => {
       };
       await loadSegment({ segment: 'fallback' }, { bitmap: new RoaringBitmap32([1, 2, 3]) }, deps);
       expect(splitIdCalls.n - before).toBe(3);
-    },
+    }),
   );
 });
 

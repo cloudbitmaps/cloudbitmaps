@@ -16,6 +16,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 
 - [**Before production**](production.md): the checklist, with permissions, lifecycle rules, timeouts and limits.
 - [**Loading in depth**](loading.md): generations and `keep`, rollback, the `*Into` verbs, `materializeMany` and its feed, and a summary of why a load is refused.
+- [**Our own Roaring**](roaring-codec.md): what the store's bitmaps are, why the bytes match CRoaring's, what it costs, and what can be used by itself.
 - [**Reading in depth**](reading.md): the combines, what a read costs, freshness, pins and paging.
 - [**Retention**](retention.md): expiring segments, the sweep you schedule, and why there is no per-id TTL.
 - [**Encryption at rest**](encryption.md): turning it on, key management, and crypto-shred.
@@ -29,7 +30,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 
 - [**Errors and what to do**](api-reference.md#errors-typed--you-catch-these): every error, what it means, and whether to retry.
 - [**A load was refused**](correctness.md#when-a-load-is-refused): each `reason` and what to do.
-- [**Install or import fails**](getting-started.md#troubleshooting): the native addon, and the deprecation warning.
+- [**Install or import fails**](getting-started.md#troubleshooting): CommonJS, Jest and TypeScript setups.
 
 ## Decide
 

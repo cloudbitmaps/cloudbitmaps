@@ -4,7 +4,7 @@ import type { SegmentRef } from '@/index';
 import { aadFor } from '@/core/crypto';
 import type { Aead, IKeystore, WrappedDek } from '@/core/crypto';
 import { writeCrbmGenerationStream } from '../helpers/crbm-write';
-import { SafeBitmap } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import type { IStorageDriver } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { openGenerationReader } from '@/core/crbm-open';
@@ -131,7 +131,7 @@ describe('a live pin that finds another reader memoised under its version while 
         backend.storage,
         { ...A, generation: 0 },
         (async function* () {
-          yield { chunkKey: 0, bitmap: SafeBitmap.fromValues([MARK]) };
+          yield { chunkKey: 0, bitmap: storeCodec.fromValues([MARK]) };
         })(),
         { crypto: { aead, aadFor: (scope) => aadFor(A, 0, scope) } },
       )

@@ -7,7 +7,7 @@ import type { EraseIdDeps } from '@/core/erase-id';
 import { nextGeneration } from '@/core/generation-gc';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { testEntropy } from '../helpers/entropy';
@@ -29,7 +29,7 @@ async function world(orphanAt: 'below' | 'above') {
     registry,
     keystore,
     entropy: testEntropy,
-    codec: roaringCodec,
+    codec: storeCodec,
   };
   const keyedLoad = async (ids: number[]): Promise<number> => {
     const generation = await nextGeneration(SEG, { storage, registry });
@@ -108,7 +108,7 @@ describe('erasure with an encrypted object the segment key does not open', () =>
         registry,
         keystore,
         entropy: testEntropy,
-        codec: roaringCodec,
+        codec: storeCodec,
       }),
     ).toMatchObject({ erased: false, reason: 'not-member', collected: [0] });
     const left: number[] = [];

@@ -109,7 +109,6 @@
           <aside class="install">
             <div class="install-head label"><span>Install &amp; verify</span><span>OIDC + SLSA</span></div>
             <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
-<span class="c"># npm 12 and pnpm 10+: allow roaring's install script first (see the install guide)</span>
 
 <span class="c"># the tarball came from the commit it claims</span>
 npm audit signatures</code></pre>
@@ -117,9 +116,10 @@ npm audit signatures</code></pre>
               <p class="label">Supply chain</p>
               <p class="install-note">
                 Published tokenlessly from CI via OIDC with SLSA provenance attached.
-                <span class="m">@cloudbitmaps/core</span> has no third-party dependencies; the codec adds
-                one native dependency (<span class="m">roaring</span>, the Node binding to CRoaring), and each
-                storage package its own cloud SDK.
+                <span class="m">@cloudbitmaps/core</span> and the codec have no third-party dependencies, and each
+                storage package has its own cloud SDK.
+                <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/roaring-codec.md" target="_blank" rel="noopener" aria-label="The codec is Roaring in TypeScript (opens in a new tab)">The codec is
+                Roaring in TypeScript</a>, with no native code.
               </p>
             </div>
           </aside>
@@ -783,7 +783,6 @@ bill.redisCrossover.readsPerSec;  <span class="c">// against a Redis sized to th
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
             <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
-<span class="c"># npm 12 and pnpm 10+: allow roaring's install script first (see the install guide)</span>
 
 <span class="c"># the codec you want, and the storage you have.</span>
 <span class="c"># also: @cloudbitmaps/gcs, @cloudbitmaps/azure-blob</span>

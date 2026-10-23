@@ -7,7 +7,7 @@ import type { Clock } from '@/core/determinism';
 import type { IRegistryDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { testEntropy } from '../helpers/entropy';
 
 /**
@@ -46,7 +46,7 @@ async function loaded(count: number) {
     await loadSegment(
       SEG,
       Array.from({ length: g + 3 }, (_, i) => i),
-      { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+      { storage, registry, entropy: testEntropy, codec: storeCodec, clock },
       { keep: 5 },
     );
   }
@@ -60,7 +60,7 @@ describe('the next step in a contention error', () => {
     const err = await loadSegment(
       SEG,
       [1, 2, 3],
-      { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+      { storage, registry, entropy: testEntropy, codec: storeCodec, clock },
       { keep: 5 },
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WriteConflictError);

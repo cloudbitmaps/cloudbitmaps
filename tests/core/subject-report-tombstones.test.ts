@@ -6,7 +6,7 @@ import { findIdUnderTombstone } from '@/core/erase-id';
 import { BudgetExceededError, TransientError } from '@/core/errors';
 import { brandAsBackend } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { roaringCodec } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { loadedStore } from '../helpers/loaded';
 
@@ -445,7 +445,7 @@ describe('subjectReport lists a cleartext tombstone whose leftover object holds 
 });
 
 describe('findIdUnderTombstone', () => {
-  const deps = (storage: IStorageDriver) => ({ storage, codec: roaringCodec });
+  const deps = (storage: IStorageDriver) => ({ storage, codec: storeCodec });
 
   it("returns the newest holder's number and writes and deletes nothing", async () => {
     const backend = new MemoryStorage();

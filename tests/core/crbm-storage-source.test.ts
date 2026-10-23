@@ -1,3 +1,4 @@
+import type { CodecBitmap } from '@cloudbitmaps/core';
 import { mkdtemp, open as fsOpen, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,7 +6,7 @@ import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { storageObjectPath } from '@/drivers/localfs/paths';
-import { SafeBitmap } from '@/roaring-codec';
+import { storeCodec } from '../helpers/store-codec';
 import { CapabilityError, IntegrityError, ValidationError } from '@/core/errors';
 import type { IStorageDriver } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -21,7 +22,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-const bm = (...vals: number[]): SafeBitmap => SafeBitmap.fromValues(vals);
+const bm = (...vals: number[]): CodecBitmap => storeCodec.fromValues(vals);
 
 describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
   it('run-encodes a storage generation: far smaller on disk, byte-identical set on the way back', async () => {
@@ -32,10 +33,10 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
     // This asserts BOTH halves, because size alone is not the property that matters. A re-encoding that lost or
     // gained a single id would also be "smaller".
     const contiguous = Array.from({ length: 50_000 }, (_, i) => i);
-    const unoptimized = SafeBitmap.fromValues(contiguous).serialize().length;
+    const unoptimized = storeCodec.fromValues(contiguous).serialize().length;
 
     await writeCrbmGeneration(driver, { segment: 'runs', generation: 0 }, [
-      { chunkKey: 0, bitmap: SafeBitmap.fromValues(contiguous) },
+      { chunkKey: 0, bitmap: storeCodec.fromValues(contiguous) },
     ]);
 
     // The written object is dramatically smaller than the same chunk serialized without the pass. A loose bound
@@ -47,7 +48,7 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
     expect(chunk!.length * 10).toBeLessThan(unoptimized);
 
     // And the set survives exactly: same cardinality, same bounds, and a member/non-member probe either side.
-    const back = SafeBitmap.safeDeserialize(chunk!, 1 << 26);
+    const back = storeCodec.safeDeserialize(chunk!, 1 << 26);
     expect(back.size).toBe(contiguous.length);
     expect(back.toArray()).toEqual(contiguous);
     expect(back.has(0)).toBe(true);
@@ -60,17 +61,17 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
     // encoding is smaller per container, so ids with no runs in them come out unchanged rather than paying for
     // a speculative conversion. Without this, "smaller on run-shaped data" would be an untested half-claim.
     const sparse = [3, 901, 5_012, 20_444, 61_003];
-    const direct = SafeBitmap.fromValues(sparse).serialize();
+    const direct = storeCodec.fromValues(sparse).serialize();
 
     await writeCrbmGeneration(driver, { segment: 'sparse', generation: 0 }, [
-      { chunkKey: 0, bitmap: SafeBitmap.fromValues(sparse) },
+      { chunkKey: 0, bitmap: storeCodec.fromValues(sparse) },
     ]);
     const storage = new CrbmStorageChunkSource(driver);
     const chunk = await storage.getChunk({ segment: 'sparse', chunkKey: 0 });
     // Contents, not identity: the driver hands back a Buffer (a Uint8Array subclass), which `toEqual`
     // distinguishes from the Uint8Array `serialize()` returns even when every byte matches.
     expect([...chunk!]).toEqual([...direct]);
-    expect(SafeBitmap.safeDeserialize(chunk!, 1 << 26).toArray()).toEqual(sparse);
+    expect(storeCodec.safeDeserialize(chunk!, 1 << 26).toArray()).toEqual(sparse);
   });
 
   it('round-trips bitmaps through an on-disk generation', async () => {
@@ -83,14 +84,14 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
     expect((await storage.listChunkKeys({ segment: 's' })).sort((a, b) => a - b)).toEqual([0, 5]);
     const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
     expect(bytes).not.toBeNull();
-    expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+    expect(storeCodec.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
     expect(await storage.getChunk({ segment: 's', chunkKey: 999 })).toBeNull();
   });
 
   it('skips empty bitmaps (empty chunks are never stored)', async () => {
     await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, [
       { chunkKey: 0, bitmap: bm(1) },
-      { chunkKey: 1, bitmap: SafeBitmap.empty() },
+      { chunkKey: 1, bitmap: storeCodec.empty() },
     ]);
     const storage = new CrbmStorageChunkSource(driver);
     expect(await storage.listChunkKeys({ segment: 's' })).toEqual([0]);
@@ -112,10 +113,9 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
   });
 
   const read = async (storage: CrbmStorageChunkSource, chunkKey: number): Promise<number[]> =>
-    SafeBitmap.safeDeserialize(
-      (await storage.getChunk({ segment: 's', chunkKey }))!,
-      1 << 20,
-    ).toArray();
+    storeCodec
+      .safeDeserialize((await storage.getChunk({ segment: 's', chunkKey }))!, 1 << 20)
+      .toArray();
 
   it('resolves the latest generation across gaps and pins it per source', async () => {
     await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, [

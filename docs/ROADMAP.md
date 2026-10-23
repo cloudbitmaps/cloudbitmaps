@@ -52,7 +52,7 @@ marked with the release it is to ship in, and sits under `[Unreleased]` in the [
 | `materializeMany` reported to the metrics sink | **shipped** — one `op` event named `materializeMany` per call, and a `storage.get` event per range request it sends, as the `*Into` verbs report; no `cache` event, since the call never looks the cache up ([observability](guide/observability.md)) |
 | A deadline on a set — `setRetention` with `retireExpired`, or a check where you read | **shipped** — `store.segment(name, options)` takes `{ namespace }` only, a plain object, and refuses any other key, `expiresAt` included, with `ValidationError`, so a deadline is never dropped in silence ([a deadline on a set](guide/retention.md#a-deadline-on-a-set)) |
 | A registry write sent on the row the load read | **shipped** — [a publish passes the row it read](guide/correctness.md#write-goes-out-on-the-row-read), so the S3, GCS and Azure Blob registries send their conditional write with no read of the row first; the store's own condition still refuses a row another writer changed; measured on S3 in-region by run `2026-10-13-b329d`: a segment's first single-part load made 2 PUT + 3 GET, and a multipart one 5 PUT-class + 3 GET ([the run](benchmarks.md#the-in-region-run--run-2026-10-13-b329d)) |
-| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-13-b329d` from AWS CloudShell in `us-east-1`: a single-part load ran at 2.72 million ids a second, a segment's first single-part `store.load()` made 2 PUT + 3 GET, $11.20 per million at the default prices, and each kind of steady `store.load()` at `keep: 12` had its requests measured, on the release the run installed — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-13-b329d) publishes it, and the [report](../bench/calibration/2026-10-13-b329d.md) explains every figure. Run `2026-10-07-88cd3` measured cold combines and the `*Into` verbs on the large suite's operands ([benchmarks](benchmarks.md#large-operands--run-2026-10-07-88cd3)). Still owed: a steady `store.load()` at a `keep` other than 12 on S3, Lambda cold start, `materializeMany` on S3, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
+| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-13-b329d` from AWS CloudShell in `us-east-1`: a single-part load ran at 2.72 million ids a second, a segment's first single-part `store.load()` made 2 PUT + 3 GET, $11.20 per million at the default prices, and each kind of steady `store.load()` at `keep: 12` had its requests measured, on the release the run installed (on the native codec; the TypeScript codec has not been run in region) — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-13-b329d) publishes it, and the [report](../bench/calibration/2026-10-13-b329d.md) explains every figure. Run `2026-10-07-88cd3` measured cold combines and the `*Into` verbs on the large suite's operands ([benchmarks](benchmarks.md#large-operands--run-2026-10-07-88cd3)). Still owed: a steady `store.load()` at a `keep` other than 12 on S3, Lambda cold start, `materializeMany` on S3, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained, maxGrowth }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, unless a rollback moved the pointer onto the object the refusal deleted, which throws `NotFoundError` ([a rollback that races a collection](guide/correctness.md#a-rollback-that-races-a-collection)); and it deletes the object it wrote while the segment's row is unchanged, changed only in its leases, or `destroyed`, and, once one read of its footer matches, while the row is gone or holds key material over a cleartext object; once another write has changed the row, it leaves the object for collection, and until it goes a rollback onto it needs `allowUnknown` ([an orphan is collected later](guide/correctness.md#how-a-load-stays-correct)). It reads the segment's row once, checks that its next number is free instead of listing for it, and at any `keep` up to 64 collects by name, deleting the generations its publish pushed out of the window that its row records and listing the segment only every 16th generation: a steady single-part load on S3 makes 2 PUT-class requests, 5 GET-class and a delete, 8 requests, held by a test and measured on S3 at `keep: 12` only, by run `2026-10-13-b329d` |
 | `guard.maxGrowth`: a ceiling on how much a load may grow a segment | **shipped** — the ceiling to `minRetained`'s floor, for a source that lands duplicated or joined on the wrong key: a generation larger than `maxGrowth` times the current one is refused with `reason: 'max-growth'`, on `load`, the `*Into` verbs and each `materializeMany` output. It does not judge a first load or a load onto an empty segment, and setting it reads the current size and fences the publish on it, `allowEmpty: true` or not ([when a load is refused](guide/correctness.md#when-a-load-is-refused)) |
 | A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation holds chunk for chunk what its ids write (its footer carries its own write identity). `deserializePortable(bytes)` decodes portable bytes through the same check, for bytes that crossed a process boundary, into a `ReadonlyBitmap` of the library's own (`size`, `has`, ascending iteration, `serialize('portable')`). Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
@@ -76,7 +76,7 @@ marked with the release it is to ship in, and sits under `[Unreleased]` in the [
 | Each driver's tests run every night at the lowest SDK version of each alternative of its range | **shipped** — S3 `3.700.0`, GCS `8.1.0` and Azure Blob `12.23.0`, each the lowest version its tests were measured to pass on (GCS: 8.0.1 fails an integration test, and 8.0.0 and every 7.x release tried fail the unit tests); a range written with `||` gets one run per alternative. A negative control runs the S3 driver one release below its floor and requires the registry's refusal of an unfenced write. The integration half runs against the emulators in the same job. [CONTRIBUTING](../CONTRIBUTING.md) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool. A store with a `metrics` sink gets one `advisory` event when the client's pool is under 64 sockets, as a client you pass with the SDK's 50 is ([observability](guide/observability.md)). The in-region run's client had 128 sockets |
 | Deferred | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, the reconcile for `setRetention` and shred writes, and the resend of a `rollback` swap the row shows did not land: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
-| WASM CRoaring research | **after** the loaded store |
+| WASM CRoaring research | **not planned** — the store's codec is Roaring in TypeScript, so there is no native addon for a WebAssembly build to replace |
 | A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — no library behaviour changes: the large suite has run against real S3, run `2026-10-07-88cd3`, whose figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-07-88cd3) |
 
 **What is next:** the batch stage (a refresh-shaped `materializeMany` measured on S3), a Lambda run, other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
@@ -89,9 +89,6 @@ and each storage package brings its own SDK — so no install carries an SDK for
 pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, storage + registry
 # npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
 ```
-
-On npm 12 and pnpm 10 and later, allow `roaring`'s install script first; see the
-[Install section of the getting-started guide](guide/getting-started.md#install).
 
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
 is a dependency of both, installed directly only to name a driver port's type from `@cloudbitmaps/core/driver-kit`
@@ -197,14 +194,14 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   genuinely occupies it for a while. It hands the event loop back periodically, so a co-resident server keeps
   answering while a load runs; a test holds a load to yielding. On by default. The guide's
   [what blocks the event loop](guide/production.md#what-blocks-the-event-loop-and-where-to-run-it) has the
-  timings it reports for one machine, measured by `bench/event-loop.cjs` and checked against its committed results in CI.
+  timings it reports for one machine, measured by `bench/event-loop.cjs` on the native codec (0.23.0) and checked against its committed results in CI; they are to be re-measured on the TypeScript codec.
 
 ### Security & data protection
 
 - **All stored bytes are untrusted.** The safe Roaring deserializer behind a hard size cap and a structural check
   of every payload (containers and values in order, runs disjoint, cardinalities matching the bits), per-chunk /
   per-index / per-footer CRC32C, and field validation on every `.crbm` header — a corrupt or hostile object
-  fails closed with a typed error instead of reaching the native addon trustingly.
+  fails closed with a typed error instead of reaching the decoder trustingly.
 - **Optional encryption at rest** — AES-256-GCM over the payload *and* the index (so metadata is hidden),
   envelope-wrapped per-segment DEKs under operator-held KEKs, AAD binding each ciphertext to its
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
@@ -501,7 +498,7 @@ move it up.
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the object size, the read cost and the monthly figure that follow — **offline, with no cloud account and
   nothing created**. Today's cost tooling can only answer that once you're already a user, which is backwards. It
-  would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
+  would also answer what Roaring is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **A data key per generation.** A segment seals every generation under one data key for its whole life, so the count
   of seals under that key grows with every load and erasure rewrite, and a full-width segment reloaded every few minutes
@@ -549,28 +546,20 @@ move it up.
     refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
   - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
     become a dozen; throttling belongs to the SDK's retry alone.
-- **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
-  remove the native addon from the install story (prebuilt binaries, musl, from-source builds on Alpine) and is
-  the prerequisite for the edge-runtime item below. It is deliberately queued *behind* the loaded store's own
-  work — the benchmarks, `load()`, the docs pass — and it ships only if the measured decode throughput is
-  acceptable against the native addon on the shapes the benchmarks cover. Research, not a commitment.
-- **Route a load's bitmap input by shape, with the codec switch.** A bare bitmap passed where ids go is recognised by
-  class today (`roaring`'s `RoaringBitmap32`, or what `deserializePortable` returned), so it loads from its containers
-  and not id by id. When the codec behind `deserializePortable` can change, recognise it by shape (an object with
-  `serialize('portable')`) instead, or a bare `RoaringBitmap32` passed as ids loses that fast path.
 - **Membership from an edge runtime — explicitly *not* supported today, and being explored.** A Cloudflare
   Worker answering "is id N in segment S?" against a storage generation in R2 is two ranged reads and a decode,
   which is the access pattern this format was designed for. What stops it is not the engine: core's main entry,
   with every module it reaches, imports no `node:*` builtin and has zero runtime dependencies, and `pnpm smoke` loads
   the built entry, bundled for a platform with no builtin, in a `node:vm` context holding only web-platform globals,
   with string code generation off and random values, timers and `fetch` refused at global scope (two rules Workers
-  documents), on every CI run. That is as close to an isolate as CI gets today, and it is a load, not a run. It is the
-  **codec** — `roaring` is a native C++ addon, and no isolate can load one under any compatibility flag. So the
-  first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which is in
+  documents), on every CI run. That is as close to an isolate as CI gets today, and it is a load, not a run. It is not
+  the codec either: the store's codec is TypeScript, with no native addon. The flavor's entry imports Node builtins
+  (`node:crypto`, `node:fs`) for its in-memory and local-disk backends and its entropy, and no runtime but Node is
+  tested. So the first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which is in
   the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
-  encoding, refuses the same malformed bytes the native path does because the two share one structural check, and
+  encoding, refuses the same malformed bytes the codec's decoder does because the two share one structural check, and
   is **not exported, not wired into anything, and not something you can use yet**. Read-only by
-  design: loads stay in Node, where the native codec is the right tool. **We will not claim this works on any
+  design: loads stay in Node. **We will not claim this works on any
   runtime until CI runs the conformance suite inside that runtime**: what a runtime can load is easy to get
   wrong, and a claim is not a test. Running the conformance suite inside an isolate also needs an in-memory backend that
   loads there. `MemoryStorage` hashes with `node:crypto`, so it is exported by `@cloudbitmaps/core/node` and not the
@@ -584,6 +573,9 @@ move it up.
 
 Saying no is part of the design:
 
+- **A WebAssembly build of CRoaring.** The store's codec is Roaring in TypeScript: no install script, no prebuilt
+  binary and nothing to compile, so a WebAssembly build of CRoaring as a second codec would replace no native addon.
+  (Alpine is not measured; the [codec page](guide/roaring-codec.md) says what is and is not.)
 - **Combining segments of two stores.** Not supported: a combine resolves each operand by name in its own store, so a
   handle of another store would be read as the receiver's segment of that name. It is refused, never bridged. Load
   both segments into one store, or read each store and combine the ids upstream; for two store objects over one
@@ -623,8 +615,9 @@ Saying no is part of the design:
   one, where a bitset would be larger still. What a flat bitset keeps is faster random access, one shift-and-mask against a
   container lookup: CPU time inside an operation that waits on an object-storage request. The codec seam stays;
   nothing is queued to fill it.
-- **Reimplementing the bit math.** CloudBitmaps wraps `roaring-node`/CRoaring. The object-store layout and the
-  chunk-skipping reads are the contribution; the container algorithms are not ours to re-invent.
+- **New container algorithms.** The store's codec implements the Roaring format and the algorithms of Lemire et al., with
+  CRoaring as the reference its tests compare it against. The object-store layout and the chunk-skipping reads are the
+  contribution; the container algorithms are not ours to re-invent.
 - **Any feature that taxes the hot path** (`has` / `count` / `intersect` / `union` / `andNot`) to speed up a
   rare operation. If it can't be pushed to wiring time, load time, a scheduled pass, an admin call, or the docs,
   it doesn't ship.
