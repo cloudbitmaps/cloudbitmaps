@@ -98,7 +98,7 @@ its backup, which a first load fails early and typed on; and an S3 SDK from 3.64
 older drops `If-None-Match`, which shows as a `write-once` problem. One from 3.641.0 to 3.699.0 keeps `If-None-Match` but drops `If-Match` on
 `PutObject`, which the registry's compare-and-swap needs; preflight cannot see that, because its registry check
 only reads and only a registry write refuses such an SDK. An SDK from 3.641.0 to 3.697.0 also drops `If-Match` on `DeleteObject`,
-which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check.
+which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check for a client you pass in; CI runs the S3 driver, and the other two, at the lowest SDK version each declared range allows every night.
 [Permissions](#permissions), [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and
 backups](#versioning-and-backups) cover the rest.
 

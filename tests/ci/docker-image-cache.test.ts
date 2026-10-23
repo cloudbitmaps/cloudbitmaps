@@ -1002,6 +1002,36 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     }
     return found;
   };
+  /**
+   * Jobs that only RESTORE the images the `integration` job in ci.yml keeps and never save any: the SDK-floor workflow
+   * runs on a schedule and on a pull request that touches a driver, starts one emulator each, and must not write a cache
+   * entry (it installs third-party packages fresh, so what it saves could be restored by a job that holds a secret).
+   * The save rules of `problemsOf` do not apply to them; `restoreOnlyProblems` is the rule that does.
+   */
+  const RESTORE_ONLY = [
+    '.github/workflows/sdk-floor.yml › floor',
+    '.github/workflows/sdk-floor.yml › negative-control',
+  ];
+  /** What is wrong with a job that must only restore the `integration` job's images: one entry per fault. */
+  const restoreOnlyProblems = (job: Job, read = repoFile): string[] => {
+    const steps = job.steps ?? [];
+    const found: string[] = [];
+    const firstPull = steps.findIndex((s) => pullingScriptsIn(s.run ?? '', read).length > 0);
+    const restore = steps.findIndex((s) => s.uses === RESTORE);
+    if (restore < 0 || firstPull < 0 || restore > firstPull) {
+      found.push('restores no cache before its first pull');
+    } else {
+      const step = steps[restore];
+      if (step?.if !== undefined) found.push('restores its cache only sometimes');
+      if (step?.with?.name !== 'integration' || step.with.files !== 'docker-compose.yml') {
+        found.push("restores something other than the integration job's entry");
+      }
+    }
+    if (steps.some((s) => s.uses === SAVE || /(^|\/)cache\/save@/.test(s.uses ?? ''))) {
+      found.push('saves a cache');
+    }
+    return found;
+  };
   /** Pairs of names one of which an older entry's prefix would find the other's under. */
   const prefixClashes = (names: string[]): string[] =>
     names.flatMap((a) =>
@@ -1287,12 +1317,51 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     ).toHaveLength(1);
   });
 
-  it.each(pulling.map((j) => [j.where, j.job] as const))(
+  it.each(
+    pulling.filter((j) => !RESTORE_ONLY.includes(j.where)).map((j) => [j.where, j.job] as const),
+  )(
     '%s restores before its first pull, and saves after its last, only from a run that passed',
     (_where, job) => {
       expect(problemsOf(job)).toEqual([]);
     },
   );
+
+  it.each(RESTORE_ONLY)(
+    "%s only restores the integration job's images: it is in the sweep and saves nothing",
+    (where) => {
+      const found = pulling.find((j) => j.where === where);
+      expect(found, `${where} is not a job that pulls an image`).toBeDefined();
+      expect(restoreOnlyProblems(found?.job ?? {})).toEqual([]);
+    },
+  );
+
+  it('reads a restore-only job: restoring the integration entry and never saving passes; anything else is a fault', () => {
+    const pin = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1';
+    const restore: Step = {
+      uses: RESTORE,
+      with: { name: 'integration', files: 'docker-compose.yml' },
+    };
+    const pull: Step = { run: 'scripts/ci-backend-images.sh "$RUNNER_TEMP/o.yml"' };
+    const job = (...steps: Step[]): Job => ({ steps: [{ uses: pin }, ...steps] });
+    expect(restoreOnlyProblems(job(restore, pull))).toEqual([]);
+    expect(restoreOnlyProblems(job(restore, pull, { run: 'docker compose down' }))).toEqual([]);
+    const wrong: [string, Job][] = [
+      ['a save after the pull', job(restore, pull, { uses: SAVE })],
+      ['a save through the cache action', job(restore, pull, { uses: 'actions/cache/save@v6' })],
+      ['no restore', job(pull)],
+      ['the restore after the pull', job(pull, restore)],
+      ['a restore only sometimes', job({ ...restore, if: 'always()' }, pull)],
+      [
+        "another job's entry",
+        job({ ...restore, with: { name: 'lambda-smoke', files: 'docker-compose.yml' } }, pull),
+      ],
+      [
+        'a key hashing another file',
+        job({ ...restore, with: { name: 'integration', files: 'scripts/rss-gate.sh' } }, pull),
+      ],
+    ];
+    for (const [what, j] of wrong) expect(restoreOnlyProblems(j), what).toHaveLength(1);
+  });
 
   it('keys each job apart: an older entry is found by the name and a dash, so no name begins another', () => {
     expect(prefixClashes(['lambda', 'lambda-smoke', 'rss-gate'])).toEqual([
@@ -1303,9 +1372,9 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       prefixClashes(['rss', 'rssx']),
       'a name and a dash begin another, not a name alone',
     ).toEqual([]);
-    const names = pulling.map(
-      ({ job }) => (job.steps ?? []).find((s) => s.uses === RESTORE)?.with?.name ?? '',
-    );
+    const names = pulling
+      .filter((j) => !RESTORE_ONLY.includes(j.where))
+      .map(({ job }) => (job.steps ?? []).find((s) => s.uses === RESTORE)?.with?.name ?? '');
     expect(new Set(names).size).toBe(names.length);
     expect(prefixClashes(names)).toEqual([]);
   });
