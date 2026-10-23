@@ -105,8 +105,9 @@ It builds its own client from Application Default Credentials. Any other key is 
 - **A read that times out before its server answers leaves its connection open.** The SDK cannot cancel a request
   whose response has not begun, so that request holds its connection until the server answers or closes it, and until
   then keeps a Node process from exiting: one per driver read, up to four per call through the store's retry, so an
-  outage at N reads a second adds about 4N held connections each second. On 8.x a read cut off after its response
-  began closes its own; on 7.x (checked on 7.22.0, outside this driver's range) it stays open too. A 404 whose error body arrives after the
+  outage at N reads a second adds about 4N held connections each second. On every version this driver's range admits
+  (8.1.0 and later) a read cut off after its response began closes its own; on 8.0.0 and 7.x (checked on 7.22.0), both
+  outside the range, it stays open too. A 404 whose error body arrives after the
   deadline is reported as a `TransientError`, not `NotFoundError`.
 - **Downloads go out on Node's global agent, so one the driver cuts off or refuses resets nothing else.** When a
   download fails part-way, the SDK destroys the HTTP agent it went out on, and its own agent is one keep-alive pool the

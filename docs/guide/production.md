@@ -405,8 +405,8 @@ closes it, and until then it keeps a Node process from exiting. That is one requ
 per call through the store's read retry: measured against a local server that never answers, one `has()` left 4
 requests open, 20 at once left 80, and a process whose read had timed out at 200 ms exited only when the server closed
 its connection, 6 s later. A sustained outage at N reads a second therefore adds about 4N held connections each
-second, until the server closes them. On `@google-cloud/storage` 8.x a read cut off after its response began closes
-its own connection; on 7.x (checked on 7.22.0, outside the driver's range) it stays open as well, and without a timeout a body the server cuts off
+second, until the server closes them. On every `@google-cloud/storage` version the driver's range admits (8.1.0 and later) a read cut off after its
+response began closes its own connection; on 8.0.0 and 7.x (checked on 7.22.0), both outside the range, it stays open as well, and without a timeout a body the server cuts off
 part-way never settles. A 404 whose error body arrives after the deadline is reported as the timeout, a
 `TransientError`, rather than as `NotFoundError`.
 

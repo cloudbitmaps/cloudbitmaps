@@ -43,9 +43,11 @@ on:
       - docker-compose.yml
       - package.json
       - packages/azure-blob/**
+      - packages/core/src/core/errors.ts
       - packages/core/src/driver-kit.ts
       - packages/core/src/drivers/**
       - packages/gcs/**
+      - packages/roaring/src/testing/conformance.ts
       - packages/s3/**
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
