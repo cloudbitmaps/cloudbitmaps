@@ -198,7 +198,7 @@ jobs:
     # only what a tarball holds, so a file missing from `files`, an `exports` path that resolves only in the
     # workspace, a dependency in the wrong field or a blocked install script fails here and not for a user. The npm
     # is the one `setup-node` ships with each Node: 10 on 22, 11 on 24. The cloud SDKs install from the registry; no
-    # cloud is contacted. About two minutes.
+    # cloud is contacted. Under a minute.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

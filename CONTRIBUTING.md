@@ -37,9 +37,11 @@ Every change must pass these locally, and CI runs each of them on every pull req
   directions.
 - `node scripts/consumer-install.cjs` packs the six packages as a release does, installs the tarballs with npm into a clean
   project outside the checkout, and runs code against them (both module systems, both local drivers, the
-  `export-segments` bin). It builds first, needs the registry for the cloud SDKs and takes about a minute; add `--keep` to
-  leave the project behind. Run it after a change to a `package.json` (`files`, `exports`, `bin`, dependencies) or to the
-  build. CI runs it on every pull request as `consumer install`, on Node 22 and 24, with the npm each ships.
+  `export-segments` bin), and fails on a file a manifest names that the tarball lacks. It builds first, needs the registry for
+  the cloud SDKs (a failed install is retried twice) and takes under a minute on CI. `--keep` leaves the project behind;
+  `--tarballs <dir>` installs tarballs you already packed. Run it after a change to a `package.json` (`files`, `exports`,
+  `bin`, dependencies) or to the build. CI runs it on every pull request as `consumer install`, on Node 22 and 24, with the
+  npm each ships. It does not compile types in the project (`pnpm smoke` does), run npm 12 or install with pnpm or yarn.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
   the entry list is derived from each manifest, so a declared entry that does not load fails the build. It checks
   that `errorKind`, from the flavor and from driver-kit, classifies an error the built `@cloudbitmaps/s3` throws, and that the store takes a

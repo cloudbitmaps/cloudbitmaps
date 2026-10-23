@@ -77,8 +77,38 @@ env:
   EXPECTED_PACKAGES: 6
 
 jobs:
+  # Installs the packed packages the way a user does, in a job of its own. npm resolves the cloud SDKs and their
+  # dependencies fresh from the registry and runs install scripts, so this runs where there is nothing to steal: no
+  # `id-token`, no environment, no secret, read-only token. `publish` needs it, so a failure here stops the release
+  # before the approval gate is reached. Runs on dry runs too.
+  consumer-install:
+    name: consumer install (packed packages)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g 'npm@^11.5.1'
+      - name: Install the packed packages as a consumer
+        run: node scripts/consumer-install.cjs --write-digests digests.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-tarball-digests
+          path: digests.json
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
     name: publish (tokenless, provenance)
+    needs: consumer-install
     runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — never a self-hosted one
     # 360 — GitHub's default, but set EXPLICITLY so it reads as a decision rather than an omission.
     #
@@ -271,12 +301,16 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: node scripts/changelog-section.cjs "${GITHUB_REF_NAME}" > /dev/null
 
-      # Install the packed tarballs with npm into a clean project outside the checkout and run code against
-      # them, as a user would. The workspace checks above never read a tarball, so a file missing from `files`
-      # or a `workspace:*` left unrewritten passes them and ships. Runs on dry-runs too, and under the npm this
-      # job just installed. See scripts/consumer-install.cjs.
-      - name: Install the packed packages as a consumer
-        run: node scripts/consumer-install.cjs
+      # The packages to publish must be the ones the consumer-install job verified, file for file: the job
+      # packed and installed them from this same commit, and wrote the hash of every file it saw. This packs
+      # again, as the publish below will, and fails on any file that differs, appeared or vanished. It proves
+      # the content, not that the same tarball bytes are uploaded: `pnpm publish` packs once more.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: verified-tarball-digests
+          path: verified
+      - name: Check the packages to publish are the ones the consumer install verified
+        run: node scripts/consumer-install.cjs --verify-digests verified/digests.json
 
       # Scan what actually ships. The tracked-file and history modes cannot see `dist/` (gitignored), which is
       # most of the published bytes and carries every `src` comment through the sourcemaps' `sourcesContent`.
