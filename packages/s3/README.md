@@ -68,7 +68,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   turns write-once into overwrite, so check yours before you depend on it. It must also be strongly consistent: a read
   or a listing made after a write or a delete returns sees it. AWS S3 is.
 - **Use `@aws-sdk/client-s3` 3.974.0 or later** if you pin the SDK or pass your own `client`. 3.974.0 is the lowest
-  version this package's own unit tests pass on (3.972.0 fails them), and CI runs them at it every night. Under it sits a
+  version this package's own unit tests pass on, and CI runs them at it every night. Under it sits a
   correctness floor, 3.700.0: an SDK sends only the conditional headers it models, and drops one it does
   not, without an error. `If-None-Match`, which write-once is built on, is modelled from 3.641.0: measured against
   MinIO, 3.640.0 silently overwrites an existing object, which loses a published generation. `If-Match` on

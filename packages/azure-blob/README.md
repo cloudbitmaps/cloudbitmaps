@@ -25,7 +25,7 @@ Install the same version of every `@cloudbitmaps/*` package: they release togeth
 
 [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-`@azure/storage-blob` (`^12.23.0`) is a real dependency of this package, so installing it is the whole step. A `containerClient` you pass must come from 12.23.0 or later: the driver's own tests fail on every older version (12.0.0 lacks members the driver calls, such as `deleteIfExists`, and a read that drops part-way is not timed out on 12.18.0 and older).
+`@azure/storage-blob` (`^12.23.0`) is a real dependency of this package, so installing it is the whole step. A `containerClient` you pass must come from 12.23.0 or later: the driver's own tests fail on every older version (the oldest 12.x lacks members the driver calls, such as `deleteIfExists`, and a read that drops part-way is not timed out on the older ones).
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use

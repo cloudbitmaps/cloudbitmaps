@@ -307,7 +307,7 @@ object and `If-Match` for the pointer.
   A rollback takes a read of its target that succeeds as proof the object is there, and an erasure's check that no
   generation still holds the id, a drop's `generationsRemaining` and the retention sweep prove a delete by listing.
   AWS S3 is; check another S3-compatible service.
-- **Use `@aws-sdk/client-s3` 3.974.0 or later if you pass your own `client`.** 3.974.0 is the lowest version the package's own unit tests pass on (3.972.0 fails them; the correctness floor under it, 3.700.0, is below). An SDK drops a conditional header it
+- **Use `@aws-sdk/client-s3` 3.974.0 or later if you pass your own `client`.** 3.974.0 is the lowest version the package's own unit tests pass on (the correctness floor under it, 3.700.0, is below). An SDK drops a conditional header it
   does not model, without an error. Measured against MinIO, 3.640.0 drops `If-None-Match` and silently overwrites an
   existing object, which loses a published generation; up to 3.699.0 the serializer drops `If-Match` on `PutObject`,
   so the registry's compare-and-swap goes out unconditionally. `@cloudbitmaps/s3` never resolves its own SDK below
