@@ -366,7 +366,7 @@ above the winner's pointer: [a rollback onto that object between the call's rene
 delete](correctness.md#rollback-during-erasure), and, on a storage driver that does not report `conditionalDelete`, [a
 delete that removes a load's generation published under that object's
 number](correctness.md#erasure-number-taken-again). Each leaves the pointer on a missing object with nothing reported,
-and only `checkConsistency()` finds it. A refused rewrite whose read of its own object faults, past the read retry, is reported too: `eraseIdFromSegment` rejects with the fault and `eraseSubject` records an `error:` note for the segment, and the object stays ([why](correctness.md#erasure-footer-read-faults)). A call that could not collect [throws rather than report `erased: true` over
+and only `checkConsistency()` finds it. A refused rewrite whose read of its own object faults, past the read retry, is reported too: `eraseIdFromSegment` rejects with the fault and `eraseSubject` records an `error:` note for the segment, and the object stays ([why](correctness.md#erasure-racing-writers)). A call that could not collect [throws rather than report `erased: true` over
 bytes still there](correctness.md#erasure-results). The mechanism, its memory and request bounds, each race, which
 drivers apply a conditional delete, and what each result means are in [How an erasure stays
 correct](correctness.md#how-an-erasure-stays-correct).

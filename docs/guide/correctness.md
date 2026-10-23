@@ -923,7 +923,7 @@ one more: a rewrite is deleted on the strength of a read of its footer. The foot
 rewrite drew, so it names that write: a load of the ids the rewrite holds, in the clear, writes the same chunks but
 another identity, and its object does not match. So the call first reads the footer of the object under its number (one read, repeated on a fault) and
 keeps one that is gone, is another object or keeps failing its footer checks. A read that faults is repeated
-under the read retry and thrown when it still fails ([below](#erasure-footer-read-faults)). Then it renews the row it read, as it does before deleting a holder, so a
+under the read retry and thrown when it still fails, as the paragraph below says. Then it renews the row it read, as it does before deleting a holder, so a
 load that wrote an object that read matched (only one with an all-zero identity can), which read the row before writing it, is refused at its publish. A
 renewal that loses means another write landed since: the call reads the row and decides again. One lost to a write of
 leases alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; after
@@ -942,7 +942,7 @@ thrown in place of the answer, as any storage delete fault of an erasure is. A l
 | `GcsStorage` | only with `conditionalDelete: true`: a delete under `ifGenerationMatch`. Off by default, since no run against GCS has shown it applies the precondition to a delete, so on GCS the window below stays open unless you set it |
 | `LocalFsStorage` | no: a filesystem has no delete conditioned on which file is under a path |
 
-<a id="erasure-footer-read-faults"></a>A refused rewrite's footer read is not an answer when it faults. A timeout, a throttle or a server error does not say
+A refused rewrite's footer read is not an answer when it faults. A timeout, a throttle or a server error does not say
 the object is another's, so the discard repeats the read under the store's read retry and, when it still fails, throws
 that error in place of the refusal (`'superseded'`), and the object stays: it may hold an id another erasure has
 reported gone, so the caller is told it may remain and can run the erasure again. `eraseIdFromSegment` rejects with the

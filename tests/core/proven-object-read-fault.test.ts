@@ -12,7 +12,7 @@ import { testEntropy } from '../helpers/entropy';
  * server error does not say the object is another's. A refused erasure's discard of its own object above the winner's
  * pointer retries that read under the store's read retry and, when it still fails, throws it, so the operator knows the
  * object may remain; a refused load's reclaim is best-effort and keeps its object, as it does for every fault (its
- * test pins that behaviour, and passes before the fix as well).
+ * test pins that behaviour and does not reproduce a bug).
  */
 
 const NO_WAIT = { clock, rng: { next: () => 0 } };
@@ -39,7 +39,8 @@ function faultingFooter(
     if (fault !== 'corrupt') throw fault;
     const tail = await storage.getTail(key, maxBytes);
     const bytes = new Uint8Array(tail.bytes);
-    bytes[bytes.length - 1] ^= 0xff;
+    const last = bytes.length - 1;
+    bytes[last] = (bytes[last] ?? 0) ^ 0xff;
     return { ...tail, bytes };
   };
   return { storage: out, faults: () => faults };
