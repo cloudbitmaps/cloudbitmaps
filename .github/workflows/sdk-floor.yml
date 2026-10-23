@@ -43,6 +43,11 @@ on:
 permissions:
   contents: read
 
+# The cache service refuses every write from this workflow, whatever runs in it. The installs here resolve third-party
+# packages fresh and run them on the runner, where the cache token can be reached, so a job left in the default mode could
+# write an entry (a Docker image key, the pnpm store) that a job holding a secret would restore. Restoring still works.
+cache-mode: read
+
 # Per event, as in ci.yml, and a run is cancelled only on a pull request: a manual dispatch on `main` must not cancel the
 # night's scheduled run, which would end grey with no failure notice.
 concurrency:
