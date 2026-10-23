@@ -451,7 +451,10 @@ const backend = new AzureBlobStorage({ containerClient, readTimeoutMs: 2_000 });
 ```
 
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
-retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
+retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`. One read is the exception: an
+erasure whose rewrite was refused reads its own object to prove it its own before it deletes it, and repeats an
+`IntegrityError` there within the read retry, since a torn read of that object can fail its checks; the repeat is not
+reported to `onRetry` or counted in the `retry` metric.
 
 **S3 reads can be timed.** `@cloudbitmaps/s3` takes `readTimeoutMs`, which is off (`0`) unless you set it. Set, it
 gives each read the backend sends, every `GetObject` and `HeadObject` of a generation or a pointer, that many ms to

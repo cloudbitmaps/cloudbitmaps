@@ -118,7 +118,8 @@ export function requireFiniteNumber(
 /**
  * Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key and the keys it
  * takes. `hint`, when given, ends the message, to point at where a likely mistake belongs (`an S3 client goes in
- * \`client\``). Only the bag's own enumerable string keys are read.
+ * \`client\``). Only the bag's own enumerable string keys are read, so a key inherited through a prototype is not
+ * checked.
  */
 export function refuseUnknownOptions(
   name: string,
