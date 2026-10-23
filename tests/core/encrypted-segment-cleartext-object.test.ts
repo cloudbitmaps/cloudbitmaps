@@ -75,11 +75,16 @@ describe('a cleartext object under an encrypted segment', () => {
       version: (await storage.getTail(key, 0)).version,
     });
     expect(await provenObject(storage, key, `${size}:1`)).toBeNull();
-    await storage.delete(key);
-    expect(await provenObject(storage, key, fingerprint)).toBeNull();
     const faulty = Object.create(storage) as typeof storage;
     faulty.getTail = () => Promise.reject(new TransientError('timed out'));
     await expect(provenObject(faulty, key, fingerprint)).rejects.toBeInstanceOf(TransientError);
+    const corrupt = Object.create(storage) as typeof storage;
+    corrupt.getTail = (k, max) =>
+      storage.getTail(k, max).then((t) => ({ ...t, bytes: t.bytes.map((b) => b ^ 0xff) }));
+    // A footer that fails its own checks says nothing about which object is there: thrown, for the caller to decide.
+    await expect(provenObject(corrupt, key, fingerprint)).rejects.toBeInstanceOf(IntegrityError);
+    await storage.delete(key);
+    expect(await provenObject(storage, key, fingerprint)).toBeNull();
   });
 
   it('a forgery in place of the current generation is refused by every read of the object', async () => {

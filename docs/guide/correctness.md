@@ -921,8 +921,9 @@ call deletes nothing more, and it reports `erased: true` when nothing left holds
 writers above) meets the same race, another erasure deleting that object as a holder and a load taking its number, and
 one more: a rewrite is deleted on the strength of a read of its footer. The footer carries the write identity the
 rewrite drew, so it names that write: a load of the ids the rewrite holds, in the clear, writes the same chunks but
-another identity, and its object does not match. So the call first reads the footer of the object under its number and
-keeps one that is gone, is another object or cannot be read. Then it renews the row it read, as it does before deleting a holder, so a
+another identity, and its object does not match. So the call first reads the footer of the object under its number (one read, repeated on a fault) and
+keeps one that is gone, is another object or keeps failing its footer checks. A read that faults is repeated
+under the read retry and thrown when it still fails ([below](#erasure-footer-read-faults)). Then it renews the row it read, as it does before deleting a holder, so a
 load that wrote an object that read matched (only one with an all-zero identity can), which read the row before writing it, is refused at its publish. A
 renewal that loses means another write landed since: the call reads the row and decides again. One lost to a write of
 leases alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; after
@@ -940,6 +941,18 @@ thrown in place of the answer, as any storage delete fault of an erasure is. A l
 | `S3Storage` | yes when its client sends to an AWS S3 host, by default: a `DeleteObject` under `If-Match`. Read from the client on the first such delete, so `capabilities()` says `false` until then, and stays `false` when the client cannot be resolved (no region). Off for any other host, MinIO included, unless you set `conditionalDelete: true` |
 | `GcsStorage` | only with `conditionalDelete: true`: a delete under `ifGenerationMatch`. Off by default, since no run against GCS has shown it applies the precondition to a delete, so on GCS the window below stays open unless you set it |
 | `LocalFsStorage` | no: a filesystem has no delete conditioned on which file is under a path |
+
+<a id="erasure-footer-read-faults"></a>A refused rewrite's footer read is not an answer when it faults. A timeout, a throttle or a server error does not say
+the object is another's, so the discard repeats the read under the store's read retry and, when it still fails, throws
+that error in place of the refusal (`'superseded'`), and the object stays: it may hold an id another erasure has
+reported gone, so the caller is told it may remain and can run the erasure again. `eraseIdFromSegment` rejects with the
+fault; `eraseSubject` records it as that segment's `error:` note (`erased: false`) and goes on to the next segment. A
+footer that fails its own checks is read the same way, since a torn read of the object can produce one: it is repeated
+under the read retry, and one that keeps failing is not proven, so the object is kept and the refusal reported, as for an
+object that is gone or whose footer is another write's. With no read retry configured the read is made once. A refused
+load's reclaim reads its own object once, without the read retry, and swallows any fault, as it does every fault of its
+cleanup: the object stays an orphan for a later load's collection. Nothing is deleted on a read that did not prove the
+object.
 
 On a driver that does not report it, a delete in that window removes the load's generation, and the pointer names a
 missing object, which `checkConsistency()` reports: the race of two erasures and a load stays open there, above the
@@ -962,12 +975,6 @@ repaired. These limits hold on every driver:
   whatever its ids: the footer does not match, and the discard keeps it, including when a rollback has moved the
   pointer below that generation before the call reads the row. A generation whose identity field is all zero is the
   exception, as above.
-- The footer read that matches the object is not an answer when it faults. A timeout, a throttle or a server error does
-  not say the object is another's, so the discard retries it under the store's read retry and, when it still fails,
-  throws that error in place of the refusal (`'superseded'`), and the object stays: it may hold an id another erasure has
-  reported gone, so the caller is told it may remain and can run the erasure again. Only an object that is gone, or whose
-  footer is another write's, is kept without an error. A refused load's reclaim reads its own object the same way and
-  swallows a fault, as it does every fault of its cleanup: the object stays an orphan for a later load's collection.
 - A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
   its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
   no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load

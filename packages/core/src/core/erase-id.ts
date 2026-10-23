@@ -1696,6 +1696,34 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
 }
 
 /**
+ * {@link provenObject} for the discard, under the store's read retry, which here retries an {@link IntegrityError} as
+ * well as a `TransientError`: a footer that fails its own checks can be a bad read of the object this call wrote. A
+ * fault still thrown after the retry is thrown; an {@link IntegrityError} still thrown after it is "not proven", the
+ * object is kept, since a corrupt object under the number is not one this call can prove its own. With no read retry
+ * the read is made once, and an {@link IntegrityError} is "not proven" at once.
+ */
+async function provenOwn(
+  c: EraseCall,
+  key: GenKey,
+  fingerprint: string,
+): Promise<{ readonly version: string | undefined } | null> {
+  const { deps } = c;
+  const retry = deps.readRetry;
+  const base = retry?.isRetryable ?? isTransientError;
+  try {
+    return await retryRead(
+      () => provenObject(deps.storage, key, fingerprint),
+      retry === undefined
+        ? undefined
+        : { ...retry, isRetryable: (err) => isIntegrityError(err) || base(err) },
+    );
+  } catch (err) {
+    if (isIntegrityError(err)) return null;
+    throw err;
+  }
+}
+
+/**
  * Delete the object a refused rewrite wrote, when it would otherwise outlive the winner above its pointer.
  *
  * Only one position needs it: the pointer moved forward past `from` and stopped **below** `written`. Two winners
@@ -1719,8 +1747,8 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
  * Above the winner's pointer the number can be taken again: another erasure, of an id this object still holds,
  * deletes it as a holder, and a load numbers `currentGen + 1`, which can be `written`. A footer names a write, not just
  * a set of ids: its checksum covers the write identity the writer drew, so a load of the ids this object holds writes
- * another footer. So the object is first matched to this rewrite's fingerprint by one read of its footer (one that is
- * gone or is another object is kept, a load's object of the same ids included), and then the row the
+ * another footer. So the object is first matched to this rewrite's fingerprint by one read of its footer, repeated under the read retry on a fault (one that is
+ * gone or is another object is kept, as is one whose footer keeps failing its checks, a load's object of the same ids included), and then the row the
  * position was read from is renewed ({@link rowRenewal}) before the delete. Whoever wrote the object that read matched
  * read its row before writing it, so before the renewal, and its publish, fenced on that row, is refused. A publish
  * that landed after this call read the row makes the renewal lose, and the call reads the row and decides again. One
@@ -1769,7 +1797,7 @@ async function discardRefused(
     }
     if (row === null || row.status !== 'active' || row.currentGen === null) return row;
     if (row.currentGen <= from || row.currentGen >= own.generation) return row;
-    const proven = await c.read(() => provenObject(deps.storage, key, own.fingerprint));
+    const proven = await provenOwn(c, key, own.fingerprint);
     if (proven === null) return row;
     // The proof reads one object at one moment, and a load can have taken the number again since. Renewing the
     // row this decision read refuses every publish fenced on a row read before the proof; a renewal that loses means

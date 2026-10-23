@@ -2,7 +2,7 @@
  * Opening and proving a stored `.crbm` generation: the blob reader over a driver's object, the checked and noting opens, the
  * identity checks that tie an open to the object it read, and generation verification.
  */
-import { IntegrityError, NotFoundError, isIntegrityError, isNotFoundError } from './errors';
+import { IntegrityError, NotFoundError, isNotFoundError } from './errors';
 import type { BlobReader } from './blob';
 import { ascending } from './order';
 import type { CrbmCrypto } from './crypto';
@@ -79,10 +79,12 @@ export function ownedTail(tail: TailRead): TailRead {
 /**
  * The object under `key`, when one read of its footer matches `fingerprint` ({@link CrbmReader.fingerprint}), with the
  * version the driver reported on that read (`undefined` from a driver that reports none). `null` when it is another
- * object, when it is gone, and when its footer fails its own checks (an {@link IntegrityError}: bytes that are not the
- * ones written). Any other failure of the read (a timeout, a throttle, a server error) is thrown as it is: a read that
- * could not look is not an answer, and a caller must not take it for "not this object". A fingerprint names the object's bytes, the write identity in its footer included, so
- * another writer's object under the number matches only when it carries the same identity (an all-zero one does). A caller that deletes what this
+ * object or is gone. A read that cannot tell is thrown as it is, never taken for "not this object": a timeout, a
+ * throttle or a server error, and an {@link IntegrityError} (a footer that fails its own checks, which a torn or
+ * flipped read of the genuine object can produce, and which says nothing about which object is there). A caller
+ * decides what each means; a caller that treats a persistent {@link IntegrityError} as not proven says so itself.
+ * A fingerprint names the object's bytes, the write identity in its footer included, so another writer's object under
+ * the number matches only when it carries the same identity (an all-zero one does). A caller that deletes what this
  * matches passes the version as the delete's `ifVersion`, so a number taken again between the read and the delete keeps
  * the object put under it since.
  */
@@ -98,7 +100,7 @@ export async function provenObject(
     });
     return (await CrbmReader.sameObject(blob, fingerprint)) ? { version } : null;
   } catch (err) {
-    if (isNotFoundError(err) || isIntegrityError(err)) return null;
+    if (isNotFoundError(err)) return null;
     throw err;
   }
 }
