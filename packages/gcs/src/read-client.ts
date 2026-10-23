@@ -1,7 +1,7 @@
 /**
  * The client a GCS backend sends its downloads on: one that never retries a download itself.
  *
- * `@google-cloud/storage` 7.x and 8.x retry a failed download by default, and when the retried request succeeds they
+ * `@google-cloud/storage` 8.x, and 7.x before it, retry a failed download by default, and when the retried request succeeds they
  * throw `ERR_STREAM_UNABLE_TO_PIPE` outside any promise, which ends the process whatever the caller wrote around the
  * call. So a download is sent once, and the driver retries it itself (`download-retry.ts`). The other requests keep the
  * client as it was built: a resumable upload's session, a listing, a delete (the conditional writes are sent once by

@@ -5,15 +5,18 @@
  * SDK floor: run one storage driver's tests against the oldest cloud SDK its dependency range allows.
  *
  * Each driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.700.0 <4`, `@google-cloud/storage`
- * `^8.1.0`, `@azure/storage-blob` `^12.23.0`), and a user's install can resolve any version in it: npm reuses one the
+ * `^8.0.1`, `@azure/storage-blob` `^12.23.0`), and a user's install can resolve any version in it: npm reuses one the
  * application already has. CI's ordinary jobs run only the version in `pnpm-lock.yaml`, the newest, so the lowest
  * version a range admits is never run, and a driver that quietly came to need a newer SDK member passes every check.
  * The S3 floor matters most: an SDK that predates `If-Match` on `PutObject` sends the registry's compare-and-swap as a
  * plain overwrite.
  *
  * What it does, for `--driver s3|gcs|azure-blob`
- *   1. Reads the lowest version the driver package's range admits from its `package.json` (never hard-coded), or takes
- *      `--version <v>`.
+ *   1. Reads the lowest version of each alternative of the driver package's range from its `package.json` (never
+ *      hard-coded) and takes the one `--floor <n>` names (0 is the lowest; a range with one alternative needs no
+ *      `--floor`, and one with several refuses to run without it), or takes `--version <v>`. A job runs every
+ *      alternative, one `--floor` each, so a break at the lowest version of a later alternative cannot hide behind a
+ *      pass at an earlier one.
  *   2. Exports the committed tree (`git archive HEAD`) into a new directory outside the checkout, adds a
  *      `pnpm.overrides` entry pinning the SDK to that version, and runs `pnpm install --no-frozen-lockfile` there.
  *      The repo's pnpm settings are kept as they are: the only dependency build script that runs is `roaring`'s.
@@ -33,7 +36,7 @@
  *
  * `--integration-only` runs the integration file alone.
  *
- * Usage:  node scripts/sdk-floor.cjs --driver <s3|gcs|azure-blob> [--version <v>] [--integration | --integration-only]
+ * Usage:  node scripts/sdk-floor.cjs --driver <s3|gcs|azure-blob> [--version <v> | --floor <n>] [--integration | --integration-only]
  *                                    [--expect-failure <text>] [--max-workers <n>] [--keep]
  *
  * Needs `git`, `pnpm` and network access to the npm registry; `--integration` needs the emulator for the driver up
@@ -127,16 +130,18 @@ function compareParsed(a, b) {
 }
 
 /**
- * The lowest version a dependency range admits, as `major.minor.patch`.
+ * The lowest version of each alternative a dependency range admits, as `major.minor.patch`, ascending, with duplicates
+ * removed. `^7.4.0 || ^8` gives `7.4.0` and `8.0.0`: a break at `8.0.0` must not hide behind a pass at `7.4.0`, so every
+ * alternative is run at its own lowest version. A range with no `||` gives one version.
  *
  * Reads the shapes this repo's drivers use: alternatives joined by `||`, each a space-separated set of comparators
  * among `^x`, `~x`, `>=x`, `<x`, `<=x` and a bare version. An alternative's lower bound is its `^`, `~`, `>=` or bare
  * version; one with none (`<4` alone), a `>` (the version after it is not a version), a tag, a wildcard or anything
  * else is refused, so a range this cannot read fails the job instead of testing the wrong version.
  */
-function lowestVersion(range) {
+function floorsOfRange(range) {
   if (typeof range !== 'string' || range.trim() === '') fail(`no range to read: ${String(range)}`);
-  let lowest;
+  const floors = [];
   for (const alternative of range.split('||')) {
     const words = alternative.trim().split(/\s+/).filter(Boolean);
     if (words.length === 0) fail(`cannot read the range "${range}": an empty alternative`);
@@ -151,13 +156,18 @@ function lowestVersion(range) {
     }
     if (lower === undefined)
       fail(`cannot read the range "${range}": "${alternative.trim()}" has no lower bound`);
-    if (lowest === undefined || compareParsed(lower, lowest) < 0) lowest = lower;
+    if (!floors.some((f) => compareParsed(f, lower) === 0)) floors.push(lower);
   }
-  return lowest.join('.');
+  return floors.sort(compareParsed).map((f) => f.join('.'));
 }
 
-/** The lowest version the named driver's package range admits, read from that package's `package.json` in `root`. */
-function floorOf(root, driver) {
+/** The lowest version the range admits: the first of {@link floorsOfRange}. */
+function lowestVersion(range) {
+  return floorsOfRange(range)[0];
+}
+
+/** The range the named driver's package declares for its SDK, read from that package's `package.json` in `root`. */
+function rangeOf(root, driver) {
   const spec = DRIVERS[driver];
   if (!spec) fail(`unknown driver "${driver}": one of ${Object.keys(DRIVERS).join(', ')}`);
   const manifest = JSON.parse(fs.readFileSync(path.join(root, spec.dir, 'package.json'), 'utf8'));
@@ -166,7 +176,17 @@ function floorOf(root, driver) {
     manifest.peerDependencies?.[spec.sdk] ??
     manifest.optionalDependencies?.[spec.sdk];
   if (range === undefined) fail(`${spec.dir}/package.json does not depend on ${spec.sdk}`);
-  return lowestVersion(range);
+  return range;
+}
+
+/** The lowest version of each alternative of the named driver's range: the versions a complete floor run covers. */
+function floorsOf(root, driver) {
+  return floorsOfRange(rangeOf(root, driver));
+}
+
+/** The lowest version the named driver's range admits. */
+function floorOf(root, driver) {
+  return floorsOf(root, driver)[0];
 }
 
 /** Refuse a working directory that is the checkout or inside it: the install and the tests must never touch it. */
@@ -350,13 +370,41 @@ function option(argv, name) {
   return value;
 }
 
+/**
+ * The version one run tests: `--version` as given, or the lowest version of the range's alternative `--floor <n>` (0 is
+ * the lowest alternative). A range with several alternatives needs `--floor`: a run that quietly took the first would
+ * leave the others untested, so it is refused.
+ */
+function chooseVersion(root, driver, explicit, floorIndex) {
+  if (explicit !== undefined) {
+    if (floorIndex !== undefined)
+      fail('--version and --floor are two ways to name one version: pass one');
+    return explicit;
+  }
+  const floors = floorsOf(root, driver);
+  if (floorIndex === undefined) {
+    if (floors.length > 1) {
+      fail(
+        `the range has ${floors.length} alternatives (lowest versions ${floors.join(', ')}): pass --floor <0-${floors.length - 1}>, one run for each`,
+      );
+    }
+    return floors[0];
+  }
+  if (!/^\d+$/.test(floorIndex) || Number(floorIndex) >= floors.length) {
+    fail(
+      `--floor must be a number from 0 to ${floors.length - 1} (${floors.join(', ')}), not "${floorIndex}"`,
+    );
+  }
+  return floors[Number(floorIndex)];
+}
+
 /** Everything one run does; returns normally on a pass and throws on anything else. */
 async function main(argv) {
   const driver = option(argv, '--driver');
   if (driver === undefined) fail('--driver <s3|gcs|azure-blob> is required');
   const spec = DRIVERS[driver];
   if (!spec) fail(`unknown driver "${driver}": one of ${Object.keys(DRIVERS).join(', ')}`);
-  const version = option(argv, '--version') ?? floorOf(ROOT, driver);
+  const version = chooseVersion(ROOT, driver, option(argv, '--version'), option(argv, '--floor'));
   if (parseVersion(version) === undefined || version.split('.').length !== 3) {
     fail(`--version must be an exact version such as 3.700.0, not "${version}"`);
   }
@@ -435,8 +483,11 @@ module.exports = {
   INSTALL_MS,
   TEST_MS,
   run,
+  floorsOfRange,
   lowestVersion,
+  floorsOf,
   floorOf,
+  chooseVersion,
   assertOutside,
   checkInstalled,
   classifyFailure,

@@ -98,7 +98,7 @@ its backup, which a first load fails early and typed on; and an S3 SDK from 3.64
 older drops `If-None-Match`, which shows as a `write-once` problem. One from 3.641.0 to 3.699.0 keeps `If-None-Match` but drops `If-Match` on
 `PutObject`, which the registry's compare-and-swap needs; preflight cannot see that, because its registry check
 only reads and only a registry write refuses such an SDK. An SDK from 3.641.0 to 3.697.0 also drops `If-Match` on `DeleteObject`,
-which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check for a client you pass in; CI runs the S3 driver, and the other two, at the lowest SDK version each declared range allows every night.
+which turns the conditional delete off without a word. So the 3.700.0 floor stays yours to check for a client you pass in; CI runs each of the three drivers every night at the lowest SDK version of each alternative of its declared range (a range written with `||` is run once for each side).
 [Permissions](#permissions), [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) and [Versioning and
 backups](#versioning-and-backups) cover the rest.
 
@@ -347,8 +347,8 @@ const store = new CloudRoaring({
 });
 ```
 
-**On GCS the driver retries downloads, and the SDK does not.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
-and 8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the
+**On GCS the driver retries downloads, and the SDK does not.** In `@google-cloud/storage` 8.x (checked on 8.1.0) and 7.x
+(checked on 7.22.0, a release outside the driver's range), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the
 process with `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The
 client `GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
 backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502,
@@ -406,7 +406,7 @@ per call through the store's read retry: measured against a local server that ne
 requests open, 20 at once left 80, and a process whose read had timed out at 200 ms exited only when the server closed
 its connection, 6 s later. A sustained outage at N reads a second therefore adds about 4N held connections each
 second, until the server closes them. On `@google-cloud/storage` 8.x a read cut off after its response began closes
-its own connection; on 7.x (checked on 7.22.0) it stays open as well, and without a timeout a body the server cuts off
+its own connection; on 7.x (checked on 7.22.0, outside the driver's range) it stays open as well, and without a timeout a body the server cuts off
 part-way never settles. A 404 whose error body arrives after the deadline is reported as the timeout, a
 `TransientError`, rather than as `NotFoundError`.
 

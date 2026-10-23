@@ -40,7 +40,15 @@ const sdkFloor = createRequire(import.meta.url)(SCRIPT) as {
     args: string[],
     options: { cwd: string; timeout: number; env?: Record<string, string> },
   ) => Promise<{ status: number | null; out: string }>;
+  floorsOfRange: (range: string) => string[];
   lowestVersion: (range: string) => string;
+  floorsOf: (root: string, driver: string) => string[];
+  chooseVersion: (
+    root: string,
+    driver: string,
+    explicit: string | undefined,
+    floorIndex: string | undefined,
+  ) => string;
   floorOf: (root: string, driver: string) => string;
   assertOutside: (root: string, dir: string) => void;
   checkInstalled: (
@@ -69,7 +77,7 @@ interface Job {
   'cache-mode'?: string;
   strategy?: {
     'fail-fast'?: boolean;
-    matrix?: { include?: { driver: string; service: string }[] };
+    matrix?: { include?: { driver: string; service: string; floor: number }[] };
   };
   steps: Step[];
 }
@@ -222,20 +230,30 @@ describe('the SDK-floor workflow', () => {
     expect(TEXT).not.toMatch(/github\.event\./);
   });
 
-  it('runs one leg per driver, each starting only its own emulator and running its tests at the floor', () => {
+  it('runs one leg for each alternative of each driver’s range, each starting only its own emulator and running its tests at that floor', () => {
     expect(floor.strategy?.['fail-fast']).toBe(false);
-    expect(floor.strategy?.matrix?.include).toEqual([
-      { driver: 's3', service: 'minio' },
-      { driver: 'gcs', service: 'fake-gcs' },
-      { driver: 'azure-blob', service: 'azurite' },
-    ]);
+    const services: Record<string, string> = {
+      s3: 'minio',
+      gcs: 'fake-gcs',
+      'azure-blob': 'azurite',
+    };
+    // One leg per lowest version of each alternative, read from the packages: a range written with `||` gets a leg
+    // for each side, so a break at the lowest version of a later alternative is not hidden by a pass at an earlier one.
+    const want = Object.keys(services).flatMap((driver) =>
+      sdkFloor
+        .floorsOf(ROOT, driver)
+        .map((_, index) => ({ driver, service: services[driver], floor: index })),
+    );
+    expect(floor.strategy?.matrix?.include).toEqual(want);
     const up = stepRunning(floor, 'docker compose');
     expect(up?.env).toEqual({ SERVICE: '${{ matrix.service }}' });
     // The service name is the last word: no other emulator starts.
     expect(up?.run).toMatch(/ up -d --pull never --wait --wait-timeout 300 "\$SERVICE"$/);
     const run = stepRunning(floor, 'scripts/sdk-floor.cjs');
-    expect(run?.run).toBe('node scripts/sdk-floor.cjs --driver "$DRIVER" --integration');
-    expect(run?.env).toEqual({ DRIVER: '${{ matrix.driver }}' });
+    expect(run?.run).toBe(
+      'node scripts/sdk-floor.cjs --driver "$DRIVER" --floor "$FLOOR" --integration',
+    );
+    expect(run?.env).toEqual({ DRIVER: '${{ matrix.driver }}', FLOOR: '${{ matrix.floor }}' });
     expect(run?.run).not.toContain('--version'); // the floor is read from the range, not written here
     expect(run?.if).toBeUndefined();
     expect(run?.['continue-on-error']).toBeUndefined();
@@ -270,10 +288,10 @@ describe('the SDK-floor workflow', () => {
 describe('the SDK-floor script: reading a floor from a range', () => {
   it('reads the three declared ranges from the packages, not from a list of its own', () => {
     expect(sdkFloor.floorOf(ROOT, 's3')).toBe('3.700.0');
-    expect(sdkFloor.floorOf(ROOT, 'gcs')).toBe('8.1.0');
+    expect(sdkFloor.floorOf(ROOT, 'gcs')).toBe('8.0.1');
     expect(sdkFloor.floorOf(ROOT, 'azure-blob')).toBe('12.23.0');
     const source = readFileSync(SCRIPT, 'utf8');
-    for (const v of ['3.700.0', '8.1.0', '12.23.0']) {
+    for (const v of ['3.700.0', '8.0.1', '12.23.0']) {
       expect(
         source.replace(/\/\*[\s\S]*?\*\//g, ''),
         `${v} is written in the script`,
@@ -285,6 +303,7 @@ describe('the SDK-floor script: reading a floor from a range', () => {
     ['>=3.700.0 <4', '3.700.0'],
     ['^7 || ^8', '7.0.0'],
     ['^8 || ^7', '7.0.0'],
+    ['^7.4.0 || ^8', '7.4.0'],
     ['^12', '12.0.0'],
     ['~1.2', '1.2.0'],
     ['1.2.3', '1.2.3'],
@@ -292,6 +311,55 @@ describe('the SDK-floor script: reading a floor from a range', () => {
     ['<4 >=3.5.0', '3.5.0'],
   ])('reads %s as %s', (range, want) => {
     expect(sdkFloor.lowestVersion(range)).toBe(want);
+  });
+
+  it.each([
+    ['>=3.700.0 <4', ['3.700.0']],
+    ['^8.1.0', ['8.1.0']],
+    // Each alternative is its own floor: a break at 8.0.0 must not hide behind a pass at 7.4.0.
+    ['^7.4.0 || ^8', ['7.4.0', '8.0.0']],
+    ['^8 || ^7.4.0', ['7.4.0', '8.0.0']],
+    ['^7.4.0 || ^8.0.0 || ^9.2.0', ['7.4.0', '8.0.0', '9.2.0']],
+    ['>=7.4.0 <8 || >=8.0.0 <9', ['7.4.0', '8.0.0']],
+    ['^8 || ^8.0.0', ['8.0.0']],
+  ])('reads every alternative of %s: %j', (range, want) => {
+    expect(sdkFloor.floorsOfRange(range)).toEqual(want);
+  });
+
+  it('names the version for a floor index, refuses a range with several alternatives that names none, and refuses a bad index', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sdk-floor-range-'));
+    try {
+      mkdirSync(join(dir, 'packages/gcs'), { recursive: true });
+      writeFileSync(
+        join(dir, 'packages/gcs/package.json'),
+        JSON.stringify({ dependencies: { '@google-cloud/storage': '^7.4.0 || ^8' } }),
+      );
+      expect(sdkFloor.chooseVersion(dir, 'gcs', undefined, '0')).toBe('7.4.0');
+      expect(sdkFloor.chooseVersion(dir, 'gcs', undefined, '1')).toBe('8.0.0');
+      expect(() => sdkFloor.chooseVersion(dir, 'gcs', undefined, undefined)).toThrow(
+        'the range has 2 alternatives (lowest versions 7.4.0, 8.0.0): pass --floor <0-1>',
+      );
+      expect(() => sdkFloor.chooseVersion(dir, 'gcs', undefined, '2')).toThrow(
+        '--floor must be a number from 0 to 1',
+      );
+      expect(() => sdkFloor.chooseVersion(dir, 'gcs', undefined, '-1')).toThrow(
+        '--floor must be a number',
+      );
+      expect(() => sdkFloor.chooseVersion(dir, 'gcs', undefined, '1.5')).toThrow(
+        '--floor must be a number',
+      );
+      expect(() => sdkFloor.chooseVersion(dir, 'gcs', '8.0.0', '1')).toThrow('pass one');
+      expect(sdkFloor.chooseVersion(dir, 'gcs', '7.22.0', undefined)).toBe('7.22.0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs a range with one alternative with no --floor, and accepts --floor 0', () => {
+    expect(sdkFloor.chooseVersion(ROOT, 's3', undefined, undefined)).toBe(
+      sdkFloor.floorOf(ROOT, 's3'),
+    );
+    expect(sdkFloor.chooseVersion(ROOT, 's3', undefined, '0')).toBe(sdkFloor.floorOf(ROOT, 's3'));
   });
 
   it.each([
@@ -612,6 +680,10 @@ describe('the SDK-floor script: arguments it refuses before it touches anything'
     [['--driver', 's3', '--expect-failure', ''], '--expect-failure needs a non-empty value'],
     [['--driver', 's3', '--expect-failure', '  '], '--expect-failure needs a non-empty value'],
     [['--driver', 's3', '--version', ''], '--version needs a non-empty value'],
+    [['--driver', 's3', '--floor', '3'], '--floor must be a number from 0 to 0'],
+    [['--driver', 's3', '--floor', 'x'], '--floor must be a number'],
+    [['--driver', 's3', '--floor'], '--floor needs a value'],
+    [['--driver', 's3', '--version', '3.700.0', '--floor', '0'], 'pass one'],
   ])('%j exits 1 saying %j', (args, message) => {
     const r = cli(...args);
     expect(r.status).toBe(1);

@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "@cloudbitmaps/core": "workspace:*",
-    "@google-cloud/storage": "^8.1.0"
+    "@google-cloud/storage": "^8.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

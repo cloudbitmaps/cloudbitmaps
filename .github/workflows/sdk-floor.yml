@@ -2,12 +2,15 @@ name: SDK floor (nightly)
 
 # Each storage driver's tests, run against the OLDEST cloud SDK its dependency range allows.
 #
-# A driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.700.0 <4`, `@google-cloud/storage` `^8.1.0`,
+# A driver depends on its SDK by a range (`@aws-sdk/client-s3` `>=3.700.0 <4`, `@google-cloud/storage` `^8.0.1`,
 # `@azure/storage-blob` `^12.23.0`), and a user's install can resolve any version in it: npm reuses one the application
 # already has. Every other job here runs the version in `pnpm-lock.yaml`, the newest, so the lowest version a range
 # admits is never run, and a driver that quietly came to need a newer SDK member passes every check. The S3 floor
 # matters most: an SDK that predates `If-Match` on `PutObject` sends the registry's compare-and-swap as a plain
 # overwrite.
+#
+# A range written with `||` is run at the lowest version of each alternative, one leg each: a break at 8.0.0 must not
+# hide behind a pass at 7.4.0.
 #
 # `scripts/sdk-floor.cjs` does the work for one driver: it exports the committed tree to a directory outside the
 # checkout, pins the SDK to the range's lowest version with a `pnpm.overrides` entry, installs there, checks that the
@@ -75,19 +78,24 @@ concurrency:
 
 jobs:
   floor:
-    name: ${{ matrix.driver }} at its SDK floor
+    name: ${{ matrix.driver }} at its SDK floor (${{ matrix.floor }})
     runs-on: ubuntu-latest # needs Docker on the runner
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
+          # One leg for each alternative of the driver's range, `floor` counting from the lowest (0): a range written
+          # with `||` gets one for each side. A test reads the packages and requires exactly these legs.
           - driver: s3
             service: minio
+            floor: 0
           - driver: gcs
             service: fake-gcs
+            floor: 0
           - driver: azure-blob
             service: azurite
+            floor: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -112,7 +120,8 @@ jobs:
       - name: Run the driver's tests at its SDK floor
         env:
           DRIVER: ${{ matrix.driver }}
-        run: node scripts/sdk-floor.cjs --driver "$DRIVER" --integration
+          FLOOR: ${{ matrix.floor }}
+        run: node scripts/sdk-floor.cjs --driver "$DRIVER" --floor "$FLOOR" --integration
       - if: always()
         run: docker compose down
 

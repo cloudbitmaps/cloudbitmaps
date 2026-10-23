@@ -34,7 +34,7 @@ export interface GcsStorageOptions {
    * A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. Its retry
    * options apply to every request except the single-request conditional writes, which the driver sends without
    * that retry whatever they say (a registry row once, and a generation's object again only after a throttle, under
-   * its own backoff), and the downloads. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408,
+   * its own backoff), and the downloads. In `@google-cloud/storage` 8.x, and in 7.x (which the driver's range does not admit), a download the SDK retries after a 408,
    * 429, 500, 502, 503 or 504 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, so downloads go through a twin of
    * this client, built from its own class with the same credentials object, endpoint and settings and the SDK's retries
    * off over any its class set, and the driver retries them itself. A client whose twin would use other credentials or
