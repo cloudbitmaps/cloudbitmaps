@@ -9,6 +9,7 @@ import { GcsStorage } from '@/gcs/backend';
 import { CRC32C, Storage, type StorageOptions } from '@google-cloud/storage';
 import { ValidationError } from '@/core/errors';
 import { downloadClient } from '@/gcs/read-client';
+import { gcsSdkAtLeast } from '../../helpers/gcs-sdk-version';
 
 /**
  * A GCS download is sent once by the SDK and retried by the driver, and a retried read cannot crash the process.
@@ -22,6 +23,9 @@ import { downloadClient } from '@/gcs/read-client';
  * Each scenario runs the driver in a child process, against a stub of the JSON API in this one, so a crash is the child's
  * exit code and not the test runner's. The real SDK is the thing under test: a mock of it could not crash.
  */
+
+/** The first SDK release measured to turn a client's `autoRetry` off while a delete with no precondition is in flight. */
+const SDK_TOGGLES_AUTO_RETRY = gcsSdkAtLeast(8, 1);
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -396,10 +400,16 @@ describe('a GCS download', () => {
       try {
         const own = new Storage({ apiEndpoint: stub.endpoint, projectId: 'p' });
         const deleting = own.bucket('b').file('o').delete();
-        expect(own.retryOptions.autoRetry).toBe(false);
+        const during = own.retryOptions.autoRetry;
         const twin = readClientOf(new GcsStorage({ bucket: 'b', client: own }));
         await deleting;
-        expect(own.retryOptions.autoRetry).toBe(true);
+        const after = own.retryOptions.autoRetry;
+        // What the SDK does to its own setting is the SDK's, and not every release does it: it is checked where the
+        // premise is known to hold, and the driver's own assertions below run on every release.
+        if (SDK_TOGGLES_AUTO_RETRY) {
+          expect(during).toBe(false);
+          expect(after).toBe(true);
+        }
         expect(twin).not.toBe(own);
         expect(twin.retryOptions.autoRetry).toBe(false);
       } finally {
