@@ -299,8 +299,8 @@ order:
    (`typecheck:next`); `typecheck` collapses to TypeScript 7 alone once `typescript-eslint` supports it. A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
    mandatory, never deferred or `// @ts-ignore`-d away. CI runs the same set and more; a fresh clone must pass it
    with no manual setup. Don't open/merge a PR on a red gate.
-4. **Run the adversarial review gate (every pull request).** Spawn **multiple parallel
-   adversarial subagents**, each with a distinct lens, to hunt for flaws in what was built **end to end**
+4. **Run the adversarial review gate (every pull request).** Run **multiple parallel
+   adversarial reviewers**, one per distinct lens, to hunt for flaws in what was built **end to end**
    (not just the diff). Standard lenses — use all that apply, add domain-specific ones:
    - **correctness/logic, end-to-end** — trace the whole data/control flow vs the specs + named invariants
      (races, lost writes, a torn read, a pointer that moves backwards, a live generation collected, divergence
@@ -326,6 +326,22 @@ order:
    README, CHANGELOG, roadmap), *in the same change*.
 6. **Commit and push always.** Commit logically, push the branch to `origin` (don't sit on local-only
    work). Open/update the PR.
+   - **The pull request text check.** The title, the body and the commit messages are public, and a squash merge
+     copies the commit subjects into `main`'s history, so the `pull request text` check scans all three, and the
+     author and committer of each commit. It fails text that says who or what did the work (state what was done
+     instead) and anything `scripts/leak-scan.cjs` would refuse in a tracked file. It prints the phrase, the source and
+     the line number, never the line. Run it before you push (a local run applies the private needles only when a
+     `.leak-needles` file exists in the checkout, so without one it is weaker than CI):
+     `BASE_SHA=$(git merge-base origin/main HEAD) HEAD_SHA=$(git rev-parse HEAD) PR_TITLE="the title" PR_BODY="$(gh pr view N --json body -q .body)" node scripts/pr-text-scan.cjs`
+     (leave out `BASE_SHA` and `HEAD_SHA` to skip the commits). It cannot catch a phrase that is not on its list or a
+     leak that is reworded, so it does not replace reading the text. To fix a hit in a title or a body, edit the text
+     on the pull request: that triggers the check again, and a re-run from the Actions tab would scan the old text. To
+     fix one in a commit message, reword the commit (`git rebase -i origin/main`) and push with
+     `git push --force-with-lease --force-if-includes` on the pull request's own branch; a commit already pushed to a
+     branch others use is better left, with the fix made in a new branch. A leak (a secret or private text) is handled
+     apart from a phrase: a force-push does not unpublish what was already pushed, so rotate a credential first and
+     ask the maintainer about anything else. `scripts/README.md` lists
+     what it checks and the known false positives, each with its rewording.
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
 
 ## Documentation — keeping it current
