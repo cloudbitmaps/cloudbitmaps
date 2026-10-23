@@ -139,7 +139,8 @@ describe('look-alikes stay quiet', () => {
 
   it("a bot's own trailers are not scanned, a person's are", () => {
     const trailers =
-      'Subject\n\nBody.\n\nSigned-off-by: dependabot[bot] <support@github.com>\n' +
+      'Subject\n\nBody.\n\nSigned-off-by: dependabot[bot] <support@' +
+      'github.com>\n' +
       'Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>';
     expect(scan({ commit: trailers }).status).toBe(0);
     expect(scan({ commit: 'Subject\n\nCo-authored-by: Some Person <p@example.com>' }).status).toBe(
@@ -194,9 +195,9 @@ describe('the leak-scan half', () => {
   });
 
   it('a link to a CI run and job is not an account id; a bare 12-digit run still is', () => {
-    const link = 'see https://github.com/o/r/actions/runs/38185387783/job/' + '123456789012';
+    const link = 'see https://github.com/o/r/actions/runs/1/job/' + '1234'.repeat(3);
     expect(scan({ body: link }).status).toBe(0);
-    const bare = scan({ body: `account ${'123456789012'}` });
+    const bare = scan({ body: `account ${'1234'.repeat(3)}` });
     expect(bare.status).toBe(1);
     expect(bare.out).toContain('AWS account id');
   });

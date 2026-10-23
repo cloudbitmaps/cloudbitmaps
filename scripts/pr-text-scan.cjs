@@ -23,8 +23,8 @@
 // Exit 0 clean; 1 a finding; 2 an input or a tool that could not be read or run. The check fails closed: a missing
 // input, a git error, a scan that crashes or exits in a way this script does not know is a failure, never a pass.
 //
-// Text that quotes the leak scan's own examples (a sample connection string with a password, an `arn:aws:` prefix,
-// a property read like `credentials: options.credentials`) is refused by the rule it quotes: reword it.
+// Text that quotes the leak scan's own examples (a sample connection string with a password, an ARN prefix, a
+// property read of a credentials option) is refused by the rule it quotes: reword it.
 //
 // What it does not catch: a phrase that is not on the list below, a leak that is reworded (a path written with a
 // space in it, an id described in other words), and anything in a pull request comment or review, which this
