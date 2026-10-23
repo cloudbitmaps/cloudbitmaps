@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { isAwsS3Host, probeClient } from '@/s3/client-probe';
 import { isolateAwsEnv, type IsolatedAwsEnv } from '../../helpers/aws-env';
+import { s3SdkMinor } from '../../helpers/s3-sdk-version';
 import { sdkWithout } from '../../helpers/stub-s3-bucket';
 
 /**
@@ -18,6 +19,8 @@ import { sdkWithout } from '../../helpers/stub-s3-bucket';
  */
 
 const BUCKET = 'a-bucket';
+/** From 3.723.0 an SDK honours `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS`; an older one reads `AWS_ENDPOINT_URL` regardless. */
+const ignoresConfiguredUrls = s3SdkMinor() >= 723;
 const credentials = { accessKeyId: 'stub', secretAccessKey: 'stub' };
 
 let sent = 0;
@@ -90,8 +93,10 @@ describe('where a client sends a request to the bucket, by every way an endpoint
         }),
         client()
       ),
-      host: `${BUCKET}.s3.us-east-1.amazonaws.com`,
-      aws: true,
+      host: ignoresConfiguredUrls
+        ? `${BUCKET}.s3.us-east-1.amazonaws.com`
+        : `${BUCKET}.minio.internal`,
+      aws: ignoresConfiguredUrls,
     },
     {
       name: 'an endpoint_url in the shared config file (default profile)',

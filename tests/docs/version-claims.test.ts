@@ -125,6 +125,11 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'unit tests pass on, in the package README and the site. A third-party version, not a claim about our release',
   ],
   [
+    '3.723.0',
+    'the first @aws-sdk/client-s3 version whose request handler sends an `Expect: 100-continue` upload outside the ' +
+      'pool `maxSockets` sets, in the s3 README. A third-party version, not a claim about our release',
+  ],
+  [
     '3.700.0',
     "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
       'correctness floor, not a preference: an SDK drops a conditional header it does not model, and up to ' +
