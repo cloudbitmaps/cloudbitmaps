@@ -35,11 +35,17 @@ const ci = load('ci.yml');
 const release = load('release.yml');
 const SCRIPT = 'node scripts/consumer-install.cjs';
 
+/** A job by name, failing loudly when it is gone: a missing job is the regression this file exists for. */
+function jobOf(wf: Workflow, name: string): Job {
+  const found = wf.jobs[name];
+  if (!found) throw new Error(`no "${name}" job`);
+  return found;
+}
+
 describe('the consumer install runs in CI', () => {
-  const job = ci.jobs['consumer-install'];
+  const job = jobOf(ci, 'consumer-install');
 
   it('is a job of the workflow that runs on pull requests', () => {
-    expect(job, 'ci.yml has no consumer-install job').toBeDefined();
     expect(Object.keys(ci.on)).toContain('pull_request');
   });
 
@@ -64,7 +70,7 @@ describe('the consumer install runs in CI', () => {
 });
 
 describe('the consumer install runs before a release publishes', () => {
-  const steps = release.jobs['publish'].steps;
+  const steps = jobOf(release, 'publish').steps;
   const names = steps.map((s) => s.name ?? s.uses ?? s.run ?? '');
   const NAME = 'Install the packed packages as a consumer';
 

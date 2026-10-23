@@ -267,7 +267,6 @@ function main() {
   // The temporary project must not sit under this checkout, or node would resolve the workspace's own copies.
   if (path.resolve(work).startsWith(ROOT + path.sep))
     fail(`temporary directory ${work} is inside the checkout`);
-  let ok = false;
   try {
     console.log(`consumer-install: ${pkgs.length} package(s), working in ${work}`);
     const tarballs = GIVEN_TARBALLS
@@ -344,7 +343,6 @@ function main() {
     const help = run(bin, ['--help'], { cwd: project, timeout: RUN_MS, env: {} });
     if (!/export-segments/.test(help)) fail(`export-segments --help printed no usage:\n${help}`);
     console.log('  export-segments --help ran');
-    ok = true;
     console.log(
       'consumer-install: the packed packages install and run as a consumer would use them',
     );
@@ -352,7 +350,6 @@ function main() {
     if (KEEP) console.log(`consumer-install: left ${work}`);
     else fs.rmSync(work, { recursive: true, force: true });
   }
-  return ok;
 }
 
 try {
