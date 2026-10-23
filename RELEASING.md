@@ -147,23 +147,7 @@ runs, and then, in order (a run started by hand skips some of these; see [A manu
   for the tag. The notes are *used* later, by the `github-release` job; they are *checked* here, before the
   publish, because that is the last moment a missing section is still a two-line edit rather than a permanent
   gap next to an immutable tarball.
-- **Installs the packed tarballs as a consumer**, in a job of its own (`consumer-install`) that the publish job `needs`, so
-  a failure stops the release before the approval gate. It runs `node scripts/consumer-install.cjs`: builds, packs the six
-  with `pnpm pack`, installs them with the npm that job just upgraded into a clean project outside the checkout, and runs
-  code against them under ESM and CommonJS (every entry, a store on the in-memory and local-files drivers, the
-  `export-segments` bin). It also fails on a `workspace:` left in a packed manifest, a package installed twice, and an
-  `exports`, `bin`, `typesVersions` or `files` entry missing from a tarball. The checks above read the workspace, where
-  those faults break nothing, and a tarball is immutable once published. npm resolves the cloud SDKs fresh from the
-  registry and runs install scripts, so this job holds only `contents: read`: no `id-token`, no environment, no secret, and
-  the script passes its children a scrubbed environment too. It writes the SHA-256 of every file in every tarball to an
-  artifact. The publish job, after its own build, packs again with `node scripts/consumer-install.cjs --verify-digests` and
-  fails on any file that differs, is new or is gone. **What that proves:** the packages published hold the same files, byte
-  for byte, as the ones that installed and ran. **What it does not:** that the uploaded tarball is the same archive (`pnpm
-  publish` packs once more, and archive bytes can differ while the files do not), that the types compile in a consumer's
-  project (`smoke` does that, in the workspace), anything about npm 12 (the `allowScripts` line it writes is only enforced
-  there, and no job here runs npm 12), pnpm or yarn consumers, or the lowest cloud SDK versions the ranges allow (npm takes
-  the newest). A failed `npm install` is retried twice, so a registry blip does not stop a release. CI runs the same install,
-  without the digests, on every pull request. It runs on dry runs too.
+- **Does not repeat the consumer install.** The packed packages are installed with npm into a clean project and run on every pull request, so the release pull request's own CI has already done it on the exact commit that is tagged; it is not in this workflow because it runs third-party install scripts, which do not belong beside the job that can publish.
 - **Leak-scans the packed tarballs** (`pnpm leak-scan:tarballs`) — the built `.tgz` for each package is packed,
   unpacked and scanned. This is a different surface from the everyday `pnpm leak-scan`: `dist/` is gitignored,
   so the tracked-file and history modes structurally cannot see the bytes a consumer downloads, and the

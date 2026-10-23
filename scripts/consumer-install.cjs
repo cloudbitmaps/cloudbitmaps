@@ -3,7 +3,7 @@
 
 /*
  * Consumer install: pack the six packages the way a release does, install the tarballs with npm into a clean
- * project outside this checkout, and run code against them, as a user who followed the README would.
+ * project, and run code against them, as a user who followed the README would.
  *
  * `scripts/smoke.cjs` loads the built packages from inside the workspace, where pnpm links them, `files` is not
  * consulted and `workspace:*` is never rewritten. This is the other half: it reads only what `pnpm pack` put in
@@ -11,45 +11,46 @@
  * dependency in the wrong field, a `workspace:*` left unrewritten, or an install script npm refuses to run
  * shows here as a failed install or a failed import, and nowhere earlier.
  *
- * What it does
- *   1. Builds the workspace, then `pnpm pack`s each package under packages/ (the workspace's pnpm, so
- *      `workspace:*` becomes the exact version as at publish; the package's own `prepack` runs the build).
- *   2. Creates a temporary project outside the repo whose package.json allows the `roaring` install script, as
- *      the README's install steps say.
- *   3. `npm install`s all six tarballs together, so the cloud SDKs come from the registry. A failed install is
- *      tried again, twice, after a pause: a registry or binary-download blip is not a packaging fault.
- *   4. Checks the installed tree: no `workspace:` in a packed manifest, one copy of each package, every `exports`
+ * Where each half runs
+ *   host        builds the workspace and runs `pnpm pack` on each package under packages/ (the workspace's pnpm and
+ *               its locked dependencies, so `workspace:*` becomes the exact version as at publish), then starts the
+ *               container below.
+ *   container   `--image <image>`: a throwaway container of an official Node image, with the tarballs and this
+ *               script mounted read-only, nothing else mounted, no environment passed in, no capabilities, and no
+ *               Docker socket. Everything that runs third-party code happens here: npm installs the tarballs
+ *               together with the cloud SDKs, resolved fresh from the registry with no lockfile, and runs their
+ *               install scripts, and the programs below run against the result. Code that runs there cannot reach
+ *               the runner's files, processes, tokens or caches.
+ *   no container `--no-container`: the same second half on this machine, for local use only. It runs third-party
+ *               install scripts on the machine with this user's access, and it refuses to run when `CI` is set.
+ *
+ * What the second half does
+ *   1. Creates a temporary project whose package.json allows the `roaring` install script, as the README's
+ *      install steps say.
+ *   2. `npm install`s all the tarballs together. A failed install is tried again, twice, after a pause: a registry
+ *      or binary-download blip is not a packaging fault.
+ *   3. Checks the installed tree: no `workspace:` in a packed manifest, one copy of each package, every `exports`
  *      target, `bin` target, `typesVersions` target and `files` entry present, `dist` not empty.
- *   5. Runs a program, once as ESM and once as CommonJS: it imports every entry of every package by name, builds
+ *   4. Runs a program, once as ESM and once as CommonJS: it imports every entry of every package by name, builds
  *      a store on the in-memory driver and again on the local-files driver, loads ids, and reads them back
  *      (`has`, `count`, an intersect).
- *   6. Runs the installed `export-segments` bin with `--help`.
- *   7. Removes the temporary project.
+ *   5. Runs the installed `export-segments` bin with `--help`.
  * The cloud drivers are imported, never used, so nothing contacts a cloud.
  *
  * What it does not show: that the types compile in a consumer's project (smoke.cjs does that, in the
  * workspace), anything about npm 12 (the `allowScripts` key is written but only npm 12 enforces it), or a pnpm or
  * yarn install.
  *
- * Every child process gets a scrubbed environment: the PATH, the home and temp folders, the locale and proxy
- * settings, and nothing else. A dependency's install script runs here, so no token, registry setting or
- * NODE_OPTIONS of the caller reaches it. The release workflow also runs this in a job that has no write
- * permission and no secret.
+ * Usage:  node scripts/consumer-install.cjs (--image <image> | --no-container) [--keep]
+ *   --image <image>  run the second half in this image, which needs Docker
+ *   --no-container   run it on this machine; local use only
+ *   --keep           leave the tarballs (and, with --no-container, the project) behind and print where
+ *   --in-container <dir>  the second half itself, over the tarballs in <dir>; what the container runs
  *
- * Usage:  node scripts/consumer-install.cjs [--keep] [--tarballs <dir>] [--write-digests <file>]
- *                                          [--verify-digests <file>]
- *   --keep                   leave the temporary project and tarballs behind and print where
- *   --tarballs <dir>         install the tarballs already in <dir> (one per package) instead of packing
- *   --write-digests <file>   also write the SHA-256 of every file in every tarball to <file>
- *   --verify-digests <file>  instead of installing, pack and fail unless every tarball holds exactly the files
- *                            <file> records, with the same hashes. The release uses it to show that what it
- *                            publishes is what the consumer install ran.
- *
- * Needs `pnpm`, `npm` and `tar` on the PATH, and network access to the npm registry for the dependencies.
+ * Needs `pnpm`, `tar` and, for `--image`, `docker` on the PATH, and network access to the npm registry.
  */
 
 const { spawnSync } = require('node:child_process');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -343,60 +344,6 @@ function programFor(mode, specifiers, manifests, scratchDir) {
   return esm ? body : body.replace("const { createRequire } = require('node:module');\n", '');
 }
 
-/** The SHA-256 of every file of a tarball, by path inside it. */
-function digestTarball(tarball) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'consumer-install-digest-'));
-  try {
-    run('tar', ['-xzf', tarball, '-C', dir], { cwd: dir, timeout: RUN_MS });
-    const digests = {};
-    const walk = (d) => {
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        const full = path.join(d, e.name);
-        if (e.isDirectory()) walk(full);
-        else {
-          const rel = path.relative(dir, full).split(path.sep).join('/');
-          digests[rel] = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
-        }
-      }
-    };
-    walk(dir);
-    return digests;
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-/** Digests of every package's tarball, keyed by package name. `names[i]` is the package of `tarballs[i]`. */
-function digestAll(names, tarballs) {
-  const all = {};
-  names.forEach((name, i) => {
-    all[name] = digestTarball(tarballs[i]);
-  });
-  return all;
-}
-
-/** What differs between two digest sets, as lines; empty when they are the same. */
-function compareDigests(expected, actual) {
-  const problems = [];
-  for (const name of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
-    const want = expected[name];
-    const got = actual[name];
-    if (!want) problems.push(`${name}: packed now, but not among the verified tarballs`);
-    else if (!got) problems.push(`${name}: verified, but not packed now`);
-    else {
-      for (const file of new Set([...Object.keys(want), ...Object.keys(got)])) {
-        if (want[file] === undefined)
-          problems.push(`${name}: ${file} is new since the verified tarball`);
-        else if (got[file] === undefined)
-          problems.push(`${name}: ${file} is gone since the verified tarball`);
-        else if (want[file] !== got[file])
-          problems.push(`${name}: ${file} differs from the verified tarball`);
-      }
-    }
-  }
-  return problems;
-}
-
 /** Run one stage; a failure names it, so a registry blip and a packaging fault read differently. */
 function stage(name, fn) {
   try {
@@ -433,19 +380,84 @@ function installWithRetry(tarballs, project, env) {
   }
 }
 
-function main() {
-  const givenTarballs = option('--tarballs');
-  const writeDigests = option('--write-digests');
-  const verifyDigests = option('--verify-digests');
-  if (givenTarballs !== undefined && !fs.existsSync(givenTarballs))
-    fail(`--tarballs ${givenTarballs}: no such directory`);
-  const expected =
-    verifyDigests === undefined ? undefined : JSON.parse(fs.readFileSync(verifyDigests, 'utf8'));
+/** The package name of a tarball, read from the manifest inside it. */
+function packageNameOf(tarball) {
+  const manifest = run('tar', ['-xOzf', tarball, 'package/package.json'], {
+    cwd: path.dirname(tarball),
+    timeout: RUN_MS,
+  });
+  return JSON.parse(manifest).name;
+}
 
-  const pkgs = workspacePackages();
+/** The arguments of the `docker run` that does the second half: what is mounted, and what is not. */
+function dockerRunArgs({ image, name, tarballDir, scriptFile }) {
+  return [
+    'run',
+    '--rm',
+    '--name',
+    name,
+    // Nothing from the host is passed in: no `-e`, no `--env-file`, no home or workspace mount, no socket.
+    '--user',
+    'node',
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges',
+    '--pids-limit',
+    '1024',
+    '--read-only',
+    '--tmpfs',
+    '/tmp:exec,mode=1777,size=2g',
+    '--tmpfs',
+    '/home/node:exec,uid=1000,gid=1000,size=1g',
+    '-v',
+    `${tarballDir}:/w/tarballs:ro`,
+    '-v',
+    `${scriptFile}:/w/consumer-install.cjs:ro`,
+    '--entrypoint',
+    'node',
+    image,
+    '/w/consumer-install.cjs',
+    '--in-container',
+    '/w/tarballs',
+  ];
+}
+
+/** Pull an image, trying again after a pause: a registry throttle is not a fault of the packages. */
+function pullWithRetry(image) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      run('docker', ['pull', image], { cwd: ROOT, timeout: INSTALL_MS });
+      return;
+    } catch (error) {
+      const wait = INSTALL_BACKOFF_MS[attempt - 1];
+      if (wait === undefined) throw error;
+      console.log(`  docker pull failed (attempt ${attempt}); trying again in ${wait / 1000}s`);
+      pause(wait);
+    }
+  }
+}
+
+/** Refuse the no-container mode where a runner holds a token: it runs registry code on the host. */
+function refuseLocalModeInCi(env) {
+  if (env.CI !== undefined && env.CI !== '' && env.CI !== 'false') {
+    fail(
+      '--no-container runs third-party install scripts on this machine and is for local use only; ' +
+        'CI sets CI, so use --image',
+    );
+  }
+}
+
+/** The second half: install the tarballs in `tarballDir` into a clean project and run code against them. */
+function installAndRun(tarballDir, keep) {
+  const tarballs = tarballsIn(tarballDir);
+  if (tarballs.length === 0) fail(`no tarballs in ${tarballDir}`);
+  const pkgs = tarballs
+    .map((t) => ({ name: packageNameOf(t) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'consumer-install-'));
   const cleanup = () => {
-    if (!KEEP) fs.rmSync(work, { recursive: true, force: true });
+    if (!keep) fs.rmSync(work, { recursive: true, force: true });
   };
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
@@ -453,43 +465,8 @@ function main() {
       process.exit(130);
     });
   }
-  // The temporary project must not sit under this checkout, or node would resolve the workspace's own copies.
-  if (path.resolve(work).startsWith(ROOT + path.sep))
-    fail(`temporary directory ${work} is inside the checkout`);
   try {
     console.log(`consumer-install: ${pkgs.length} package(s), working in ${work}`);
-    const tarballs = stage('pack', () =>
-      givenTarballs
-        ? tarballsIn(path.resolve(givenTarballs))
-        : packAll(pkgs, path.join(work, 'tarballs')),
-    );
-    if (tarballs.length !== pkgs.length) {
-      fail(`[pack] expected ${pkgs.length} tarballs, found ${tarballs.length}`);
-    }
-    const names = tarballs.map(
-      (t) =>
-        pkgs.find((p) =>
-          path.basename(t).startsWith(p.name.replace('@', '').replace('/', '-') + '-'),
-        )?.name ?? t,
-    );
-    if (writeDigests !== undefined || expected !== undefined) {
-      const digests = stage('digest', () => digestAll(names, tarballs));
-      if (writeDigests !== undefined) {
-        fs.writeFileSync(writeDigests, JSON.stringify(digests, null, 2));
-        console.log(`  wrote the digests of ${names.length} tarballs to ${writeDigests}`);
-      }
-      if (expected !== undefined) {
-        const problems = compareDigests(expected, digests);
-        if (problems.length > 0) {
-          fail(
-            `[verify] the packages to publish are not the ones the consumer install verified:\n  ${problems.slice(0, 20).join('\n  ')}`,
-          );
-        }
-        console.log('consumer-install: the tarballs hold exactly the files that were verified');
-        return;
-      }
-    }
-
     const project = path.join(work, 'project');
     fs.mkdirSync(project);
     // What the README tells a user to put in package.json before installing. npm 12 skips a dependency's
@@ -511,11 +488,10 @@ function main() {
     const emptyRc = path.join(work, 'empty.npmrc');
     fs.writeFileSync(emptyRc, '');
     const npmEnv = { npm_config_userconfig: emptyRc, npm_config_update_notifier: 'false' };
-
     const npmOut = (...args) =>
       run('npm', args, { cwd: project, timeout: RUN_MS, env: npmEnv }).trim();
     console.log(
-      `  npm ${npmOut('--version')}, userconfig ${path.basename(npmOut('config', 'get', 'userconfig'))}: install`,
+      `  node ${process.version}, npm ${npmOut('--version')}, userconfig ${path.basename(npmOut('config', 'get', 'userconfig'))}: install`,
     );
     stage('install', () => installWithRetry(tarballs, project, npmEnv));
 
@@ -565,8 +541,64 @@ function main() {
       'consumer-install: the packed packages install and run as a consumer would use them',
     );
   } finally {
-    if (KEEP) console.log(`consumer-install: left ${work}`);
+    if (keep) console.log(`consumer-install: left ${work}`);
     else cleanup();
+  }
+}
+
+function main() {
+  const inContainer = option('--in-container');
+  if (inContainer !== undefined) return installAndRun(inContainer, false);
+  const image = option('--image');
+  const local = process.argv.includes('--no-container');
+  if ((image === undefined) === !local)
+    fail('give exactly one of --image <image> and --no-container');
+  if (local) refuseLocalModeInCi(process.env);
+
+  const pkgs = workspacePackages();
+  // Under the checkout and not the system temp folder: Docker Desktop shares the user's folders with the
+  // container and not /var/folders. Ignored by git.
+  const work = fs.mkdtempSync(path.join(ROOT, '.consumer-install-tmp-'));
+  const name = `consumer-install-${process.pid}`;
+  const cleanup = () => {
+    if (image !== undefined) spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
+    if (!KEEP) fs.rmSync(work, { recursive: true, force: true });
+  };
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      cleanup();
+      process.exit(130);
+    });
+  }
+  try {
+    const tarballs = stage('pack', () => packAll(pkgs, path.join(work, 'tarballs')));
+    if (tarballs.length !== pkgs.length) {
+      fail(`[pack] expected ${pkgs.length} tarballs, found ${tarballs.length}`);
+    }
+    if (local) {
+      installAndRun(path.join(work, 'tarballs'), KEEP);
+      return;
+    }
+    stage('pull', () => pullWithRetry(image));
+    console.log(`  install and run inside ${image}`);
+    const args = dockerRunArgs({
+      image,
+      name,
+      tarballDir: path.join(work, 'tarballs'),
+      scriptFile: __filename,
+    });
+    // Streamed, not captured: the container's output is the log.
+    const result = spawnSync('docker', args, {
+      cwd: ROOT,
+      env: childEnv({}),
+      stdio: 'inherit',
+      timeout: 15 * 60_000,
+    });
+    if (result.status !== 0)
+      fail(`[container] docker run exited ${result.status ?? result.error?.message}`);
+  } finally {
+    if (KEEP) console.log(`consumer-install: left ${work}`);
+    cleanup();
   }
 }
 
@@ -580,10 +612,11 @@ if (require.main === module) {
 } else {
   module.exports = {
     checkInstalled,
-    compareDigests,
     entrySpecifiers,
     exportTargets,
     typesVersionsTargets,
     childEnv,
+    dockerRunArgs,
+    refuseLocalModeInCi,
   };
 }

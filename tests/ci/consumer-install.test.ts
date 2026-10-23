@@ -8,11 +8,11 @@ import { parse } from 'yaml';
 // Holds the consumer install in place, and fires its detectors at planted trees.
 //
 // The workflow half: a pull request job that packs the six packages and installs the tarballs into a clean
-// project, and a release job that does the same before anything is published, with nothing a dependency's install
-// script could steal. Neither can be seen to be missing. Every other check passes without them, because none of the
-// others reads a tarball: the workspace links packages in place, so a file missing from `files` or a `workspace:*`
-// left in a manifest breaks nothing until a user installs. A job deleted, a step made advisory with
-// `continue-on-error`, or a matrix that runs one Node twice leaves CI green.
+// project, with the third-party half inside a container and nothing the container's code could steal or poison.
+// Neither can be seen to be missing or loosened. Every other check passes without it, because none of the others
+// reads a tarball, and a job that gains a cache, a secret or a step run on the host leaves CI green while giving
+// registry code a way into every later run. The release workflow must not run it at all: the release pull
+// request's own CI has already run it on the commit that is released.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 interface Step {
@@ -27,11 +27,12 @@ interface Step {
   'continue-on-error'?: boolean | string;
 }
 interface Job {
-  needs?: string | string[];
   environment?: unknown;
   env?: Record<string, unknown>;
   if?: string;
   permissions?: Record<string, string>;
+  container?: unknown;
+  services?: unknown;
   'runs-on'?: string;
   'timeout-minutes'?: number;
   'continue-on-error'?: boolean | string;
@@ -40,15 +41,14 @@ interface Job {
 }
 interface Workflow {
   on: Record<string, unknown>;
-  permissions?: Record<string, string>;
   jobs: Record<string, Job>;
 }
 
 const load = (file: string) =>
   parse(readFileSync(join(ROOT, '.github/workflows', file), 'utf8')) as Workflow;
 const ci = load('ci.yml');
-const release = load('release.yml');
 const SCRIPT = 'node scripts/consumer-install.cjs';
+const RUN = `${SCRIPT} --image public.ecr.aws/docker/library/node:\${{ matrix.node }}-bookworm`;
 
 /** A job by name, failing loudly when it is gone: a missing job is the regression this file exists for. */
 function jobOf(wf: Workflow, name: string): Job {
@@ -56,7 +56,6 @@ function jobOf(wf: Workflow, name: string): Job {
   if (!found) throw new Error(`no "${name}" job`);
   return found;
 }
-const label = (s: Step) => s.name ?? s.uses ?? s.run ?? '';
 /** What would let a step run differently from how it reads, or let its failure pass. */
 function loosened(step: Step | undefined): string[] {
   if (!step) return ['the step is missing'];
@@ -69,7 +68,7 @@ function loosened(step: Step | undefined): string[] {
 
 describe('the consumer install runs in CI', () => {
   const job = jobOf(ci, 'consumer-install');
-  const script = job.steps.find((s) => s.run === SCRIPT);
+  const script = job.steps.find((s) => (s.run ?? '').startsWith(SCRIPT));
 
   it('is a job of the workflow that runs on pull requests', () => {
     expect(Object.keys(ci.on)).toContain('pull_request');
@@ -82,6 +81,11 @@ describe('the consumer install runs in CI', () => {
     expect(loosened(script)).toEqual([]);
   });
 
+  it('runs the install through the container, never on the runner', () => {
+    expect(script?.run).toBe(RUN);
+    expect(script?.run).not.toContain('--no-container');
+  });
+
   it('runs on Node 22 and 24, and each leg really uses its own Node', () => {
     expect(job.strategy?.matrix?.node).toEqual([22, 24]);
     const setup = job.steps.find((s) => (s.uses ?? '').startsWith('actions/setup-node@'));
@@ -89,9 +93,30 @@ describe('the consumer install runs in CI', () => {
     expect(job.steps.indexOf(setup as Step)).toBeLessThan(job.steps.indexOf(script as Step));
   });
 
+  it('uses no cache of any kind, so nothing it ran can be restored by a job that holds a secret', () => {
+    for (const step of job.steps) {
+      const what = step.name ?? step.uses ?? step.run ?? '';
+      expect(step.with?.['cache'], `${what} sets a cache`).toBeUndefined();
+      expect(step.with?.['cache-dependency-path'], `${what} sets a cache path`).toBeUndefined();
+      expect(step.uses ?? '', `${what} is a cache action`).not.toMatch(/(^|\/)cache(\/|@)/);
+      expect(step.uses ?? '', `${what} restores or saves a cache`).not.toMatch(
+        /\/(restore|save)@|docker-images-/,
+      );
+    }
+  });
+
+  it('holds no secret, no token beyond the read-only default, no environment and no container service', () => {
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|NPM_TOKEN|id-token/);
+    expect(job.env).toBeUndefined();
+    expect(job.environment).toBeUndefined();
+    expect(job.permissions).toBeUndefined(); // the workflow's `contents: read`
+    expect(job.container).toBeUndefined();
+    expect(job.services).toBeUndefined();
+  });
+
   it('installs pnpm and the dependencies before it, and stays inside a time bound', () => {
     const names = job.steps.map((s) => s.uses ?? s.run ?? '');
-    const iScript = names.indexOf(SCRIPT);
+    const iScript = names.indexOf(RUN);
     expect(iScript).toBeGreaterThan(-1);
     const iPnpm = names.findIndex((n) => n.startsWith('pnpm/action-setup'));
     expect(iPnpm).toBeGreaterThan(-1);
@@ -103,59 +128,13 @@ describe('the consumer install runs in CI', () => {
   });
 });
 
-describe('the consumer install runs before a release publishes, with nothing to steal', () => {
-  const job = jobOf(release, 'consumer-install');
-  const publish = jobOf(release, 'publish');
-  const NAME = 'Install the packed packages as a consumer';
-  const step = job.steps.find((s) => s.name === NAME);
-
-  it('is a job of its own that the publish job needs, so a failure stops the release', () => {
-    expect([publish.needs].flat()).toContain('consumer-install');
-    expect(job.if).toBeUndefined();
-    expect(job['continue-on-error']).toBeUndefined();
-    expect(job.environment).toBeUndefined();
-  });
-
-  it('holds no token a dependency could use: read-only, no id-token, no secret, no environment', () => {
-    // A job-level block replaces the workflow's, so this is the whole of what the job holds.
-    expect(job.permissions).toEqual({ contents: 'read' });
-    expect(JSON.stringify(job)).not.toMatch(/secrets\.|id-token|NODE_AUTH_TOKEN|NPM_TOKEN/);
-    expect(job.env).toBeUndefined();
-    // Registry auth would be written into an npmrc that npm reads: no `registry-url`, no `token`.
-    for (const s of job.steps) {
-      expect(s.with?.['registry-url'], `${label(s)} sets a registry`).toBeUndefined();
-      expect(s.with?.['token'], `${label(s)} passes a token`).toBeUndefined();
-    }
-  });
-
-  it('runs the script and writes the digests, with nothing that can skip it or let it fail quietly', () => {
-    expect(step?.run).toBe(`${SCRIPT} --write-digests digests.json`);
-    expect(loosened(step)).toEqual([]);
-  });
-
-  it('runs under the npm the release publishes with, after pnpm is installed', () => {
-    const names = job.steps.map(label);
-    const i = names.indexOf(NAME);
-    expect(names.indexOf('Upgrade npm for Trusted Publishing')).toBeGreaterThan(-1);
-    expect(i).toBeGreaterThan(names.indexOf('Upgrade npm for Trusted Publishing'));
-    expect(i).toBeGreaterThan(names.indexOf('pnpm install --frozen-lockfile'));
-  });
-
-  it('hands the digests to the publish job, which checks what it will publish against them', () => {
-    const upload = job.steps.find((s) => (s.uses ?? '').startsWith('actions/upload-artifact@'));
-    expect(upload?.with?.['name']).toBe('verified-tarball-digests');
-    expect(upload?.with?.['if-no-files-found']).toBe('error');
-    const steps = publish.steps;
-    const names = steps.map(label);
-    const download = steps.find((s) => (s.uses ?? '').startsWith('actions/download-artifact@'));
-    expect(download?.with?.['name']).toBe('verified-tarball-digests');
-    const check = steps.find((s) => s.run === `${SCRIPT} --verify-digests verified/digests.json`);
-    expect(loosened(check)).toEqual([]);
-    const iCheck = names.indexOf(check ? label(check) : '');
-    expect(iCheck).toBeGreaterThan(names.indexOf('pnpm build'));
-    expect(iCheck).toBeGreaterThan(steps.indexOf(download as Step));
-    expect(iCheck).toBeLessThan(names.indexOf('Publish (dry-run)'));
-    expect(iCheck).toBeLessThan(names.indexOf('Publish (real)'));
+describe('the release workflow does not run the consumer install', () => {
+  // The check runs third-party install scripts. In the release workflow it would sit beside the job that holds
+  // `id-token: write`, and a cache or an artifact is a way from one to the other. The release pull request's
+  // own CI runs it on the exact commit that is tagged, which is enough.
+  it('never names the script, the job or its artifact', () => {
+    const text = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+    expect(text).not.toMatch(/consumer-install|consumer install|verified-tarball-digests/i);
   });
 });
 
@@ -163,11 +142,14 @@ describe('the consumer install runs before a release publishes, with nothing to 
 // that is not the defect does not trip it.
 const lib = createRequire(import.meta.url)('../../scripts/consumer-install.cjs') as {
   checkInstalled: (project: string, pkgs: { name: string }[]) => string[];
-  compareDigests: (
-    expected: Record<string, Record<string, string>>,
-    actual: Record<string, Record<string, string>>,
-  ) => string[];
   childEnv: (extra: Record<string, string>) => Record<string, string>;
+  dockerRunArgs: (o: {
+    image: string;
+    name: string;
+    tarballDir: string;
+    scriptFile: string;
+  }) => string[];
+  refuseLocalModeInCi: (env: Record<string, string | undefined>) => void;
 };
 
 const temps: string[] = [];
@@ -271,25 +253,40 @@ describe('the install checks', () => {
   });
 });
 
-describe('the comparison of verified and packed files', () => {
-  const verified = { a: { 'package/x.js': '1', 'package/y.js': '2' } };
-
-  it('passes the same files with the same hashes', () => {
-    expect(lib.compareDigests(verified, structuredClone(verified))).toEqual([]);
+describe('the container the third-party half runs in', () => {
+  const args = lib.dockerRunArgs({
+    image: 'node:22',
+    name: 'ci-1',
+    tarballDir: '/work/tarballs',
+    scriptFile: '/work/scripts/consumer-install.cjs',
   });
 
-  it('fails a changed, a new and a vanished file, and a package on one side only', () => {
-    expect(
-      lib.compareDigests(verified, { a: { 'package/x.js': 'changed', 'package/z.js': '3' } }),
-    ).toEqual([
-      'a: package/x.js differs from the verified tarball',
-      'a: package/y.js is gone since the verified tarball',
-      'a: package/z.js is new since the verified tarball',
+  it('is started with no environment, no privileges and nothing writable from the host', () => {
+    const joined = args.join(' ');
+    expect(args).not.toContain('-e');
+    expect(args).not.toContain('--env');
+    expect(args).not.toContain('--env-file');
+    expect(args).not.toContain('--privileged');
+    expect(joined).not.toMatch(/docker\.sock|--network[= ]host|--pid[= ]host|--volumes-from/);
+    expect(joined).toContain('--cap-drop ALL');
+    expect(joined).toContain('--security-opt no-new-privileges');
+    expect(args).toContain('--read-only');
+    expect(args[args.indexOf('--user') + 1]).toBe('node');
+  });
+
+  it('mounts exactly the tarballs and the script, both read-only', () => {
+    const mounts = args.flatMap((a, i) => (a === '-v' ? [args[i + 1]] : []));
+    expect(mounts).toEqual([
+      '/work/tarballs:/w/tarballs:ro',
+      '/work/scripts/consumer-install.cjs:/w/consumer-install.cjs:ro',
     ]);
-    expect(lib.compareDigests(verified, {})).toEqual(['a: verified, but not packed now']);
-    expect(lib.compareDigests({}, verified)).toEqual([
-      'a: packed now, but not among the verified tarballs',
-    ]);
+  });
+
+  it('refuses the no-container mode where CI is set, and allows it where it is not', () => {
+    expect(() => lib.refuseLocalModeInCi({ CI: 'true' })).toThrow(/local use only/);
+    expect(() => lib.refuseLocalModeInCi({ CI: '1' })).toThrow(/local use only/);
+    expect(() => lib.refuseLocalModeInCi({})).not.toThrow();
+    expect(() => lib.refuseLocalModeInCi({ CI: 'false' })).not.toThrow();
   });
 });
 

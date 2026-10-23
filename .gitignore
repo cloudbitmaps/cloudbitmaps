@@ -69,3 +69,4 @@ __pycache__/
 
 # Written and removed by a test that builds an older registry parser
 tests/**/*.generated.ts
+.consumer-install-tmp-*/

@@ -53,8 +53,8 @@ const stepNames = (j: Job) => j.steps.map((s) => s.name ?? s.uses ?? s.run ?? ''
 const hasStep = (j: Job, name: string) => stepNames(j).some((n) => n === name);
 
 describe('release workflow shape', () => {
-  it('has exactly the three jobs, and github-release depends on publish', () => {
-    expect(Object.keys(wf.jobs).sort()).toEqual(['consumer-install', 'github-release', 'publish']);
+  it('has exactly the two jobs, and github-release depends on publish', () => {
+    expect(Object.keys(wf.jobs).sort()).toEqual(['github-release', 'publish']);
     expect(job('github-release').needs).toBe('publish');
   });
 
@@ -139,7 +139,6 @@ describe('release workflow shape', () => {
     for (const precondition of [
       'Require release notes to exist before publishing',
       'Leak-scan the packed tarballs',
-      'Check the packages to publish are the ones the consumer install verified',
       'node scripts/audit.cjs',
       'Verify tag matches every package version',
       'Refuse to "publish" a still-private package',
