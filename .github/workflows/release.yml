@@ -271,6 +271,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: node scripts/changelog-section.cjs "${GITHUB_REF_NAME}" > /dev/null
 
+      # Install the packed tarballs with npm into a clean project outside the checkout and run code against
+      # them, as a user would. The workspace checks above never read a tarball, so a file missing from `files`
+      # or a `workspace:*` left unrewritten passes them and ships. Runs on dry-runs too, and under the npm this
+      # job just installed. See scripts/consumer-install.cjs.
+      - name: Install the packed packages as a consumer
+        run: node scripts/consumer-install.cjs
+
       # Scan what actually ships. The tracked-file and history modes cannot see `dist/` (gitignored), which is
       # most of the published bytes and carries every `src` comment through the sourcemaps' `sourcesContent`.
       # See scripts/leak-scan-tarballs.cjs. Runs on dry-runs too — a dry run whose whole job is to prove the

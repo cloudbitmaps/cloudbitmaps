@@ -139,6 +139,7 @@ describe('release workflow shape', () => {
     for (const precondition of [
       'Require release notes to exist before publishing',
       'Leak-scan the packed tarballs',
+      'Install the packed packages as a consumer',
       'node scripts/audit.cjs',
       'Verify tag matches every package version',
       'Refuse to "publish" a still-private package',

@@ -147,6 +147,12 @@ runs, and then, in order (a run started by hand skips some of these; see [A manu
   for the tag. The notes are *used* later, by the `github-release` job; they are *checked* here, before the
   publish, because that is the last moment a missing section is still a two-line edit rather than a permanent
   gap next to an immutable tarball.
+- **Installs the packed tarballs as a consumer** (`node scripts/consumer-install.cjs`) — packs the six, installs them with the
+  npm this job just upgraded into a clean project outside the checkout, and runs code against them under ESM and
+  CommonJS: every entry, a store on the in-memory and local-files drivers, and the `export-segments` bin. The checks above
+  read the workspace, where a file missing from `files`, an `exports` path that resolves only there or a `workspace:*`
+  left in a manifest breaks nothing, and a tarball is immutable once published. CI runs the same script on every pull
+  request. It runs on dry runs too.
 - **Leak-scans the packed tarballs** (`pnpm leak-scan:tarballs`) — the built `.tgz` for each package is packed,
   unpacked and scanned. This is a different surface from the everyday `pnpm leak-scan`: `dist/` is gitignored,
   so the tracked-file and history modes structurally cannot see the bytes a consumer downloads, and the

@@ -35,6 +35,11 @@ Every change must pass these locally, and CI runs each of them on every pull req
   `Function` constructor, and on dynamic `import()`; and the
   detectors the build, `pnpm smoke` and the Node-floor gate rely on are fired at planted inputs in both
   directions.
+- `node scripts/consumer-install.cjs` packs the six packages as a release does, installs the tarballs with npm into a clean
+  project outside the checkout, and runs code against them (both module systems, both local drivers, the
+  `export-segments` bin). It builds first, needs the registry for the cloud SDKs and takes about a minute; add `--keep` to
+  leave the project behind. Run it after a change to a `package.json` (`files`, `exports`, `bin`, dependencies) or to the
+  build. CI runs it on every pull request as `consumer install`, on Node 22 and 24, with the npm each ships.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
   the entry list is derived from each manifest, so a declared entry that does not load fails the build. It checks
   that `errorKind`, from the flavor and from driver-kit, classifies an error the built `@cloudbitmaps/s3` throws, and that the store takes a
