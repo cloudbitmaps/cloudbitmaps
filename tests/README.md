@@ -22,7 +22,7 @@ resolves.
 ## Full strength
 
 A few tests are heavy: property suites that draw many cases, a namespace listing of a quarter-million rows, thousands of
-native bitmaps measured, each cardinality in a fresh process. On a pull request they run a reduced size, so a push stays
+bitmaps measured (the TypeScript codec's, and the native one's as the reference), each cardinality in a fresh process. On a pull request they run a reduced size, so a push stays
 cheap; a scheduled run keeps the coverage by running each at the size it always had.
 
 | | runs | how |
@@ -140,6 +140,7 @@ reader.
 | `materialize-many-figures.test.ts` | The requests of a refresh-shaped `materializeMany` call that the guide and the changelog quote are not the ones `bench/materialize-many-counts.json` holds, or a timing is quoted that is not counted. The gate reads the figures out of the JSON and holds both documents to them. |
 | `public-jsdoc.test.ts` | A public method on the facade has no JSDoc of its own. |
 | `retired-names.test.ts` | A package still exports a name the library removed, or a page names one, in prose or in a code sample: markdown, HTML or a plain-text page the site serves, anywhere but the changelog and the changesets, which announce the removal. A name with no use left in any code is refused in the code too, comments included, since a doc-comment ships in the `.d.ts`. For every name `@cloudbitmaps/roaring` stopped exporting in this release (`left-the-flavor.json` lists them for `scripts/smoke.cjs`), with what to use instead: the flavor's barrel declares none and re-exports nothing with a star, no page imports one from it, each driver contract is on driver-kit, a name with no public home is on no page, one that a few pages name legitimately is on those alone, and no hover doc of the flavor or driver-kit names one or links to a name a reader cannot import. |
+| `roaring-codec-example.test.ts` | The runnable example on the codec page (`docs/guide/roaring-codec.md`) fails to run, or prints something other than what the comment beside each `console.log` says. The one `js` fence is taken from the page and run against the package's source; a copy whose output is changed must fail, and a truncated byte string must be refused with `ValidationError`. |
 | `sdk-floor-claims.test.ts` | A driver package's cloud-SDK range differs between its manifest, its README and `site/usage.html` — or the S3 range admits a version below the one its correctness depends on. |
 | `specifiers.test.ts` | A user-facing file tells a reader to install or import `cloud-roaring`, an unscoped name that is only an empty placeholder on npm. |
 | `superseded-behaviour-claims.test.ts` | A page repeats one of the listed phrases, each a claim about behaviour this library does not have, with what to say instead. |

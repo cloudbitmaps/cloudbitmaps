@@ -82,10 +82,9 @@ async function bucketIds(
   const byChunk = new Map<number, CodecBitmap>();
   // Batched per chunk, not one `add()` call per id.
   //
-  // The obvious loop — `bitmap.add(remainder)` for every id — makes one call per id, and
-  // measured **1,679 ms (on the native codec) for 1M ids** with no yield point anywhere in it. Since this is a synchronous stretch on
-  // Node's only thread, a caller who wires it to a request handler stalls every other request on that instance
-  // for over a second (measured separately: a 0.7 ms health check took 275 ms).
+  // The obvious loop — `bitmap.add(remainder)` for every id — makes one call per id with no yield point anywhere
+  // in it, and a synchronous stretch of that length on Node's only thread stalls every other request on the
+  // instance when a caller wires it to a request handler.
   //
   // Buffering the remainders and inserting them per chunk in one `fromValues`/`addMany` call amortises that
   // per-call cost across the whole batch.
@@ -105,14 +104,11 @@ async function bucketIds(
   // Yield periodically, NOT per chunk — see {@link yieldEvery} for why per-unit async is a 7x regression here.
   const tickChunk = yieldEvery(clock);
   const tickId = yieldEvery(clock, YIELD_EVERY_IDS);
-  // Yield every N chunks, NOT per chunk. Measured: handing each chunk's insert to the threadpool
-  // (`fromArrayAsync`) costs ~9 µs of dispatch against ~1.5 µs of actual work once ids are spread across
-  // ~61,000 chunks — 636 ms versus 92 ms, a 7x regression that would have undone the per-chunk batching this
-  // function already does. Keeping the inserts synchronous and interrupting them periodically gets the
-  // starvation fix without the cost — measured on the per-chunk insert microbenchmark: 88 ms wall against a
-  // 92 ms unyielded baseline. The whole-load end-to-end figures are a DIFFERENT experiment and live in
-  // `cooperative.ts`. Quoting this 92 ms baseline beside that experiment's 450 ms stall would describe a 92 ms
-  // operation with 450 ms of starvation inside it, which is impossible on its face.
+  // Yield every N chunks, NOT per chunk. Handing each chunk's insert to a threadpool costs more in dispatch than
+  // the insert itself once ids are spread across tens of thousands of chunks (measured on the native codec's
+  // threadpool insert in 0.23.0: a 7x regression, which would have undone the per-chunk batching this function
+  // already does). Keeping the inserts synchronous and interrupting them periodically gets the starvation fix
+  // without that cost. The whole-load end-to-end figures are a different experiment and live in `cooperative.ts`.
   //
   // The yield must be a REAL macrotask. `await Promise.resolve()` is a microtask and never lets I/O run, which
   // is the trap that makes naive "just await something" fixes measure as no change at all.

@@ -11,7 +11,7 @@ New to the words? [The words these docs use](#the-words-these-docs-use) is at th
 
 ## Install
 
-In a new folder, run `pnpm init` (or `npm init -y`). Nothing needs allowing first: no package here runs an install script or ships a native binary.
+In a new folder, run `pnpm init` (or `npm init -y`). Nothing needs allowing first: no package here runs an install script or ships a native binary. The store's Roaring is written in TypeScript ([what that means](roaring-codec.md)).
 
 Then:
 
@@ -304,28 +304,12 @@ one row per item, each linking to the detail.
   [errors table](api-reference.md#errors-typed--you-catch-these) lists each one with what to do.
 - **A load returned `published: false`.** Read `result.reason`:
   [when a load is refused](correctness.md#when-a-load-is-refused).
-- **An old install error or deprecation warning:** [Troubleshooting](#troubleshooting) says which no longer apply.
 - **Timeouts and retries.** <a id="6-reliability-retries-backoff--timeouts"></a>Reads retry by themselves, and a write is
   retried only where that is safe, so a fault it does not settle is yours to re-run: [Reliability](production.md#reliability-retries-backoff--timeouts).
 - **Expiring data.** <a id="135-retention-ttl-and-pruning--what-exists-and-what-doesnt"></a>There is no per-id
   expiry: [Retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt).
 
 ## Troubleshooting
-
-### `Cannot find module './build/Release/roaring.node'` after a successful install
-
-This no longer applies from the first version that has no native dependency. `@cloudbitmaps/roaring` reads and writes
-Roaring bytes in TypeScript, so there is no install script to allow, no binary to download and nothing to rebuild when
-you change Node's major version, and it installs the same under `--ignore-scripts`, on Alpine and on any other platform
-Node 22.12 runs on. If you still see this message, either a release before this change is installed (upgrade
-`@cloudbitmaps/roaring`), or your project installed the `roaring` package from npm itself, as the samples that build a
-bitmap do: allow its install script as that package documents.
-
-### `DEP0169 DeprecationWarning: url.parse() behavior is not standardized`
-
-This no longer applies from the first version that has no native dependency: the warning came from the `roaring`
-package's own binary lookup, which `@cloudbitmaps/roaring` no longer installs or loads. If you still see it, it comes
-from a `roaring` package your project installed itself, or from a release before this change.
 
 ### CommonJS, Jest and TypeScript
 

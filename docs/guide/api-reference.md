@@ -329,11 +329,11 @@ check:
 <!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32`, `bytes`, `deserializePortable` to the reader -->
 ```ts
 const checked = deserializePortable(bytes); // ValidationError if malformed
-const native = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
+const bitmap32 = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
 ```
 
 Decode `checked`'s bytes, not the original ones: a `SharedArrayBuffer` can change between the check and a decode of
-the original. [The parts recipe](loading.md#parts-of-one-segment-built-separately) uses this.
+the original. [The parts recipe](loading.md#parts-of-one-segment-built-separately) uses this. See also [what you can use by itself](roaring-codec.md#what-you-can-use-by-itself).
 
 ### The segment verbs (the ~90% of daily use)
 

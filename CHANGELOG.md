@@ -45,9 +45,8 @@ so, and so do the module headers in the code.
   byte what the `roaring` package wrote, so nothing is migrated, and a store can have readers and writers on either
   codec at once. No package of this family depends on `roaring` now, so there is no install script to allow
   (npm 12 `allowScripts`, pnpm `onlyBuiltDependencies` or `allowBuilds`), no binary to download, nothing to rebuild
-  when Node's major version changes, and the install is the same under `--ignore-scripts` (and, there being no native code to build, on Alpine, which was not measured). The two
-  troubleshooting entries for `Cannot find module './build/Release/roaring.node'` and `DEP0169` say they no longer
-  apply. `roaring` stays a pinned development dependency: the tests hold the TypeScript codec to it, as the
+  when Node's major version changes, and the install is the same under `--ignore-scripts` (and, there being no native code to build, on Alpine, which was not measured). The guide's two
+  troubleshooting entries for `Cannot find module './build/Release/roaring.node'` and `DEP0169` are removed. `roaring` stays a pinned development dependency: the tests hold the TypeScript codec to it, as the
   reference. A project that imports `roaring` itself (the samples that build a bitmap do) still installs and allows it.
 
 - **The TypeScript codec's four-operand intersect of mixed chunks is within 5% of the native codec's (one codec per process), and the codec seam gains an optional `intersectSmallestFirst`.**

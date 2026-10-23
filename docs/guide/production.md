@@ -756,7 +756,8 @@ billion members. `maxScanSegments`, an option of `store.retireExpired` and `stor
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
 is network-bound and irrelevant here — a `has()` spends a negligible fraction of its time on bit math — but a
 **load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation.
-Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process:
+Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process, **on the native codec of
+0.23.0**:
 
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
@@ -771,6 +772,11 @@ median run and 47 ms in the worst — with the loop free in between: other reque
 queueing behind the whole load. Without a clock to yield through, the two columns are the same number: the same
 1M-id load holds the loop for **~519 ms straight** (median), long enough for a health check to time out and the
 instance to be pulled from its load balancer.
+
+**These are the native codec's figures, to be re-measured on the TypeScript codec.** The store runs the TypeScript codec,
+and its bulk load measured faster than the native one's in a warm process (see [the codec's costs and
+gains](roaring-codec.md#what-it-costs-and-gains-against-native)), so ~526 ms is not what a load costs on it; no event-loop
+run exists on it yet, and the stall column is likewise native's.
 
 **Read these as a loaded machine's figures.** The machine was not idle: its one-minute load average was about 5
 at the start and the end of the run, so the cost column in particular is likely higher than an idle machine would

@@ -3,13 +3,16 @@
  *
  * Everything this library does on the hot read path is small. Bulk-load is the exception: it is the one place
  * where a single call legitimately occupies the CPU for hundreds of milliseconds, and Node has exactly one thread
- * to occupy. Measured on a 1M-id load of 65,536 chunks onto in-memory storage, on a loaded Apple M3 Pro: **518 ms
- * wall, and 519 ms during which the event loop did not turn at all** (medians of 20 fresh-process runs). Wire that to a request handler and every other in-flight request on the instance — health
+ * to occupy. Measured on the native codec of 0.23.0 (every figure in this header is the native codec's, to be
+ * re-measured on the TypeScript codec), on a 1M-id load of 65,536 chunks onto in-memory storage, on a loaded Apple M3
+ * Pro: **518 ms wall, and 519 ms during which the event loop did not turn at all** (medians of 20 fresh-process
+ * runs). Wire that to a request handler and every other in-flight request on the instance — health
  * checks included — waits out the whole load.
  *
- * The fix is not to make the work asynchronous. That was measured too, and it is a 7x *regression*: handing each
- * chunk's insert to the threadpool costs ~9 µs of dispatch against ~1.5 µs of actual work once ids are spread
- * across ~62,000 chunks (636 ms versus 92 ms). The work is genuinely CPU-bound and genuinely small per chunk;
+ * The fix is not to make the work asynchronous. That was measured too, on the native codec's threadpool insert, and
+ * it was a 7x *regression*: handing each chunk's insert to the threadpool cost ~9 µs of dispatch against ~1.5 µs of
+ * actual work once ids are spread across ~62,000 chunks (636 ms versus 92 ms). The TypeScript codec has no
+ * threadpool path. The work is genuinely CPU-bound and genuinely small per chunk;
  * the only thing wrong with it is that it never stops to let anyone else go. So the fix is to keep the work
  * synchronous and periodically hand the loop back.
  *
