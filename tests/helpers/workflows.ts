@@ -27,6 +27,8 @@ export interface Job {
   /** A job that calls a reusable workflow names it here, and has no steps of its own. */
   uses?: string;
   steps?: Step[];
+  /** The cache mode this job sets for itself, over its workflow's. */
+  'cache-mode'?: string;
   services?: unknown;
   container?: unknown;
   strategy?: { matrix?: unknown };

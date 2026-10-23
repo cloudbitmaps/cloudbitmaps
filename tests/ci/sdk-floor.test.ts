@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
+import { s3MinorOf, S3_STRONG_MINOR } from '../helpers/s3-sdk-version';
 
 // Holds the SDK-floor job in place, and fires the script's checks at planted inputs.
 //
@@ -20,8 +22,9 @@ import { parse } from 'yaml';
 // negative control that must see the S3 driver fail one release below its floor. Neither can be seen to be missing
 // or loosened: every other check passes without them, since none runs a version other than the lockfile's. A
 // control that stops requiring the failure turns the job into one that cannot tell "the old SDK works" from "the job
-// cannot see a dropped If-Match", and a cache saved from a job that installs third-party packages fresh could be
-// restored by a job that holds a secret.
+// cannot see a dropped If-Match", and a cache entry written by a job that installs third-party packages fresh could
+// be restored by a job that holds a secret. Not saving is a property of the steps; the workflow's `cache-mode: read`
+// makes the cache service refuse writes whatever runs in a job.
 //
 // The script half: what needs no network and no Docker. Reading the lowest version out of a range, refusing a range
 // it cannot read, refusing to run inside the checkout, the check that the installed SDK is the version asked for
@@ -30,6 +33,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SCRIPT = join(ROOT, 'scripts/sdk-floor.cjs');
 const sdkFloor = createRequire(import.meta.url)(SCRIPT) as {
   DRIVERS: Record<string, { dir: string; sdk: string; unit: string; integration: string }>;
+  INSTALL_MS: number;
+  TEST_MS: number;
+  run: (
+    cmd: string,
+    args: string[],
+    options: { cwd: string; timeout: number; env?: Record<string, string> },
+  ) => Promise<{ status: number | null; out: string }>;
   lowestVersion: (range: string) => string;
   floorOf: (root: string, driver: string) => string;
   assertOutside: (root: string, dir: string) => void;
@@ -56,6 +66,7 @@ interface Job {
   permissions?: unknown;
   'timeout-minutes'?: number;
   'continue-on-error'?: boolean | string;
+  'cache-mode'?: string;
   strategy?: {
     'fail-fast'?: boolean;
     matrix?: { include?: { driver: string; service: string }[] };
@@ -69,6 +80,7 @@ interface Workflow {
     pull_request?: { paths?: string[] };
   } & Record<string, unknown>;
   permissions?: Record<string, string>;
+  'cache-mode'?: string;
   jobs: Record<string, Job>;
 }
 
@@ -81,6 +93,37 @@ const job = (name: string): Job => {
 };
 const floor = job('floor');
 const control = job('negative-control');
+/**
+ * What a pull request must touch for the job to run: the drivers, everything their tests and the emulators' start read,
+ * and the job itself.
+ */
+const PR_PATHS = [
+  '.github/actions/docker-images-restore/**',
+  '.github/workflows/sdk-floor.yml',
+  'docker-compose.yml',
+  'package.json',
+  'packages/azure-blob/**',
+  'packages/core/src/driver-kit.ts',
+  'packages/core/src/drivers/**',
+  'packages/gcs/**',
+  'packages/s3/**',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'scripts/ci-backend-images.sh',
+  'scripts/lib/docker-pull.sh',
+  'scripts/sdk-floor.cjs',
+  'tests/drivers/_shared/**',
+  'tests/drivers/azure/**',
+  'tests/drivers/gcs/**',
+  'tests/drivers/s3/**',
+  'tests/helpers/**',
+  'tests/integration/azure.test.ts',
+  'tests/integration/gcs.test.ts',
+  'tests/integration/s3.test.ts',
+  'tests/setup-fast-check.ts',
+  'vitest.config.ts',
+  'vitest.integration.config.ts',
+];
 const stepRunning = (j: Job, needle: string): Step | undefined =>
   j.steps.find((s) => (s.run ?? '').includes(needle));
 
@@ -88,17 +131,27 @@ describe('the SDK-floor workflow', () => {
   it('runs nightly at 03:00 UTC, on demand, and on a pull request that touches a driver, the script or itself', () => {
     expect(wf.on.schedule).toEqual([{ cron: '0 3 * * *' }]);
     expect(Object.keys(wf.on).sort()).toEqual(['pull_request', 'schedule', 'workflow_dispatch']);
-    expect(wf.on.pull_request?.paths?.slice().sort()).toEqual(
-      [
-        '.github/workflows/sdk-floor.yml',
-        'packages/azure-blob/**',
-        'packages/core/src/drivers/**',
-        'packages/gcs/**',
-        'packages/s3/**',
-        'pnpm-lock.yaml',
-        'scripts/sdk-floor.cjs',
-      ].sort(),
-    );
+    expect(wf.on.pull_request?.paths?.slice().sort()).toEqual(PR_PATHS.slice().sort());
+  });
+
+  it('lists only paths that exist, so a rename cannot leave the filter watching nothing', () => {
+    for (const entry of PR_PATHS) {
+      const target = entry.endsWith('/**') ? entry.slice(0, -3) : entry;
+      expect(existsSync(join(ROOT, target)), `${entry} does not exist`).toBe(true);
+    }
+  });
+
+  it('fits the script’s install and test budgets inside each job’s time bound, with room to start', () => {
+    const minutes = (ms: number) => ms / 60_000;
+    const spare = 5; // the checkout, the image restore, the emulator's start
+    expect(
+      minutes(sdkFloor.INSTALL_MS + 2 * sdkFloor.TEST_MS) + spare,
+      'floor: one install and two test runs',
+    ).toBeLessThanOrEqual(floor['timeout-minutes'] ?? 0);
+    expect(
+      minutes(sdkFloor.INSTALL_MS + sdkFloor.TEST_MS) + spare,
+      'negative control: one install and one test run',
+    ).toBeLessThanOrEqual(control['timeout-minutes'] ?? 0);
   });
 
   it('grants a read-only token and holds no secret, environment or container', () => {
@@ -114,14 +167,26 @@ describe('the SDK-floor workflow', () => {
     }
   });
 
+  it('cannot write the cache: the workflow sets cache-mode read, and no job sets its own', () => {
+    expect(wf['cache-mode']).toBe('read');
+    for (const [name, j] of Object.entries(wf.jobs)) {
+      expect(j['cache-mode'], `${name} sets its own cache-mode`).toBeUndefined();
+    }
+    expect(TEXT.match(/^\s*cache-mode:/gm) ?? []).toHaveLength(1);
+  });
+
   it('keeps no cache: setup-node has none, nothing is saved, and the images are only restored', () => {
     for (const [name, j] of Object.entries(wf.jobs)) {
       for (const step of j.steps) {
         const what = `${name}: ${step.name ?? step.uses ?? step.run ?? ''}`;
         expect(step.with?.['cache'], `${what} sets a cache`).toBeUndefined();
         expect(step.with?.['cache-dependency-path'], `${what} sets a cache path`).toBeUndefined();
+        expect(
+          Object.keys(step.with ?? {}).filter((k) => k.startsWith('cache')),
+          `${what} sets a cache input`,
+        ).toEqual([]);
         expect(step.uses ?? '', `${what} saves a cache`).not.toMatch(
-          /(^|\/)cache\/save@|docker-images-save/,
+          /(^|\/)cache(\/save)?@|docker-images-save/,
         );
         if ((step.uses ?? '').startsWith('actions/setup-node@')) {
           // setup-node turns its cache on by itself when `packageManager` names npm; keep it off whatever that says.
@@ -133,7 +198,7 @@ describe('the SDK-floor workflow', () => {
         `${name} restores the images`,
       ).toHaveLength(1);
     }
-    expect(TEXT).not.toMatch(/docker-images-save|cache\/save/);
+    expect(TEXT).not.toMatch(/docker-images-save|cache\/save|actions\/cache@/);
   });
 
   it('checks out without keeping the token, and pins each action as ci.yml does', () => {
@@ -367,6 +432,107 @@ describe('the SDK-floor script: where it works and what it installed', () => {
   });
 });
 
+describe('the SDK-floor script: what it installed, beyond the two paths a test resolves', () => {
+  it('finds a second copy in the pnpm virtual store, and fails the check on it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sdk-floor-test-'));
+    try {
+      const put = (at: string, version: string) => {
+        const manifest = join(dir, at, 'package.json');
+        mkdirSync(dirname(manifest), { recursive: true });
+        writeFileSync(manifest, JSON.stringify({ version }));
+      };
+      put('packages/s3/node_modules/@aws-sdk/client-s3', '3.700.0');
+      put(
+        'node_modules/.pnpm/@aws-sdk+client-s3@3.700.0/node_modules/@aws-sdk/client-s3',
+        '3.700.0',
+      );
+      expect(sdkFloor.checkInstalled(dir, 's3', '3.700.0')).toHaveLength(2);
+      // Look-alikes in the store are not copies of the SDK: another package, and a copy of another scope's name.
+      put('node_modules/.pnpm/@aws-sdk+client-sts@3.1.0/node_modules/@aws-sdk/client-s3', '9.9.9');
+      expect(sdkFloor.checkInstalled(dir, 's3', '3.700.0')).toHaveLength(2);
+      put(
+        'node_modules/.pnpm/@aws-sdk+client-s3@3.1132.0/node_modules/@aws-sdk/client-s3',
+        '3.1132.0',
+      );
+      expect(() => sdkFloor.checkInstalled(dir, 's3', '3.700.0')).toThrow(
+        /resolved to 3\.1132\.0 at node_modules[\\/]\.pnpm.*pin did not take/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the SDK-floor script: a command past its budget is killed with everything it started', () => {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  it('kills a grandchild too, and rejects; a command inside its budget resolves with its output', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sdk-floor-test-'));
+    const pidFile = join(dir, 'grandchild.pid');
+    let grandchild = 0;
+    try {
+      // The child starts a grandchild that outlives it unless the whole group is killed, and then waits.
+      const child = `
+        const { spawn } = require('node:child_process');
+        const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+        require('node:fs').writeFileSync(process.argv[1], String(g.pid));
+        setTimeout(() => {}, 60000);
+      `;
+      await expect(
+        sdkFloor.run(process.execPath, ['-e', child, pidFile], { cwd: dir, timeout: 1500 }),
+      ).rejects.toThrow('killed after 1500 ms');
+      grandchild = Number(readFileSync(pidFile, 'utf8'));
+      expect(grandchild).toBeGreaterThan(0);
+      for (let i = 0; i < 40 && alive(grandchild); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(alive(grandchild), 'the grandchild outlived the kill').toBe(false);
+      const ok = await sdkFloor.run(
+        process.execPath,
+        ['-e', 'console.log("hi"); process.exit(3)'],
+        {
+          cwd: dir,
+          timeout: 10_000,
+        },
+      );
+      expect(ok).toEqual({ status: 3, out: 'hi\n' });
+    } finally {
+      if (grandchild > 0 && alive(grandchild)) process.kill(grandchild, 'SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the S3 version helper that gates tests on the installed SDK', () => {
+  it.each([
+    ['3.700.0', 700],
+    ['3.723.0', 723],
+    ['3.1132.0', 1132],
+  ])('reads the minor of %s', (version, minor) => {
+    expect(s3MinorOf(version)).toBe(minor);
+  });
+
+  it.each(['4.1.0', '2.1.0', '3.700', '3.x.0', 'v3.700.0', '3.700.0-beta.1', '', 'latest'])(
+    'refuses %j rather than answer NaN or the wrong major',
+    (version) => {
+      expect(() => s3MinorOf(version)).toThrow('is not a 3.x.y version');
+    },
+  );
+
+  it('puts the version the lockfile resolves on the strong branch, so the newest-SDK runs are never weakened', () => {
+    const lock = readFileSync(join(ROOT, 'pnpm-lock.yaml'), 'utf8');
+    const versions = [...lock.matchAll(/^ {2}'@aws-sdk\/client-s3@(\d+\.\d+\.\d+)':/gm)].map(
+      (m) => m[1]!,
+    );
+    expect(versions.length, 'the lockfile resolves no @aws-sdk/client-s3').toBeGreaterThan(0);
+    for (const v of versions) expect(s3MinorOf(v)).toBeGreaterThanOrEqual(S3_STRONG_MINOR);
+  });
+});
+
 describe('the SDK-floor script: the verdict of the negative control', () => {
   const REFUSAL = 'ValidationError: the S3 client does not send If-Match on a PutObject';
   const report = (over: Record<string, unknown> = {}) => ({
@@ -442,6 +608,10 @@ describe('the SDK-floor script: arguments it refuses before it touches anything'
     [['--driver', 's3', '--version', 'latest'], 'must be an exact version'],
     [['--driver', 's3', '--version'], '--version needs a value'],
     [['--driver', 's3', '--expect-failure', '--keep'], '--expect-failure needs a value'],
+    // An empty text would match any failure message, so the control would pass whatever broke.
+    [['--driver', 's3', '--expect-failure', ''], '--expect-failure needs a non-empty value'],
+    [['--driver', 's3', '--expect-failure', '  '], '--expect-failure needs a non-empty value'],
+    [['--driver', 's3', '--version', ''], '--version needs a non-empty value'],
   ])('%j exits 1 saying %j', (args, message) => {
     const r = cli(...args);
     expect(r.status).toBe(1);

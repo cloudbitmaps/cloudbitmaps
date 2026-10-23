@@ -17,7 +17,8 @@
  *   2. Exports the committed tree (`git archive HEAD`) into a new directory outside the checkout, adds a
  *      `pnpm.overrides` entry pinning the SDK to that version, and runs `pnpm install --no-frozen-lockfile` there.
  *      The repo's pnpm settings are kept as they are: the only dependency build script that runs is `roaring`'s.
- *   3. Checks that every installed copy of the SDK is exactly that version, and fails if none is found or one differs:
+ *   3. Checks that every installed copy of the SDK is exactly that version (the root's, the driver package's, and any
+ *      under `node_modules/.pnpm`), and fails if none is found or one differs:
  *      a pin that silently did not take would run the newest SDK and report green.
  *   4. Runs the driver's unit tests (`tests/drivers/<dir>`) and, with `--integration`, its file under
  *      `tests/integration/` against the emulator that is already up.
@@ -39,16 +40,21 @@
  * (`docker compose up -d <service>`).
  */
 
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
+const { setTimeout, clearTimeout } = require('node:timers');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
 
-/** Install and test budgets, in milliseconds. A run past its budget is killed and fails. */
-const INSTALL_MS = 5 * 60_000;
-const TEST_MS = 15 * 60_000;
+/**
+ * Install and test budgets, in milliseconds. A run past its budget is killed, with every process it started, and fails.
+ * One install and two test runs (the unit tests, then the integration file) must fit inside the job's `timeout-minutes`
+ * with the export and the emulator's start to spare; a test checks that sum against the workflow.
+ */
+const INSTALL_MS = 4 * 60_000;
+const TEST_MS = 7 * 60_000;
 
 /**
  * Per driver: its package directory, the SDK it depends on, its unit tests and its integration file. The name is the
@@ -171,12 +177,28 @@ function assertOutside(root, dir) {
   }
 }
 
-/** Every installed copy of `sdk` that a test in the tree can resolve: the root's and the driver package's. */
+/**
+ * Every installed copy of `sdk` in the tree: the root's, the driver package's, and each one pnpm keeps in its virtual
+ * store (`node_modules/.pnpm/<scope>+<name>@<version>...`), where a second version that something else depends on lives.
+ */
 function installedVersions(copy, driver) {
   const spec = DRIVERS[driver];
+  const manifests = [copy, path.join(copy, spec.dir)].map((base) =>
+    path.join(base, 'node_modules', ...spec.sdk.split('/'), 'package.json'),
+  );
+  const store = path.join(copy, 'node_modules', '.pnpm');
+  if (fs.existsSync(store)) {
+    const prefix = `${spec.sdk.replace('/', '+')}@`;
+    for (const entry of fs.readdirSync(store)) {
+      if (entry.startsWith(prefix)) {
+        manifests.push(
+          path.join(store, entry, 'node_modules', ...spec.sdk.split('/'), 'package.json'),
+        );
+      }
+    }
+  }
   const found = [];
-  for (const base of [copy, path.join(copy, spec.dir)]) {
-    const manifest = path.join(base, 'node_modules', ...spec.sdk.split('/'), 'package.json');
+  for (const manifest of manifests) {
     if (fs.existsSync(manifest)) {
       found.push({
         at: path.relative(copy, manifest),
@@ -246,36 +268,67 @@ function summarize({ out, text }) {
   return lines.join('\n');
 }
 
-/** Run a command; return `{ status, out }`. A spawn error or a timeout throws. */
+/** The most output kept from one command, in characters; the rest is dropped, oldest first. */
+const MAX_OUT = 64 * 1024 * 1024;
+
+/**
+ * Run a command; resolve `{ status, out }`. The command leads a process group of its own, and a run past `timeout` has
+ * the whole group killed (SIGKILL), so a test runner's workers and anything a test started do not outlive the job step;
+ * a timeout or a spawn error rejects.
+ */
 function run(cmd, args, { cwd, timeout, env }) {
-  const result = spawnSync(cmd, args, {
-    cwd,
-    env: childEnv(env),
-    encoding: 'utf8',
-    timeout,
-    maxBuffer: 256 * 1024 * 1024,
-    killSignal: 'SIGKILL',
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      cwd,
+      env: childEnv(env),
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    const keep = (chunk) => {
+      out = (out + chunk).slice(-MAX_OUT);
+    };
+    child.stdout.setEncoding('utf8').on('data', keep);
+    child.stderr.setEncoding('utf8').on('data', keep);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        child.kill('SIGKILL');
+      }
+    }, timeout);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`${cmd} ${args.join(' ')}: ${err.message}\n${out}`));
+    });
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`${cmd} ${args.join(' ')}: killed after ${timeout} ms\n${out}`));
+      } else {
+        resolve({ status, out });
+      }
+    });
   });
-  const out = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  if (result.error) fail(`${cmd} ${args.join(' ')}: ${result.error.message}\n${out}`);
-  return { status: result.status, out };
 }
 
-function mustRun(cmd, args, options) {
-  const { status, out } = run(cmd, args, options);
+async function mustRun(cmd, args, options) {
+  const { status, out } = await run(cmd, args, options);
   if (status !== 0) fail(`${cmd} ${args.join(' ')} exited ${status}\n${out}`);
   return out;
 }
 
 /** Export the committed tree of `root` into `dest`. */
-function exportTree(root, dest) {
+async function exportTree(root, dest) {
   const archive = path.join(dest, '..', `${path.basename(dest)}.tar`);
-  mustRun('git', ['archive', '--format=tar', `--output=${archive}`, 'HEAD'], {
+  await mustRun('git', ['archive', '--format=tar', `--output=${archive}`, 'HEAD'], {
     cwd: root,
     timeout: 120_000,
   });
   fs.mkdirSync(dest);
-  mustRun('tar', ['-xf', archive, '-C', dest], { cwd: dest, timeout: 120_000 });
+  await mustRun('tar', ['-xf', archive, '-C', dest], { cwd: dest, timeout: 120_000 });
   fs.rmSync(archive, { force: true });
 }
 
@@ -293,11 +346,12 @@ function option(argv, name) {
   if (i === -1) return undefined;
   const value = argv[i + 1];
   if (value === undefined || value.startsWith('--')) fail(`${name} needs a value`);
+  if (value.trim() === '') fail(`${name} needs a non-empty value`);
   return value;
 }
 
 /** Everything one run does; returns normally on a pass and throws on anything else. */
-function main(argv) {
+async function main(argv) {
   const driver = option(argv, '--driver');
   if (driver === undefined) fail('--driver <s3|gcs|azure-blob> is required');
   const spec = DRIVERS[driver];
@@ -318,10 +372,10 @@ function main(argv) {
     assertOutside(ROOT, parent);
     console.log(`sdk-floor: ${driver} at ${spec.sdk}@${version}`);
     console.log('  export the committed tree');
-    exportTree(ROOT, copy);
+    await exportTree(ROOT, copy);
     pinSdk(copy, spec.sdk, version);
     console.log('  pnpm install (no frozen lockfile, SDK pinned)');
-    mustRun('pnpm', ['install', '--no-frozen-lockfile'], { cwd: copy, timeout: INSTALL_MS });
+    await mustRun('pnpm', ['install', '--no-frozen-lockfile'], { cwd: copy, timeout: INSTALL_MS });
     const found = checkInstalled(copy, driver, version);
     console.log(`  installed: ${found.map((f) => `${f.at} ${f.version}`).join(', ')}`);
 
@@ -341,7 +395,7 @@ function main(argv) {
       if (isIntegration) args.push('-c', 'vitest.integration.config.ts');
       args.push(target);
       console.log(`  ${isIntegration ? 'integration' : 'unit'} tests: ${target}`);
-      const { status, out: text } = run('pnpm', args, { cwd: copy, timeout: TEST_MS });
+      const { status, out: text } = await run('pnpm', args, { cwd: copy, timeout: TEST_MS });
       if (status !== 0) failed = true;
       reports.push({ out, status, text });
     }
@@ -378,6 +432,9 @@ function main(argv) {
 
 module.exports = {
   DRIVERS,
+  INSTALL_MS,
+  TEST_MS,
+  run,
   lowestVersion,
   floorOf,
   assertOutside,
@@ -387,10 +444,8 @@ module.exports = {
 };
 
 if (require.main === module) {
-  try {
-    main(process.argv.slice(2));
-  } catch (err) {
+  main(process.argv.slice(2)).catch((err) => {
     console.error(`sdk-floor: ${err.message}`);
     process.exitCode = 1;
-  }
+  });
 }

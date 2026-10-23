@@ -22,9 +22,12 @@ name: SDK floor (nightly)
 # it, whoever last changed the cron line, as that user's notification settings allow. A pull request that touches a
 # driver, the script or this file runs it too, so a change that breaks a floor fails where it is made.
 #
-# No secret, no cache: nothing here saves a cache entry (the Docker images are restored, never saved, from the entry
-# the `integration` job in ci.yml keeps), and setup-node's cache is off. The installs here resolve third-party packages
-# fresh, so nothing this job runs may leave behind something a job that holds a secret would restore.
+# No secret, and no cache writes. Two things hold, and they are different claims. The steps save nothing: the Docker
+# images are restored, never saved, from the entry the `integration` job in ci.yml keeps, and setup-node's cache is off.
+# And the job cannot write the cache whatever runs in it: the installs here resolve third-party packages fresh and run
+# them on the runner, where the cache token can be reached, so the workflow sets `cache-mode: read` and the cache service
+# refuses every write. What a job holding a secret restores (the Docker image entries, the pnpm store) cannot come
+# from here.
 
 on:
   schedule:
@@ -32,20 +35,36 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - packages/s3/**
-      - packages/gcs/**
-      - packages/azure-blob/**
-      - packages/core/src/drivers/**
-      - pnpm-lock.yaml
-      - scripts/sdk-floor.cjs
+      - .github/actions/docker-images-restore/**
       - .github/workflows/sdk-floor.yml
+      - docker-compose.yml
+      - package.json
+      - packages/azure-blob/**
+      - packages/core/src/driver-kit.ts
+      - packages/core/src/drivers/**
+      - packages/gcs/**
+      - packages/s3/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - scripts/ci-backend-images.sh
+      - scripts/lib/docker-pull.sh
+      - scripts/sdk-floor.cjs
+      - tests/drivers/_shared/**
+      - tests/drivers/azure/**
+      - tests/drivers/gcs/**
+      - tests/drivers/s3/**
+      - tests/helpers/**
+      - tests/integration/azure.test.ts
+      - tests/integration/gcs.test.ts
+      - tests/integration/s3.test.ts
+      - tests/setup-fast-check.ts
+      - vitest.config.ts
+      - vitest.integration.config.ts
 
 permissions:
   contents: read
 
-# The cache service refuses every write from this workflow, whatever runs in it. The installs here resolve third-party
-# packages fresh and run them on the runner, where the cache token can be reached, so a job left in the default mode could
-# write an entry (a Docker image key, the pnpm store) that a job holding a secret would restore. Restoring still works.
+# Restoring still works; only writing is refused. A job must not set its own `cache-mode`: a job's setting overrides this.
 cache-mode: read
 
 # Per event, as in ci.yml, and a run is cancelled only on a pull request: a manual dispatch on `main` must not cancel the
@@ -77,7 +96,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
-          # Off whatever `packageManager` says: this job saves no cache.
+          # Off whatever `packageManager` says: setup-node's own cache is not used here.
           package-manager-cache: false
       # The images are restored from the entry the `integration` job keeps, and never saved from here.
       - uses: ./.github/actions/docker-images-restore
@@ -109,7 +128,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
-          # Off whatever `packageManager` says: this job saves no cache.
+          # Off whatever `packageManager` says: setup-node's own cache is not used here.
           package-manager-cache: false
       - uses: ./.github/actions/docker-images-restore
         with:
