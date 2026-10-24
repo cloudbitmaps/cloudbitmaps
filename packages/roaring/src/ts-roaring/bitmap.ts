@@ -28,6 +28,9 @@
  *     a pair of containers combines into an array or a bitset, never a run.
  *   - `clone` shares every container with the original and flags it, so the first write on either side copies it.
  *
+ * `andCardinality` (and the or, xor and andNot counts derived from it), `intersects`, `isSubset` and `isEqual` answer from
+ * the containers without building a result: they change neither bitmap and allocate nothing per call.
+ *
  * Writing an id that is not an integer from 0 to 4,294,967,295 throws `ValidationError`; reading one (`has`) says no
  * and removing one does nothing. A combine works on each pair of containers by their kinds (`containers.ts` has the
  * table), `addMany` and `removeMany` group sorted ids by key and touch each container once, and iteration is a class

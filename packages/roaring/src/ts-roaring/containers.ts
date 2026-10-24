@@ -38,6 +38,10 @@
  *            runs: probe / range copy
  *
  * A combine takes `inPlace` when its first operand is a bitset nothing else can see: the words are written, not copied.
+ *
+ * COUNTS. `containerAndCard` says how many values a pair shares and `containersIntersect` whether it shares any (stopping
+ * at the first), each by the kinds of the pair and each building nothing: the answers the bitmap's counting operations
+ * are made from.
  */
 import { ARRAY_MAX_CARDINALITY } from '../portable/layout';
 
@@ -1163,6 +1167,26 @@ function andCountArrays(a: Container, b: Container): number {
     }
     return n;
   }
+  if (small.len >= PROBE_MIN) {
+    // As the building intersection does: the shorter array as bits, the longer one tested against them in order, only
+    // the span of the longer between the shorter's ends. Nothing is written but the scratch bits, cleared again.
+    const first = s[small.off] as number;
+    const last = s[se - 1] as number;
+    if (last < (l[big.off] as number) || first > (l[le - 1] as number)) return 0;
+    const from = gallop(l, 0, big.off, le, first);
+    const to = gallop(l, 0, from, le, last + 1);
+    const words = probeWords;
+    for (let i = small.off; i < se; i++) {
+      const v = s[i] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    for (let j = from; j < to; j++) {
+      const v = l[j] as number;
+      n += ((words[v >>> 5] as number) >>> (v & 31)) & 1;
+    }
+    for (let i = small.off; i < se; i++) words[(s[i] as number) >>> 5] = 0;
+    return n;
+  }
   let i = small.off;
   let j = big.off;
   while (i < se && j < le) {
@@ -1251,14 +1275,17 @@ function andCountRuns(a: Container, b: Container): number {
   return n;
 }
 
+// Scratch for the AND of two bitsets before its bits are counted: overwritten whole by every call.
+const andWords = new Uint32Array(WORDS);
+
 /** How many values both containers hold; builds nothing and changes neither operand. */
 export function containerAndCard(a: Container, b: Container): number {
   if (a.kind === BITSET && b.kind === BITSET) {
     const x = words32(a);
     const y = words32(b);
-    let n = 0;
-    for (let i = 0; i < WORDS; i++) n += popcount32((x[i] as number) & (y[i] as number));
-    return n;
+    const both = andWords;
+    for (let i = 0; i < WORDS; i++) both[i] = (x[i] as number) & (y[i] as number);
+    return popcountWords(both);
   }
   // Commutative: put the lower kind first (array, bitset, run).
   if (a.kind > b.kind) return containerAndCard(b, a);

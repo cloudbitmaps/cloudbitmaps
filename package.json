@@ -77,6 +77,8 @@
     "bench:load-input:check": "node bench/load-input.cjs --check",
     "bench:ts-codec": "node --expose-gc bench/ts-codec.cjs --memory",
     "bench:ts-codec:check": "node bench/ts-codec.cjs --check",
+    "bench:count-kernels": "node bench/count-kernels.cjs",
+    "bench:count-kernels:check": "node bench/count-kernels.cjs --check",
     "bench:ts-codec-engine": "node --expose-gc bench/ts-codec-engine.cjs --all",
     "bench:ts-codec-engine:check": "node bench/ts-codec-engine.cjs --check",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
