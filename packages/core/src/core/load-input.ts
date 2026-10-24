@@ -260,21 +260,40 @@ export function prepareLoadInput(
  * input of a load goes through, and what a flavor offers its users to decode bytes they hold themselves.
  *
  * The bytes must be a `Uint8Array` (a Node `Buffer` is one), at most {@link MAX_SERIALIZED_LOAD_BYTES}, one whole
- * bitmap and structurally sound. A view is read over the bytes it really holds, and bytes in a `SharedArrayBuffer`
- * are copied first. An empty or detached buffer is the empty bitmap.
+ * bitmap and structurally sound. A view is read over the bytes it really holds, once, and the size checks, the
+ * copy and the decode all use that one view. Bytes in a `SharedArrayBuffer` are copied first. An empty or detached
+ * buffer is the empty bitmap, unless `refuseEmpty` is set.
  *
  * @param what names the input in a refusal's message.
+ * @param options `maxBytes` lowers the size cap for this call (it cannot raise it); `refuseEmpty` refuses an empty or
+ * detached buffer, which is not a bitmap.
  * @throws {ValidationError} for anything that is not such bytes; nothing reaches the codec's decoder then.
  */
 export function decodeSerialized(
   bytes: unknown,
   codec: CodecInterface,
   what = 'the buffer',
+  options: { readonly maxBytes?: number; readonly refuseEmpty?: boolean } = {},
 ): CodecBitmap {
   if (typeof bytes !== 'object' || bytes === null || tagOf(bytes) !== 'Uint8Array') {
     throw new ValidationError(`${what} must be a Uint8Array of portable Roaring bytes`);
   }
   const view = plainView(bytes as Uint8Array, what);
+  if (view.byteLength === 0 && options.refuseEmpty === true) {
+    throw new ValidationError(
+      `${what} is empty or detached: an empty buffer is not a bitmap, and an empty bitmap is built without bytes`,
+    );
+  }
+  const { maxBytes } = options;
+  if (
+    maxBytes !== undefined &&
+    maxBytes < MAX_SERIALIZED_LOAD_BYTES &&
+    view.byteLength > maxBytes
+  ) {
+    throw new ValidationError(
+      `${what} is ${view.byteLength} bytes, more than the ${maxBytes} this call allows (maxBytes)`,
+    );
+  }
   if (view.byteLength > MAX_SERIALIZED_LOAD_BYTES) throw overCap(what, view.byteLength);
   // Bytes in a SharedArrayBuffer are copied: another thread could change them between the check and the decode.
   const own = isShared(view.buffer) ? new Uint8Array(view) : view;

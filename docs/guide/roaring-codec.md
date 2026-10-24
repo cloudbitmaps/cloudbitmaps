@@ -106,18 +106,28 @@ wall-clock, recorded and not asserted:
 The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) and the
 in-region and at-scale figures on the benchmarks page are the native codec's, and say so.
 
-## What you can use by itself
+## Using it by itself
 
-Two names from `@cloudbitmaps/roaring` give you this codec's bitmap without a store:
+`RoaringBitmap` from `@cloudbitmaps/roaring` is this codec's bitmap as a public class, usable without a store: a mutable
+set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript on typed arrays, with no native code. Import it
+from `@cloudbitmaps/roaring/bitmap`, which loads no store and imports no Node builtin (a build step proves that on every
+build), or from `@cloudbitmaps/roaring`, which re-exports the same class. The class runs in CI on Node 22 and 24 only. The earlier Bun and Deno
+self-check ran the codec inside a store, not this class, and no isolate or browser was run. Its methods, errors and costs are in
+[the API reference](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
-- `deserializePortable(bytes: Uint8Array): ReadonlyBitmap` decodes the portable bytes of one bitmap you hold (a Node
-  `Buffer` is one) through the check a `{ serialized }` load makes: the 537,403,396-byte cap, the structural check, exactly
-  one bitmap (trailing bytes are refused), then the decoder. An empty buffer is the empty bitmap.
-- `ReadonlyBitmap` (a type): `size`, `has(id)`, iteration in ascending order (a promise), and `serialize('portable')`
-  (exactly that argument). Any other member throws `TypeError`.
+- **One door for bytes.** `RoaringBitmap.deserialize(bytes: Uint8Array)` decodes the portable bytes of one bitmap you hold
+  (a Node `Buffer` is one) through the check a `{ serialized }` load makes: the 537,403,396-byte cap, the structural
+  check, exactly one bitmap (trailing bytes are refused), then the decoder. An empty buffer is refused, not the empty set:
+  `new RoaringBitmap()` is the empty set. The result owns its storage, so decoding a large input and reducing the result
+  does not keep the input alive.
+- **Build and change.** `new RoaringBitmap(ids)`, `add`, `addMany`, `remove`, `removeMany`, `clear`, `clone`, and the
+  in-place `andInPlace`, `orInPlace` and `andNotInPlace`; `has`, `size`, `isEmpty`, `minimum`, `maximum`, iteration in
+  ascending order (a promise), `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`.
+- **Every id is checked**, and a refusal never repeats the value.
+- **It loads as itself.** `store.load(ref, bitmap)` reads a bitmap and never changes it.
 
 ```js
-import { deserializePortable } from '@cloudbitmaps/roaring';
+import { RoaringBitmap } from '@cloudbitmaps/roaring';
 
 // The portable bytes of the set {5, 7}: 20 bytes, one array container.
 const bytes = Uint8Array.from([
@@ -128,34 +138,55 @@ const bytes = Uint8Array.from([
   0x05, 0x00, 0x07, 0x00, // the values 5 and 7
 ]);
 
-const bitmap = deserializePortable(bytes); // ValidationError unless it is exactly one well-formed bitmap
+const bitmap = RoaringBitmap.deserialize(bytes); // ValidationError unless it is exactly one well-formed bitmap
 console.log(bitmap.size); // 2
 console.log(bitmap.has(5), bitmap.has(6)); // true false
 console.log([...bitmap]); // [ 5, 7 ]
 console.log(bitmap.serialize('portable').length); // 20
+
+// Build, change and combine in memory; the bitmap you decoded is mutable.
+const wider = new RoaringBitmap([1, 70_000]).addMany(bitmap);
+console.log(wider.remove(1), wider.remove(1)); // true false
+console.log(wider.minimum(), wider.maximum()); // 5 70000
+console.log(new RoaringBitmap().minimum()); // undefined
+
+try {
+  wider.add(-1);
+} catch (err) {
+  console.log(err.name); // ValidationError
+}
 ```
 
 The example is run by [`tests/docs/roaring-codec-example.test.ts`](../../tests/docs/roaring-codec-example.test.ts).
 
-The bitmap is not a `RoaringBitmap32`: its class is not part of the contract (no `instanceof`, no cast),
-`JSON.stringify` of it gives `"{}"` (write `JSON.stringify([...bitmap])`), and it must not be passed to the `roaring`
-package's methods. It loads as `{ bitmap }`, or bare where ids go. The full contract is in
-[the API reference](api-reference.md#decode-portable-bytes--deserializeportablebytes).
+**What importing it costs** (measured on 2026-10-24 on an Apple M3 Pro under Node v24.22.1, 31 fresh processes per entry
+with the main entry measured twice as the control, by `bench/ts-codec-paired.cjs`; the control's median differed from the
+first by 0.3%): `@cloudbitmaps/roaring/bitmap` imports in 10.0 ms against 23.9 ms for the main entry (58% less), and an
+esbuild bundle of a one-line importer of the class is 31,468 bytes (11,108 gzipped) from `./bitmap` against 44,208 (15,530
+gzipped) from the main entry.
 
-**What is not public.** You cannot build, add to, remove from, union, intersect or subtract bitmaps with this codec on
-its own: the codec itself, its bitmap class and its containers are internal, and a store cannot be given a codec. For
-set algebra on bitmaps you hold, decode the bytes with a Roaring library of your own after the check (the example in
-[the API reference](api-reference.md#decode-portable-bytes--deserializeportablebytes) and
-[the parts recipe](loading.md#parts-of-one-segment-built-separately) do): the bytes are the standard portable format,
-which is the point of the guarantee. A public bitmap API in `@cloudbitmaps/roaring` itself, for building and combining
-bitmaps with this codec, is planned for a coming release.
+**Where it differs from the `roaring` package from npm**, each on purpose: `add` and `remove` take exactly one id (a second
+argument is an error naming `addMany` or `removeMany`); every id argument throws a `ValidationError` that does not
+repeat the value, where `add` of `roaring` accepts a string or `null`; `minimum()` and `maximum()` of an empty set are
+`undefined`, where `roaring` answers `0xFFFFFFFF` and `0`, which are real ids; `deserialize` takes a `Uint8Array` and an
+optional `{ maxBytes }` and checks the whole buffer, where `roaring`'s takes a format and checks only its own reads;
+`serialize` returns a `Uint8Array` and its format argument is optional; and there is no `toJSON`, so
+`JSON.stringify(bitmap)` gives `"{}"` and `JSON.stringify([...bitmap])` writes the ids. It is not a `RoaringBitmap32`: do
+not pass one to the `roaring` package's methods, which answer wrongly without throwing in JavaScript; decode its
+`serialize()` bytes with that package instead.
+
+**What is not public.** The codec itself, its containers and its seam are internal, and a store cannot be given a codec.
+The class has no ranges, `rank`, `select`, frozen views or 64-bit ids, and in this release no `xorInPlace`, static
+combine that returns a new bitmap, count-only combine, `isEqual`, `isSubset` or `intersects`. No speed claim is made for
+it: the figures above are the codec inside a store, and a loop over the class in memory has no store's network reads to
+hide a slower combine behind.
 
 ## Errors you can see from it
 
 | you see | when | what to do |
 |---|---|---|
 | `IntegrityError` | a stored chunk fails the structural check: a bad cookie, keys out of order, an offset that is not where the container starts, a container that runs past the buffer, a bitset whose count differs from its header, bytes over the cap | the stored object is damaged or not a bitmap: [`checkConsistency()`](disaster-recovery.md) finds it, and a restore replaces it |
-| `ValidationError` | bytes you supply (`deserializePortable`, a `{ serialized }` or `{ bitmap }` load) are not exactly one well-formed bitmap, with the structural message inside; an id that is not an integer from 0 to 4294967295 | fix the input: the message names the problem |
+| `ValidationError` | bytes you supply (`RoaringBitmap.deserialize`, a `{ serialized }` or `{ bitmap }` load) are not exactly one well-formed bitmap, with the structural message inside; an id that is not an integer from 0 to 4294967295 | fix the input: the message names the problem |
 
 [Errors and what to do](api-reference.md#errors-typed--you-catch-these) lists every error of the library.
 

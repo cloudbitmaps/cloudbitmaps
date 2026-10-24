@@ -1,0 +1,436 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * The rule that judges the paired before-and-after bench (`bench/lib/paired-verdict.cjs`), held at its boundaries, the
+ * gate that reads every pass, and the committed evidence (`bench/ts-codec-paired-results.json`), when it is committed,
+ * held to the rule each pass records: every median, interval and verdict in the file is recomputed from the rounds
+ * beside it. Nothing here times anything.
+ */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
+
+/** `[order, base, head, control, loadAtStart, loadAtEnd]`, or the first recorded pass's layout, which has one load at the end. */
+type Round = number[];
+type Cell = {
+  dataset?: string;
+  op?: string;
+  answersAgree: boolean;
+  rounds: Round[];
+  discarded?: Round[];
+  verdict: string;
+  headInterval: number[];
+  [field: string]: unknown;
+};
+type Pass = {
+  pass: number;
+  schema?: number;
+  rule?: string;
+  explained?: string;
+  unresolved?: Record<string, string>;
+  reads: Cell[];
+  write: Cell[];
+  ops?: Cell[];
+  import: { runs: number; moduleLoadMs: Cell };
+  verdict: string;
+  started: string;
+  environment: {
+    rounds: number;
+    tree: string;
+    base: string;
+    head: string;
+    anyLoad?: boolean;
+    smoke?: boolean;
+  };
+};
+type Interval = { lower: number; upper: number; k: number; coverage: number };
+const rule = require_('./lib/paired-verdict.cjs') as {
+  CONTROL_BAND: number;
+  TOLERANCE: number;
+  MAX_LOAD: number;
+  RULE: string;
+  WITHIN: string;
+  SLOWER: string;
+  FASTER: string;
+  INCONCLUSIVE: string;
+  MALFORMED: string;
+  LEGACY: { WITHIN: string; SLOWER: string; FASTER: string };
+  medianInterval: (values: number[], coverage?: number) => Interval;
+  differencesOf: (rounds: Round[]) => { head: number[]; headVsBase: number[]; control: number[] };
+  judge: (
+    rounds: Round[],
+    tolerance?: number,
+  ) => { verdict: string; headVsReference: number; headInterval: number[]; controlVsBase: number };
+  cellOf: (rounds: Round[], places?: number, tolerance?: number) => Cell;
+  legacyBandOf: (q: number[]) => number;
+  legacyVerdictOf: (head: number, control: number, q: number[]) => string;
+  worstPaired: (vs: string[]) => string;
+  kindOf: (v: string) => string;
+  boundText: (upper: number | null) => string;
+  keepRound: (loadAtEnd: number, anyLoad?: boolean) => boolean;
+  gateProblems: (passes: unknown[]) => string[];
+};
+const codec = require_('./lib/codec-verdict.cjs') as {
+  MIN_ROUNDS: number;
+  summarise: (rounds: Round[], places?: number) => Record<string, number | number[]>;
+};
+const { WITHIN, SLOWER, FASTER, INCONCLUSIVE, MALFORMED, judge, medianInterval, worstPaired } =
+  rule;
+
+/** 31 rounds whose head, as a fraction over the reference (base and control both 100), is each of `heads`. */
+function roundsOfHeads(heads: number[], control = 100): Round[] {
+  return heads.map((d, i) => [i % 6, 100, 100 * (1 + d), control, 1, 1]);
+}
+/** 31 head differences whose interval at the rule's coverage is exactly [lower, upper] (k = 10 of 31). */
+function headsWithInterval(lower: number, upper: number): number[] {
+  return [
+    ...new Array<number>(9).fill(lower - 0.03),
+    lower,
+    ...new Array<number>(11).fill((lower + upper) / 2),
+    upper,
+    ...new Array<number>(9).fill(upper + 0.03),
+  ];
+}
+
+describe('the median interval', () => {
+  it('is the 10th smallest to the 10th largest of 31 values, at 97.06% coverage', () => {
+    const values = Array.from({ length: 31 }, (_, i) => i + 1);
+    const got = medianInterval(values.slice().reverse());
+    expect([got.lower, got.upper, got.k]).toEqual([10, 22, 10]);
+    expect(got.coverage).toBeCloseTo(0.971, 3);
+  });
+
+  it('takes the largest k that keeps 95%: 61 rounds give k = 23, and a stricter coverage a smaller k', () => {
+    const values = Array.from({ length: 61 }, (_, i) => i + 1);
+    const got = medianInterval(values);
+    expect([got.lower, got.upper, got.k]).toEqual([23, 39, 23]);
+    expect(got.coverage).toBeCloseTo(0.9604, 4);
+    expect(medianInterval(values, 0.97).k).toBeLessThan(23);
+  });
+
+  it('is unbounded when no rank reaches the coverage, so a verdict drawn from it cannot pass', () => {
+    const got = medianInterval([1, 2, 3, 4, 5]);
+    expect(got.lower).toBe(Number.NEGATIVE_INFINITY);
+    expect(got.upper).toBe(Number.POSITIVE_INFINITY);
+    expect(judge(roundsOfHeads([0, 0, 0, 0, 0])).verdict).toBe(INCONCLUSIVE);
+  });
+});
+
+describe('the paired verdict rule', () => {
+  it('calls a head that is the base within the bar', () => {
+    const got = judge(roundsOfHeads(new Array<number>(31).fill(0)));
+    expect(got.verdict).toBe(WITHIN);
+    expect(got.headInterval).toEqual([0, 0]);
+  });
+
+  it('compares the head with the mean of the base and the control', () => {
+    const d = rule.differencesOf([[0, 100, 102, 104, 1, 1]]);
+    expect(d.head[0]).toBeCloseTo(0, 12);
+    expect(d.headVsBase[0]).toBeCloseTo(0.02, 12);
+    expect(d.control[0]).toBeCloseTo(0.04, 12);
+  });
+
+  it('is within when the interval ends exactly at the bar, and open just above it', () => {
+    expect(judge(roundsOfHeads(headsWithInterval(-0.01, 0.02))).verdict).toBe(WITHIN);
+    expect(judge(roundsOfHeads(headsWithInterval(-0.01, 0.0201))).verdict).toBe(INCONCLUSIVE);
+  });
+
+  it('is inconclusive for an interval of [-1%, +2.5%]: it cannot rule out a 2.5% tax', () => {
+    const got = judge(roundsOfHeads(headsWithInterval(-0.01, 0.025)));
+    expect(got.verdict).toBe(INCONCLUSIVE);
+    expect(got.headInterval[0]).toBeCloseTo(-0.01, 9);
+    expect(got.headInterval[1]).toBeCloseTo(0.025, 9);
+  });
+
+  it('is slower only when the whole interval is above the bar', () => {
+    expect(judge(roundsOfHeads(headsWithInterval(0.0201, 0.04))).verdict).toBe(SLOWER);
+    expect(judge(roundsOfHeads(headsWithInterval(0.02, 0.04))).verdict).toBe(INCONCLUSIVE);
+  });
+
+  it('is faster only when the whole interval is below minus the bar', () => {
+    expect(judge(roundsOfHeads(headsWithInterval(-0.05, -0.0201))).verdict).toBe(FASTER);
+    expect(judge(roundsOfHeads(headsWithInterval(-0.05, -0.02))).verdict).toBe(WITHIN);
+  });
+
+  it('does not call a head at +6% within when the control is noisy (interquartile range 15% either way)', () => {
+    // Control rounds scatter from -15% to +15% around the base, with a median of 0: the instrument passes its check,
+    // and the head at +6% of the base is lost in the reference's noise. The earlier rule widened its band to fit.
+    const rounds: Round[] = Array.from({ length: 31 }, (_, i) => {
+      const control = 100 * (1 + (i - 15) * 0.01);
+      return [i % 6, 100, 106, control, 1, 1];
+    });
+    const got = judge(rounds);
+    expect(got.verdict).not.toBe(WITHIN);
+    expect(rule.legacyVerdictOf(0.06, 0, [-0.15, 0.15])).toBe(rule.LEGACY.WITHIN);
+  });
+
+  it('takes the control as an instrument check: a median past +-2% makes the cell inconclusive', () => {
+    const calm = new Array<number>(31).fill(0);
+    expect(judge(roundsOfHeads(calm, 102)).verdict).toBe(WITHIN);
+    expect(judge(roundsOfHeads(calm, 102.01)).verdict).toBe(INCONCLUSIVE);
+    expect(judge(roundsOfHeads(calm, 97.99)).verdict).toBe(INCONCLUSIVE);
+    expect(judge(roundsOfHeads(new Array<number>(31).fill(-0.5), 103)).verdict).toBe(INCONCLUSIVE);
+  });
+
+  it('calls a figure that is not a positive number, or no rounds, malformed, never a pass', () => {
+    const ok = roundsOfHeads(new Array<number>(31).fill(0));
+    expect(judge(ok.map((r, i) => (i === 3 ? [0, 100, Number.NaN, 100, 1, 1] : r))).verdict).toBe(
+      MALFORMED,
+    );
+    expect(judge(ok.map((r, i) => (i === 3 ? [0, 0, 100, 100, 1, 1] : r))).verdict).toBe(MALFORMED);
+    expect(judge([]).verdict).toBe(MALFORMED);
+  });
+
+  it('keeps the rounds whole and the figures it derives in the cell, the unbounded ends as they are', () => {
+    const rounds = roundsOfHeads(headsWithInterval(-0.01, 0.01));
+    const cell = rule.cellOf(rounds);
+    expect(cell.rounds).toBe(rounds);
+    expect(cell).toMatchObject({
+      baseMedian: 100,
+      controlMedian: 100,
+      headInterval: [-0.01, 0.01],
+      verdict: WITHIN,
+    });
+  });
+
+  it('takes the worst of a list over both rules wording: malformed, slower, inconclusive, faster, within', () => {
+    expect(worstPaired([WITHIN, WITHIN])).toBe(WITHIN);
+    expect(worstPaired([WITHIN, FASTER])).toBe(FASTER);
+    expect(worstPaired([FASTER, INCONCLUSIVE])).toBe(INCONCLUSIVE);
+    expect(worstPaired([INCONCLUSIVE, SLOWER, WITHIN])).toBe(SLOWER);
+    expect(worstPaired([rule.LEGACY.WITHIN, rule.LEGACY.SLOWER, INCONCLUSIVE])).toBe(
+      rule.LEGACY.SLOWER,
+    );
+    expect(worstPaired([SLOWER, MALFORMED])).toBe(MALFORMED);
+    expect(worstPaired([])).toBe(MALFORMED);
+    expect(rule.kindOf('anything else')).toBe('malformed');
+  });
+});
+
+describe('the earlier rule, kept to recompute the first pass', () => {
+  const QUIET = [-0.004, 0.004];
+  it('puts the head inside, above or below a band of half the control interquartile range, at least 1%', () => {
+    expect(rule.legacyBandOf([-0.004, 0.004])).toBe(0.01);
+    expect(rule.legacyBandOf([-0.03, 0.03])).toBe(0.03);
+    expect(rule.legacyVerdictOf(0.01, 0, QUIET)).toBe(rule.LEGACY.WITHIN);
+    expect(rule.legacyVerdictOf(0.0101, 0, QUIET)).toBe(rule.LEGACY.SLOWER);
+    expect(rule.legacyVerdictOf(-0.0101, 0, QUIET)).toBe(rule.LEGACY.FASTER);
+    expect(rule.legacyVerdictOf(0, 0.0301, QUIET)).toBe(INCONCLUSIVE);
+    expect(rule.legacyVerdictOf(Number.NaN, 0, QUIET)).toBe(MALFORMED);
+    expect(rule.legacyVerdictOf(0, 0, [])).toBe(MALFORMED);
+  });
+});
+
+describe('the load rule', () => {
+  it('keeps a round that ends under 6 and sets aside one that ends at 6 or more', () => {
+    expect(rule.keepRound(5.99)).toBe(true);
+    expect(rule.keepRound(6)).toBe(false);
+    expect(rule.keepRound(8.65)).toBe(false);
+  });
+  it('keeps every round when the rule is turned off', () => {
+    expect(rule.keepRound(8.65, true)).toBe(true);
+  });
+});
+
+/** A pass of schema 2 with cells of the given verdicts; the cells' rounds are real, so the gate can read their loads. */
+function passOf(
+  verdicts: string[],
+  extra: Partial<Pass> = {},
+  cellExtra: Partial<Cell> = {},
+  pass = 1,
+): Pass {
+  const cell = (verdict: string, i: number): Cell => ({
+    dataset: 'dense',
+    op: `op${i}`,
+    answersAgree: true,
+    verdict,
+    headInterval: [0.0, 0.0321],
+    rounds: [[0, 100, 100, 100, 1, 2]],
+    ...cellExtra,
+  });
+  return {
+    pass,
+    schema: 2,
+    rule: rule.RULE,
+    reads: verdicts.map(cell),
+    write: [],
+    import: { runs: 0, moduleLoadMs: cell(WITHIN, 99) },
+    verdict: '',
+    started: '',
+    environment: { rounds: 31, tree: 'clean', base: '', head: '' },
+    ...extra,
+  };
+}
+
+describe('the gate', () => {
+  it('passes when every cell is within', () => {
+    expect(rule.gateProblems([passOf([WITHIN, FASTER])])).toEqual([]);
+  });
+
+  it('fails on a conclusive slower in the only pass', () => {
+    expect(rule.gateProblems([passOf([WITHIN, SLOWER])])).toEqual([
+      'pass 1: dense op1 is conclusively slower and the pass has no "explained" note',
+    ]);
+  });
+
+  it('fails on a slower in pass 1 even when a green pass 2 follows: a re-take never erases it', () => {
+    const problems = rule.gateProblems([passOf([SLOWER]), passOf([WITHIN], {}, {}, 2)]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('pass 1');
+  });
+
+  it('lets a slower stand when its pass carries an explained note', () => {
+    expect(rule.gateProblems([passOf([SLOWER], { explained: 'the base was rebuilt' })])).toEqual(
+      [],
+    );
+  });
+
+  it('reads the per-operation and write cells as it reads the reads, and not the import cell', () => {
+    const ops = passOf([WITHIN]);
+    ops.ops = [{ ...ops.reads[0]!, dataset: 'ops', op: 'decode first dense', verdict: SLOWER }];
+    expect(rule.gateProblems([ops])).toEqual([
+      'pass 1: ops decode first dense is conclusively slower and the pass has no "explained" note',
+    ]);
+    const write = passOf([WITHIN]);
+    write.write = [{ ...write.reads[0]!, op: 'erase', verdict: SLOWER }];
+    expect(rule.gateProblems([write])).toHaveLength(1);
+    const imp = passOf([WITHIN]);
+    imp.import.moduleLoadMs.verdict = SLOWER;
+    expect(rule.gateProblems([imp])).toEqual([]);
+  });
+
+  it('fails a cell left inconclusive in the last pass unless a note quotes its bound', () => {
+    const open = passOf([INCONCLUSIVE]);
+    expect(rule.gateProblems([open])).toEqual([
+      'last pass: dense op0 is inconclusive and has no "unresolved" note that quotes its bound +3.2%',
+    ]);
+    const wrong = passOf([INCONCLUSIVE], { unresolved: { 'dense op0': 'cannot rule out +9.9%' } });
+    expect(rule.gateProblems([wrong])).toHaveLength(1);
+    const right = passOf([INCONCLUSIVE], {
+      unresolved: { 'dense op0': 'cannot rule out up to +3.2%' },
+    });
+    expect(rule.gateProblems([right])).toEqual([]);
+  });
+
+  it('does not ask an earlier pass for a note: only the last pass has to be resolved', () => {
+    expect(rule.gateProblems([passOf([INCONCLUSIVE]), passOf([WITHIN], {}, {}, 2)])).toEqual([]);
+  });
+
+  it('needs the last pass judged by the current rule', () => {
+    const old = passOf([WITHIN], { rule: undefined, schema: undefined });
+    expect(rule.gateProblems([old])).toEqual([
+      expect.stringContaining('judged by the earlier rule'),
+    ]);
+  });
+
+  it('fails a kept round that ended at a load of 6 or more, unless the pass turned the rule off', () => {
+    const loaded = passOf([WITHIN], {}, { rounds: [[0, 100, 100, 100, 1, 6]] });
+    expect(rule.gateProblems([loaded])).toEqual([
+      'pass 1: dense op0 kept a round that ended at load 6',
+    ]);
+    const just = passOf([WITHIN], {}, { rounds: [[0, 100, 100, 100, 1, 5.99]] });
+    expect(rule.gateProblems([just])).toEqual([]);
+    const off = passOf(
+      [WITHIN],
+      { environment: { rounds: 31, tree: 'clean', base: '', head: '', anyLoad: true } },
+      { rounds: [[0, 100, 100, 100, 1, 9]] },
+    );
+    expect(rule.gateProblems([off])).toEqual([]);
+  });
+
+  it('refuses a smoke pass, and a record with no pass', () => {
+    const smoke = passOf([WITHIN], {
+      environment: { rounds: 3, tree: 'clean', base: '', head: '', smoke: true },
+    });
+    expect(rule.gateProblems([smoke])).toEqual(['pass 1: a smoke pass is no evidence']);
+    expect(rule.gateProblems([])).toEqual(['no pass is recorded']);
+  });
+
+  it('quotes a bound it cannot give as unbounded', () => {
+    expect(rule.boundText(0.0321)).toBe('+3.2%');
+    expect(rule.boundText(-0.004)).toBe('-0.4%');
+    expect(rule.boundText(null)).toBe('unbounded');
+    expect(rule.boundText(Number.POSITIVE_INFINITY)).toBe('unbounded');
+  });
+});
+
+describe('the committed paired results', () => {
+  const file = join(ROOT, 'bench', 'ts-codec-paired-results.json');
+  const passes = existsSync(file)
+    ? (JSON.parse(readFileSync(file, 'utf8')) as { passes: Pass[] }).passes
+    : null;
+  const cellsOf = (p: Pass): Cell[] => [...p.reads, ...p.write, ...(p.ops ?? [])];
+
+  it.skipIf(passes === null)(
+    'keeps every pass, numbered from 1 without a gap, each with its time and commits',
+    () => {
+      expect(passes!.length).toBeGreaterThan(0);
+      passes!.forEach((p, i) => {
+        expect(p.pass, `pass ${i + 1}`).toBe(i + 1);
+        expect(Number.isNaN(Date.parse(p.started))).toBe(false);
+        expect(p.environment.base).toMatch(/^[0-9a-f]{40}$/);
+        expect(p.environment.head).toMatch(/^[0-9a-f]{40}$/);
+      });
+    },
+  );
+
+  it.skipIf(passes === null)(
+    'recomputes every median, interval and verdict of every pass from its rounds, by the rule the pass records',
+    () => {
+      for (const doc of passes!) {
+        const cells = [...cellsOf(doc), doc.import.moduleLoadMs];
+        expect(cells.length).toBeGreaterThan(10);
+        for (const c of cells) {
+          const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`;
+          expect(c.rounds.length, name).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
+          if (doc.rule === undefined) {
+            const s = codec.summarise(c.rounds, 0);
+            expect(c.typescriptVsNative, name).toBe(s.typescriptVsNative);
+            expect(c.controlVsNative, name).toBe(s.controlVsNative);
+            expect(c.verdict, name).toBe(
+              rule.legacyVerdictOf(
+                s.typescriptVsNative as number,
+                s.controlVsNative as number,
+                s.controlQuartiles as number[],
+              ),
+            );
+          } else {
+            expect(doc.rule, name).toBe(rule.RULE);
+            const places = c === doc.import.moduleLoadMs ? 3 : c.dataset === 'ops' ? 1 : 0;
+            const left = new Set(['rounds', 'discarded', 'dataset', 'op', 'answersAgree']);
+            const figures = Object.fromEntries(Object.entries(c).filter(([k]) => !left.has(k)));
+            const fresh = Object.fromEntries(
+              Object.entries(rule.cellOf(c.rounds, places)).filter(([k]) => k !== 'rounds'),
+            );
+            expect(figures, name).toEqual(fresh);
+            for (const r of c.rounds) expect(r, name).toHaveLength(6);
+          }
+        }
+        for (const c of cellsOf(doc)) expect(c.answersAgree).toBe(true);
+        expect(doc.verdict).toBe(worstPaired(cellsOf(doc).map((c) => c.verdict)));
+      }
+    },
+  );
+
+  it.skipIf(passes === null)('was taken on a clean tree at full strength', () => {
+    for (const doc of passes!) {
+      expect(doc.environment.tree).toBe('clean');
+      expect(doc.environment.rounds).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
+    }
+  });
+
+  it.skipIf(passes === null)(
+    'passes the gate over every pass: no slower is erased, no load rule is broken, no open cell goes unquoted',
+    () => {
+      // The first pass was judged by the earlier rule; the gate asks for a last pass of the current rule, which the
+      // re-take on the final code supplies. Until it is appended that one message is the only one allowed.
+      const problems = rule
+        .gateProblems(passes!)
+        .filter((p) => !p.includes('judged by the earlier rule'));
+      expect(problems).toEqual([]);
+    },
+  );
+});

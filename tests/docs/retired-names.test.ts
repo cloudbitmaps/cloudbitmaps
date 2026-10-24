@@ -291,6 +291,16 @@ const LEFT_THE_FLAVOR: ReadonlyArray<{
     instead: "`errorKind(err) === 'TransientError'`",
     onlyOn: [join('bench', 'README.md')],
   },
+  {
+    name: 'deserializePortable',
+    instead: '`RoaringBitmap.deserialize(bytes)`, which returns a mutable `RoaringBitmap`',
+    anyPage: true,
+  },
+  {
+    name: 'ReadonlyBitmap',
+    instead: 'a parameter typed `Iterable<number>` or `RoaringBitmap`',
+    anyPage: true,
+  },
   { name: 'IdRange', instead: "`Pick<CombineOptions, 'after' | 'through'>`", anyPage: true },
   ...['BaseCombineOptions', 'MaterializeOptions', 'AndNotIntoOptions'].map((name) => ({
     name,
@@ -835,7 +845,7 @@ describe('a name the flavor stopped exporting stays off it', () => {
       'CombineOptions',
       'SegmentRef',
       'errorKind',
-      'deserializePortable',
+      'RoaringBitmap',
     ]) {
       expect(names.has(kept), kept).toBe(true);
     }

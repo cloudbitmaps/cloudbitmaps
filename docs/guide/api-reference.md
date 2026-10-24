@@ -34,7 +34,8 @@ an application uses, as the next paragraph says. To price a store, add `@cloudbi
 reads nothing of a store and needs none to run:
 
 ```
-@cloudbitmaps/roaring         the store + memory/localfs backends + the errors, helpers and types an application uses
+@cloudbitmaps/roaring         the store + memory/localfs backends + the errors, helpers and types an application uses, and RoaringBitmap
+@cloudbitmaps/roaring/bitmap  RoaringBitmap alone: no store, no Node builtin on its import path
 @cloudbitmaps/s3              S3Storage                                           (dep: @aws-sdk/client-s3)
 @cloudbitmaps/gcs             GcsStorage                                          (dep: @google-cloud/storage)
 @cloudbitmaps/azure-blob      AzureBlobStorage                                    (dep: @azure/storage-blob)
@@ -48,7 +49,7 @@ CLI (binary):                 export-segments
 Each cloud SDK is a **real dependency** of its backend package, not an optional peer: installing
 `@cloudbitmaps/s3` installs `@aws-sdk/client-s3`, and no install carries an SDK for a service you do not use.
 
-**Where the code actually lives.** The flavor package is the roaring codec (internal, not exported),
+**Where the code actually lives.** The flavor package is the roaring codec (internal; `RoaringBitmap` is its public shell),
 the `CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports, by name, the types the
 store's signatures name, the backends, the errors and the helpers an application calls. What it leaves on core is
 the engine, whose main entry and `/node` subpath are internal: the packages here import it, and it is not part of the public API. The
@@ -282,7 +283,7 @@ The `store.load` row lists the guards and what throws instead.
 format, or `{ bitmap }`, any `PortableBitmap` (an object with `serialize('portable')`, such as `roaring`'s
 `RoaringBitmap32`, and optionally `getSerializationSizeInBytes('portable')`, which lets a load refuse one over the cap
 before serializing it), which is loaded as `{ serialized: bitmap.serialize('portable') }`, serialized once at the
-call. An iterable with a `serialize` method (a `RoaringBitmap32` from the `roaring` package, another copy's bitmap, or a bitmap `deserializePortable` returned) passed
+call. An iterable with a `serialize` method (a `RoaringBitmap32` from the `roaring` package, another copy's bitmap, or a `RoaringBitmap`) passed
 as ids is loaded as `{ bitmap }` and not iterated; a byte array is refused as ids even with a `serialize` of its own. Bitmap bytes are capped at 537,403,396 bytes (more than any canonical 32-bit bitmap
 serializes to), must hold exactly one bitmap, and
 are checked structurally and decoded by the safe deserializer before the first request; malformed or oversized
@@ -300,40 +301,131 @@ whatever the segment's size, and writes the same object an unsorted load of the 
 id lower than the one before throws `ValidationError` naming its position. The row, the number and the key are settled
 before the first id is read. An error the ids raise reaches the caller as the very object raised, never seen by the
 storage driver, and a storage driver that runs its write again gets `IntegrityError`. With `{ serialized }`, `{ bitmap
-}`, a bitmap `deserializePortable` returned or any other iterable with a `serialize` method, and as a value that is not a boolean, it throws `ValidationError` before any
+}`, a `RoaringBitmap` or any other iterable with a `serialize` method, and as a value that is not a boolean, it throws `ValidationError` before any
 request; the `*Into` verbs do not take it
 ([ids that already ascend](loading.md#what-a-load-accepts)).
 
-### Decode portable bytes — `deserializePortable(bytes)`
+### Build and combine bitmaps by themselves — `RoaringBitmap`
 
-`deserializePortable(bytes: Uint8Array): ReadonlyBitmap` decodes portable Roaring bytes you hold (a Node `Buffer`
-is one) through the check a `{ serialized }` load makes first: the 537,403,396-byte cap, the structural check, exactly
-one bitmap, and only then the decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
-load refuses them; an empty buffer is the empty bitmap. Use it for bytes that crossed a process boundary, in place of
-`RoaringBitmap32.deserialize`, which checks nothing but its own reads.
+`RoaringBitmap` is a mutable set of integers from 0 to 4,294,967,295 (unsigned 32-bit ids), in TypeScript on typed
+arrays, with no native addon. It is the codec's own bitmap behind a checked shell, and it writes and reads the portable
+Roaring bytes a store loads and holds. Import it from `@cloudbitmaps/roaring/bitmap`, an entry that loads no store and
+no Node builtin, or from `@cloudbitmaps/roaring`, which re-exports the same class. It is not designed for subclassing,
+and it is synchronous: a large `deserialize`, `toArray` or combine holds the event loop for its duration
+([where to run it](production.md#what-blocks-the-event-loop-and-where-to-run-it)).
 
-`ReadonlyBitmap` is a type of this library's own, exported as a type. It is a `PortableBitmap` and an
-`Iterable<number>` with `size` (how many ids it holds) and `has(id)`. Iterating it yields its ids ascending, which is a
-promise. The bitmap `deserializePortable` returned has only these members: its `serialize` takes exactly
-`'portable'` and throws `ValidationError` for any other argument (a `RoaringBitmap32` also satisfies the type and takes
-other formats), and a call to any other member throws `TypeError`. A load takes it as `{ bitmap }`, and the bitmap
-`deserializePortable` returned also loads bare where ids go; the library keeps no reference to it. Its class is not part
-of the contract: do not cast it and do not test it with `instanceof`. Do not pass it to a method of the `roaring` package from npm either: it is not a
-`RoaringBitmap32`, so the predicates and counts (`intersects`, `andCardinality`, `isSubset` and the like) answer wrongly
-without throwing in JavaScript (TypeScript refuses the call), the static `RoaringBitmap32.and`, `or` and `orMany` throw,
-and the constructor and the in-place operations (`orInPlace`, `addMany` and the like) read it as ids. It is not
-serialized to JSON either: `JSON.stringify(bitmap)` gives `"{}"`, so write `JSON.stringify([...bitmap])`. For the rest of a
-Roaring library's API (set algebra, `toArray`, and so on) decode its portable bytes with that library, after the
-check:
-
-<!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32`, `bytes`, `deserializePortable` to the reader -->
+<!-- typecheck-skip: a fragment: `ids` and `bytes` are the reader's -->
 ```ts
-const checked = deserializePortable(bytes); // ValidationError if malformed
-const bitmap32 = RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
+const empty = new RoaringBitmap();
+const fromList = new RoaringBitmap([1, 5, 70_000]);        // any iterable of ids
+const fromTyped = new RoaringBitmap(new Uint32Array(ids)); // never changed or kept
+const fromBytes = RoaringBitmap.deserialize(bytes);        // portable bytes: capped, checked, one whole bitmap
 ```
 
-Decode `checked`'s bytes, not the original ones: a `SharedArrayBuffer` can change between the check and a decode of
-the original. [The parts recipe](loading.md#parts-of-one-segment-built-separately) uses this. See also [what you can use by itself](roaring-codec.md#what-you-can-use-by-itself).
+| Call | Does | Cost |
+|---|---|---|
+| `new RoaringBitmap(values?)` | the empty bitmap, or one of an iterable of ids, a `Uint32Array` (read in place when it already ascends, else sorted on a copy; a `SharedArrayBuffer`-backed one is copied first) or another `RoaringBitmap` (a copy-on-write `clone()`) | linear in the ids |
+| `RoaringBitmap.deserialize(bytes, { maxBytes? }?)` | decodes portable bytes you hold: [below](#decode-portable-bytes--roaringbitmapdeserializebytes) | linear in the bytes |
+| `bm.size`, `bm.isEmpty` | how many ids it holds; whether it holds none | constant |
+| `bm.has(id)` | membership | one container lookup |
+| `bm.minimum()`, `bm.maximum()` | the smallest and the largest id, or `undefined` when it is empty | constant per container |
+| `bm.add(id)` → `this` | adds one id | one container lookup, plus a copy of the container the first time it is written after a clone |
+| `bm.addMany(values)` → `this` | adds every id of an iterable, a `Uint32Array` or a `RoaringBitmap`; nothing is added if any id is refused | linear in the ids |
+| `bm.remove(id)` → `boolean` | removes one id; whether it was there | as `add` |
+| `bm.removeMany(values)` → `this` | removes every id of an iterable, a `Uint32Array` or a `RoaringBitmap`; nothing is removed if any id is refused | linear in the ids |
+| `bm.clear()` | removes every id | constant |
+| `bm.clone()` | a copy, copy-on-write: it costs the key list and one flag per container, not the ids | O(containers) |
+| `bm.andInPlace(other)`, `bm.orInPlace(other)`, `bm.andNotInPlace(other)` → `this` | keeps the ids both hold, adds the ids `other` holds, or removes them; `other` is not changed and may be `bm` itself | linear in the containers of the two |
+| `[Symbol.iterator]()` | the ids, ascending, each once (a promise) | lazy |
+| `bm.toArray()`, `bm.toUint32Array()` | the ids as a new ascending array the caller owns (`toUint32Array` never returns a view of the bitmap's storage); a bitmap too large to allocate throws the runtime's `RangeError` | `size` times 8 bytes (array) or 4 bytes (typed) |
+| `bm.serialize(format?)` → `Uint8Array` | the portable bytes, in a new array; `'portable'` is the only format, and any other argument throws `ValidationError` | linear in the containers |
+| `bm.runOptimize()` → `boolean` | re-encodes each container in its smallest form (a run container only where strictly smaller than the plain one), so `serialize()` afterwards depends on the set alone; returns whether the bitmap has at least one run container afterwards, not whether anything changed | linear in the containers |
+
+**Every id argument is checked.** `has`, `add`, `addMany`, `remove`, `removeMany` and the constructor throw
+`ValidationError` for a value that is not an integer from 0 to 4,294,967,295 (a fraction, `NaN`, a string, `null`, a
+negative, one too large), the same answer `seg.has` gives. The message names what is wrong with the value and never
+repeats it, because an id that is refused is often an identifier that was never meant to be one and applications log
+error messages. The bitmap is unchanged after a refused call: the check runs before any container is touched. `add` and
+`remove` take exactly one id, and a second argument throws `ValidationError` naming `addMany` or `removeMany`, so a call
+moved from a variadic form fails loudly rather than dropping the second id. The constructor and `addMany` read an
+iterable of ids once; a `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError`
+(each byte would be read as an id; call `RoaringBitmap.deserialize` for bytes), and so does anything that is not an
+iterable, a string included. An operand of `andInPlace`, `orInPlace` or `andNotInPlace` must be a `RoaringBitmap` of this
+copy of the package, or `ValidationError`.
+
+**Copy-on-write.** `clone()` shares every container between the copy and the original until one side writes it, and the
+first write to a shared container copies it once. The flag is never cleared, so a bitmap that was ever cloned pays that
+one copy per container it writes, even after the clone is dropped: the right trade for snapshot-and-continue, and
+`clone()` is not free to call in a loop on a bitmap you keep writing.
+
+**Iterating while changing is unsupported.** An iteration of an unchanged bitmap yields every id once, ascending. If the
+bitmap changes during the walk the iterator neither throws nor reads outside the bitmap's storage, and what it yields is
+unspecified: collect first with `toUint32Array()`, or iterate a `clone()`.
+
+**`JSON.stringify(bm)` gives `"{}"`.** There is no `toJSON`, so a structured logger that serializes `{ segment, bitmap }`
+does not write every id into a log. Write `JSON.stringify([...bitmap])` or `bitmap.toArray()` when you mean the ids. Do
+not pass a `RoaringBitmap` to a method of the `roaring` package from npm: it is not a `RoaringBitmap32`, so the predicates
+and counts (`intersects`, `andCardinality`, `isSubset` and the like) answer wrongly without throwing in JavaScript
+(TypeScript refuses the call), the static `RoaringBitmap32.and`, `or` and `orMany` throw, and the constructor and the
+in-place operations (`orInPlace`, `addMany` and the like) read it as ids. To use one of that package's operations, decode
+the bitmap's `serialize()` bytes with it.
+
+**Where it differs from the `roaring` package from npm.** Each difference is deliberate:
+
+| | `roaring` | `RoaringBitmap` |
+|---|---|---|
+| `add`, `remove` | variadic | exactly one id; a second argument is a `ValidationError` naming `addMany` or `removeMany` |
+| a value that is not an id | `add` accepts `string`, `number`, `null` and `undefined` | every id argument throws a `ValidationError` with a value-free message |
+| `minimum()`, `maximum()` of an empty set | `0xFFFFFFFF` and `0`, which are real ids | `undefined` |
+| `deserialize` | `(buffer, format)`, a `Buffer`, the format required; it checks only its own reads | `(bytes, { maxBytes? })`, a `Uint8Array`; a format argument and an empty buffer are refused; the bytes are capped and checked |
+| `serialize` | returns a `Buffer`, the format required | returns a `Uint8Array`; `'portable'` is optional |
+| `runOptimize()` | true if a run container exists | the same meaning (it also demotes runs that are not smaller) |
+| `toJSON` | present | absent |
+
+**Not provided.** Ranges, `rank`, `select`, frozen views, Array-style helpers, `toSet`, `getSerializationSizeInBytes`
+and 64-bit ids are left out. In this release the class also has no `xorInPlace`, no static combine that returns a new
+bitmap, no count-only combine, and no `isEqual`, `isSubset` or `intersects`.
+
+**A load reads your bitmap and never changes it.** `store.load(ref, bitmap)` and `store.load(ref, { bitmap })` serialize
+it once, check and decode those bytes as any `{ serialized }` load does, and keep no reference to it. A bitmap decoded
+from bytes another writer made keeps its run containers as they were, and one that serializes above the size cap is
+refused by a load: call `runOptimize()` first.
+
+### Decode portable bytes — `RoaringBitmap.deserialize(bytes)`
+
+`RoaringBitmap.deserialize(bytes: Uint8Array, options?: RoaringBitmapDeserializeOptions): RoaringBitmap` decodes portable
+Roaring bytes you hold (a Node `Buffer` is one) through the check a `{ serialized }` load makes first: the
+537,403,396-byte cap, the structural check, exactly one bitmap (bytes after its last container are refused), and only then
+the decoder. Use it for bytes that crossed a process boundary, in place of `RoaringBitmap32.deserialize`, which checks
+nothing but its own reads. It is the one door for bytes: `new RoaringBitmap(bytes)` refuses them.
+
+`{ maxBytes }` lowers the cap for a service that knows its inputs are small: bytes over it are refused before any is read.
+A `maxBytes` above 537,403,396, or one that is not a non-negative integer, is refused, never honoured: there is no
+trusting variant. The input is copied once before it is checked, so a buffer another thread is writing cannot pass the
+check and then change, and the result keeps nothing of that copy: each container owns its storage, so a large input that
+is decoded and then reduced with `andInPlace` can be freed.
+
+It throws `ValidationError`, never `IntegrityError` (that is for a stored object that is damaged), for:
+
+| Input | Message says |
+|---|---|
+| not a `Uint8Array` | the argument must be one |
+| a zero-length or detached `Uint8Array` | an empty buffer is not a bitmap; `new RoaringBitmap()` is the empty set (a transport that lost the bytes does not become "no ids"; a bitmap with no ids has real bytes) |
+| over 537,403,396 bytes, or over `maxBytes` | the size and the limit |
+| not exactly one well-formed bitmap | the structural reason, with no container key or id in it |
+| a second argument that is not `undefined` or an object whose only key is `maxBytes` | `deserialize` takes no format argument (the format is always portable), as a migrated call such as `deserialize(bytes, 'portable')` passes |
+| a `maxBytes` that is not an integer from 0 to the cap | the rule |
+
+<!-- typecheck-skip: a fragment: `bytes` and `ids` are the reader's -->
+```ts
+const checked = RoaringBitmap.deserialize(bytes); // ValidationError if malformed
+checked.andInPlace(new RoaringBitmap(ids));       // the result is mutable
+await store.load(ref, checked);                   // read, never changed or kept
+```
+
+The result is a mutable `RoaringBitmap`: code that shared one decoded bitmap between callers and relied on it not
+changing hands out `has`, or a `clone()`, instead. [The parts recipe](loading.md#parts-of-one-segment-built-separately)
+uses this. See also [using it by itself](roaring-codec.md#using-it-by-itself).
 
 ### The segment verbs (the ~90% of daily use)
 
@@ -1204,7 +1296,7 @@ driver contracts, the ports the store's signatures stop at among them, are under
 
 ### `@cloudbitmaps/roaring` — values
 
-`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` ·
+`CloudRoaring` · `Segment` · `RoaringBitmap` · `MemoryStorage` · `LocalFsStorage` ·
 `destroySegment` · `eraseNamespace` · `InProcessKeystore` · `readRetentionPolicy` · `excludingReservedRows` ·
 `CountingMetricsSink` · `RecordingAuditSink` · `CloudRoaringError` ·
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
@@ -1216,7 +1308,7 @@ driver contracts, the ports the store's signatures stop at among them, are under
 `CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
 `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
 `MaterializeResult` · `MaterializeRefusal` · `Expr` · `MaterializeManyOptions` · `MaterializeManyDryRunOptions` · `MaterializeManyDryRun` · `MaterializeDryRunResult` · `MaterializeManyDryRunOutcome` · `MaterializeManyOutput` · `MaterializeManyFeed` · `MaterializeManyFeedRecord` · `MaterializeManyOutcome` · `MaterializeManyRun` · `MaterializeManyStats` · `MaterializeManyOperandStats` · `MaterializeManyOutputStats` · `CombineOptions`
-· `IdIterator` · `IdStream` · `LoadInput` · `PortableBitmap` · `ReadonlyBitmap` · `LoadOptions` · `LoadGuard`
+· `IdIterator` · `IdStream` · `LoadInput` · `PortableBitmap` · `RoaringBitmapDeserializeOptions` · `LoadOptions` · `LoadGuard`
 · `LoadResult` · `LoadRefusal` · `GenerationEntry` · `GenerationMetadata` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
 · `PinOptions` · `Lease` · `PinnedAt` · `SegmentRef` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
@@ -1225,6 +1317,10 @@ driver contracts, the ports the store's signatures stop at among them, are under
 `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` · `RetryPolicy` ·
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `Clock` ·
 `Rng` · `Entropy` · `Budget` · `BudgetOption` · `ErrorKind` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` · `PreflightResult` · `PreflightCheck`
+
+### `@cloudbitmaps/roaring/bitmap`
+
+`RoaringBitmap` · `RoaringBitmapDeserializeOptions`
 
 ### `@cloudbitmaps/core/driver-kit`
 

@@ -847,14 +847,22 @@ function assertEntrySdkFree(pkgDir) {
 }
 
 /**
- * The built entries that must load where no Node builtin exists (a V8 isolate): core's main entry and `driver-kit`, and
- * the offline tools. `@cloudbitmaps/core/node` is the one core entry that may reach a builtin, and is not listed.
+ * The built entries that must load where no Node builtin exists (a V8 isolate): core's main entry and `driver-kit`,
+ * the flavor's `./bitmap` entry (the public bitmap class, which loads no store) and the offline tools.
+ * `@cloudbitmaps/core/node` and the flavor's main entry are the entries that may reach a builtin, and are not listed.
  */
 const RUNTIME_NEUTRAL_ENTRIES = [
   ['core', 'index.js'],
   ['core', 'driver-kit.js'],
+  ['roaring', 'bitmap.js'],
   ['tools', 'index.js'],
 ];
+
+/**
+ * The one entry of a gated package that may reach a Node builtin, and so is not on the list: core's `./node`, and the
+ * flavor's main entry, which re-exports the in-process backends from it. Its `./bitmap` entry is on the list.
+ */
+const MAY_REACH_BUILTINS = { core: './node', roaring: '.' };
 
 /** The import specifier of a built entry file: `index.js` is the package, any other is a subpath of it. */
 function specifierOfEntry(pkgDir, entryFile) {
@@ -906,7 +914,7 @@ async function assertEntryBuiltinFree(pkgDir, entryFile) {
 function assertRuntimeNeutralCoversGatedPackages() {
   for (const pkgDir of [...new Set(RUNTIME_NEUTRAL_ENTRIES.map(([pkg]) => pkg))]) {
     const wanted = distEntryFilesOf(pkgDir)
-      .filter(({ key }) => !(pkgDir === 'core' && key === './node'))
+      .filter(({ key }) => key !== MAY_REACH_BUILTINS[pkgDir])
       .map(({ file }) => file)
       .sort();
     const listed = RUNTIME_NEUTRAL_ENTRIES.filter(([pkg]) => pkg === pkgDir)
@@ -915,7 +923,7 @@ function assertRuntimeNeutralCoversGatedPackages() {
     if (JSON.stringify(wanted) !== JSON.stringify(listed)) {
       throw new Error(
         `RUNTIME_NEUTRAL_ENTRIES lists @cloudbitmaps/${pkgDir} entries [${listed.join(', ')}] but its manifest ` +
-          `exports [${wanted.join(', ')}] (core's ./node aside). Add the new entry to the list, so it is checked to ` +
+          `exports [${wanted.join(', ')}] (${MAY_REACH_BUILTINS[pkgDir]} aside). Add the new entry to the list, so it is checked to ` +
           `load with no Node builtin.`,
       );
     }
@@ -924,7 +932,7 @@ function assertRuntimeNeutralCoversGatedPackages() {
 
 /**
  * No declaration the flavor ships imports the `roaring` package, so no public signature can name one of its types.
- * `deserializePortable` returns the library's own `ReadonlyBitmap`; a signature that named `roaring`'s class again
+ * `RoaringBitmap` is the library's own class; a signature that named `roaring`'s class again
  * would put `import ... from 'roaring'`, or a `/// <reference types="roaring" />` directive, back into the emitted
  * `.d.ts`, and a consumer without that package's types would see `any`.
  */
@@ -937,7 +945,7 @@ function assertNoRoaringTypesInDeclarations(pkgDir) {
     if (namesPackage(readFileSync(path.join(dist, file), 'utf8'), 'roaring')) {
       throw new Error(
         `@cloudbitmaps/${pkgDir}: dist/${file} imports the \`roaring\` package. No public signature may name one ` +
-          `of its types: return the library's own type (see \`ReadonlyBitmap\`).`,
+          `of its types: return the library's own type (see \`RoaringBitmap\`).`,
       );
     }
   }
@@ -1031,6 +1039,36 @@ function assertManifestResolves(pkgDir, familyNames) {
   console.log(`  manifest OK: ${manifest.name}`);
 }
 
+/**
+ * `RoaringBitmap` from the main entry and from `./bitmap` is one class object under ESM and under `require()`, and it
+ * works: a build that bundled the class twice would split `instanceof`, and a bitmap from one entry would be refused
+ * as an operand by the other.
+ */
+async function assertOneBitmapClass() {
+  const { strict: assert } = require('node:assert');
+  const BITMAP = `${PKG}/bitmap`;
+  const esmMain = (await import(PKG)).RoaringBitmap;
+  const esmSub = (await import(BITMAP)).RoaringBitmap;
+  const cjsMain = require(PKG).RoaringBitmap;
+  const cjsSub = require(BITMAP).RoaringBitmap;
+  for (const [name, cls] of [
+    ['ESM ./bitmap', esmSub],
+    ['CJS main', cjsMain],
+    ['CJS ./bitmap', cjsSub],
+  ]) {
+    assert.equal(
+      cls,
+      esmMain,
+      `${PKG}: RoaringBitmap from ${name} is not the class of the ESM main entry`,
+    );
+  }
+  const a = new esmMain([1, 2, 70000]);
+  const b = new cjsSub([2, 70000, 4294967295]);
+  assert.deepEqual(a.andInPlace(b).toArray(), [2, 70000]);
+  assert.deepEqual(esmSub.deserialize(a.serialize()).toArray(), [2, 70000]);
+  console.log('  one RoaringBitmap class: main and ./bitmap, ESM and require()');
+}
+
 async function main() {
   // First, so a lost or stray declaration is reported by the compiler, not by the narrower checks below.
   assertDeclarationsMatchWhatTscLoads();
@@ -1083,6 +1121,7 @@ async function main() {
   });
   // The leg that can actually fail: two separately bundled packages, each with its own class copy.
   assertPackagesShareOneCopy(require(CORE), require(PKG), require(S3));
+  await assertOneBitmapClass();
   const familyNames = packageDirs().map(
     (d) =>
       JSON.parse(

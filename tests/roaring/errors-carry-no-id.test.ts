@@ -3,9 +3,10 @@
  * that was never meant to be one (a phone number, a 64-bit user id), and applications log error messages.
  */
 import { describe, expect, it } from 'vitest';
-import { ValidationError } from '@/index';
+import { RoaringBitmap, ValidationError } from '@/index';
 import { batchWorld } from '../helpers/batch-world';
 import { feedOf } from '../helpers/combine-feed';
+import { craftPortable } from '../helpers/portable-bytes';
 
 const SENTINEL = 14155551234;
 const DIGITS = String(SENTINEL);
@@ -166,5 +167,66 @@ describe('an error message never carries an id', () => {
       w.store.load({ segment: 't' }, SENTINEL as unknown as number[]),
     );
     expectNoId(message);
+  });
+});
+
+describe('a RoaringBitmap error message never carries an id', () => {
+  const messageSync = (run: () => unknown): string => {
+    try {
+      run();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationError);
+      return (error as Error).message;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  it('the constructor, add, addMany, has, remove and removeMany say what is wrong and never the value', () => {
+    const messages: string[] = [];
+    for (const bad of BAD_VALUES) {
+      const v = bad as number;
+      const b = new RoaringBitmap([1]);
+      messages.push(messageSync(() => new RoaringBitmap([1, v])));
+      messages.push(messageSync(() => new RoaringBitmap(new Set([1, v]))));
+      messages.push(messageSync(() => b.add(v)));
+      messages.push(messageSync(() => b.addMany([v])));
+      messages.push(messageSync(() => b.has(v)));
+      messages.push(messageSync(() => b.remove(v)));
+      messages.push(messageSync(() => b.removeMany([v])));
+    }
+    for (const message of messages) expectNoId(message);
+    expect(messages[0]).toMatch(/an id must be an integer from 0 to 4294967295; got /);
+  });
+
+  it('names a wrong kind of value by its kind, a BigInt, a Symbol and an object included', () => {
+    const b = new RoaringBitmap();
+    expect(messageSync(() => b.has(14155551234n as unknown as number))).toMatch(/got a bigint$/);
+    expect(messageSync(() => b.has(Symbol('14155551234') as unknown as number))).toMatch(
+      /got a symbol$/,
+    );
+    expect(messageSync(() => b.has({ toString: () => DIGITS } as unknown as number))).toMatch(
+      /got an object$/,
+    );
+  });
+
+  it('the decode door says why bytes are refused without a container key, an offset value or an id', () => {
+    // Keys 51,234 then 40,000 are out of order, and 51,234 must not appear.
+    const messages = [
+      craftPortable([
+        { key: 51_234, kind: 'array', values: [1] },
+        { key: 40_000, kind: 'array', values: [2] },
+      ]),
+      craftPortable([
+        { key: 51_234, kind: 'array', values: [1] },
+        { key: 51_234, kind: 'array', values: [2] },
+      ]),
+      new Uint8Array(0),
+      new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+    ].map((bytes) => messageSync(() => RoaringBitmap.deserialize(bytes)));
+    expect(messages[0]).toMatch(/not strictly ascending/);
+    for (const message of messages) {
+      expect(message).not.toContain('51234');
+      expect(message).not.toContain('40000');
+    }
   });
 });

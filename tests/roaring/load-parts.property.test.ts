@@ -22,7 +22,7 @@ vi.setConfig({ testTimeout: 60_000 });
  * Held: the generation the recipe writes is byte for byte the one a load of the whole set writes, wherever the
  * range boundaries fall (inside a 65,536-id chunk or on one), from one part to eight; parts that overlap are
  * refused before anything is written; bytes that are not a well-formed bitmap are refused by the library's own
- * check rather than decoded by the native addon; and the recipe makes the requests of one load, however many
+ * check; and the recipe makes the requests of one load, however many
  * parts there are.
  */
 const { RoaringBitmap32 } = roaring;
@@ -32,7 +32,7 @@ const CHUNK = 65_536;
 const SPAN = 6 * CHUNK;
 
 interface Recipe {
-  partBytes(part: Bitmap): Uint8Array;
+  partBytes(part: library.RoaringBitmap): Uint8Array;
   loadParts(store: CloudRoaring, ref: Ref, parts: Uint8Array[]): Promise<library.LoadResult>;
 }
 
@@ -93,6 +93,10 @@ function recipeFromGuide(): Recipe {
 }
 
 const recipe = recipeFromGuide();
+
+/** A part as the recipe's workers hold it: a `RoaringBitmap` of the ids of an oracle bitmap. */
+const asPart = (oracle: Bitmap): library.RoaringBitmap =>
+  new library.RoaringBitmap(oracle.toUint32Array());
 const ref: Ref = { segment: 'parts' };
 
 /** Ids over six chunks: scattered ones, and sometimes a dense run that fills a chunk past the array/bitset line. */
@@ -178,7 +182,7 @@ async function loadViaRecipe(
   const result = await recipe.loadParts(
     new CloudRoaring({ storage: backend, seams: { entropy: counterEntropy() } }),
     ref,
-    parts.map((p) => recipe.partBytes(p)),
+    parts.map((p) => recipe.partBytes(asPart(p))),
   );
   return { result, objects: await stored(backend) };
 }
@@ -248,7 +252,7 @@ describe('the parts recipe in the loading guide', () => {
             recipe.loadParts(
               new CloudRoaring({ storage: backend }),
               ref,
-              parts.map((p) => recipe.partBytes(p)),
+              parts.map((p) => recipe.partBytes(asPart(p))),
             ),
           ).rejects.toBeInstanceOf(ValidationError);
           expect(await stored(backend)).toEqual({});
@@ -258,12 +262,12 @@ describe('the parts recipe in the loading guide', () => {
     );
   });
 
-  it('refuses a part that is not a well-formed bitmap, before the native decoder sees it', async () => {
-    // A bitset whose header says 5 values and whose bits hold 3: the native decoder takes it and answers wrongly.
+  it('refuses a part that is not a well-formed bitmap, whatever the header says', async () => {
+    // A bitset whose header says 5 values and whose bits hold 3: a decoder that reads only its bounds takes it and answers wrongly.
     const bits = new Uint8Array(8_192);
     bits[0] = 0b111;
     const forged = craftPortable([{ key: 0, kind: 'bitset', bits, cardinality: 5 }]);
-    const good = recipe.partBytes(new RoaringBitmap32([CHUNK + 1, CHUNK + 2]));
+    const good = recipe.partBytes(asPart(new RoaringBitmap32([CHUNK + 1, CHUNK + 2])));
     const backend = new MemoryStorage();
     await expect(
       recipe.loadParts(new CloudRoaring({ storage: backend }), ref, [good, forged]),
@@ -305,7 +309,7 @@ describe('the parts recipe in the loading guide', () => {
         { length: n - 1 },
         (_, i) => (i + 1) * Math.floor(SPAN / n) + 11,
       );
-      const parts = split(set, cutPoints).map((p) => recipe.partBytes(p));
+      const parts = split(set, cutPoints).map((p) => recipe.partBytes(asPart(p)));
       expect(parts).toHaveLength(n);
       const joined = await requestsOf((store) => recipe.loadParts(store, ref, parts));
       expect(joined).toEqual(single);

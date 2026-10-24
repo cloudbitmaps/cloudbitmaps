@@ -35,8 +35,6 @@ const NATIVE_STORE_FILES: Readonly<Record<string, string>> = {
     'compares a stored chunk with the bytes a native bitmap serializes to',
   'tests/roaring/codec-switch.test.ts':
     'holds the switch itself: it flips it both ways and restores it',
-  'tests/roaring/deserialize-portable.test.ts':
-    'spies on the native decoder to prove what a decode does and does not call',
   'tests/roaring/load-bitmap.test.ts':
     'tests the native bitmap class, and its racing-decode case wraps the native codec to simulate a write landing between the check and the decode',
   'tests/roaring/load-no-per-id.test.ts':

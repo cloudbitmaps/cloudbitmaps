@@ -447,6 +447,18 @@ export const { A, B } = src;
   });
 });
 
+describe('the private-field brand of a class', () => {
+  const files = {
+    'index.ts':
+      '/** A. */\nexport class A {\n  #x = 1;\n  /** Reads it. */\n  read(): number {\n    return this.#x;\n  }\n  write(): void {}\n}\n',
+  };
+
+  it('is not asked for hover text, while a method beside it still is', () => {
+    const got = findings(files, [`${K} A.#private`, `${K} A.read`, `${K} A.write`]);
+    expect(got.map((g) => g.split(' (')[0])).toEqual([`${K} A.write`]);
+  });
+});
+
 describe('the surface gate takes its entry points from the packages', () => {
   it('fails a key for a specifier that is no entry point, named', () => {
     const got = findings({ 'index.ts': '/** X. */\nexport const X = 1;\n' }, [
@@ -476,6 +488,7 @@ describe('the surface gate takes its entry points from the packages', () => {
       '@cloudbitmaps/core/node',
       '@cloudbitmaps/gcs',
       '@cloudbitmaps/roaring',
+      '@cloudbitmaps/roaring/bitmap',
       '@cloudbitmaps/s3',
       '@cloudbitmaps/tools',
     ]);

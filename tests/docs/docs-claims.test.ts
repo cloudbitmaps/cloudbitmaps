@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Install, cache, `ReadonlyBitmap`, retention-grace and seal-bound claims, held where a rewrite cannot quietly undo
+ * Install, cache, `RoaringBitmap`, retention-grace and seal-bound claims, held where a rewrite cannot quietly undo
  * them: the install line for the `roaring` package from npm names the version the repo pins, the seal bound does
- * not call itself unreachable, a `ReadonlyBitmap` is not offered to a method of that package or to `JSON.stringify`
+ * not call itself unreachable, a `RoaringBitmap` is not offered to a method of that package or to `JSON.stringify`
  * as it is, and the retention grace names the window it must outlast.
  *
  * Each reads its file whole with line breaks, a comment's leading `*` and runs of spaces folded to one space, so a sentence the formatter
@@ -25,7 +25,7 @@ const roaringPin = (
   }
 ).devDependencies['roaring'];
 
-describe('install, cache, ReadonlyBitmap and grace claims', () => {
+describe('install, cache, RoaringBitmap and grace claims', () => {
   it('tells a reader of the samples that import roaring the version the samples are tested against, and that any version works', () => {
     expect(roaringPin).toMatch(/^\d+\.\d+\.\d+$/);
     const loading = read('docs/guide/loading.md');
@@ -60,13 +60,13 @@ describe('install, cache, ReadonlyBitmap and grace claims', () => {
     );
   });
 
-  it('warns that a ReadonlyBitmap is not a roaring bitmap and does not serialize to JSON', () => {
+  it('warns that a RoaringBitmap is not a roaring bitmap and does not serialize to JSON', () => {
     for (const file of ['docs/guide/api-reference.md', 'docs/guide/loading.md']) {
       const text = read(file);
       expect(text, file).toContain('`JSON.stringify([...bitmap])`');
       expect(text, file).toMatch(/to a method of the `roaring` package from npm/);
     }
-    expect(read('packages/roaring/src/roaring-codec.ts')).toContain(
+    expect(read('packages/roaring/src/bitmap.ts')).toContain(
       'Passed to a method of the `roaring` package from npm in place of a `RoaringBitmap32`, it answers wrongly',
     );
   });

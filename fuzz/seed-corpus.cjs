@@ -86,6 +86,41 @@ function seedSafeDeserialize(target) {
 }
 
 /**
+ * Seeds for the bitmap-ops target: `[u16 n][n bytes of a portable bitmap][operation bytes]`. The bitmaps are the
+ * safe-deserialize seeds' (plain and with run containers, so the decode reaches runs, bitsets and a slab of arrays),
+ * each followed by every operation once and then a deterministic spread of operation bytes. The `u16` caps the bitmap
+ * bytes at 65,535, so a seed too large for it is left out.
+ */
+function seedBitmapOps(target) {
+  const everyOperation = Uint8Array.from(
+    Array.from({ length: 14 }, (_, op) => [op, 0, 7, 0, 0, 3, 1, 0, 0, 0, 2]).flat(),
+  );
+  for (const [name, vals] of Object.entries(valueSets())) {
+    for (const [form, runs] of [
+      ['valid', false],
+      ['runs', true],
+    ]) {
+      const bitmap = new RoaringBitmap32(vals);
+      if (runs) bitmap.runOptimize();
+      const ser = bitmap.serialize(SerializationFormat.portable);
+      if (ser.length > 0xffff) continue;
+      let state = ser.length + 1;
+      const spread = Uint8Array.from({ length: 96 }, () => {
+        state = (Math.imul(state, 1103515245) + 12345) & 0x7fffffff;
+        return state >> 16;
+      });
+      const input = new Uint8Array(2 + ser.length + everyOperation.length + spread.length);
+      input[0] = ser.length & 0xff;
+      input[1] = ser.length >> 8;
+      input.set(ser, 2);
+      input.set(everyOperation, 2 + ser.length);
+      input.set(spread, 2 + ser.length + everyOperation.length);
+      writeSeed(target, `${form}-${name}.bin`, input);
+    }
+  }
+}
+
+/**
  * The bytes of generation `generation` of a segment holding `chunks`, as `store.load()` writes them. A load takes
  * the next generation number itself, so generation `n` is the `n + 1`th load of the segment.
  */
@@ -284,10 +319,13 @@ async function seedCrbmExt() {
 async function main() {
   const only = process.argv[2];
   if (!only || only === 'safe-deserialize') seedSafeDeserialize('safe-deserialize');
+  if (!only || only === 'bitmap-ops') seedBitmapOps('bitmap-ops');
   if (!only || only === 'crbm-reader') await seedCrbmReader();
   if (!only || only === 'crbm-index') seedCrbmIndex();
   if (!only || only === 'crbm-ext') await seedCrbmExt();
-  const targets = only ? [only] : ['safe-deserialize', 'crbm-reader', 'crbm-index', 'crbm-ext'];
+  const targets = only
+    ? [only]
+    : ['safe-deserialize', 'bitmap-ops', 'crbm-reader', 'crbm-index', 'crbm-ext'];
   for (const t of targets) {
     const dir = path.join(CORPUS, t);
     const n = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
