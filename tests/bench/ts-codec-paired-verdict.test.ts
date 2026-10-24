@@ -68,7 +68,7 @@ describe('the paired verdict rule', () => {
   });
 
   it('calls a cell inconclusive when the control median is past 3%, whatever the head shows', () => {
-    expect(pairedVerdictOf(0, 0.03, QUIET)).toBe(WITHIN);
+    expect(pairedVerdictOf(0.03, 0.03, QUIET)).toBe(WITHIN);
     expect(pairedVerdictOf(0, 0.0301, QUIET)).toBe(INCONCLUSIVE);
     expect(pairedVerdictOf(0.5, -0.0301, QUIET)).toBe(INCONCLUSIVE);
     expect(pairedVerdictOf(-0.5, 0.05, QUIET)).toBe(INCONCLUSIVE);

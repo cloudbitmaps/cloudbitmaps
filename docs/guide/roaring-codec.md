@@ -159,6 +159,14 @@ try {
 
 The example is run by [`tests/docs/roaring-codec-example.test.ts`](../../tests/docs/roaring-codec-example.test.ts).
 
+**What importing it costs** (measured on 2026-10-24 on an Apple M3 Pro under Node v24.22.1, 31 fresh processes per entry
+with the main entry measured twice as the control, by `bench/ts-codec-paired.cjs`; the control's median differed from the
+first by 0.3%): `@cloudbitmaps/roaring/bitmap` imports in 10.0 ms against 23.9 ms for the main entry (58% less), and an
+esbuild bundle of a one-line importer of the class is 31,468 bytes (11,108 gzipped) from `./bitmap` against 44,208 (15,530
+gzipped) from the main entry. The same run held the
+store's reads, a load and an erasure's rewrite on this change's codec to the base commit's within the noise its control
+showed on every cell.
+
 **Where it differs from the `roaring` package from npm**, each on purpose: `add` and `remove` take exactly one id (a second
 argument is an error naming `addMany` or `removeMany`); every id argument throws a `ValidationError` that does not
 repeat the value, where `add` of `roaring` accepts a string or `null`; `minimum()` and `maximum()` of an empty set are

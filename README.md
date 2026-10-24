@@ -78,34 +78,6 @@ console.log(both); // [ 5, 1234567890 ]
 It prints `true`, `3`, then `[ 5, 1234567890 ]`. The [getting-started guide](docs/guide/getting-started.md) goes on
 from here.
 
-### A bitmap on its own
-
-`RoaringBitmap` is the codec's bitmap as a public class: a mutable set of unsigned 32-bit ids with the portable Roaring
-bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring/bitmap` to load no store and no Node
-builtin, or from `@cloudbitmaps/roaring`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
-door for bytes you did not write.
-
-<!-- typecheck -->
-```ts
-import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring';
-
-const store = new CloudRoaring({ storage: new MemoryStorage() });
-
-const vip = new RoaringBitmap([5, 99_999, 1_234_567_890]); // any iterable of ids
-vip.add(7);
-vip.removeMany([99_999]);
-vip.addMany(new RoaringBitmap([8, 9])); // another bitmap, or a Uint32Array, works too
-
-await store.load({ segment: 'vip' }, vip); // read, never changed or kept
-
-// Bytes from another process go through the one safe door: capped, checked, one whole bitmap.
-const received = RoaringBitmap.deserialize(vip.serialize());
-console.log(received.size, received.minimum(), received.maximum()); // 5 5 1234567890
-```
-
-[The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap) has every method
-and where it differs from the `roaring` package.
-
 ### The same code on S3
 
 Install `@cloudbitmaps/s3`, give it a bucket, and change one line. Everything after it is unchanged:
@@ -289,6 +261,34 @@ for await (const id of store.segment('vips').intersect([store.segment('engaged')
 [coming from Redis bitmaps](docs/guide/getting-started.md#coming-from-redis-bitmaps) ·
 [API reference](docs/guide/api-reference.md) ·
 [errors and what to do](docs/guide/api-reference.md#errors-typed--you-catch-these)
+
+### A bitmap on its own
+
+`RoaringBitmap` is the codec's bitmap as a public class: a mutable set of unsigned 32-bit ids with the portable Roaring
+bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring/bitmap` to load no store and no Node
+builtin, or from `@cloudbitmaps/roaring`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
+door for bytes you did not write.
+
+<!-- typecheck -->
+```ts
+import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring';
+
+const store = new CloudRoaring({ storage: new MemoryStorage() });
+
+const vip = new RoaringBitmap([5, 99_999, 1_234_567_890]); // any iterable of ids
+vip.add(7);
+vip.removeMany([99_999]);
+vip.addMany(new RoaringBitmap([8, 9])); // another bitmap, or a Uint32Array, works too
+
+await store.load({ segment: 'vip' }, vip); // read, never changed or kept
+
+// Bytes from another process go through the one safe door: capped, checked, one whole bitmap.
+const received = RoaringBitmap.deserialize(vip.serialize());
+console.log(received.size, received.minimum(), received.maximum()); // 5 5 1234567890
+```
+
+[The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap) has every method
+and where it differs from the `roaring` package.
 
 ## How it works
 
