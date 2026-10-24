@@ -80,6 +80,8 @@
     "bench:ts-codec:check": "node bench/ts-codec.cjs --check",
     "bench:ts-codec-engine": "node --expose-gc bench/ts-codec-engine.cjs --all",
     "bench:ts-codec-engine:check": "node bench/ts-codec-engine.cjs --check",
+    "bench:ts-codec-paired": "node --expose-gc bench/ts-codec-paired.cjs --all",
+    "bench:ts-codec-paired:check": "node --expose-gc bench/ts-codec-paired.cjs --check",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
   },
   "lint-staged": {
