@@ -174,157 +174,191 @@ async function generations(storage: IStorageDriver): Promise<number[]> {
 const REGISTRY_CALLS = ['get', 'create', 'compareAndSwap', 'delete'] as const;
 const STORAGE_CALLS = ['putImmutable', 'getTail', 'list', 'delete'] as const;
 
+const RUNS = 150;
+
+/**
+ * The property, over `RUNS` cases drawn from `seed` (a random seed when none is given), returning how often the
+ * generator reached each case the floors below count.
+ */
+async function explore(seed?: number): Promise<{
+  contested: number;
+  fenced: number;
+  abovePointer: number;
+}> {
+  let contested = 0;
+  let fenced = 0;
+  let abovePointer = 0;
+  await fc.assert(
+    fc.asyncProperty(
+      fc.scheduler(),
+      fc.array(LOAD, { minLength: 2, maxLength: 4 }),
+      fc.constantFrom<Other>('none', 'retention', 'drop', 'erase', 'erase', 'erase'),
+      fc.boolean(),
+      async (s, specs, other, eager) => {
+        const storage = new MemoryStorageDriver();
+        const registry = new MemoryRegistryDriver();
+        const found: (boolean | undefined)[] = specs.map(() => undefined);
+        const audits = specs.map(() => new RecordingAuditSink());
+        // The erasure waits for a load to create the row and for another load to have written an object holding an
+        // id the creator's does not, an unguarded one where it can, and erases that id: found only above the pointer.
+        const wrote = specs.map(() => false);
+        const at: { creator?: number; id?: number } = {};
+        let erasable!: (id: number) => void;
+        const ready = new Promise<number>((resolve) => (erasable = resolve));
+        const check = (): void => {
+          if (at.creator === undefined || at.id !== undefined) return;
+          const own = new Set(specs[at.creator]!.ids);
+          const holders = specs
+            .map((spec, j) => ({ spec, j }))
+            .filter(
+              ({ spec, j }) => j !== at.creator && wrote[j] && spec.ids.some((n) => !own.has(n)),
+            )
+            .sort((a, b) => Number(a.spec.guarded) - Number(b.spec.guarded));
+          const holder = holders[0];
+          if (holder === undefined) return;
+          at.id = holder.spec.ids.find((n) => !own.has(n))!;
+          erasable(at.id);
+        };
+        const loads = specs.map((spec, i) =>
+          loadSegment(
+            SEG,
+            [...spec.ids],
+            {
+              storage: onPut(scheduled(s, storage, STORAGE_CALLS, `load ${i}`), () => {
+                wrote[i] = true;
+                check();
+              }),
+              registry: observed(
+                scheduled(s, registry, REGISTRY_CALLS, `load ${i}`),
+                (row) => (found[i] = row),
+                () => {
+                  at.creator ??= i;
+                  check();
+                },
+              ),
+              entropy: testEntropy,
+              codec: storeCodec,
+            },
+            { ...(spec.guarded ? {} : { allowEmpty: true }), audit: audits[i] },
+          ).then(
+            (r): { r: LoadResult } | { err: unknown } => ({ r }),
+            (err: unknown) => ({ err }),
+          ),
+        );
+        const settled = Promise.all(loads);
+        const erasure = { puts: 0, deletes: 0 };
+        // The other writer's calls wait their turn like the loads', or, for an eager erasure, go through at once, so
+        // that it often deletes an object above the pointer before the load that wrote it publishes.
+        const wait = !(other === 'erase' && eager);
+        const deps = {
+          storage: counted(wait ? scheduled(s, storage, STORAGE_CALLS, other) : storage, erasure),
+          registry: wait ? scheduled(s, registry, REGISTRY_CALLS, other) : registry,
+          entropy: testEntropy,
+          codec: storeCodec,
+        };
+        // The other writer's own outcome is not what this checks: an erasure may refuse or find nothing, a drop may
+        // lose a race.
+        const writer: Promise<unknown> =
+          other === 'retention'
+            ? setSegmentRetention(SEG, deps, { expiresAt: Date.now() + 86_400_000 }).catch(
+                () => undefined,
+              )
+            : other === 'drop'
+              ? dropSegment(SEG, deps, { confirmSegment: SEG.segment }).catch(() => undefined)
+              : other === 'erase'
+                ? Promise.race([ready, settled.then(() => undefined)]).then(async (id) => {
+                    if (id === undefined) return undefined;
+                    const result = await eraseIdFromSegment(SEG, id, deps).catch(() => undefined);
+                    if (result?.erased === true && erasure.puts === 0 && erasure.deletes > 0) {
+                      abovePointer += 1;
+                    }
+                    return result;
+                  })
+                : Promise.resolve(undefined);
+        const outcomes = await s.waitFor(settled);
+        await s.waitFor(writer);
+
+        // 3. Each load published, or was refused as superseded and audited so, or met a tombstone before it wrote.
+        const results: LoadResult[] = [];
+        outcomes.forEach((o, i) => {
+          if ('err' in o) {
+            const met = other === 'drop' && o.err instanceof ValidationError;
+            if (!met) throw new Error(`load ${i} threw: ${String(o.err)}`);
+            expect(String(o.err)).toMatch(/destroyed/);
+            expect(audits[i]!.snapshot()).toEqual([]);
+            return;
+          }
+          const r = o.r;
+          results.push(r);
+          if (r.published) {
+            expect(audits[i]!.snapshot()).toContainEqual(
+              expect.objectContaining({ kind: 'segment.publish', generation: r.generation }),
+            );
+          } else {
+            expect(r.reason).toBe('superseded');
+            expect(audits[i]!.snapshot()).toEqual([
+              expect.objectContaining({
+                kind: 'segment.load-refused',
+                generation: r.generation,
+                reason: 'superseded',
+              }),
+            ]);
+          }
+        });
+
+        // 1. Only one load can create the row.
+        const rowless = outcomes.flatMap((o, i) => ('r' in o && found[i] === false ? [o.r] : []));
+        expect(rowless.filter((r) => r.published).length).toBeLessThanOrEqual(1);
+        if (rowless.length >= 2) contested += 1;
+        fenced += rowless.filter((r) => !r.published && r.size > 0).length;
+
+        // 2. The pointer names an object in the bucket, holding what the load that took it wrote.
+        const row = await registry.get(SEG);
+        if (row === null || row.status === 'destroyed' || row.currentGen === null) return;
+        expect(await generations(storage)).toContain(row.currentGen);
+        const held = await idsAt(storage, row.currentGen);
+        const candidates = outcomes.flatMap((o, i) =>
+          'r' in o && o.r.published ? [[...specs[i]!.ids].sort((a, b) => a - b)] : [],
+        );
+        const erasedId = other === 'erase' ? at.id : undefined;
+        const allowed =
+          erasedId === undefined
+            ? candidates
+            : [...candidates, ...candidates.map((ids) => ids.filter((id) => id !== erasedId))];
+        expect(allowed).toContainEqual(held);
+      },
+    ),
+    { numRuns: RUNS, ...(seed === undefined ? {} : { seed }) },
+  );
+  return { contested, fenced, abovePointer };
+}
+
+/**
+ * The floors the generator must clear, and the seeds that hold them. A run is a function of its seed alone, so each
+ * seed's counts are a fact about the generator, not about a random draw. Over a scan of seeds 1 to 500 (the `ids`
+ * project) the lowest counts were 132, 97 and 26 against a mean of about 142, 121 and 43; the three seeds are the ones
+ * that gave them (362, 436 and 473). If the generator changes and one stops clearing a floor, the test below names
+ * it: pick new seeds the same way.
+ */
+const SEEDS: readonly number[] = [362, 436, 473];
+const FLOORS = { contested: 60, fenced: 40, abovePointer: 10 };
+
 describe('loads racing onto a segment with no row (property)', () => {
   it('at most one that found no row publishes, and the pointer always names an object that reads', async () => {
-    let contested = 0;
-    let fenced = 0;
-    let abovePointer = 0;
-    await fc.assert(
-      fc.asyncProperty(
-        fc.scheduler(),
-        fc.array(LOAD, { minLength: 2, maxLength: 4 }),
-        fc.constantFrom<Other>('none', 'retention', 'drop', 'erase', 'erase', 'erase'),
-        fc.boolean(),
-        async (s, specs, other, eager) => {
-          const storage = new MemoryStorageDriver();
-          const registry = new MemoryRegistryDriver();
-          const found: (boolean | undefined)[] = specs.map(() => undefined);
-          const audits = specs.map(() => new RecordingAuditSink());
-          // The erasure waits for a load to create the row and for another load to have written an object holding an
-          // id the creator's does not, an unguarded one where it can, and erases that id: found only above the pointer.
-          const wrote = specs.map(() => false);
-          const at: { creator?: number; id?: number } = {};
-          let erasable!: (id: number) => void;
-          const ready = new Promise<number>((resolve) => (erasable = resolve));
-          const check = (): void => {
-            if (at.creator === undefined || at.id !== undefined) return;
-            const own = new Set(specs[at.creator]!.ids);
-            const holders = specs
-              .map((spec, j) => ({ spec, j }))
-              .filter(
-                ({ spec, j }) => j !== at.creator && wrote[j] && spec.ids.some((n) => !own.has(n)),
-              )
-              .sort((a, b) => Number(a.spec.guarded) - Number(b.spec.guarded));
-            const holder = holders[0];
-            if (holder === undefined) return;
-            at.id = holder.spec.ids.find((n) => !own.has(n))!;
-            erasable(at.id);
-          };
-          const loads = specs.map((spec, i) =>
-            loadSegment(
-              SEG,
-              [...spec.ids],
-              {
-                storage: onPut(scheduled(s, storage, STORAGE_CALLS, `load ${i}`), () => {
-                  wrote[i] = true;
-                  check();
-                }),
-                registry: observed(
-                  scheduled(s, registry, REGISTRY_CALLS, `load ${i}`),
-                  (row) => (found[i] = row),
-                  () => {
-                    at.creator ??= i;
-                    check();
-                  },
-                ),
-                entropy: testEntropy,
-                codec: storeCodec,
-              },
-              { ...(spec.guarded ? {} : { allowEmpty: true }), audit: audits[i] },
-            ).then(
-              (r): { r: LoadResult } | { err: unknown } => ({ r }),
-              (err: unknown) => ({ err }),
-            ),
-          );
-          const settled = Promise.all(loads);
-          const erasure = { puts: 0, deletes: 0 };
-          // The other writer's calls wait their turn like the loads', or, for an eager erasure, go through at once, so
-          // that it often deletes an object above the pointer before the load that wrote it publishes.
-          const wait = !(other === 'erase' && eager);
-          const deps = {
-            storage: counted(wait ? scheduled(s, storage, STORAGE_CALLS, other) : storage, erasure),
-            registry: wait ? scheduled(s, registry, REGISTRY_CALLS, other) : registry,
-            entropy: testEntropy,
-            codec: storeCodec,
-          };
-          // The other writer's own outcome is not what this checks: an erasure may refuse or find nothing, a drop may
-          // lose a race.
-          const writer: Promise<unknown> =
-            other === 'retention'
-              ? setSegmentRetention(SEG, deps, { expiresAt: Date.now() + 86_400_000 }).catch(
-                  () => undefined,
-                )
-              : other === 'drop'
-                ? dropSegment(SEG, deps, { confirmSegment: SEG.segment }).catch(() => undefined)
-                : other === 'erase'
-                  ? Promise.race([ready, settled.then(() => undefined)]).then(async (id) => {
-                      if (id === undefined) return undefined;
-                      const result = await eraseIdFromSegment(SEG, id, deps).catch(() => undefined);
-                      if (result?.erased === true && erasure.puts === 0 && erasure.deletes > 0) {
-                        abovePointer += 1;
-                      }
-                      return result;
-                    })
-                  : Promise.resolve(undefined);
-          const outcomes = await s.waitFor(settled);
-          await s.waitFor(writer);
-
-          // 3. Each load published, or was refused as superseded and audited so, or met a tombstone before it wrote.
-          const results: LoadResult[] = [];
-          outcomes.forEach((o, i) => {
-            if ('err' in o) {
-              const met = other === 'drop' && o.err instanceof ValidationError;
-              if (!met) throw new Error(`load ${i} threw: ${String(o.err)}`);
-              expect(String(o.err)).toMatch(/destroyed/);
-              expect(audits[i]!.snapshot()).toEqual([]);
-              return;
-            }
-            const r = o.r;
-            results.push(r);
-            if (r.published) {
-              expect(audits[i]!.snapshot()).toContainEqual(
-                expect.objectContaining({ kind: 'segment.publish', generation: r.generation }),
-              );
-            } else {
-              expect(r.reason).toBe('superseded');
-              expect(audits[i]!.snapshot()).toEqual([
-                expect.objectContaining({
-                  kind: 'segment.load-refused',
-                  generation: r.generation,
-                  reason: 'superseded',
-                }),
-              ]);
-            }
-          });
-
-          // 1. Only one load can create the row.
-          const rowless = outcomes.flatMap((o, i) => ('r' in o && found[i] === false ? [o.r] : []));
-          expect(rowless.filter((r) => r.published).length).toBeLessThanOrEqual(1);
-          if (rowless.length >= 2) contested += 1;
-          fenced += rowless.filter((r) => !r.published && r.size > 0).length;
-
-          // 2. The pointer names an object in the bucket, holding what the load that took it wrote.
-          const row = await registry.get(SEG);
-          if (row === null || row.status === 'destroyed' || row.currentGen === null) return;
-          expect(await generations(storage)).toContain(row.currentGen);
-          const held = await idsAt(storage, row.currentGen);
-          const candidates = outcomes.flatMap((o, i) =>
-            'r' in o && o.r.published ? [[...specs[i]!.ids].sort((a, b) => a - b)] : [],
-          );
-          const erasedId = other === 'erase' ? at.id : undefined;
-          const allowed =
-            erasedId === undefined
-              ? candidates
-              : [...candidates, ...candidates.map((ids) => ids.filter((id) => id !== erasedId))];
-          expect(allowed).toContainEqual(held);
-        },
-      ),
-      { numRuns: 150 },
-    );
-    // Each well below what 200 seeds gave at their lowest: 133, 98 and 30.
-    expect(contested).toBeGreaterThan(60);
-    expect(fenced).toBeGreaterThan(40);
-    expect(abovePointer).toBeGreaterThan(10);
+    // A random draw reaches the rarer cases only by chance, so this run asserts no floor on how often it did: the
+    // committed seeds below hold the floors, and this run keeps only the exploration for counterexamples.
+    await explore();
     // Hundreds of interleaved loads: well under a second idle, so the default 5 s limit is too tight under full-suite load.
   }, 60_000);
+
+  it('reaches each race the property is about: every committed seed clears every floor', async () => {
+    expect(SEEDS.length).toBeGreaterThanOrEqual(3);
+    for (const seed of SEEDS) {
+      const got = await explore(seed);
+      const where = `seed ${seed} (${JSON.stringify(got)}): the generator changed`;
+      expect(got.contested, where).toBeGreaterThan(FLOORS.contested);
+      expect(got.fenced, where).toBeGreaterThan(FLOORS.fenced);
+      expect(got.abovePointer, where).toBeGreaterThan(FLOORS.abovePointer);
+    }
+  }, 120_000);
 });
