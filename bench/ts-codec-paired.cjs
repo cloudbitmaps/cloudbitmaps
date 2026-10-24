@@ -2,8 +2,8 @@
  * Paired before-and-after bench for a change under `packages/roaring/src/ts-roaring/`: the store's hot paths and write
  * path with the codec of a base commit, the codec of the working tree, and the base codec a second time as an A/A
  * control, rotated within one run, one subject per process. Two separate runs of an hour each cannot resolve a
- * difference that small (their own noise is the size of the bar), so the comparison is paired and the band it is held
- * to is measured in each run from the control, not assumed.
+ * difference that small (their own noise is the size of the bar), so the comparison is paired, with the instrument's own
+ * noise measured in each run by the control and checked against a fixed bound.
  *
  * WHAT IS MEASURED
  *
@@ -14,6 +14,12 @@
  *   write    a bulk `load` of 1,000,000 ids over 62,500 chunks and an `eraseSubject` of one id (the rewrite of that
  *            generation), each timed in a fresh process after one untimed round of the same two calls, with a
  *            collection before each timed call.
+ *   ops      the codec's own operations, one call at a time and apart from the store (`bench/lib/codec-ops.cjs`, which
+ *            another paired bench can import): `has`, `decode` (warm, and `decode first`, the first call of a fresh
+ *            process, which is the cold decode path the store's warm read cells never reach, because its cache holds
+ *            decoded bitmaps), `serialize`, `iterate`, `toUint32`, `optimize`, `count`, `clone`, `build`, `addMany`,
+ *            `removeMany`, and `and`, `or`, `andNot` on six operand pairs, on dense, sparse and run chunks and on a
+ *            128-container bitmap. Cells are named `ops <operation> <shape>`.
  *   import   the time to import `packages/roaring/dist/bitmap.js` against `packages/roaring/dist/index.js` (the
  *            built entries), each in a fresh process, with the main entry a second time as the control, and the bytes
  *            of an esbuild bundle (minified, and gzipped) of a one-line importer of the class from each entry.
@@ -21,23 +27,42 @@
  *
  * HOW A COMPARISON IS JUDGED
  *
- * A round times the same call for three subjects: `base` (the codec at the base commit), `head` (this tree's) and
+ * A round times the same call for three subjects: `base` (the code at the base commit), `head` (this tree's) and
  * `control` (the base again), each in a process of its own, in an order that rotates through the six permutations.
- * A cell reports the median of at least 31 paired differences (`head / base - 1` and `control / base - 1`) with their
- * quartiles and every round, and a verdict from `bench/lib/paired-verdict.cjs`: the head is within the band the
- * control's own differences show, or slower or faster than it, or the cell is inconclusive because the control moved
- * more than 3% (the machine was busy; re-run, never publish). A figure is taken only while the 1-minute load average
- * is under 6, and every round carries the load. Every subject must give the same answer for a cell, or the run fails.
+ * A round is `[order, base, head, control, loadAtStart, loadAtEnd]`. Rule `median-interval-v2`
+ * (`bench/lib/paired-verdict.cjs`, which says it in full): per round the head is compared with the mean of the base and
+ * the control; the cell reports the distribution-free 95% interval of the median of those differences, and is `within`
+ * when the interval's upper end is at most 2%, `slower` when its lower end is above 2%, `faster` when its upper end is
+ * below -2%, and `inconclusive` otherwise, or whenever the control's median differs from the base by more than 2% (the
+ * machine moved; re-run, never publish). The 2% is fixed before a measurement and never changed after.
+ *
+ * THE GATE reads every pass of the results file, not the last: a cell judged `slower` in any pass fails unless that pass
+ * carries an `explained` note, so a green re-take never erases it. A cell still `inconclusive` in the last pass needs an
+ * entry in that pass's `unresolved` notes, keyed by the cell's name (`<data set> <op>`), that quotes its bound (the
+ * interval's upper end, such as `+3.2%`): it is published with that bound and never called within. `--gate` applies the
+ * gate to the results file without measuring; a run applies it after its last pass (exit 3: a conclusive "slower"; exit
+ * 4: a cell left open or another failure of the record).
+ *
+ * THE LOAD RULE. The 1-minute load average is recorded at the start and at the end of every round (`loadAtStart`,
+ * `loadAtEnd`). The machine is waited for before a round, and a round that ends at a load of 6 or more is not kept: it
+ * is stored under the cell's `discarded` and the round is taken again, so a kept round never ended at a load of 6 or
+ * more (`PAIRED_ANY_LOAD=1` turns the rule off, and the pass records it). A pass's `load` gives the highest load a kept
+ * round ended at and the number of rounds discarded.
+ *
+ * Every subject must give the same answer for a cell, or the run fails.
  *
  * The base is the merge base of `origin/main` and HEAD unless `PAIRED_BASE` names a commit. Its `packages/` are
  * extracted with `git archive` into a work folder (`PAIRED_WORKDIR`, default the system's temporary folder) and
  * bundled with esbuild; nothing in the working tree is touched.
  *
  * `--check` runs everything once at a tiny scale and fails only if the output is malformed or the subjects disagree;
- * it compares no duration with any bound. `--all` takes the full measurement (about an hour on an idle machine) and
- * writes `bench/ts-codec-paired-results.json` (`PAIRED_RESULTS` names another file). `--reads`, `--write` and
- * `--import` run one part; `--only=<text>` keeps the read cells whose "<data set> <op>" contains the text.
- * Environment: `PAIRED_ROUNDS` (at least 31), `PAIRED_ANY_LOAD=1` (turns the load gate off and records it).
+ * it compares no duration with any bound. `--all` takes the full measurement and writes
+ * `bench/ts-codec-paired-results.json` (`PAIRED_RESULTS` names another file). `--reads`, `--write`, `--ops` and
+ * `--import` run one part; `--only=<text>` keeps the read cells whose "<data set> <op>" contains the text (`a|b` keeps
+ * either), `--only-ops=<text>` the same for the per-operation cells. `--all` is the reads, the write path, the
+ * per-operation cells and the import time. Environment: `PAIRED_ROUNDS` (at least 31), `PAIRED_ANY_LOAD=1`,
+ * `PAIRED_SMOKE=1` (a few rounds at a tiny scale through the whole pipeline, writing a pass that the gate refuses; it
+ * needs `PAIRED_RESULTS` to name a scratch file).
  *
  * Wall-clock and machine-dependent: recorded, never asserted.
  */
@@ -50,29 +75,42 @@ const zlib = require('node:zlib');
 const { execFileSync } = require('node:child_process');
 const { bundleText, evaluate } = require('./lib/codec-engine.cjs');
 const { idsOf } = require('./lib/codec-data.cjs');
-const { MIN_ROUNDS, cellFrom } = require('./lib/codec-verdict.cjs');
+const { MIN_ROUNDS } = require('./lib/codec-verdict.cjs');
 const {
-  pairedVerdictOf,
-  worstPaired,
+  MAX_LOAD,
+  RULE,
+  TOLERANCE,
   MALFORMED,
-  INCONCLUSIVE,
-  SLOWER,
+  cellOf,
+  worstPaired,
+  kindOf,
+  cellName,
+  gatedCellsOf,
+  gateProblems,
+  keepRound,
 } = require('./lib/paired-verdict.cjs');
+const ops = require('./lib/codec-ops.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const CHECK = process.argv.includes('--check');
 const RESULTS = process.env.PAIRED_RESULTS
   ? path.resolve(process.env.PAIRED_RESULTS)
   : path.join(__dirname, 'ts-codec-paired-results.json');
-const MAX_LOAD = 6;
+const SMOKE = process.env.PAIRED_SMOKE === '1';
+/** A tiny-scale run: nothing it measures is evidence. */
+const SMALL = CHECK || SMOKE;
 const ANY_LOAD = process.env.PAIRED_ANY_LOAD === '1';
-const ROUNDS = CHECK ? 2 : Math.max(MIN_ROUNDS, Number(process.env.PAIRED_ROUNDS) || MIN_ROUNDS);
-const WARM_MS = CHECK ? 0 : 300;
-const SAMPLE_MS = CHECK ? 0 : 25;
-const CHUNK_SCALE = CHECK
+const ROUNDS = CHECK
+  ? 2
+  : SMOKE
+    ? Math.max(2, Number(process.env.PAIRED_ROUNDS) || 3)
+    : Math.max(MIN_ROUNDS, Number(process.env.PAIRED_ROUNDS) || MIN_ROUNDS);
+const WARM_MS = SMALL ? 0 : 300;
+const SAMPLE_MS = SMALL ? 0 : 25;
+const CHUNK_SCALE = SMALL
   ? { dense: 2, sparse: 4, runs: 2, mixed: 3, spread8k: 100 }
   : { dense: 32, sparse: 256, runs: 128, mixed: 128, spread8k: 8192 };
-const WRITE_CHUNKS = CHECK ? 300 : 62500;
+const WRITE_CHUNKS = SMALL ? 300 : 62500;
 const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k'];
 const OPS = ['has', 'count', 'iterate', 'intersect2', 'intersect4', 'andNot'];
 const ORDERS = [
@@ -102,7 +140,7 @@ const wanted = (only, label) =>
   only === undefined || only.split('|').some((t) => label.includes(t));
 
 function waitForQuietMachine() {
-  if (CHECK || ANY_LOAD) return;
+  if (SMALL || ANY_LOAD) return;
   for (let waited = 0; load1() >= MAX_LOAD; waited += 20) {
     if (waited >= 600) {
       console.error(`load ${load1().toFixed(2)} stays at or above ${MAX_LOAD}: not measuring`);
@@ -243,6 +281,40 @@ async function importChild(file) {
   return { ms: +((now() - t0) / 1e6).toFixed(3) };
 }
 
+/** The codec of a subject bundle: the TypeScript codec the bundle exports. */
+const codecOf = (file) => evaluate(fs.readFileSync(file, 'utf8'), ROOT).tsRoaringCodec;
+
+const opsInputs = () =>
+  ops.opCells(ops.storedBytesFromJson(fs.readFileSync(process.env.PAIRED_OPS_INPUTS, 'utf8')));
+
+/** The warmed per-operation cells, in a process that holds one subject (`--child-ops=<bundle>`). */
+function opsChild(file, onlyOps) {
+  const codec = codecOf(file);
+  const out = {};
+  for (const cell of opsInputs()) {
+    if (cell.cold || (onlyOps !== undefined && !onlyOps.split('|').includes(cell.name))) continue;
+    const fn = cell.make(codec);
+    const answer = ops.digest(fn());
+    global.gc();
+    out[cell.name] = {
+      ns: +ops
+        .measureSteady(fn, cell.unit, { warmMs: WARM_MS, sampleMs: SMALL ? 0 : 8 })
+        .toFixed(1),
+      answer,
+    };
+  }
+  return out;
+}
+
+/** The first call of one cold cell, in a fresh process (`--child-ops-cold=<bundle> --cell=<name>`). */
+function opsColdChild(file, name) {
+  const cell = opsInputs().find((c) => c.cold && c.name === name);
+  if (cell === undefined) throw new Error(`no cold cell ${JSON.stringify(name)}`);
+  const fn = cell.make(codecOf(file));
+  const ns = ops.measureCold(fn);
+  return { ns, answer: ops.digest(fn()) };
+}
+
 // ---- orchestration -------------------------------------------------------------------------------------------------
 
 /** Runs this script in a child process with `args` and returns the last line of its output. */
@@ -262,7 +334,7 @@ function git(...args) {
 }
 
 /** The bundles of the base commit and of this tree, in a work folder; the base's sources come from `git archive`. */
-function prepareSubjects() {
+function prepareSubjects(withOps = false) {
   const base = process.env.PAIRED_BASE ?? git('merge-base', 'origin/main', 'HEAD');
   const baseSha = git('rev-parse', `${base}^{commit}`);
   const dir = fs.mkdtempSync(
@@ -290,75 +362,142 @@ function prepareSubjects() {
     files.head,
     bundleText({ root: ROOT, entry: ENTRY, sourcefile: 'head-entry.ts' }),
   );
-  return { dir, baseSha, files: [files.base, files.head, files.base] };
+  const opsFile = path.join(dir, 'ops-inputs.json');
+  if (withOps) fs.writeFileSync(opsFile, ops.storedBytesToJson(ops.storedBytesOf(nativeCodec())));
+  return { dir, baseSha, opsInputs: opsFile, files: [files.base, files.head, files.base] };
 }
 
 function allEqual(answers) {
   return answers.every((a) => a === answers[0]);
 }
 
+/**
+ * Takes `ROUNDS` kept rounds of `runRound(order)`, which returns the three subjects' outputs in the order base, head,
+ * control. Each round records the load before and after; a round that ended at `MAX_LOAD` or more is set aside and
+ * taken again, and the machine is waited for before every round. Returns `{ kept, discarded }`, each a list of
+ * `{ order, start, end, samples }`.
+ */
+function takeRounds(runRound) {
+  const kept = [];
+  const discarded = [];
+  while (kept.length < ROUNDS) {
+    waitForQuietMachine();
+    const order = kept.length % 6;
+    const start = twoDecimals(load1());
+    const sample = [null, null, null];
+    for (const i of ORDERS[order]) sample[i] = runRound(i);
+    const round = { order, start, end: twoDecimals(load1()), samples: sample };
+    if (!SMALL && !keepRound(round.end, ANY_LOAD)) {
+      discarded.push(round);
+      if (discarded.length > 2 * ROUNDS) {
+        console.error(
+          `${discarded.length} rounds ended at a load of ${MAX_LOAD} or more: not measuring`,
+        );
+        process.exit(2);
+      }
+    } else {
+      kept.push(round);
+    }
+  }
+  return { kept, discarded };
+}
+
+/** `[order, base, head, control, loadAtStart, loadAtEnd]` of each round, from `figure(samples) -> [b, h, c]`. */
+const rowsOf = (list, figure) =>
+  list.map((r) => {
+    const [b, h, c] = figure(r.samples);
+    return [r.order, b, h, c, r.start, r.end];
+  });
+
+/** A cell from its kept and discarded rounds. */
+function pairedCell(taken, figure, places = 0) {
+  const cell = cellOf(rowsOf(taken.kept, figure), places);
+  const discarded = rowsOf(taken.discarded, figure);
+  return discarded.length > 0 ? { ...cell, discarded } : cell;
+}
+
 function readsMeasure(subjects, only) {
   const cells = [];
   for (const dataset of DATASETS) {
-    const rounds = {};
-    const answers = {};
-    for (let r = 0; r < ROUNDS; r++) {
-      waitForQuietMachine();
-      const sample = [null, null, null];
-      for (const i of ORDERS[r % 6]) {
-        sample[i] = JSON.parse(
-          spawnLast([
-            `--child-reads=${subjects.files[i]}:${dataset}`,
-            ...(only ? [`--only=${only}`] : []),
-          ]),
-        );
-      }
-      const load = twoDecimals(load1());
-      for (const op of Object.keys(sample[0].ops)) {
-        (rounds[op] ??= []).push([
-          r % 6,
-          sample[0].ops[op].ns,
-          sample[1].ops[op].ns,
-          sample[2].ops[op].ns,
-          load,
-        ]);
-        (answers[op] ??= []).push(...sample.map((s) => s.ops[op].answer));
-      }
-    }
-    for (const op of Object.keys(rounds)) {
-      cells.push({ dataset, op, answersAgree: allEqual(answers[op]), ...pairedCell(rounds[op]) });
+    const taken = takeRounds((i) =>
+      JSON.parse(
+        spawnLast([
+          `--child-reads=${subjects.files[i]}:${dataset}`,
+          ...(only ? [`--only=${only}`] : []),
+        ]),
+      ),
+    );
+    for (const op of Object.keys(taken.kept[0].samples[0].ops)) {
+      const answers = [...taken.kept, ...taken.discarded].flatMap((r) =>
+        r.samples.map((s) => s.ops[op].answer),
+      );
+      cells.push({
+        dataset,
+        op,
+        answersAgree: allEqual(answers),
+        ...pairedCell(taken, (s) => s.map((x) => x.ops[op].ns)),
+      });
     }
   }
   return cells;
 }
 
-function pairedCell(rounds, places = 0) {
-  const cell = cellFrom(rounds, places, null);
-  return {
-    ...cell,
-    verdict: pairedVerdictOf(cell.typescriptVsNative, cell.controlVsNative, cell.controlQuartiles),
-  };
-}
-
 function writeMeasure(subjects) {
-  const rounds = { load: [], erase: [] };
-  const answers = [];
-  for (let r = 0; r < ROUNDS; r++) {
-    waitForQuietMachine();
-    const sample = [null, null, null];
-    for (const i of ORDERS[r % 6])
-      sample[i] = JSON.parse(spawnLast([`--child-write=${subjects.files[i]}`]));
-    const load = twoDecimals(load1());
-    for (const field of Object.keys(rounds))
-      rounds[field].push([r % 6, sample[0][field], sample[1][field], sample[2][field], load]);
-    answers.push(...sample.map((s) => s.answer));
-  }
-  return Object.entries(rounds).map(([op, rs]) => ({
+  const taken = takeRounds((i) => JSON.parse(spawnLast([`--child-write=${subjects.files[i]}`])));
+  const answers = [...taken.kept, ...taken.discarded].flatMap((r) =>
+    r.samples.map((s) => s.answer),
+  );
+  return ['load', 'erase'].map((op) => ({
     dataset: `spread ${WRITE_CHUNKS} chunks`,
     op,
     answersAgree: allEqual(answers),
-    ...pairedCell(rs),
+    ...pairedCell(taken, (s) => s.map((x) => x[op])),
   }));
+}
+
+/** The per-operation cells of `bench/lib/codec-ops.cjs`, each as a cell named `ops <operation> <shape>`. */
+function opsMeasure(subjects, onlyOps) {
+  const cells = ops.opCells({});
+  const steady = cells
+    .filter((c) => !c.cold && wanted(onlyOps, `ops ${c.name}`))
+    .map((c) => c.name);
+  const cold = cells.filter((c) => c.cold && wanted(onlyOps, `ops ${c.name}`)).map((c) => c.name);
+  if (steady.length + cold.length === 0) throw new Error('--only-ops keeps no per-operation cell');
+  process.env.PAIRED_OPS_INPUTS = subjects.opsInputs;
+  const taken = takeRounds((i) => ({
+    steady:
+      steady.length === 0
+        ? {}
+        : JSON.parse(
+            spawnLast([`--child-ops=${subjects.files[i]}`, `--only-ops=${steady.join('|')}`]),
+          ),
+    cold: Object.fromEntries(
+      cold.map((name) => [
+        name,
+        JSON.parse(spawnLast([`--child-ops-cold=${subjects.files[i]}`, `--cell=${name}`])),
+      ]),
+    ),
+  }));
+  const all = [...taken.kept, ...taken.discarded];
+  return [...steady, ...cold].map((name) => {
+    const at = (x) => x.steady[name] ?? x.cold[name];
+    return {
+      dataset: 'ops',
+      op: name,
+      answersAgree: allEqual(all.flatMap((r) => r.samples.map((x) => at(x).answer))),
+      ...pairedCell(taken, (s) => s.map((x) => at(x).ns), 1),
+    };
+  });
+}
+
+/** The native codec of this checkout, which writes the stored bytes every subject decodes. */
+function nativeCodec() {
+  const text = bundleText({
+    root: ROOT,
+    entry: `export { roaringCodec } from ${JSON.stringify(path.join(ROOT, 'tests/helpers/native-codec'))};`,
+    sourcefile: 'native-entry.ts',
+  });
+  return evaluate(text, ROOT).roaringCodec;
 }
 
 /** The bytes of a minified esbuild bundle of a one-line importer of `RoaringBitmap` from a built entry. */
@@ -380,6 +519,7 @@ function bundleBytes(entryFile) {
   return { bytes: out.length, gzipBytes: zlib.gzipSync(out).length };
 }
 
+/** The import time of the built `./bitmap` entry against the main entry; informational, outside the hot-path verdict. */
 function importMeasure() {
   const dist = path.join(ROOT, 'packages/roaring/dist');
   const files = [
@@ -389,18 +529,12 @@ function importMeasure() {
   ];
   for (const f of files)
     if (!fs.existsSync(f)) throw new Error(`${f} is missing: run pnpm build first`);
-  const rounds = [];
-  const runs = CHECK ? 2 : MIN_ROUNDS;
-  for (let r = 0; r < runs; r++) {
-    waitForQuietMachine();
-    const ms = [0, 0, 0];
-    for (const i of ORDERS[r % 6]) ms[i] = JSON.parse(spawnLast([`--child-import=${files[i]}`])).ms;
-    rounds.push([r % 6, ...ms, twoDecimals(load1())]);
-  }
   // Round layout here is [order, main entry, ./bitmap, main entry again]: the "head" column is the ./bitmap entry.
+  const taken = takeRounds((i) => JSON.parse(spawnLast([`--child-import=${files[i]}`])).ms);
   return {
-    runs,
-    moduleLoadMs: pairedCell(rounds, 3),
+    runs: ROUNDS,
+    informational: true,
+    moduleLoadMs: pairedCell(taken, (s) => s, 3),
     bundle: { mainEntry: bundleBytes(files[0]), bitmapEntry: bundleBytes(files[1]) },
   };
 }
@@ -420,24 +554,36 @@ function environment() {
     head: git('rev-parse', 'HEAD'),
     tree,
     anyLoad: ANY_LOAD,
+    smoke: SMOKE,
     rounds: ROUNDS,
+    maxLoad: MAX_LOAD,
   };
 }
 
 function wellFormed(doc) {
   const problems = [];
-  const cells = [...(doc.reads ?? []), ...(doc.write ?? [])];
-  for (const c of cells) {
-    const name = `${c.dataset} ${c.op}`;
+  for (const c of gatedCellsOf(doc)) {
+    const name = cellName(c);
     if (c.answersAgree !== true) problems.push(`${name}: the subjects gave different answers`);
     if (c.verdict === MALFORMED) problems.push(`${name}: no verdict`);
     if (!Array.isArray(c.rounds) || c.rounds.length < ROUNDS)
       problems.push(`${name}: too few rounds`);
   }
   if (doc.reads !== undefined && doc.reads.length === 0) problems.push('no read cells');
+  if (doc.ops !== undefined && doc.ops.length === 0) problems.push('no per-operation cells');
   if (doc.import !== undefined && doc.import.moduleLoadMs.verdict === MALFORMED)
     problems.push('the import time has no verdict');
   return problems;
+}
+
+/** Applies the gate to every pass in the results file; prints what stops it and returns the exit code. */
+function applyGate() {
+  const file = JSON.parse(fs.readFileSync(RESULTS, 'utf8'));
+  const problems = gateProblems(file.passes);
+  for (const p of problems) console.log(`gate: ${p}`);
+  if (problems.length === 0) console.log(`gate: ${RESULTS}: every pass is clear`);
+  if (problems.some((p) => p.includes('conclusively slower'))) return 3;
+  return problems.length > 0 ? 4 : 0;
 }
 
 async function main() {
@@ -457,7 +603,23 @@ async function main() {
     console.log(JSON.stringify(await importChild(arg('child-import'))));
     return;
   }
-  const parts = ['reads', 'write', 'import'].filter((p) => process.argv.includes(`--${p}`));
+  if (arg('child-ops')) {
+    console.log(JSON.stringify(opsChild(arg('child-ops'), arg('only-ops'))));
+    return;
+  }
+  if (arg('child-ops-cold')) {
+    console.log(JSON.stringify(opsColdChild(arg('child-ops-cold'), arg('cell'))));
+    return;
+  }
+  if (process.argv.includes('--gate')) {
+    process.exitCode = applyGate();
+    return;
+  }
+  if (SMOKE && !process.env.PAIRED_RESULTS) {
+    console.error('PAIRED_SMOKE=1 needs PAIRED_RESULTS to name a scratch file');
+    process.exit(2);
+  }
+  const parts = ['reads', 'write', 'ops', 'import'].filter((p) => process.argv.includes(`--${p}`));
   const everything = process.argv.includes('--all') || CHECK || parts.length === 0;
   const run = (p) =>
     everything ? !(p === 'import' && process.argv.includes('--no-import')) : parts.includes(p);
@@ -465,10 +627,10 @@ async function main() {
     console.error('run with node --expose-gc');
     process.exit(2);
   }
-  const retakes = CHECK ? 0 : Number(process.env.PAIRED_RETAKES ?? 2);
+  const retakes = SMALL ? 0 : Number(process.env.PAIRED_RETAKES ?? 2);
   const passes = [];
   for (let n = 0; n <= retakes; n++) {
-    const doc = takePass(run, only);
+    const doc = takePass(run, only, arg('only-ops'));
     doc.pass = n + 1;
     const problems = wellFormed(doc);
     if (problems.length > 0) {
@@ -477,74 +639,90 @@ async function main() {
     }
     passes.push(doc);
     if (CHECK) break;
+    doc.pass = nextPassNumber();
     appendPass(doc);
     printPass(doc);
-    // A pass the control could not resolve is recorded as inconclusive and taken again; the earlier reading stays.
-    if (!cellsOf(doc).some((c) => c.verdict === INCONCLUSIVE)) break;
+    // A pass with a cell the rule could not resolve is recorded and taken again; the earlier reading stays.
+    if (!gatedCellsOf(doc).some((c) => kindOf(c.verdict) === 'inconclusive')) break;
   }
   if (CHECK) {
     console.log(
-      `ts-codec-paired --check: ok (${cellsOf(passes[0]).length} cells, ${ROUNDS} rounds each)`,
+      `ts-codec-paired --check: ok (${gatedCellsOf(passes[0]).length} cells, ${ROUNDS} rounds each)`,
     );
     return;
   }
-  const last = passes[passes.length - 1];
   console.log(`passes taken: ${passes.length}; appended to ${RESULTS}`);
-  if (cellsOf(last).some((c) => c.verdict === INCONCLUSIVE)) {
+  process.exitCode = applyGate();
+  if (process.exitCode !== 0) {
     console.log(
-      'still inconclusive after the re-takes: publish nothing from the inconclusive cells',
+      'the gate stops this record: a "slower" blocks the merge until it is explained or fixed (an `explained` note on its pass), and a cell still inconclusive is published only with its bound (an `unresolved` note on the last pass)',
     );
-    process.exitCode = 4;
-  }
-  if (cellsOf(last).some((c) => c.verdict === SLOWER)) {
-    console.log(
-      'a conclusive "slower" on a hot path: this blocks the merge until it is explained or fixed',
-    );
-    process.exitCode = 3;
   }
 }
 
-const cellsOf = (doc) => [...(doc.reads ?? []), ...(doc.write ?? [])];
-
 /** One pass: the parts asked for, once, as a document with its time, commits, machine and loads. */
-function takePass(run, only) {
-  const doc = { environment: environment(), started: new Date().toISOString() };
+function takePass(run, only, onlyOps) {
+  const doc = {
+    schema: 2,
+    rule: RULE,
+    tolerance: TOLERANCE,
+    environment: environment(),
+    started: new Date().toISOString(),
+  };
   doc.environment.loadAtStart = twoDecimals(load1());
   let subjects;
-  if (run('reads') || run('write')) {
-    subjects = prepareSubjects();
+  if (run('reads') || run('write') || run('ops')) {
+    subjects = prepareSubjects(run('ops'));
     doc.environment.base = subjects.baseSha;
   }
   try {
     if (run('reads')) doc.reads = readsMeasure(subjects, only);
     if (run('write')) doc.write = writeMeasure(subjects);
+    if (run('ops')) doc.ops = opsMeasure(subjects, onlyOps);
   } finally {
     if (subjects) fs.rmSync(subjects.dir, { recursive: true, force: true });
   }
   if (run('import')) doc.import = importMeasure();
   doc.finished = new Date().toISOString();
-  const verdicts = cellsOf(doc).map((c) => c.verdict);
+  doc.environment.loadAtEnd = twoDecimals(load1());
+  const cells = [...gatedCellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
+  doc.load = {
+    maxLoadAtEnd: Math.max(0, ...cells.flatMap((c) => c.rounds.map((r) => r[5]))),
+    discardedRounds: Math.max(0, ...cells.map((c) => (c.discarded ?? []).length)),
+  };
+  const verdicts = gatedCellsOf(doc).map((c) => c.verdict);
   doc.verdict = verdicts.length > 0 ? worstPaired(verdicts) : undefined;
   return doc;
 }
 
-/** Adds a pass to the results file, which keeps every earlier pass: a re-take never hides the first reading. */
-function appendPass(doc) {
+function readResults() {
   const file = fs.existsSync(RESULTS)
     ? JSON.parse(fs.readFileSync(RESULTS, 'utf8'))
     : { passes: [] };
   if (!Array.isArray(file.passes)) throw new Error(`${RESULTS} is not a list of passes`);
+  return file;
+}
+
+const nextPassNumber = () => readResults().passes.length + 1;
+
+/** Adds a pass to the results file, which keeps every earlier pass: a re-take never hides the first reading. */
+function appendPass(doc) {
+  const file = readResults();
   file.passes.push(doc);
   fs.writeFileSync(RESULTS, `${JSON.stringify(file)}\n`);
 }
 
 function printPass(doc) {
-  for (const c of cellsOf(doc)) {
+  for (const c of gatedCellsOf(doc)) {
+    const [lo, hi] = c.headInterval;
     console.log(
-      `${c.dataset} ${c.op}: head ${(c.typescriptVsNative * 100).toFixed(1)}%, control ${(c.controlVsNative * 100).toFixed(1)}% (${c.verdict})`,
+      `${cellName(c)}: head ${(c.headVsReference * 100).toFixed(1)}% [${(lo * 100).toFixed(1)}, ${(hi * 100).toFixed(1)}], control ${(c.controlVsBase * 100).toFixed(1)}% (${c.verdict})`,
     );
   }
-  console.log(`pass ${doc.pass} worst: ${doc.verdict}`);
+  const { maxLoadAtEnd, discardedRounds } = doc.load;
+  console.log(
+    `pass ${doc.pass} worst: ${doc.verdict}; kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${discardedRounds} round(s) discarded at ${MAX_LOAD} or more${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
+  );
 }
 
 main().catch((err) => {
