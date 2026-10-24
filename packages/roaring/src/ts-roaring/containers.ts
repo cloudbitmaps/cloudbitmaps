@@ -1127,3 +1127,246 @@ export function containerAndNot(a: Container, b: Container, inPlace = false): Co
   }
   return fromWordsCard(words, popcountWords(words));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Counting a combine without building it
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Set bits of `words` from bit `start` to bit `end`, both inclusive. */
+function bitsInRange(words: Uint32Array, start: number, end: number): number {
+  const first = start >>> 5;
+  const last = end >>> 5;
+  const head = (0xffff_ffff << (start & 31)) >>> 0;
+  const tail = 0xffff_ffff >>> (31 - (end & 31));
+  if (first === last) return popcount32((words[first] as number) & head & tail);
+  let n = popcount32((words[first] as number) & head) + popcount32((words[last] as number) & tail);
+  for (let i = first + 1; i < last; i++) n += popcount32(words[i] as number);
+  return n;
+}
+
+/** Values both arrays hold: a merge that writes nothing, or a gallop of the shorter over the longer when one is much longer. */
+function andCountArrays(a: Container, b: Container): number {
+  const small = a.len <= b.len ? a : b;
+  const big = small === a ? b : a;
+  const s = lows16(small);
+  const l = lows16(big);
+  const se = small.off + small.len;
+  const le = big.off + big.len;
+  let n = 0;
+  if (skewed(small.len, big.len)) {
+    let at = big.off;
+    for (let i = small.off; i < se; i++) {
+      const v = s[i] as number;
+      at = gallop(l, 0, at, le, v);
+      if (at === le) break;
+      if (l[at] === v) n++;
+    }
+    return n;
+  }
+  let i = small.off;
+  let j = big.off;
+  while (i < se && j < le) {
+    const x = s[i] as number;
+    const y = l[j] as number;
+    // No branch on the comparison, as in the building merge.
+    n += x === y ? 1 : 0;
+    i += x <= y ? 1 : 0;
+    j += x >= y ? 1 : 0;
+  }
+  return n;
+}
+
+/** Values of array `a` that bitset `b` holds. */
+function andCountArrayBitset(a: Container, b: Container): number {
+  const u16 = lows16(a);
+  const words = words32(b);
+  let n = 0;
+  for (let i = a.off; i < a.off + a.len; i++) {
+    const v = u16[i] as number;
+    n += ((words[v >>> 5] as number) >>> (v & 31)) & 1;
+  }
+  return n;
+}
+
+/** Values of array `a` that the runs of `b` cover: a walk of both, or a search of the runs per value when the runs are far more. */
+function andCountArrayRuns(a: Container, b: Container): number {
+  const u16 = lows16(a);
+  const pairs = lows16(b);
+  const ae = a.off + a.len;
+  let n = 0;
+  if (skewed(a.len, b.len)) {
+    for (let i = a.off; i < ae; i++) {
+      const v = u16[i] as number;
+      // The last run starting at or before `v`.
+      const after = lowerBound(pairs, b.off, b.len, v + 1, 2);
+      if (after === 0) continue;
+      const r = b.off + 2 * (after - 1);
+      if (v <= (pairs[r] as number) + (pairs[r + 1] as number)) n++;
+    }
+    return n;
+  }
+  let i = a.off;
+  for (let r = 0; r < b.len && i < ae; r++) {
+    const start = pairs[b.off + 2 * r] as number;
+    const end = start + (pairs[b.off + 2 * r + 1] as number);
+    while (i < ae && (u16[i] as number) < start) i++;
+    while (i < ae && (u16[i] as number) <= end) {
+      n++;
+      i++;
+    }
+  }
+  return n;
+}
+
+/** Values bitset `a` holds inside the runs of `b`. */
+function andCountBitsetRuns(a: Container, b: Container): number {
+  const words = words32(a);
+  const pairs = lows16(b);
+  let n = 0;
+  for (let r = 0; r < b.len; r++) {
+    const start = pairs[b.off + 2 * r] as number;
+    n += bitsInRange(words, start, start + (pairs[b.off + 2 * r + 1] as number));
+  }
+  return n;
+}
+
+/** Values both run containers hold: the summed overlap of the runs. */
+function andCountRuns(a: Container, b: Container): number {
+  const x = lows16(a);
+  const y = lows16(b);
+  let n = 0;
+  let i = 0;
+  let j = 0;
+  while (i < a.len && j < b.len) {
+    const as = x[a.off + 2 * i] as number;
+    const ae = as + (x[a.off + 2 * i + 1] as number);
+    const bs = y[b.off + 2 * j] as number;
+    const be = bs + (y[b.off + 2 * j + 1] as number);
+    const lo = as > bs ? as : bs;
+    const hi = ae < be ? ae : be;
+    if (lo <= hi) n += hi - lo + 1;
+    if (ae < be) i++;
+    else j++;
+  }
+  return n;
+}
+
+/** How many values both containers hold; builds nothing and changes neither operand. */
+export function containerAndCard(a: Container, b: Container): number {
+  if (a.kind === BITSET && b.kind === BITSET) {
+    const x = words32(a);
+    const y = words32(b);
+    let n = 0;
+    for (let i = 0; i < WORDS; i++) n += popcount32((x[i] as number) & (y[i] as number));
+    return n;
+  }
+  // Commutative: put the lower kind first (array, bitset, run).
+  if (a.kind > b.kind) return containerAndCard(b, a);
+  if (a.kind === ARRAY) {
+    if (b.kind === ARRAY) return andCountArrays(a, b);
+    return b.kind === BITSET ? andCountArrayBitset(a, b) : andCountArrayRuns(a, b);
+  }
+  return b.kind === RUN && a.kind === RUN ? andCountRuns(a, b) : andCountBitsetRuns(a, b);
+}
+
+/** Whether two arrays share a value; stops at the first. */
+function intersectsArrays(a: Container, b: Container): boolean {
+  const small = a.len <= b.len ? a : b;
+  const big = small === a ? b : a;
+  const s = lows16(small);
+  const l = lows16(big);
+  const se = small.off + small.len;
+  const le = big.off + big.len;
+  // Disjoint ranges answer at once.
+  if (
+    (s[se - 1] as number) < (l[big.off] as number) ||
+    (s[small.off] as number) > (l[le - 1] as number)
+  ) {
+    return false;
+  }
+  if (skewed(small.len, big.len)) {
+    let at = big.off;
+    for (let i = small.off; i < se; i++) {
+      const v = s[i] as number;
+      at = gallop(l, 0, at, le, v);
+      if (at === le) return false;
+      if (l[at] === v) return true;
+    }
+    return false;
+  }
+  let i = small.off;
+  let j = big.off;
+  while (i < se && j < le) {
+    const x = s[i] as number;
+    const y = l[j] as number;
+    if (x === y) return true;
+    if (x < y) i++;
+    else j++;
+  }
+  return false;
+}
+
+/** Whether the array `a` has a value the runs of `b` cover; stops at the first. */
+function intersectsArrayRuns(a: Container, b: Container): boolean {
+  const u16 = lows16(a);
+  const pairs = lows16(b);
+  let r = 0;
+  for (let i = a.off; i < a.off + a.len; i++) {
+    const v = u16[i] as number;
+    // The first run that ends at or after `v`.
+    while (
+      r < b.len &&
+      (pairs[b.off + 2 * r] as number) + (pairs[b.off + 2 * r + 1] as number) < v
+    ) {
+      r++;
+    }
+    if (r === b.len) return false;
+    if ((pairs[b.off + 2 * r] as number) <= v) return true;
+  }
+  return false;
+}
+
+/** Whether the two containers share a value; stops at the first one it finds. */
+export function containersIntersect(a: Container, b: Container): boolean {
+  if (a.kind > b.kind) return containersIntersect(b, a);
+  if (a.kind === ARRAY) {
+    if (b.kind === ARRAY) return intersectsArrays(a, b);
+    if (b.kind === RUN) return intersectsArrayRuns(a, b);
+    const u16 = lows16(a);
+    const words = words32(b);
+    for (let i = a.off; i < a.off + a.len; i++) {
+      const v = u16[i] as number;
+      if ((((words[v >>> 5] as number) >>> (v & 31)) & 1) === 1) return true;
+    }
+    return false;
+  }
+  if (a.kind === BITSET) {
+    const x = words32(a);
+    if (b.kind === BITSET) {
+      const y = words32(b);
+      for (let i = 0; i < WORDS; i++) if (((x[i] as number) & (y[i] as number)) !== 0) return true;
+      return false;
+    }
+    const pairs = lows16(b);
+    for (let r = 0; r < b.len; r++) {
+      const start = pairs[b.off + 2 * r] as number;
+      if (bitsInRange(x, start, start + (pairs[b.off + 2 * r + 1] as number)) !== 0) return true;
+    }
+    return false;
+  }
+  // Two run containers share a value when any two runs overlap.
+  const x = lows16(a);
+  const y = lows16(b);
+  let i = 0;
+  let j = 0;
+  while (i < a.len && j < b.len) {
+    const as = x[a.off + 2 * i] as number;
+    const ae = as + (x[a.off + 2 * i + 1] as number);
+    const bs = y[b.off + 2 * j] as number;
+    const be = bs + (y[b.off + 2 * j + 1] as number);
+    if ((as > bs ? as : bs) <= (ae < be ? ae : be)) return true;
+    if (ae < be) i++;
+    else j++;
+  }
+  return false;
+}
