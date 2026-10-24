@@ -75,7 +75,6 @@ const CHUNK_SCALE = CHECK
 const WRITE_CHUNKS = CHECK ? 300 : 62500;
 const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k'];
 const OPS = ['has', 'count', 'iterate', 'intersect2', 'intersect4', 'andNot'];
-const SUBJECTS = ['base', 'head', 'control'];
 const ORDERS = [
   [0, 1, 2],
   [2, 1, 0],
