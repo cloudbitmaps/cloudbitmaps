@@ -238,11 +238,11 @@ export async function loadParts(
   package from npm: decode what its `serialize('portable')` wrote the same way.
   A `RoaringBitmap` is not a `RoaringBitmap32`: do not pass it to a method of the `roaring` package from npm, and
   `JSON.stringify(bitmap)` gives `"{}"`, so write `JSON.stringify([...bitmap])` when you mean the ids.
-- **The recipe costs about three passes over a part.** Each part's bytes are checked and decoded once, on a copy the
+- **The recipe costs four passes over a part.** Each part's bytes are checked and decoded once, on a copy the
   library makes first (a `SharedArrayBuffer` can change between a check and a decode of the original), the union is
   one `orInPlace` per part, and the load serializes the union and checks and decodes it once more. A single part that
   needs no joining goes straight to `store.load(ref, { serialized: bytes })`.
-- **Overlap is refused by the size check.** `orMany` merges parts that share ids without a word, so a range that two
+- **Overlap is refused by the size check.** `orInPlace` merges parts that share ids without a word, so a range that two
   workers both built would load as if nothing were wrong. The members of disjoint parts add up to the members of their
   union, and they add up to fewer when any id is in two parts, so the recipe compares the two and refuses.
 - **A range boundary may fall inside a chunk.** A chunk is the 65,536 ids that share their high 16 bits. When a

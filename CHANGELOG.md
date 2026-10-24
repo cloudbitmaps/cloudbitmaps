@@ -11,6 +11,17 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`deserializePortable(bytes)` and the `ReadonlyBitmap` type are removed.** What a caller does: call
+  `RoaringBitmap.deserialize(bytes)` and import `RoaringBitmap` in place of the function. The result is a mutable
+  `RoaringBitmap`, not a read-only view, so code that shared one decoded bitmap between callers and relied on it not
+  changing hands out `has` or a `clone()` instead. A parameter typed `ReadonlyBitmap` is typed `Iterable<number>` or
+  `RoaringBitmap`. The old name fails at import (a compile error in TypeScript, a link error in ESM). Two inputs behave
+  differently: an empty buffer, which `deserializePortable` read as the empty bitmap, is now a `ValidationError`
+  (`new RoaringBitmap()` is the empty set, and a bitmap with no ids has real bytes), and the message of a refused
+  layout no longer names a container key. The same keyless message is what a stored chunk's `IntegrityError` carries.
+
 ### Added
 
 - **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, importable from `@cloudbitmaps/roaring/bitmap` or the
@@ -30,18 +41,6 @@ so, and so do the module headers in the code.
   check a `{ serialized }` load makes (the 537,403,396-byte cap, which `maxBytes` can lower, the structural check, exactly
   one bitmap), refuses an empty buffer and a format argument, and returns a bitmap that owns its storage, so a large input
   that is decoded and then reduced does not stay in memory.
-
-### Breaking
-
-- **`deserializePortable(bytes)` and the `ReadonlyBitmap` type are removed.** What a caller does: call
-  `RoaringBitmap.deserialize(bytes)` and import `RoaringBitmap` in place of the function. The result is a mutable
-  `RoaringBitmap`, not a read-only view, so code that shared one decoded bitmap between callers and relied on it not
-  changing hands out `has` or a `clone()` instead. A parameter typed `ReadonlyBitmap` is typed `Iterable<number>` or
-  `RoaringBitmap`. The old name fails at import (a compile error in TypeScript, a link error in ESM). Two inputs behave
-  differently: an empty buffer, which `deserializePortable` read as the empty bitmap, is now a `ValidationError`
-  (`new RoaringBitmap()` is the empty set, and a bitmap with no ids has real bytes), and the message of a refused
-  layout no longer names a container key. The same keyless message is what a stored chunk's `IntegrityError` carries.
-
 
 ## [0.24.0] — 2026-10-23
 

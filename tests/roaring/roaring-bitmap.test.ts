@@ -16,7 +16,7 @@ import {
 vi.setConfig({ testTimeout: 60_000 });
 
 /**
- * The public class held to CRoaring, through the `roaring` package's public API, on every P1 method: the ids it holds,
+ * The public class held to CRoaring, through the `roaring` package's public API, on every method it has: the ids it holds,
  * its extremes, the boolean `remove` answers, the in-place combines, `runOptimize`'s bytes, and the bytes a decode
  * reads back. Sets reach 2^31 and 0xFFFFFFFF, which a uniform random set almost never hits.
  */

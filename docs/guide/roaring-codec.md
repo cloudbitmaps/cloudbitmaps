@@ -111,8 +111,8 @@ in-region and at-scale figures on the benchmarks page are the native codec's, an
 `RoaringBitmap` from `@cloudbitmaps/roaring` is this codec's bitmap as a public class, usable without a store: a mutable
 set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript on typed arrays, with no native code. Import it
 from `@cloudbitmaps/roaring/bitmap`, which loads no store and imports no Node builtin (a build step proves that on every
-build), or from `@cloudbitmaps/roaring`, which re-exports the same class. CI runs Node 22 and 24, Bun and Deno ran a local
-self-check only, and no isolate or browser was run, so no claim is made beyond that. Its methods, errors and costs are in
+build), or from `@cloudbitmaps/roaring`, which re-exports the same class. The class runs in CI on Node 22 and 24 only. The earlier Bun and Deno
+self-check ran the codec inside a store, not this class, and no isolate or browser was run. Its methods, errors and costs are in
 [the API reference](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
 - **One door for bytes.** `RoaringBitmap.deserialize(bytes: Uint8Array)` decodes the portable bytes of one bitmap you hold
@@ -163,9 +163,7 @@ The example is run by [`tests/docs/roaring-codec-example.test.ts`](../../tests/d
 with the main entry measured twice as the control, by `bench/ts-codec-paired.cjs`; the control's median differed from the
 first by 0.3%): `@cloudbitmaps/roaring/bitmap` imports in 10.0 ms against 23.9 ms for the main entry (58% less), and an
 esbuild bundle of a one-line importer of the class is 31,468 bytes (11,108 gzipped) from `./bitmap` against 44,208 (15,530
-gzipped) from the main entry. The same run held the
-store's reads, a load and an erasure's rewrite on this change's codec to the base commit's within the noise its control
-showed on every cell.
+gzipped) from the main entry.
 
 **Where it differs from the `roaring` package from npm**, each on purpose: `add` and `remove` take exactly one id (a second
 argument is an error naming `addMany` or `removeMany`); every id argument throws a `ValidationError` that does not

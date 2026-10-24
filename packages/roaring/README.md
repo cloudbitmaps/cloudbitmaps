@@ -76,7 +76,7 @@ console.log(received.size, received.minimum(), received.maximum()); // 5 5 12345
 [The API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
 has every method and where it differs from the `roaring` package.
 
-There is no `add` or `remove`: a segment changes only by loading a new generation. A load is a batch job, not a
+A stored segment has no `add` or `remove` (`RoaringBitmap` does, for a bitmap in memory): a segment changes only by loading a new generation. A load is a batch job, not a
 request handler. `store.exists(ref)` says whether a segment has been loaded. A load takes ids, or a bitmap you already
 hold: `store.load(ref, bitmap)` for a `RoaringBitmap` (or a `RoaringBitmap32`), or `{ serialized }` for portable Roaring bytes, checked
 before anything is written and loaded with no per-id work, into a generation holding chunk for chunk what its ids would write (its footer carries its own write identity).
