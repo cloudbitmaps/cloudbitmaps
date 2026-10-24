@@ -557,7 +557,7 @@
   },
   {
     "entry": "@cloudbitmaps/roaring deserializePortable",
-    "reason": "removed, agreed with the maintainer on 2026-10-24: RoaringBitmap.deserialize is the one door for decoding portable bytes, next to the constructor, and returns a mutable RoaringBitmap; a caller changes one call, and an import of the old name fails loudly"
+    "reason": "removed, agreed with the maintainer on 2026-10-24: RoaringBitmap.deserialize is the one door for decoding portable bytes, next to the constructor, and returns a mutable RoaringBitmap; a caller changes one call, and an import of it fails loudly"
   },
   {
     "entry": "@cloudbitmaps/roaring ReadonlyBitmap*",

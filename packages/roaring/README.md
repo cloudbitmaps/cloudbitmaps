@@ -55,6 +55,7 @@ bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring/
 builtin, or from `@cloudbitmaps/roaring`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
 door for bytes you did not write.
 
+<!-- typecheck -->
 ```ts
 import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring';
 

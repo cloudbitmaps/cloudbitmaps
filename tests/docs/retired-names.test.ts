@@ -294,12 +294,12 @@ const LEFT_THE_FLAVOR: ReadonlyArray<{
   {
     name: 'deserializePortable',
     instead: '`RoaringBitmap.deserialize(bytes)`, which returns a mutable `RoaringBitmap`',
-    onlyOn: ['CHANGELOG.md'],
+    anyPage: true,
   },
   {
     name: 'ReadonlyBitmap',
     instead: 'a parameter typed `Iterable<number>` or `RoaringBitmap`',
-    onlyOn: ['CHANGELOG.md'],
+    anyPage: true,
   },
   { name: 'IdRange', instead: "`Pick<CombineOptions, 'after' | 'through'>`", anyPage: true },
   ...['BaseCombineOptions', 'MaterializeOptions', 'AndNotIntoOptions'].map((name) => ({
