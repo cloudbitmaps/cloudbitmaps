@@ -147,8 +147,8 @@ its own: the codec itself, its bitmap class and its containers are internal, and
 set algebra on bitmaps you hold, decode the bytes with a Roaring library of your own after the check (the example in
 [the API reference](api-reference.md#decode-portable-bytes--deserializeportablebytes) and
 [the parts recipe](loading.md#parts-of-one-segment-built-separately) do): the bytes are the standard portable format,
-which is the point of the guarantee. A standalone Roaring package built on this codec is planned, with no name and no date
-yet.
+which is the point of the guarantee. A public bitmap API in `@cloudbitmaps/roaring` itself, for building and combining
+bitmaps with this codec, is planned for a coming release.
 
 ## Errors you can see from it
 
