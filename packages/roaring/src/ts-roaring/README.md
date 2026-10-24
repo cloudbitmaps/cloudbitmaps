@@ -290,13 +290,45 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
 - `toRun` for a bitset reads starts and ends word by word and alternates them across words; a run of one value is both at
   once.
 
+### Counting without building: `containerAndCard` and `containersIntersect`
+
+Every counting question the bitmap answers (how many ids two bitmaps share, how many either holds, whether they share any,
+whether one is inside the other, whether they are equal) comes from one kernel family, the AND count. It writes no result
+container, allocates nothing per call and changes neither operand. The family is chosen by the kinds of the pair, as the
+building kernels are (`containerAndCard` is commutative and puts the lower kind first):
+
+```
+              and count                                       does it intersect (stops at the first shared value)
+  A  A     probe | gallop | merge, counting hits           merge or gallop, returns at the first equal pair
+  A  B     one bit test per array value                    first set bit found
+  A  R     walk runs | binary-search runs per value        walk the runs against the values
+  B  B     AND into a scratch, then Harley-Seal            first word whose AND is not zero
+  B  R     popcount of the words inside each run           first run whose covered words hold a set bit
+  R  R     sum of the overlap of each pair of runs         first pair of runs that overlap
+```
+
+- `andCountArrays` is `andArrays` with the output removed: the same probe (the shorter array as bits in `probeWords`,
+  the span of the longer between the shorter's ends tested against them, the bits cleared again) when the shorter has at
+  least `PROBE_MIN` values and the lengths are within `GALLOP_SKEW`, the same gallop when one is much longer, else the same
+  branch-free merge with `n += x === y`. Below `PROBE_MIN` the merge is shorter than the probe's set-and-clear.
+- `andCountArrayBitset` is a sum of bit tests; `andCountArrayRuns` walks both lists when the runs are not more than 16
+  times the values, and finds each value's run by binary search when they are; `andCountBitsetRuns` is `bitsInRange` per
+  run (the masked popcount of the covered words); `andCountRuns` adds `hi - lo + 1` for each overlapping pair of runs.
+- Two bitsets AND into `andWords` (2,048 words, overwritten whole by every call) and are counted by `popcountWords`, the
+  Harley-Seal count the building kernels use. Counting each ANDed word with `popcount32` as it goes measured slower.
+- `containersIntersect` is the early-exit form: each pair kind returns at the first shared value instead of counting
+  all of them. Disjoint ranges of two arrays answer before any value is read.
+
+The bitmap-level operations in section 7 call these. A count is exact: `|A and B|` is the sum over shared keys of
+`containerAndCard`, and the other counts are arithmetic on it and the two sizes.
+
 ### The thresholds and what each trades
 
 | Constant | Value | Where | Trades |
 |---|---|---|---|
 | `ARRAY_MAX_CARDINALITY` | 4,096 | everywhere a kind is chosen | the format's own array/bitset boundary: array body `2*card` reaches the bitset's 8,192 bytes at 4,096 |
-| `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
-| `PROBE_MIN` | 32 | `andArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
+| `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays`, `andCountArrays`, `intersectsArrays`, `andCountArrayRuns` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
+| `PROBE_MIN` | 32 | `andArrays` and `andCountArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
 | `LONG_RUN` | 48 | `appendIds` | a run shorter than this is counted out; longer is copied from the `iota` table |
 | `SCRATCH_KEEP` | 65,536 | `values16`, `pairs16` | the most a scratch keeps for the life of the process |
 | `filterByRuns` rule | `a.len >= b.len` | array against runs | runs-first walk wins when values are at least as many as runs; the value walk skips runs a short array does not need |
@@ -337,6 +369,23 @@ All of these are in `bitmap.ts`.
   band), and it did not make native faster on the other intersect cells measured. Why is not measured: the order
   changes the `size` reads (across the addon boundary for native), which operand is cloned and the order of the ANDs
   together.
+- **Counting without building (`andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality`, `intersects`,
+  `isSubset`, `isEqual`).** Each takes another `TsBitmap` (anything else is a `ValidationError`) and changes neither
+  bitmap. `andCardinality` walks both key lists like `#combine`'s intersection, galloping over a stretch of keys the
+  other side lacks, and sums `containerAndCard` over the keys both hold. The others are arithmetic on it and the two
+  sizes:
+
+  ```
+    |A or B|     = |A| + |B| - |A and B|
+    |A xor B|    = |A| + |B| - 2 |A and B|
+    |A andNot B| = |A| - |A and B|
+  ```
+
+  `intersects` returns at the first container pair that shares a value (`containersIntersect`). `isSubset` returns false
+  at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when a container's
+  `containerAndCard` with its partner is below its own cardinality. `isEqual` compares the sizes and the key lists, then
+  each container pair's cardinality and `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
+  decoded from run bytes equals the same ids built from an array. None of these is on the public surface yet.
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
   bitset a scan from the top word).
@@ -450,6 +499,21 @@ so no run. The payload is the 16-byte header plus 8,192 = 8,208 bytes. (5,000 co
   05 00        00 00                  bodies: {5}, {0}  (65536 = key 1, remainder 0)
 ```
 
+**Counting two bitmaps without building one.** `A = {5, 7, 65536, 4294967295}` and `B = {7, 65536, 65537, 4294967295}`.
+Both hold keys 0, 1 and 65535, so `andCardinality` meets three container pairs and builds none:
+
+```
+  key 0      A: {5, 7}    B: {7}        array / array   -> 1 shared (7)
+  key 1      A: {0}       B: {0, 1}     array / array   -> 1 shared (65536)
+  key 65535  A: {65535}   B: {65535}    array / array   -> 1 shared (4294967295)
+  |A and B| = 3,  |A| = 4,  |B| = 4
+  |A or B|     = 4 + 4 - 3     = 5     (5, 7, 65536, 65537, 4294967295)
+  |A xor B|    = 4 + 4 - 2 * 3 = 2     (5 and 65537)
+  |A andNot B| = 4 - 3         = 1     (5)
+  intersects: true at key 0, the first pair, so keys 1 and 65535 are never read
+  isSubset(A, B): false  (A is not larger than B, but key 0's count is 1, below A's 2 values there)
+```
+
 **Splitting an id.** `1234567890`: `1234567890 >>> 16 = 18838` (18838 * 65536 = 1,234,567,168), remainder
 `1234567890 & 0xffff = 722`. Chunk key 18838, value 722. `99999`: chunk key 1, value `99999 - 65536 = 34463`.
 
@@ -486,7 +550,7 @@ throws `TypeError` on anything that is not a typed array. The caller-facing entr
 | Raised by | Message gist | Condition |
 |---|---|---|
 | `add`, `addMany`, `fromValues` (`checkedId`, `collect`) | `<value> is not an integer from 0 to 4294967295` | an id that is not an integer in range; `addMany` / `fromValues` throw before changing the bitmap |
-| `orInPlace`, `andInPlace`, `andNotInPlace` (`#of`) | `a TypeScript roaring bitmap combines only with another one` | the other operand is not a `TsBitmap` (the seam promises one codec per store, so the engine never does this) |
+| `orInPlace`, `andInPlace`, `andNotInPlace`, `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality`, `intersects`, `isSubset`, `isEqual` (`#of`) | `a TypeScript roaring bitmap combines only with another one` | the other operand is not a `TsBitmap` (the seam promises one codec per store, so the engine never does this) |
 
 `has` of a bad id answers false; `remove` and `removeMany` of a bad id do nothing.
 
@@ -534,6 +598,13 @@ Everything here is a test, a workflow or a bench, not part of the module.
   copy-on-write against every mutator (before, during and with a clone during an `encodeChunks`), a bitmap combined with
   itself, and decodes that must not alias their input (a `Uint8Array`, a `Buffer`, a pooled `Buffer`, a
   `SharedArrayBuffer`, an offset subarray).
+- **The counting kernels** (`tests/roaring/count-kernels.test.ts`): `containerAndCard` and `containersIntersect` against a
+  `Set` for each of the nine ordered pairs of kinds (array, bitset, run on both sides, with the 16-bit kinds stored at an
+  offset in a shared slab), over generated sets that pick every branch (few, many, runs, the chunk ends, one side far longer);
+  the seven bitmap operations against CRoaring and a `Set` over ids at 2^31 and 0xFFFFFFFF, bitmaps built from ids and
+  decoded from run bytes; the identities between the counts and the built union, intersection and difference;
+  `isEqual` after `serialize` and `safeDeserialize`; empty bitmaps; a bitmap that is not a `TsBitmap`. Each kernel was
+  held by mutating it and watching a test fail.
 - **The store's suites on this codec.** Every suite runs on this codec by default. A vitest project, `ts-codec`, re-runs
   the flavor's, core's, the engine's end-to-end and the memory and local-file drivers' suites with the switch pinned to
   this codec (`tests/setup-codec-ts.ts`); a first test (`tests/roaring/codec-switch.test.ts`) fails if this codec is not
@@ -561,6 +632,10 @@ Everything here is a test, a workflow or a bench, not part of the module.
   fails if their answers differ or a cell is missing. `pnpm bench:ts-codec-engine:check` runs every part once at tiny scale
   and fails only if the output is malformed, the codecs disagree on an answer, a store ran the wrong codec, the cache was
   not warm, or the two codecs wrote different bytes; it compares no duration with a bound. `bench/README.md` lists both.
+  `bench/count-kernels.cjs` times each counting operation against building the result and taking its size (a clone, `andInPlace`,
+  `size`) on the pairs of `ts-codec.cjs` and two multi-chunk pairs, and the codec's `has`, `count`, `iterate`, `and` and `andNot`
+  against the codec of another commit with an A/A control, each subject in a process of its own; `--check` runs every cell once and
+  fails if a count differs from the built result.
 
 ## 12. Behaviours worth knowing
 
