@@ -125,7 +125,9 @@ function maxBytesOf(options: unknown): number {
 /**
  * A mutable set of integers from 0 to 4,294,967,295 (unsigned 32-bit ids) with set algebra and the portable Roaring
  * serialization. It is not designed for subclassing, and `JSON.stringify` of one gives `"{}"`: write
- * `JSON.stringify([...bitmap])` or `bitmap.toArray()`.
+ * `JSON.stringify([...bitmap])` or `bitmap.toArray()`. Passed to a method of the `roaring` package from npm in place of a
+ * `RoaringBitmap32`, it answers wrongly without throwing in JavaScript (TypeScript refuses the call): decode its
+ * `serialize()` bytes with that package instead.
  *
  * Every id argument is checked: a value that is not an integer in range (a fraction, `NaN`, a string, `null`, a
  * negative, one too large) throws `ValidationError`, whose message never repeats it, and the bitmap is unchanged.

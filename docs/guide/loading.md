@@ -236,6 +236,8 @@ export async function loadParts(
   Node `Buffer` is, and returns a mutable [`RoaringBitmap`](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   that owns its storage, so the union is built in the same package. The parts may also be built with the `roaring`
   package from npm: decode what its `serialize('portable')` wrote the same way.
+  A `RoaringBitmap` is not a `RoaringBitmap32`: do not pass it to a method of the `roaring` package from npm, and
+  `JSON.stringify(bitmap)` gives `"{}"`, so write `JSON.stringify([...bitmap])` when you mean the ids.
 - **The recipe costs about three passes over a part.** Each part's bytes are checked and decoded once, on a copy the
   library makes first (a `SharedArrayBuffer` can change between a check and a decode of the original), the union is
   one `orInPlace` per part, and the load serializes the union and checks and decodes it once more. A single part that

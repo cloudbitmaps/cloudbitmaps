@@ -11,6 +11,38 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, importable from `@cloudbitmaps/roaring/bitmap` or the
+  main entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
+  `new RoaringBitmap(ids?)`, `add`, `addMany`, `remove` (answers whether the id was there), `removeMany`, `clear`,
+  `clone` (copy-on-write), `andInPlace`, `orInPlace`, `andNotInPlace`, `has`, `size`, `isEmpty`, `minimum` and `maximum`
+  (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`.
+  The `./bitmap` entry loads no store and imports no Node builtin, which `pnpm smoke` proves on every build. Every id
+  argument is checked and throws `ValidationError` with a message that never repeats the value, `add` and `remove` take
+  exactly one id (a second argument names `addMany` or `removeMany`), and there is no `toJSON`, so `JSON.stringify(bitmap)`
+  gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. The class does not
+  yet have `xorInPlace`, the combines that return a new bitmap, the count-only combines, `isEqual`, `isSubset` or
+  `intersects`. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
+  lists each method and where it differs from the `roaring` package.
+
+- **`RoaringBitmap.deserialize(bytes, { maxBytes? }?)`, the one door for portable bytes you did not write.** It makes the
+  check a `{ serialized }` load makes (the 537,403,396-byte cap, which `maxBytes` can lower, the structural check, exactly
+  one bitmap), refuses an empty buffer and a format argument, and returns a bitmap that owns its storage, so a large input
+  that is decoded and then reduced does not stay in memory.
+
+### Breaking
+
+- **`deserializePortable(bytes)` and the `ReadonlyBitmap` type are removed.** What a caller does: call
+  `RoaringBitmap.deserialize(bytes)` and import `RoaringBitmap` in place of the function. The result is a mutable
+  `RoaringBitmap`, not a read-only view, so code that shared one decoded bitmap between callers and relied on it not
+  changing hands out `has` or a `clone()` instead. A parameter typed `ReadonlyBitmap` is typed `Iterable<number>` or
+  `RoaringBitmap`. The old name fails at import (a compile error in TypeScript, a link error in ESM). Two inputs behave
+  differently: an empty buffer, which `deserializePortable` read as the empty bitmap, is now a `ValidationError`
+  (`new RoaringBitmap()` is the empty set, and a bitmap with no ids has real bytes), and the message of a refused
+  layout no longer names a container key. The same keyless message is what a stored chunk's `IntegrityError` carries.
+
+
 ## [0.24.0] — 2026-10-23
 
 ### Breaking
