@@ -245,6 +245,15 @@ describe('the requests an intersect of two or more includes makes for its exclud
   });
 });
 
+/**
+ * Seeds of the random-operands property below that reach the batcher. A run is a function of its seed alone, so the
+ * count of runs the batcher decided is a fact about the generator, not about a random draw. Over a scan of seeds 1 to
+ * 500 (the `ids` project) that count averaged 11 with a lowest of 5, against a floor of more than 2, which a random
+ * draw can miss; these are the three seeds that gave 5, 5 and 6 (256, 446 and 56). If the generator changes and one
+ * stops reaching the batcher, the test below names it: pick new seeds the same way.
+ */
+const SEEDS: readonly number[] = [256, 446, 56];
+
 describe('an intersect with an exclude over random operands', () => {
   /** What each of 60 chunk keys holds: most keys are in both includes, so many survive; some ANDs are empty. */
   const layout = fc.array(
@@ -258,7 +267,11 @@ describe('an intersect with an exclude over random operands', () => {
     { minLength: 60, maxLength: 60 },
   );
 
-  it('equals the set arithmetic, and never makes more requests for the exclude than reading each key did', async () => {
+  /**
+   * The property, over 60 cases drawn from `seed` (a random seed when none is given), returning how many of them the
+   * batcher decided.
+   */
+  async function explore(seed?: number): Promise<number> {
     let batched = 0;
     await fc.assert(
       fc.asyncProperty(
@@ -333,11 +346,24 @@ describe('an intersect with an exclude over random operands', () => {
           }
         },
       ),
-      { numRuns: 60 },
+      { numRuns: 60, ...(seed === undefined ? {} : { seed }) },
     );
-    // The generator reaches the batcher: in some runs the requests were fewer than the keys.
-    expect(batched).toBeGreaterThan(2);
+    return batched;
+  }
+
+  it('equals the set arithmetic, and never makes more requests for the exclude than reading each key did', async () => {
+    // A random draw reaches the batcher only by chance, so this run asserts no floor on how often it did: the
+    // committed seeds below hold the floor, and this run keeps only the exploration for counterexamples.
+    await explore();
   }, 120_000);
+
+  it('reaches the batcher: every committed seed has runs it decided', async () => {
+    expect(SEEDS.length).toBeGreaterThanOrEqual(3);
+    for (const seed of SEEDS) {
+      // The generator reaches the batcher: in some runs the requests were fewer than the keys.
+      expect(await explore(seed), `seed ${seed}: the generator changed`).toBeGreaterThan(2);
+    }
+  }, 360_000);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

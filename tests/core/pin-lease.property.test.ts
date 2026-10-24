@@ -83,190 +83,222 @@ interface Held {
   until: number;
 }
 
+const RUNS = 150;
+
+/**
+ * The property, over `RUNS` cases drawn from `seed` (a random seed when none is given), returning how often the
+ * generator reached each case the floors below count.
+ */
+async function explore(
+  seed?: number,
+): Promise<{ held: number; spared: number; resumed: number; erased: number }> {
+  let held = 0;
+  let spared = 0;
+  let resumed = 0;
+  let erased = 0;
+  await fc.assert(
+    fc.asyncProperty(
+      KEEPS,
+      fc.array(STEP, { minLength: 30, maxLength: 130 }),
+      async (keep, steps) => {
+        let t = T0;
+        const clock = { now: () => t, sleep: () => Promise.resolve() };
+        const storage = new MemoryStorageDriver();
+        const registry = new MemoryRegistryDriver({ now: () => t });
+        const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
+        const model = new Map<string, Held>();
+        let holders = 0;
+
+        // The model's own reading of when a lease ends, not the library's: the collector holds it for the margin after `until`.
+        const live = (): Held[] => [...model.values()].filter((e) => t < e.until + LEASE_SKEW_MS);
+        const idsFor = async (extra: number): Promise<number[]> => {
+          const have = (await registry.get(SEG))?.currentGen ?? -1;
+          return Array.from({ length: Math.max(have, 0) + 2 + extra }, (_, i) => i);
+        };
+
+        for (const step of steps) {
+          const before = await generations(storage);
+          const row = await registry.get(SEG);
+          const current = row?.currentGen ?? -1;
+          const owed = live().filter((e) => before.includes(e.generation));
+          let overrides = false;
+          let periodicLoad: { generation: number } | undefined;
+
+          switch (step.kind) {
+            case 'load': {
+              const r = await loadSegment(SEG, await idsFor(step.extra), deps, { keep });
+              if (
+                r.published &&
+                r.generation % LIST_COLLECTION_CADENCE === 0 &&
+                keep < r.generation
+              ) {
+                periodicLoad = { generation: r.generation };
+              }
+              break;
+            }
+            case 'pin': {
+              if (row === null || row.status !== 'active' || row.currentGen === null) break;
+              const holder = H(++holders);
+              const taken = await takeLease(
+                SEG,
+                { registry, clock },
+                {
+                  holder,
+                  generation: row.currentGen,
+                  until: t + step.dur,
+                  row,
+                  current: true,
+                },
+              );
+              if (taken !== 'moved') {
+                model.set(holder, { holder, generation: row.currentGen, until: t + step.dur });
+              }
+              break;
+            }
+            case 'pinAt': {
+              const past = before.filter((g) => g < current);
+              const g = past[step.pick % Math.max(past.length, 1)];
+              if (row === null || g === undefined) break;
+              const holder = H(++holders);
+              await takeLease(
+                SEG,
+                { registry, clock },
+                {
+                  holder,
+                  generation: g,
+                  until: t + step.dur,
+                  row,
+                  current: false,
+                },
+              );
+              model.set(holder, { holder, generation: g, until: t + step.dur });
+              break;
+            }
+            case 'release': {
+              const all = [...model.values()];
+              const e = all[step.pick % Math.max(all.length, 1)];
+              if (e === undefined) break;
+              await releaseLease(SEG, { registry, clock }, e.holder);
+              model.delete(e.holder);
+              break;
+            }
+            case 'advance':
+              t += step.ms;
+              break;
+            case 'erase': {
+              if (row === null || current < 0) break;
+              overrides = true;
+              const res = await eraseIdFromSegment(SEG, step.id, deps);
+              if (res.erased && res.generation !== undefined) {
+                erased += 1;
+                const after = (await registry.get(SEG))!;
+                // 3: a rewrite takes every generation below its pointer and leaves the row no lease.
+                expect(after.leases).toBeUndefined();
+                expect((await generations(storage)).filter((g) => g < res.generation!)).toEqual([]);
+                model.clear();
+              }
+              break;
+            }
+            case 'rollback': {
+              const below = before.filter((g) => g < current);
+              const target = below[step.pick % Math.max(below.length, 1)];
+              if (target !== undefined) await rollbackSegment(SEG, target, { storage, registry });
+              break;
+            }
+            case 'retention':
+              if (row !== null) await setSegmentRetention(SEG, { registry }, { expiresAt: FAR });
+              break;
+            case 'drop':
+              if (row !== null) {
+                overrides = true;
+                await dropSegment(SEG, { storage, registry }, { confirmSegment: SEG.segment });
+                await registry.delete(SEG); // the name is free again
+                model.clear();
+              }
+              break;
+          }
+
+          const after = await generations(storage);
+          const now = await registry.get(SEG);
+
+          // 1: what a live lease held is still there, unless a step that always wins took it.
+          if (!overrides) {
+            for (const e of owed) {
+              expect(
+                after,
+                `${step.kind} took generation ${e.generation} that a live lease holds`,
+              ).toContain(e.generation);
+              held += 1;
+              if (step.kind === 'load' && e.generation < (now?.currentGen ?? 0)) spared += 1;
+            }
+          }
+
+          // 2: after a periodic pass nothing unnamed and unleased is left below the pointer.
+          if (
+            periodicLoad !== undefined &&
+            now !== null &&
+            windowOf(now) !== undefined &&
+            now.currentGen === periodicLoad.generation
+          ) {
+            const leased = new Set(live().map((e) => e.generation));
+            const stray = after.filter(
+              (g) => g < now.currentGen! && !windowOf(now)!.includes(g) && !leased.has(g),
+            );
+            expect(stray, `generation ${periodicLoad.generation} at keep ${keep}`).toEqual([]);
+            resumed += 1;
+          }
+
+          // 4: the row's list is bounded, unique, and holds every live lease of the model.
+          const rowLeases = now?.leases ?? [];
+          expect(rowLeases.length).toBeLessThanOrEqual(MAX_LEASES_PER_SEGMENT);
+          expect(new Set(rowLeases.map((e) => e.holder)).size).toBe(rowLeases.length);
+          if (now !== null && now.status === 'active') {
+            for (const e of live()) {
+              expect(
+                rowLeases.some((r) => r.holder === e.holder && r.generation === e.generation),
+                `the row lost the live lease ${e.holder}`,
+              ).toBe(true);
+            }
+          }
+          // The pointer's object is never one a lease could have taken.
+          if (now?.currentGen !== null && now !== null) expect(after).toContain(now.currentGen);
+        }
+      },
+    ),
+    { numRuns: RUNS, ...(seed === undefined ? {} : { seed }) },
+  );
+  return { held, spared, resumed, erased };
+}
+
+/**
+ * The floors the generator must clear, and the seeds that hold them. A run is a function of its seed alone, so each
+ * seed's counts are a fact about the generator, not about a random draw. The tightest floor is `resumed`: over a scan
+ * of seeds 1 to 500 (the `ids` project) its mean was 54 with a spread of 6, so a random draw lands within four spreads
+ * of the floor of 30, and its lowest was 35 (seed 309). The other floors sit far below their lowest (4,150, 1,777 and
+ * 240, from seeds 10, 136 and 119). These four seeds are those. If the generator changes and one stops clearing a
+ * floor, the test below names it: pick new seeds the same way.
+ */
+const SEEDS: readonly number[] = [309, 10, 136, 119];
+const FLOORS = { held: 500, spared: 100, resumed: 30, erased: 20 };
+
 describe('leases among loads, erasures, rollbacks and drops (property)', () => {
   it('holds a live lease, collects once it ends, and never holds past an erasure, a drop or a purge', async () => {
-    let held = 0;
-    let spared = 0;
-    let resumed = 0;
-    let erased = 0;
-    await fc.assert(
-      fc.asyncProperty(
-        KEEPS,
-        fc.array(STEP, { minLength: 30, maxLength: 130 }),
-        async (keep, steps) => {
-          let t = T0;
-          const clock = { now: () => t, sleep: () => Promise.resolve() };
-          const storage = new MemoryStorageDriver();
-          const registry = new MemoryRegistryDriver({ now: () => t });
-          const deps = { storage, registry, entropy: testEntropy, codec: storeCodec, clock };
-          const model = new Map<string, Held>();
-          let holders = 0;
-
-          // The model's own reading of when a lease ends, not the library's: the collector holds it for the margin after `until`.
-          const live = (): Held[] => [...model.values()].filter((e) => t < e.until + LEASE_SKEW_MS);
-          const idsFor = async (extra: number): Promise<number[]> => {
-            const have = (await registry.get(SEG))?.currentGen ?? -1;
-            return Array.from({ length: Math.max(have, 0) + 2 + extra }, (_, i) => i);
-          };
-
-          for (const step of steps) {
-            const before = await generations(storage);
-            const row = await registry.get(SEG);
-            const current = row?.currentGen ?? -1;
-            const owed = live().filter((e) => before.includes(e.generation));
-            let overrides = false;
-            let periodicLoad: { generation: number } | undefined;
-
-            switch (step.kind) {
-              case 'load': {
-                const r = await loadSegment(SEG, await idsFor(step.extra), deps, { keep });
-                if (
-                  r.published &&
-                  r.generation % LIST_COLLECTION_CADENCE === 0 &&
-                  keep < r.generation
-                ) {
-                  periodicLoad = { generation: r.generation };
-                }
-                break;
-              }
-              case 'pin': {
-                if (row === null || row.status !== 'active' || row.currentGen === null) break;
-                const holder = H(++holders);
-                const taken = await takeLease(
-                  SEG,
-                  { registry, clock },
-                  {
-                    holder,
-                    generation: row.currentGen,
-                    until: t + step.dur,
-                    row,
-                    current: true,
-                  },
-                );
-                if (taken !== 'moved') {
-                  model.set(holder, { holder, generation: row.currentGen, until: t + step.dur });
-                }
-                break;
-              }
-              case 'pinAt': {
-                const past = before.filter((g) => g < current);
-                const g = past[step.pick % Math.max(past.length, 1)];
-                if (row === null || g === undefined) break;
-                const holder = H(++holders);
-                await takeLease(
-                  SEG,
-                  { registry, clock },
-                  {
-                    holder,
-                    generation: g,
-                    until: t + step.dur,
-                    row,
-                    current: false,
-                  },
-                );
-                model.set(holder, { holder, generation: g, until: t + step.dur });
-                break;
-              }
-              case 'release': {
-                const all = [...model.values()];
-                const e = all[step.pick % Math.max(all.length, 1)];
-                if (e === undefined) break;
-                await releaseLease(SEG, { registry, clock }, e.holder);
-                model.delete(e.holder);
-                break;
-              }
-              case 'advance':
-                t += step.ms;
-                break;
-              case 'erase': {
-                if (row === null || current < 0) break;
-                overrides = true;
-                const res = await eraseIdFromSegment(SEG, step.id, deps);
-                if (res.erased && res.generation !== undefined) {
-                  erased += 1;
-                  const after = (await registry.get(SEG))!;
-                  // 3: a rewrite takes every generation below its pointer and leaves the row no lease.
-                  expect(after.leases).toBeUndefined();
-                  expect((await generations(storage)).filter((g) => g < res.generation!)).toEqual(
-                    [],
-                  );
-                  model.clear();
-                }
-                break;
-              }
-              case 'rollback': {
-                const below = before.filter((g) => g < current);
-                const target = below[step.pick % Math.max(below.length, 1)];
-                if (target !== undefined) await rollbackSegment(SEG, target, { storage, registry });
-                break;
-              }
-              case 'retention':
-                if (row !== null) await setSegmentRetention(SEG, { registry }, { expiresAt: FAR });
-                break;
-              case 'drop':
-                if (row !== null) {
-                  overrides = true;
-                  await dropSegment(SEG, { storage, registry }, { confirmSegment: SEG.segment });
-                  await registry.delete(SEG); // the name is free again
-                  model.clear();
-                }
-                break;
-            }
-
-            const after = await generations(storage);
-            const now = await registry.get(SEG);
-
-            // 1: what a live lease held is still there, unless a step that always wins took it.
-            if (!overrides) {
-              for (const e of owed) {
-                expect(
-                  after,
-                  `${step.kind} took generation ${e.generation} that a live lease holds`,
-                ).toContain(e.generation);
-                held += 1;
-                if (step.kind === 'load' && e.generation < (now?.currentGen ?? 0)) spared += 1;
-              }
-            }
-
-            // 2: after a periodic pass nothing unnamed and unleased is left below the pointer.
-            if (
-              periodicLoad !== undefined &&
-              now !== null &&
-              windowOf(now) !== undefined &&
-              now.currentGen === periodicLoad.generation
-            ) {
-              const leased = new Set(live().map((e) => e.generation));
-              const stray = after.filter(
-                (g) => g < now.currentGen! && !windowOf(now)!.includes(g) && !leased.has(g),
-              );
-              expect(stray, `generation ${periodicLoad.generation} at keep ${keep}`).toEqual([]);
-              resumed += 1;
-            }
-
-            // 4: the row's list is bounded, unique, and holds every live lease of the model.
-            const rowLeases = now?.leases ?? [];
-            expect(rowLeases.length).toBeLessThanOrEqual(MAX_LEASES_PER_SEGMENT);
-            expect(new Set(rowLeases.map((e) => e.holder)).size).toBe(rowLeases.length);
-            if (now !== null && now.status === 'active') {
-              for (const e of live()) {
-                expect(
-                  rowLeases.some((r) => r.holder === e.holder && r.generation === e.generation),
-                  `the row lost the live lease ${e.holder}`,
-                ).toBe(true);
-              }
-            }
-            // The pointer's object is never one a lease could have taken.
-            if (now?.currentGen !== null && now !== null) expect(after).toContain(now.currentGen);
-          }
-        },
-      ),
-      { numRuns: 150 },
-    );
-    // Not vacuous: leases were held across loads, periodic passes met leased generations, and erasures ran.
-    expect(held).toBeGreaterThan(500);
-    expect(spared).toBeGreaterThan(100);
-    expect(resumed).toBeGreaterThan(30);
-    expect(erased).toBeGreaterThan(20);
+    // A random draw reaches the rarer cases only by chance, so this run asserts no floor on how often it did: the
+    // committed seeds below hold the floors, and this run keeps only the exploration for counterexamples.
+    await explore();
     expect(LEASE_SKEW_MS).toBe(60_000);
   }, 120_000);
+
+  it('reaches each case the property is about: every committed seed clears every floor', async () => {
+    expect(SEEDS.length).toBeGreaterThanOrEqual(3);
+    for (const seed of SEEDS) {
+      const got = await explore(seed);
+      const where = `seed ${seed} (${JSON.stringify(got)}): the generator changed`;
+      // Not vacuous: leases were held across loads, periodic passes met leased generations, and erasures ran.
+      expect(got.held, where).toBeGreaterThan(FLOORS.held);
+      expect(got.spared, where).toBeGreaterThan(FLOORS.spared);
+      expect(got.resumed, where).toBeGreaterThan(FLOORS.resumed);
+      expect(got.erased, where).toBeGreaterThan(FLOORS.erased);
+    }
+  }, 360_000);
 });
