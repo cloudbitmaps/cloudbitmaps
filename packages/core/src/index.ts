@@ -29,9 +29,10 @@ export { BoundedLru } from './core/lru';
 export { safeMetrics } from './core/metrics';
 export { runExport } from './export';
 export type { SegmentReader } from './export';
-// `splitId` only: the flavor uses it to fail fast on a non-u32 id. `joinId` is the inverse and has no
-// caller outside core, so it stays internal rather than shipping as half-documented public API.
-export { splitId } from './core/bit-route';
+// `splitId` and `refusalOfId` only: the flavor uses them to fail fast on a non-u32 id, with a message that never
+// repeats the value. `joinId` is the inverse and has no caller outside core, so it stays internal rather than
+// shipping as half-documented public API.
+export { splitId, refusalOfId } from './core/bit-route';
 export { mapWithConcurrency } from './core/concurrency';
 export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
 export { segmentExists, listSegments } from './core/discover';
@@ -101,7 +102,7 @@ export type {
   LoadRefusal,
 } from './core/load';
 export type { LoadInput, PortableBitmap } from './core/load-input';
-export { decodeSerialized } from './core/load-input';
+export { decodeSerialized, MAX_SERIALIZED_LOAD_BYTES } from './core/load-input';
 // See what a segment has been, and put it back. `rollbackSegment` is the one pointer move that goes backwards,
 // and the one no automatic path performs — forward-only is right for a writer and wrong for an operator.
 export { listGenerations, rollbackSegment } from './core/rollback';

@@ -117,7 +117,7 @@ Two names from `@cloudbitmaps/roaring` give you this codec's bitmap without a st
   (exactly that argument). Any other member throws `TypeError`.
 
 ```js
-import { deserializePortable } from '@cloudbitmaps/roaring';
+import { RoaringBitmap } from '@cloudbitmaps/roaring';
 
 // The portable bytes of the set {5, 7}: 20 bytes, one array container.
 const bytes = Uint8Array.from([
@@ -128,7 +128,7 @@ const bytes = Uint8Array.from([
   0x05, 0x00, 0x07, 0x00, // the values 5 and 7
 ]);
 
-const bitmap = deserializePortable(bytes); // ValidationError unless it is exactly one well-formed bitmap
+const bitmap = RoaringBitmap.deserialize(bytes); // ValidationError unless it is exactly one well-formed bitmap
 console.log(bitmap.size); // 2
 console.log(bitmap.has(5), bitmap.has(6)); // true false
 console.log([...bitmap]); // [ 5, 7 ]

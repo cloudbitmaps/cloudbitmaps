@@ -112,11 +112,12 @@ interface Decoded {
 }
 
 /**
- * Read the portable bitmap in `bytes`. An empty buffer is the empty bitmap.
+ * Read the portable bitmap in `bytes`. An empty buffer is the empty bitmap. With `detached`, each container is copied
+ * into storage of its own, so the result holds no view of the input's copy and no slab shared between containers.
  *
  * @throws {IntegrityError} for every shape {@link parsePortableLayout} refuses.
  */
-export function decodeContainers(input: Uint8Array): Decoded {
+export function decodeContainers(input: Uint8Array, detached = false): Decoded {
   // The bytes are copied before they are checked, and the checked copy is the one read (Uint8Array's own slice, which
   // always copies; a Node Buffer's slice is a view of the same memory): a buffer another thread is
   // still writing (a shared one) could otherwise pass the check and then hold different bytes when they are copied
@@ -153,8 +154,11 @@ export function decodeContainers(input: Uint8Array): Decoded {
     bytes.byteOffset === 0 &&
     bytes.buffer instanceof ArrayBuffer &&
     bytes.buffer.byteLength === bytes.byteLength;
-  const alias = own && small === 1;
-  const slab = alias ? NO_U16 : new Uint16Array(slabLength);
+  const alias = !detached && own && small === 1;
+  // A container with storage of its own: the one a detached decode gives every container, and the lone array or run
+  // container of a bitmap that cannot be read in place.
+  const solo = alias || detached;
+  const slab = solo ? NO_U16 : new Uint16Array(slabLength);
   let used = 0;
   for (const { key, cardinality, kind, offset } of layout) {
     keys[n] = key;
@@ -163,22 +167,22 @@ export function decodeContainers(input: Uint8Array): Decoded {
         const values = new Uint16Array(bytes.buffer, offset, cardinality);
         conts[n++] = new Container(ARRAY, values, 0, cardinality, cardinality, false);
       } else {
-        const into = alias ? new Uint16Array(cardinality) : slab;
-        getU16s(bytes, view, offset, into, alias ? 0 : used, cardinality);
+        const into = solo ? new Uint16Array(cardinality) : slab;
+        getU16s(bytes, view, offset, into, solo ? 0 : used, cardinality);
         conts[n++] = new Container(
           ARRAY,
           into,
-          alias ? 0 : used,
+          solo ? 0 : used,
           cardinality,
           cardinality,
-          small > 1,
+          !solo && small > 1,
         );
         used += cardinality;
       }
       end = offset + 2 * cardinality;
     } else if (kind === LAYOUT_BITMAP) {
       let words: Uint32Array;
-      if (own && offset % 4 === 0) {
+      if (!detached && own && offset % 4 === 0) {
         words = new Uint32Array(bytes.buffer, offset, WORDS);
       } else {
         words = new Uint32Array(WORDS);
@@ -196,9 +200,16 @@ export function decodeContainers(input: Uint8Array): Decoded {
         const pairs = new Uint16Array(bytes.buffer, offset + 2, 2 * runs);
         conts[n++] = new Container(RUN, pairs, 0, runs, cardinality, false);
       } else {
-        const into = alias ? new Uint16Array(2 * runs) : slab;
-        getU16s(bytes, view, offset + 2, into, alias ? 0 : used, 2 * runs);
-        conts[n++] = new Container(RUN, into, alias ? 0 : used, runs, cardinality, small > 1);
+        const into = solo ? new Uint16Array(2 * runs) : slab;
+        getU16s(bytes, view, offset + 2, into, solo ? 0 : used, 2 * runs);
+        conts[n++] = new Container(
+          RUN,
+          into,
+          solo ? 0 : used,
+          runs,
+          cardinality,
+          !solo && small > 1,
+        );
         used += 2 * runs;
       }
       end = offset + 2 + 4 * runs;

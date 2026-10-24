@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import roaring from 'roaring';
-import { CloudRoaring, MemoryStorage, deserializePortable } from '@/index';
+import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@/index';
 import type { CloudRoaringOptions, LoadInput, LoadResult, PortableBitmap } from '@/index';
 import { bulkLoadCrbmGeneration } from '@/core/bulk-load';
 import { openGenerationReader } from '@/core/crbm-open';
@@ -394,8 +394,8 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
   });
 
-  it('a bitmap deserializePortable returned loads as a bitmap, never iterated', async () => {
-    const view = deserializePortable(new RoaringBitmap32(IDS).serialize('portable'));
+  it('a RoaringBitmap loads as a bitmap, never iterated', async () => {
+    const view = RoaringBitmap.deserialize(new RoaringBitmap32(IDS).serialize('portable'));
     const iterate = vi.spyOn(view, Symbol.iterator);
     const { bytes } = await loadAndRead(view);
     expect(iterate).not.toHaveBeenCalled();
