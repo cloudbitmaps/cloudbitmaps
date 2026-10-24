@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
 
-/** `[order, base, head, control, loadAtStart, loadAtEnd]`, or the earlier layout with one load at the end. */
+/** `[order, base, head, control, loadAtStart, loadAtEnd]`, or the first recorded pass's layout, which has one load at the end. */
 type Round = number[];
 type Cell = {
   dataset?: string;
