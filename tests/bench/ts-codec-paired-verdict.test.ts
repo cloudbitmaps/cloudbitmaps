@@ -91,37 +91,81 @@ describe('the paired verdict rule', () => {
   });
 });
 
+type Pass = {
+  pass: number;
+  reads: Cell[];
+  write: Cell[];
+  import: { runs: number; moduleLoadMs: Cell };
+  verdict: string;
+  started: string;
+  environment: { rounds: number; tree: string; base: string; head: string; loadAtStart: number };
+};
+
 describe('the committed paired results', () => {
   const file = join(ROOT, 'bench', 'ts-codec-paired-results.json');
-  const doc = existsSync(file)
-    ? (JSON.parse(readFileSync(file, 'utf8')) as {
-        reads: Cell[];
-        write: Cell[];
-        import: { runs: number; moduleLoadMs: Cell };
-        verdict: string;
-        environment: { rounds: number; tree: string; base: string; head: string };
-      })
+  const passes = existsSync(file)
+    ? (JSON.parse(readFileSync(file, 'utf8')) as { passes: Pass[] }).passes
     : null;
 
-  it.skipIf(doc === null)('recomputes every median, quartile and verdict from its rounds', () => {
-    const cells = [...doc!.reads, ...doc!.write, doc!.import.moduleLoadMs];
-    expect(cells.length).toBeGreaterThan(10);
-    for (const c of cells) {
-      const name = `${c.dataset ?? 'import'} ${c.op ?? ''}`;
-      expect(c.rounds.length, name).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
-      const s = codec.summarise(c.rounds, 0);
-      expect(c.typescriptVsNative, name).toBe(s.typescriptVsNative);
-      expect(c.controlVsNative, name).toBe(s.controlVsNative);
-      expect(c.verdict, name).toBe(
-        pairedVerdictOf(s.typescriptVsNative, s.controlVsNative, s.controlQuartiles),
-      );
+  it.skipIf(passes === null)(
+    'keeps every pass, numbered from 1 without a gap, each with its time and commits',
+    () => {
+      expect(passes!.length).toBeGreaterThan(0);
+      passes!.forEach((p, i) => {
+        expect(p.pass, `pass ${i + 1}`).toBe(i + 1);
+        expect(Number.isNaN(Date.parse(p.started))).toBe(false);
+        expect(p.environment.base).toMatch(/^[0-9a-f]{40}$/);
+        expect(p.environment.head).toMatch(/^[0-9a-f]{40}$/);
+      });
+    },
+  );
+
+  it.skipIf(passes === null)(
+    'recomputes every median, quartile and verdict of every pass from its rounds',
+    () => {
+      for (const doc of passes!) {
+        const cells = [...doc.reads, ...doc.write, doc.import.moduleLoadMs];
+        expect(cells.length).toBeGreaterThan(10);
+        for (const c of cells) {
+          const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`;
+          expect(c.rounds.length, name).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
+          const s = codec.summarise(c.rounds, 0);
+          expect(c.typescriptVsNative, name).toBe(s.typescriptVsNative);
+          expect(c.controlVsNative, name).toBe(s.controlVsNative);
+          expect(c.verdict, name).toBe(
+            pairedVerdictOf(s.typescriptVsNative, s.controlVsNative, s.controlQuartiles),
+          );
+        }
+        for (const c of [...doc.reads, ...doc.write]) expect(c.answersAgree).toBe(true);
+        expect(doc.verdict).toBe(worstPaired([...doc.reads, ...doc.write].map((c) => c.verdict)));
+      }
+    },
+  );
+
+  it.skipIf(passes === null)('was taken on a clean tree at full strength', () => {
+    for (const doc of passes!) {
+      expect(doc.environment.tree).toBe('clean');
+      expect(doc.environment.rounds).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
     }
-    for (const c of [...doc!.reads, ...doc!.write]) expect(c.answersAgree).toBe(true);
-    expect(doc!.verdict).toBe(worstPaired([...doc!.reads, ...doc!.write].map((c) => c.verdict)));
   });
 
-  it.skipIf(doc === null)('was taken on a clean tree at full strength', () => {
-    expect(doc!.environment.tree).toBe('clean');
-    expect(doc!.environment.rounds).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
-  });
+  it.skipIf(passes === null)(
+    're-took every inconclusive pass, and a conclusive slower blocks the merge',
+    () => {
+      const cells = (p: Pass): Cell[] => [...p.reads, ...p.write];
+      passes!.forEach((p, i) => {
+        const last = i === passes!.length - 1;
+        if (cells(p).some((c) => c.verdict === rule.INCONCLUSIVE) && !last) {
+          expect(passes![i + 1], `pass ${p.pass} was inconclusive`).toBeDefined();
+        }
+      });
+      const final = passes![passes!.length - 1]!;
+      expect(
+        cells(final)
+          .filter((c) => c.verdict === rule.SLOWER)
+          .map((c) => `${c.dataset} ${c.op}`),
+        'a conclusive slower in the last pass',
+      ).toEqual([]);
+    },
+  );
 });

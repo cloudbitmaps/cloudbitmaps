@@ -51,7 +51,13 @@ const { execFileSync } = require('node:child_process');
 const { bundleText, evaluate } = require('./lib/codec-engine.cjs');
 const { idsOf } = require('./lib/codec-data.cjs');
 const { MIN_ROUNDS, cellFrom } = require('./lib/codec-verdict.cjs');
-const { pairedVerdictOf, worstPaired, MALFORMED } = require('./lib/paired-verdict.cjs');
+const {
+  pairedVerdictOf,
+  worstPaired,
+  MALFORMED,
+  INCONCLUSIVE,
+  SLOWER,
+} = require('./lib/paired-verdict.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const CHECK = process.argv.includes('--check');
@@ -460,7 +466,51 @@ async function main() {
     console.error('run with node --expose-gc');
     process.exit(2);
   }
+  const retakes = CHECK ? 0 : Number(process.env.PAIRED_RETAKES ?? 2);
+  const passes = [];
+  for (let n = 0; n <= retakes; n++) {
+    const doc = takePass(run, only);
+    doc.pass = n + 1;
+    const problems = wellFormed(doc);
+    if (problems.length > 0) {
+      console.error(problems.join('\n'));
+      process.exit(1);
+    }
+    passes.push(doc);
+    if (CHECK) break;
+    appendPass(doc);
+    printPass(doc);
+    // A pass the control could not resolve is recorded as inconclusive and taken again; the earlier reading stays.
+    if (!cellsOf(doc).some((c) => c.verdict === INCONCLUSIVE)) break;
+  }
+  if (CHECK) {
+    console.log(
+      `ts-codec-paired --check: ok (${cellsOf(passes[0]).length} cells, ${ROUNDS} rounds each)`,
+    );
+    return;
+  }
+  const last = passes[passes.length - 1];
+  console.log(`passes taken: ${passes.length}; appended to ${RESULTS}`);
+  if (cellsOf(last).some((c) => c.verdict === INCONCLUSIVE)) {
+    console.log(
+      'still inconclusive after the re-takes: publish nothing from the inconclusive cells',
+    );
+    process.exitCode = 4;
+  }
+  if (cellsOf(last).some((c) => c.verdict === SLOWER)) {
+    console.log(
+      'a conclusive "slower" on a hot path: this blocks the merge until it is explained or fixed',
+    );
+    process.exitCode = 3;
+  }
+}
+
+const cellsOf = (doc) => [...(doc.reads ?? []), ...(doc.write ?? [])];
+
+/** One pass: the parts asked for, once, as a document with its time, commits, machine and loads. */
+function takePass(run, only) {
   const doc = { environment: environment(), started: new Date().toISOString() };
+  doc.environment.loadAtStart = twoDecimals(load1());
   let subjects;
   if (run('reads') || run('write')) {
     subjects = prepareSubjects();
@@ -474,24 +524,28 @@ async function main() {
   }
   if (run('import')) doc.import = importMeasure();
   doc.finished = new Date().toISOString();
-  const verdicts = [...(doc.reads ?? []), ...(doc.write ?? [])].map((c) => c.verdict);
+  const verdicts = cellsOf(doc).map((c) => c.verdict);
   doc.verdict = verdicts.length > 0 ? worstPaired(verdicts) : undefined;
-  const problems = wellFormed(doc);
-  if (problems.length > 0) {
-    console.error(problems.join('\n'));
-    process.exit(1);
-  }
-  if (CHECK) {
-    console.log(`ts-codec-paired --check: ok (${verdicts.length} cells, ${ROUNDS} rounds each)`);
-    return;
-  }
-  fs.writeFileSync(RESULTS, `${JSON.stringify(doc)}\n`);
-  for (const c of [...(doc.reads ?? []), ...(doc.write ?? [])]) {
+  return doc;
+}
+
+/** Adds a pass to the results file, which keeps every earlier pass: a re-take never hides the first reading. */
+function appendPass(doc) {
+  const file = fs.existsSync(RESULTS)
+    ? JSON.parse(fs.readFileSync(RESULTS, 'utf8'))
+    : { passes: [] };
+  if (!Array.isArray(file.passes)) throw new Error(`${RESULTS} is not a list of passes`);
+  file.passes.push(doc);
+  fs.writeFileSync(RESULTS, `${JSON.stringify(file)}\n`);
+}
+
+function printPass(doc) {
+  for (const c of cellsOf(doc)) {
     console.log(
       `${c.dataset} ${c.op}: head ${(c.typescriptVsNative * 100).toFixed(1)}%, control ${(c.controlVsNative * 100).toFixed(1)}% (${c.verdict})`,
     );
   }
-  console.log(`worst: ${doc.verdict}; wrote ${RESULTS}`);
+  console.log(`pass ${doc.pass} worst: ${doc.verdict}`);
 }
 
 main().catch((err) => {
