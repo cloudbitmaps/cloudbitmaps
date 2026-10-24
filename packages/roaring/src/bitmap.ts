@@ -44,10 +44,9 @@ function tagOf(value: unknown): string {
 }
 
 const VIEW = Object.getPrototypeOf(Uint8Array.prototype) as object;
-const viewGetter = (name: 'buffer' | 'byteLength'): ((this: unknown) => unknown) =>
+const viewGetter = (name: 'buffer'): ((this: unknown) => unknown) =>
   Object.getOwnPropertyDescriptor(VIEW, name)?.get as (this: unknown) => unknown;
 const bufferOf = viewGetter('buffer');
-const byteLengthOf = viewGetter('byteLength');
 
 const sharedByteLength =
   typeof SharedArrayBuffer === 'function'
@@ -171,20 +170,12 @@ export class RoaringBitmap implements Iterable<number> {
    */
   static deserialize(bytes: Uint8Array, options?: RoaringBitmapDeserializeOptions): RoaringBitmap {
     const maxBytes = maxBytesOf(options);
-    if (tagOf(bytes) === 'Uint8Array') {
-      const length = byteLengthOf.call(bytes) as number;
-      if (length === 0) {
-        throw new ValidationError(
-          'the buffer is empty or detached: an empty buffer is not a bitmap, and new RoaringBitmap() is the empty set',
-        );
-      }
-      if (maxBytes < MAX_SERIALIZED_LOAD_BYTES && length > maxBytes) {
-        throw new ValidationError(
-          `the buffer is ${length} bytes, more than the ${maxBytes} this call allows (maxBytes)`,
-        );
-      }
-    }
-    return RoaringBitmap.#wrap(decodeSerialized(bytes, detachedCodec) as TsBitmap);
+    return RoaringBitmap.#wrap(
+      decodeSerialized(bytes, detachedCodec, 'the buffer', {
+        maxBytes,
+        refuseEmpty: true,
+      }) as TsBitmap,
+    );
   }
 
   /** Whether `value` is a `RoaringBitmap` of this copy of the package. */

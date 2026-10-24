@@ -618,6 +618,30 @@ describe('store.load serializes a { bitmap } at the call, before anything is awa
     for await (const id of store.segment(SEG.segment).iterate()) ids.push(id);
     expect(ids).toEqual([1, 2, 3]);
   });
+
+  it.each<[string, (b: RoaringBitmap) => LoadInput]>([
+    ['a bare RoaringBitmap', (b) => b],
+    ['{ bitmap } of a RoaringBitmap', (b) => ({ bitmap: b })],
+  ])('%s changed right after the call is loaded as it was', async (_, as) => {
+    const store = new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: 0 } });
+    const bitmap = new RoaringBitmap([1, 2, 3]);
+    const pending = store.load(SEG, as(bitmap)); // not awaited
+    bitmap.add(4).remove(1);
+    bitmap.clear();
+    bitmap.add(9);
+    expect(await pending).toMatchObject({ published: true, cardinality: 3 });
+    const ids: number[] = [];
+    for await (const id of store.segment(SEG.segment).iterate()) ids.push(id);
+    expect(ids).toEqual([1, 2, 3]);
+  });
+
+  it('a load never changes the RoaringBitmap it reads', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    const bitmap = new RoaringBitmap([1, 2, 3, 70_000]);
+    await store.load(SEG, bitmap);
+    await store.load({ segment: 'other' }, { bitmap });
+    expect(bitmap.toArray()).toEqual([1, 2, 3, 70_000]);
+  });
 });
 
 describe('a bitmap load reports the fingerprint of the object it wrote', () => {

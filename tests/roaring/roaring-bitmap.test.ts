@@ -126,6 +126,81 @@ describe('RoaringBitmap against CRoaring: has, add, remove, clear', () => {
     expect(bitmap.toArray()).toEqual([...model].sort((a, b) => a - b));
   });
 
+  /** One set of each container kind: a bitset just above the array limit, an array just under it, and runs. */
+  const KINDS: ReadonlyArray<readonly [string, number[], boolean]> = [
+    ['a bitset (4,097 ids)', CORPUS.find(([n]) => n === 'a bitset at the boundary')![1], false],
+    ['an array (4,096 ids)', CORPUS.find(([n]) => n === 'an array at the boundary')![1], false],
+    [
+      'runs',
+      [
+        ...Array.from({ length: 900 }, (_, i) => 10 + i),
+        ...Array.from({ length: 2_000 }, (_, i) => 5_000 + i),
+        ...Array.from({ length: 500 }, (_, i) => HALF + i),
+        TOP - 1,
+        TOP,
+      ],
+      true,
+    ],
+  ];
+
+  it.each(KINDS)(
+    'remove answers as CRoaring does on %s, across the bitset-to-array line and at each end',
+    (_name, ids, optimize) => {
+      const bitmap = new RoaringBitmap(ids);
+      const oracle = crOf(ids);
+      if (optimize) {
+        bitmap.runOptimize();
+        oracle.runOptimize();
+      }
+      const first = ids[0]!;
+      const last = ids.at(-1)!;
+      // the first ids (4,097 -> 4,096 -> 4,095 on the bitset), an id twice, an absent one, then the last and the first
+      const order = [
+        ids[1]!,
+        ids[2]!,
+        ids[3]!,
+        ids[3]!,
+        first + 1,
+        last,
+        last,
+        first,
+        first,
+        ids[ids.length >> 1]!,
+      ];
+      for (const id of order) {
+        expect(bitmap.remove(id), `remove(${id})`).toBe(oracle.remove(id));
+        expectHolds(`after remove(${id})`, bitmap, oracle);
+      }
+      for (const id of ids.slice(0, 40)) expect(bitmap.has(id)).toBe(oracle.has(id));
+    },
+  );
+
+  it.each(KINDS)(
+    'removeMany leaves what CRoaring leaves on %s, step by step across the bitset-to-array line',
+    (_name, ids, optimize) => {
+      const bitmap = new RoaringBitmap(ids);
+      const oracle = crOf(ids);
+      if (optimize) {
+        bitmap.runOptimize();
+        oracle.runOptimize();
+      }
+      const steps = [
+        [ids[1]!],
+        [ids[2]!, 1_000_000_000],
+        [ids[3]!, ids[4]!],
+        [ids.at(-1)!],
+        ids.slice(0, 7),
+      ];
+      for (const step of steps) {
+        bitmap.removeMany(step);
+        oracle.remove(...step);
+        expectHolds(`after removeMany of ${step.length}`, bitmap, oracle);
+      }
+      bitmap.removeMany(new RoaringBitmap(ids));
+      expect(bitmap.isEmpty).toBe(true);
+    },
+  );
+
   it('removing the last id of a container drops the container and the extremes follow', () => {
     const bitmap = new RoaringBitmap([3, 70_000, TOP]);
     expect(bitmap.remove(TOP)).toBe(true);

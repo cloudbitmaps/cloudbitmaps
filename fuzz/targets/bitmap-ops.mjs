@@ -1,4 +1,3 @@
-import { isCloudRoaringError } from '../build/fuzz-core.js';
 import { runBitmapOps } from '../build/fuzz-codec.js';
 
 /*
@@ -10,17 +9,13 @@ import { runBitmapOps } from '../build/fuzz-codec.js';
  * call must leave the bitmap as it was, and a clone and its original must change apart (see
  * `packages/roaring/src/testing/fuzz-bitmap-ops.ts`).
  *
- * A typed CloudRoaring error that escapes is not a finding (the contract for bytes the door refuses); anything else
- * that escapes, a wrong answer included, is. The reproducer of a finding is written under fuzz/crashes/ and, once
+ * Nothing is caught here: bytes the door refuses are handled inside the run (they start an empty bitmap), so a
+ * typed error that escapes, such as a `ValidationError` from `add` on a valid id, is as much a finding as a wrong
+ * answer. The reproducer of a finding is written under fuzz/crashes/ and, once
  * minimized and fixed, committed to tests/core/crbm/fuzz-corpus/bitmap-ops/, which the normal suite replays.
  *
  * jazzer contract: export `fuzz(data: Buffer)`; an uncaught throw is a finding.
  */
 export function fuzz(data) {
-  try {
-    runBitmapOps(data);
-  } catch (err) {
-    if (isCloudRoaringError(err)) return;
-    throw err;
-  }
+  runBitmapOps(data);
 }

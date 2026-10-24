@@ -10,7 +10,8 @@ import {
   runBitmapOps,
   tsRoaringCodec,
 } from '@/testing/fuzz-codec';
-import { CloudRoaringError, IntegrityError } from '@/core/errors';
+import { CloudRoaringError, IntegrityError, ValidationError } from '@/core/errors';
+import { RoaringBitmap } from '@/bitmap';
 import type { BlobReader } from '@/core/blob';
 import type { CrbmCrypto } from '@/core/crypto';
 
@@ -164,13 +165,7 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
 
   for (const { name, bytes } of ops) {
     it(`bitmap-ops reproducer ${name} keeps every answer equal to the model`, () => {
-      expect(() => {
-        try {
-          runBitmapOps(bytes);
-        } catch (err) {
-          if (!(err instanceof CloudRoaringError)) throw err;
-        }
-      }).not.toThrow();
+      expect(() => runBitmapOps(bytes)).not.toThrow();
     });
   }
 
@@ -203,4 +198,40 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
       await expect(readChain(bytes)).resolves.toBeUndefined();
     });
   }
+});
+
+describe('the fuzz targets surface a typed error that is the wrong one', () => {
+  const ids = new RoaringBitmap([1, 2, 3, 2 ** 31, 0xffff_ffff]).serialize();
+
+  it('checkPublicDoor: a round trip the door refuses is a plain Error, which a target that tolerates typed errors cannot swallow', () => {
+    vi.spyOn(RoaringBitmap.prototype, 'serialize').mockReturnValue(new Uint8Array(0));
+    try {
+      checkPublicDoor(ids);
+      expect.unreachable('the refused round trip was not reported');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(CloudRoaringError);
+      expect((err as Error).cause).toBeInstanceOf(ValidationError);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('runBitmapOps: a ValidationError from add on a valid id escapes, the replay of ids-at-the-top.bin included', () => {
+    const real = RoaringBitmap.prototype.add;
+    vi.spyOn(RoaringBitmap.prototype, 'add').mockImplementation(function (
+      this: RoaringBitmap,
+      id: number,
+    ) {
+      if (id >= 2 ** 31) throw new ValidationError('an id this bitmap refuses');
+      return real.call(this, id);
+    });
+    try {
+      const replay = reproducers('bitmap-ops').find((r) => r.name === 'ids-at-the-top.bin');
+      expect(replay).toBeDefined();
+      expect(() => runBitmapOps(replay!.bytes)).toThrow(ValidationError);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 });

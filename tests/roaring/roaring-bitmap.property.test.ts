@@ -179,11 +179,52 @@ describe('RoaringBitmap: bytes, iteration and the load', () => {
         expect(A.minimum()).toBe(a[0]);
         expect(A.maximum()).toBe(a.at(-1));
         for (const id of a.filter((_, i) => i % 331 === 0)) expect(A.has(id)).toBe(true);
+        const members = new Set(a);
         for (const id of a.filter((_, i) => i % 331 === 0)) {
-          if (id < 0xffff_ffff && !A.has(id + 1)) expect(A.has(id + 1)).toBe(false);
+          if (id < 0xffff_ffff) expect(A.has(id + 1)).toBe(members.has(id + 1));
         }
       }),
       RUNS,
+    );
+  });
+
+  it('a result of a combine does not change when the operand later does, and the operand is not changed by it', () => {
+    const mutators: ((x: RoaringBitmap, ids: number[]) => void)[] = [
+      (x, ids) => x.addMany(ids),
+      (x, ids) => x.removeMany(ids),
+      (x) => x.add(0xffff_ffff).add(2 ** 31),
+      (x) => x.remove(2 ** 31),
+      (x) => x.runOptimize(),
+      (x) => x.clear(),
+      (x, ids) => x.andNotInPlace(new RoaringBitmap(ids)),
+      (x, ids) => x.orInPlace(new RoaringBitmap(ids)),
+    ];
+    const combines: ((x: RoaringBitmap, b: RoaringBitmap) => void)[] = [
+      (x, b) => x.orInPlace(b),
+      (x, b) => x.addMany(b),
+      (x, b) => x.andNotInPlace(b),
+      (x, b) => x.andInPlace(b),
+    ];
+    fc.assert(
+      fc.property(triple, ({ a, b, c }) => {
+        for (const combine of combines) {
+          for (const mutate of mutators) {
+            const x = new RoaringBitmap(a);
+            const operand = new RoaringBitmap(b);
+            const operandBefore = operand.toUint32Array();
+            combine(x, operand);
+            const snapshot = x.toUint32Array();
+            expect(firstDifference(operand.toUint32Array(), operandBefore)).toBe(-1);
+            mutate(operand, c);
+            expect(firstDifference(x.toUint32Array(), snapshot)).toBe(-1);
+            // and the other way round: changing the result leaves the operand as it is
+            const operandNow = operand.toUint32Array();
+            mutate(x, c);
+            expect(firstDifference(operand.toUint32Array(), operandNow)).toBe(-1);
+          }
+        }
+      }),
+      { numRuns: 6 },
     );
   });
 
@@ -205,7 +246,10 @@ describe('RoaringBitmap: bytes, iteration and the load', () => {
         expect((await written(new RoaringBitmap(a))).equals(fromIds)).toBe(true);
         const optimized = new RoaringBitmap(a);
         optimized.runOptimize();
+        const before = optimized.toUint32Array();
         expect((await written({ bitmap: optimized })).equals(fromIds)).toBe(true);
+        expect(firstDifference(optimized.toUint32Array(), before)).toBe(-1);
+        expect(optimized.size).toBe(before.length);
         expect(
           (await written(RoaringBitmap.deserialize(new RoaringBitmap(a).serialize()))).equals(
             fromIds,

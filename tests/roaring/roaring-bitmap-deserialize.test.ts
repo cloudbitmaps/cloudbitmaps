@@ -232,6 +232,77 @@ describe('decodeSerialized: the size cap, at its boundary, in front of the codec
   });
 });
 
+describe('RoaringBitmap.deserialize: one checked read of the input', () => {
+  const good = (): Uint8Array => new RoaringBitmap([1, 2, 3]).serialize();
+
+  it('refuses an object that only claims the tag, with a ValidationError and not a TypeError', () => {
+    const forged = { [Symbol.toStringTag]: 'Uint8Array' } as unknown as Uint8Array;
+    expect(() => RoaringBitmap.deserialize(forged)).toThrow(ValidationError);
+    expect(() => RoaringBitmap.deserialize(forged, { maxBytes: 100 })).toThrow(ValidationError);
+  });
+
+  it('reads the bytes a subclass holds, whatever its byteLength getter says', () => {
+    class Liar extends Uint8Array {
+      override get byteLength(): number {
+        return 0;
+      }
+    }
+    const bytes = good();
+    const liar = new Liar(bytes);
+    expect(RoaringBitmap.deserialize(liar).toArray()).toEqual([1, 2, 3]);
+    expect(() => RoaringBitmap.deserialize(liar, { maxBytes: bytes.length - 1 })).toThrow(
+      /maxBytes/,
+    );
+  });
+
+  it('holds maxBytes to the bytes that are decoded, from one read of the length', () => {
+    const bytes = good();
+    let reads = 0;
+    const counted = new Proxy(bytes, {
+      get(target, key) {
+        if (key === 'byteLength') reads += 1;
+        return Reflect.get(target, key, target) as unknown;
+      },
+    });
+    expect(() => RoaringBitmap.deserialize(counted, { maxBytes: bytes.length - 1 })).toThrow(
+      ValidationError,
+    );
+    expect(reads).toBe(0);
+  });
+
+  it('reads a length-tracking view of a resizable buffer as the bytes it holds now', () => {
+    const bytes = good();
+    type Resizable = ArrayBuffer & { resize(length: number): void };
+    const Resizable = ArrayBuffer as unknown as new (
+      length: number,
+      options: { maxByteLength: number },
+    ) => Resizable;
+    const buffer = new Resizable(bytes.length, { maxByteLength: bytes.length + 64 });
+    const view = new Uint8Array(buffer);
+    view.set(bytes);
+    expect(RoaringBitmap.deserialize(view).toArray()).toEqual([1, 2, 3]);
+    buffer.resize(bytes.length + 1);
+    expect(() => RoaringBitmap.deserialize(view)).toThrow(ValidationError);
+    expect(() => RoaringBitmap.deserialize(view, { maxBytes: bytes.length })).toThrow(/maxBytes/);
+    buffer.resize(0);
+    expect(() => RoaringBitmap.deserialize(view)).toThrow(/empty or detached/);
+  });
+});
+
+describe('decodeSerialized: maxBytes and refuseEmpty', () => {
+  it('refuses an empty buffer only when asked, and lowers the cap only when given', () => {
+    expect(decodeSerialized(new Uint8Array(0), tsRoaringCodec).isEmpty).toBe(true);
+    expect(() =>
+      decodeSerialized(new Uint8Array(0), tsRoaringCodec, 'the buffer', { refuseEmpty: true }),
+    ).toThrow(/empty or detached/);
+    const bytes = new RoaringBitmap([7]).serialize();
+    expect(decodeSerialized(bytes, tsRoaringCodec, 'x', { maxBytes: bytes.length }).size).toBe(1);
+    expect(() =>
+      decodeSerialized(bytes, tsRoaringCodec, 'x', { maxBytes: bytes.length - 1 }),
+    ).toThrow(/^x is \d+ bytes, more than the \d+ this call allows/);
+  });
+});
+
 describe('a decoded RoaringBitmap, loaded', () => {
   const SEG = { segment: 'decoded' };
   type Load = (decoded: RoaringBitmap) => LoadInput;

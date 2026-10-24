@@ -573,7 +573,7 @@
     "@cloudbitmaps/core clearSegmentRetention": "function clearSegmentRetention(ref: SegmentRef, deps: RetentionDeps): Promise<boolean>;",
     "@cloudbitmaps/core collectWithinBudget": "function collectWithinBudget<T>(source: AsyncIterable<T>, budget: Budget | null, op: string): Promise<T[]>;",
     "@cloudbitmaps/core compileCombineMany": "function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledCombineMany<R>;",
-    "@cloudbitmaps/core decodeSerialized": "function decodeSerialized(bytes: unknown, codec: CodecInterface, what?: string): CodecBitmap;",
+    "@cloudbitmaps/core decodeSerialized": "function decodeSerialized(bytes: unknown, codec: CodecInterface, what?: string, options?: { readonly maxBytes?: number; readonly refuseEmpty?: boolean; }): CodecBitmap;",
     "@cloudbitmaps/core destroySegment": "function destroySegment(ref: SegmentRef, deps: EraseDeps, options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink; }): Promise<DestroyResult>;",
     "@cloudbitmaps/core dropSegment": "function dropSegment(ref: SegmentRef, deps: DropDeps, options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink; }): Promise<DropResult>;",
     "@cloudbitmaps/core eraseIdFromSegment": "function eraseIdFromSegment(ref: SegmentRef, id: number, deps: EraseIdDeps, options?: { audit?: IAuditSink; }): Promise<EraseIdResult>;",

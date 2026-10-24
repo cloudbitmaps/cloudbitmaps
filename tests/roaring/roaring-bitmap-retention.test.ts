@@ -37,8 +37,11 @@ function bigBytes(): Uint8Array {
 }
 
 /** Builds the input, decodes it, and returns the bitmap: the input is unreachable from the caller's frame. */
-function decodeThenDropInput<T>(decode: (bytes: Uint8Array) => T): { kept: T; inputBytes: number } {
-  const bytes = bigBytes();
+function decodeThenDropInput<T>(
+  decode: (bytes: Uint8Array) => T,
+  make: () => Uint8Array = bigBytes,
+): { kept: T; inputBytes: number } {
+  const bytes = make();
   return { kept: decode(bytes), inputBytes: bytes.byteLength };
 }
 
@@ -66,4 +69,93 @@ describe('a decoded bitmap does not pin its input', () => {
       'an aliasing decode keeps its private copy while a bitset of it is held',
     ).toBeGreaterThan(inputBytes / 2);
   });
+});
+
+/**
+ * Many small containers, which the codec's own decode would keep on one shared slab: 20,000 arrays of 200 scattered
+ * ids, and 20,000 containers of 30 short runs that `runOptimize` turns into run containers. A bitmap reduced by AND
+ * rebuilds these containers and could not show a slab, so the reduction here removes every other container, which
+ * leaves the survivor as it was decoded.
+ */
+const SMALL = 20_000;
+const SURVIVOR = 7_777;
+
+/** The ids of both lists, ascending, in one typed array (a spread of millions of ids would overflow the stack). */
+function merged(a: number[], b: number[]): Uint32Array {
+  const out = new Uint32Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out.sort();
+}
+
+const shapes: ReadonlyArray<[string, (key: number, out: number[]) => void, boolean]> = [
+  [
+    'array',
+    (key, out) => {
+      for (let i = 0; i < 200; i++) out.push(key * 65_536 + i * 11);
+    },
+    false,
+  ],
+  [
+    'run',
+    (key, out) => {
+      for (let r = 0; r < 30; r++) for (let i = 0; i < 8; i++) out.push(key * 65_536 + r * 20 + i);
+    },
+    true,
+  ],
+];
+
+describe('a decoded bitmap of many small containers does not pin its input either', () => {
+  it.each(shapes)(
+    'the public door, %s containers: reduced by removing the others, it holds its own container',
+    (_name, fill, optimize) => {
+      const ids: number[] = [];
+      const others: number[] = [];
+      for (let key = 0; key < SMALL; key++) fill(key, key === SURVIVOR ? ids : others);
+      const all = new RoaringBitmap(merged(ids, others));
+      if (optimize) all.runOptimize();
+      const gone = new RoaringBitmap(others);
+
+      for (const reduce of [
+        (b: RoaringBitmap) => b.andNotInPlace(gone),
+        (b: RoaringBitmap) => b.removeMany(gone),
+        (b: RoaringBitmap) => b.removeMany(others),
+      ]) {
+        const base = externalBytes();
+        const { kept, inputBytes } = decodeThenDropInput(
+          (bytes) => RoaringBitmap.deserialize(bytes),
+          () => all.serialize(),
+        );
+        expect(inputBytes).toBeGreaterThan(2 * MB);
+        reduce(kept);
+        expect(kept.size).toBe(ids.length);
+        const retained = externalBytes() - base;
+        expect(retained, `retained ${retained} bytes of a ${inputBytes}-byte input`).toBeLessThan(
+          MB / 2,
+        );
+      }
+    },
+  );
+
+  it.each(shapes)(
+    'the store’s decode, %s containers, which shares a slab, does pin it (the control)',
+    (_name, fill, optimize) => {
+      const ids: number[] = [];
+      const others: number[] = [];
+      for (let key = 0; key < SMALL; key++) fill(key, key === SURVIVOR ? ids : others);
+      const all = new RoaringBitmap(merged(ids, others));
+      if (optimize) all.runOptimize();
+      const base = externalBytes();
+      const { kept, inputBytes } = decodeThenDropInput(
+        (bytes) => TsBitmap.safeDeserialize(bytes, MAX_SERIALIZED_LOAD_BYTES, { whole: true }),
+        () => all.serialize(),
+      );
+      kept.andNotInPlace(TsBitmap.fromValues(new Uint32Array(others).sort()));
+      const retained = externalBytes() - base;
+      expect(
+        retained,
+        'a shared slab stays whole while one container of it is held',
+      ).toBeGreaterThan(inputBytes / 2);
+    },
+  );
 });

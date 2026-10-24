@@ -80,20 +80,26 @@ export function checkPublicDoor(data: Uint8Array): void {
   }
   if (!codecAccepts)
     throw new Error('the public door accepted bytes the codec refuses, or an empty buffer');
-  assertConsistentDecode(door);
-  if (door.size !== codecSize)
-    throw new Error(`the door holds ${door.size} values, the codec ${codecSize}`);
-  const back = RoaringBitmap.deserialize(door.serialize());
-  if (back.size !== door.size) throw new Error('serialize then deserialize changes the size');
-  if (door.size > 1_000_000) return;
-  assertConsistentDecode(back);
-  const a = door.toUint32Array();
-  const b = back.toUint32Array();
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) throw new Error(`serialize then deserialize changes value ${i}`);
-  }
-  if (door.minimum() !== a[0] || door.maximum() !== a.at(-1)) {
-    throw new Error('minimum or maximum disagrees with the values');
+  // Past the first decode every throw is a finding: a typed error here (a refused round trip, say) must not be
+  // mistaken, by a caller that tolerates the door's refusals, for the door refusing bad bytes.
+  try {
+    assertConsistentDecode(door);
+    if (door.size !== codecSize)
+      throw new Error(`the door holds ${door.size} values, the codec ${codecSize}`);
+    const back = RoaringBitmap.deserialize(door.serialize());
+    if (back.size !== door.size) throw new Error('serialize then deserialize changes the size');
+    if (door.size > 1_000_000) return;
+    assertConsistentDecode(back);
+    const a = door.toUint32Array();
+    const b = back.toUint32Array();
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) throw new Error(`serialize then deserialize changes value ${i}`);
+    }
+    if (door.minimum() !== a[0] || door.maximum() !== a.at(-1)) {
+      throw new Error('minimum or maximum disagrees with the values');
+    }
+  } catch (err) {
+    throw new Error(`the public door's result misbehaved: ${String(err)}`, { cause: err });
   }
 }
 
