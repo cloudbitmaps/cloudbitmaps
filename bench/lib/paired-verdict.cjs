@@ -19,6 +19,13 @@
  *     otherwise. The bar is a parameter of `judge` so another comparison (the count kernels against a build) can judge
  *     by its own, but a comparison states it before it measures.
  *
+ * UNIT. Every duration a pass records (a round's three figures, a cell's medians) is milliseconds with enough decimals
+ * to keep the instrument's own resolution: six for a figure the harness measures in whole nanoseconds, seven for one it
+ * measures to a tenth of a nanosecond (the per-operation cells). The decimal point keeps any integer run of the record
+ * short (no run of twelve digits can occur for any plausible duration). A pass recorded before that carries no `unit`
+ * and holds nanoseconds, with no decimals (a tenth of a nanosecond in the per-operation cells); `figurePlaces` gives the
+ * places each form is rounded to, and the ratios the rule derives do not depend on the unit.
+ *
  * Rounds of the first pass in the committed results file were judged by the earlier rule (the head's median against a
  * band of half the control's interquartile range); `legacyVerdictOf` keeps it so that file can still be recomputed.
  */
@@ -32,6 +39,8 @@ const TOLERANCE = 0.02;
 const COVERAGE = 0.95;
 /** A round that ends at or above this 1-minute load average is not kept: it is taken again. */
 const MAX_LOAD = 6;
+/** The unit a pass records its durations in; a pass that records none holds nanoseconds. */
+const UNIT = 'ms';
 /** The name each pass records for the rule that judged it. */
 const RULE = 'median-interval-v2';
 /** Slack for the floating-point error of a ratio that is exactly on a boundary. */
@@ -58,6 +67,31 @@ const KIND = new Map([
   [INCONCLUSIVE, 'inconclusive'],
   [MALFORMED, 'malformed'],
 ]);
+
+/**
+ * A duration of `ns` nanoseconds (an integer, or a multiple of `10 ** -decimals` when `decimals` is given) as
+ * milliseconds, divided exactly: the digits are moved six places by text, so nothing is rounded and the result is the
+ * double nearest to the exact decimal.
+ */
+function nsToMs(ns, decimals = 0) {
+  const text = Number(ns).toFixed(decimals);
+  if (!/^\d+(\.\d+)?$/.test(text)) throw new RangeError(`not a duration in nanoseconds: ${ns}`);
+  const places = 6 + decimals;
+  const padded = text.replace('.', '').padStart(places + 1, '0');
+  const whole = padded.slice(0, padded.length - places);
+  const fraction = padded.slice(padded.length - places).replace(/0+$/, '');
+  return Number(fraction === '' ? whole : `${whole}.${fraction}`);
+}
+
+/**
+ * The places a stored duration is rounded to: `kind` is `whole` (measured in whole nanoseconds), `tenth` (to a tenth of
+ * a nanosecond) or `import` (measured in milliseconds, three places), and `unit` is the pass's `unit`.
+ */
+function figurePlaces(kind, unit) {
+  if (kind === 'import') return 3;
+  const base = kind === 'tenth' ? 1 : 0;
+  return unit === UNIT ? base + 6 : base;
+}
 
 /** The median of a list: the upper middle one of an even count, NaN for an empty list. */
 function median(xs) {
@@ -275,12 +309,15 @@ module.exports = {
   COVERAGE,
   MAX_LOAD,
   RULE,
+  UNIT,
   WITHIN,
   SLOWER,
   FASTER,
   INCONCLUSIVE,
   MALFORMED,
   LEGACY,
+  nsToMs,
+  figurePlaces,
   median,
   medianInterval,
   differencesOf,

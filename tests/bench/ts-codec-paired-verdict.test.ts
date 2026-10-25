@@ -28,6 +28,7 @@ type Cell = {
 type Pass = {
   pass: number;
   schema?: number;
+  unit?: string;
   rule?: string;
   explained?: string;
   unresolved?: Record<string, string>;
@@ -65,6 +66,9 @@ const rule = require_('./lib/paired-verdict.cjs') as {
     tolerance?: number,
   ) => { verdict: string; headVsReference: number; headInterval: number[]; controlVsBase: number };
   cellOf: (rounds: Round[], places?: number, tolerance?: number) => Cell;
+  UNIT: string;
+  nsToMs: (ns: number, decimals?: number) => number;
+  figurePlaces: (kind: 'whole' | 'tenth' | 'import', unit?: string) => number;
   legacyBandOf: (q: number[]) => number;
   legacyVerdictOf: (head: number, control: number, q: number[]) => string;
   worstPaired: (vs: string[]) => string;
@@ -221,6 +225,54 @@ describe('the earlier rule, kept to recompute the first pass', () => {
     expect(rule.legacyVerdictOf(0, 0.0301, QUIET)).toBe(INCONCLUSIVE);
     expect(rule.legacyVerdictOf(Number.NaN, 0, QUIET)).toBe(MALFORMED);
     expect(rule.legacyVerdictOf(0, 0, [])).toBe(MALFORMED);
+  });
+});
+
+describe('the unit of a record', () => {
+  it('divides nanoseconds by a million exactly, by moving the digits', () => {
+    expect(rule.nsToMs(491533)).toBe(0.491533);
+    expect(rule.nsToMs(1063148369958)).toBe(1063148.369958);
+    expect(rule.nsToMs(110419750)).toBe(110.41975);
+    expect(rule.nsToMs(1)).toBe(0.000001);
+    expect(rule.nsToMs(0)).toBe(0);
+    expect(rule.nsToMs(1000000)).toBe(1);
+    expect(rule.nsToMs(12.3, 1)).toBe(0.0000123);
+    expect(rule.nsToMs(5, 1)).toBe(0.000005);
+    expect(() => rule.nsToMs(-1)).toThrow(RangeError);
+    expect(() => rule.nsToMs(Number.NaN)).toThrow(RangeError);
+  });
+  it('leaves no run of twelve digits in a duration of up to a thousand seconds, nor a day', () => {
+    const digits = (x: number): string => JSON.stringify(rule.nsToMs(x));
+    for (const ns of [999999999999, 1000000000000, 86_400_000_000_000, 123456789012345]) {
+      expect(digits(ns), String(ns)).not.toMatch(/\d{12}/);
+    }
+    expect(JSON.stringify(rule.nsToMs(123456789012.3, 1))).not.toMatch(/\d{12}/);
+  });
+  it('rounds a stored duration to six places, seven for a tenth of a nanosecond, and three for the import', () => {
+    expect(rule.figurePlaces('whole', rule.UNIT)).toBe(6);
+    expect(rule.figurePlaces('tenth', rule.UNIT)).toBe(7);
+    expect(rule.figurePlaces('import', rule.UNIT)).toBe(3);
+    expect(rule.figurePlaces('whole')).toBe(0);
+    expect(rule.figurePlaces('tenth')).toBe(1);
+    expect(rule.figurePlaces('import')).toBe(3);
+  });
+  it('gives the same figures and verdict whether the rounds are read in nanoseconds or in milliseconds', () => {
+    const ns: Round[] = [];
+    for (let i = 0; i < 31; i++) {
+      const base = 480000 + ((i * 7919) % 5000);
+      ns.push([i % 6, base, base + ((i * 104729) % 3000), base + ((i * 31) % 2000), 1, 2]);
+    }
+    const ms = ns.map((r) => [r[0], ...r.slice(1, 4).map((x) => rule.nsToMs(x)), r[4], r[5]]);
+    const old = rule.cellOf(ns, 0);
+    const now = rule.cellOf(ms, 6);
+    expect(now.verdict).toBe(old.verdict);
+    expect(now.headInterval).toEqual(old.headInterval);
+    expect(now.headVsReference).toBe(old.headVsReference);
+    expect(now.controlVsBase).toBe(old.controlVsBase);
+    expect(now.baseMedian).toBe(rule.nsToMs(old.baseMedian as number));
+    expect(now.headMedian).toBe(rule.nsToMs(old.headMedian as number));
+    expect(judge(ms).verdict).toBe(judge(ns).verdict);
+    expect(judge(ms).headInterval[1]).toBeCloseTo(judge(ns).headInterval[1], 12);
   });
 });
 
@@ -399,7 +451,9 @@ describe('the committed paired results', () => {
             );
           } else {
             expect(doc.rule, name).toBe(rule.RULE);
-            const places = c === doc.import?.moduleLoadMs ? 3 : c.dataset === 'ops' ? 1 : 0;
+            const kind =
+              c === doc.import?.moduleLoadMs ? 'import' : c.dataset === 'ops' ? 'tenth' : 'whole';
+            const places = rule.figurePlaces(kind, doc.unit);
             const left = new Set(['rounds', 'discarded', 'dataset', 'op', 'answersAgree']);
             const figures = Object.fromEntries(Object.entries(c).filter(([k]) => !left.has(k)));
             // Through JSON, as the file holds it: a recomputed -0 is stored as 0.

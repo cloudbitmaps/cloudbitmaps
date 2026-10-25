@@ -29,7 +29,8 @@
  *
  * A round times the same call for three subjects: `base` (the code at the base commit), `head` (this tree's) and
  * `control` (the base again), each in a process of its own, in an order that rotates through the six permutations.
- * A round is `[order, base, head, control, loadAtStart, loadAtEnd]`. Rule `median-interval-v2`
+ * A round is `[order, base, head, control, loadAtStart, loadAtEnd]`, the three figures in milliseconds with the decimals
+ * that keep the instrument's resolution (a pass records `"unit": "ms"`; see `bench/lib/paired-verdict.cjs`). Rule `median-interval-v2`
  * (`bench/lib/paired-verdict.cjs`, which says it in full): per round the head is compared with the mean of the base and
  * the control; the cell reports the distribution-free 95% interval of the median of those differences, and is `within`
  * when the interval's upper end is at most 2%, `slower` when its lower end is above 2%, `faster` when its upper end is
@@ -81,6 +82,9 @@ const {
   RULE,
   TOLERANCE,
   MALFORMED,
+  UNIT,
+  nsToMs,
+  figurePlaces,
   cellOf,
   worstPaired,
   kindOf,
@@ -402,17 +406,25 @@ function takeRounds(runRound) {
   return { kept, discarded };
 }
 
-/** `[order, base, head, control, loadAtStart, loadAtEnd]` of each round, from `figure(samples) -> [b, h, c]`. */
-const rowsOf = (list, figure) =>
+/**
+ * `[order, base, head, control, loadAtStart, loadAtEnd]` of each round, from `figure(samples) -> [b, h, c]` in the
+ * unit `toMs` converts to milliseconds.
+ */
+const rowsOf = (list, figure, toMs) =>
   list.map((r) => {
-    const [b, h, c] = figure(r.samples);
+    const [b, h, c] = figure(r.samples).map(toMs);
     return [r.order, b, h, c, r.start, r.end];
   });
 
-/** A cell from its kept and discarded rounds. */
-function pairedCell(taken, figure, places = 0) {
-  const cell = cellOf(rowsOf(taken.kept, figure), places);
-  const discarded = rowsOf(taken.discarded, figure);
+/**
+ * A cell from its kept and discarded rounds. `kind` says how the figure is measured: `whole` nanoseconds, `tenth` (a
+ * tenth of a nanosecond) or `import` (already milliseconds); the cell stores milliseconds.
+ */
+function pairedCell(taken, figure, kind = 'whole') {
+  const decimals = kind === 'tenth' ? 1 : 0;
+  const toMs = kind === 'import' ? (x) => x : (x) => nsToMs(x, decimals);
+  const cell = cellOf(rowsOf(taken.kept, figure, toMs), figurePlaces(kind, UNIT));
+  const discarded = rowsOf(taken.discarded, figure, toMs);
   return discarded.length > 0 ? { ...cell, discarded } : cell;
 }
 
@@ -485,7 +497,7 @@ function opsMeasure(subjects, onlyOps) {
       dataset: 'ops',
       op: name,
       answersAgree: allEqual(all.flatMap((r) => r.samples.map((x) => at(x).answer))),
-      ...pairedCell(taken, (s) => s.map((x) => at(x).ns), 1),
+      ...pairedCell(taken, (s) => s.map((x) => at(x).ns), 'tenth'),
     };
   });
 }
@@ -534,7 +546,7 @@ function importMeasure() {
   return {
     runs: ROUNDS,
     informational: true,
-    moduleLoadMs: pairedCell(taken, (s) => s, 3),
+    moduleLoadMs: pairedCell(taken, (s) => s, 'import'),
     bundle: { mainEntry: bundleBytes(files[0]), bitmapEntry: bundleBytes(files[1]) },
   };
 }
@@ -664,6 +676,7 @@ async function main() {
 function takePass(run, only, onlyOps) {
   const doc = {
     schema: 2,
+    unit: UNIT,
     rule: RULE,
     tolerance: TOLERANCE,
     environment: environment(),
