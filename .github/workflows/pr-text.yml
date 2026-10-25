@@ -1,7 +1,7 @@
 name: Pull request text
 
-# A pull request's title, body and commit messages are public, and a squash merge copies the commit subjects into
-# `main`'s history. This fails a pull request whose text names who or what did the work, or that the leak scan
+# A pull request's title, body, branch name and commit messages are public, and a squash merge copies the commit
+# subjects into `main`'s history. This fails a pull request whose text names who or what did the work, or that the leak scan
 # would refuse in a tracked file (a credential, a local path, a private reference, a private needle). The rules and
 # what they miss are in scripts/pr-text-scan.cjs.
 #
@@ -34,10 +34,11 @@ jobs:
           node-version: 22
           # No cache: this job installs nothing, so there is nothing to restore or save.
           package-manager-cache: false
-      - name: Scan the title, body and commit messages
+      - name: Scan the title, body, branch name and commit messages
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BRANCH: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           LEAK_SCAN_EXTRA: ${{ secrets.LEAK_SCAN_EXTRA }}

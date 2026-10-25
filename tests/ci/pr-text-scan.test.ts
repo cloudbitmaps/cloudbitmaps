@@ -109,13 +109,25 @@ function run(dir: string, env: Record<string, string | undefined>): Run {
 
 /** Run the check on a title, a body and one commit message, the way the workflow does. */
 function scan(
-  { title = 'Add a thing', body = 'Adds a thing.', commit = 'Add a thing' },
+  {
+    title = 'Add a thing',
+    body = 'Adds a thing.',
+    commit = 'Add a thing',
+    branch = undefined as string | undefined,
+  },
   extraEnv: Record<string, string | undefined> = {},
 ): Run {
   const { dir, commit: c } = repo();
   const base = c('base');
   const head = c(commit);
-  return run(dir, { PR_TITLE: title, PR_BODY: body, BASE_SHA: base, HEAD_SHA: head, ...extraEnv });
+  return run(dir, {
+    PR_TITLE: title,
+    PR_BODY: body,
+    PR_BRANCH: branch,
+    BASE_SHA: base,
+    HEAD_SHA: head,
+    ...extraEnv,
+  });
 }
 
 // Each phrase as it would really be written, and the look-alikes beside them.
@@ -409,6 +421,51 @@ function asIdentityOut(): string {
   return run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head }).out;
 }
 
+describe('the head branch name', () => {
+  it('a phrase in it fails, at line 1 of the branch name', () => {
+    for (const [phrase, branch] of [
+      ['subagent', 'feature/subagent-cleanup'],
+      ['Claude', 'Claude/tidy-up'],
+      ['coordinator', 'fix/coordinator.rewrite'],
+      ['AI-generated', 'docs/AI-generated-notes'],
+    ]) {
+      const r = scan({ branch });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(`"${phrase}" in the branch name, line 1`);
+      expect(r.out).not.toContain(branch);
+    }
+  });
+
+  it('a needle in it fails, redacted, and so does a local path', () => {
+    const r = scan({ branch: 'feat/zz-test-needle-7-thing' }, { LEAK_SCAN_EXTRA: FAKE_NEEDLE });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('extra needle');
+    expect(r.out).toContain('branch.txt:1');
+    expect(r.out).not.toContain('zz-test-needle');
+    expect(scan({ branch: `${'/Users'}/someone/x` }).status).toBe(1);
+  });
+
+  it('an ordinary name passes, and so do the look-alikes of the phrase list', () => {
+    for (const branch of [
+      'ci/pr-text-follow-ups',
+      'feature/add-thing',
+      'dependabot/npm_and_yarn/vitest-4.1.0',
+      'fix/coordinator-free-path',
+      'docs/claude-md-notes',
+      'chore/sub-second-timers',
+    ]) {
+      const r = scan({ branch }, { LEAK_SCAN_EXTRA: FAKE_NEEDLE });
+      expect(r.out).not.toContain('FAILED');
+      expect(r.status).toBe(0);
+    }
+  });
+
+  it('is optional on a local run, which says so; an empty name is scanned as nothing', () => {
+    expect(scan({}).out).toContain('no PR_BRANCH, so the branch name was not scanned');
+    expect(scan({ branch: '' }).status).toBe(0);
+  });
+});
+
 describe('the leak-scan half', () => {
   // Built at run time, so this file holds no local path or private-repo reference itself (the leak scan reads it).
   const localPath = `see ${'/Users'}/someone/project/file.ts`;
@@ -641,6 +698,7 @@ describe('the workflow', () => {
     expect(scan?.env).toEqual({
       PR_TITLE: '${{ github.event.pull_request.title }}',
       PR_BODY: '${{ github.event.pull_request.body }}',
+      PR_BRANCH: '${{ github.head_ref }}',
       BASE_SHA: '${{ github.event.pull_request.base.sha }}',
       HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
       LEAK_SCAN_EXTRA: '${{ secrets.LEAK_SCAN_EXTRA }}',

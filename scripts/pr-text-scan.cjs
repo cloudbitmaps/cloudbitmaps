@@ -333,6 +333,9 @@ function main(env) {
     { file: 'title.txt', source: 'title', text: title },
     { file: 'body.txt', source: 'body', text: body },
   ];
+  if (env.PR_BRANCH !== undefined)
+    texts.push({ file: 'branch.txt', source: 'branch name', text: env.PR_BRANCH });
+  else console.log('pr-text-scan: no PR_BRANCH, so the branch name was not scanned.');
   const identities = [];
   const people = [];
   if (hasBase) {
@@ -381,7 +384,7 @@ function main(env) {
   if (leak.migration !== '') console.log(leak.migration);
   if (!leak.ok) {
     console.error(
-      '\npr-text-scan: the leak scan refused this text (file names: title.txt, body.txt, commit-<sha>.txt):',
+      '\npr-text-scan: the leak scan refused this text (file names: title.txt, body.txt, branch.txt, commit-<sha>.txt):',
     );
     console.error(leak.out);
     console.error(
@@ -396,7 +399,7 @@ function main(env) {
     return 1;
   }
   console.log(
-    `pr-text-scan: clean (${texts.length} text(s): title, body, ${texts.length - 2} commit message(s))`,
+    `pr-text-scan: clean (${texts.length} text(s), ${people.length} commit(s) with their authors and committers)`,
   );
   return 0;
 }
