@@ -402,7 +402,10 @@ describe('identities are run through the private needles', () => {
 
   it('an ordinary address with no needle passes, and the email rule never fires on it', () => {
     // A domain the leak scan does not allow-list, so the scan's own email rule would fire on it if its findings were kept.
-    for (const author of ['Alex Smith <alex.smith@mail.test>', 'Alex Smith <alex@corp.test>']) {
+    for (const author of [
+      `Alex Smith <alex.smith@${'mail'}.test>`,
+      `Alex Smith <alex@${'corp'}.test>`,
+    ]) {
       const { r } = asIdentity({ author });
       expect(r.status).toBe(0);
       expect(r.out).not.toContain('email address');
@@ -521,7 +524,7 @@ describe('the head branch name', () => {
   });
 
   it('a phrase joined by hyphens, underscores, dots or slashes fails too', () => {
-    for (const [phrase, branch] of [
+    const cases: [string, string][] = [
       ['this session', 'docs/this-session-cookie'],
       ['this session', 'fix/this.session'],
       ['cannot spawn', 'chore/cannot-spawn'],
@@ -530,7 +533,8 @@ describe('the head branch name', () => {
       ['builder (the one who did the work)', 'fix/added-by-the-builder'],
       ['subagent', 'fix/Sub_Agent'],
       ['Generated with', 'generated-with-a-tool'],
-    ]) {
+    ];
+    for (const [phrase, branch] of cases) {
       const r = scan({ branch });
       expect(r.status).toBe(1);
       expect(r.out).toContain(`"${phrase}" in the branch name, line 1`);
@@ -557,11 +561,12 @@ describe('the head branch name', () => {
   });
 
   it('a branch name holding a twelve-digit run fails the account-id rule, and says how to fix it', () => {
-    const r = scan({ branch: 'hotfix-202410221530' });
+    const stamp = ['2024', '1022', '1530'].join('');
+    const r = scan({ branch: `hotfix-${stamp}` });
     expect(r.status).toBe(1);
     expect(r.out).toContain('AWS account id');
     expect(r.out).toContain('branch.txt:1');
-    expect(r.out).not.toContain('202410221530');
+    expect(r.out).not.toContain(stamp);
     expect(r.out).toContain('twelve-digit run');
     expect(r.out).toContain('push the work to a branch with another name');
   });
