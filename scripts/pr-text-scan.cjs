@@ -21,7 +21,7 @@
 //   PR_BRANCH  the head branch's name, scanned with the same phrase list and leak rules as the other texts, and
 //              also with `-`, `_`, `/` and `.` read as spaces (`this-session` is `this session`; the `coordinator`
 //              rule skips that reading), and refused when it starts with a coding tool's own branch prefix
-//              (`claude/`, `copilot/`, `cursor/`, `devin/`, in any case). A name that holds a twelve-digit run (a
+//              (`claude/`, `codex/`, `copilot/`, `cursor/`, `devin/`, in any case). A name that holds a twelve-digit run (a
 //              `yyyymmddhhmm` stamp) fails the leak scan's account-id rule. A branch cannot be renamed on a pull
 //              request, so a finding says to push the work to a branch with another name and open the pull request
 //              from it. Unset locally: the check says so and skips it.
@@ -38,7 +38,7 @@
 //
 // Exit 0 clean; 1 a finding; 2 an input or a tool that could not be read or run. The check fails closed: a missing
 // input, a git error, a scan that crashes or exits in a way this script does not know is a failure, never a pass.
-// When GITHUB_ACTIONS is `true`, a missing PR_BRANCH, BASE_SHA or HEAD_SHA is exit 2 too (a local run only notes it).
+// When GITHUB_ACTIONS is `true`, a missing or empty PR_BRANCH, BASE_SHA or HEAD_SHA is exit 2 too (a local run only notes it).
 //
 // A finding names the phrase, the source and the line number, never the text of the line: the log of a public run is
 // a second copy of the text, and a line that holds a listed phrase can hold anything else. The leak scan's report is
@@ -59,8 +59,9 @@
 //
 // What it does not catch: a phrase that is not on the list below, a leak that is reworded (a path written with a
 // space in it, an id described in other words), a phrase in a branch name that no `-`, `_`, `/` or `.` reading
-// exposes (a branch of another tool than the four named, a line-start `Generated with` that does not begin the
-// name), an author whose identity names no tool, a phrase inside an author's or committer's name (only a bot, an
+// exposes (a phrase written with underscores where the phrase has hyphens, such as `co_authored_by` or
+// `ai_generated`; a line-start `Generated with` that does not begin the name; a branch of another tool than the
+// five named), an author whose identity names no tool, a phrase inside an author's or committer's name (only a bot, an
 // `(aider)` or a vendor address is checked there), a NUL in a commit message (git stops reading the message at
 // it, and only a hand-built commit holds one), and anything in a pull request comment or review, which this
 // script never reads.
@@ -137,8 +138,8 @@ const FIX =
   'fix: say what was done, not who or what did it (public text names the change, never its author)';
 
 // A branch that starts with the prefix a coding tool gives the branches it makes (matched at the start of the name,
-// in any case: `docs/claude-md-notes` and `feat/codex-parser` are not tool branches).
-const TOOL_BRANCH = /^(?:claude|copilot|cursor|devin)\//i;
+// in any case, and only at the start: `docs/claude-md-notes`, `feat/codex-parser` and `x/claude/y` are not tool branches).
+const TOOL_BRANCH = /^(?:claude|codex|copilot|cursor|devin)\//i;
 
 /** Phrase findings in one text: `{ phrase, source, line }`. Never the text of the line. `skip` names phrases to leave out. */
 function phraseFindings(source, text, skip = []) {
@@ -295,7 +296,7 @@ function identityNeedleHits(identities, idDir, run) {
     if (inNeedle && more) extra += Number(more[1]);
   }
   return {
-    hits: hits.map((source) => ({ phrase: 'private needle', source, line: 0 })),
+    hits: [...new Set(hits)].map((source) => ({ phrase: 'private needle', source, line: 0 })),
     unnamed: extra,
   };
 }
@@ -377,7 +378,7 @@ function main(env) {
   // In CI the workflow always sets all three of these: one that is gone is a broken workflow, not a pass.
   if (inCi)
     for (const name of ['PR_BRANCH', 'BASE_SHA', 'HEAD_SHA'])
-      if (env[name] === undefined || (name !== 'PR_BRANCH' && env[name] === ''))
+      if (env[name] === undefined || env[name] === '')
         throw new InputError(`${name} is not set (the workflow always sets it)`);
   const hasBase = env.BASE_SHA !== undefined && env.BASE_SHA !== '';
   const hasHead = env.HEAD_SHA !== undefined && env.HEAD_SHA !== '';
@@ -433,7 +434,7 @@ function main(env) {
     leak.out,
   );
   if (count > 0) {
-    console.error(`pr-text-scan: ${FIX}`);
+    if (findings.some((f) => f.phrase !== 'private needle')) console.error(`pr-text-scan: ${FIX}`);
     if (findings.some((f) => f.source.includes('commit ') && f.line > 0))
       console.error(
         "pr-text-scan: to fix a commit message: reword it with `git rebase -i origin/main`, then `git push --force-with-lease --force-if-includes` on the pull request's own branch; the text of a title or a body is edited on the pull request",

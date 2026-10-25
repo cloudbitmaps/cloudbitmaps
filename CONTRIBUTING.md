@@ -355,7 +355,7 @@ order:
      branch others use is better left, with the fix made in a new branch. A branch name cannot be edited on a pull
      request: push the work to a branch with another name and open the pull request from it (a name with
      a twelve-digit run, such as a `yyyymmddhhmm` stamp, fails the account-id rule, and one that starts with
-     `claude/`, `copilot/`, `cursor/` or `devin/` is refused). A leak (a secret or private text) is handled
+     `claude/`, `codex/`, `copilot/`, `cursor/` or `devin/` is refused). A leak (a secret or private text) is handled
      apart from a phrase: a force-push does not unpublish what was already pushed, so rotate a credential first and
      ask the maintainer about anything else. `scripts/README.md` lists
      what it checks and the known false positives, each with its rewording.

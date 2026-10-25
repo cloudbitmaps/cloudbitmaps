@@ -384,6 +384,7 @@ describe('identities are run through the private needles', () => {
     expect(r.out).toContain(`"private needle" in the author email of commit ${head}`);
     expect(r.out).not.toContain('zz-test-needle');
     expect(r.out).not.toContain('Smith');
+    expect(r.out).not.toContain('say what was done');
   });
 
   it('a needle in a committer name, a committer email and an author name fails', () => {
@@ -398,6 +399,18 @@ describe('identities are run through the private needles', () => {
     expect(author.r.status).toBe(1);
     expect(author.r.out).toContain(`in the author name of commit ${author.head}`);
     for (const x of [name, email, author]) expect(x.r.out).not.toContain('zz-test-needle');
+  });
+
+  it('a field that two needles match is named and counted once', () => {
+    const { head, r } = asIdentity(
+      { author: 'Alex <zz-test-needle-5-xq9zvk-7@example.com>' },
+      { LEAK_SCAN_EXTRA: `${FAKE_NEEDLE}\nxq9zvk-[0-9]+` },
+    );
+    expect(r.status).toBe(1);
+    expect(r.out.match(/"private needle" in the author email of commit/g)).toHaveLength(1);
+    expect(r.out).toContain(`"private needle" in the author email of commit ${head}`);
+    expect(r.out).toContain('FAILED: 1 finding(s)');
+    expect(r.out).not.toContain('xq9zvk');
   });
 
   it('an ordinary address with no needle passes, and the email rule never fires on it', () => {
@@ -545,6 +558,17 @@ describe('the head branch name', () => {
     }
   });
 
+  it('a phrase that a name holds through both readings is reported once', () => {
+    for (const [branch, phrase] of [
+      ['feature/subagent-cleanup', 'subagent'],
+      ['Claude/x', 'Claude'],
+    ]) {
+      const r = scan({ branch });
+      expect(r.status).toBe(1);
+      expect(r.out.match(new RegExp(`"${phrase}" in the branch name`, 'g'))).toHaveLength(1);
+    }
+  });
+
   it("a branch that starts with a coding tool's own prefix fails, in any case", () => {
     for (const branch of [
       'claude/fix-bug-AbC12',
@@ -552,6 +576,8 @@ describe('the head branch name', () => {
       'copilot/fix-1',
       'cursor/add-feature-1a2b',
       'devin/1700000000-add-thing',
+      'codex/fix-thing',
+      'Codex/Fix-Thing',
     ]) {
       const r = scan({ branch });
       expect(r.status).toBe(1);
@@ -599,6 +625,11 @@ describe('the head branch name', () => {
       'fix/cursor-pagination',
       'feat/codex-parser',
       'feat/devin-the-dog',
+      'x/claude/y',
+      'feat/cursor/x',
+      'fix/copilot/x',
+      'chore/devin/x',
+      'docs/codex/x',
     ]) {
       const r = scan({ branch }, { LEAK_SCAN_EXTRA: FAKE_NEEDLE });
       expect(r.out).not.toContain('FAILED');
@@ -794,6 +825,11 @@ describe('fails closed', () => {
       const r = inCi({ ...all, [missing]: undefined });
       expect(r.status).toBe(2);
       expect(r.out).toContain(`${missing} is not set`);
+    }
+    for (const empty of ['PR_BRANCH', 'BASE_SHA', 'HEAD_SHA'] as const) {
+      const r = inCi({ ...all, [empty]: '' });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain(`${empty} is not set`);
     }
     expect(inCi({ ...all, BASE_SHA: '', HEAD_SHA: '' }).out).toContain('BASE_SHA is not set');
     expect(inCi({ PR_BRANCH: 'feat/x' }).status).toBe(2);
