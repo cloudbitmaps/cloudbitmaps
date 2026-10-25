@@ -778,8 +778,14 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
 - `tests/roaring/roaring-bitmap-algebra.test.ts`: the statics and `xorInPlace` against CRoaring on every pair of the oracle's
   shapes (ids at 2^31 and 0xFFFFFFFF included) and on random container shapes; the laws (commutativity, associativity, `a xor a`
   empty, `andNot` against `and` with a complement over the universe of the test, `orMany` equal to the fold of `or`,
-  `xorInPlace` equal to `xor`); that a result never changes when an operand later does and an operand never changes when the
-  result does, under every mutator; that a result keeps neither a decoded operand nor its input alive; and each refusal.
+  `xorInPlace` equal to `xor`, absorption); that a result never changes when an operand later does and an operand never changes
+  when the result does, under every mutator, including a container only the second operand holds and `orMany` of one bitmap or
+  of the same bitmap twice; that a result keeps neither a decoded operand nor its input alive, `orMany`'s own result included;
+  and each refusal.
+- `tests/roaring/ts-bitmap-sharing.test.ts`: at the codec level, which containers each static flags shared and which container
+  objects it hands back (`and` and the union `orMany` builds flag nothing; `or`, `xor` and `andNot` flag exactly the containers
+  only the first operand holds, and keep those objects; a container only the second operand holds is always a copy; no pair
+  kernel returns an operand's object).
 - `tests/roaring/roaring-bitmap.property.test.ts`: round trips, `clone` independence under every mutator and across
   generations of clones, ascending iteration, and a load of a bitmap writing what a load of its ids writes.
 - `tests/roaring/roaring-bitmap-refusals.test.ts` and `tests/roaring/errors-carry-no-id.test.ts`: each refusal, the

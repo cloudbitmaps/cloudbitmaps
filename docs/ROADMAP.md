@@ -523,7 +523,7 @@ move it up.
   space, publishing one generation together without re-encoding. The format already allows it (a chunk's checksum
   and its encryption are bound to the chunk, not its position); what it needs is a server-side compose on every
   storage driver, a protocol for reserving the generation and sharing its key, and collection of the parts. In one
-  process it needs nothing: `RoaringBitmap.orMany` over the parts, then one load, as the
+  process it needs nothing: `orInPlace` over the parts one at a time (or `RoaringBitmap.orMany` when every part fits in memory at once), then one load, as the
   [loading guide](guide/loading.md#what-a-load-accepts) shows.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
   bulk load that never buffers the distinct set of unsorted ids (ids that already ascend need none: `sorted: true`).
