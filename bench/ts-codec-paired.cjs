@@ -53,7 +53,7 @@
  * THE SLEEP RULE. A machine that sleeps during a round turns a call of milliseconds into one of minutes, and a head that is
  * really slow in some rounds looks the same in wall time; they differ in CPU time, because a slow head burns CPU and a
  * sleeping machine does not. Every child therefore times each span twice, wall (`process.hrtime`) and CPU
- * (`process.cpuUsage()` deltas around the same span). A subject's figure in a round counts as slept only when it is more
+ * (`process.cpuUsage()` deltas bracketing the same span). A subject's figure in a round counts as slept only when it is more
  * than 100 times that subject's median in the cell AND less than half of its wall time was on CPU. A round with a slept
  * figure in any cell is stored under the cell's `slept` with that evidence (cell, subject, wall figure, CPU figure), taken
  * again, and counted (a pass's `load.sleptRounds`, and the summary line it prints). The pass records the rule it was taken
@@ -153,6 +153,11 @@ const cpuNow = () => {
   const u = process.cpuUsage();
   return (u.user + u.system) * 1e3;
 };
+/** The first CPU read of a process is slow: each child makes one untimed call before its first timed span. */
+const warmCpuClock = () => {
+  cpuNow();
+  cpuNow();
+};
 const load1 = () => os.loadavg()[0];
 const twoDecimals = (x) => +x.toFixed(2);
 const keep = new Array(16).fill(0);
@@ -237,11 +242,12 @@ function opsOf(idLists) {
 
 /** The wall and CPU nanoseconds per call of `reps` calls of `fn`, timed over one span. */
 async function timeCalls(fn, reps) {
-  const t0 = now();
   const c0 = cpuNow();
+  const t0 = now();
   for (let i = 0; i < reps; i++) keep[i & 15] = await fn();
+  const wall = now() - t0;
   const cpu = cpuNow() - c0;
-  return { ns: (now() - t0) / reps, cpuNs: cpu / reps };
+  return { ns: wall / reps, cpuNs: cpu / reps };
 }
 
 /** Warm by time, then the batch size that makes one timed sample about `SAMPLE_MS`. */
@@ -267,6 +273,7 @@ async function readsChild(file, dataset, only) {
   const segs = segmentNames(dataset).map((n) => store.segment(n));
   const ops = opsOf(idLists);
   global.gc();
+  warmCpuClock();
   const out = {};
   for (const op of OPS) {
     if (!wanted(only, `${dataset} ${op}`)) continue;
@@ -283,20 +290,21 @@ async function readsChild(file, dataset, only) {
 async function writeChild(file) {
   const engine = engineOf(file);
   const ids = idsOf('spread8k', 0, { spread8k: WRITE_CHUNKS });
+  warmCpuClock();
   let timed;
   for (let round = 0; round < 2; round++) {
     const store = newStore(engine, new engine.roaring.MemoryStorage());
     global.gc();
-    let t0 = now();
     let c0 = cpuNow();
+    let t0 = now();
     const loaded = await store.load({ segment: 'w' }, ids, { sorted: true });
     const loadNs = now() - t0;
     const loadCpuNs = cpuNow() - c0;
     if (!loaded.published) throw new Error('the write-path load was not published');
     const victim = ids[ids.length >> 1];
     global.gc();
-    t0 = now();
     c0 = cpuNow();
+    t0 = now();
     const erased = await store.eraseSubject(victim, { allNamespaces: true });
     const eraseNs = now() - t0;
     const eraseCpuNs = cpuNow() - c0;
@@ -315,10 +323,13 @@ async function writeChild(file) {
 /** The time to import one built entry in a fresh process (`--child-import=<file>`). */
 async function importChild(file) {
   const url = require('node:url').pathToFileURL(file).href;
-  const t0 = now();
+  warmCpuClock();
   const c0 = cpuNow();
+  const t0 = now();
   keep[0] = await import(url);
-  return { ms: +((now() - t0) / 1e6).toFixed(3), cpuMs: +((cpuNow() - c0) / 1e6).toFixed(3) };
+  const wall = now() - t0;
+  const cpu = cpuNow() - c0;
+  return { ms: +(wall / 1e6).toFixed(3), cpuMs: +(cpu / 1e6).toFixed(3) };
 }
 
 /** The codec of a subject bundle: the TypeScript codec the bundle exports. */
@@ -330,6 +341,7 @@ const opsInputs = () =>
 /** The warmed per-operation cells, in a process that holds one subject (`--child-ops=<bundle>`). */
 function opsChild(file, onlyOps) {
   const codec = codecOf(file);
+  warmCpuClock();
   const out = {};
   for (const cell of opsInputs()) {
     if (cell.cold || (onlyOps !== undefined && !onlyOps.split('|').includes(cell.name))) continue;

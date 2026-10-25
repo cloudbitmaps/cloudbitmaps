@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CodecBitmap, CodecInterface } from '@cloudbitmaps/core';
 import { tsRoaringCodec } from '../../packages/roaring/src/ts-roaring/bitmap';
 import { roaringCodec } from '../helpers/native-codec';
@@ -32,6 +32,12 @@ const ops = require_('./lib/codec-ops.cjs') as {
     o?: { warmMs?: number; sampleMs?: number },
   ) => number;
   measureCold: (fn: () => unknown) => number;
+  measureSteadyCpu: (
+    fn: () => unknown,
+    unit?: number,
+    o?: { warmMs?: number; sampleMs?: number },
+  ) => { ns: number; cpuNs: number };
+  measureColdCpu: (fn: () => unknown) => { ns: number; cpuNs: number };
 };
 
 const bytes = ops.storedBytesOf(roaringCodec);
@@ -121,5 +127,50 @@ describe('the per-operation cells', () => {
     const cold = ops.measureCold(() => ++first);
     expect(first).toBe(1);
     expect(cold).toBeGreaterThanOrEqual(0);
+  });
+
+  describe('the CPU reads bracket the timed span', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    /** The order of the clock reads around one timed call: `cpu` is a CPU read, `wall` a wall read, `work` the call. */
+    const trace = (run: (work: () => number) => unknown): string[] => {
+      const seen: string[] = [];
+      const cpu = process.cpuUsage.bind(process);
+      const wall = process.hrtime.bigint.bind(process.hrtime);
+      vi.spyOn(process, 'cpuUsage').mockImplementation((prev) => {
+        seen.push('cpu');
+        return cpu(prev);
+      });
+      vi.spyOn(process.hrtime, 'bigint').mockImplementation(() => {
+        seen.push('wall');
+        return wall();
+      });
+      run(() => {
+        seen.push('work');
+        return 1;
+      });
+      vi.restoreAllMocks();
+      return seen;
+    };
+
+    it('holds no CPU read between the two wall reads of a first call, and warms the CPU clock before them', () => {
+      const seen = trace((work) => ops.measureColdCpu(work));
+      const first = seen.indexOf('wall');
+      const last = seen.lastIndexOf('wall');
+      expect(seen.slice(first, last + 1)).toEqual(['wall', 'work', 'wall']);
+      // A warm-up read, then the start read, before the wall span; the end read after it.
+      expect(seen.slice(0, first).filter((x) => x === 'cpu').length).toBeGreaterThanOrEqual(2);
+      expect(seen.slice(last + 1)).toEqual(['cpu']);
+    });
+
+    it('holds no CPU read between the two wall reads of the batch of a warmed call', () => {
+      const seen = trace((work) => ops.measureSteadyCpu(work, 1, { warmMs: 0, sampleMs: 0 }));
+      const last = seen.lastIndexOf('wall');
+      // The timed batch is the last run: its wall reads are the last two, and the CPU reads sit outside them.
+      const start = seen.lastIndexOf('wall', last - 1);
+      expect(seen.slice(start, last + 1).every((x) => x !== 'cpu')).toBe(true);
+      expect(seen[start - 1]).toBe('cpu');
+      expect(seen.slice(last + 1)).toEqual(['cpu']);
+    });
   });
 });

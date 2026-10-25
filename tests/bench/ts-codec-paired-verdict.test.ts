@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 /**
  * The rule that judges the paired before-and-after bench (`bench/lib/paired-verdict.cjs`), held at its boundaries, the
@@ -494,7 +494,7 @@ describe('the sleep rule', () => {
     expect(rule.cellOf(third.map((r) => [r.order, ...r.samples, 1, 2])).verdict).not.toBe(WITHIN);
   });
 
-  it('sets aside the same rounds when the machine was asleep (CPU flat), and the gate then wants the cell taken again', () => {
+  it('sets aside the same rounds when the machine was asleep (CPU flat), every one of them on the head', () => {
     const feed = feedOf({ n: 120, share: 0.2, slow: 15000, noise: 0.03, seed: 11 });
     let next = 0;
     const out = rule.collectRounds({
@@ -567,21 +567,37 @@ describe('the sleep rule against a stopped process', () => {
     'while (cpu() - c0 < Number(process.argv[1])) {}',
     'console.log(JSON.stringify({ wall: Number(process.hrtime.bigint() - t0) / 1e6, cpu: cpu() - c0 }));',
   ].join('\n');
+  // Every child started here is continued and then killed after each test, so an interrupted or failed run never
+  // leaves a stopped process behind (a stopped process does not notice that its parent is gone).
+  const children = new Set<ReturnType<typeof spawn>>();
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  afterEach(() => {
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+    for (const child of children) {
+      child.kill('SIGCONT');
+      child.kill('SIGKILL');
+    }
+    children.clear();
+  });
   const run = (spinMs: number, stopMs: number): Promise<{ wall: number; cpu: number }> =>
     new Promise((resolveRun, reject) => {
       const child = spawn(process.execPath, ['-e', SPIN, String(spinMs)], {
         stdio: ['ignore', 'pipe', 'inherit'],
       });
+      children.add(child);
       let out = '';
       let stopped = false;
       child.stdout.on('data', (chunk: Buffer) => {
         out += chunk.toString();
         if (stopMs > 0 && !stopped && out.includes('started')) {
           stopped = true;
-          setTimeout(() => {
-            child.kill('SIGSTOP');
-            setTimeout(() => child.kill('SIGCONT'), stopMs);
-          }, 100);
+          timers.add(
+            setTimeout(() => {
+              child.kill('SIGSTOP');
+              timers.add(setTimeout(() => child.kill('SIGCONT'), stopMs));
+            }, 100),
+          );
         }
       });
       child.on('error', reject);
@@ -603,7 +619,7 @@ describe('the sleep rule against a stopped process', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
-    'the same span made 15 times longer with no stop: CPU tracks wall, and the figure is not slept even past 100 times a small median',
+    'a span with no stop: CPU tracks wall, and a figure over 100 times a small median is not slept',
     async () => {
       let best = { wall: 0, cpu: 0 };
       // The share is the machine's to give; the best of three keeps a busy runner from deciding the test.

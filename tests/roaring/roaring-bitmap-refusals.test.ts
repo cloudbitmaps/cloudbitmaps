@@ -76,11 +76,26 @@ describe('an id argument that is not an id', () => {
       ]) {
         expect(make).toThrow(ValidationError);
       }
-      for (const list of [[1, bad as number], new Set([1, bad as number])]) {
+      // Each list puts a value that would change the bitmap before the bad one: 3 is absent (an add that applies as it
+      // goes inserts it) and 2 is held (a remove that applies as it goes deletes it).
+      const lists = (good: number): Array<Iterable<number>> => [
+        [good, bad as number],
+        new Set([good, bad as number]),
+      ];
+      for (const list of lists(3)) {
         const b = fresh();
         expect(() => b.addMany(list)).toThrow(ValidationError);
+        expect(b.toArray(), 'a refused addMany adds nothing, 3 included').toEqual([
+          1,
+          2,
+          70_000,
+          TOP,
+        ]);
+      }
+      for (const list of lists(2)) {
+        const b = fresh();
         expect(() => b.removeMany(list)).toThrow(ValidationError);
-        expect(b.toArray(), 'a refused call changes nothing, 1 included').toEqual([
+        expect(b.toArray(), 'a refused removeMany removes nothing, 2 included').toEqual([
           1,
           2,
           70_000,

@@ -278,6 +278,15 @@ const cpuNs = () => {
   const u = process.cpuUsage();
   return (u.user + u.system) * 1e3;
 };
+/**
+ * The first `process.cpuUsage()` call of a process costs tens of microseconds; one untimed call before a first timed
+ * span keeps that out of it. The CPU reads bracket every timed span (CPU start, wall start, work, wall end, CPU end), so
+ * the wall span holds no CPU read.
+ */
+const warmCpuClock = () => {
+  cpuNs();
+  cpuNs();
+};
 /** Every result lands here, reachable from `globalThis`, so no call is dead code. */
 const keep = new Array(16).fill(0);
 globalThis.__codecOpsKeep = keep;
@@ -305,11 +314,12 @@ function measureSteadyCpu(fn, unit = 1, { warmMs = 300, sampleMs = 8 } = {}) {
       break;
     }
   }
-  const t0 = nowNs();
   const c0 = cpuNs();
+  const t0 = nowNs();
   for (let i = 0; i < reps; i++) keep[i & 15] = fn();
+  const wall = nowNs() - t0;
   const cpu = cpuNs() - c0;
-  return { ns: (nowNs() - t0) / reps / unit, cpuNs: cpu / reps / unit };
+  return { ns: wall / reps / unit, cpuNs: cpu / reps / unit };
 }
 
 /** The time of the first call, in nanoseconds, nothing warmed. */
@@ -319,11 +329,13 @@ function measureCold(fn) {
 
 /** `measureCold`, with the CPU nanoseconds of the same call: `{ ns, cpuNs }`. */
 function measureColdCpu(fn) {
-  const t0 = nowNs();
+  warmCpuClock();
   const c0 = cpuNs();
+  const t0 = nowNs();
   keep[0] = fn();
+  const wall = nowNs() - t0;
   const cpu = cpuNs() - c0;
-  return { ns: nowNs() - t0, cpuNs: cpu };
+  return { ns: wall, cpuNs: cpu };
 }
 
 module.exports = {

@@ -30,21 +30,24 @@
  * milliseconds. A sleeping machine and a slow head look alike in wall time and differ in CPU time: a slow head burns
  * CPU for the whole of its slow round, a sleeping machine does not. So a subject's figure in a round counts as slept
  * only when BOTH hold: it is more than `SLEEP_FACTOR` (100) times that subject's median in the cell, AND less than
- * `SLEEP_MAX_ON_CPU` (half) of its wall time was on CPU (`process.cpuUsage()` deltas around the same timed span, in the
- * child that times it). A round with a slept figure in any cell is not kept: it is stored under the cell's `slept`, with
+ * `SLEEP_MAX_ON_CPU` (half) of its wall time was on CPU (`process.cpuUsage()` deltas that bracket the same timed span, in the
+ * child that times it: the CPU read comes before the wall start and after the wall end, so the wall span holds no CPU
+ * read, and each child makes one untimed CPU read before its first span). A round with a slept figure in any cell is not kept: it is stored under the cell's `slept`, with
  * the evidence (for each slept figure its cell, subject, wall figure and CPU figure), and another round is taken in its
  * place, as for the load rule.
  *
  * Why these numbers, from the committed record: the largest ordinary round on record is 11.95 times its cell's median
- * (the first pass, `sparse count`, the control, round 8), and the second and third passes reach 5.1 times; every sleep
- * on record is at least 1,116 times its median and hit the base, the head and the control alike. A factor alone cannot
- * tell a sleep from a head that is slow in some rounds (a head 15 times slower in a third of its rounds would be set
- * aside and the cell read as within the bar), so the CPU condition is what separates them; the factor then only has to
- * clear the ordinary rounds, and 100 is nearly ten times clear of the largest.
+ * (the first pass, `sparse count`, the control, `rounds[8]`, the ninth round), and the second and third passes reach 5.1
+ * times; every sleep on record is at least 1,116 times its median and hit the base, the head and the control alike. A
+ * factor alone cannot tell a sleep from a head that is slow in some rounds (a factor of ten alone set aside a head 15
+ * times slower in a third of its rounds, and any factor alone sets aside a head slower than it), so the CPU condition is
+ * what separates them; the factor then only has to clear the ordinary rounds, and 100 is 8.4 times the largest.
  *
  * Backstop: the gate refuses a cell whose slept rounds fall on the head two or more times and more often than on the
  * base and the control together, unless the cell carries an `explained` note, because a sleep does not pick a subject.
- * A refusal means the cell is taken again.
+ * A refusal means the cell is taken again. The backstop has a limit: one head-only round that is off CPU is set aside
+ * without a refusal, because it needs two. That is accepted: a single off-CPU head round over 100 times the median is a
+ * sleep or a deschedule far more often than a slowdown, and a second one refuses the cell.
  *
  * A pass records the rule it was taken under (`sleepRule: { factor, maxOnCpu }`), and only a pass that records it is
  * read by it. A pass without it carries no CPU figures and is read exactly as stored: its kept rounds are not trimmed
