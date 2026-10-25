@@ -255,6 +255,14 @@ function algebra(held: Held, bytes: Bytes): void {
   agree('second operand after the result changed', { bitmap: second, model: ids2 });
   mutate(held, bytes.u8() % 5, bytes);
   agree('result after the operand changed', { bitmap: result, model: made.model });
+  // A container only the second operand held may have been copied into the result: a change to the second operand must
+  // not reach the result, nor the other operands.
+  const secondHeld: Held = { bitmap: second, model: ids2 };
+  mutate(secondHeld, bytes.u8() % 5, bytes);
+  agree('result after the second operand changed', { bitmap: result, model: made.model });
+  agree('first operand after the second changed', held);
+  agree('second operand after its own change', secondHeld);
+  agree('third operand after the others changed', { bitmap: third, model: ids3 });
 }
 
 function refusals(held: Held, bytes: Bytes): void {

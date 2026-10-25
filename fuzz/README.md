@@ -64,7 +64,7 @@ rests on `dist ≈ src` (esbuild, no minify).
 generated deterministically by `fuzz/seed-corpus.cjs` (valid bitmaps/`.crbm` files/index regions spanning every
 container type, objects with an extension block and its sections spanning the metadata shapes up to the 1 KiB cap, plus
 truncations/flips), so no seed is committed: the only inputs in the repo are the
-reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accretes across runs.
+reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accretes across runs. A change to how a target reads its operation bytes (the `bitmap-ops` target gained operations, and its operation count and combine kinds changed) makes a cached input decode to different operations than it was learned for; the target is still correct on it, and the corpus relearns over the next runs.
 
 ## When a crash is found — the regression loop
 
