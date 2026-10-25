@@ -168,7 +168,7 @@ function commits(base, head) {
   try {
     raw = execFileSync(
       'git',
-      ['log', '--format=%x1e%H%n%an%n%ae%n%cn%n%ce%n%B', `${base}..${head}`],
+      ['log', '-z', '--format=%H%n%an%n%ae%n%cn%n%ce%n%B', `${base}..${head}`],
       {
         cwd: ROOT,
         encoding: 'utf8',
@@ -181,22 +181,24 @@ function commits(base, head) {
       `git log ${base}..${head} failed: ${String(err.stderr || err.message).trim()}`,
     );
   }
-  return raw
-    .split('\x1e')
-    .filter((c) => c.trim() !== '')
-    .map((c) => {
-      const lines = c.split('\n');
-      if (lines.length < 6) throw new InputError('git log gave a commit with no identity lines');
-      return {
-        sha: lines[0].trim(),
-        author: { name: lines[1], email: lines[2] },
-        committer: { name: lines[3], email: lines[4] },
-        message: lines
-          .slice(5)
-          .filter((l) => !BOT_TRAILER.test(l))
-          .join('\n'),
-      };
-    });
+  // `-z` ends each record with a NUL, which a commit message cannot hold, so no text of a message can be taken for
+  // the end of a record. A record that does not parse stops the check.
+  const records = raw.split('\0');
+  if (records.pop() !== '') throw new InputError('git log gave a record with no terminator');
+  return records.map((record) => {
+    const lines = record.split('\n');
+    if (lines.length < 6 || !SHA.test(lines[0]))
+      throw new InputError('git log gave a commit record this check cannot parse');
+    return {
+      sha: lines[0],
+      author: { name: lines[1], email: lines[2] },
+      committer: { name: lines[3], email: lines[4] },
+      message: lines
+        .slice(5)
+        .filter((l) => !BOT_TRAILER.test(l))
+        .join('\n'),
+    };
+  });
 }
 
 /** The leak scan's report with each finding's text withheld (the location stays), and the needle's index dropped. */
