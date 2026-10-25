@@ -439,13 +439,16 @@ async function loadMeasure(only) {
  * (the count kernels) or `build-then-count`. Fails closed: a build with no switch, or one this cannot read, stops the run.
  */
 function countRoute() {
-  const file = path.join(ROOT, 'packages', 'roaring', 'dist', 'count-route.js');
+  // The build bundles the package into one entry, so the switch is read from there.
+  const file = path.join(ROOT, 'packages', 'roaring', 'dist', 'index.js');
   const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-  const m = /COUNT_BY_KERNELS\s*=\s*(true|false)\b/.exec(text);
-  if (m === null) {
-    throw new Error(`${file}: no COUNT_BY_KERNELS switch to read: run pnpm build first`);
+  const found = [...text.matchAll(/^var COUNT_BY_KERNELS = (true|false);$/gm)];
+  if (found.length !== 1) {
+    throw new Error(
+      `${file}: expected one COUNT_BY_KERNELS switch to read, found ${found.length}: run pnpm build first`,
+    );
   }
-  return m[1] === 'true' ? 'kernels' : 'build-then-count';
+  return found[0][1] === 'true' ? 'kernels' : 'build-then-count';
 }
 
 function environment() {
