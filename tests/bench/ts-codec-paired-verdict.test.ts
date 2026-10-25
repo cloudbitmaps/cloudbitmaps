@@ -275,7 +275,12 @@ describe('the unit of a record', () => {
       const base = 480000 + ((i * 7919) % 5000);
       ns.push([i % 6, base, base + ((i * 104729) % 3000), base + ((i * 31) % 2000), 1, 2]);
     }
-    const ms = ns.map((r) => [r[0], ...r.slice(1, 4).map((x) => rule.nsToMs(x)), r[4], r[5]]);
+    const ms: Round[] = ns.map((r) => [
+      r[0]!,
+      ...r.slice(1, 4).map((x) => rule.nsToMs(x)),
+      r[4]!,
+      r[5]!,
+    ]);
     const old = rule.cellOf(ns, 0);
     const now = rule.cellOf(ms, 6);
     expect(now.verdict).toBe(old.verdict);
@@ -285,7 +290,7 @@ describe('the unit of a record', () => {
     expect(now.baseMedian).toBe(rule.nsToMs(old.baseMedian as number));
     expect(now.headMedian).toBe(rule.nsToMs(old.headMedian as number));
     expect(judge(ms).verdict).toBe(judge(ns).verdict);
-    expect(judge(ms).headInterval[1]).toBeCloseTo(judge(ns).headInterval[1], 12);
+    expect(judge(ms).headInterval[1]!).toBeCloseTo(judge(ns).headInterval[1]!, 12);
   });
 });
 
@@ -322,7 +327,7 @@ describe('the sleep rule', () => {
     expect(rule.awakeRounds(flatRounds())).toHaveLength(31);
   });
   it('judges each subject against its own median, so a slow subject is not a sleeping one', () => {
-    const rounds = flatRounds().map((r) => [r[0], 100, 900, 100, 1, 2]);
+    const rounds: Round[] = flatRounds().map((r) => [r[0]!, 100, 900, 100, 1, 2]);
     expect(rule.awakeRounds(rounds)).toHaveLength(31);
   });
   it('sets a round aside when any one cell of it slept', () => {
