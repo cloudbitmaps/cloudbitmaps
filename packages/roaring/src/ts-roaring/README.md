@@ -403,7 +403,7 @@ All of these are in `bitmap.ts`.
   at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when a container's
   `containerAndCard` with its partner is below its own cardinality. `isEqual` compares the sizes and the key lists, then
   each container pair's cardinality and `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
-  decoded from run bytes equals the same ids built from an array. None of these is on the public surface yet.
+  decoded from run bytes equals the same ids built from an array. The public class exposes all seven (section 13).
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
   bitset a scan from the top word).
@@ -643,7 +643,9 @@ Everything here is a test, a workflow or a bench, not part of the module.
   `assertConsistentDecode` (a self-consistent bitmap, or a typed `CloudRoaringError`), and what the public door accepts to
   a `serialize` then `deserialize` that gives an equal bitmap. `fuzz/targets/bitmap-ops.mjs` decodes bytes into a
   `RoaringBitmap` and then runs a byte-driven sequence of the class's operations against a `Set` model, so guidance
-  reaches the kernels through shapes only a decode produces (run containers, a slab of small containers). All of it is
+  reaches the kernels through shapes only a decode produces (run containers, a slab of small containers); every counting
+  method is checked there against the model on pairs of the starting bitmap, its clone, itself and small operands, reading no
+  input byte, so an input recorded before the counts were added decodes as it did. All of it is
   instrumented JavaScript, so guidance reaches `decodeContainers`, the slab and the aliasing paths after the shared
   structural check (`portable/layout.ts`). The committed reproducers are replayed through the same decoder on every pull
   request (`tests/core/crbm/fuzz-corpus.test.ts`); `fuzz/README.md` describes the targets.
@@ -732,6 +734,13 @@ Everything here is a test, a workflow or a bench, not part of the module.
 - **Operands are branded.** `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics and a bitmap passed to `addMany` or `removeMany`
   are recognised by the class's private field, so one from a second installed copy of the package is refused rather than
   read through members it does not share. `addMany(bitmap)` is `orInPlace` and `removeMany(bitmap)` is `andNotInPlace`.
+- **The counts and comparisons.** `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality` and `intersects`
+  check the operand with the brand, then answer through one switch (`COUNT_BY_KERNELS`, in `src/count-route.ts`): `true`
+  calls the codec's counting members above, `false` builds the combination with the matching `TsBitmap` static and reads
+  its `size` (or `isEmpty` for `intersects`). Both routes give the same answers and change neither operand, and the test
+  suite runs once on each (`tests/roaring/roaring-bitmap-counts.kernels.test.ts` and `.derived.test.ts`, one shared
+  suite). `isSubset` and `isEqual` always call their codec members. A non-bitmap operand is a `ValidationError` for all
+  seven, `isSubset` included.
 - **`minimum()`, `maximum()` are `undefined` when empty.** `minimum` reads the first container's smallest value
   (`containerMin`, beside `containerMax`); neither scans.
 - **`clear()`** drops the key and container lists. A container a clone shares is left to the clone, so it does not copy.
@@ -765,7 +774,7 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
 | the constructor, `add`, `addMany`, `has`, `remove`, `removeMany` | an id that is not an integer from 0 to 4294967295; a constructor or `addMany` argument that is not an iterable (a string included) |
 | `add`, `remove` | more than one argument |
 | the constructor | a `Uint8Array`, `Uint8ClampedArray` or `Buffer` |
-| `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, `RoaringBitmap.and`, `or`, `xor`, `andNot`, `orMany` | an operand (for `orMany`, any element, or a list that is not an iterable) that is not a `RoaringBitmap` of this copy of the package; nothing is combined |
+| `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, `RoaringBitmap.and`, `or`, `xor`, `andNot`, `orMany`, `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality`, `intersects`, `isSubset`, `isEqual` | an operand (for `orMany`, any element, or a list that is not an iterable) that is not a `RoaringBitmap` of this copy of the package; nothing is combined |
 | `deserialize` | not a `Uint8Array`; empty or detached; over the cap or `maxBytes`; not one well-formed bitmap; a second argument other than `undefined` or `{ maxBytes }`; a `maxBytes` outside 0 to the cap |
 | `serialize` | an argument other than `undefined` or `'portable'` |
 
@@ -780,6 +789,14 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
   when the result does, under every mutator, including a container only the second operand holds and `orMany` of one bitmap or
   of the same bitmap twice; that a result keeps neither a decoded operand nor its input alive, `orMany`'s own result included;
   and each refusal.
+- `tests/roaring/roaring-bitmap-counts.kernels.test.ts` and `tests/roaring/roaring-bitmap-counts.derived.test.ts`: the seven
+  counts and comparisons against CRoaring on every pair of the oracle's shapes (ids at 2^31 and 0xFFFFFFFF, empty, a bitmap
+  against itself and its clone) and on random container shapes, the identities against the returning forms
+  (`andCardinality(a, b) == and(a, b).size`, `intersects == andCardinality > 0`, `isSubset(a, b) == andNot(a, b).isEmpty`,
+  `isEqual` symmetric and equal to element-wise equality), that no operand or earlier clone changes, and each refusal, once with
+  each route of the switch; the suite also proves which route a run took.
+- `tests/roaring/fuzz-count-reproducers.test.ts`: the committed `bitmap-ops` reproducers for the counts start from an array, a
+  bitset and a run, call every count, and the target's check fires on a wrong answer from each.
 - `tests/roaring/ts-bitmap-sharing.test.ts`: at the codec level, which containers each static flags shared and which container
   objects it hands back (`and` and the union `orMany` builds flag nothing; `or`, `xor` and `andNot` flag exactly the containers
   only the first operand holds, and keep those objects; a container only the second operand holds is always a copy; no pair

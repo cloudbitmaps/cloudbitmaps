@@ -586,5 +586,33 @@
   {
     "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmapDeserializeOptions*",
     "reason": "the @cloudbitmaps/roaring/bitmap subpath never shipped in a release, and the class is exported from the main entry: RoaringBitmap and RoaringBitmapDeserializeOptions are imported from @cloudbitmaps/roaring only"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.andCardinality",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: how many ids both bitmaps hold, answered without a result bitmap you can keep; it changes neither bitmap and takes a RoaringBitmap of this copy of the package, as the combines do"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.orCardinality",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: how many ids either holds, answered without a result bitmap you can keep; it changes neither bitmap and takes a RoaringBitmap of this copy of the package, as the combines do"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.xorCardinality",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: how many ids exactly one holds, answered without a result bitmap you can keep; it changes neither bitmap and takes a RoaringBitmap of this copy of the package, as the combines do"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.andNotCardinality",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: how many ids this one holds that the other lacks, answered without a result bitmap you can keep; it changes neither bitmap and takes a RoaringBitmap of this copy of the package, as the combines do"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.intersects",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: whether the two bitmaps share an id; it changes neither bitmap and takes a RoaringBitmap of this copy of the package, as the combines do"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.isSubset",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: whether every id of this bitmap is in the other (a value that is not a bitmap is a ValidationError, where the roaring package answers false)"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.isEqual",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: whether the two bitmaps hold the same ids, by membership and not by container kinds or serialized bytes"
   }
 ]

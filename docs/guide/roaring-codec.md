@@ -123,7 +123,8 @@ store, not this class, and no isolate or browser was run. Its methods, errors an
   does not keep the input alive.
 - **Build and change.** `new RoaringBitmap(ids)`, `add`, `addMany`, `remove`, `removeMany`, `clear`, `clone`, and the
   in-place `andInPlace`, `orInPlace`, `xorInPlace` and `andNotInPlace`; the statics that return a new bitmap and change no
-  operand (`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`); `has`, `size`, `isEmpty`, `minimum`, `maximum`, iteration in
+  operand (`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`); the counts and comparisons that build nothing you keep
+  (`andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality`, `intersects`, `isSubset` and `isEqual`); `has`, `size`, `isEmpty`, `minimum`, `maximum`, iteration in
   ascending order (a promise), `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`.
 - **Every id is checked**, and a refusal never repeats the value.
 - **It loads as itself.** `store.load(ref, bitmap)` reads a bitmap and never changes it.
@@ -152,6 +153,10 @@ console.log(wider.remove(1), wider.remove(1)); // true false
 console.log(wider.minimum(), wider.maximum()); // 5 70000
 console.log(new RoaringBitmap().minimum()); // undefined
 
+// Count and compare without keeping a result; neither bitmap changes.
+console.log(wider.andCardinality(bitmap), wider.orCardinality(bitmap)); // 2 3
+console.log(bitmap.isSubset(wider), wider.isEqual(bitmap)); // true false
+
 try {
   wider.add(-1);
 } catch (err) {
@@ -172,8 +177,7 @@ not pass one to the `roaring` package's methods, which answer wrongly without th
 `serialize()` bytes with that package instead.
 
 **What is not public.** The codec itself, its containers and its seam are internal, and a store cannot be given a codec.
-The class has no ranges, `rank`, `select`, frozen views or 64-bit ids, and in this release no `xorInPlace`, static
-combine that returns a new bitmap, count-only combine, `isEqual`, `isSubset` or `intersects`. No speed claim is made for
+The class has no ranges, `rank`, `select`, frozen views or 64-bit ids. No speed claim is made for
 it: the figures above are the codec inside a store, and a loop over the class in memory has no store's network reads to
 hide a slower combine behind.
 
