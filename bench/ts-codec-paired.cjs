@@ -19,7 +19,8 @@
  *            process, which is the cold decode path the store's warm read cells never reach, because its cache holds
  *            decoded bitmaps), `serialize`, `iterate`, `toUint32`, `optimize`, `count`, `clone`, `build`, `addMany`,
  *            `removeMany`, and `and`, `or`, `andNot` on six operand pairs, on dense, sparse and run chunks and on a
- *            128-container bitmap. Cells are named `ops <operation> <shape>`.
+ *            128-container bitmap, and the four combines that return a new bitmap (`and new`, `or new`, `xor new`,
+ *            `andNot new`) on the same pairs. Cells are named `ops <operation> <shape>`.
  *   import   the time to import `packages/roaring/dist/bitmap.js` against `packages/roaring/dist/index.js` (the
  *            built entries), each in a fresh process, with the main entry a second time as the control, and the bytes
  *            of an esbuild bundle (minified, and gzipped) of a one-line importer of the class from each entry.

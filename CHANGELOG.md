@@ -24,6 +24,16 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`, the combines that return a new bitmap, and `xorInPlace`.**
+  `RoaringBitmap.and(a, b)` and the others take two bitmaps (`orMany` takes an iterable of them) and return a new one that
+  owns its storage; no operand's ids change, and a result and its operands change apart afterwards. `and` keeps no
+  container of either operand. `or`, `xor` and `andNot` keep a container only the first operand holds by reference,
+  flagged copy-on-write, so the next write to that container, on either side, copies it once. `orMany` builds the
+  union in containers of its own and flags nothing. `xorInPlace(other)` is the symmetric difference in place, derived from
+  the intersection, a union and a removal, with no kernel of its own. An operand that is not a `RoaringBitmap` of this
+  copy of the package is a `ValidationError`, as for the in-place combines. `RoaringBitmap.orMany` replaces the
+  `orMany` of the `roaring` package in the recipe for parts of one segment built separately.
+
 - **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, importable from `@cloudbitmaps/roaring/bitmap` or the
   main entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
   `new RoaringBitmap(ids?)`, `add`, `addMany`, `remove` (answers whether the id was there), `removeMany`, `clear`,
@@ -33,8 +43,7 @@ so, and so do the module headers in the code.
   argument is checked and throws `ValidationError` with a message that never repeats the value, `add` and `remove` take
   exactly one id (a second argument names `addMany` or `removeMany`), and there is no `toJSON`, so `JSON.stringify(bitmap)`
   gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. The class does not
-  yet have `xorInPlace`, the combines that return a new bitmap, the count-only combines, `isEqual`, `isSubset` or
-  `intersects`. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
+  yet have the count-only combines, `isEqual`, `isSubset` or `intersects`. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   lists each method and where it differs from the `roaring` package.
 
 - **`RoaringBitmap.deserialize(bytes, { maxBytes? }?)`, the one door for portable bytes you did not write.** It makes the

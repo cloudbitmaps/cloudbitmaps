@@ -22,6 +22,7 @@
  *   serialize, iterate, toUint32      on dense, sparse, run and many
  *   optimize, clone, build, addMany, removeMany    on dense, sparse and run
  *   and, or, andNot    the in-place combine of a clone of one operand with another, on six operand pairs
+ *   and new, or new, xor new, andNot new    the combine that returns a new bitmap, on the same six pairs
  *
  * The stored bytes come from the native codec (`storedBytesOf`), so every subject decodes the same bytes whatever it
  * writes itself; ids are regenerated from seeds, so they are the same in every process. `digest` reduces a call's
@@ -246,6 +247,38 @@ function opCells(bytes) {
           return () => {
             const x = a.clone();
             x[call](b);
+            return x;
+          };
+        },
+      });
+    }
+  }
+  // The combines that return a new bitmap. A codec whose bitmap class has the static (`and`, `or`, `xor`, `andNot`: the
+  // native one and the head of this repository) is timed on it; the base, which has none, is timed on what a caller
+  // wrote before: a clone and an in-place combine, and for `xor` the three passes the in-place form is derived from.
+  for (const [label, sa, sb] of PAIRS) {
+    for (const op of ['and', 'or', 'xor', 'andNot']) {
+      list.push({
+        name: `${op} new ${label}`,
+        make: (c) => {
+          const a = decoded(c, sa);
+          const b = decoded(c, sb === sa ? `${sb} other` : sb);
+          const ctor = a.constructor;
+          if (typeof ctor[op] === 'function') return () => ctor[op](a, b);
+          const inPlace = `${op}InPlace`;
+          if (typeof a[inPlace] === 'function') {
+            return () => {
+              const x = a.clone();
+              x[inPlace](b);
+              return x;
+            };
+          }
+          return () => {
+            const x = a.clone();
+            const both = a.clone();
+            both.andInPlace(b);
+            x.orInPlace(b);
+            x.andNotInPlace(both);
             return x;
           };
         },

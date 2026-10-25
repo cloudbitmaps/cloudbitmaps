@@ -65,6 +65,7 @@ describe('the per-operation cells', () => {
       'skew 64/4000',
     ]) {
       for (const op of ['and', 'or', 'andNot']) want.push(`${op} ${pair}`);
+      for (const op of ['and', 'or', 'xor', 'andNot']) want.push(`${op} new ${pair}`);
     }
     expect(names.slice().sort()).toEqual(want.sort());
     expect(new Set(names).size).toBe(names.length);
