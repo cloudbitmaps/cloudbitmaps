@@ -83,12 +83,21 @@ export function collect(values: Iterable<number>): Uint32Array {
   if (Array.isArray(values)) {
     const list = values as number[];
     const out = new Uint32Array(list.length);
-    for (let i = 0; i < list.length; i++) {
-      const v = list[i] as number;
-      // `v >>> 0 === v` is an integer from 0 to 2^32 - 1 and nothing else (NaN, fractions, strings and null fail it);
-      // the `typeof` keeps a BigInt or a Symbol, which `>>>` would throw a TypeError for, a refusal of its own.
-      if (typeof v !== 'number' || v >>> 0 !== v) throw refusalOfId(v);
-      out[i] = v;
+    let i = 0;
+    try {
+      for (; i < list.length; i++) {
+        const v = list[i] as number;
+        // `v >>> 0 === v` is an integer from 0 to 2^32 - 1 and nothing else (NaN, fractions, strings and null fail it).
+        if (v >>> 0 !== v) throw refusalOfId(v);
+        out[i] = v;
+      }
+    } catch (error) {
+      // `>>>` throws a TypeError for a BigInt or a Symbol; that is a refusal of the id like any other, and a check per
+      // value to tell it apart in the loop would cost every build. Anything else is rethrown as it is.
+      const v: unknown = list[i];
+      if (error instanceof TypeError && (typeof v === 'bigint' || typeof v === 'symbol'))
+        throw refusalOfId(v);
+      throw error;
     }
     return out;
   }
