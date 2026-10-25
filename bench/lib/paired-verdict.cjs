@@ -22,7 +22,7 @@
  * UNIT. Every duration a pass records (a round's three figures, a cell's medians) is milliseconds with enough decimals
  * to keep the instrument's own resolution: six for a figure the harness measures in whole nanoseconds, seven for one it
  * measures to a tenth of a nanosecond (the per-operation cells). The decimal point keeps any integer run of the record
- * short (no run of twelve digits can occur for any plausible duration). A pass recorded before that carries no `unit`
+ * short (no run of twelve digits can occur in a duration). A pass recorded before that carries no `unit`
  * and holds nanoseconds, with no decimals (a tenth of a nanosecond in the per-operation cells); `figurePlaces` gives the
  * places each form is rounded to, and the ratios the rule derives do not depend on the unit.
  *
