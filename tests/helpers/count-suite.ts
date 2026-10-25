@@ -15,6 +15,11 @@ const TOP = 0xffff_ffff;
 const HALF = 2 ** 31;
 const EDGES = [0, 1, 4_095, 4_096, 65_535, 65_536, 65_537, HALF - 1, HALF, HALF + 1, TOP - 1, TOP];
 
+/** The ids `from` up to but not including `to`. */
+function span(from: number, to: number): number[] {
+  return Array.from({ length: to - from }, (_, i) => from + i);
+}
+
 const CORPUS: ReadonlyArray<readonly [string, number[]]> = [
   ['empty', []],
   ['one id at 0', [0]],
@@ -30,11 +35,52 @@ const CORPUS: ReadonlyArray<readonly [string, number[]]> = [
   ['a bitset at the boundary', Array.from({ length: 4_097 }, (_, i) => i * 3)],
   ['an array at the boundary', Array.from({ length: 4_096 }, (_, i) => i * 3)],
   ['a subset of the array', Array.from({ length: 1_000 }, (_, i) => i * 3)],
+  ['two long runs', [...span(100, 3_100), ...span(8_000, 9_000)]],
+  ['a run apart from those', span(20_000, 22_000)],
+  ['a run across the first two', span(5_000, 9_000)],
+  ['many short runs', Array.from({ length: 100 }, (_, r) => span(r * 200, r * 200 + 50)).flat()],
+  ['a bitset away from the runs', Array.from({ length: 5_000 }, (_, i) => 30_000 + i * 2)],
 ];
 
 const COUNTS = ['andCardinality', 'orCardinality', 'xorCardinality', 'andNotCardinality'] as const;
 const PREDICATES = ['intersects', 'isSubset', 'isEqual'] as const;
 const ALL = [...COUNTS, ...PREDICATES] as const;
+
+/** The static a derived route builds for each family method; `isSubset` and `isEqual` build nothing. */
+const BUILDS = {
+  andCardinality: 'and',
+  orCardinality: 'or',
+  xorCardinality: 'xor',
+  andNotCardinality: 'andNot',
+  intersects: 'and',
+} as const;
+const STATICS = ['and', 'or', 'xor', 'andNot'] as const;
+
+/** Corpus entries that hold at least one run container once `runOptimize` has run. */
+const RUN_NAMES = new Set([
+  'a full container',
+  'a full top container',
+  'runs across the 2^31 line',
+  'two long runs',
+  'a run apart from those',
+  'a run across the first two',
+  'many short runs',
+]);
+
+/** A bitmap of `ids`, with its containers run-optimised when `runs` is true. */
+function make(ids: readonly number[], runs: boolean): RoaringBitmap {
+  const bitmap = new RoaringBitmap(ids);
+  if (runs) bitmap.runOptimize();
+  return bitmap;
+}
+
+/** Which operand holds run containers: neither, the first, the second, both. */
+const VARIANTS: ReadonlyArray<readonly [boolean, boolean]> = [
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+];
 
 /** What CRoaring answers for `method` on two id lists. */
 function oracle(
@@ -54,21 +100,41 @@ function snapshot(bitmap: RoaringBitmap): number[] {
 /** Registers the suite under `title`; `route` names the route the caller has configured, and the suite proves it took. */
 export function describeCounts(title: string, route: 'kernels' | 'derived'): void {
   describe(title, () => {
-    it('the configured route is the one taken', () => {
-      const build = vi.spyOn(TsBitmap, 'and');
-      const a = new RoaringBitmap([1, 2, 3]);
-      const b = new RoaringBitmap([2, 3, 4]);
-      for (const method of COUNTS) a[method](b);
-      a.intersects(b);
-      const built = build.mock.calls.length;
-      a.isSubset(b);
-      a.isEqual(b);
-      const after = build.mock.calls.length;
-      build.mockRestore();
-      expect(built, 'combinations built by the five family methods').toBe(
-        route === 'derived' ? 2 : 0,
-      );
-      expect(after, 'isSubset and isEqual build nothing').toBe(built);
+    it.each(ALL)('%s takes the configured route', (method) => {
+      const statics = STATICS.map((name) => [name, vi.spyOn(TsBitmap, name)] as const);
+      const kernel = vi.spyOn(TsBitmap.prototype, method);
+      try {
+        const a = new RoaringBitmap([1, 2, 3]);
+        const b = new RoaringBitmap([2, 3, 4]);
+        a[method](b);
+        const built = statics.filter(([, spy]) => spy.mock.calls.length > 0).map(([name]) => name);
+        const builds = BUILDS[method as keyof typeof BUILDS];
+        if (route === 'derived' && builds !== undefined) {
+          expect(built, `${method} builds ${builds} and nothing else`).toEqual([builds]);
+          expect(kernel, `${method} does not call its kernel`).not.toHaveBeenCalled();
+        } else {
+          expect(built, `${method} builds no combination`).toEqual([]);
+          expect(kernel, `${method} calls its kernel`).toHaveBeenCalled();
+        }
+      } finally {
+        for (const [, spy] of statics) spy.mockRestore();
+        kernel.mockRestore();
+      }
+    });
+
+    it('container kinds: the run corpus entries hold run containers once optimised, the plain ones do not', () => {
+      const RUN_COOKIE = 12_347;
+      const cookie = (bm: RoaringBitmap): number => {
+        const bytes = bm.serialize();
+        return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(0, true);
+      };
+      for (const [name, ids] of CORPUS) {
+        if (ids.length === 0) continue;
+        const runs = make(ids, true);
+        const plain = make(ids, false);
+        expect(cookie(plain), `${name}, plain`).not.toBe(RUN_COOKIE);
+        if (RUN_NAMES.has(name)) expect(cookie(runs), `${name}, optimised`).toBe(RUN_COOKIE);
+      }
     });
 
     const pairs = CORPUS.flatMap(([an, a]) =>
@@ -76,14 +142,17 @@ export function describeCounts(title: string, route: 'kernels' | 'derived'): voi
     );
 
     it.each(pairs)('%s agrees with CRoaring and changes neither operand', (_n, a, b) => {
-      const left = new RoaringBitmap(a);
-      const right = new RoaringBitmap(b);
-      for (const method of ALL) {
-        expect(left[method](right), `${method}`).toBe(oracle(method, a, b));
-        expect(right[method](left), `${method}, operands swapped`).toBe(oracle(method, b, a));
+      for (const [leftRuns, rightRuns] of VARIANTS) {
+        const where = `runs in (${leftRuns}, ${rightRuns})`;
+        const left = make(a, leftRuns);
+        const right = make(b, rightRuns);
+        for (const method of ALL) {
+          expect(left[method](right), `${method}, ${where}`).toBe(oracle(method, a, b));
+          expect(right[method](left), `${method}, swapped, ${where}`).toBe(oracle(method, b, a));
+        }
+        expect(snapshot(left), where).toEqual(Array.from(crOf(a).toUint32Array()));
+        expect(snapshot(right), where).toEqual(Array.from(crOf(b).toUint32Array()));
       }
-      expect(snapshot(left)).toEqual(Array.from(crOf(a).toUint32Array()));
-      expect(snapshot(right)).toEqual(Array.from(crOf(b).toUint32Array()));
     });
 
     it('a bitmap against itself, and against a clone of itself', () => {
@@ -139,10 +208,12 @@ export function describeCounts(title: string, route: 'kernels' | 'derived'): voi
     it('random sets of container shapes agree with CRoaring', () => {
       fc.assert(
         fc.property(pair, ({ a, b }) => {
-          const [A, B] = [new RoaringBitmap(a), new RoaringBitmap(b)];
-          for (const method of ALL) {
-            expect(A[method](B), method).toBe(oracle(method, a, b));
-            expect(B[method](A), `${method}, swapped`).toBe(oracle(method, b, a));
+          for (const [leftRuns, rightRuns] of VARIANTS) {
+            const [A, B] = [make(a, leftRuns), make(b, rightRuns)];
+            for (const method of ALL) {
+              expect(A[method](B), method).toBe(oracle(method, a, b));
+              expect(B[method](A), `${method}, swapped`).toBe(oracle(method, b, a));
+            }
           }
         }),
         RUNS,
@@ -152,7 +223,7 @@ export function describeCounts(title: string, route: 'kernels' | 'derived'): voi
     it('each count equals the size of its returning form, and the predicates their identities', () => {
       fc.assert(
         fc.property(pair, ({ a, b }) => {
-          const [A, B] = [new RoaringBitmap(a), new RoaringBitmap(b)];
+          const [A, B] = [make(a, true), make(b, true)];
           expect(A.andCardinality(B)).toBe(RoaringBitmap.and(A, B).size);
           expect(A.orCardinality(B)).toBe(RoaringBitmap.or(A, B).size);
           expect(A.xorCardinality(B)).toBe(RoaringBitmap.xor(A, B).size);

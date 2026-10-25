@@ -337,10 +337,10 @@ const fromBytes = RoaringBitmap.deserialize(bytes);        // portable bytes: ca
 | `bm.xorInPlace(other)` → `this` | keeps the ids exactly one of the two holds; `other` is not changed and may be `bm` itself (the result is then empty). Derived: the shared ids are taken first, `other` is added, then the shared ids are removed | three passes over the containers of the two |
 | `RoaringBitmap.and(a, b)`, `RoaringBitmap.or(a, b)`, `RoaringBitmap.xor(a, b)`, `RoaringBitmap.andNot(a, b)` → `RoaringBitmap` | a new bitmap of the ids both hold, either holds, exactly one holds, or `a` holds and `b` lacks. Neither operand's ids change, and the result owns its storage: a change to it never reaches an operand and the reverse. `a` and `b` may be the same bitmap | linear in the containers of the two; `or`, `xor` and `andNot` flag, copy-on-write, each container only `a` holds that the result keeps by reference (below) |
 | `RoaringBitmap.orMany(bitmaps)` → `RoaringBitmap` | a new bitmap of the union of an iterable of bitmaps (the empty set for none), built in containers of its own: nothing is flagged and no operand changes. Every element is checked before any is combined | linear in the containers of all of them |
-| `bm.andCardinality(other)`, `bm.orCardinality(other)`, `bm.xorCardinality(other)`, `bm.andNotCardinality(other)` → `number` | how many ids both hold, either holds, exactly one holds, or `bm` holds and `other` lacks, answered without a result bitmap you can keep. Neither bitmap changes, and `other` may be `bm` itself. `or`, `xor` and `andNot` are arithmetic on the intersection's count and the two sizes | linear in the containers of the two |
-| `bm.intersects(other)` → `boolean` | whether the two share an id; equal to `andCardinality(other) > 0` | linear in the containers of the two, and it stops at the first shared id |
-| `bm.isSubset(other)` → `boolean` | whether every id of `bm` is in `other`; an empty bitmap is a subset of every bitmap, itself included. Unlike `roaring`, a value that is not a bitmap is a `ValidationError`, not `false` | linear in the containers of `bm`, and it stops at the first container that is not inside its partner |
-| `bm.isEqual(other)` → `boolean` | whether the two hold exactly the same ids: by membership, not by container kinds or serialized bytes, so a bitmap with run containers equals the same ids held as arrays | linear in the containers of the two |
+| `bm.andCardinality(other)`, `bm.orCardinality(other)`, `bm.xorCardinality(other)`, `bm.andNotCardinality(other)` → `number` | how many ids both hold, either holds, exactly one holds, or `bm` holds and `other` lacks, answered without a result bitmap you can keep. Neither bitmap changes, and `other` may be `bm` itself | no cost stated |
+| `bm.intersects(other)` → `boolean` | whether the two share an id; equal to `andCardinality(other) > 0` | no cost stated |
+| `bm.isSubset(other)` → `boolean` | whether every id of `bm` is in `other`; an empty bitmap is a subset of every bitmap, itself included. Unlike `roaring`, a value that is not a bitmap is a `ValidationError`, not `false` | no cost stated |
+| `bm.isEqual(other)` → `boolean` | whether the two hold exactly the same ids: by membership, not by container kinds or serialized bytes, so a bitmap with run containers equals the same ids held as arrays | no cost stated |
 | `[Symbol.iterator]()` | the ids, ascending, each once (a promise) | lazy |
 | `bm.toArray()`, `bm.toUint32Array()` | the ids as a new ascending array the caller owns (`toUint32Array` never returns a view of the bitmap's storage); a bitmap too large to allocate throws the runtime's `RangeError` | `size` times 8 bytes (array) or 4 bytes (typed) |
 | `bm.serialize(format?)` → `Uint8Array` | the portable bytes, in a new array; `'portable'` is the only format, and any other argument throws `ValidationError` | linear in the containers |
@@ -360,9 +360,8 @@ iterable, a string included. An operand of `andInPlace`, `orInPlace`, `andNotInP
 a `RoaringBitmap` of this copy of the package, or `ValidationError`.
 
 **Counting and comparing.** `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality` and `intersects` answer
-from the containers of the two bitmaps, or by building the combination and counting it; either way the answer is the same,
-neither bitmap changes and nothing is kept. `isSubset` and `isEqual` compare container by container and stop at the first
-difference. Each is held to the `roaring` package's answer and to the identities `andCardinality(a, b) == and(a, b).size`,
+whichever way the release computes them: the answer is the one `roaring` gives, neither bitmap changes and nothing is
+kept. `isSubset` and `isEqual` compare by membership. Each is held to the `roaring` package's answer and to the identities `andCardinality(a, b) == and(a, b).size`,
 `intersects(a, b) == (andCardinality(a, b) > 0)` and `isSubset(a, b) == andNot(a, b).isEmpty`. No speed claim is made for them.
 
 **Copy-on-write.** `clone()` shares every container between the copy and the original until one side writes it, and the

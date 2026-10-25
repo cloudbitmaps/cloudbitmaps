@@ -794,9 +794,10 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
   against itself and its clone) and on random container shapes, the identities against the returning forms
   (`andCardinality(a, b) == and(a, b).size`, `intersects == andCardinality > 0`, `isSubset(a, b) == andNot(a, b).isEmpty`,
   `isEqual` symmetric and equal to element-wise equality), that no operand or earlier clone changes, and each refusal, once with
-  each route of the switch; the suite also proves which route a run took.
+  each route of the switch; the suite also proves, for each of the seven methods, which route a run took (the combination it built, if any, and whether it called its codec member), and every pair of its shapes runs again with run containers on either side or both.
 - `tests/roaring/fuzz-count-reproducers.test.ts`: the committed `bitmap-ops` reproducers for the counts start from an array, a
-  bitset and a run, call every count, and the target's check fires on a wrong answer from each.
+  bitset and a run, call every count, and the target's check fires on a wrong answer from each and on a non-bitmap operand
+  that a method accepts.
 - `tests/roaring/ts-bitmap-sharing.test.ts`: at the codec level, which containers each static flags shared and which container
   objects it hands back (`and` and the union `orMany` builds flag nothing; `or`, `xor` and `andNot` flag exactly the containers
   only the first operand holds, and keep those objects; a container only the second operand holds is always a copy; no pair
