@@ -428,7 +428,7 @@ describe('leak-scan', () => {
     const BROKEN = ['qvx7kz9w(', '[zq8wk3vjh', 'zq5xwv9k)', 'zq2xwv7k{2,1}'];
     const windows = (pattern: string): string[] => {
       const out: string[] = [];
-      for (let i = 0; i + 4 <= pattern.length; i += 1) out.push(pattern.slice(i, i + 4));
+      for (let i = 0; i + 3 <= pattern.length; i += 1) out.push(pattern.slice(i, i + 3));
       return out;
     };
 
