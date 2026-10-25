@@ -123,6 +123,9 @@ jobs:
       # reads: it runs every cell once on tiny data and fails if the output is malformed, the codecs disagree, a store
       # ran the wrong codec or the codecs wrote different bytes.
       - run: pnpm bench:ts-codec-engine:check
+      # bench/count-kernels.cjs times each counting operation of the TypeScript codec against building the result. This
+      # times nothing: it runs every cell once on tiny data and fails if a count differs from the built result.
+      - run: pnpm bench:count-kernels:check
       # bench/ts-codec-paired.cjs times a change to the TypeScript codec against its base commit. This times nothing: it
       # runs every part once at a tiny scale and fails if the output is malformed or the subjects disagree on an answer.
       # It extracts the base from history, which this job's full clone has, and it imports the built entry, so it runs

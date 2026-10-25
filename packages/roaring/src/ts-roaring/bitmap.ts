@@ -28,6 +28,9 @@
  *     a pair of containers combines into an array or a bitset, never a run.
  *   - `clone` shares every container with the original and flags it, so the first write on either side copies it.
  *
+ * `andCardinality` (and the or, xor and andNot counts derived from it), `intersects`, `isSubset` and `isEqual` answer from
+ * the containers without building a result: they change neither bitmap and allocate nothing per call.
+ *
  * Writing an id that is not an integer from 0 to 4,294,967,295 throws `ValidationError`; reading one (`has`) says no
  * and removing one does nothing. A combine works on each pair of containers by their kinds (`containers.ts` has the
  * table), `addMany` and `removeMany` group sorted ids by key and touch each container once, and iteration is a class
@@ -49,12 +52,14 @@ import {
   cloneContainer,
   containerAdd,
   containerAnd,
+  containerAndCard,
   containerAndNot,
   containerHas,
   containerMax,
   containerMin,
   containerOr,
   containerRemove,
+  containersIntersect,
   fromSortedIds,
   optimize,
   RUN,
@@ -424,6 +429,95 @@ export class TsBitmap implements CodecBitmap {
 
   andNotInPlace(other: CodecBitmap): void {
     this.#combine(TsBitmap.#of(other), AND_NOT);
+  }
+
+  /** How many ids both bitmaps hold, counted without building the intersection. */
+  andCardinality(other: CodecBitmap): number {
+    const that = TsBitmap.#of(other);
+    const a = this.#keys;
+    const b = that.#keys;
+    let n = 0;
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+      const ka = a[i] as number;
+      const kb = b[j] as number;
+      if (ka === kb) {
+        n += containerAndCard(this.#conts[i++] as Container, that.#conts[j++] as Container);
+      } else if (ka < kb) {
+        i = gallopKeys(a, kb, i + 1);
+      } else {
+        j = gallopKeys(b, ka, j + 1);
+      }
+    }
+    return n;
+  }
+
+  /** How many ids either bitmap holds. */
+  orCardinality(other: CodecBitmap): number {
+    return this.#size + TsBitmap.#of(other).#size - this.andCardinality(other);
+  }
+
+  /** How many ids exactly one of the bitmaps holds. */
+  xorCardinality(other: CodecBitmap): number {
+    return this.#size + TsBitmap.#of(other).#size - 2 * this.andCardinality(other);
+  }
+
+  /** How many ids this bitmap holds that `other` lacks. */
+  andNotCardinality(other: CodecBitmap): number {
+    return this.#size - this.andCardinality(other);
+  }
+
+  /** Whether the bitmaps share an id; stops at the first one found. */
+  intersects(other: CodecBitmap): boolean {
+    const that = TsBitmap.#of(other);
+    const a = this.#keys;
+    const b = that.#keys;
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+      const ka = a[i] as number;
+      const kb = b[j] as number;
+      if (ka === kb) {
+        if (containersIntersect(this.#conts[i++] as Container, that.#conts[j++] as Container)) {
+          return true;
+        }
+      } else if (ka < kb) {
+        i = gallopKeys(a, kb, i + 1);
+      } else {
+        j = gallopKeys(b, ka, j + 1);
+      }
+    }
+    return false;
+  }
+
+  /** Whether every id of this bitmap is in `other`; stops at the first container that is not inside its partner. */
+  isSubset(other: CodecBitmap): boolean {
+    const that = TsBitmap.#of(other);
+    if (this.#size > that.#size) return false;
+    const a = this.#keys;
+    const b = that.#keys;
+    let j = 0;
+    for (let i = 0; i < a.length; i++) {
+      j = gallopKeys(b, a[i] as number, j);
+      if (j === b.length || b[j] !== a[i]) return false;
+      const c = this.#conts[i] as Container;
+      if (containerAndCard(c, that.#conts[j++] as Container) !== c.card) return false;
+    }
+    return true;
+  }
+
+  /** Whether both hold the same ids, whatever the kinds of their containers. */
+  isEqual(other: CodecBitmap): boolean {
+    const that = TsBitmap.#of(other);
+    if (this.#size !== that.#size || this.#keys.length !== that.#keys.length) return false;
+    for (let i = 0; i < this.#keys.length; i++) {
+      if (this.#keys[i] !== that.#keys[i]) return false;
+      const c = this.#conts[i] as Container;
+      const d = that.#conts[i] as Container;
+      if (c.card !== d.card || containerAndCard(c, d) !== c.card) return false;
+    }
+    return true;
   }
 
   [Symbol.iterator](): IterableIterator<number> {
