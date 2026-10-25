@@ -548,14 +548,6 @@
     "reason": "a new options type, agreed with the maintainer on 2026-10-24: { maxBytes } on RoaringBitmap.deserialize, which can only lower the size cap"
   },
   {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap*",
-    "reason": "a new public class, agreed with the maintainer on 2026-10-24: a mutable set of 32-bit ids over the codec's own bitmap, the one place a caller builds a bitmap and the one door that decodes portable bytes (RoaringBitmap.deserialize), with a value-free ValidationError for every id argument; on its own subpath, which loads no store and no Node builtin"
-  },
-  {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmapDeserializeOptions*",
-    "reason": "a new options type, agreed with the maintainer on 2026-10-24: { maxBytes } on RoaringBitmap.deserialize, which can only lower the size cap"
-  },
-  {
     "entry": "@cloudbitmaps/roaring deserializePortable",
     "reason": "removed, agreed with the maintainer on 2026-10-24: RoaringBitmap.deserialize is the one door for decoding portable bytes, next to the constructor, and returns a mutable RoaringBitmap; a caller changes one call, and an import of it fails loudly"
   },
@@ -588,27 +580,7 @@
     "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the union of an iterable of bitmaps as a new bitmap, so the recipe for parts of one segment built separately needs one package"
   },
   {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.xorInPlace",
-    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: the symmetric difference in place, derived from the intersection, a union and a removal, with the argument rules of the other in-place combines"
-  },
-  {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.and",
-    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
-  },
-  {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.or",
-    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
-  },
-  {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.xor",
-    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
-  },
-  {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.andNot",
-    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
-  },
-  {
-    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.orMany",
-    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the union of an iterable of bitmaps as a new bitmap, so the recipe for parts of one segment built separately needs one package"
+    "entry": "@cloudbitmaps/roaring/bitmap *",
+    "reason": "the @cloudbitmaps/roaring/bitmap subpath never shipped in a release, and the class is exported from the main entry: RoaringBitmap and RoaringBitmapDeserializeOptions are imported from @cloudbitmaps/roaring only"
   }
 ]

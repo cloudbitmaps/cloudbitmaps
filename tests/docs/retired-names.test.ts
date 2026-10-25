@@ -112,6 +112,10 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
     instead: '`store.load()`, or `loadSegment()` with your own drivers',
   },
   { name: 'BulkLoadResult', instead: '`LoadResult`' },
+  {
+    name: '@cloudbitmaps/roaring/bitmap',
+    instead: '`@cloudbitmaps/roaring`, the one entry `RoaringBitmap` is imported from',
+  },
   { name: 'becameCurrent', instead: "`LoadResult`'s `published`" },
   { name: 'RetryingStorageDriver', instead: RETRY_INSTEAD, code: true },
   { name: 'RetryingRegistryDriver', instead: RETRY_INSTEAD, code: true },

@@ -265,8 +265,8 @@ for await (const id of store.segment('vips').intersect([store.segment('engaged')
 ### A bitmap on its own
 
 `RoaringBitmap` is the codec's bitmap as a public class: a mutable set of unsigned 32-bit ids with the portable Roaring
-bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring/bitmap` to load no store and no Node
-builtin, or from `@cloudbitmaps/roaring`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
+bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring`, the same line as the store:
+`import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring'`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
 door for bytes you did not write.
 
 <!-- typecheck -->

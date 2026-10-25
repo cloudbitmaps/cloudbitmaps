@@ -11,7 +11,7 @@ import {
   tsRoaringCodec,
 } from '@/testing/fuzz-codec';
 import { CloudRoaringError, IntegrityError, ValidationError } from '@/core/errors';
-import { RoaringBitmap } from '@/bitmap';
+import { RoaringBitmap } from '@/index';
 import type { BlobReader } from '@/core/blob';
 import type { CrbmCrypto } from '@/core/crypto';
 

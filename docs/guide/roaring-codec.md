@@ -109,10 +109,11 @@ in-region and at-scale figures on the benchmarks page are the native codec's, an
 ## Using it by itself
 
 `RoaringBitmap` from `@cloudbitmaps/roaring` is this codec's bitmap as a public class, usable without a store: a mutable
-set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript on typed arrays, with no native code. Import it
-from `@cloudbitmaps/roaring/bitmap`, which loads no store and imports no Node builtin (a build step proves that on every
-build), or from `@cloudbitmaps/roaring`, which re-exports the same class. The class runs in CI on Node 22 and 24 only. The earlier Bun and Deno
-self-check ran the codec inside a store, not this class, and no isolate or browser was run. Its methods, errors and costs are in
+set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript on typed arrays, with no native code. It loads
+with the package's main entry, the same import line as the store (`import { CloudRoaring, MemoryStorage, RoaringBitmap }
+from '@cloudbitmaps/roaring'`), and that entry also loads the store's in-process backends and their Node builtins. So the
+class runs where the package runs: CI runs it on Node 22 and 24, the earlier Bun and Deno self-check ran the codec inside a
+store, not this class, and no isolate or browser was run. Its methods, errors and costs are in
 [the API reference](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
 - **One door for bytes.** `RoaringBitmap.deserialize(bytes: Uint8Array)` decodes the portable bytes of one bitmap you hold
@@ -159,12 +160,6 @@ try {
 ```
 
 The example is run by [`tests/docs/roaring-codec-example.test.ts`](../../tests/docs/roaring-codec-example.test.ts).
-
-**What importing it costs** (measured on 2026-10-24 on an Apple M3 Pro under Node v24.22.1, 31 fresh processes per entry
-with the main entry measured twice as the control, by `bench/ts-codec-paired.cjs`; the control's median differed from the
-first by 0.3%): `@cloudbitmaps/roaring/bitmap` imports in 10.0 ms against 23.9 ms for the main entry (58% less), and an
-esbuild bundle of a one-line importer of the class is 31,468 bytes (11,108 gzipped) from `./bitmap` against 44,208 (15,530
-gzipped) from the main entry.
 
 **Where it differs from the `roaring` package from npm**, each on purpose: `add` and `remove` take exactly one id (a second
 argument is an error naming `addMany` or `removeMany`); every id argument throws a `ValidationError` that does not

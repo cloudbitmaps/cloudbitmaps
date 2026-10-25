@@ -699,9 +699,7 @@ Everything here is a test, a workflow or a bench, not part of the module.
 `encodeChunks`, `optimize` and the containers are not exported, so the seam is not frozen into the promise.
 
 ```
-  import ... from '@cloudbitmaps/roaring/bitmap'      import ... from '@cloudbitmaps/roaring'
-            |                                                   |
-            +-------------------- one class ------------------+
+         import { RoaringBitmap } from '@cloudbitmaps/roaring'
                                        |
                  RoaringBitmap  (src/bitmap.ts)  #bitmap: TsBitmap
                     |  checks every argument, then forwards
@@ -794,9 +792,9 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
   hostile-bytes test, run through the public door.
 - `tests/roaring/roaring-bitmap-retention.test.ts`: decodes a multi-container bitmap, reduces it, drops the input and checks
   the heap falls, with a control that decodes without `detached` and does not.
-- The fuzz targets (section 11) and, on every build, `pnpm smoke`: the `./bitmap` entry is walked for `node:*` specifiers,
-  bundled for a runtime-neutral platform and loaded in a context with web globals only, and the class from the main entry
-  and from `./bitmap` is one object under ESM and `require()`. `tests/arch` fires planted inputs at that gate both ways.
+- The fuzz targets (section 11) and, on every build, `pnpm smoke`: the class from the main entry is one object under ESM and
+  `require()`, and it works. The package's main entry also loads the store's in-process backends and their Node builtins,
+  so the class runs where the package runs.
 
 ## 14. Credits
 
