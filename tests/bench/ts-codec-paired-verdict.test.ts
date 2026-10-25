@@ -76,7 +76,20 @@ const rule = require_('./lib/paired-verdict.cjs') as {
   boundText: (upper: number | null) => string;
   keepRound: (loadAtEnd: number, anyLoad?: boolean) => boolean;
   gateProblems: (passes: unknown[]) => string[];
+  SLEEP_FACTOR: number;
+  sleepHits: (figureRows: number[][][]) => boolean[];
+  awakeRounds: (rounds: Round[]) => Round[];
+  collectRounds: (options: {
+    want: number;
+    takeOne: (order: number) => TakenRound;
+    triplesOf: (samples: number[]) => number[][];
+    checkSleep?: boolean;
+    keepByLoad?: (round: TakenRound) => boolean;
+    limit?: number;
+  }) => { kept: TakenRound[]; discarded: TakenRound[]; slept: TakenRound[] };
+  effectiveOf: (cell: Cell) => { verdict: string; headInterval: number[] };
 };
+type TakenRound = { order: number; start: number; end: number; samples: number[] };
 const codec = require_('./lib/codec-verdict.cjs') as {
   MIN_ROUNDS: number;
   summarise: (rounds: Round[], places?: number) => Record<string, number | number[]>;
@@ -276,6 +289,129 @@ describe('the unit of a record', () => {
   });
 });
 
+/** 31 rounds of the three figures, each 100 ms, with `plant` (round index, subject 1..3) set to the given figure. */
+function flatRounds(plant: Record<string, number> = {}, n = 31): Round[] {
+  return Array.from({ length: n }, (_, i) => {
+    const r = [i % 6, 100, 100, 100, 1, 2];
+    for (const subject of [1, 2, 3]) r[subject] = plant[`${i}:${subject}`] ?? 100;
+    return r;
+  });
+}
+
+describe('the sleep rule', () => {
+  it('is ten times the median of that subject in the cell', () => {
+    expect(rule.SLEEP_FACTOR).toBe(10);
+  });
+  it('keeps a round whose figure is exactly ten times the median and sets aside one just above it, for each subject', () => {
+    for (const subject of [1, 2, 3]) {
+      const at = rule.awakeRounds(flatRounds({ [`7:${subject}`]: 1000 }));
+      expect(at, `subject ${subject} at 10x`).toHaveLength(31);
+      const above = rule.awakeRounds(flatRounds({ [`7:${subject}`]: 1000.001 }));
+      expect(above, `subject ${subject} above 10x`).toHaveLength(30);
+      expect(above.some((r) => r[0] === 7 && r[subject] === 1000.001)).toBe(false);
+    }
+  });
+  it('sets aside a planted sleep-hit round whole, whichever subject slept, and leaves the other rounds as they were', () => {
+    const rounds = flatRounds({ '3:2': 1e6, '20:1': 5e5 });
+    const awake = rule.awakeRounds(rounds);
+    expect(awake).toHaveLength(29);
+    expect(awake).toEqual(rounds.filter((_, i) => i !== 3 && i !== 20));
+  });
+  it('does not touch an ordinary slow round (five times the median), nor a cell with no outlier', () => {
+    expect(rule.awakeRounds(flatRounds({ '4:2': 500, '9:3': 499 }))).toHaveLength(31);
+    expect(rule.awakeRounds(flatRounds())).toHaveLength(31);
+  });
+  it('judges each subject against its own median, so a slow subject is not a sleeping one', () => {
+    const rounds = flatRounds().map((r) => [r[0], 100, 900, 100, 1, 2]);
+    expect(rule.awakeRounds(rounds)).toHaveLength(31);
+  });
+  it('sets a round aside when any one cell of it slept', () => {
+    const rows = Array.from({ length: 31 }, () => [
+      [10, 10, 10],
+      [20, 20, 20],
+    ]);
+    rows[5]![1] = [20, 20, 201];
+    const hits = rule.sleepHits(rows);
+    expect(hits.filter(Boolean)).toHaveLength(1);
+    expect(hits[5]).toBe(true);
+    rows[5]![1] = [20, 20, 200];
+    expect(rule.sleepHits(rows).some(Boolean)).toBe(false);
+  });
+  it('takes a replacement for a slept round, counts it, and keeps the rounds it wants', () => {
+    const feed = flatRounds({ '2:1': 1e9 }, 40).map((r, i) => ({
+      order: r[0]!,
+      start: 1,
+      end: 2,
+      samples: [r[1]!, r[2]!, r[3]!],
+      i,
+    }));
+    let next = 0;
+    const out = rule.collectRounds({
+      want: 31,
+      takeOne: () => feed[next++]!,
+      triplesOf: (samples) => [samples],
+    });
+    expect(out.kept).toHaveLength(31);
+    expect(out.slept).toHaveLength(1);
+    expect(out.slept[0]!.samples[0]).toBe(1e9);
+    expect(next).toBe(32);
+    expect(out.discarded).toEqual([]);
+  });
+  it('counts a load discard apart from a slept round, and gives up when too many rounds sleep', () => {
+    let n = 0;
+    const out = rule.collectRounds({
+      want: 5,
+      takeOne: () => ({ order: 0, start: 1, end: n++ === 1 ? 9 : 2, samples: [1, 1, 1] }),
+      triplesOf: (samples) => [samples],
+      keepByLoad: (r) => r.end < 6,
+    });
+    expect(out.discarded).toHaveLength(1);
+    expect(out.slept).toHaveLength(0);
+    let t = 0;
+    expect(() =>
+      rule.collectRounds({
+        want: 6,
+        limit: 1,
+        takeOne: () => ({ order: 0, start: 1, end: 2, samples: [t++ % 4 === 0 ? 1e9 : 1, 1, 1] }),
+        triplesOf: (samples) => [samples],
+      }),
+    ).toThrow(/slept/);
+  });
+  it('is not applied when switched off (a tiny-scale run)', () => {
+    const feed = flatRounds({ '1:1': 1e9 }, 3).map((r) => ({
+      order: r[0]!,
+      start: 1,
+      end: 2,
+      samples: [r[1]!, r[2]!, r[3]!],
+    }));
+    let next = 0;
+    const out = rule.collectRounds({
+      want: 3,
+      takeOne: () => feed[next++]!,
+      triplesOf: (samples) => [samples],
+      checkSleep: false,
+    });
+    expect(out.kept).toHaveLength(3);
+    expect(out.slept).toEqual([]);
+  });
+  it('reads a recorded cell without its slept rounds: twelve slept heads leave it within, not open', () => {
+    const plant: Record<string, number> = {};
+    for (let i = 0; i < 12; i++) plant[`${i * 2}:2`] = 1e8;
+    const rounds = flatRounds(plant);
+    const stored = rule.cellOf(rounds, 6);
+    expect(stored.verdict).toBe(INCONCLUSIVE);
+    const cell = { ...stored, dataset: 'dense', op: 'has', answersAgree: true };
+    expect(rule.effectiveOf(cell).verdict).toBe(WITHIN);
+    expect(rule.effectiveOf({ ...cell, rounds: flatRounds() }).verdict).toBe(stored.verdict);
+    const pass = passOf([], { reads: [cell] });
+    expect(rule.gateProblems([pass])).toEqual([]);
+    const unread = passOf([], { reads: [{ ...cell, rounds: [[0, 100, 100, 100, 1, 2]] }] });
+    expect(rule.gateProblems([unread])).toEqual([
+      expect.stringContaining('dense has is inconclusive'),
+    ]);
+  });
+});
+
 describe('the load rule', () => {
   it('keeps a round that ends under 6 and sets aside one that ends at 6 or more', () => {
     expect(rule.keepRound(5.99)).toBe(true);
@@ -471,6 +607,25 @@ describe('the committed paired results', () => {
         for (const c of cellsOf(doc)) expect(c.answersAgree).toBe(true);
         expect(doc.verdict).toBe(worstPaired(cellsOf(doc).map((c) => c.verdict)));
       }
+    },
+  );
+
+  it.skipIf(passes === null)(
+    'holds slept rounds only where a pass was recorded before the sleep rule, and reading it without them changes no verdict',
+    () => {
+      const found: string[] = [];
+      for (const doc of passes!) {
+        if (doc.rule !== rule.RULE) continue;
+        const cells = [...cellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
+        for (const c of cells) {
+          const slept = c.rounds.length - rule.awakeRounds(c.rounds).length;
+          if (slept > 0) found.push(`pass ${doc.pass} ${c.dataset} ${c.op}: ${slept}`);
+          expect(rule.effectiveOf(c).verdict, `pass ${doc.pass} ${c.dataset} ${c.op}`).toBe(
+            c.verdict,
+          );
+        }
+      }
+      expect(found).toEqual(['pass 2 runs iterate: 4']);
     },
   );
 

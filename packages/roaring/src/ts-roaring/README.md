@@ -564,7 +564,7 @@ Everything here is a test, a workflow or a bench, not part of the module.
   base again as an A/A control, rotated within one run, one subject per process, over the engine bench's cells and the
   write path. Each cell is judged by `bench/lib/paired-verdict.cjs`: the distribution-free 95% interval of the median
   difference between the head and the mean of the base and the control must sit within a fixed 2% bar, with the control
-  itself within 2% of the base; every pass is kept and gated, and a round that ends at a load of 6 or more is taken again.
+  itself within 2% of the base; every pass is kept and gated, and a round that ends at a load of 6 or more, or in which a figure is more than ten times its median (the machine slept), is taken again.
 - **The benches** (recorded, never asserted). `bench/ts-codec.cjs` times one operation at a time on one chunk against the
   native codec (`has`, `decode`, `serialize`, `iterate`, `toUint32`, `optimize`, `count`, `clone`, `build`, `addMany`; and,
   or, andNot on six operand pairs; `--memory` adds bytes per decoded chunk by kind). `bench/ts-codec-engine.cjs` compares

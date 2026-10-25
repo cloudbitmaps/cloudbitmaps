@@ -50,6 +50,13 @@
  * more (`PAIRED_ANY_LOAD=1` turns the rule off, and the pass records it). A pass's `load` gives the highest load a kept
  * round ended at and the number of rounds discarded.
  *
+ * THE SLEEP RULE. A machine that sleeps during a round turns a call of milliseconds into one of minutes. A round in which
+ * any subject's figure in any cell is more than ten times the median of that subject's figure in that cell is marked as
+ * slept: it is stored under the cell's `slept`, taken again, and counted (a pass's `load.sleptRounds`, and the summary
+ * line it prints). Ten sits two orders of magnitude below the sleeps on record and twice clear of the largest ordinary
+ * round. A pass recorded without the rule is read with its slept rounds left out, its rounds untouched. A tiny-scale run
+ * applies neither this rule nor the load rule.
+ *
  * Every subject must give the same answer for a cell, or the run fails.
  *
  * The base is the merge base of `origin/main` and HEAD unless `PAIRED_BASE` names a commit. Its `packages/` are
@@ -92,6 +99,7 @@ const {
   gatedCellsOf,
   gateProblems,
   keepRound,
+  collectRounds,
 } = require('./lib/paired-verdict.cjs');
 const ops = require('./lib/codec-ops.cjs');
 
@@ -376,34 +384,33 @@ function allEqual(answers) {
 }
 
 /**
- * Takes `ROUNDS` kept rounds of `runRound(order)`, which returns the three subjects' outputs in the order base, head,
- * control. Each round records the load before and after; a round that ended at `MAX_LOAD` or more is set aside and
- * taken again, and the machine is waited for before every round. Returns `{ kept, discarded }`, each a list of
- * `{ order, start, end, samples }`.
+ * Takes `ROUNDS` kept rounds of `runRound(i)`, which returns subject `i`'s output (0 base, 1 head, 2 control).
+ * `triplesOf(samples)` gives the `[base, head, control]` figure of each cell the round measured. Each round records the
+ * load before and after; a round that ended at `MAX_LOAD` or more is set aside and taken again, and so is a round in
+ * which a subject's figure in any cell is more than ten times its median in that cell (the machine slept; see
+ * `bench/lib/paired-verdict.cjs`). The machine is waited for before every round. A tiny-scale run applies neither
+ * rule. Returns `{ kept, discarded, slept }`, each a list of `{ order, start, end, samples }`.
  */
-function takeRounds(runRound) {
-  const kept = [];
-  const discarded = [];
-  while (kept.length < ROUNDS) {
-    waitForQuietMachine();
-    const order = kept.length % 6;
-    const start = twoDecimals(load1());
-    const sample = [null, null, null];
-    for (const i of ORDERS[order]) sample[i] = runRound(i);
-    const round = { order, start, end: twoDecimals(load1()), samples: sample };
-    if (!SMALL && !keepRound(round.end, ANY_LOAD)) {
-      discarded.push(round);
-      if (discarded.length > 2 * ROUNDS) {
-        console.error(
-          `${discarded.length} rounds ended at a load of ${MAX_LOAD} or more: not measuring`,
-        );
-        process.exit(2);
-      }
-    } else {
-      kept.push(round);
-    }
+function takeRounds(runRound, triplesOf) {
+  try {
+    return collectRounds({
+      want: ROUNDS,
+      triplesOf,
+      checkSleep: !SMALL,
+      keepByLoad: (round) => SMALL || keepRound(round.end, ANY_LOAD),
+      takeOne: (order) => {
+        waitForQuietMachine();
+        const start = twoDecimals(load1());
+        const sample = [null, null, null];
+        for (const i of ORDERS[order]) sample[i] = runRound(i);
+        return { order, start, end: twoDecimals(load1()), samples: sample };
+      },
+    });
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    console.error(err.message);
+    process.exit(2);
   }
-  return { kept, discarded };
 }
 
 /**
@@ -425,22 +432,30 @@ function pairedCell(taken, figure, kind = 'whole') {
   const toMs = kind === 'import' ? (x) => x : (x) => nsToMs(x, decimals);
   const cell = cellOf(rowsOf(taken.kept, figure, toMs), figurePlaces(kind, UNIT));
   const discarded = rowsOf(taken.discarded, figure, toMs);
-  return discarded.length > 0 ? { ...cell, discarded } : cell;
+  const slept = rowsOf(taken.slept, figure, toMs);
+  return {
+    ...cell,
+    ...(discarded.length > 0 ? { discarded } : {}),
+    ...(slept.length > 0 ? { slept } : {}),
+  };
 }
 
 function readsMeasure(subjects, only) {
   const cells = [];
   for (const dataset of DATASETS) {
-    const taken = takeRounds((i) =>
-      JSON.parse(
-        spawnLast([
-          `--child-reads=${subjects.files[i]}:${dataset}`,
-          ...(only ? [`--only=${only}`] : []),
-        ]),
-      ),
+    const opNames = OPS.filter((op) => wanted(only, `${dataset} ${op}`));
+    const taken = takeRounds(
+      (i) =>
+        JSON.parse(
+          spawnLast([
+            `--child-reads=${subjects.files[i]}:${dataset}`,
+            ...(only ? [`--only=${only}`] : []),
+          ]),
+        ),
+      (samples) => opNames.map((op) => samples.map((x) => x.ops[op].ns)),
     );
-    for (const op of Object.keys(taken.kept[0].samples[0].ops)) {
-      const answers = [...taken.kept, ...taken.discarded].flatMap((r) =>
+    for (const op of opNames) {
+      const answers = [...taken.kept, ...taken.discarded, ...taken.slept].flatMap((r) =>
         r.samples.map((s) => s.ops[op].answer),
       );
       cells.push({
@@ -455,8 +470,11 @@ function readsMeasure(subjects, only) {
 }
 
 function writeMeasure(subjects) {
-  const taken = takeRounds((i) => JSON.parse(spawnLast([`--child-write=${subjects.files[i]}`])));
-  const answers = [...taken.kept, ...taken.discarded].flatMap((r) =>
+  const taken = takeRounds(
+    (i) => JSON.parse(spawnLast([`--child-write=${subjects.files[i]}`])),
+    (samples) => ['load', 'erase'].map((op) => samples.map((x) => x[op])),
+  );
+  const answers = [...taken.kept, ...taken.discarded, ...taken.slept].flatMap((r) =>
     r.samples.map((s) => s.answer),
   );
   return ['load', 'erase'].map((op) => ({
@@ -476,28 +494,31 @@ function opsMeasure(subjects, onlyOps) {
   const cold = cells.filter((c) => c.cold && wanted(onlyOps, `ops ${c.name}`)).map((c) => c.name);
   if (steady.length + cold.length === 0) throw new Error('--only-ops keeps no per-operation cell');
   process.env.PAIRED_OPS_INPUTS = subjects.opsInputs;
-  const taken = takeRounds((i) => ({
-    steady:
-      steady.length === 0
-        ? {}
-        : JSON.parse(
-            spawnLast([`--child-ops=${subjects.files[i]}`, `--only-ops=${steady.join('|')}`]),
-          ),
-    cold: Object.fromEntries(
-      cold.map((name) => [
-        name,
-        JSON.parse(spawnLast([`--child-ops-cold=${subjects.files[i]}`, `--cell=${name}`])),
-      ]),
-    ),
-  }));
-  const all = [...taken.kept, ...taken.discarded];
+  const at = (x, name) => x.steady[name] ?? x.cold[name];
+  const taken = takeRounds(
+    (i) => ({
+      steady:
+        steady.length === 0
+          ? {}
+          : JSON.parse(
+              spawnLast([`--child-ops=${subjects.files[i]}`, `--only-ops=${steady.join('|')}`]),
+            ),
+      cold: Object.fromEntries(
+        cold.map((name) => [
+          name,
+          JSON.parse(spawnLast([`--child-ops-cold=${subjects.files[i]}`, `--cell=${name}`])),
+        ]),
+      ),
+    }),
+    (samples) => [...steady, ...cold].map((name) => samples.map((x) => at(x, name).ns)),
+  );
+  const all = [...taken.kept, ...taken.discarded, ...taken.slept];
   return [...steady, ...cold].map((name) => {
-    const at = (x) => x.steady[name] ?? x.cold[name];
     return {
       dataset: 'ops',
       op: name,
-      answersAgree: allEqual(all.flatMap((r) => r.samples.map((x) => at(x).answer))),
-      ...pairedCell(taken, (s) => s.map((x) => at(x).ns), 'tenth'),
+      answersAgree: allEqual(all.flatMap((r) => r.samples.map((x) => at(x, name).answer))),
+      ...pairedCell(taken, (s) => s.map((x) => at(x, name).ns), 'tenth'),
     };
   });
 }
@@ -542,7 +563,10 @@ function importMeasure() {
   for (const f of files)
     if (!fs.existsSync(f)) throw new Error(`${f} is missing: run pnpm build first`);
   // Round layout here is [order, main entry, ./bitmap, main entry again]: the "head" column is the ./bitmap entry.
-  const taken = takeRounds((i) => JSON.parse(spawnLast([`--child-import=${files[i]}`])).ms);
+  const taken = takeRounds(
+    (i) => JSON.parse(spawnLast([`--child-import=${files[i]}`])).ms,
+    (samples) => [samples],
+  );
   return {
     runs: ROUNDS,
     informational: true,
@@ -702,6 +726,7 @@ function takePass(run, only, onlyOps) {
   doc.load = {
     maxLoadAtEnd: Math.max(0, ...cells.flatMap((c) => c.rounds.map((r) => r[5]))),
     discardedRounds: Math.max(0, ...cells.map((c) => (c.discarded ?? []).length)),
+    sleptRounds: Math.max(0, ...cells.map((c) => (c.slept ?? []).length)),
   };
   const verdicts = gatedCellsOf(doc).map((c) => c.verdict);
   doc.verdict = verdicts.length > 0 ? worstPaired(verdicts) : undefined;
@@ -732,9 +757,9 @@ function printPass(doc) {
       `${cellName(c)}: head ${(c.headVsReference * 100).toFixed(1)}% [${(lo * 100).toFixed(1)}, ${(hi * 100).toFixed(1)}], control ${(c.controlVsBase * 100).toFixed(1)}% (${c.verdict})`,
     );
   }
-  const { maxLoadAtEnd, discardedRounds } = doc.load;
+  const { maxLoadAtEnd, discardedRounds, sleptRounds } = doc.load;
   console.log(
-    `pass ${doc.pass} worst: ${doc.verdict}; kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${discardedRounds} round(s) discarded at ${MAX_LOAD} or more${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
+    `pass ${doc.pass} worst: ${doc.verdict}; kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${discardedRounds} round(s) discarded at ${MAX_LOAD} or more; ${sleptRounds} round(s) discarded as slept (a figure over ten times its median)${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
   );
 }
 

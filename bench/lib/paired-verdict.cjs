@@ -26,6 +26,16 @@
  * and holds nanoseconds, with no decimals (a tenth of a nanosecond in the per-operation cells); `figurePlaces` gives the
  * places each form is rounded to, and the ratios the rule derives do not depend on the unit.
  *
+ * THE SLEEP RULE. A machine that sleeps in the middle of a round gives a duration of minutes for a call of
+ * milliseconds. A round in which any subject's figure in any cell is more than `SLEEP_FACTOR` (10) times the median of
+ * that subject's figure in that cell is marked as slept: it is not kept, it is stored under the cell's `slept`, and
+ * another round is taken in its place, as for the load rule. Ten is chosen from the record: an ordinary round of the
+ * committed passes is at most about five times its cell's median (a cold or tiny operation), and every round a sleep
+ * hit is more than a thousand times it, so the threshold sits two orders of magnitude clear of the sleeps and twice
+ * clear of the noise. A median is robust to the sleeps that a run would tolerate (the rule gives up after twice as many
+ * slept rounds as the pass wants). A pass recorded without the rule is read with its slept rounds left out
+ * (`effectiveOf`), its recorded rounds untouched; the first pass, judged by the earlier rule, is read as it is.
+ *
  * Rounds of the first pass in the committed results file were judged by the earlier rule (the head's median against a
  * band of half the control's interquartile range); `legacyVerdictOf` keeps it so that file can still be recomputed.
  */
@@ -41,6 +51,8 @@ const COVERAGE = 0.95;
 const MAX_LOAD = 6;
 /** The unit a pass records its durations in; a pass that records none holds nanoseconds. */
 const UNIT = 'ms';
+/** A round whose figure is more than this many times its subject's median in the cell is a sleep-hit round. */
+const SLEEP_FACTOR = 10;
 /** The name each pass records for the rule that judged it. */
 const RULE = 'median-interval-v2';
 /** Slack for the floating-point error of a ratio that is exactly on a boundary. */
@@ -133,6 +145,83 @@ function medianInterval(values, coverage = COVERAGE) {
   }
   const s = values.slice().sort((p, q) => p - q);
   return { lower: s[k - 1], upper: s[n - k], k, coverage: reached };
+}
+
+/**
+ * Which rounds slept. `figureRows[i]` is the list of cells' `[base, head, control]` figures of round `i`; a round slept
+ * when any figure of it is more than `SLEEP_FACTOR` times the median of that subject's figures in that cell over all
+ * the rounds. Returns one boolean per round.
+ */
+function sleepHits(figureRows) {
+  const cells = figureRows.length === 0 ? 0 : figureRows[0].length;
+  const limits = [];
+  for (let c = 0; c < cells; c++) {
+    limits.push(
+      [0, 1, 2].map((subject) => SLEEP_FACTOR * median(figureRows.map((row) => row[c][subject]))),
+    );
+  }
+  return figureRows.map((row) =>
+    row.some((triple, c) => triple.some((figure, subject) => figure > limits[c][subject])),
+  );
+}
+
+/** The rounds of a cell (`[order, base, head, control, ...]`) that did not sleep, in their order. */
+function awakeRounds(rounds) {
+  const hits = sleepHits(rounds.map((r) => [[r[1], r[2], r[3]]]));
+  return rounds.filter((_, i) => !hits[i]);
+}
+
+/**
+ * Takes rounds until `want` of them are kept. `takeOne(order)` takes one round (`{ order, start, end, samples }`) and
+ * `triplesOf(samples)` gives the `[base, head, control]` figure of each cell in it. A round that `keepByLoad` refuses
+ * is set aside (`discarded`); a kept round that slept, judged against every round taken so far, is set aside as well
+ * (`slept`) and taken again. With `checkSleep` false no round is marked as slept. Throws a `RangeError` when more
+ * than `limit` rounds (default twice `want`) were set aside for either reason, so a machine that never settles stops
+ * the run. Returns `{ kept, discarded, slept }`.
+ */
+function collectRounds({
+  want,
+  takeOne,
+  triplesOf,
+  checkSleep = true,
+  keepByLoad = () => true,
+  limit = 2 * want,
+}) {
+  const pool = [];
+  const discarded = [];
+  for (;;) {
+    const hits = checkSleep
+      ? sleepHits(pool.map((r) => triplesOf(r.samples)))
+      : pool.map(() => false);
+    const kept = pool.filter((_, i) => !hits[i]);
+    const slept = pool.filter((_, i) => hits[i]);
+    if (kept.length >= want) return { kept, discarded, slept };
+    if (slept.length > limit) throw new RangeError(`${slept.length} rounds slept: not measuring`);
+    const round = takeOne(kept.length % 6);
+    if (keepByLoad(round)) {
+      pool.push(round);
+    } else {
+      discarded.push(round);
+      if (discarded.length > limit) {
+        throw new RangeError(
+          `${discarded.length} rounds ended at a load of ${MAX_LOAD} or more: not measuring`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * The verdict and interval a cell is read by: the stored ones, unless the cell holds slept rounds (a pass recorded
+ * before the sleep rule), in which case the cell is judged again on its rounds that did not sleep.
+ */
+function effectiveOf(cell) {
+  const awake = awakeRounds(cell.rounds ?? []);
+  if (awake.length === (cell.rounds ?? []).length) {
+    return { verdict: cell.verdict, headInterval: cell.headInterval };
+  }
+  const j = judge(awake);
+  return { verdict: j.verdict, headInterval: j.headInterval };
 }
 
 /** The per-round figures a verdict is drawn from: the head against the reference, and the control against the base. */
@@ -250,6 +339,12 @@ const boundText = (upper) =>
 /** Whether a round that ended at `loadAtEnd` is kept: under `MAX_LOAD`, or with the load rule turned off. */
 const keepRound = (loadAtEnd, anyLoad = false) => anyLoad || loadAtEnd < MAX_LOAD;
 
+/** A cell as its pass is read: the earlier rule's pass as stored, a pass of the current rule without its slept rounds. */
+const effective = (pass, cell) =>
+  pass.rule === RULE
+    ? effectiveOf(cell)
+    : { verdict: cell.verdict, headInterval: cell.headInterval };
+
 /**
  * What stops a list of passes from being published, as a list of messages (empty when nothing does). The gate reads
  * every pass, so a later green pass never erases an earlier conclusive "slower":
@@ -267,13 +362,13 @@ function gateProblems(passes) {
     const label = `pass ${pass.pass ?? i + 1}`;
     if (pass.environment?.smoke) problems.push(`${label}: a smoke pass is no evidence`);
     for (const c of gatedCellsOf(pass)) {
-      if (kindOf(c.verdict) === 'slower' && !pass.explained) {
+      if (kindOf(effective(pass, c).verdict) === 'slower' && !pass.explained) {
         problems.push(
           `${label}: ${cellName(c)} is conclusively slower and the pass has no "explained" note`,
         );
       }
       if (pass.rule === RULE && !pass.environment?.anyLoad) {
-        for (const r of c.rounds ?? []) {
+        for (const r of awakeRounds(c.rounds ?? [])) {
           if (!keepRound(r[5])) {
             problems.push(`${label}: ${cellName(c)} kept a round that ended at load ${r[5]}`);
             break;
@@ -291,9 +386,10 @@ function gateProblems(passes) {
     return problems;
   }
   for (const c of gatedCellsOf(last)) {
-    if (kindOf(c.verdict) !== 'inconclusive') continue;
+    const read = effective(last, c);
+    if (kindOf(read.verdict) !== 'inconclusive') continue;
     const note = last.unresolved?.[cellName(c)];
-    const bound = boundText(c.headInterval?.[1]);
+    const bound = boundText(read.headInterval?.[1]);
     if (typeof note !== 'string' || !note.includes(bound)) {
       problems.push(
         `last pass: ${cellName(c)} is inconclusive and has no "unresolved" note that quotes its bound ${bound}`,
@@ -309,6 +405,11 @@ module.exports = {
   COVERAGE,
   MAX_LOAD,
   RULE,
+  SLEEP_FACTOR,
+  sleepHits,
+  awakeRounds,
+  collectRounds,
+  effectiveOf,
   UNIT,
   WITHIN,
   SLOWER,
