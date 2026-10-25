@@ -76,7 +76,7 @@ function passOf(cells: Array<[string, string, string, string, number, number, nu
       method,
       answersAgree: true,
       ...verdict.cellOf(rounds(native, ours, control ?? ours, internal ?? null)),
-    })),
+    })) as unknown as Cell[],
     load: { maxLoadAtEnd: 4.5, discardedRounds: 2, sleptRounds: 0 },
   };
 }
