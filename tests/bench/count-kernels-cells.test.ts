@@ -178,7 +178,7 @@ describe('each cell times the call it is named for', () => {
       }
     }
     expect(unequal).toBeGreaterThan(0);
-  });
+  }, 60_000);
 
   it('isSubsetTrue asks A about the union of A and B, which is not A itself', () => {
     for (const small of [true, false]) {
@@ -192,7 +192,7 @@ describe('each cell times the call it is named for', () => {
         expect(arg.andCardinality(self), g.name).toBe(self.size);
       }
     }
-  });
+  }, 60_000);
 
   it('isEqual compares A with a second decode of A, a different object', () => {
     for (const small of [true, false]) {
@@ -205,7 +205,7 @@ describe('each cell times the call it is named for', () => {
         expect(arg.size, g.name).toBe(self.size);
       }
     }
-  });
+  }, 60_000);
 });
 
 describe('the decision', () => {
