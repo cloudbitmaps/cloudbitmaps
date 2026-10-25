@@ -421,6 +421,17 @@ describe('the leak-scan half', () => {
     expect(r.out).not.toMatch(/extra needle #/);
   });
 
+  it('a needle that is not a valid regular expression fails closed without printing its pattern', () => {
+    const broken = 'qvx7kz9w(';
+    for (const args of [{}, { REQUIRE_NEEDLES: 'true' }]) {
+      const r = scan({}, { LEAK_SCAN_EXTRA: `${FAKE_NEEDLE}\n${broken}`, ...args });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain('is not a valid regular expression');
+      for (let i = 0; i + 4 <= broken.length; i += 1)
+        expect(r.out).not.toContain(broken.slice(i, i + 4));
+    }
+  });
+
   it('a link to a CI run and job is not an account id; a bare 12-digit run still is', () => {
     const link = 'see https://github.com/o/r/actions/runs/1/job/' + '1234'.repeat(3);
     expect(scan({ body: link }).status).toBe(0);
