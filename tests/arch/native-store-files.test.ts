@@ -42,6 +42,8 @@ const NATIVE_STORE_FILES: Readonly<Record<string, string>> = {
 };
 
 const NATIVE_ORACLE_FILES: Readonly<Record<string, string>> = {
+  'tests/bench/codec-ops.test.ts':
+    'checks that every per-operation bench cell gives the same answer on the TypeScript codec and the native one',
   'tests/helpers/roaring-oracle.ts':
     'the oracle: the codec list, CRoaring bytes and the comparison helpers',
   'tests/roaring/portable-layout.test.ts': 'judges the layout check against the native library',

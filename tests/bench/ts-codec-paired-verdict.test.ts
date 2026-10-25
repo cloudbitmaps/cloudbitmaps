@@ -32,9 +32,9 @@ type Pass = {
   explained?: string;
   unresolved?: Record<string, string>;
   reads: Cell[];
-  write: Cell[];
+  write?: Cell[];
   ops?: Cell[];
-  import: { runs: number; moduleLoadMs: Cell };
+  import?: { runs: number; moduleLoadMs: Cell };
   verdict: string;
   started: string;
   environment: {
@@ -298,7 +298,7 @@ describe('the gate', () => {
     write.write = [{ ...write.reads[0]!, op: 'erase', verdict: SLOWER }];
     expect(rule.gateProblems([write])).toHaveLength(1);
     const imp = passOf([WITHIN]);
-    imp.import.moduleLoadMs.verdict = SLOWER;
+    imp.import!.moduleLoadMs.verdict = SLOWER;
     expect(rule.gateProblems([imp])).toEqual([]);
   });
 
@@ -362,7 +362,7 @@ describe('the committed paired results', () => {
   const passes = existsSync(file)
     ? (JSON.parse(readFileSync(file, 'utf8')) as { passes: Pass[] }).passes
     : null;
-  const cellsOf = (p: Pass): Cell[] => [...p.reads, ...p.write, ...(p.ops ?? [])];
+  const cellsOf = (p: Pass): Cell[] => [...p.reads, ...(p.write ?? []), ...(p.ops ?? [])];
 
   it.skipIf(passes === null)(
     'keeps every pass, numbered from 1 without a gap, each with its time and commits',
@@ -381,7 +381,7 @@ describe('the committed paired results', () => {
     'recomputes every median, interval and verdict of every pass from its rounds, by the rule the pass records',
     () => {
       for (const doc of passes!) {
-        const cells = [...cellsOf(doc), doc.import.moduleLoadMs];
+        const cells = [...cellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
         expect(cells.length).toBeGreaterThan(10);
         for (const c of cells) {
           const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`;
@@ -399,12 +399,17 @@ describe('the committed paired results', () => {
             );
           } else {
             expect(doc.rule, name).toBe(rule.RULE);
-            const places = c === doc.import.moduleLoadMs ? 3 : c.dataset === 'ops' ? 1 : 0;
+            const places = c === doc.import?.moduleLoadMs ? 3 : c.dataset === 'ops' ? 1 : 0;
             const left = new Set(['rounds', 'discarded', 'dataset', 'op', 'answersAgree']);
             const figures = Object.fromEntries(Object.entries(c).filter(([k]) => !left.has(k)));
-            const fresh = Object.fromEntries(
-              Object.entries(rule.cellOf(c.rounds, places)).filter(([k]) => k !== 'rounds'),
-            );
+            // Through JSON, as the file holds it: a recomputed -0 is stored as 0.
+            const fresh = JSON.parse(
+              JSON.stringify(
+                Object.fromEntries(
+                  Object.entries(rule.cellOf(c.rounds, places)).filter(([k]) => k !== 'rounds'),
+                ),
+              ),
+            ) as Record<string, unknown>;
             expect(figures, name).toEqual(fresh);
             for (const r of c.rounds) expect(r, name).toHaveLength(6);
           }
