@@ -139,7 +139,8 @@ function phraseFindings(source, text) {
 }
 
 /** Findings in a commit's author or committer: `{ phrase, source, line }`, line 0 being the identity itself. */
-function identityFindings(source, identity) {
+function identityFindings(source, { name, email }) {
+  const identity = `${name} <${email}>`;
   const out = IDENTITY_RULES.filter((r) => r.test(identity)).map((r) => ({
     phrase: r.name,
     source,
@@ -167,7 +168,7 @@ function commits(base, head) {
   try {
     raw = execFileSync(
       'git',
-      ['log', '--format=%x1e%H%n%an <%ae>%n%cn <%ce>%n%B', `${base}..${head}`],
+      ['log', '--format=%x1e%H%n%an%n%ae%n%cn%n%ce%n%B', `${base}..${head}`],
       {
         cwd: ROOT,
         encoding: 'utf8',
@@ -185,13 +186,13 @@ function commits(base, head) {
     .filter((c) => c.trim() !== '')
     .map((c) => {
       const lines = c.split('\n');
-      if (lines.length < 4) throw new InputError('git log gave a commit with no identity lines');
+      if (lines.length < 6) throw new InputError('git log gave a commit with no identity lines');
       return {
         sha: lines[0].trim(),
-        author: lines[1],
-        committer: lines[2],
+        author: { name: lines[1], email: lines[2] },
+        committer: { name: lines[3], email: lines[4] },
         message: lines
-          .slice(3)
+          .slice(5)
           .filter((l) => !BOT_TRAILER.test(l))
           .join('\n'),
       };
@@ -205,14 +206,58 @@ function redact(report) {
     .replace(/extra needle #\d+/g, 'extra needle');
 }
 
+const ID_FIELDS = ['author name', 'author email', 'committer name', 'committer email'];
+
+/**
+ * The private needles alone over every commit's author and committer, name and email: one file per field, scanned by
+ * the leak scan, and only the findings of an `extra needle` rule are kept (a second pass, so the scan's email rule
+ * never fires on an ordinary address). Returns `[{ phrase, source, line: 0 }]`: the commit and the field, never the
+ * value. The scan's report lists at most ten files per rule, so a count beyond the ones named is a finding of its own.
+ */
+function identityNeedleHits(identities, idDir, run) {
+  if (identities.length === 0) return [];
+  const files = new Map();
+  for (const c of identities) {
+    const values = [c.author.name, c.author.email, c.committer.name, c.committer.email];
+    ID_FIELDS.forEach((field, i) => {
+      const file = `id-${files.size}.txt`;
+      files.set(file, `${field} of commit ${c.sha}`);
+      writeFileSync(join(idDir, file), values[i]);
+    });
+  }
+  const r = run(['--snapshot'], idDir);
+  const verdict =
+    (r.status === 0 && /^leak-scan: directory /m.test(r.stdout || '')) ||
+    (r.status === 1 && /leak-scan: FAILED/.test(r.stderr || ''));
+  if (r.error !== undefined || !verdict)
+    throw new InputError(
+      `the leak scan did not run to a verdict over the identities (${r.error ? r.error.message : `exit ${r.status}`})`,
+    );
+  const hits = [];
+  let inNeedle = false;
+  for (const line of (r.stdout || '').split('\n')) {
+    const heading = /^ {2}(\S.*?): (\d+)$/.exec(line);
+    if (heading) {
+      inNeedle = heading[1].startsWith('extra needle');
+      continue;
+    }
+    const hit = /^ {4}(id-\d+\.txt):\d+ /.exec(line);
+    if (inNeedle && hit && files.has(hit[1])) hits.push(files.get(hit[1]));
+    const more = /^ {4}… (\d+) more$/.exec(line);
+    if (inNeedle && more) hits.push(`${more[1]} more identity field(s)`);
+  }
+  return hits.map((source) => ({ phrase: 'private needle', source, line: 0 }));
+}
+
 /**
  * The leak scan over the texts. Returns `{ ok, notes }`. With the private needles it runs as a snapshot (private
  * repo and private-doc references fail too); without them (a fork's pull request gets no secrets) it runs without
  * `--snapshot`, so the hard rules still apply, and says the needles were not applied. When the needles are required
  * (a pull request from this repository) their absence is an error, not a pass.
  */
-function leakScan(texts, requireNeedles) {
+function leakScan(texts, requireNeedles, identities = []) {
   const dir = mkdtempSync(join(tmpdir(), 'pr-text-'));
+  const idDir = mkdtempSync(join(tmpdir(), 'pr-text-id-'));
   try {
     // A GitHub Actions run or job id in a link is a 12-digit run the account-id rule would refuse, and a link to a
     // failing job is ordinary pull request text, so the ids in that one URL shape are replaced before the scan.
@@ -222,8 +267,8 @@ function leakScan(texts, requireNeedles) {
         t.text.replace(/\/actions\/runs\/\d+(?:\/job\/\d+)?/g, '/actions/runs/ID'),
       );
     }
-    const run = (flags) =>
-      spawnSync(process.execPath, [join(__dirname, 'leak-scan.cjs'), ...flags, '--dir', dir], {
+    const run = (flags, target = dir) =>
+      spawnSync(process.execPath, [join(__dirname, 'leak-scan.cjs'), ...flags, '--dir', target], {
         cwd: ROOT,
         encoding: 'utf8',
         maxBuffer: 64 * 1024 * 1024,
@@ -257,9 +302,16 @@ function leakScan(texts, requireNeedles) {
     }
     // Without needles the migration findings are informational and no failure carries them: show them.
     const migration = degraded ? /^MIGRATION[^\n]*\n(?:[ ]+.*(?:\n|$))*/m.exec(out) : null;
-    return { ok: r.status === 0, notes, out, migration: migration ? migration[0] : '' };
+    return {
+      ok: r.status === 0,
+      notes,
+      out,
+      migration: migration ? migration[0] : '',
+      identityHits: degraded ? [] : identityNeedleHits(identities, idDir, run),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(idDir, { recursive: true, force: true });
   }
 }
 
@@ -280,9 +332,11 @@ function main(env) {
     { file: 'body.txt', source: 'body', text: body },
   ];
   const identities = [];
+  const people = [];
   if (hasBase) {
     for (const c of commits(env.BASE_SHA, env.HEAD_SHA)) {
       texts.push({ file: `commit-${c.sha}.txt`, source: `commit ${c.sha}`, text: c.message });
+      people.push(c);
       identities.push(
         ...identityFindings(`author of commit ${c.sha}`, c.author),
         ...identityFindings(`committer of commit ${c.sha}`, c.committer),
@@ -292,7 +346,12 @@ function main(env) {
     console.log('pr-text-scan: no BASE_SHA / HEAD_SHA, so commit messages were not scanned.');
   }
 
-  const findings = [...texts.flatMap((t) => phraseFindings(t.source, t.text)), ...identities];
+  const leak = leakScan(texts, env.REQUIRE_NEEDLES === 'true', people);
+  const findings = [
+    ...texts.flatMap((t) => phraseFindings(t.source, t.text)),
+    ...identities,
+    ...leak.identityHits,
+  ];
   for (const f of findings) {
     console.error(
       f.line === 0
@@ -306,13 +365,16 @@ function main(env) {
       console.error(
         "pr-text-scan: to fix a commit message: reword it with `git rebase -i origin/main`, then `git push --force-with-lease --force-if-includes` on the pull request's own branch; the text of a title or a body is edited on the pull request",
       );
-    if (findings.some((f) => f.line === 0))
+    if (leak.identityHits.length > 0)
+      console.error(
+        'pr-text-scan: a private needle in an author or committer is handled as a leak: a force-push does not unpublish what was already pushed; ask the maintainer before rewriting the history',
+      );
+    if (findings.some((f) => f.line === 0 && f.phrase !== 'private needle'))
       console.error(
         'pr-text-scan: to fix an author or committer of the last commit: `git commit --amend --no-edit --reset-author` with the right identity configured (an earlier commit: mark it `edit` in `git rebase -i origin/main`, amend it the same way, then `git rebase --continue`)',
       );
   }
 
-  const leak = leakScan(texts, env.REQUIRE_NEEDLES === 'true');
   for (const n of leak.notes) console.log(n);
   if (leak.migration !== '') console.log(leak.migration);
   if (!leak.ok) {
@@ -327,7 +389,7 @@ function main(env) {
 
   if (findings.length > 0 || !leak.ok) {
     console.error(
-      `pr-text-scan: FAILED: ${findings.length} process phrase(s)${leak.ok ? '' : ', and the leak scan'} (scanned ${texts.length} text(s))`,
+      `pr-text-scan: FAILED: ${findings.length} finding(s)${leak.ok ? '' : ', and the leak scan'} (scanned ${texts.length} text(s))`,
     );
     return 1;
   }

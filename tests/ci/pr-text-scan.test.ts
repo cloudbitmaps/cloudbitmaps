@@ -38,7 +38,10 @@ const git = (cwd: string, ...args: string[]) =>
 /** A throwaway repository holding copies of the two scripts, so the real ones run against a place the test owns. */
 function repo(leakScan: string = LEAK): {
   dir: string;
-  commit: (msg: string, identity?: { author?: string; committer?: string }) => string;
+  commit: (
+    msg: string,
+    identity?: { author?: string; committer?: string; committerEmail?: string },
+  ) => string;
   merge: (msg?: string) => string;
 } {
   const dir = mkdtempSync(join(tmpdir(), 'pr-text-test-'));
@@ -51,7 +54,10 @@ function repo(leakScan: string = LEAK): {
   git(dir, 'config', 'user.name', 'a');
   git(dir, 'config', 'commit.gpgsign', 'false');
   let n = 0;
-  const commit = (msg: string, identity: { author?: string; committer?: string } = {}): string => {
+  const commit = (
+    msg: string,
+    identity: { author?: string; committer?: string; committerEmail?: string } = {},
+  ): string => {
     n += 1;
     writeFileSync(join(dir, `f${n}.txt`), String(n));
     git(dir, 'add', '-A');
@@ -63,11 +69,11 @@ function repo(leakScan: string = LEAK): {
       env: {
         ...process.env,
         GIT_CONFIG_GLOBAL: '/dev/null',
-        ...(identity.committer === undefined
+        ...(identity.committer === undefined && identity.committerEmail === undefined
           ? {}
           : {
-              GIT_COMMITTER_NAME: identity.committer,
-              GIT_COMMITTER_EMAIL: 'c@users.noreply.github.com',
+              GIT_COMMITTER_NAME: identity.committer ?? 'c',
+              GIT_COMMITTER_EMAIL: identity.committerEmail ?? 'c@users.noreply.github.com',
             }),
       },
     });
@@ -320,6 +326,58 @@ describe('look-alikes stay quiet', () => {
     const r = scan({ body: template });
     expect(r.out).not.toContain('FAILED');
     expect(r.status).toBe(0);
+  });
+});
+
+describe('identities are run through the private needles', () => {
+  const asIdentity = (
+    identity: { author?: string; committer?: string; committerEmail?: string },
+    extraEnv: Record<string, string | undefined> = { LEAK_SCAN_EXTRA: FAKE_NEEDLE },
+  ) => {
+    const { dir, commit } = repo();
+    const base = commit('base');
+    const head = commit('Add a thing', identity);
+    return {
+      head,
+      r: run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head, ...extraEnv }),
+    };
+  };
+
+  it('a needle in an author email fails, naming the commit and the field and nothing else', () => {
+    const { head, r } = asIdentity({ author: 'Alex Smith <zz-test-needle-5@example.com>' });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"private needle" in the author email of commit ${head}`);
+    expect(r.out).not.toContain('zz-test-needle');
+    expect(r.out).not.toContain('Smith');
+  });
+
+  it('a needle in a committer name, a committer email and an author name fails', () => {
+    const name = asIdentity({ committer: 'Zed zz-test-needle-9' });
+    expect(name.r.status).toBe(1);
+    expect(name.r.out).toContain(`"private needle" in the committer name of commit ${name.head}`);
+    expect(name.r.out).not.toContain('Zed');
+    const email = asIdentity({ committerEmail: 'zz-test-needle-1@example.com' });
+    expect(email.r.status).toBe(1);
+    expect(email.r.out).toContain(`in the committer email of commit ${email.head}`);
+    const author = asIdentity({ author: 'zz-test-needle-3 <a@example.com>' });
+    expect(author.r.status).toBe(1);
+    expect(author.r.out).toContain(`in the author name of commit ${author.head}`);
+    for (const x of [name, email, author]) expect(x.r.out).not.toContain('zz-test-needle');
+  });
+
+  it('an ordinary address with no needle passes, and the email rule never fires on it', () => {
+    const { r } = asIdentity({ author: 'Alex Smith <alex.smith@example.com>' });
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain('email address');
+  });
+
+  it('without needles it passes on a fork and fails closed when they are required', () => {
+    const who = { author: 'Alex Smith <zz-test-needle-5@example.com>' };
+    expect(asIdentity(who, {}).r.status).toBe(0);
+    expect(asIdentity(who, { REQUIRE_NEEDLES: 'true' }).r.status).toBe(2);
+    expect(
+      asIdentity(who, { REQUIRE_NEEDLES: 'true', LEAK_SCAN_EXTRA: FAKE_NEEDLE }).r.status,
+    ).toBe(1);
   });
 });
 
