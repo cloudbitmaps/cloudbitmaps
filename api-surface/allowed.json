@@ -541,7 +541,7 @@
   },
   {
     "entry": "@cloudbitmaps/roaring RoaringBitmap*",
-    "reason": "a new public class, agreed with the maintainer on 2026-10-24: a mutable set of 32-bit ids over the codec's own bitmap, the one place a caller builds a bitmap and the one door that decodes portable bytes (RoaringBitmap.deserialize), with a value-free ValidationError for every id argument; also exported from the main entry, as the same class object"
+    "reason": "a new public class, agreed with the maintainer on 2026-10-24: a mutable set of 32-bit ids over the codec's own bitmap, the one place a caller builds a bitmap and the one door that decodes portable bytes (RoaringBitmap.deserialize), with a value-free ValidationError for every id argument"
   },
   {
     "entry": "@cloudbitmaps/roaring RoaringBitmapDeserializeOptions*",

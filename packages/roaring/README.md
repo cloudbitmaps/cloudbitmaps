@@ -52,8 +52,8 @@ To persist, pass a different **backend** as `storage`. Nothing else changes:
 
 `RoaringBitmap` is the codec's bitmap as a public class: a mutable set of unsigned 32-bit ids with the portable Roaring
 bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring`, the same line as the store:
-`import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring'`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
-door for bytes you did not write.
+`import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring'`. A store loads one as it is, and
+`RoaringBitmap.deserialize(bytes)` is the one door for bytes you did not write.
 
 <!-- typecheck -->
 ```ts
