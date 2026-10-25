@@ -22,11 +22,6 @@
  * combination with the in-place operations and take its size, or answer from that size).
  *
  *   andCardinality        |A and B|     against   clone, andInPlace, size
- *   orCardinality         |A or B|      against   clone, orInPlace, size
- *   andNotCardinality     |A not B|     against   clone, andNotInPlace, size
- *   xorCardinality        |A xor B|     against   the union less the intersection, built (the codec has no in-place xor, so
- *                                       the baseline is composed of the three in-place operations it has: a native xor
- *                                       build would cost less, so this baseline favours the count)
  *   intersects            whether they share an id    against   clone, andInPlace, size above zero
  *   isSubsetTrue          A within (A or B): true     against   clone, andInPlace, size equal to A's size; a full walk
  *   isSubsetFalse         the smaller of A and B within the larger: false on these pairs, never answered by the size check
@@ -34,10 +29,16 @@
  *   isEqual               A against a second decode of A: true, a full walk     against   clone, andInPlace, both sizes
  *                                                                                   equal to the intersection's
  *
- * THE STOP RULE, fixed before any measurement: a count operation is kept only if it beats building the combination and
- * taking its size on every group it is timed on, which the paired rule (`bench/lib/paired-verdict.cjs`, head = count,
- * base = build, control = build again, bar 2%) calls `faster than the bar`. A cell that is `within the bar` or `slower` is
- * not kept for that group, an `inconclusive` one is taken again, and `decisionsOf` names the cells that stop an operation.
+ * `orCardinality`, `xorCardinality` and `andNotCardinality` have no cell: each is arithmetic on the two sizes and the
+ * AND count, so building to count them costs what building the intersection costs, which is the `andCardinality` cell.
+ *
+ * THE STOP RULE, fixed before any measurement, is one decision for the family. The four cardinalities and `intersects`
+ * call the kernels if `andCardinality` beats build-then-size (build the AND, take its size) on every group, which the
+ * paired rule (`bench/lib/paired-verdict.cjs`, head = count, base = build, control = build again, bar 2%) calls `faster
+ * than the bar`; if any group is `within the bar`, `slower` or `inconclusive`, all five are derived by build-then-count.
+ * `intersects`, `isSubsetTrue`, `isSubsetFalse` and `isEqual` are timed and printed as information and judged by no
+ * rule. `decisionOf` reads the last pass and fails closed: a record that does not hold every cell of every group, or
+ * whose cells disagree on an answer, is invalid and decides nothing.
  */
 'use strict';
 
@@ -52,16 +53,7 @@ const CHUNK_SCALE = { dense: 32, sparse: 256, runs: 128, mixed: 128, spread8k: 8
 /** A tiny scale for the pipeline check. */
 const SMALL_SCALE = { dense: 2, sparse: 4, runs: 2, mixed: 3, spread8k: 100 };
 
-const ALL_OPS = [
-  'andCardinality',
-  'orCardinality',
-  'andNotCardinality',
-  'xorCardinality',
-  'intersects',
-  'isSubsetTrue',
-  'isSubsetFalse',
-  'isEqual',
-];
+const ALL_OPS = ['andCardinality', 'intersects', 'isSubsetTrue', 'isSubsetFalse', 'isEqual'];
 const DISJOINT_OPS = ['andCardinality', 'intersects'];
 const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k'];
 
@@ -139,22 +131,6 @@ function operationsOf(codec, ids) {
       count: () => a.andCardinality(b),
       build: () => combined(a, 'andInPlace', b).size,
     },
-    orCardinality: {
-      count: () => a.orCardinality(b),
-      build: () => combined(a, 'orInPlace', b).size,
-    },
-    andNotCardinality: {
-      count: () => a.andNotCardinality(b),
-      build: () => combined(a, 'andNotInPlace', b).size,
-    },
-    xorCardinality: {
-      count: () => a.xorCardinality(b),
-      build: () => {
-        const both = combined(a, 'orInPlace', b);
-        both.andNotInPlace(combined(a, 'andInPlace', b));
-        return both.size;
-      },
-    },
     intersects: {
       count: () => a.intersects(b),
       build: () => combined(a, 'andInPlace', b).size > 0,
@@ -182,23 +158,66 @@ function cellNames() {
   return groups().flatMap((g) => g.ops.map((op) => cellName({ dataset: g.name, op })));
 }
 
+/** The operation the family's decision rests on. */
+const JUDGED_OP = 'andCardinality';
+
+/** The status each outcome of the gate exits with. */
+const EXIT = { kept: 0, derived: 3, invalid: 4 };
+
 /**
- * The stop rule applied to a list of passes (the last pass decides): per operation, whether it is kept (`faster than the
- * bar` on every group it was timed on) and the cells that stop it, each with its verdict. An operation timed in no cell
- * of the last pass is absent.
+ * What the record decides, from a list of passes (the last pass decides). `status` is `kept` (the four cardinalities and
+ * `intersects` call the kernels), `derived` (all five are built, then counted) or `invalid` (the record cannot decide:
+ * `problems` says why, and nothing is kept or derived from it). `stoppedBy` lists the `andCardinality` cells that were not
+ * `faster than the bar`; `recorded` the cells that are printed but not judged.
+ *
+ * Invalid: no pass; a smoke pass; a pass not judged by the current rule or not of the build/count/build subjects; a cell
+ * of `cellNames()` missing from the last pass (a partial pass can never keep); a cell that is not in `cellNames()`; a
+ * cell with answers that disagree, no verdict or too few rounds; and whatever else the paired gate refuses in any pass
+ * (a round kept at a high load, a slept round with no explanation). `faster` means a conclusive verdict and nothing less.
  */
-function decisionsOf(passes) {
+function decisionOf(passes, { problemsOf = () => [], rule } = {}) {
+  const problems = [...problemsOf(passes)];
   const last = passes[passes.length - 1];
-  const byOp = new Map();
-  for (const cell of last?.ops ?? []) {
-    const entry = byOp.get(cell.op) ?? { op: cell.op, kept: true, stoppedBy: [] };
-    if (kindOf(cell.verdict) !== 'faster') {
-      entry.kept = false;
-      entry.stoppedBy.push({ cell: cellName(cell), verdict: cell.verdict });
+  const stoppedBy = [];
+  const recorded = [];
+  if (last === undefined) problems.push('no pass is recorded');
+  else {
+    if (last.environment?.smoke) problems.push('the last pass is a smoke pass');
+    if (rule !== undefined && last.rule !== rule)
+      problems.push(`the last pass was not judged by ${rule}`);
+    const subjects = last.subjects ?? {};
+    if (
+      subjects.base !== 'build' ||
+      subjects.head !== 'count' ||
+      subjects.control !== 'build again'
+    ) {
+      problems.push('the last pass does not time the build, the count and the build again');
     }
-    byOp.set(cell.op, entry);
+    const have = new Map((last.ops ?? []).map((c) => [cellName(c), c]));
+    const want = cellNames();
+    for (const name of want)
+      if (!have.has(name)) problems.push(`the last pass has no cell "${name}"`);
+    for (const name of have.keys()) {
+      if (!want.includes(name)) problems.push(`the last pass has a cell "${name}" no group has`);
+    }
+    for (const cell of have.values()) {
+      const name = cellName(cell);
+      if (cell.answersAgree !== true)
+        problems.push(`${name}: the count and the build gave different answers`);
+      if (!Array.isArray(cell.rounds) || cell.rounds.length < (last.environment?.rounds ?? 0)) {
+        problems.push(`${name}: too few rounds`);
+      }
+      if (kindOf(cell.verdict) === 'malformed') problems.push(`${name}: no verdict`);
+    }
+    for (const cell of last.ops ?? []) {
+      if (cell.op === JUDGED_OP) {
+        if (kindOf(cell.verdict) !== 'faster')
+          stoppedBy.push({ cell: cellName(cell), verdict: cell.verdict });
+      } else recorded.push({ cell: cellName(cell), verdict: cell.verdict });
+    }
   }
-  return [...byOp.values()];
+  const status = problems.length > 0 ? 'invalid' : stoppedBy.length === 0 ? 'kept' : 'derived';
+  return { status, problems, stoppedBy, recorded };
 }
 
 module.exports = {
@@ -212,6 +231,8 @@ module.exports = {
   groups,
   stored,
   operationsOf,
+  JUDGED_OP,
+  EXIT,
   cellNames,
-  decisionsOf,
+  decisionOf,
 };

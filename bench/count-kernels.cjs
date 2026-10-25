@@ -1,9 +1,11 @@
 /*
- * Counting kernels against building: for each counting operation of the TypeScript codec's bitmap (`andCardinality`,
- * `orCardinality`, `andNotCardinality`, `xorCardinality`, `intersects`, `isSubset`, `isEqual`), the time of the count
- * beside the time of the work it replaces (build the combination with the in-place operations and take its size), on
- * every operand pair of `bench/lib/count-cells.cjs`. It answers one question: is each count faster than building? The
- * stop rule, fixed before any measurement, is that a count is kept only if it is on every group (`decisionsOf`).
+ * Counting kernels against building: for `andCardinality` and the questions answered beside it (`intersects`,
+ * `isSubset`, `isEqual`), the time of the count beside the time of the work it replaces (build the combination with the
+ * in-place operations and take its size), on every operand pair of `bench/lib/count-cells.cjs`. It answers one question:
+ * does `andCardinality` beat build-then-size on every group? The `orCardinality`, `xorCardinality` and `andNotCardinality`
+ * counts are arithmetic on it and have no cell of their own. The stop rule, fixed before any measurement, is one decision for the family (`decisionOf`): the four cardinalities and
+ * `intersects` call the kernels if `andCardinality` beats build-then-size on every group, and are otherwise all derived
+ * by build-then-count.
  *
  * It does NOT judge whether a change slowed the store's hot paths. That is `bench/ts-codec-paired.cjs`, the paired
  * harness, run against the same commit (`--reads`, `--write` and the per-operation cells with `--ops`): this bench
@@ -22,9 +24,10 @@
  * THE RECORD is `bench/count-kernels-results.json`: every pass, appended, never replaced, each with every round of every
  * cell (`[order, build, count, build again, loadAtStart, loadAtEnd]`, the figures in milliseconds), the rounds set aside,
  * the medians, intervals and verdicts, the commit, the tree's state, the Node version and the machine. A pass with an
- * inconclusive cell is taken again (`COUNT_RETAKES`, default 2); the earlier pass stays. `--gate` applies the paired
- * gate to the file and prints the decision per operation. A conclusive `slower` stops the gate until the pass carries an
- * `explained` note (the operation is routed to building); an operation that is not `faster` on every group is not kept.
+ * inconclusive cell is taken again (`COUNT_RETAKES`, default 2); the earlier pass stays. `--gate` reads the last pass and
+ * prints one final line, `RESULT kept`, `RESULT derived` or `RESULT invalid`, and exits 0, 3 or 4 to match. A record that
+ * does not hold every cell of every group of the full run, or whose cells disagree on an answer, is invalid: a partial
+ * `--only` pass can never print `kept`. A cell that is `slower` or `inconclusive` is a result (derived), not a failure.
  *
  *   node --expose-gc bench/count-kernels.cjs                  every group, appended to the results file
  *   node --expose-gc bench/count-kernels.cjs --only=<a>|<b>   the cells whose "<group> <operation>" contains either text
@@ -63,6 +66,7 @@ const {
   collectRounds,
   SLEEP_FACTOR,
   SLEEP_MAX_ON_CPU,
+  exitWhenDone,
 } = require('./lib/paired-verdict.cjs');
 const cells = require('./lib/count-cells.cjs');
 
@@ -82,7 +86,10 @@ const ROUNDS = CHECK
 const WARM_MS = SMALL ? 0 : 300;
 const SAMPLE_MS = SMALL ? 0 : 8;
 /** Which function each subject of a round times: the build, the count, and the build again as the control. */
+const SUBJECTS = { base: 'build', head: 'count', control: 'build again' };
 const VARIANTS = ['build', 'count', 'build'];
+/** What each subject of a round must report having timed (a literal of its own, so a changed `VARIANTS` is caught). */
+const TIMED = ['build', 'count', 'build'];
 const ORDERS = [
   [0, 1, 2],
   [2, 1, 0],
@@ -128,7 +135,15 @@ function child(file, groupName, variant, only) {
     const fn = operations[op][variant];
     const answer = digest(fn());
     const timed = measureSteadyCpu(fn, 1, { warmMs: WARM_MS, sampleMs: SAMPLE_MS });
-    out[op] = { ns: +timed.ns.toFixed(1), cpuNs: +timed.cpuNs.toFixed(1), answer };
+    // Which of the two calls this process timed, by the function itself, not by the name it was asked for.
+    const timedName =
+      fn === operations[op].count ? 'count' : fn === operations[op].build ? 'build' : '?';
+    out[op] = {
+      ns: +timed.ns.toFixed(1),
+      cpuNs: +timed.cpuNs.toFixed(1),
+      answer,
+      timed: timedName,
+    };
   }
   return { group: groupName, ops: out };
 }
@@ -223,13 +238,22 @@ function measureGroups(file, only) {
     const opNames = group.ops.filter((op) => wanted(only, cellName({ dataset: group.name, op })));
     if (opNames.length === 0) continue;
     const taken = takeRounds(
-      (i) =>
-        JSON.parse(
+      (i) => {
+        const out = JSON.parse(
           spawnLast([
             `--child=${file}:${group.name}:${VARIANTS[i]}`,
             ...(only ? [`--only=${only}`] : []),
           ]),
-        ),
+        );
+        for (const op of opNames) {
+          if (out.ops[op].timed !== TIMED[i]) {
+            throw new Error(
+              `${cellName({ dataset: group.name, op })}: subject ${i} timed the ${out.ops[op].timed}, not the ${TIMED[i]}`,
+            );
+          }
+        }
+        return out;
+      },
       (samples) => opNames.map((op) => samples.map((x) => x.ops[op].ns)),
       (samples) => opNames.map((op) => samples.map((x) => x.ops[op].cpuNs)),
     );
@@ -302,12 +326,15 @@ function appendPass(doc) {
   fs.writeFileSync(RESULTS, `${JSON.stringify(file)}\n`);
 }
 
+/** A cell's figures on one line: the count as a share of the build, its interval, the second build, the verdict. */
+function verdictLine(c) {
+  const [lo, hi] = c.headInterval;
+  return `count ${(c.headVsReference * 100).toFixed(1)}% of build [${(lo * 100).toFixed(1)}, ${(hi * 100).toFixed(1)}], second build ${(c.controlVsBase * 100).toFixed(1)}% (${c.verdict})`;
+}
+
 function printPass(doc) {
   for (const c of doc.ops) {
-    const [lo, hi] = c.headInterval;
-    console.log(
-      `${cellName(c)}: count ${(c.headVsReference * 100).toFixed(1)}% of build [${(lo * 100).toFixed(1)}, ${(hi * 100).toFixed(1)}], second build ${(c.controlVsBase * 100).toFixed(1)}% (${c.verdict})`,
-    );
+    console.log(`${cellName(c)}: ${verdictLine(c)}`);
   }
   const { maxLoadAtEnd, discardedRounds, sleptRounds } = doc.load;
   console.log(
@@ -315,21 +342,35 @@ function printPass(doc) {
   );
 }
 
-/** The gate over every pass, and the stop rule's decision for each operation. Returns the exit code. */
+/**
+ * The gate over every pass: prints each judged cell, each recorded cell, and one final line, `RESULT <status>: ...`, then
+ * returns the exit code (0 kept, 3 derived, 4 incomplete or invalid). Nothing else decides.
+ */
 function applyGate() {
   const file = readResults();
-  const problems = gateProblems(file.passes);
-  for (const p of problems) console.log(`gate: ${p}`);
-  if (problems.length === 0) console.log(`gate: ${RESULTS}: every pass is clear`);
-  for (const d of cells.decisionsOf(file.passes)) {
-    console.log(
-      d.kept
-        ? `keep ${d.op}: faster than building on every group`
-        : `NOT KEPT ${d.op}: ${d.stoppedBy.map((s) => `${s.cell} (${s.verdict})`).join('; ')}`,
-    );
+  const d = cells.decisionOf(file.passes, {
+    rule: RULE,
+    problemsOf: (passes) => gateProblems(passes, { verdicts: false }),
+  });
+  const last = file.passes[file.passes.length - 1];
+  for (const c of last?.ops ?? []) {
+    const judged = c.op === cells.JUDGED_OP;
+    console.log(`${judged ? 'judged  ' : 'recorded'} ${cellName(c)}: ${verdictLine(c)}`);
   }
-  if (problems.some((p) => p.includes('conclusively slower'))) return 3;
-  return problems.length > 0 ? 4 : 0;
+  for (const p of d.problems) console.log(`invalid: ${p}`);
+  const groups = cells.groups().length;
+  if (d.status === 'kept') {
+    console.log(
+      `RESULT kept: ${cells.JUDGED_OP} beat build-then-size on all ${groups} groups; andCardinality, orCardinality, andNotCardinality, xorCardinality and intersects call the kernels`,
+    );
+  } else if (d.status === 'derived') {
+    console.log(
+      `RESULT derived: ${cells.JUDGED_OP} did not beat build-then-size on ${d.stoppedBy.map((s) => `${s.cell} (${s.verdict})`).join('; ')}; andCardinality, orCardinality, andNotCardinality, xorCardinality and intersects are derived by build-then-count`,
+    );
+  } else {
+    console.log(`RESULT invalid: ${d.problems.length} problem(s); the record decides nothing`);
+  }
+  return cells.EXIT[d.status];
 }
 
 /** One pass, as a document with its time, commits, machine and loads. */
@@ -340,7 +381,7 @@ function takePass(file, only) {
     rule: RULE,
     sleepRule: { factor: SLEEP_FACTOR, maxOnCpu: SLEEP_MAX_ON_CPU },
     tolerance: TOLERANCE,
-    subjects: { base: 'build', head: 'count', control: 'build again' },
+    subjects: SUBJECTS,
     environment: environment(),
     started: new Date().toISOString(),
   };
@@ -395,6 +436,14 @@ function main() {
         process.exit(1);
       }
       if (CHECK) {
+        if (only === undefined) {
+          const have = new Set(doc.ops.map((c) => cellName(c)));
+          const missing = cells.cellNames().filter((n) => !have.has(n));
+          if (missing.length > 0) {
+            console.error(`a cell is missing: ${missing.join(', ')}`);
+            process.exit(1);
+          }
+        }
         console.log(`count-kernels --check: ok (${doc.ops.length} cells, ${ROUNDS} rounds each)`);
         return;
       }
@@ -410,3 +459,4 @@ function main() {
 }
 
 main();
+exitWhenDone();
