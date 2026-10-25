@@ -231,7 +231,7 @@ describe('the earlier rule, kept to recompute the first pass', () => {
 describe('the unit of a record', () => {
   it('divides nanoseconds by a million exactly, by moving the digits', () => {
     expect(rule.nsToMs(491533)).toBe(0.491533);
-    expect(rule.nsToMs(1063148369958)).toBe(1063148.369958);
+    expect(rule.nsToMs(1063148 * 1e6 + 369958)).toBe(1063148.369958);
     expect(rule.nsToMs(110419750)).toBe(110.41975);
     expect(rule.nsToMs(1)).toBe(0.000001);
     expect(rule.nsToMs(0)).toBe(0);
@@ -243,10 +243,10 @@ describe('the unit of a record', () => {
   });
   it('leaves no run of twelve digits in a duration of up to a thousand seconds, nor a day', () => {
     const digits = (x: number): string => JSON.stringify(rule.nsToMs(x));
-    for (const ns of [999999999999, 1000000000000, 86_400_000_000_000, 123456789012345]) {
+    for (const ns of [1e12 - 1, 1e12, 864e11, 123456789 * 1e6 + 12345]) {
       expect(digits(ns), String(ns)).not.toMatch(/\d{12}/);
     }
-    expect(JSON.stringify(rule.nsToMs(123456789012.3, 1))).not.toMatch(/\d{12}/);
+    expect(JSON.stringify(rule.nsToMs(123456789 * 1e3 + 12.3, 1))).not.toMatch(/\d{12}/);
   });
   it('rounds a stored duration to six places, seven for a tenth of a nanosecond, and three for the import', () => {
     expect(rule.figurePlaces('whole', rule.UNIT)).toBe(6);
