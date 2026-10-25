@@ -6,8 +6,9 @@ import { runBitmapOps } from '@/testing/fuzz-bitmap-ops';
 
 /**
  * The committed `bitmap-ops` reproducers for the counting methods: each starts from a decode that holds an array, a
- * bitset and a run container, so the counts reach every container-pair kind, and each makes the target call every
- * counting method. The target's check is shown to fire on a wrong count and to stay quiet on right ones.
+ * bitset and a run container, and each makes the target call every counting method. The target's check is shown to fire
+ * on a wrong count and on a non-bitmap operand that is accepted, and to stay quiet on right ones. Which container pairs a
+ * count compares is the public count suite's to prove, not these files'.
  */
 const DIR = join(__dirname, '../core/crbm/fuzz-corpus/bitmap-ops');
 const MODEL_LIMIT = 20_000;
@@ -43,6 +44,7 @@ function kindsOf(bytes: Uint8Array): Set<string> {
   return kinds;
 }
 
+const REFUSAL_FILE = 'counts-refuse-non-bitmaps.bin';
 const FILES = ['counts-on-a-bitset-array-and-run.bin', 'counts-at-the-model-limit.bin'];
 
 describe('the counting reproducers of the bitmap-ops target', () => {
@@ -79,5 +81,29 @@ describe('the counting reproducers of the bitmap-ops target', () => {
       return typeof answer === 'boolean' ? !answer : answer + 1;
     } as never);
     expect(() => runBitmapOps(file)).toThrow(new RegExp(`bitmap-ops: .*${method}`));
+  });
+
+  it.each(METHODS)(
+    '%s is asked for a non-bitmap by the refusal reproducer, and refuses',
+    (method) => {
+      const asked = vi.spyOn(RoaringBitmap.prototype, method);
+      runBitmapOps(readFileSync(join(DIR, REFUSAL_FILE)));
+      const strangers = asked.mock.calls.filter(([other]) => !(other instanceof RoaringBitmap));
+      expect(strangers.length, `${method} called with a non-bitmap`).toBeGreaterThan(0);
+    },
+  );
+
+  it.each(METHODS)('%s accepting a non-bitmap is a finding', (method) => {
+    const file = readFileSync(join(DIR, REFUSAL_FILE));
+    const real = RoaringBitmap.prototype[method] as (o: RoaringBitmap) => number | boolean;
+    vi.spyOn(RoaringBitmap.prototype, method).mockImplementation(function (
+      this: RoaringBitmap,
+      other: unknown,
+    ) {
+      return other instanceof RoaringBitmap ? real.call(this, other) : 0;
+    } as never);
+    expect(() => runBitmapOps(file)).toThrow(
+      new RegExp(`${method} with a non-bitmap: was accepted`),
+    );
   });
 });
