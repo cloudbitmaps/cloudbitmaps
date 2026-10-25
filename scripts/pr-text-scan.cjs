@@ -18,8 +18,13 @@
 //     PR_TITLE='…' PR_BODY='…' PR_BRANCH='…' BASE_SHA=<sha> HEAD_SHA=<sha> node scripts/pr-text-scan.cjs
 //
 //   PR_TITLE   required, non-empty            PR_BODY   required (may be empty: a PR can have no body)
-//   PR_BRANCH  the head branch's name, scanned with the same phrase list and leak rules as the other texts; when
-//              unset the check says so and skips it (the workflow always sets it)
+//   PR_BRANCH  the head branch's name, scanned with the same phrase list and leak rules as the other texts, and
+//              also with `-`, `_`, `/` and `.` read as spaces (`this-session` is `this session`; the `coordinator`
+//              rule skips that reading), and refused when it starts with a coding tool's own branch prefix
+//              (`claude/`, `copilot/`, `cursor/`, `devin/`, in any case). A name that holds a twelve-digit run (a
+//              `yyyymmddhhmm` stamp) fails the leak scan's account-id rule. A branch cannot be renamed on a pull
+//              request, so a finding says to push the work to a branch with another name and open the pull request
+//              from it. Unset locally: the check says so and skips it.
 //   BASE_SHA / HEAD_SHA   both or neither; with both, the messages, the author and the committer of every commit of
 //                         `git log BASE..HEAD` are scanned: the pull request's own commits, those that reached its
 //                         branch through a merge's second parent, and its merges. BASE_SHA is the base branch's tip
@@ -33,6 +38,7 @@
 //
 // Exit 0 clean; 1 a finding; 2 an input or a tool that could not be read or run. The check fails closed: a missing
 // input, a git error, a scan that crashes or exits in a way this script does not know is a failure, never a pass.
+// When GITHUB_ACTIONS is `true`, a missing PR_BRANCH, BASE_SHA or HEAD_SHA is exit 2 too (a local run only notes it).
 //
 // A finding names the phrase, the source and the line number, never the text of the line: the log of a public run is
 // a second copy of the text, and a line that holds a listed phrase can hold anything else. The leak scan's report is
@@ -46,13 +52,18 @@
 //
 // An author's and committer's name and email are run through the private needles alone: one file per field goes to
 // the leak scan, and only the findings of its `extra needle` rules are kept, so the scan's email rule never fires on
-// an ordinary address. A finding names the commit and the field. The commit records are read with `git log -z`, so
+// an ordinary address. A needle finding names the commit and the field, never the value; the leak scan names ten
+// files per rule, so the fields beyond that are counted, not named. A bot, `(aider)` or vendor-address finding
+// names the commit and whether it is the author or the committer. The commit records are read with `git log -z`, so
 // no text of a message can end a record, and a record that does not parse is exit 2.
 //
 // What it does not catch: a phrase that is not on the list below, a leak that is reworded (a path written with a
-// space in it, an id described in other words), a phrase in a branch name that the list spells with a space and the
-// name joins with hyphens, an author whose identity names no tool, and anything in a pull request comment or
-// review, which this script never reads.
+// space in it, an id described in other words), a phrase in a branch name that no `-`, `_`, `/` or `.` reading
+// exposes (a branch of another tool than the four named, a line-start `Generated with` that does not begin the
+// name), an author whose identity names no tool, a phrase inside an author's or committer's name (only a bot, an
+// `(aider)` or a vendor address is checked there), a NUL in a commit message (git stops reading the message at
+// it, and only a hand-built commit holds one), and anything in a pull request comment or review, which this
+// script never reads.
 
 const { execFileSync, spawnSync } = require('node:child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
@@ -125,12 +136,17 @@ const IDENTITY_RULES = [
 const FIX =
   'fix: say what was done, not who or what did it (public text names the change, never its author)';
 
-/** Phrase findings in one text: `{ phrase, source, line }`. Never the text of the line. */
-function phraseFindings(source, text) {
+// A branch that starts with the prefix a coding tool gives the branches it makes (matched at the start of the name,
+// in any case: `docs/claude-md-notes` and `feat/codex-parser` are not tool branches).
+const TOOL_BRANCH = /^(?:claude|copilot|cursor|devin)\//i;
+
+/** Phrase findings in one text: `{ phrase, source, line }`. Never the text of the line. `skip` names phrases to leave out. */
+function phraseFindings(source, text, skip = []) {
   const out = [];
   const lines = text.split(/\r?\n/);
   lines.forEach((t, i) => {
     for (const p of PHRASES) {
+      if (skip.includes(p.name)) continue;
       if (p.re.test(t)) {
         out.push({ phrase: p.name, source, line: i + 1 });
       } else if (
@@ -154,6 +170,27 @@ function identityFindings(source, { name, email }) {
     source,
     line: 0,
   }));
+  return out;
+}
+
+/**
+ * Findings in the head branch's name: the phrase list on the name as written, the phrase list again on a copy with `-`,
+ * `_`, `/` and `.` turned into spaces (`this-session` is the phrase `this session`), and the prefix of a coding tool's
+ * own branches. The `coordinator` rule is skipped on the copy: it treats a hyphenated compound as a property
+ * (`coordinator-free`), and the copy would undo that. Each phrase is reported once.
+ */
+function branchFindings(name) {
+  const source = 'branch name';
+  const seen = new Set();
+  const out = [];
+  for (const f of [
+    ...phraseFindings(source, name),
+    ...phraseFindings(source, name.replace(/[-_/.]/g, ' '), ['coordinator']),
+  ]) {
+    if (!seen.has(f.phrase)) out.push(f);
+    seen.add(f.phrase);
+  }
+  if (TOOL_BRANCH.test(name)) out.push({ phrase: 'coding tool branch prefix', source, line: 1 });
   return out;
 }
 
@@ -221,11 +258,11 @@ const ID_FIELDS = ['author name', 'author email', 'committer name', 'committer e
 /**
  * The private needles alone over every commit's author and committer, name and email: one file per field, scanned by
  * the leak scan, and only the findings of an `extra needle` rule are kept (a second pass, so the scan's email rule
- * never fires on an ordinary address). Returns `[{ phrase, source, line: 0 }]`: the commit and the field, never the
- * value. The scan's report lists at most ten files per rule, so a count beyond the ones named is a finding of its own.
+ * never fires on an ordinary address). Returns `{ hits, unnamed }`: `hits` are `{ phrase, source, line: 0 }`, the commit and the field, never the
+ * value; the scan's report names at most ten files per rule, so `unnamed` counts the fields it did not name.
  */
 function identityNeedleHits(identities, idDir, run) {
-  if (identities.length === 0) return [];
+  if (identities.length === 0) return { hits: [], unnamed: 0 };
   const files = new Map();
   for (const c of identities) {
     const values = [c.author.name, c.author.email, c.committer.name, c.committer.email];
@@ -244,6 +281,7 @@ function identityNeedleHits(identities, idDir, run) {
       `the leak scan did not run to a verdict over the identities (${r.error ? r.error.message : `exit ${r.status}`})`,
     );
   const hits = [];
+  let extra = 0;
   let inNeedle = false;
   for (const line of (r.stdout || '').split('\n')) {
     const heading = /^ {2}(\S.*?): (\d+)$/.exec(line);
@@ -254,9 +292,12 @@ function identityNeedleHits(identities, idDir, run) {
     const hit = /^ {4}(id-\d+\.txt):\d+ /.exec(line);
     if (inNeedle && hit && files.has(hit[1])) hits.push(files.get(hit[1]));
     const more = /^ {4}… (\d+) more$/.exec(line);
-    if (inNeedle && more) hits.push(`${more[1]} more identity field(s)`);
+    if (inNeedle && more) extra += Number(more[1]);
   }
-  return hits.map((source) => ({ phrase: 'private needle', source, line: 0 }));
+  return {
+    hits: hits.map((source) => ({ phrase: 'private needle', source, line: 0 })),
+    unnamed: extra,
+  };
 }
 
 /**
@@ -317,7 +358,7 @@ function leakScan(texts, requireNeedles, identities = []) {
       notes,
       out,
       migration: migration ? migration[0] : '',
-      identityHits: degraded ? [] : identityNeedleHits(identities, idDir, run),
+      identity: degraded ? { hits: [], unnamed: 0 } : identityNeedleHits(identities, idDir, run),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -328,14 +369,22 @@ function leakScan(texts, requireNeedles, identities = []) {
 function main(env) {
   const title = env.PR_TITLE;
   const body = env.PR_BODY;
+  const inCi = env.GITHUB_ACTIONS === 'true';
   if (title === undefined || title.trim() === '')
     throw new InputError('PR_TITLE is missing or empty');
   if (body === undefined)
     throw new InputError('PR_BODY is not set (set it to an empty string for no body)');
+  // In CI the workflow always sets all three of these: one that is gone is a broken workflow, not a pass.
+  if (inCi)
+    for (const name of ['PR_BRANCH', 'BASE_SHA', 'HEAD_SHA'])
+      if (env[name] === undefined || (name !== 'PR_BRANCH' && env[name] === ''))
+        throw new InputError(`${name} is not set (the workflow always sets it)`);
   const hasBase = env.BASE_SHA !== undefined && env.BASE_SHA !== '';
   const hasHead = env.HEAD_SHA !== undefined && env.HEAD_SHA !== '';
   if (hasBase !== hasHead)
-    throw new InputError('BASE_SHA and HEAD_SHA go together: one is missing');
+    throw new InputError(
+      `${hasBase ? 'HEAD_SHA' : 'BASE_SHA'} is not set: BASE_SHA and HEAD_SHA go together`,
+    );
 
   const texts = [
     { file: 'title.txt', source: 'title', text: title },
@@ -361,9 +410,11 @@ function main(env) {
 
   const leak = leakScan(texts, env.REQUIRE_NEEDLES === 'true', people);
   const findings = [
-    ...texts.flatMap((t) => phraseFindings(t.source, t.text)),
+    ...texts.flatMap((t) =>
+      t.source === 'branch name' ? branchFindings(t.text) : phraseFindings(t.source, t.text),
+    ),
     ...identities,
-    ...leak.identityHits,
+    ...leak.identity.hits,
   ];
   for (const f of findings) {
     console.error(
@@ -372,13 +423,22 @@ function main(env) {
         : `pr-text-scan: "${f.phrase}" in the ${f.source}, line ${f.line}`,
     );
   }
-  if (findings.length > 0) {
+  if (leak.identity.unnamed > 0)
+    console.error(
+      `pr-text-scan: and ${leak.identity.unnamed} more identity fields hold a private needle (the leak scan names ten per rule)`,
+    );
+  const count = findings.length + leak.identity.unnamed;
+  const branchLeak = !leak.ok && /^ {4}branch\.txt:\d+/m.test(leak.out);
+  const branchDigits = /AWS account id[^\n]*\n(?: {4}\S+:\d+[^\n]*\n)*? {4}branch\.txt:/.test(
+    leak.out,
+  );
+  if (count > 0) {
     console.error(`pr-text-scan: ${FIX}`);
     if (findings.some((f) => f.source.includes('commit ') && f.line > 0))
       console.error(
         "pr-text-scan: to fix a commit message: reword it with `git rebase -i origin/main`, then `git push --force-with-lease --force-if-includes` on the pull request's own branch; the text of a title or a body is edited on the pull request",
       );
-    if (leak.identityHits.length > 0)
+    if (leak.identity.hits.length + leak.identity.unnamed > 0)
       console.error(
         'pr-text-scan: a private needle in an author or committer is handled as a leak: a force-push does not unpublish what was already pushed; ask the maintainer before rewriting the history',
       );
@@ -387,6 +447,13 @@ function main(env) {
         'pr-text-scan: to fix an author or committer of the last commit: `git commit --amend --no-edit --reset-author` with the right identity configured (an earlier commit: mark it `edit` in `git rebase -i origin/main`, amend it the same way, then `git rebase --continue`)',
       );
   }
+  if (findings.some((f) => f.source === 'branch name') || branchLeak)
+    console.error(
+      "pr-text-scan: to fix the branch name: a pull request's branch cannot be renamed, so push the work to a branch with another name and open the pull request from it" +
+        (branchDigits
+          ? ' (a branch name holding a twelve-digit run, such as a yyyymmddhhmm stamp, fails the account-id rule)'
+          : ''),
+    );
 
   for (const n of leak.notes) console.log(n);
   if (leak.migration !== '') console.log(leak.migration);
@@ -400,9 +467,9 @@ function main(env) {
     );
   }
 
-  if (findings.length > 0 || !leak.ok) {
+  if (count > 0 || !leak.ok) {
     console.error(
-      `pr-text-scan: FAILED: ${findings.length} finding(s)${leak.ok ? '' : ', and the leak scan'} (scanned ${texts.length} text(s))`,
+      `pr-text-scan: FAILED: ${count} finding(s)${leak.ok ? '' : ', and the leak scan'} (scanned ${texts.length} text(s))`,
     );
     return 1;
   }
