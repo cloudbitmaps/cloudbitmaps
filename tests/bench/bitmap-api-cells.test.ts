@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import roaring from 'roaring';
-import { RoaringBitmap } from '@/bitmap';
+import { RoaringBitmap } from '@/index';
 import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 
 /**
@@ -56,7 +56,7 @@ describe('the stored bytes', () => {
 describe('the cells', () => {
   const names = lib.cellsOf({ some: [], small: true }).map((c) => c.name);
 
-  it('are the ones the design lists, and not the count cells the class does not have yet', () => {
+  it('are the ones the design lists, count cells included', () => {
     for (const want of [
       'build array',
       'build Uint32Array',
@@ -84,10 +84,14 @@ describe('the cells', () => {
       'orMany 64',
       'clone',
       'clone then write',
+      'andCardinality',
+      'orCardinality',
+      'isSubset',
+      'isEqual',
+      'intersects',
     ]) {
       expect(names, want).toContain(want);
     }
-    expect(names.some((n) => /cardinality|subset|equal|intersects/i.test(n))).toBe(false);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -101,6 +105,14 @@ describe('the cells', () => {
     expect(lib.runsOn(at('orMany 8'), internal)).toBe(false);
     expect(lib.runsOn(at('orMany 8'), ours)).toBe(true);
     expect(lib.runsOn(at('has'), internal)).toBe(true);
+    // The codec runs the two counts as build-then-count, and has no counterpart for the rest.
+    expect(lib.runsOn(at('andCardinality'), internal)).toBe(true);
+    expect(lib.runsOn(at('orCardinality'), internal)).toBe(true);
+    for (const n of ['isSubset', 'isEqual', 'intersects']) {
+      expect(lib.runsOn(at(n), native), n).toBe(true);
+      expect(lib.runsOn(at(n), ours), n).toBe(true);
+      expect(lib.runsOn(at(n), internal), n).toBe(false);
+    }
   });
 
   for (const dataset of lib.DATASETS) {
@@ -118,6 +130,9 @@ describe('the cells', () => {
         }
       }
       expect(answers.size).toBe(names.length);
+      // The two comparisons are the full-scan case: both answer true, so neither can end at its first element.
+      for (const n of ['isSubset', 'isEqual'])
+        expect([...answers.get(n)!.values()], n).toEqual(['true', 'true']);
       for (const [cell, per] of answers) {
         expect(new Set(per.values()).size, `${dataset} ${cell}: ${JSON.stringify([...per])}`).toBe(
           1,

@@ -43,6 +43,10 @@ const verdict = require_('./lib/bitmap-api-verdict.cjs') as {
   overShipBar: (
     cells: Array<Partial<Cell>>,
   ) => Array<{ method: string; worst: number; cell: string }>;
+  countKernelsRule: (cells: Array<Partial<Cell>>) => {
+    beats: boolean;
+    perDataset: Array<{ dataset: string; vsInternal: number; controlInBand: boolean }>;
+  };
   passOfRecord: (file: { passes: unknown[] }) => unknown;
   gateProblems: (passes: unknown[]) => string[];
 };
@@ -173,6 +177,36 @@ describe('stop rule 3: more than 10 times native', () => {
       ['b', 30, 'dense b cell'],
       ['a', 11, 'dense op'],
     ]);
+  });
+});
+
+describe('stop rule 1: the count kernels against build-then-count', () => {
+  const count = (dataset: string, vsInternal: number, inBand = true, op = 'andCardinality') =>
+    ({ dataset, op, vsInternal, controlInBand: inBand }) as Partial<Cell>;
+
+  it('is met only when every data set is below 1 with its control in band', () => {
+    const all = ['dense', 'sparse', 'runs'];
+    expect(verdict.countKernelsRule(all.map((d) => count(d, 0.5))).beats).toBe(true);
+    expect(
+      verdict.countKernelsRule([...all.map((d) => count(d, 0.5)), count('mixed', 1)]).beats,
+    ).toBe(false);
+    expect(verdict.countKernelsRule([count('dense', 0.99), count('sparse', 1.01)]).beats).toBe(
+      false,
+    );
+    expect(verdict.countKernelsRule([count('dense', 0.5), count('sparse', 0.5, false)]).beats).toBe(
+      false,
+    );
+  });
+
+  it('reads only andCardinality, and is not met by a pass without it', () => {
+    expect(verdict.countKernelsRule([]).beats).toBe(false);
+    const orOnly = verdict.countKernelsRule([count('dense', 0.1, true, 'orCardinality')]);
+    expect(orOnly.beats).toBe(false);
+    expect(orOnly.perDataset).toEqual([]);
+    expect(
+      verdict.countKernelsRule([count('dense', 0.5), count('sparse', 5, true, 'orCardinality')])
+        .beats,
+    ).toBe(true);
   });
 });
 

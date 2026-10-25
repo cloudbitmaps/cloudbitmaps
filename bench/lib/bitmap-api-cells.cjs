@@ -17,8 +17,12 @@
  * native codec with its runs optimized, as the store writes them) decoded by that subject's own decoder, so all three
  * work on the same containers; the build cells start from the ids, regenerated from seeds in every process.
  *
- * Not built yet: `andCardinality`, `orCardinality`, `isSubset`, `isEqual` and `intersects`, which wait for the class
- * to have them.
+ * THE COUNT CELLS. `andCardinality` and `orCardinality` run on all three subjects: `native` and `ours` call the method,
+ * and `internal` is build-then-count, the codec's own combine followed by `size`, so that figure is what the kernels
+ * are held against. `ours` runs whichever route the class's count switch selects (the pass records which). `isSubset`,
+ * `isEqual` and `intersects` have no codec counterpart. `isSubset` asks whether the intersection of the two operands is
+ * inside the first, and `isEqual` whether the first operand equals a copy of itself: both answer `true`, which is the
+ * full-scan case, with no early exit. `intersects` takes the two stored bitmaps as they are.
  */
 'use strict';
 
@@ -76,6 +80,10 @@ function nativeApi(nativeModule) {
     toUint32: (b) => b.toUint32Array(),
     toArray: (b) => b.toArray(),
     orMany: (list) => R.orMany(list),
+    count: (op, a, b) => a[`${op}Cardinality`](b),
+    subset: (a, b) => a.isSubset(b),
+    equal: (a, b) => a.isEqual(b),
+    intersects: (a, b) => a.intersects(b),
   };
 }
 
@@ -102,6 +110,10 @@ function oursApi(RoaringBitmap) {
     toUint32: (b) => b.toUint32Array(),
     toArray: (b) => b.toArray(),
     orMany: (list) => R.orMany(list),
+    count: (op, a, b) => a[`${op}Cardinality`](b),
+    subset: (a, b) => a.isSubset(b),
+    equal: (a, b) => a.isEqual(b),
+    intersects: (a, b) => a.intersects(b),
   };
 }
 
@@ -133,6 +145,11 @@ function internalApi(codec) {
     toUint32: (b) => b.toUint32Array(),
     toArray: (b) => b.toArray(),
     orMany: undefined,
+    // Build-then-count: the combine, then its size.
+    count: (op, a, b) => a.constructor[op](a, b).size,
+    subset: undefined,
+    equal: undefined,
+    intersects: undefined,
   };
 }
 
@@ -420,6 +437,49 @@ function cellsOf(data) {
         api.addMany(x, data.batch);
         return x;
       };
+    },
+  });
+  for (const op of ['and', 'or']) {
+    add({
+      name: `${op}Cardinality`,
+      method: `${op}Cardinality`,
+      group: 'count',
+      make: (api) => {
+        const [a, b] = operands(api);
+        return () => api.count(op, a, b);
+      },
+    });
+  }
+  add({
+    name: 'isSubset',
+    method: 'isSubset',
+    group: 'compare',
+    who: NATIVE_OURS,
+    make: (api) => {
+      const [a, b] = operands(api);
+      const inside = api.combine('and', a, b);
+      return () => api.subset(inside, a);
+    },
+  });
+  add({
+    name: 'isEqual',
+    method: 'isEqual',
+    group: 'compare',
+    who: NATIVE_OURS,
+    make: (api) => {
+      const [a] = operands(api);
+      const copy = api.clone(a);
+      return () => api.equal(a, copy);
+    },
+  });
+  add({
+    name: 'intersects',
+    method: 'intersects',
+    group: 'count',
+    who: NATIVE_OURS,
+    make: (api) => {
+      const [a, b] = operands(api);
+      return () => api.intersects(a, b);
     },
   });
   // The first operand's next write after a combine that returns a new bitmap. A returning `or`, `xor` or `andNot`

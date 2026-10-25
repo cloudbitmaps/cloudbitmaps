@@ -63,6 +63,7 @@ function passOf(cells: Array<[string, string, string, string, number, number, nu
       head: 'abcdef0123456789abcdef0123456789abcdef01',
       tree: 'clean',
       roaring: '2.7.0',
+      countRoute: 'kernels',
       anyLoad: false,
       smoke: false,
       rounds: 31,
@@ -199,6 +200,44 @@ describe('the table of a record', () => {
     expect(region).toContain('not resolved');
     expect(region).not.toContain('Close to native');
     expect(table.problemsOf('p.md', rendered(noisy), noisy)).toEqual([]);
+  });
+});
+
+describe('the count cells of a record', () => {
+  const countPass = (route: string, andCard: number) => {
+    const base = passOf([
+      ...DATASETS.map(
+        (d) => [d, 'andCardinality', 'count', 'andCardinality', 10, 12, 12, andCard] as never,
+      ),
+    ]);
+    return {
+      passes: [{ ...base, environment: { ...base.environment, countRoute: route } }],
+    } as File;
+  };
+
+  it('names the route the class ran, and says the kernels won when every data set is below build-then-count', () => {
+    const region = table.regionText('p.md', rendered(countPass('kernels', 20)));
+    expect(region).toContain('by the count kernels in this pass');
+    expect(region).toContain(
+      'The count kernels took less time than build-then-count on every data set (`andCardinality`).',
+    );
+  });
+
+  it('says so, with each figure, when the kernels did not win everywhere, and names the other route', () => {
+    const region = table.regionText('p.md', rendered(countPass('build-then-count', 10)));
+    expect(region).toContain('by building the combination and counting it in this pass');
+    expect(region).toContain('did not take less time than build-then-count on every data set');
+    expect(region).toContain('dense 1.20');
+  });
+
+  it('is refused when a page names the other route than the record', () => {
+    const file = countPass('kernels', 20);
+    const wrong = rendered(file).replace(
+      'by the count kernels in this pass',
+      'by building the combination and counting it in this pass',
+    );
+    expect(table.problemsOf('p.md', wrong, file).join('\n')).toContain('not what');
+    expect(table.problemsOf('p.md', rendered(file), file)).toEqual([]);
   });
 });
 

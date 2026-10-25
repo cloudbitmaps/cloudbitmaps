@@ -91,6 +91,31 @@ function ruleLines(pass) {
   return lines;
 }
 
+/** What the record says of the count cells: the route the class ran, and rule 1's reading of `andCardinality`. */
+function countLines(pass) {
+  const route = pass.environment.countRoute;
+  const routeText =
+    route === 'kernels'
+      ? 'the count kernels'
+      : route === 'build-then-count'
+        ? 'building the combination and counting it'
+        : 'an unrecorded route';
+  const rule = verdict.countKernelsRule((pass.cells ?? []).filter((c) => !c.malformed));
+  const lines = [
+    `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\`, \`andNotCardinality\` and \`intersects\` by ${routeText} in this pass. The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it.`,
+  ];
+  if (rule.perDataset.length > 0) {
+    lines.push(
+      rule.beats
+        ? 'The count kernels took less time than build-then-count on every data set (`andCardinality`).'
+        : `The count kernels did not take less time than build-then-count on every data set (\`andCardinality\`: ${rule.perDataset
+            .map((d) => `${d.dataset} ${times(d.vsInternal)}${d.controlInBand ? '' : ' *'}`)
+            .join(', ')}).`,
+    );
+  }
+  return lines;
+}
+
 /** The text of a region for a results file: the table of its last pass that is not a smoke pass, or `NOT_MEASURED`. */
 function render(file) {
   const pass = verdict.passOfRecord(file);
@@ -145,9 +170,7 @@ function render(file) {
     );
   }
   parts.push(ruleLines(pass).join('\n'));
-  parts.push(
-    'The count-only combines (`andCardinality`, `orCardinality`) and `isSubset`, `isEqual`, `intersects` are not in this table: the class does not have them yet.',
-  );
+  parts.push(countLines(pass).join('\n'));
   return parts.join('\n\n');
 }
 

@@ -20,7 +20,8 @@
  * THE STOP RULE (fixed before the first measurement; a number changes only before one, never after):
  *
  *   1. The count kernels ship only if `andCardinality` beats build-then-`size` on every data set (median of the rounds).
- *      Not decided by this pass: the cells wait for the class to have them.
+ *      `countKernelsRule` reads it from a pass: the `ours / internal` figure of `andCardinality` on each data set, where
+ *      `internal` is build-then-count. The route the class took in that pass is recorded in its environment.
  *   2. "Close to native" means within `CLOSE_BAR` (3) times native on every cell of the group the words describe.
  *   3. A public method whose median is more than `SHIP_BAR` (10) times native on any data set does not ship in this
  *      release unless the maintainer decides otherwise, having seen the table.
@@ -127,6 +128,25 @@ function groupsOf(cells) {
 }
 
 /**
+ * Rule 1: for each data set, whether `andCardinality` took less time than build-then-count (`vsInternal` below 1), as
+ * `{ beats, perDataset: [{ dataset, vsInternal, controlInBand }] }`. `beats` is true only when every data set is below 1
+ * with its control in band, and false when the pass holds no `andCardinality` cell.
+ */
+function countKernelsRule(cells) {
+  const perDataset = cells
+    .filter((c) => c.op === 'andCardinality' && c.vsInternal !== undefined)
+    .map((c) => ({
+      dataset: c.dataset,
+      vsInternal: c.vsInternal,
+      controlInBand: c.controlInBand,
+    }));
+  return {
+    beats: perDataset.length > 0 && perDataset.every((d) => d.vsInternal < 1 && d.controlInBand),
+    perDataset,
+  };
+}
+
+/**
  * Rule 3: the public methods with a cell above `SHIP_BAR` times native on any data set, as
  * `[{ method, worst, cell }]`, worst first. A cell whose control is out of band is still read by its figure here: a
  * method is not cleared by an instrument that could not resolve it.
@@ -205,6 +225,7 @@ module.exports = {
   recompute,
   groupsOf,
   overShipBar,
+  countKernelsRule,
   cellsOfPass,
   cellName,
   passOfRecord,

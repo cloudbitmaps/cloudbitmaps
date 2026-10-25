@@ -20,8 +20,8 @@
  *   load       `store.load(ref, { bitmap })` against the serialize and the checked decode it makes, from the built
  *              package (one subject, so no A/A control; the share of a load the round trip is is the figure)
  *
- * Not built yet: the cells of the count-only combines, `isSubset`, `isEqual` and `intersects`, which wait for the class
- * to have them.
+ * The count cells (`andCardinality`, `orCardinality`, `isSubset`, `isEqual`, `intersects`) are in the steady part; the
+ * route the class's count switch selects is read from the built package and recorded in the pass's environment.
  *
  * HOW A FIGURE IS READ (`bench/lib/bitmap-api-verdict.cjs` says it in full). A round times a cell for four subjects,
  * `native`, `ours`, `ours` again (the control) and the codec's own, each in a process of its own, in an order that
@@ -434,6 +434,20 @@ async function loadMeasure(only) {
   return out;
 }
 
+/**
+ * The route the built class takes for its four cardinalities and `intersects`, read from the built switch: `kernels`
+ * (the count kernels) or `build-then-count`. Fails closed: a build with no switch, or one this cannot read, stops the run.
+ */
+function countRoute() {
+  const file = path.join(ROOT, 'packages', 'roaring', 'dist', 'count-route.js');
+  const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  const m = /COUNT_BY_KERNELS\s*=\s*(true|false)\b/.exec(text);
+  if (m === null) {
+    throw new Error(`${file}: no COUNT_BY_KERNELS switch to read: run pnpm build first`);
+  }
+  return m[1] === 'true' ? 'kernels' : 'build-then-count';
+}
+
 function environment() {
   let tree = 'unknown';
   try {
@@ -455,6 +469,7 @@ function environment() {
     head: git('rev-parse', 'HEAD'),
     tree,
     roaring,
+    countRoute: countRoute(),
     anyLoad: ANY_LOAD,
     smoke: SMOKE,
     rounds: ROUNDS,
