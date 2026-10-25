@@ -421,4 +421,36 @@ describe('leak-scan', () => {
     const { out } = scan('export const x = 1;\n');
     expect(out).toMatch(/no extra needles configured|\d+ extra needle\(s\) configured/);
   });
+
+  describe('a needle that is not a valid regular expression', () => {
+    // V8's SyntaxError message quotes the pattern ("Invalid regular expression: /<pattern>/i: ..."), and a needle is
+    // the string the file protects, so the report names the needle's place in the list and never its text.
+    const BROKEN = ['qvx7kz9w(', '[zq8wk3vjh', 'zq5xwv9k)', 'zq2xwv7k{2,1}'];
+    const windows = (pattern: string): string[] => {
+      const out: string[] = [];
+      for (let i = 0; i + 4 <= pattern.length; i += 1) out.push(pattern.slice(i, i + 4));
+      return out;
+    };
+
+    for (const pattern of BROKEN) {
+      it(`exits 2 naming the needle's index only (${pattern.length} characters)`, () => {
+        const { status, out } = scanWith('export const x = 1;\n', [], {
+          LEAK_SCAN_EXTRA: pattern,
+        });
+        expect(status).toBe(2);
+        expect(out).toMatch(/extra needle #\d+ is not a valid regular expression/);
+        for (const w of windows(pattern)) expect(out).not.toContain(w);
+        expect(out).not.toContain('Invalid regular expression');
+      });
+    }
+
+    it('a valid needle beside a broken one is still never printed, and the run still fails closed', () => {
+      const { status, out } = scanWith('export const x = 1;\n', [], {
+        LEAK_SCAN_EXTRA: 'zz-valid-needle-[0-9]+\nqvx7kz9w(',
+      });
+      expect(status).toBe(2);
+      expect(out).not.toContain('qvx7');
+      expect(out).not.toContain('valid-needle');
+    });
+  });
 });

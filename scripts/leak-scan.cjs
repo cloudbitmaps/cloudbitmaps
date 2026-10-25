@@ -296,10 +296,11 @@ function extraNeedles() {
     if (t === '' || t.startsWith('#')) continue;
     try {
       out.push({ name: `extra needle #${out.length + 1}`, re: new RegExp(t, 'i'), redact: true });
-    } catch (err) {
-      // Don't echo the needle itself in the error — that is the string we are protecting.
+    } catch {
+      // Neither the needle nor the engine's message goes in the report: V8's SyntaxError quotes the whole pattern
+      // ("Invalid regular expression: /<pattern>/i: ..."), and the pattern is the string we are protecting.
       console.error(
-        `leak-scan: extra needle #${out.length + 1} is not a valid regex: ${(err && err.message) || err}`,
+        `leak-scan: extra needle #${out.length + 1} is not a valid regular expression (its text is not printed)`,
       );
       console.error(
         '           (note: needles are separated by NEWLINES, so `|` is safe inside one)',
