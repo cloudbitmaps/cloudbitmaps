@@ -203,6 +203,17 @@ describe('the returning combines: laws', () => {
     );
   });
 
+  it('absorbs: a or (a and b) is a, and a and (a or b) is a', () => {
+    fc.assert(
+      fc.property(triple, ({ a, b }) => {
+        const [A, B] = [new RoaringBitmap(a), new RoaringBitmap(b)];
+        same(or(A, and(A, B)), A);
+        same(and(A, or(A, B)), A);
+      }),
+      RUNS,
+    );
+  });
+
   it('orMany equals the fold of or, in any order', () => {
     fc.assert(
       fc.property(triple, fc.integer({ min: 0, max: 4 }), ({ a, b, c }, extra) => {
@@ -278,6 +289,53 @@ describe('the returning combines: copy-on-write', () => {
     );
   });
 
+  it('a container only the second operand holds is copied into the result, before and after the first operand keys', () => {
+    // a holds key 3 alone; b holds key 1 (met first) and key 5 (met after a's keys run out), one bitset each.
+    const bitsetAt = (key: number): number[] =>
+      Array.from({ length: 6_000 }, (_, i) => key * 65_536 + i * 7);
+    const bIds = [...bitsetAt(1), ...bitsetAt(5)];
+    for (const op of ['or', 'xor'] as const) {
+      const make = (): [RoaringBitmap, RoaringBitmap, RoaringBitmap] => {
+        const [x, y] = [new RoaringBitmap([3 * 65_536 + 1]), new RoaringBitmap(bIds)];
+        return [x, y, RoaringBitmap[op](x, y)];
+      };
+      const [, y0, r0] = make();
+      const held = r0.toUint32Array();
+      y0.remove(65_536);
+      y0.addMany([65_536 + 3, 5 * 65_536 + 3]);
+      y0.removeMany(bitsetAt(5).slice(0, 100));
+      expectSame(`${op}: the result after the second operand changed`, r0.toUint32Array(), held);
+
+      const [, y1, r1] = make();
+      const heldB = y1.toUint32Array();
+      r1.remove(65_536);
+      r1.addMany([65_536 + 3, 5 * 65_536 + 3]);
+      r1.removeMany(bitsetAt(5).slice(0, 100));
+      expectSame(`${op}: the second operand after the result changed`, y1.toUint32Array(), heldB);
+    }
+  });
+
+  it('orMany of one or of the same bitmap twice is independent of the operand, both ways', () => {
+    for (const parts of [1, 2]) {
+      const x = new RoaringBitmap(Array.from({ length: 6_000 }, (_, i) => i * 7));
+      const heldX = x.toUint32Array();
+      const r = RoaringBitmap.orMany(Array.from({ length: parts }, () => x));
+      const heldR = r.toUint32Array();
+      x.remove(0);
+      x.addMany([1, 2, 3]);
+      expectSame(
+        `orMany of ${parts}: the result after the operand changed`,
+        r.toUint32Array(),
+        heldR,
+      );
+      r.remove(7);
+      r.add(5);
+      x.runOptimize();
+      expect(x.has(7), 'the operand after the result changed').toBe(true);
+      expect(x.size).toBe(heldX.length + 2);
+    }
+  });
+
   it('several generations of results and clones stay independent', () => {
     const a = new RoaringBitmap(Array.from({ length: 9_000 }, (_, i) => i * 7));
     const b = new RoaringBitmap([1, 70_000, HALF]);
@@ -329,6 +387,25 @@ describe('a result holds its own storage', () => {
     expect(kept.size).toBe(6_000);
     const retained = externalBytes() - base;
     expect(retained, `retained ${retained} bytes`).toBeLessThan(MB);
+  });
+});
+
+describe('what orMany retains', () => {
+  /** A bitmap of 1,500 bitsets (about 12 MB), decoded, and `orMany` of it kept with the decoded bitmap and its input dropped. */
+  function unionOfDecoded(): RoaringBitmap {
+    const ids = new Uint32Array(1_500 * 6_000);
+    for (let k = 0; k < 1_500; k++)
+      for (let i = 0; i < 6_000; i++) ids[k * 6_000 + i] = k * 65_536 + i * 7;
+    return RoaringBitmap.orMany([RoaringBitmap.deserialize(new RoaringBitmap(ids).serialize())]);
+  }
+
+  it('keeping the result of orMany keeps its own containers, not the decoded part or its input as well', () => {
+    const base = externalBytes();
+    const kept = unionOfDecoded();
+    expect(kept.size).toBe(9_000_000);
+    const retained = externalBytes() - base;
+    // The result's own 1,500 bitsets are about 12.3 MB; a result that also kept the decoded part would hold twice that.
+    expect(retained, `retained ${retained} bytes`).toBeLessThan(14 * MB);
   });
 });
 
