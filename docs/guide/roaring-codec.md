@@ -111,9 +111,11 @@ in-region and at-scale figures on the benchmarks page are the native codec's, an
 `RoaringBitmap` from `@cloudbitmaps/roaring` is this codec's bitmap as a public class, usable without a store: a mutable
 set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript on typed arrays, with no native code. It loads
 with the package's main entry, the same import line as the store (`import { CloudRoaring, MemoryStorage, RoaringBitmap }
-from '@cloudbitmaps/roaring'`), and that entry also loads the store's in-process backends and their Node builtins. So the
-class runs where the package runs: CI runs it on Node 22 and 24, the earlier Bun and Deno self-check ran the codec inside a
-store, not this class, and no isolate or browser was run. Its methods, errors and costs are in
+from '@cloudbitmaps/roaring'`), and that entry also loads the store's in-process backends and their Node builtins, so
+importing the class loads the whole package: measured on 2026-10-24 on an Apple M3 Pro under Node v24.22.1, 31 fresh
+processes, the main entry imports in 23.9 ms and an esbuild bundle of a one-line importer of the class is 44,208 bytes
+(15,530 gzipped). The class runs where the package runs: CI runs it on Node 22 and 24, the earlier Bun and Deno
+self-check ran the codec inside a store, not this class, and no isolate or browser was run. Its methods, errors and costs are in
 [the API reference](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
 - **One door for bytes.** `RoaringBitmap.deserialize(bytes: Uint8Array)` decodes the portable bytes of one bitmap you hold

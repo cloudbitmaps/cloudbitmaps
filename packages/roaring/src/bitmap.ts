@@ -1,7 +1,7 @@
 /**
- * `RoaringBitmap`: a mutable set of unsigned 32-bit ids, in TypeScript on typed arrays, with no native addon. It is a thin public shell around the codec's own bitmap (`ts-roaring/bitmap.ts`):
- * the shell checks every argument (an id is an integer from 0 to 4,294,967,295, and a refusal never repeats the
- * value), and the codec does the work.
+ * `RoaringBitmap`: a mutable set of unsigned 32-bit ids, in TypeScript on typed arrays, with no native addon. It is a
+ * thin public shell around the codec's own bitmap (`ts-roaring/bitmap.ts`): the shell checks every argument (an id is
+ * an integer from 0 to 4,294,967,295, and a refusal never repeats the value), and the codec does the work.
  *
  * ```ts
  * import { RoaringBitmap } from '@cloudbitmaps/roaring';

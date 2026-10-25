@@ -309,8 +309,7 @@ request; the `*Into` verbs do not take it
 `RoaringBitmap` is a mutable set of integers from 0 to 4,294,967,295 (unsigned 32-bit ids), in TypeScript on typed
 arrays, with no native addon. It is the codec's own bitmap behind a checked shell, and it writes and reads the portable
 Roaring bytes a store loads and holds. Import it from `@cloudbitmaps/roaring`, with the store (the package's main entry also loads the store's in-process
-backends and their Node builtins). It is not designed for subclassing,
-and it is synchronous: a large `deserialize`, `toArray` or combine holds the event loop for its duration
+backends and their Node builtins). It is not designed for subclassing, and it is synchronous: a large `deserialize`, `toArray` or combine holds the event loop for its duration
 ([where to run it](production.md#what-blocks-the-event-loop-and-where-to-run-it)).
 
 <!-- typecheck-skip: a fragment: `ids` and `bytes` are the reader's -->

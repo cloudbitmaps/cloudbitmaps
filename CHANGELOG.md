@@ -43,12 +43,11 @@ so, and so do the module headers in the code.
   copy of the package is a `ValidationError`, as for the in-place combines. `RoaringBitmap.orMany` replaces the
   `orMany` of the `roaring` package in the recipe for parts of one segment built separately.
 
-- **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, exported from the
-  main entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
+- **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, exported from the main
+  entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
   `new RoaringBitmap(ids?)`, `add`, `addMany`, `remove` (answers whether the id was there), `removeMany`, `clear`,
   `clone` (copy-on-write), `andInPlace`, `orInPlace`, `andNotInPlace`, `has`, `size`, `isEmpty`, `minimum` and `maximum`
-  (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`.
-  Every id
+  (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`. Every id
   argument is checked and throws `ValidationError` with a message that never repeats the value, `add` and `remove` take
   exactly one id (a second argument names `addMany` or `removeMany`), and there is no `toJSON`, so `JSON.stringify(bitmap)`
   gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
