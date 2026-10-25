@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ValidationError, deserializePortable } from '@/index';
+import { RoaringBitmap, ValidationError } from '@/index';
 
 /**
  * The runnable example on `docs/guide/roaring-codec.md` runs, and prints what its comments say it prints.
@@ -20,12 +20,9 @@ function exampleSource(markdown: string): string {
   return fences[0]![1]!;
 }
 
-/** Runs the example with `deserializePortable` injected and returns each logged line as its arguments joined. */
+/** Runs the example with `RoaringBitmap` injected and returns each logged line as its arguments joined. */
 async function run(source: string): Promise<string[]> {
-  const body = source.replace(
-    /^import \{ deserializePortable \} from '@cloudbitmaps\/roaring';\n/m,
-    '',
-  );
+  const body = source.replace(/^import \{ RoaringBitmap \} from '@cloudbitmaps\/roaring';\n/m, '');
   expect(body).not.toBe(source);
   const logged: string[] = [];
   const log = (...args: unknown[]): void => {
@@ -34,7 +31,7 @@ async function run(source: string): Promise<string[]> {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
     ...args: string[]
   ) => (...args: unknown[]) => Promise<void>;
-  await new AsyncFunction('deserializePortable', 'console', body)(deserializePortable, { log });
+  await new AsyncFunction('RoaringBitmap', 'console', body)(RoaringBitmap, { log });
   return logged;
 }
 
@@ -45,7 +42,7 @@ describe('the codec page example', () => {
     const expected = [...source.matchAll(/console\.log\([^\n]*\); \/\/ ([^\n]+)/g)].map(
       (m) => m[1]!,
     );
-    expect(expected).toHaveLength(4);
+    expect(expected).toHaveLength(8);
     expect(await run(source)).toEqual(expected);
   });
 
@@ -59,8 +56,8 @@ describe('the codec page example', () => {
   });
 
   it('refuses a truncated copy of the bytes, as the page says (a ValidationError)', () => {
-    expect(() => deserializePortable(Uint8Array.from([0x3a, 0x30, 0x00, 0x00, 0x01]))).toThrow(
-      ValidationError,
-    );
+    expect(() =>
+      RoaringBitmap.deserialize(Uint8Array.from([0x3a, 0x30, 0x00, 0x00, 0x01])),
+    ).toThrow(ValidationError);
   });
 });

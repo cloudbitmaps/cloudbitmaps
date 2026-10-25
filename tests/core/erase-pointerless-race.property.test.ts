@@ -202,284 +202,320 @@ async function idsServed(
   return out.sort((a, b) => a - b);
 }
 
-describe('two erasures racing first loads onto a row with no pointer (property)', () => {
-  it('no pointer names a missing object, and an id it reports erased is not served after it', async () => {
-    let renewed = 0;
-    let refusedAndDeleted = 0;
-    let staleRefused = 0;
-    let retakenKept = 0;
-    await fc.assert(
-      fc.asyncProperty(
-        fc.scheduler(),
-        fc.constantFrom(true, true, false), // the row is made up front, or by a setRetention racing the loads
-        fc.array(IDS, { minLength: 0, maxLength: 2 }), // objects of first loads that crashed
-        fc.array(LOAD, { minLength: 1, maxLength: 3 }),
-        fc.constantFrom<Start>('now', 'reads', 'write', 'write'), // when the erasure begins
-        fc.constantFrom<SecondStart>('with', 'renewed', 'renewed'), // when the second one begins
-        fc.constantFrom(true, true, true, false), // the second erases the same id
-        LOAD, // the load that begins once a delete has landed
-        fc.constantFrom(true, true, true, false), // the first erasure's deletes wait for the second, and the late load
-        fc.boolean(), // encrypted
-        fc.nat(),
-        async (
-          s,
-          rowFirst,
-          crashed,
-          specs,
-          start,
-          secondStart,
-          sameId,
-          lateSpec,
-          slow,
-          encrypted,
-          pick,
-        ) => {
-          const storage = new MemoryStorageDriver();
-          const registry = new MemoryRegistryDriver();
-          const keystore = encrypted
-            ? new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' })
-            : undefined;
-          const keyed = keystore === undefined ? {} : { keystore };
-          if (rowFirst) {
-            await setSegmentRetention(SEG, { registry }, { expiresAt: Date.now() + 86_400_000 });
+const RUNS = 600;
+
+interface Floors {
+  renewed: number;
+  refusedAndDeleted: number;
+  staleRefused: number;
+  retakenKept: number;
+}
+
+/**
+ * The property, over `RUNS` cases drawn from `seed` (a random seed when none is given), returning how often the
+ * generator reached each case the floors below count.
+ */
+async function explore(seed?: number): Promise<Floors> {
+  let renewed = 0;
+  let refusedAndDeleted = 0;
+  let staleRefused = 0;
+  let retakenKept = 0;
+  await fc.assert(
+    fc.asyncProperty(
+      fc.scheduler(),
+      fc.constantFrom(true, true, false), // the row is made up front, or by a setRetention racing the loads
+      fc.array(IDS, { minLength: 0, maxLength: 2 }), // objects of first loads that crashed
+      fc.array(LOAD, { minLength: 1, maxLength: 3 }),
+      fc.constantFrom<Start>('now', 'reads', 'write', 'write'), // when the erasure begins
+      fc.constantFrom<SecondStart>('with', 'renewed', 'renewed'), // when the second one begins
+      fc.constantFrom(true, true, true, false), // the second erases the same id
+      LOAD, // the load that begins once a delete has landed
+      fc.constantFrom(true, true, true, false), // the first erasure's deletes wait for the second, and the late load
+      fc.boolean(), // encrypted
+      fc.nat(),
+      async (
+        s,
+        rowFirst,
+        crashed,
+        specs,
+        start,
+        secondStart,
+        sameId,
+        lateSpec,
+        slow,
+        encrypted,
+        pick,
+      ) => {
+        const storage = new MemoryStorageDriver();
+        const registry = new MemoryRegistryDriver();
+        const keystore = encrypted
+          ? new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' })
+          : undefined;
+        const keyed = keystore === undefined ? {} : { keystore };
+        if (rowFirst) {
+          await setSegmentRetention(SEG, { registry }, { expiresAt: Date.now() + 86_400_000 });
+        }
+        for (const [generation, ids] of crashed.entries()) {
+          await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, [...ids], {
+            registry,
+            publish: false,
+            ...keyed,
+          });
+        }
+        // An id a crashed object holds, where there is one, in half the runs; otherwise one any of them holds.
+        const fromCrashed = crashed.flat();
+        const held = [...new Set([...fromCrashed, ...specs.flatMap((l) => [...l.ids])])];
+        const pool = fromCrashed.length > 0 && pick % 2 === 0 ? fromCrashed : held;
+        const id = pool[Math.floor(pick / 2) % pool.length]!;
+
+        // 1, checked before each call goes through: a row unchanged across a listing of the bucket names an object in it.
+        const torn = new Map<number, string>();
+        const check = async (): Promise<void> => {
+          const before = await registry.get(SEG);
+          const present = await generations(storage);
+          const after = await registry.get(SEG);
+          if (
+            before !== null &&
+            after !== null &&
+            before.token === after.token &&
+            before.status === 'active' &&
+            before.currentGen !== null &&
+            !present.includes(before.currentGen)
+          ) {
+            torn.set(
+              before.currentGen,
+              `the row names ${before.currentGen}; the bucket holds [${present.join()}]`,
+            );
           }
-          for (const [generation, ids] of crashed.entries()) {
-            await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, [...ids], {
-              registry,
-              publish: false,
+        };
+
+        // The erasure begins at its start, with the id to erase: one a load's landed object holds, for `write`.
+        let reads = 0;
+        let begin!: (id: number) => void;
+        const begun = new Promise<number>((resolve) => (begin = resolve));
+        if (start === 'now') begin(id);
+        const loads = specs.map((spec, i) =>
+          loadSegment(
+            SEG,
+            [...spec.ids],
+            {
+              storage: scheduled(s, storage, STORAGE_CALLS, `load ${i}`, check, (method) => {
+                if (method === 'putImmutable' && start === 'write') {
+                  begin(spec.ids[pick % spec.ids.length]!);
+                }
+              }),
+              registry: firstRead(
+                scheduled(s, registry, REGISTRY_CALLS, `load ${i}`, check),
+                () => {
+                  if (++reads === specs.length && start === 'reads') begin(id);
+                },
+              ),
+              entropy: testEntropy,
+              codec: storeCodec,
               ...keyed,
-            });
-          }
-          // An id a crashed object holds, where there is one, in half the runs; otherwise one any of them holds.
-          const fromCrashed = crashed.flat();
-          const held = [...new Set([...fromCrashed, ...specs.flatMap((l) => [...l.ids])])];
-          const pool = fromCrashed.length > 0 && pick % 2 === 0 ? fromCrashed : held;
-          const id = pool[Math.floor(pick / 2) % pool.length]!;
-
-          // 1, checked before each call goes through: a row unchanged across a listing of the bucket names an object in it.
-          const torn = new Map<number, string>();
-          const check = async (): Promise<void> => {
-            const before = await registry.get(SEG);
-            const present = await generations(storage);
-            const after = await registry.get(SEG);
-            if (
-              before !== null &&
-              after !== null &&
-              before.token === after.token &&
-              before.status === 'active' &&
-              before.currentGen !== null &&
-              !present.includes(before.currentGen)
-            ) {
-              torn.set(
-                before.currentGen,
-                `the row names ${before.currentGen}; the bucket holds [${present.join()}]`,
-              );
-            }
-          };
-
-          // The erasure begins at its start, with the id to erase: one a load's landed object holds, for `write`.
-          let reads = 0;
-          let begin!: (id: number) => void;
-          const begun = new Promise<number>((resolve) => (begin = resolve));
-          if (start === 'now') begin(id);
-          const loads = specs.map((spec, i) =>
-            loadSegment(
+            },
+            spec.guarded ? {} : { allowEmpty: true },
+          ).then(
+            (r): { r: LoadResult } | { err: unknown } => ({ r }),
+            (err: unknown) => ({ err }),
+          ),
+        );
+        const settled = Promise.all(loads);
+        const retention = rowFirst
+          ? Promise.resolve()
+          : setSegmentRetention(
               SEG,
-              [...spec.ids],
+              { registry: scheduled(s, registry, REGISTRY_CALLS, 'setRetention', check) },
+              { expiresAt: Date.now() + 86_400_000 },
+            ).then(
+              () => undefined,
+              () => undefined,
+            );
+
+        // The late load begins once either erasure's first delete lands, of ids neither erases.
+        let deleted!: () => void;
+        const firstDelete = new Promise<void>((resolve) => (deleted = resolve));
+        // A delete refused because another object was under the number by then, by generation.
+        const refused = new Set<number>();
+        /** One erasure, of the id it is given once it begins; `did` is what it renewed and deleted. */
+        const erase = (
+          who: string,
+          chosen: Promise<number>,
+          renewedRow: () => void = () => undefined,
+          held: () => Promise<void> = () => Promise.resolve(),
+        ) => {
+          const did = { renewed: false, deleted: new Set<number>() };
+          const at: { id?: number; everyLoadRead?: boolean } = {};
+          const outcome = chosen.then((idToErase) => {
+            at.id = idToErase;
+            at.everyLoadRead = reads === specs.length;
+            return eraseIdFromSegment(SEG, idToErase, {
+              storage: scheduled(
+                s,
+                refusing(storage, held, (generation) => refused.add(generation)),
+                STORAGE_CALLS,
+                who,
+                check,
+                (method, a) => {
+                  if (method !== 'delete') return;
+                  did.deleted.add((a[0] as { generation: number }).generation);
+                  deleted();
+                },
+              ),
+              registry: scheduled(s, registry, REGISTRY_CALLS, who, check, (method, a) => {
+                const patch = a[2] as { currentGen?: number | null } | undefined;
+                if (method === 'compareAndSwap' && patch?.currentGen === null) {
+                  did.renewed = true;
+                  renewedRow();
+                }
+              }),
+              entropy: testEntropy,
+              codec: storeCodec,
+              ...keyed,
+            }).then(
+              (r): { r: EraseIdResult } | { err: unknown } => ({ r }),
+              (err: unknown) => ({ err }),
+            );
+          });
+          return { did, at, outcome };
+        };
+
+        // A load that never writes an object leaves the erasure to begin once every load has answered.
+        const firstId = Promise.race([begun, settled.then(() => id)]);
+        let renewal!: () => void;
+        const firstRenewed = new Promise<void>((resolve) => (renewal = resolve));
+        let letDeletesGo!: () => void;
+        const deletesMayGo = new Promise<void>((resolve) => (letDeletesGo = resolve));
+        let reachDelete!: () => void;
+        const firstAtDelete = new Promise<void>((resolve) => (reachDelete = resolve));
+        const first = erase('erasure', firstId, renewal, async () => {
+          reachDelete();
+          await deletesMayGo;
+        });
+        // The second erases the first's id, or another one a crashed object or a load holds.
+        const secondId = firstId.then((chosen) =>
+          sameId ? chosen : (held.find((other) => other !== chosen) ?? chosen),
+        );
+        const second = erase(
+          'erasure 2',
+          secondStart === 'with'
+            ? secondId
+            : // Or once the first is about to delete, or has answered, when it renews no row with no pointer.
+              Promise.race([firstRenewed, firstAtDelete, first.outcome]).then(() => secondId),
+        );
+        const both = Promise.all([first.outcome, second.outcome]);
+        const late = Promise.race([firstDelete.then(() => true), both.then(() => false)]).then(
+          async (begins): Promise<{ r: LoadResult } | { err: unknown } | undefined> => {
+            if (!begins) return undefined;
+            // A delete landed, so the first erasure's id is chosen, and with it the second's.
+            const erasing = await Promise.all([firstId, secondId]);
+            const ids = lateSpec.ids.filter((x) => !erasing.includes(x));
+            return loadSegment(
+              SEG,
+              ids.length > 0 ? ids : [13],
               {
-                storage: scheduled(s, storage, STORAGE_CALLS, `load ${i}`, check, (method) => {
-                  if (method === 'putImmutable' && start === 'write') {
-                    begin(spec.ids[pick % spec.ids.length]!);
-                  }
-                }),
-                registry: firstRead(
-                  scheduled(s, registry, REGISTRY_CALLS, `load ${i}`, check),
-                  () => {
-                    if (++reads === specs.length && start === 'reads') begin(id);
-                  },
-                ),
+                storage: scheduled(s, storage, STORAGE_CALLS, 'late load', check),
+                registry: scheduled(s, registry, REGISTRY_CALLS, 'late load', check),
                 entropy: testEntropy,
                 codec: storeCodec,
                 ...keyed,
               },
-              spec.guarded ? {} : { allowEmpty: true },
+              lateSpec.guarded ? {} : { allowEmpty: true },
             ).then(
               (r): { r: LoadResult } | { err: unknown } => ({ r }),
               (err: unknown) => ({ err }),
-            ),
-          );
-          const settled = Promise.all(loads);
-          const retention = rowFirst
-            ? Promise.resolve()
-            : setSegmentRetention(
-                SEG,
-                { registry: scheduled(s, registry, REGISTRY_CALLS, 'setRetention', check) },
-                { expiresAt: Date.now() + 86_400_000 },
-              ).then(
-                () => undefined,
-                () => undefined,
-              );
+            );
+          },
+        );
 
-          // The late load begins once either erasure's first delete lands, of ids neither erases.
-          let deleted!: () => void;
-          const firstDelete = new Promise<void>((resolve) => (deleted = resolve));
-          // A delete refused because another object was under the number by then, by generation.
-          const refused = new Set<number>();
-          /** One erasure, of the id it is given once it begins; `did` is what it renewed and deleted. */
-          const erase = (
-            who: string,
-            chosen: Promise<number>,
-            renewedRow: () => void = () => undefined,
-            held: () => Promise<void> = () => Promise.resolve(),
-          ) => {
-            const did = { renewed: false, deleted: new Set<number>() };
-            const at: { id?: number; everyLoadRead?: boolean } = {};
-            const outcome = chosen.then((idToErase) => {
-              at.id = idToErase;
-              at.everyLoadRead = reads === specs.length;
-              return eraseIdFromSegment(SEG, idToErase, {
-                storage: scheduled(
-                  s,
-                  refusing(storage, held, (generation) => refused.add(generation)),
-                  STORAGE_CALLS,
-                  who,
-                  check,
-                  (method, a) => {
-                    if (method !== 'delete') return;
-                    did.deleted.add((a[0] as { generation: number }).generation);
-                    deleted();
-                  },
-                ),
-                registry: scheduled(s, registry, REGISTRY_CALLS, who, check, (method, a) => {
-                  const patch = a[2] as { currentGen?: number | null } | undefined;
-                  if (method === 'compareAndSwap' && patch?.currentGen === null) {
-                    did.renewed = true;
-                    renewedRow();
-                  }
-                }),
-                entropy: testEntropy,
-                codec: storeCodec,
-                ...keyed,
-              }).then(
-                (r): { r: EraseIdResult } | { err: unknown } => ({ r }),
-                (err: unknown) => ({ err }),
-              );
-            });
-            return { did, at, outcome };
-          };
-
-          // A load that never writes an object leaves the erasure to begin once every load has answered.
-          const firstId = Promise.race([begun, settled.then(() => id)]);
-          let renewal!: () => void;
-          const firstRenewed = new Promise<void>((resolve) => (renewal = resolve));
-          let letDeletesGo!: () => void;
-          const deletesMayGo = new Promise<void>((resolve) => (letDeletesGo = resolve));
-          let reachDelete!: () => void;
-          const firstAtDelete = new Promise<void>((resolve) => (reachDelete = resolve));
-          const first = erase('erasure', firstId, renewal, async () => {
-            reachDelete();
-            await deletesMayGo;
+        // The first erasure, slowed, deletes once the second has answered and the load its delete began has too: it
+        // re-read the row before each delete as ever, and its deletes reach the bucket last.
+        if (!slow) letDeletesGo();
+        else {
+          void second.outcome.then(async () => {
+            if (second.did.deleted.size > 0) await late;
+            letDeletesGo();
           });
-          // The second erases the first's id, or another one a crashed object or a load holds.
-          const secondId = firstId.then((chosen) =>
-            sameId ? chosen : (held.find((other) => other !== chosen) ?? chosen),
-          );
-          const second = erase(
-            'erasure 2',
-            secondStart === 'with'
-              ? secondId
-              : // Or once the first is about to delete, or has answered, when it renews no row with no pointer.
-                Promise.race([firstRenewed, firstAtDelete, first.outcome]).then(() => secondId),
-          );
-          const both = Promise.all([first.outcome, second.outcome]);
-          const late = Promise.race([firstDelete.then(() => true), both.then(() => false)]).then(
-            async (begins): Promise<{ r: LoadResult } | { err: unknown } | undefined> => {
-              if (!begins) return undefined;
-              // A delete landed, so the first erasure's id is chosen, and with it the second's.
-              const erasing = await Promise.all([firstId, secondId]);
-              const ids = lateSpec.ids.filter((x) => !erasing.includes(x));
-              return loadSegment(
-                SEG,
-                ids.length > 0 ? ids : [13],
-                {
-                  storage: scheduled(s, storage, STORAGE_CALLS, 'late load', check),
-                  registry: scheduled(s, registry, REGISTRY_CALLS, 'late load', check),
-                  entropy: testEntropy,
-                  codec: storeCodec,
-                  ...keyed,
-                },
-                lateSpec.guarded ? {} : { allowEmpty: true },
-              ).then(
-                (r): { r: LoadResult } | { err: unknown } => ({ r }),
-                (err: unknown) => ({ err }),
-              );
-            },
-          );
+        }
 
-          // The first erasure, slowed, deletes once the second has answered and the load its delete began has too: it
-          // re-read the row before each delete as ever, and its deletes reach the bucket last.
-          if (!slow) letDeletesGo();
-          else {
-            void second.outcome.then(async () => {
-              if (second.did.deleted.size > 0) await late;
-              letDeletesGo();
-            });
+        const outcomes = await s.waitFor(settled);
+        await s.waitFor(retention);
+        const erasures = await s.waitFor(both);
+        const lateOutcome = await s.waitFor(late);
+        await check();
+
+        // 1.
+        expect([...torn.values()]).toEqual([]);
+
+        // 3. Each load published or was refused as superseded; each erasure answered, or threw a write conflict.
+        [...outcomes, ...(lateOutcome === undefined ? [] : [lateOutcome])].forEach((o, i) => {
+          if ('err' in o) throw new Error(`load ${i} threw: ${String(o.err)}`);
+          if (!o.r.published) expect(o.r.reason).toBe('superseded');
+        });
+        for (const erased of erasures) {
+          if ('err' in erased) {
+            // A holder left at its last look asks for a re-run; a number another writer took first is write-once.
+            expect(erased.err).toBeInstanceOf(WriteConflictError);
           }
+        }
 
-          const outcomes = await s.waitFor(settled);
-          await s.waitFor(retention);
-          const erasures = await s.waitFor(both);
-          const lateOutcome = await s.waitFor(late);
-          await check();
-
-          // 1.
-          expect([...torn.values()]).toEqual([]);
-
-          // 3. Each load published or was refused as superseded; each erasure answered, or threw a write conflict.
-          [...outcomes, ...(lateOutcome === undefined ? [] : [lateOutcome])].forEach((o, i) => {
-            if ('err' in o) throw new Error(`load ${i} threw: ${String(o.err)}`);
-            if (!o.r.published) expect(o.r.reason).toBe('superseded');
-          });
-          for (const erased of erasures) {
-            if ('err' in erased) {
-              // A holder left at its last look asks for a re-run; a number another writer took first is write-once.
-              expect(erased.err).toBeInstanceOf(WriteConflictError);
-            }
+        // 2. An id an erasure reported erased is not served, when every load read the row before it began.
+        for (const [i, erased] of erasures.entries()) {
+          const at = [first, second][i]!.at;
+          if (at.everyLoadRead === true && 'r' in erased && erased.r.erased) {
+            const served = await idsServed(storage, registry, keystore);
+            if (served !== null) expect(served).not.toContain(at.id);
           }
+        }
 
-          // 2. An id an erasure reported erased is not served, when every load read the row before it began.
-          for (const [i, erased] of erasures.entries()) {
-            const at = [first, second][i]!.at;
-            if (at.everyLoadRead === true && 'r' in erased && erased.r.erased) {
-              const served = await idsServed(storage, registry, keystore);
-              if (served !== null) expect(served).not.toContain(at.id);
-            }
-          }
+        if ([first, second].some((e) => e.did.renewed && e.did.deleted.size > 0)) renewed += 1;
+        refusedAndDeleted += outcomes.filter(
+          (o) =>
+            'r' in o &&
+            !o.r.published &&
+            (first.did.renewed || second.did.renewed) &&
+            (first.did.deleted.has(o.r.generation) || second.did.deleted.has(o.r.generation)),
+        ).length;
+        if (refused.size > 0) {
+          staleRefused += 1;
+          const row = await registry.get(SEG);
+          if (row?.currentGen != null && refused.has(row.currentGen)) retakenKept += 1;
+        }
+      },
+    ),
+    { numRuns: RUNS, ...(seed === undefined ? {} : { seed }) },
+  );
+  return { renewed, refusedAndDeleted, staleRefused, retakenKept };
+}
 
-          if ([first, second].some((e) => e.did.renewed && e.did.deleted.size > 0)) renewed += 1;
-          refusedAndDeleted += outcomes.filter(
-            (o) =>
-              'r' in o &&
-              !o.r.published &&
-              (first.did.renewed || second.did.renewed) &&
-              (first.did.deleted.has(o.r.generation) || second.did.deleted.has(o.r.generation)),
-          ).length;
-          if (refused.size > 0) {
-            staleRefused += 1;
-            const row = await registry.get(SEG);
-            if (row?.currentGen != null && refused.has(row.currentGen)) retakenKept += 1;
-          }
-        },
-      ),
-      { numRuns: 600 },
-    );
-    // The last two count a race about 3% of runs reach, so they spread like a Poisson count. At 300 runs their means were
-    // near 9, and a floor of 2 fails about one execution in 600 to 1,000. At 600 runs, 60 seeds in each project gave at
-    // their lowest 65, 54, 11 and 10 (means 87 to 95, 76 to 86, 19 to 20 and 18), and a floor of 4 on a mean of 18 fails
-    // about once in 40,000 executions.
-    expect(renewed).toBeGreaterThan(30);
-    expect(refusedAndDeleted).toBeGreaterThan(25);
-    expect(staleRefused).toBeGreaterThan(3);
-    expect(retakenKept).toBeGreaterThan(3);
+/**
+ * The floors the generator must clear, and the seeds that hold them. A run is a function of its seed alone, so each
+ * seed's counts are a fact about the generator, not about a random draw. The counts are Poisson-like (a race about
+ * 3% to 20% of runs reach), so a floor on a random draw fails once in a very long while: over a scan of seeds 1 to
+ * 500 (the `ids` project) the lowest counts were 72, 73, 17 and 15 against a mean of 97, 115, 40 and 36. The three
+ * seeds are the ones that gave those lowest counts (396, 192 and 420); each also clears every floor in the
+ * `serialized` and `sorted` projects. If the generator changes and one stops clearing a floor, the test below names
+ * it: pick new seeds the same way.
+ */
+const SEEDS: readonly number[] = [396, 192, 420];
+const FLOORS = { renewed: 30, refusedAndDeleted: 25, staleRefused: 3, retakenKept: 3 };
+
+describe('two erasures racing first loads onto a row with no pointer (property)', () => {
+  it('no pointer names a missing object, and an id it reports erased is not served after it', async () => {
+    // A random draw reaches the rarer cases only by chance, so this run asserts no floor on how often it did: the
+    // committed seeds below hold the floors, and this run keeps only the exploration for counterexamples.
+    await explore();
   }, 120_000);
+
+  it('reaches each race the property is about: every committed seed clears every floor', async () => {
+    expect(SEEDS.length).toBeGreaterThanOrEqual(3);
+    for (const seed of SEEDS) {
+      const got = await explore(seed);
+      const where = `seed ${seed} (${JSON.stringify(got)}): the generator changed`;
+      expect(got.renewed, where).toBeGreaterThan(FLOORS.renewed);
+      expect(got.refusedAndDeleted, where).toBeGreaterThan(FLOORS.refusedAndDeleted);
+      expect(got.staleRefused, where).toBeGreaterThan(FLOORS.staleRefused);
+      expect(got.retakenKept, where).toBeGreaterThan(FLOORS.retakenKept);
+    }
+  }, 600_000);
 });

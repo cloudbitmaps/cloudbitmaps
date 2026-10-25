@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { IntegrityError } from '@cloudbitmaps/core';
 import type { CodecBitmap } from '@cloudbitmaps/core';
 import { DeserializationFormat, RoaringBitmap32 } from 'roaring';
+import { RoaringBitmap, ValidationError } from '@/index';
 import { checkPortableLayout } from '@/portable/layout';
 import { bitsetOf, craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
 import {
@@ -458,3 +459,86 @@ function mutate(source: Uint8Array, next: () => number): Uint8Array {
     ...Array.from({ length: 1 + Math.floor(next() * 8) }, () => Math.floor(next() * 256)),
   ]);
 }
+
+/**
+ * The public door, `RoaringBitmap.deserialize`, is the same decode behind core's `decodeSerialized`: the same bytes
+ * refused, with `ValidationError` (a caller's bytes), the empty buffer refused, and what it accepts holds what CRoaring
+ * decodes from them.
+ */
+function expectDoorVerdict(label: string, bytes: Uint8Array): boolean {
+  const end = layoutEnd(bytes);
+  const wants = bytes.byteLength > 0 && end !== undefined && end === bytes.byteLength;
+  let door: RoaringBitmap | undefined;
+  try {
+    door = RoaringBitmap.deserialize(bytes);
+  } catch (err) {
+    expect(err, `${label}: a refusal is a ValidationError`).toBeInstanceOf(ValidationError);
+  }
+  expect(
+    door !== undefined,
+    `${label}: the door accepts exactly one whole well-formed bitmap`,
+  ).toBe(wants);
+  if (door === undefined) return false;
+  const want = RoaringBitmap32.deserialize(bytes, DeserializationFormat.portable).toUint32Array();
+  expect(firstDifference(door.toUint32Array(), want), `${label}: contents`).toBe(-1);
+  expect(door.size, `${label}: size`).toBe(want.length);
+  expect(door.maximum(), `${label}: maximum`).toBe(want.length === 0 ? undefined : want.at(-1));
+  expect(door.minimum(), `${label}: minimum`).toBe(want.length === 0 ? undefined : want[0]);
+  return true;
+}
+
+describe('the public door: hostile bytes', () => {
+  it.each(HOSTILE.map((h) => [h.name, h] as const))('refuses %s', (_name, h) => {
+    const bytes = craftPortable(h.containers, { offsets: h.offsets });
+    expect(layoutEnd(bytes), 'layout.ts refuses it').toBeUndefined();
+    expect(expectDoorVerdict(h.name, bytes)).toBe(false);
+  });
+
+  it('refuses every prefix of a real payload, the empty one included, and bytes after it', () => {
+    const whole = craftPortable([
+      { key: 0, kind: 'array', values: [1, 2] },
+      { key: 1, kind: 'run', runs: [[10, 5]] },
+      { key: 2, kind: 'bitset', bits: allBits },
+      { key: 9, kind: 'array', values: [4] },
+    ]);
+    expect(expectDoorVerdict('whole', whole)).toBe(true);
+    for (let length = 0; length < whole.byteLength; length++) {
+      expect(expectDoorVerdict(`cut at ${length}`, whole.slice(0, length))).toBe(false);
+    }
+    expect(expectDoorVerdict('one byte after', new Uint8Array([...whole, 0]))).toBe(false);
+  });
+
+  it('accepts the empty bitmap by its own bytes, and not by no bytes', () => {
+    expect(expectDoorVerdict('the 8-byte empty bitmap', new RoaringBitmap().serialize())).toBe(
+      true,
+    );
+    expect(expectDoorVerdict('no bytes', new Uint8Array(0))).toBe(false);
+  });
+
+  it('holds on overwritten, truncated and extended payloads', () => {
+    const total = Math.ceil(heavy('codecOracleMutations') / 4);
+    const cases = 50;
+    const each = Math.ceil(total / cases);
+    let accepted = 0;
+    let refused = 0;
+    fc.assert(
+      fc.property(
+        setSpec(2),
+        fc.constantFrom('plain', 'runs', 'ranges'),
+        fc.integer({ min: 0, max: 0x7fffffff }),
+        (spec, how, seed) => {
+          const source = new Uint8Array(crPlainBytes(buildSet(spec).slice(0, 70_000), how));
+          const next = prng(seed);
+          for (let i = 0; i < each; i++) {
+            if (expectDoorVerdict(`mutation ${i} of seed ${seed}`, mutate(source, next)))
+              accepted++;
+            else refused++;
+          }
+        },
+      ),
+      { numRuns: cases },
+    );
+    expect(accepted, 'mutations the door accepts').toBeGreaterThan(total / 50);
+    expect(refused, 'mutations the door refuses').toBeGreaterThan(total / 50);
+  }, 600_000);
+});

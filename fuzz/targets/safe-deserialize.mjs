@@ -1,5 +1,5 @@
 import { isCloudRoaringError, DEFAULT_MAX_BITMAP_BYTES } from '../build/fuzz-core.js';
-import { tsRoaringCodec, assertConsistentDecode } from '../build/fuzz-codec.js';
+import { tsRoaringCodec, assertConsistentDecode, checkPublicDoor } from '../build/fuzz-codec.js';
 
 /*
  * Coverage-guided fuzz target: the TypeScript Roaring codec's safe deserializer, the decoder a store runs when it is
@@ -14,11 +14,17 @@ import { tsRoaringCodec, assertConsistentDecode } from '../build/fuzz-codec.js';
  * run containers), so guidance covers the whole decode and not only which bytes are refused. Each input is decoded
  * twice, with and without `{ whole: true }` (the trailing-bytes refusal), and the two must agree on the set.
  *
+ * A second leg feeds each input through the public door, `RoaringBitmap.deserialize`, the same decode behind core's
+ * `decodeSerialized` with a detached copy of the storage: it must accept exactly what the codec accepts as one whole
+ * bitmap (an empty buffer excepted, which it refuses), what it accepts must be self-consistent and read back through
+ * `serialize` then `deserialize` as an equal bitmap, and anything else must be a `ValidationError`.
+ *
  * jazzer contract: export `fuzz(data: Buffer)`; an uncaught throw is a finding, and its reproducer is written under
  * fuzz/crashes/.
  */
 export function fuzz(data) {
   try {
+    checkPublicDoor(data);
     // Walk every value of what was accepted, so a bad-but-accepted decode surfaces. The walk is bounded to avoid a
     // false finding: a run-heavy bitmap is tiny on disk yet can expand to billions of ids.
     const loose = tsRoaringCodec.safeDeserialize(data, DEFAULT_MAX_BITMAP_BYTES);

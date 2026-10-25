@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import roaring from 'roaring';
-import { CloudRoaring, MemoryStorage, deserializePortable } from '@/index';
+import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@/index';
 import type { CloudRoaringOptions, LoadInput, LoadResult, PortableBitmap } from '@/index';
 import { bulkLoadCrbmGeneration } from '@/core/bulk-load';
 import { openGenerationReader } from '@/core/crbm-open';
@@ -394,8 +394,8 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
   });
 
-  it('a bitmap deserializePortable returned loads as a bitmap, never iterated', async () => {
-    const view = deserializePortable(new RoaringBitmap32(IDS).serialize('portable'));
+  it('a RoaringBitmap loads as a bitmap, never iterated', async () => {
+    const view = RoaringBitmap.deserialize(new RoaringBitmap32(IDS).serialize('portable'));
     const iterate = vi.spyOn(view, Symbol.iterator);
     const { bytes } = await loadAndRead(view);
     expect(iterate).not.toHaveBeenCalled();
@@ -617,6 +617,30 @@ describe('store.load serializes a { bitmap } at the call, before anything is awa
     const ids: number[] = [];
     for await (const id of store.segment(SEG.segment).iterate()) ids.push(id);
     expect(ids).toEqual([1, 2, 3]);
+  });
+
+  it.each<[string, (b: RoaringBitmap) => LoadInput]>([
+    ['a bare RoaringBitmap', (b) => b],
+    ['{ bitmap } of a RoaringBitmap', (b) => ({ bitmap: b })],
+  ])('%s changed right after the call is loaded as it was', async (_, as) => {
+    const store = new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: 0 } });
+    const bitmap = new RoaringBitmap([1, 2, 3]);
+    const pending = store.load(SEG, as(bitmap)); // not awaited
+    bitmap.add(4).remove(1);
+    bitmap.clear();
+    bitmap.add(9);
+    expect(await pending).toMatchObject({ published: true, cardinality: 3 });
+    const ids: number[] = [];
+    for await (const id of store.segment(SEG.segment).iterate()) ids.push(id);
+    expect(ids).toEqual([1, 2, 3]);
+  });
+
+  it('a load never changes the RoaringBitmap it reads', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    const bitmap = new RoaringBitmap([1, 2, 3, 70_000]);
+    await store.load(SEG, bitmap);
+    await store.load({ segment: 'other' }, { bitmap });
+    expect(bitmap.toArray()).toEqual([1, 2, 3, 70_000]);
   });
 });
 

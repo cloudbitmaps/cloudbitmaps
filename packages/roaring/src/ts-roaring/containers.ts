@@ -532,6 +532,17 @@ export function containerRemove(c: Container, low: number): Container | null {
   return arrayContainer(u16, plain.card - 1);
 }
 
+/** The smallest remainder in the container. */
+export function containerMin(c: Container): number {
+  if (c.kind === ARRAY || c.kind === RUN) return (c.data as Uint16Array)[c.off] as number;
+  const words = words32(c);
+  for (let i = 0; i < WORDS; i++) {
+    const w = words[i] as number;
+    if (w !== 0) return i * 32 + 31 - Math.clz32(w & -w);
+  }
+  throw new RangeError('a bitset container holds no bits');
+}
+
 /** The largest remainder in the container. */
 export function containerMax(c: Container): number {
   if (c.kind === ARRAY) return (c.data as Uint16Array)[c.off + c.len - 1] as number;

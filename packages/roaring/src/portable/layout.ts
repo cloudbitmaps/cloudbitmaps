@@ -145,7 +145,7 @@ export function* containerPayloads(bytes: Uint8Array): Generator<EncodedChunk> {
     const key = view.getUint16(descriptiveAt + i * 4, true);
     if (key <= previousKey) {
       throw new IntegrityError(
-        `portable roaring: container keys are not strictly ascending (${previousKey} then ${key} at index ${i})`,
+        `portable roaring: container keys are not strictly ascending at index ${i}`,
       );
     }
     previousKey = key;
@@ -241,7 +241,7 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
     const key = view.getUint16(descriptiveAt + i * 4, true);
     if (key <= previousKey) {
       throw new IntegrityError(
-        `portable roaring: container keys are not strictly ascending (${previousKey} then ${key} at index ${i})`,
+        `portable roaring: container keys are not strictly ascending at index ${i}`,
       );
     }
     previousKey = key;
