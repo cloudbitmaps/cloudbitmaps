@@ -106,6 +106,20 @@ wall-clock, recorded and not asserted:
 The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) and the
 in-region and at-scale figures on the benchmarks page are the native codec's, and say so.
 
+### The public class against native, in memory
+
+The figures above go through the store. [`RoaringBitmap`](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
+is also used on its own, where nothing hides the cost of an operation behind a network read. This is the class against
+the `roaring` package it is compared with, cell by cell, generated from
+[`bench/bitmap-api-results.json`](../../bench/bitmap-api-results.json) (the record of
+[`bench/bitmap-api.cjs`](../../bench/bitmap-api.cjs)):
+
+<!-- BITMAP_API:TABLE:START -->
+
+Not measured yet: `bench/bitmap-api-results.json` holds no pass, so this page states no figure of the class against `roaring`. The table is generated from that file by `pnpm bench:bitmap-api:table`.
+
+<!-- BITMAP_API:TABLE:END -->
+
 ## Using it by itself
 
 `RoaringBitmap` from `@cloudbitmaps/roaring` is this codec's bitmap as a public class, usable without a store: a mutable

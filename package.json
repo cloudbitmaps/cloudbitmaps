@@ -84,6 +84,10 @@
     "bench:ts-codec-engine:check": "node bench/ts-codec-engine.cjs --check",
     "bench:ts-codec-paired": "node --expose-gc bench/ts-codec-paired.cjs --all",
     "bench:ts-codec-paired:check": "node --expose-gc bench/ts-codec-paired.cjs --check",
+    "bench:bitmap-api": "pnpm run build && node --expose-gc bench/bitmap-api.cjs --all",
+    "bench:bitmap-api:check": "node --expose-gc bench/bitmap-api.cjs --check",
+    "bench:bitmap-api:table": "node bench/bitmap-api-table.cjs",
+    "bench:bitmap-api:table:check": "node bench/bitmap-api-table.cjs --check",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
   },
   "lint-staged": {

@@ -396,6 +396,18 @@ the bitmap's `serialize()` bytes with it.
 and 64-bit ids are left out, and so are `xorMany` and `delete`. In this release the class also has no
 count-only combine, and no `isEqual`, `isSubset` or `intersects`.
 
+**Against the `roaring` package.** What each operation of the class costs next to the pinned `roaring` package (CRoaring
+through its binding) on the same data, and next to the codec's own call that the store runs, one data set a column. A
+store hides these costs behind network reads; a loop over in-memory bitmaps does not, so the table prints every cell,
+losses included. The figures are the record in [`bench/bitmap-api-results.json`](../../bench/bitmap-api-results.json),
+measured by [`bench/bitmap-api.cjs`](../../bench/bitmap-api.cjs); this region is generated from it.
+
+<!-- BITMAP_API:TABLE:START -->
+
+Not measured yet: `bench/bitmap-api-results.json` holds no pass, so this page states no figure of the class against `roaring`. The table is generated from that file by `pnpm bench:bitmap-api:table`.
+
+<!-- BITMAP_API:TABLE:END -->
+
 **A load reads your bitmap and never changes it.** `store.load(ref, bitmap)` and `store.load(ref, { bitmap })` serialize
 it once, check and decode those bytes as any `{ serialized }` load does, and keep no reference to it. A bitmap decoded
 from bytes another writer made keeps its run containers as they were, and one that serializes above the size cap is
