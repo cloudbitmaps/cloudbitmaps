@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-// The pull-request text check: a pull request's title, its body and its own commit messages are public text, and a
-// squash merge copies the commit subjects into `main`'s history for good. Two things must not be in them:
+// The pull-request text check: a pull request's title, its body, the name of its head branch and its own commit
+// messages are public text, and a squash merge copies the commit subjects into `main`'s history for good. Two
+// things must not be in them:
 //
 //   1. Words about WHO or WHAT did the work. Public text says what was done ("the review gate: run after the PR is
 //      up"), never who did it.
@@ -10,13 +11,15 @@
 //      private-doc reference, and the private needles. The texts are written into a temporary directory and
 //      `scripts/leak-scan.cjs` is run over it, so PR text gets the same rules as the repository.
 //
-// Usage (CI passes everything through the environment; locally, give the title and body, and the two commit ids
-// to include the commit messages):
+// Usage (CI passes everything through the environment; locally, give the title and body, the two commit ids to
+// include the commit messages, and the branch name):
 //
 //     PR_TITLE='…' PR_BODY='…' node scripts/pr-text-scan.cjs
-//     PR_TITLE='…' PR_BODY='…' BASE_SHA=<sha> HEAD_SHA=<sha> node scripts/pr-text-scan.cjs
+//     PR_TITLE='…' PR_BODY='…' PR_BRANCH='…' BASE_SHA=<sha> HEAD_SHA=<sha> node scripts/pr-text-scan.cjs
 //
 //   PR_TITLE   required, non-empty            PR_BODY   required (may be empty: a PR can have no body)
+//   PR_BRANCH  the head branch's name, scanned with the same phrase list and leak rules as the other texts; when
+//              unset the check says so and skips it (the workflow always sets it)
 //   BASE_SHA / HEAD_SHA   both or neither; with both, the messages, the author and the committer of every commit of
 //                         `git log BASE..HEAD` are scanned: the pull request's own commits, those that reached its
 //                         branch through a merge's second parent, and its merges. BASE_SHA is the base branch's tip
@@ -41,10 +44,15 @@
 // Text that quotes the leak scan's own examples (a sample connection string with a password, an ARN prefix, a
 // property read of a credentials option) is refused by the rule it quotes: reword it.
 //
+// An author's and committer's name and email are run through the private needles alone: one file per field goes to
+// the leak scan, and only the findings of its `extra needle` rules are kept, so the scan's email rule never fires on
+// an ordinary address. A finding names the commit and the field. The commit records are read with `git log -z`, so
+// no text of a message can end a record, and a record that does not parse is exit 2.
+//
 // What it does not catch: a phrase that is not on the list below, a leak that is reworded (a path written with a
-// space in it, an id described in other words), the name of the branch, an author whose identity names no tool, and
-// anything in a pull request comment or review, which this script never reads. An author's or committer's name and
-// address are not run through the private needles (the leak scan's email rule would refuse every human address).
+// space in it, an id described in other words), a phrase in a branch name that the list spells with a space and the
+// name joins with hyphens, an author whose identity names no tool, and anything in a pull request comment or
+// review, which this script never reads.
 
 const { execFileSync, spawnSync } = require('node:child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
