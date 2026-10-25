@@ -38,7 +38,10 @@ const git = (cwd: string, ...args: string[]) =>
 /** A throwaway repository holding copies of the two scripts, so the real ones run against a place the test owns. */
 function repo(leakScan: string = LEAK): {
   dir: string;
-  commit: (msg: string, identity?: { author?: string; committer?: string }) => string;
+  commit: (
+    msg: string,
+    identity?: { author?: string; committer?: string; committerEmail?: string },
+  ) => string;
   merge: (msg?: string) => string;
 } {
   const dir = mkdtempSync(join(tmpdir(), 'pr-text-test-'));
@@ -51,7 +54,10 @@ function repo(leakScan: string = LEAK): {
   git(dir, 'config', 'user.name', 'a');
   git(dir, 'config', 'commit.gpgsign', 'false');
   let n = 0;
-  const commit = (msg: string, identity: { author?: string; committer?: string } = {}): string => {
+  const commit = (
+    msg: string,
+    identity: { author?: string; committer?: string; committerEmail?: string } = {},
+  ): string => {
     n += 1;
     writeFileSync(join(dir, `f${n}.txt`), String(n));
     git(dir, 'add', '-A');
@@ -63,11 +69,11 @@ function repo(leakScan: string = LEAK): {
       env: {
         ...process.env,
         GIT_CONFIG_GLOBAL: '/dev/null',
-        ...(identity.committer === undefined
+        ...(identity.committer === undefined && identity.committerEmail === undefined
           ? {}
           : {
-              GIT_COMMITTER_NAME: identity.committer,
-              GIT_COMMITTER_EMAIL: 'c@users.noreply.github.com',
+              GIT_COMMITTER_NAME: identity.committer ?? 'c',
+              GIT_COMMITTER_EMAIL: identity.committerEmail ?? 'c@users.noreply.github.com',
             }),
       },
     });
@@ -92,7 +98,12 @@ function repo(leakScan: string = LEAK): {
 }
 
 function run(dir: string, env: Record<string, string | undefined>): Run {
-  const clean: Record<string, string | undefined> = { ...process.env, LEAK_SCAN_EXTRA: undefined };
+  // CI sets GITHUB_ACTIONS itself, which would make a missing input a failure in every run below that leaves one out.
+  const clean: Record<string, string | undefined> = {
+    ...process.env,
+    LEAK_SCAN_EXTRA: undefined,
+    GITHUB_ACTIONS: undefined,
+  };
   const r = spawnSync(process.execPath, [join(dir, 'scripts/pr-text-scan.cjs')], {
     cwd: dir,
     encoding: 'utf8',
@@ -103,13 +114,25 @@ function run(dir: string, env: Record<string, string | undefined>): Run {
 
 /** Run the check on a title, a body and one commit message, the way the workflow does. */
 function scan(
-  { title = 'Add a thing', body = 'Adds a thing.', commit = 'Add a thing' },
+  {
+    title = 'Add a thing',
+    body = 'Adds a thing.',
+    commit = 'Add a thing',
+    branch = undefined as string | undefined,
+  },
   extraEnv: Record<string, string | undefined> = {},
 ): Run {
   const { dir, commit: c } = repo();
   const base = c('base');
   const head = c(commit);
-  return run(dir, { PR_TITLE: title, PR_BODY: body, BASE_SHA: base, HEAD_SHA: head, ...extraEnv });
+  return run(dir, {
+    PR_TITLE: title,
+    PR_BODY: body,
+    PR_BRANCH: branch,
+    BASE_SHA: base,
+    HEAD_SHA: head,
+    ...extraEnv,
+  });
 }
 
 // Each phrase as it would really be written, and the look-alikes beside them.
@@ -315,11 +338,167 @@ describe('look-alikes stay quiet', () => {
     ).toBe(0);
   });
 
+  it('a message that holds a control character, even the old record separator, is parsed and scanned', () => {
+    for (const sep of ['\x1e', '\x1f', '\x1e\x1e', '\n\x1e\n']) {
+      const { dir, commit } = repo();
+      const base = commit('base');
+      const head = commit(`Subject\n\nbefore${sep}after\nwritten by Claude`);
+      const r = run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head });
+      expect(r.status).toBe(1);
+      expect(r.out).toMatch(new RegExp(`"Claude" in the commit ${head}, line \\d+`));
+      expect(r.out).not.toContain('FAILED to run');
+      const other = repo();
+      const otherBase = other.commit('base');
+      const clean = other.commit(`Subject\n\nbefore${sep}after`);
+      expect(
+        run(other.dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: otherBase, HEAD_SHA: clean }).status,
+      ).toBe(0);
+    }
+  });
+
   it('the pull request template, as reworded', () => {
     const template = readFileSync(join(ROOT, '.github/PULL_REQUEST_TEMPLATE.md'), 'utf8');
     const r = scan({ body: template });
     expect(r.out).not.toContain('FAILED');
     expect(r.status).toBe(0);
+  });
+});
+
+describe('identities are run through the private needles', () => {
+  const asIdentity = (
+    identity: { author?: string; committer?: string; committerEmail?: string },
+    extraEnv: Record<string, string | undefined> = { LEAK_SCAN_EXTRA: FAKE_NEEDLE },
+  ) => {
+    const { dir, commit } = repo();
+    const base = commit('base');
+    const head = commit('Add a thing', identity);
+    return {
+      head,
+      r: run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head, ...extraEnv }),
+    };
+  };
+
+  it('a needle in an author email fails, naming the commit and the field and nothing else', () => {
+    const { head, r } = asIdentity({ author: 'Alex Smith <zz-test-needle-5@example.com>' });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"private needle" in the author email of commit ${head}`);
+    expect(r.out).not.toContain('zz-test-needle');
+    expect(r.out).not.toContain('Smith');
+    expect(r.out).not.toContain('say what was done');
+  });
+
+  it('a needle in a committer name, a committer email and an author name fails', () => {
+    const name = asIdentity({ committer: 'Zed zz-test-needle-9' });
+    expect(name.r.status).toBe(1);
+    expect(name.r.out).toContain(`"private needle" in the committer name of commit ${name.head}`);
+    expect(name.r.out).not.toContain('Zed');
+    const email = asIdentity({ committerEmail: 'zz-test-needle-1@example.com' });
+    expect(email.r.status).toBe(1);
+    expect(email.r.out).toContain(`in the committer email of commit ${email.head}`);
+    const author = asIdentity({ author: 'zz-test-needle-3 <a@example.com>' });
+    expect(author.r.status).toBe(1);
+    expect(author.r.out).toContain(`in the author name of commit ${author.head}`);
+    for (const x of [name, email, author]) expect(x.r.out).not.toContain('zz-test-needle');
+  });
+
+  it('a field that two needles match is named and counted once', () => {
+    const { head, r } = asIdentity(
+      { author: 'Alex <zz-test-needle-5-xq9zvk-7@example.com>' },
+      { LEAK_SCAN_EXTRA: `${FAKE_NEEDLE}\nxq9zvk-[0-9]+` },
+    );
+    expect(r.status).toBe(1);
+    expect(r.out.match(/"private needle" in the author email of commit/g)).toHaveLength(1);
+    expect(r.out).toContain(`"private needle" in the author email of commit ${head}`);
+    expect(r.out).toContain('FAILED: 1 finding(s)');
+    expect(r.out).not.toContain('xq9zvk');
+  });
+
+  it('an ordinary address with no needle passes, and the email rule never fires on it', () => {
+    // A domain the leak scan does not allow-list, so the scan's own email rule would fire on it if its findings were kept.
+    for (const author of [
+      `Alex Smith <alex.smith@${'mail'}.test>`,
+      `Alex Smith <alex@${'corp'}.test>`,
+    ]) {
+      const { r } = asIdentity({ author });
+      expect(r.status).toBe(0);
+      expect(r.out).not.toContain('email address');
+      expect(r.out).not.toContain('private needle');
+    }
+  });
+
+  it('names at most ten fields, then counts the rest, and counts every one as a finding', () => {
+    const { dir, commit } = repo();
+    const base = commit('base');
+    let head = base;
+    for (let i = 0; i < 7; i += 1)
+      head = commit(`Add thing ${i}`, {
+        author: 'Alex <zz-test-needle-1@example.com>',
+        committerEmail: 'zz-test-needle-2@example.com',
+      });
+    const r = run(dir, {
+      PR_TITLE: 't',
+      PR_BODY: '',
+      BASE_SHA: base,
+      HEAD_SHA: head,
+      LEAK_SCAN_EXTRA: FAKE_NEEDLE,
+    });
+    expect(r.status).toBe(1);
+    expect(
+      r.out.match(/"private needle" in the (?:author|committer) email of commit/g),
+    ).toHaveLength(10);
+    expect(r.out).toContain('4 more identity fields hold a private needle');
+    expect(r.out).not.toContain('"private needle" in the 4 more');
+    expect(r.out).toContain('FAILED: 14 finding(s)');
+    expect(r.out).not.toContain('zz-test-needle');
+  });
+
+  it('an identity pass that crashes or prints no verdict ends in exit 2, not a pass', () => {
+    const stub = mkdtempSync(join(tmpdir(), 'pr-text-stub-'));
+    dirs.push(stub);
+    for (const body of [
+      "console.error('boom'); process.exit(1);",
+      "console.log('nothing to see'); process.exit(0);",
+    ]) {
+      // The text pass runs the real scan; the pass over the identities (its own directory) gets the stub's answer.
+      writeFileSync(
+        join(stub, 'leak-scan.cjs'),
+        `const { basename } = require('node:path');
+const { spawnSync } = require('node:child_process');
+const dir = process.argv[process.argv.indexOf('--dir') + 1];
+if (basename(dir).startsWith('pr-text-id-')) { ${body} }
+const r = spawnSync(process.execPath, [${JSON.stringify(LEAK)}, ...process.argv.slice(2)], { stdio: 'inherit' });
+process.exit(r.status);
+`,
+      );
+      const { dir: d, commit } = repo(join(stub, 'leak-scan.cjs'));
+      const base = commit('base');
+      const head = commit('Add a thing');
+      const r = run(d, {
+        PR_TITLE: 't',
+        PR_BODY: '',
+        BASE_SHA: base,
+        HEAD_SHA: head,
+        LEAK_SCAN_EXTRA: FAKE_NEEDLE,
+      });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain('did not run to a verdict over the identities');
+    }
+  });
+
+  it('a needle in an identity is advised as a leak, not as a rewording', () => {
+    const { r } = asIdentity({ author: 'Alex <zz-test-needle-5@example.com>' });
+    expect(r.out).toContain('handled as a leak');
+    expect(r.out).toContain('ask the maintainer before rewriting the history');
+    expect(r.out).not.toContain('--reset-author');
+  });
+
+  it('without needles it passes on a fork and fails closed when they are required', () => {
+    const who = { author: 'Alex Smith <zz-test-needle-5@example.com>' };
+    expect(asIdentity(who, {}).r.status).toBe(0);
+    expect(asIdentity(who, { REQUIRE_NEEDLES: 'true' }).r.status).toBe(2);
+    expect(
+      asIdentity(who, { REQUIRE_NEEDLES: 'true', LEAK_SCAN_EXTRA: FAKE_NEEDLE }).r.status,
+    ).toBe(1);
   });
 });
 
@@ -332,6 +511,137 @@ function asIdentityOut(): string {
   });
   return run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head }).out;
 }
+
+describe('the head branch name', () => {
+  it('a phrase in it fails, at line 1 of the branch name', () => {
+    for (const [phrase, branch] of [
+      ['subagent', 'feature/subagent-cleanup'],
+      ['Claude', 'Claude/tidy-up'],
+      ['coordinator', 'fix/coordinator.rewrite'],
+      ['AI-generated', 'docs/AI-generated-notes'],
+    ]) {
+      const r = scan({ branch });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(`"${phrase}" in the branch name, line 1`);
+      expect(r.out).not.toContain(branch);
+    }
+  });
+
+  it('a needle in it fails, redacted, and so does a local path', () => {
+    const r = scan({ branch: 'feat/zz-test-needle-7-thing' }, { LEAK_SCAN_EXTRA: FAKE_NEEDLE });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('extra needle');
+    expect(r.out).toContain('branch.txt:1');
+    expect(r.out).not.toContain('zz-test-needle');
+    expect(scan({ branch: `${'/Users'}/someone/x` }).status).toBe(1);
+  });
+
+  it('a phrase joined by hyphens, underscores, dots or slashes fails too', () => {
+    const cases: [string, string][] = [
+      ['this session', 'docs/this-session-cookie'],
+      ['this session', 'fix/this.session'],
+      ['cannot spawn', 'chore/cannot-spawn'],
+      ['cannot spawn', 'chore/could_not_spawn'],
+      ['builder (the one who did the work)', 'fix/the-builder-ran'],
+      ['builder (the one who did the work)', 'fix/added-by-the-builder'],
+      ['subagent', 'fix/Sub_Agent'],
+      ['Generated with', 'generated-with-a-tool'],
+    ];
+    for (const [phrase, branch] of cases) {
+      const r = scan({ branch });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(`"${phrase}" in the branch name, line 1`);
+      expect(
+        r.out.match(new RegExp(`"${phrase.replace(/[()]/g, '\\$&')}" in the branch name`, 'g')),
+      ).toHaveLength(1);
+      expect(r.out).not.toContain(branch);
+    }
+  });
+
+  it('a phrase that a name holds through both readings is reported once', () => {
+    for (const [branch, phrase] of [
+      ['feature/subagent-cleanup', 'subagent'],
+      ['Claude/x', 'Claude'],
+    ]) {
+      const r = scan({ branch });
+      expect(r.status).toBe(1);
+      expect(r.out.match(new RegExp(`"${phrase}" in the branch name`, 'g'))).toHaveLength(1);
+    }
+  });
+
+  it("a branch that starts with a coding tool's own prefix fails, in any case", () => {
+    for (const branch of [
+      'claude/fix-bug-AbC12',
+      'Claude/tidy-up',
+      'copilot/fix-1',
+      'cursor/add-feature-1a2b',
+      'devin/1700000000-add-thing',
+      'codex/fix-thing',
+      'Codex/Fix-Thing',
+    ]) {
+      const r = scan({ branch });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('"coding tool branch prefix" in the branch name, line 1');
+      expect(r.out).not.toContain(branch);
+    }
+  });
+
+  it('a branch name holding a twelve-digit run fails the account-id rule, and says how to fix it', () => {
+    const stamp = ['2024', '1022', '1530'].join('');
+    const r = scan({ branch: `hotfix-${stamp}` });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('AWS account id');
+    expect(r.out).toContain('branch.txt:1');
+    expect(r.out).not.toContain(stamp);
+    expect(r.out).toContain('twelve-digit run');
+    expect(r.out).toContain('push the work to a branch with another name');
+  });
+
+  it('a phrase finding in a branch says how to fix it', () => {
+    const r = scan({ branch: 'fix/this-session' });
+    expect(r.out).toContain('push the work to a branch with another name');
+    expect(r.out).not.toContain('twelve-digit run');
+    expect(scan({ title: 'written by Claude' }).out).not.toContain('another name');
+  });
+
+  it('an ordinary name passes, and so do the look-alikes of the phrase list and the prefixes', () => {
+    for (const branch of [
+      'ci/pr-text-follow-ups',
+      'feature/add-thing',
+      'dependabot/npm_and_yarn/vitest-4.1.0',
+      'dependabot/github_actions/actions/checkout-5',
+      'release-please--branches--main',
+      'changeset-release/main',
+      'coordinator-free',
+      'fix/coordinator-free-path',
+      'docs/claude-md-notes',
+      'chore/sub-second-timers',
+      'feature/user-agent-header',
+      'fix/query-builder-keys',
+      'fix/query-builder-read-path',
+      'chore/a-builder-pattern-doc',
+      'fix/session-this',
+      'docs/generated-with-typedoc',
+      'fix/cursor-pagination',
+      'feat/codex-parser',
+      'feat/devin-the-dog',
+      'x/claude/y',
+      'feat/cursor/x',
+      'fix/copilot/x',
+      'chore/devin/x',
+      'docs/codex/x',
+    ]) {
+      const r = scan({ branch }, { LEAK_SCAN_EXTRA: FAKE_NEEDLE });
+      expect(r.out).not.toContain('FAILED');
+      expect(r.status).toBe(0);
+    }
+  }, 60000);
+
+  it('is optional on a local run, which says so; an empty name is scanned as nothing', () => {
+    expect(scan({}).out).toContain('no PR_BRANCH, so the branch name was not scanned');
+    expect(scan({ branch: '' }).status).toBe(0);
+  });
+});
 
 describe('the leak-scan half', () => {
   // Built at run time, so this file holds no local path or private-repo reference itself (the leak scan reads it).
@@ -361,6 +671,17 @@ describe('the leak-scan half', () => {
     expect(r.out).toContain('extra needle');
     expect(r.out).not.toContain('zz-test-needle-42');
     expect(r.out).not.toMatch(/extra needle #/);
+  });
+
+  it('a needle that is not a valid regular expression fails closed without printing its pattern', () => {
+    const broken = 'q~v7#kz!w(';
+    for (const args of [{}, { REQUIRE_NEEDLES: 'true' }]) {
+      const r = scan({}, { LEAK_SCAN_EXTRA: `${FAKE_NEEDLE}\n${broken}`, ...args });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain('is not a valid regular expression');
+      for (let i = 0; i + 3 <= broken.length; i += 1)
+        expect(r.out).not.toContain(broken.slice(i, i + 3));
+    }
   });
 
   it('a link to a CI run and job is not an account id; a bare 12-digit run still is', () => {
@@ -456,6 +777,65 @@ describe('fails closed', () => {
     expect(r.out).toContain('did not run to a verdict');
   });
 
+  it('on a commit record it cannot parse', () => {
+    const stub = mkdtempSync(join(tmpdir(), 'pr-text-git-'));
+    dirs.push(stub);
+    const { dir, commit } = repo();
+    const base = commit('base');
+    const head = commit('x');
+    const records = [
+      // text, then whether git ends the record with a NUL
+      ['not a record', true],
+      [`${head}\\nname\\nemail`, true],
+      // five lines: one short of a record
+      [`${head}\\na\\ne\\nc\\ne`, true],
+      // six lines whose first is not a commit id
+      ['junk\\na\\ne\\nc\\ne\\nmessage', true],
+      // a whole record with no terminator
+      [`${head}\\na\\ne\\nc\\ne\\nmessage`, false],
+      ['', true],
+    ] as const;
+    for (const [record, terminated] of records) {
+      writeFileSync(
+        join(stub, 'git'),
+        `#!/bin/sh\nprintf '${record}${terminated ? '\\0' : ''}'\n`,
+        { mode: 0o755 },
+      );
+      const r = run(dir, {
+        PR_TITLE: 't',
+        PR_BODY: '',
+        BASE_SHA: base,
+        HEAD_SHA: head,
+        PATH: `${stub}:${process.env.PATH}`,
+      });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain('FAILED to run');
+    }
+  });
+
+  it('in CI, on a missing branch name, base or head; a local run only notes it', () => {
+    const { dir, commit } = repo();
+    const base = commit('base');
+    const head = commit('x');
+    const inCi = (env: Record<string, string | undefined>) =>
+      run(dir, { PR_TITLE: 't', PR_BODY: '', GITHUB_ACTIONS: 'true', ...env });
+    const all = { PR_BRANCH: 'feat/x', BASE_SHA: base, HEAD_SHA: head };
+    expect(inCi(all).status).toBe(0);
+    for (const missing of ['PR_BRANCH', 'BASE_SHA', 'HEAD_SHA'] as const) {
+      const r = inCi({ ...all, [missing]: undefined });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain(`${missing} is not set`);
+    }
+    for (const empty of ['PR_BRANCH', 'BASE_SHA', 'HEAD_SHA'] as const) {
+      const r = inCi({ ...all, [empty]: '' });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain(`${empty} is not set`);
+    }
+    expect(inCi({ ...all, BASE_SHA: '', HEAD_SHA: '' }).out).toContain('BASE_SHA is not set');
+    expect(inCi({ PR_BRANCH: 'feat/x' }).status).toBe(2);
+    expect(run(dir, { PR_TITLE: 't', PR_BODY: '' }).status).toBe(0);
+  });
+
   it('on a bad commit id', () => {
     const { dir, commit } = repo();
     const head = commit('x');
@@ -534,6 +914,7 @@ describe('the workflow', () => {
     expect(scan?.env).toEqual({
       PR_TITLE: '${{ github.event.pull_request.title }}',
       PR_BODY: '${{ github.event.pull_request.body }}',
+      PR_BRANCH: '${{ github.head_ref }}',
       BASE_SHA: '${{ github.event.pull_request.base.sha }}',
       HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
       LEAK_SCAN_EXTRA: '${{ secrets.LEAK_SCAN_EXTRA }}',
