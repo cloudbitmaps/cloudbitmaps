@@ -4441,8 +4441,7 @@ export type {
   LocalFsStorageOptions,
   MemoryStorageOptions,
 } from '@cloudbitmaps/core/node';
-// The public bitmap class, also the one door that decodes portable bytes you hold. It is defined once, in `./bitmap`,
-// which the `./bitmap` entry exports without the store, so both entries give the same class.
+// The public bitmap class, also the one door that decodes portable bytes you hold. It is defined in `./bitmap`.
 export { RoaringBitmap } from './bitmap';
 export type { RoaringBitmapDeserializeOptions } from './bitmap';
 export {

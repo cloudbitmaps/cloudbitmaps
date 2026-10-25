@@ -123,9 +123,12 @@ Not measured yet: `bench/bitmap-api-results.json` holds no pass, so this page st
 ## Using it by itself
 
 `RoaringBitmap` from `@cloudbitmaps/roaring` is this codec's bitmap as a public class, usable without a store: a mutable
-set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript on typed arrays, with no native code. Import it
-from `@cloudbitmaps/roaring/bitmap`, which loads no store and imports no Node builtin (a build step proves that on every
-build), or from `@cloudbitmaps/roaring`, which re-exports the same class. The class runs in CI on Node 22 and 24 only. The earlier Bun and Deno
+set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript on typed arrays, with no native code. It loads
+with the package's main entry, the same import line as the store (`import { CloudRoaring, MemoryStorage, RoaringBitmap }
+from '@cloudbitmaps/roaring'`), and that entry also loads the store's in-process backends and their Node builtins, so
+importing the class loads the whole package: measured on 2026-10-24 on an Apple M3 Pro under Node v24.22.1, 31 fresh
+processes, the main entry imports in 23.9 ms and an esbuild bundle of a one-line importer of the class is 44,208 bytes
+(15,530 gzipped). The class runs where the package runs: CI runs it on Node 22 and 24, the earlier Bun and Deno
 self-check ran the codec inside a store, not this class, and no isolate or browser was run. Its methods, errors and costs are in
 [the API reference](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
@@ -136,7 +139,8 @@ self-check ran the codec inside a store, not this class, and no isolate or brows
   does not keep the input alive.
 - **Build and change.** `new RoaringBitmap(ids)`, `add`, `addMany`, `remove`, `removeMany`, `clear`, `clone`, and the
   in-place `andInPlace`, `orInPlace`, `xorInPlace` and `andNotInPlace`; the statics that return a new bitmap and change no
-  operand (`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`); `has`, `size`, `isEmpty`, `minimum`, `maximum`, iteration in
+  operand (`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`); the counts and comparisons that build nothing you keep
+  (`andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality`, `intersects`, `isSubset` and `isEqual`); `has`, `size`, `isEmpty`, `minimum`, `maximum`, iteration in
   ascending order (a promise), `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`.
 - **Every id is checked**, and a refusal never repeats the value.
 - **It loads as itself.** `store.load(ref, bitmap)` reads a bitmap and never changes it.
@@ -165,6 +169,10 @@ console.log(wider.remove(1), wider.remove(1)); // true false
 console.log(wider.minimum(), wider.maximum()); // 5 70000
 console.log(new RoaringBitmap().minimum()); // undefined
 
+// Count and compare without keeping a result; neither bitmap changes.
+console.log(wider.andCardinality(bitmap), wider.orCardinality(bitmap)); // 2 3
+console.log(bitmap.isSubset(wider), wider.isEqual(bitmap)); // true false
+
 try {
   wider.add(-1);
 } catch (err) {
@@ -173,12 +181,6 @@ try {
 ```
 
 The example is run by [`tests/docs/roaring-codec-example.test.ts`](../../tests/docs/roaring-codec-example.test.ts).
-
-**What importing it costs** (measured on 2026-10-24 on an Apple M3 Pro under Node v24.22.1, 31 fresh processes per entry
-with the main entry measured twice as the control, by `bench/ts-codec-paired.cjs`; the control's median differed from the
-first by 0.3%): `@cloudbitmaps/roaring/bitmap` imports in 10.0 ms against 23.9 ms for the main entry (58% less), and an
-esbuild bundle of a one-line importer of the class is 31,468 bytes (11,108 gzipped) from `./bitmap` against 44,208 (15,530
-gzipped) from the main entry.
 
 **Where it differs from the `roaring` package from npm**, each on purpose: `add` and `remove` take exactly one id (a second
 argument is an error naming `addMany` or `removeMany`); every id argument throws a `ValidationError` that does not
@@ -191,8 +193,7 @@ not pass one to the `roaring` package's methods, which answer wrongly without th
 `serialize()` bytes with that package instead.
 
 **What is not public.** The codec itself, its containers and its seam are internal, and a store cannot be given a codec.
-The class has no ranges, `rank`, `select`, frozen views or 64-bit ids, and in this release no `xorInPlace`, static
-combine that returns a new bitmap, count-only combine, `isEqual`, `isSubset` or `intersects`. No speed claim is made for
+The class has no ranges, `rank`, `select`, frozen views or 64-bit ids. No speed claim is made for
 it: the figures above are the codec inside a store, and a loop over the class in memory has no store's network reads to
 hide a slower combine behind.
 

@@ -1,0 +1,8 @@
+/**
+ * How the four cardinalities and `intersects` of `RoaringBitmap` are answered: from the containers, with the count
+ * kernels (`true`), or by building the combination and counting it (`false`). Both routes give the same answers and
+ * change no operand; only the cost differs. `isSubset` and `isEqual` always use their kernels.
+ *
+ * One switch, so a measurement that finds the build-then-count route cheaper changes this line and nothing else.
+ */
+export const COUNT_BY_KERNELS = true;

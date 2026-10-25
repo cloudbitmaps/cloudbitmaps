@@ -112,6 +112,12 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
     instead: '`store.load()`, or `loadSegment()` with your own drivers',
   },
   { name: 'BulkLoadResult', instead: '`LoadResult`' },
+  {
+    // The full specifier, and its shorthand spellings (`roaring/bitmap`, `.../dist/bitmap`); `ts-roaring/bitmap`, the
+    // codec's own file, is a different path and stays legitimate.
+    name: '(?:@cloudbitmaps/roaring|(?<!-)roaring)/(?:dist/)?bitmap',
+    instead: '`@cloudbitmaps/roaring`, the one entry `RoaringBitmap` is imported from',
+  },
   { name: 'becameCurrent', instead: "`LoadResult`'s `published`" },
   { name: 'RetryingStorageDriver', instead: RETRY_INSTEAD, code: true },
   { name: 'RetryingRegistryDriver', instead: RETRY_INSTEAD, code: true },
@@ -815,6 +821,15 @@ describe('a removed export is named nowhere a reader looks', () => {
     expect(retiredNames('if (r.becameCurrent) publish();')).toHaveLength(1);
     expect(retiredNames('myBulkLoadResultShape and becameCurrentGen')).toEqual([]);
     expect(retiredNames('`store.load()` returns a `LoadResult`')).toEqual([]);
+    expect(
+      retiredNames('import { RoaringBitmap } from "@cloudbitmaps/roaring/bitmap";'),
+    ).toHaveLength(1);
+    expect(retiredNames('the `roaring/bitmap` entry loads no store')).toHaveLength(1);
+    expect(retiredNames('`@cloudbitmaps/roaring/dist/bitmap.js`')).toHaveLength(1);
+    expect(retiredNames('see `ts-roaring/bitmap.ts` and `@cloudbitmaps/roaring/bitmapx`')).toEqual(
+      [],
+    );
+    expect(retiredNames('import { RoaringBitmap } from "@cloudbitmaps/roaring";')).toEqual([]);
     expect(retiredNames('new RetryingStorageDriver(inner, opts)')).toHaveLength(1);
     expect(retiredNames('wrap it in `RetryingRegistryDriver`')).toHaveLength(1);
     expect(

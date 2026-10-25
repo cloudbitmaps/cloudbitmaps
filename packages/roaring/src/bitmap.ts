@@ -1,11 +1,10 @@
 /**
- * `RoaringBitmap`: a mutable set of unsigned 32-bit ids, in TypeScript on typed arrays, with no native addon and no
- * Node builtin on its import path. It is a thin public shell around the codec's own bitmap (`ts-roaring/bitmap.ts`):
- * the shell checks every argument (an id is an integer from 0 to 4,294,967,295, and a refusal never repeats the
- * value), and the codec does the work.
+ * `RoaringBitmap`: a mutable set of unsigned 32-bit ids, in TypeScript on typed arrays, with no native addon. It is a
+ * thin public shell around the codec's own bitmap (`ts-roaring/bitmap.ts`): the shell checks every argument (an id is
+ * an integer from 0 to 4,294,967,295, and a refusal never repeats the value), and the codec does the work.
  *
  * ```ts
- * import { RoaringBitmap } from '@cloudbitmaps/roaring/bitmap';
+ * import { RoaringBitmap } from '@cloudbitmaps/roaring';
  *
  * const a = new RoaringBitmap([1, 5, 70_000]);
  * a.add(9).has(9); // true
@@ -25,6 +24,7 @@ import {
   refusalOfId,
 } from '@cloudbitmaps/core';
 import type { CodecInterface } from '@cloudbitmaps/core';
+import { COUNT_BY_KERNELS } from './count-route';
 import { checkOptions, kindOf, picked } from './options';
 import { TsBitmap, collect, tsRoaringCodec } from './ts-roaring/bitmap';
 
@@ -330,6 +330,86 @@ export class RoaringBitmap implements Iterable<number> {
     this.#bitmap.orInPlace(that);
     this.#bitmap.andNotInPlace(both);
     return this;
+  }
+
+  /**
+   * How many ids both bitmaps hold, without building the intersection. Neither bitmap changes; `other` may be this one.
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  andCardinality(other: RoaringBitmap): number {
+    const that = RoaringBitmap.#operand(other);
+    return COUNT_BY_KERNELS
+      ? this.#bitmap.andCardinality(that)
+      : TsBitmap.and(this.#bitmap, that).size;
+  }
+
+  /**
+   * How many ids either bitmap holds. Neither bitmap changes; `other` may be this one.
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  orCardinality(other: RoaringBitmap): number {
+    const that = RoaringBitmap.#operand(other);
+    return COUNT_BY_KERNELS
+      ? this.#bitmap.orCardinality(that)
+      : TsBitmap.or(this.#bitmap, that).size;
+  }
+
+  /**
+   * How many ids exactly one of the bitmaps holds. Neither bitmap changes; `other` may be this one.
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  xorCardinality(other: RoaringBitmap): number {
+    const that = RoaringBitmap.#operand(other);
+    return COUNT_BY_KERNELS
+      ? this.#bitmap.xorCardinality(that)
+      : TsBitmap.xor(this.#bitmap, that).size;
+  }
+
+  /**
+   * How many ids this bitmap holds that `other` lacks. Neither bitmap changes; `other` may be this one.
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  andNotCardinality(other: RoaringBitmap): number {
+    const that = RoaringBitmap.#operand(other);
+    return COUNT_BY_KERNELS
+      ? this.#bitmap.andNotCardinality(that)
+      : TsBitmap.andNot(this.#bitmap, that).size;
+  }
+
+  /**
+   * Whether the bitmaps share an id. Neither bitmap changes; `other` may be this one.
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  intersects(other: RoaringBitmap): boolean {
+    const that = RoaringBitmap.#operand(other);
+    return COUNT_BY_KERNELS
+      ? this.#bitmap.intersects(that)
+      : !TsBitmap.and(this.#bitmap, that).isEmpty;
+  }
+
+  /**
+   * Whether every id of this bitmap is in `other` (an empty bitmap is a subset of every bitmap, itself included). Neither
+   * bitmap changes. Unlike the `roaring` package, which answers `false`, a value that is not a bitmap is refused.
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  isSubset(other: RoaringBitmap): boolean {
+    return this.#bitmap.isSubset(RoaringBitmap.#operand(other));
+  }
+
+  /**
+   * Whether both bitmaps hold exactly the same ids, whatever the kinds of their containers or the bytes they would
+   * serialize to. Neither bitmap changes.
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  isEqual(other: RoaringBitmap): boolean {
+    return this.#bitmap.isEqual(RoaringBitmap.#operand(other));
   }
 
   /**

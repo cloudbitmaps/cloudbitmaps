@@ -488,7 +488,6 @@ describe('the surface gate takes its entry points from the packages', () => {
       '@cloudbitmaps/core/node',
       '@cloudbitmaps/gcs',
       '@cloudbitmaps/roaring',
-      '@cloudbitmaps/roaring/bitmap',
       '@cloudbitmaps/s3',
       '@cloudbitmaps/tools',
     ]);

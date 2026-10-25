@@ -847,20 +847,19 @@ function assertEntrySdkFree(pkgDir) {
 }
 
 /**
- * The built entries that must load where no Node builtin exists (a V8 isolate): core's main entry and `driver-kit`,
- * the flavor's `./bitmap` entry (the public bitmap class, which loads no store) and the offline tools.
- * `@cloudbitmaps/core/node` and the flavor's main entry are the entries that may reach a builtin, and are not listed.
+ * The built entries that must load where no Node builtin exists (a V8 isolate): core's main entry and `driver-kit`
+ * and the offline tools. `@cloudbitmaps/core/node` and the flavor's main entry (which also loads the store's
+ * in-process backends) are the entries that may reach a builtin, and are not listed.
  */
 const RUNTIME_NEUTRAL_ENTRIES = [
   ['core', 'index.js'],
   ['core', 'driver-kit.js'],
-  ['roaring', 'bitmap.js'],
   ['tools', 'index.js'],
 ];
 
 /**
  * The one entry of a gated package that may reach a Node builtin, and so is not on the list: core's `./node`, and the
- * flavor's main entry, which re-exports the in-process backends from it. Its `./bitmap` entry is on the list.
+ * flavor's main entry, which re-exports the in-process backends from it. A flavor subpath added later is on the list.
  */
 const MAY_REACH_BUILTINS = { core: './node', roaring: '.' };
 
@@ -912,7 +911,10 @@ async function assertEntryBuiltinFree(pkgDir, entryFile) {
  * unnoticed.
  */
 function assertRuntimeNeutralCoversGatedPackages() {
-  for (const pkgDir of [...new Set(RUNTIME_NEUTRAL_ENTRIES.map(([pkg]) => pkg))]) {
+  for (const pkgDir of new Set([
+    ...RUNTIME_NEUTRAL_ENTRIES.map(([pkg]) => pkg),
+    ...Object.keys(MAY_REACH_BUILTINS),
+  ])) {
     const wanted = distEntryFilesOf(pkgDir)
       .filter(({ key }) => key !== MAY_REACH_BUILTINS[pkgDir])
       .map(({ file }) => file)
@@ -1040,33 +1042,24 @@ function assertManifestResolves(pkgDir, familyNames) {
 }
 
 /**
- * `RoaringBitmap` from the main entry and from `./bitmap` is one class object under ESM and under `require()`, and it
- * works: a build that bundled the class twice would split `instanceof`, and a bitmap from one entry would be refused
- * as an operand by the other.
+ * `RoaringBitmap` loads from the main entry under ESM and under `require()` as one class object, and it works: a
+ * build that bundled the class twice would split `instanceof`, and a bitmap from one load would be refused as an
+ * operand by the other.
  */
 async function assertOneBitmapClass() {
   const { strict: assert } = require('node:assert');
-  const BITMAP = `${PKG}/bitmap`;
   const esmMain = (await import(PKG)).RoaringBitmap;
-  const esmSub = (await import(BITMAP)).RoaringBitmap;
   const cjsMain = require(PKG).RoaringBitmap;
-  const cjsSub = require(BITMAP).RoaringBitmap;
-  for (const [name, cls] of [
-    ['ESM ./bitmap', esmSub],
-    ['CJS main', cjsMain],
-    ['CJS ./bitmap', cjsSub],
-  ]) {
-    assert.equal(
-      cls,
-      esmMain,
-      `${PKG}: RoaringBitmap from ${name} is not the class of the ESM main entry`,
-    );
-  }
+  assert.equal(
+    cjsMain,
+    esmMain,
+    `${PKG}: RoaringBitmap from require() is not the class of the ESM entry`,
+  );
   const a = new esmMain([1, 2, 70000]);
-  const b = new cjsSub([2, 70000, 4294967295]);
+  const b = new cjsMain([2, 70000, 4294967295]);
   assert.deepEqual(a.andInPlace(b).toArray(), [2, 70000]);
-  assert.deepEqual(esmSub.deserialize(a.serialize()).toArray(), [2, 70000]);
-  console.log('  one RoaringBitmap class: main and ./bitmap, ESM and require()');
+  assert.deepEqual(esmMain.deserialize(a.serialize()).toArray(), [2, 70000]);
+  console.log('  one RoaringBitmap class: ESM and require() of the main entry');
 }
 
 async function main() {

@@ -24,6 +24,15 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`RoaringBitmap`'s counts and comparisons: `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality`,
+  `intersects`, `isSubset` and `isEqual`.** Each takes another bitmap and changes neither: the four counts say how many ids
+  both hold, either holds, exactly one holds, or this one holds and the other lacks, without a result bitmap you can keep;
+  `intersects` says whether they share an id; `isSubset(other)` whether every id of this one is in `other` (the empty
+  bitmap is a subset of every bitmap); `isEqual(other)` whether they hold the same ids, by membership and not by
+  container kinds or serialized bytes. The other bitmap may be this one. A value that is not a `RoaringBitmap` of this copy
+  of the package is a `ValidationError`, for `isSubset` too, where the `roaring` package answers `false`. No speed claim
+  is made for them.
+
 - **`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`, the combines that return a new bitmap, and `xorInPlace`.**
   `RoaringBitmap.and(a, b)` and the others take two bitmaps (`orMany` takes an iterable of them) and return a new one that
   owns its storage; no operand's ids change, and a result and its operands change apart afterwards. `and` keeps no
@@ -34,16 +43,14 @@ so, and so do the module headers in the code.
   copy of the package is a `ValidationError`, as for the in-place combines. `RoaringBitmap.orMany` replaces the
   `orMany` of the `roaring` package in the recipe for parts of one segment built separately.
 
-- **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, importable from `@cloudbitmaps/roaring/bitmap` or the
-  main entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
+- **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, exported from the main
+  entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
   `new RoaringBitmap(ids?)`, `add`, `addMany`, `remove` (answers whether the id was there), `removeMany`, `clear`,
   `clone` (copy-on-write), `andInPlace`, `orInPlace`, `andNotInPlace`, `has`, `size`, `isEmpty`, `minimum` and `maximum`
-  (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`.
-  The `./bitmap` entry loads no store and imports no Node builtin, which `pnpm smoke` proves on every build. Every id
+  (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`. Every id
   argument is checked and throws `ValidationError` with a message that never repeats the value, `add` and `remove` take
   exactly one id (a second argument names `addMany` or `removeMany`), and there is no `toJSON`, so `JSON.stringify(bitmap)`
-  gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. The class does not
-  yet have the count-only combines, `isEqual`, `isSubset` or `intersects`. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
+  gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   lists each method and where it differs from the `roaring` package.
 
 - **`RoaringBitmap.deserialize(bytes, { maxBytes? }?)`, the one door for portable bytes you did not write.** It makes the

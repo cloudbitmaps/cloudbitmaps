@@ -39,6 +39,13 @@ interface Dropped {
 export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
   {
     title:
+      '`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, importable from `@cloudbitmaps/roaring/bitmap` or the main entry.',
+    reason:
+      'retitled in the same unreleased minor: the class is exported from the main entry only, because the second ' +
+      'entry was removed before it was released',
+  },
+  {
+    title:
       "A rollback above the pointer of an encrypted segment needs the segment's key, and a keystore fault is no longer taken for a missing key.",
     reason:
       'rewritten in the same unreleased minor as the rollback that moves only onto a generation its row knows: the key is ' +

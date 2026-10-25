@@ -64,14 +64,13 @@ export default defineConfig({
     // catch-all, so a new package's alias goes ABOVE it.
     //   @/index          → the roaring facade (the package entry the tests mean)
     //   @/roaring-codec  → the roaring codec selection point
-    //   @/bitmap         → the roaring package's public bitmap class (the `./bitmap` entry)
     //   @/native-codec   → the native (CRoaring) codec, the oracle's reference
     //   @/*              → @cloudbitmaps/core internals
     alias: [
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },
       { find: /^@\/roaring-codec$/, replacement: ROARING + '/roaring-codec.ts' },
-      { find: /^@\/bitmap$/, replacement: ROARING + '/bitmap.ts' },
       { find: /^@\/native-codec$/, replacement: TESTS + '/helpers/native-codec.ts' },
+      { find: /^@\/count-route$/, replacement: ROARING + '/count-route.ts' },
       { find: /^@\/option-keys$/, replacement: ROARING + '/option-keys.ts' },
       { find: /^@\/lease-guards$/, replacement: ROARING + '/lease-guards.ts' },
       { find: /^@\/reserved-namespace$/, replacement: ROARING + '/reserved-namespace.ts' },

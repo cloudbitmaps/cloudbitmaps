@@ -167,6 +167,7 @@ function combine(held: Held, op: number, bytes: Bytes): void {
   const { bitmap, model } = held;
   const other = op === 8 ? bitmap : new RoaringBitmap(idsFrom(bytes, model));
   const otherIds = new Set(other);
+  counts('counts against the combine operand', held, { bitmap: other, model: otherIds });
   const before = [...model];
   const kind = bytes.u8() % 4;
   if (kind === 0) {
@@ -222,6 +223,13 @@ function algebra(held: Held, bytes: Bytes): void {
   const third =
     bytes.u8() % 2 === 0 ? first.clone() : new RoaringBitmap(idsFrom(bytes, held.model));
   const [ids2, ids3] = [new Set(second), new Set(third)];
+  const secondHeld: Held = { bitmap: second, model: ids2 };
+  const thirdHeld: Held = { bitmap: third, model: ids3 };
+  counts('first against second', held, secondHeld);
+  counts('second against first', secondHeld, held);
+  counts('first against third', held, thirdHeld);
+  counts('third against second', thirdHeld, secondHeld);
+  counts('first against itself', held, held);
   const kind = bytes.u8() % 5;
   const want = new Set<number>();
   let result: RoaringBitmap;
@@ -246,6 +254,8 @@ function algebra(held: Held, bytes: Bytes): void {
     fail('a combine returned an operand');
   const made: Held = { bitmap: result, model: want };
   agree('combine result', made);
+  counts('result against first', made, held);
+  counts('second against result', secondHeld, made);
   agree('first operand', held);
   agree('second operand', { bitmap: second, model: ids2 });
   agree('third operand', { bitmap: third, model: ids3 });
@@ -257,12 +267,34 @@ function algebra(held: Held, bytes: Bytes): void {
   agree('result after the operand changed', { bitmap: result, model: made.model });
   // A container only the second operand held may have been copied into the result: a change to the second operand must
   // not reach the result, nor the other operands.
-  const secondHeld: Held = { bitmap: second, model: ids2 };
   mutate(secondHeld, bytes.u8() % 5, bytes);
   agree('result after the second operand changed', { bitmap: result, model: made.model });
   agree('first operand after the second changed', held);
   agree('second operand after its own change', secondHeld);
   agree('third operand after the others changed', { bitmap: third, model: ids3 });
+}
+
+/**
+ * Every count and comparison of `x` against `y`, held to the models. No operand changes. It reads no input byte, so a
+ * check added here never changes how an earlier input decodes.
+ */
+function counts(label: string, x: Held, y: Held): void {
+  let both = 0;
+  for (const id of x.model) if (y.model.has(id)) both++;
+  const xs = x.model.size;
+  const ys = y.model.size;
+  const is = (what: string, got: number | boolean, want: number | boolean): void => {
+    if (got !== want) fail(`${label}: ${what} is ${got}, model ${want}`);
+  };
+  is('andCardinality', x.bitmap.andCardinality(y.bitmap), both);
+  is('orCardinality', x.bitmap.orCardinality(y.bitmap), xs + ys - both);
+  is('xorCardinality', x.bitmap.xorCardinality(y.bitmap), xs + ys - 2 * both);
+  is('andNotCardinality', x.bitmap.andNotCardinality(y.bitmap), xs - both);
+  is('intersects', x.bitmap.intersects(y.bitmap), both > 0);
+  is('isSubset', x.bitmap.isSubset(y.bitmap), both === xs);
+  is('isEqual', x.bitmap.isEqual(y.bitmap), both === xs && xs === ys);
+  agree(`${label}: first operand after the counts`, x);
+  agree(`${label}: second operand after the counts`, y);
 }
 
 function refusals(held: Held, bytes: Bytes): void {
@@ -283,6 +315,17 @@ function refusals(held: Held, bytes: Bytes): void {
   refused('xor with a non-bitmap', () =>
     RoaringBitmap.xor(bad as unknown as RoaringBitmap, bitmap),
   );
+  for (const method of [
+    'andCardinality',
+    'orCardinality',
+    'xorCardinality',
+    'andNotCardinality',
+    'intersects',
+    'isSubset',
+    'isEqual',
+  ] as const) {
+    refused(`${method} with a non-bitmap`, () => bitmap[method](bad as unknown as RoaringBitmap));
+  }
   refused('orMany with a non-bitmap', () => RoaringBitmap.orMany([bitmap, bad as RoaringBitmap]));
 }
 

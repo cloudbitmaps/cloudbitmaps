@@ -173,7 +173,7 @@ function rows(w: Awaited<ReturnType<typeof world>>): Row[] {
     },
     {
       name: 'RoaringBitmap.deserialize',
-      covers: [`${RR} RoaringBitmap.deserialize`, `${RR}/bitmap RoaringBitmap.deserialize`],
+      covers: [`${RR} RoaringBitmap.deserialize`],
       base: {},
       keys: { maxBytes: 'int' } satisfies Record<keyof RoaringBitmapDeserializeOptions, Kind>,
       call: (o) => RoaringBitmap.deserialize(new RoaringBitmap([1]).serialize(), o),
