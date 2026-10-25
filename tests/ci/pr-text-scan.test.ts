@@ -321,6 +321,22 @@ describe('look-alikes stay quiet', () => {
     ).toBe(0);
   });
 
+  it('a message that holds a control character, even the old record separator, is parsed and scanned', () => {
+    for (const sep of ['\x1e', '\x1f', '\x1e\x1e', '\n\x1e\n']) {
+      const { dir, commit } = repo();
+      const base = commit('base');
+      const head = commit(`Subject\n\nbefore${sep}after\nwritten by Claude`);
+      const r = run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: head });
+      expect(r.status).toBe(1);
+      expect(r.out).toMatch(new RegExp(`"Claude" in the commit ${head}, line \\d+`));
+      expect(r.out).not.toContain('FAILED to run');
+      const clean = commit(`Subject\n\nbefore${sep}after`);
+      expect(run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: clean }).status).toBe(
+        0,
+      );
+    }
+  });
+
   it('the pull request template, as reworded', () => {
     const template = readFileSync(join(ROOT, '.github/PULL_REQUEST_TEMPLATE.md'), 'utf8');
     const r = scan({ body: template });
@@ -523,6 +539,26 @@ describe('fails closed', () => {
     const r = run(dir, { PR_TITLE: 't', PR_BODY: '' });
     expect(r.status).toBe(2);
     expect(r.out).toContain('did not run to a verdict');
+  });
+
+  it('on a commit record it cannot parse', () => {
+    const stub = mkdtempSync(join(tmpdir(), 'pr-text-git-'));
+    dirs.push(stub);
+    const { dir, commit } = repo();
+    const base = commit('base');
+    const head = commit('x');
+    for (const record of ['not a record', `${head}\\nname\\nemail`, '']) {
+      writeFileSync(join(stub, 'git'), `#!/bin/sh\nprintf '${record}\\0'\n`, { mode: 0o755 });
+      const r = run(dir, {
+        PR_TITLE: 't',
+        PR_BODY: '',
+        BASE_SHA: base,
+        HEAD_SHA: head,
+        PATH: `${stub}:${process.env.PATH}`,
+      });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain('FAILED to run');
+    }
   });
 
   it('on a bad commit id', () => {
