@@ -344,7 +344,7 @@ order:
      copies the commit subjects into `main`'s history, so the `pull request text` check scans all three, the head
      branch's name, and the author and committer of each commit (the private needles included). It fails text that says who or what did the work (state what was done
      instead) and anything `scripts/leak-scan.cjs` would refuse in a tracked file. It prints the phrase, the source and
-     the line number, never the line (for an author or committer, the commit and the field). Run it before you push (a local run applies the private needles only when a
+     the line number, never the line (for a needle in an author or committer, the commit and the field). Run it before you push (a local run applies the private needles only when a
      `.leak-needles` file exists in the checkout, so without one it is weaker than CI):
      `BASE_SHA=$(git merge-base origin/main HEAD) HEAD_SHA=$(git rev-parse HEAD) PR_TITLE="the title" PR_BODY="$(gh pr view N --json body -q .body)" PR_BRANCH="$(git branch --show-current)" node scripts/pr-text-scan.cjs`
      (leave out `BASE_SHA` and `HEAD_SHA` to skip the commits, `PR_BRANCH` to skip the branch name). It cannot catch a phrase that is not on its list or a
@@ -353,7 +353,9 @@ order:
      fix one in a commit message, reword the commit (`git rebase -i origin/main`) and push with
      `git push --force-with-lease --force-if-includes` on the pull request's own branch; a commit already pushed to a
      branch others use is better left, with the fix made in a new branch. A branch name cannot be edited on a pull
-     request: open it again from a branch with another name. A leak (a secret or private text) is handled
+     request: push the work to a branch with another name and open the pull request from it (a name with
+     a twelve-digit run, such as a `yyyymmddhhmm` stamp, fails the account-id rule, and one that starts with
+     `claude/`, `copilot/`, `cursor/` or `devin/` is refused). A leak (a secret or private text) is handled
      apart from a phrase: a force-push does not unpublish what was already pushed, so rotate a credential first and
      ask the maintainer about anything else. `scripts/README.md` lists
      what it checks and the known false positives, each with its rewording.
