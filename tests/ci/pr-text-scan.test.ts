@@ -330,10 +330,12 @@ describe('look-alikes stay quiet', () => {
       expect(r.status).toBe(1);
       expect(r.out).toMatch(new RegExp(`"Claude" in the commit ${head}, line \\d+`));
       expect(r.out).not.toContain('FAILED to run');
-      const clean = commit(`Subject\n\nbefore${sep}after`);
-      expect(run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: base, HEAD_SHA: clean }).status).toBe(
-        0,
-      );
+      const other = repo();
+      const otherBase = other.commit('base');
+      const clean = other.commit(`Subject\n\nbefore${sep}after`);
+      expect(
+        run(other.dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: otherBase, HEAD_SHA: clean }).status,
+      ).toBe(0);
     }
   });
 
