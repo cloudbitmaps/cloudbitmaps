@@ -1,451 +1,412 @@
 /*
- * Counting kernels bench: the codec's count-without-building operations against the work they replace, and the codec's
- * hot paths against the codec at the base commit, in one paired run with an A/A control.
+ * Counting kernels against building: for each counting operation of the TypeScript codec's bitmap (`andCardinality`,
+ * `orCardinality`, `andNotCardinality`, `xorCardinality`, `intersects`, `isSubset`, `isEqual`), the time of the count
+ * beside the time of the work it replaces (build the combination with the in-place operations and take its size), on
+ * every operand pair of `bench/lib/count-cells.cjs`. It answers one question: is each count faster than building? The
+ * stop rule, fixed before any measurement, is that a count is kept only if it is on every group (`decisionsOf`).
  *
- * TWO PARTS
+ * It does NOT judge whether a change slowed the store's hot paths. That is `bench/ts-codec-paired.cjs`, the paired
+ * harness, run against the same commit (`--reads`, `--write` and the per-operation cells with `--ops`): this bench
+ * shares its rule and nothing else about the question.
  *
- *   count     `andCardinality` against building the intersection and taking its size (`clone`, `andInPlace`, `size`),
- *             on the six operand pairs of `ts-codec.cjs` and on two multi-chunk pairs. A count operation is kept only
- *             if it is faster on every pair. `intersects`, `isSubset` and `isEqual` are timed as well, against the
- *             same build-then-size.
- *   hot       `has`, `size`, iteration, `and` and `andNot` (the codec's own in-place combines, which the store's
- *             `has`, `count`, `iterate` and `intersect` call) on the same shapes, for three subjects of one run: the
- *             codec at the base commit, the codec at this commit, and the base codec a second time as the A/A control.
+ * HOW A CELL IS JUDGED. It is the paired rule of `bench/lib/paired-verdict.cjs` with different subjects: `base` is the
+ * build, `head` the count and `control` the build again. A round times the same call once for each of the three, each in
+ * a process of its own (so the timed call sites see one function, as the store's do), in an order that rotates through
+ * the six permutations; 31 rounds. Per round the count is compared with the mean of the two builds; the cell reports the
+ * distribution-free 95% interval of the median of those differences and is `faster than the bar` when its upper end is
+ * below -2%, `within` when its upper end is at most +2% and it is not faster, `slower` when its lower end is above +2%,
+ * and `inconclusive` otherwise, or whenever the second build's median differs from the first by more than 2%. The
+ * load rule (a round that ends at a 1-minute load of 6 or more is not kept) and the sleep rule (a figure over 100 times
+ * its median with under half of its wall time on CPU is not kept) are the paired harness's, applied by the same code.
  *
- * HOW. Each cell runs in its own child process. The subjects' rounds are interleaved in one process, in an order that
- * rotates each round; a hot cell is run three times with the subjects in other slots (a subject that always sits in the
- * first slot can differ from the others for reasons of the harness alone), and its ratios are the medians of the three; a round times a batch of about 8 ms after a 300 ms warm-up. A cell
- * reports the median of 31 rounds per subject, the head against base ratio and the A/A ratio. The band is the A/A
- * ratio's distance from 1 in the same run, never narrower than 2% (a control that happens to land within 0.1% is luck, not
- * a measurement of 0.1%): a head ratio outside `1 +- band` is out of band, and a band wider than 2% means the run was
- * noisy (another process was running) and the cell is to be taken again. A figure is taken only while the 1-minute load average is under 6.
+ * THE RECORD is `bench/count-kernels-results.json`: every pass, appended, never replaced, each with every round of every
+ * cell (`[order, build, count, build again, loadAtStart, loadAtEnd]`, the figures in milliseconds), the rounds set aside,
+ * the medians, intervals and verdicts, the commit, the tree's state, the Node version and the machine. A pass with an
+ * inconclusive cell is taken again (`COUNT_RETAKES`, default 2); the earlier pass stays. `--gate` applies the paired
+ * gate to the file and prints the decision per operation. A conclusive `slower` stops the gate until the pass carries an
+ * `explained` note (the operation is routed to building); an operation that is not `faster` on every group is not kept.
  *
- * The base codec is the `packages/roaring/src` of another commit, copied to `<dir>/src` (`git archive origin/main
- * packages/roaring/src`, then move it to `<dir>/src`) and named by `COUNT_BENCH_BASE=<dir>`. Wall-clock and
- * machine-dependent: recorded, not asserted. `--check` times nothing: it runs every cell once and fails if the counting
- * answers differ from building the result.
+ *   node --expose-gc bench/count-kernels.cjs                  every group, appended to the results file
+ *   node --expose-gc bench/count-kernels.cjs --only=<a>|<b>   the cells whose "<group> <operation>" contains either text
+ *   node --expose-gc bench/count-kernels.cjs --gate           judge the results file, measure nothing
+ *   node --expose-gc bench/count-kernels.cjs --check          every cell once at a tiny scale: times no duration against any bound
  *
- *   node bench/count-kernels.cjs [--only=<text>]          both parts (needs COUNT_BENCH_BASE for `hot`)
- *   node bench/count-kernels.cjs --check
+ * Environment: `COUNT_RESULTS` (the file to append to), `COUNT_ROUNDS` (at least 31), `COUNT_RETAKES`,
+ * `COUNT_ANY_LOAD=1` (turns the load rule off; the pass records it), `COUNT_SMOKE=1` (3 rounds at a tiny scale through the
+ * whole pipeline into the scratch file `COUNT_RESULTS` names; the gate refuses such a pass).
+ *
+ * Wall-clock and machine-dependent: recorded, never asserted.
  */
 'use strict';
 
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createRequire } = require('node:module');
 const { execFileSync } = require('node:child_process');
+const { bundleText, evaluate } = require('./lib/codec-engine.cjs');
+const { MIN_ROUNDS } = require('./lib/codec-verdict.cjs');
+const { measureSteadyCpu, digest } = require('./lib/codec-ops.cjs');
+const {
+  MAX_LOAD,
+  RULE,
+  TOLERANCE,
+  MALFORMED,
+  UNIT,
+  nsToMs,
+  figurePlaces,
+  cellOf,
+  worstPaired,
+  kindOf,
+  cellName,
+  gateProblems,
+  keepRound,
+  collectRounds,
+  SLEEP_FACTOR,
+  SLEEP_MAX_ON_CPU,
+} = require('./lib/paired-verdict.cjs');
+const cells = require('./lib/count-cells.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
-const ROUNDS = 31;
-const ROUND_MS = 8;
-const WARM_MS = 300;
-const MAX_LOAD = 6;
-const REPEATS = 5;
-const CAP = 1 << 26;
-const BASE = process.env.COUNT_BENCH_BASE ? path.resolve(process.env.COUNT_BENCH_BASE) : undefined;
-
-/** The TypeScript codec, bundled from `<dir>/src` (or this checkout's), as a CommonJS module. */
-function loadCodec(dir) {
-  const { buildSync } = require('esbuild');
-  const rr = path.join(ROOT, 'packages/roaring');
-  const entry = path.join(dir ? path.resolve(dir) : rr, 'src/ts-roaring/bitmap');
-  const out = buildSync({
-    stdin: {
-      contents: `export * from ${JSON.stringify(entry)};\n`,
-      resolveDir: rr,
-      sourcefile: 'count-kernels-entry.ts',
-      loader: 'ts',
-    },
-    tsconfig: path.join(rr, 'tsconfig.json'),
-    bundle: true,
-    format: 'cjs',
-    platform: 'node',
-    target: 'es2022',
-    packages: 'external',
-    write: false,
-    logLevel: 'error',
-  });
-  const mod = { exports: {} };
-  const req = createRequire(path.join(rr, 'package.json'));
-  new Function('require', 'module', 'exports', out.outputFiles[0].text)(req, mod, mod.exports);
-  return mod.exports;
-}
-
-function prng(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function randomLows(seed, count) {
-  const next = prng(seed);
-  const seen = new Set();
-  while (seen.size < count) seen.add(Math.floor(next() * 65536));
-  return Array.from(seen).sort((x, y) => x - y);
-}
-
-function runLows(seed, runs) {
-  const next = prng(seed);
-  const out = [];
-  let at = Math.floor(next() * 50);
-  for (let r = 0; r < runs; r++) {
-    const len = 100 + Math.floor(next() * 201);
-    for (let k = 0; k < len && at + k < 65536; k++) out.push(at + k);
-    at += len + 50 + Math.floor(next() * 150);
-    if (at > 65535) break;
-  }
-  return out;
-}
-
-const SHAPES = {
-  dense: (seed) => randomLows(seed, 32768),
-  sparse: (seed) => randomLows(seed, 1000),
-  run: (seed) => runLows(seed, 150),
-  tiny: (seed) => randomLows(seed, 64),
-  quarter: (seed) => randomLows(seed, 4000),
-};
-const PAIRS = [
-  ['dense/dense', 'dense', 'dense'],
-  ['sparse/sparse', 'sparse', 'sparse'],
-  ['run/run', 'run', 'run'],
-  ['sparse/dense', 'sparse', 'dense'],
-  ['run/dense', 'run', 'dense'],
-  ['skew 64/4000', 'tiny', 'quarter'],
+const CHECK = process.argv.includes('--check');
+const SMOKE = process.env.COUNT_SMOKE === '1';
+const SMALL = CHECK || SMOKE;
+const ANY_LOAD = process.env.COUNT_ANY_LOAD === '1';
+const RESULTS = process.env.COUNT_RESULTS
+  ? path.resolve(process.env.COUNT_RESULTS)
+  : path.join(__dirname, 'count-kernels-results.json');
+const ROUNDS = CHECK
+  ? 2
+  : SMOKE
+    ? 3
+    : Math.max(MIN_ROUNDS, Number(process.env.COUNT_ROUNDS) || MIN_ROUNDS);
+const WARM_MS = SMALL ? 0 : 300;
+const SAMPLE_MS = SMALL ? 0 : 8;
+/** Which function each subject of a round times: the build, the count, and the build again as the control. */
+const VARIANTS = ['build', 'count', 'build'];
+const ORDERS = [
+  [0, 1, 2],
+  [2, 1, 0],
+  [1, 2, 0],
+  [0, 2, 1],
+  [2, 0, 1],
+  [1, 0, 2],
 ];
-const SINGLES = ['dense', 'sparse', 'run'];
+const ENTRY = `export { tsRoaringCodec } from './src/ts-roaring/bitmap';`;
 
-/** Ids over `keys` chunks starting at chunk 0 (every `step`th), each chunk the shape's remainders. */
-function spread(shape, seed, keys, step) {
-  const out = [];
-  for (let k = 0; k < keys; k++) {
-    for (const low of SHAPES[shape](seed + k)) out.push(k * step * 65536 + low);
-  }
-  return out;
+const load1 = () => os.loadavg()[0];
+const twoDecimals = (x) => +x.toFixed(2);
+
+function arg(name) {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit === undefined ? undefined : hit.slice(name.length + 3);
 }
-
-/** A stored bitmap of `ids` (optimized, so runs are runs), decoded: what a store reads. */
-function stored(codec, ids) {
-  const seam = codec.tsRoaringCodec;
-  const b = seam.fromValues(ids);
-  b.optimize();
-  return seam.safeDeserialize(b.serialize(), CAP);
-}
-
-/** The operand pairs of the count part, as id lists. */
-function countData() {
-  const out = PAIRS.map(([label, sa, sb]) => ({ label, a: SHAPES[sa](11), b: SHAPES[sb](22) }));
-  out.push({
-    label: 'mixed 32 chunks',
-    a: spread('sparse', 5, 32, 1),
-    b: spread('sparse', 6, 32, 1),
-  });
-  out.push({ label: 'runs 32 chunks', a: spread('run', 5, 32, 1), b: spread('run', 6, 32, 1) });
-  return out;
-}
-
-function countCells() {
-  const cells = [];
-  for (const d of countData()) {
-    const build = (codec) => {
-      const a = stored(codec, d.a);
-      const b = stored(codec, d.b);
-      const s2 = stored(codec, d.a);
-      return {
-        a,
-        b,
-        a2: s2,
-        build: () => {
-          const x = a.clone();
-          x.andInPlace(b);
-          return x.size;
-        },
-        buildSelf: () => {
-          const x = a.clone();
-          x.andInPlace(s2);
-          return x.size;
-        },
-      };
-    };
-    for (const [name, call, same] of [
-      ['andCardinality', (s) => s.a.andCardinality(s.b), (s) => s.build()],
-      ['orCardinality', (s) => s.a.orCardinality(s.b), (s) => s.a.size + s.b.size - s.build()],
-      ['intersects', (s) => s.a.intersects(s.b), (s) => s.build() > 0],
-      ['isSubset', (s) => s.a.isSubset(s.b), (s) => s.build() === s.a.size],
-      [
-        'isEqual',
-        (s) => s.a.isEqual(s.a2),
-        (s) => s.buildSelf() === s.a.size && s.a2.size === s.a.size,
-      ],
-    ]) {
-      cells.push({
-        name: `${name} ${d.label}`,
-        count: true,
-        make: (codec, variant) => {
-          const s = build(codec);
-          return variant === 'count' ? () => call(s) : () => same(s);
-        },
-        answers: (codec) => {
-          const s = build(codec);
-          return [call(s), same(s)];
-        },
-      });
-    }
-  }
-  return cells;
-}
-
-function hotCells() {
-  const cells = [];
-  for (const shape of SINGLES) {
-    const ids = SHAPES[shape](11);
-    const probes = Array.from({ length: 256 }, (_, i) =>
-      i % 2 === 0 ? ids[(i * 7) % ids.length] : (i * 251 + 3) & 0xffff,
-    );
-    cells.push({
-      name: `has ${shape}`,
-      unit: 256,
-      make: (c) => {
-        const bm = stored(c, ids);
-        return () => {
-          let n = 0;
-          for (let i = 0; i < 256; i++) if (bm.has(probes[i])) n++;
-          return n;
-        };
-      },
-    });
-    cells.push({
-      name: `count ${shape}`,
-      unit: 256,
-      make: (c) => {
-        // Eight bitmaps read in turn, so the loop is not folded into one load.
-        const held = Array.from({ length: 8 }, (_, k) => stored(c, ids.slice(0, ids.length - k)));
-        return () => {
-          let n = 0;
-          for (let i = 0; i < 256; i++) n += held[i & 7].size;
-          return n;
-        };
-      },
-    });
-    cells.push({
-      name: `iterate ${shape}`,
-      make: (c) => {
-        const bm = stored(c, ids);
-        return () => {
-          let s = 0;
-          for (const v of bm) s += v;
-          return s;
-        };
-      },
-    });
-  }
-  for (const [label, sa, sb] of PAIRS) {
-    for (const [op, call] of [
-      ['and', 'andInPlace'],
-      ['andNot', 'andNotInPlace'],
-    ]) {
-      cells.push({
-        name: `${op} ${label}`,
-        make: (c) => {
-          const a = stored(c, SHAPES[sa](11));
-          const b = stored(c, SHAPES[sb](22));
-          return () => {
-            const x = a.clone();
-            x[call](b);
-            return x;
-          };
-        },
-      });
-    }
-  }
-  return cells;
-}
-
-const now = () => Number(process.hrtime.bigint());
-const keep = new Array(16).fill(0);
-globalThis.__countKernelsKeep = keep;
-
-function calibrate(fn) {
-  const warmEnd = now() + WARM_MS * 1e6;
-  let reps = 1;
-  let spent = 0;
-  while (now() < warmEnd || spent < ROUND_MS * 1e6 * 0.5) {
-    const t0 = now();
-    for (let i = 0; i < reps; i++) keep[i & 15] = fn();
-    spent = now() - t0;
-    if (spent < ROUND_MS * 1e6 * 0.5) reps *= 2;
-    else if (now() >= warmEnd) break;
-  }
-  return Math.max(1, Math.round((reps * ROUND_MS * 1e6) / Math.max(spent, 1)));
-}
-
-function timeBatch(fn, reps) {
-  const t0 = now();
-  for (let i = 0; i < reps; i++) keep[i & 15] = fn();
-  return (now() - t0) / reps;
-}
-
-const median = (xs) => xs.slice().sort((p, q) => p - q)[xs.length >> 1];
+const wanted = (only, label) =>
+  only === undefined || only.split('|').some((t) => label.includes(t));
 
 function waitForQuietMachine() {
-  for (let waited = 0; ; waited += 20) {
-    if (os.loadavg()[0] < MAX_LOAD) return;
+  if (SMALL || ANY_LOAD) return;
+  for (let waited = 0; load1() >= MAX_LOAD; waited += 20) {
     if (waited >= 600) {
-      console.error(
-        `load ${os.loadavg()[0].toFixed(2)} stays at or above ${MAX_LOAD}: not measuring`,
-      );
+      console.error(`load ${load1().toFixed(2)} stays at or above ${MAX_LOAD}: not measuring`);
       process.exit(2);
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20000);
   }
 }
 
-/** The rounds of several subjects, interleaved, the order rotating each round. Returns each subject's median per unit. */
-function rotate(subjects, unit) {
-  waitForQuietMachine();
-  let load = os.loadavg()[0];
-  const reps = subjects.map((s) => calibrate(s.fn));
-  const samples = subjects.map(() => []);
-  for (let r = 0; r < ROUNDS; r++) {
-    for (let k = 0; k < subjects.length; k++) {
-      const i = (k + r) % subjects.length;
-      samples[i].push(timeBatch(subjects[i].fn, reps[i]));
-    }
+// ---- the subject ---------------------------------------------------------------------------------------------------
+
+/** Every cell of one group, in a process that times one variant (`--child=<bundle>:<group>:<variant>`). */
+function child(file, groupName, variant, only) {
+  const codec = evaluate(fs.readFileSync(file, 'utf8'), ROOT).tsRoaringCodec;
+  const group = cells.groups().find((g) => g.name === groupName);
+  const operations = cells.operationsOf(codec, group.ids(SMALL));
+  global.gc();
+  const out = {};
+  for (const op of group.ops) {
+    if (!wanted(only, cellName({ dataset: groupName, op }))) continue;
+    const fn = operations[op][variant];
+    const answer = digest(fn());
+    const timed = measureSteadyCpu(fn, 1, { warmMs: WARM_MS, sampleMs: SAMPLE_MS });
+    out[op] = { ns: +timed.ns.toFixed(1), cpuNs: +timed.cpuNs.toFixed(1), answer };
   }
-  load = Math.max(load, os.loadavg()[0]);
-  return { medians: samples.map((s) => median(s) / unit), load };
+  return { group: groupName, ops: out };
 }
 
-function measureCount(cell) {
-  const codec = loadCodec();
-  const { medians, load } = rotate(
-    [
-      { fn: cell.make(codec, 'build') },
-      { fn: cell.make(codec, 'count') },
-      { fn: cell.make(codec, 'build') },
-    ],
-    1,
-  );
-  const [build, count, control] = medians;
-  return {
-    cell: cell.name,
-    buildNs: +build.toFixed(1),
-    countNs: +count.toFixed(1),
-    countOverBuild: +(count / build).toFixed(3),
-    controlOverBuild: +(control / build).toFixed(3),
-    load: +load.toFixed(2),
-  };
+// ---- orchestration -------------------------------------------------------------------------------------------------
+
+function spawnLast(args) {
+  return execFileSync(
+    process.execPath,
+    ['--expose-gc', __filename, ...(CHECK ? ['--check'] : []), ...args],
+    { encoding: 'utf8', env: process.env, maxBuffer: 1 << 28 },
+  )
+    .trim()
+    .split('\n')
+    .pop();
 }
 
-/** One subject of a hot cell in this process: the median ns per unit over `ROUNDS` timed batches, after the warm-up. */
-function measureSubject(cell, role) {
-  const codec = role === 'head' ? loadCodec() : loadCodec(BASE);
-  const { medians, load } = rotate([{ fn: cell.make(codec) }], cell.unit || 1);
-  return { ns: medians[0], load };
+function git(...args) {
+  return execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8' }).trim();
 }
+
+const allEqual = (answers) => answers.every((a) => a === answers[0]);
 
 /**
- * A hot cell: each subject in a process of its own (so the call sites in the timed code see one codec's classes, as
- * in production), the three taken in an order that rotates through `REPEATS` repeats; a subject's figure is the median
- * of its processes' medians. Interleaving three codecs in one process was tried first and abandoned: the call sites
- * became polymorphic and the subject warmed first was faster than an identical copy of itself.
+ * Takes `ROUNDS` kept rounds of `runRound(i)`, which returns subject `i`'s output (0 the build, 1 the count, 2 the build
+ * again). A round that ended at `MAX_LOAD` or more, or that holds a slept figure, is set aside and taken again (the rules
+ * of `bench/lib/paired-verdict.cjs`); the machine is waited for before every round. A tiny-scale run applies neither rule
+ * but still requires every child to report CPU figures. Returns `{ kept, discarded, slept }`.
  */
-function measureHot(cell, spawn) {
-  const roles = ['base', 'head', 'aa'];
-  const got = { base: [], head: [], aa: [] };
-  let load = 0;
-  for (let rep = 0; rep < REPEATS; rep++) {
-    for (let k = 0; k < 3; k++) {
-      const role = roles[(k + rep) % 3];
-      const r = spawn(cell.name, role);
-      got[role].push(r.ns);
-      load = Math.max(load, r.load);
+function takeRounds(runRound, triplesOf, cpuOf) {
+  const checkedCpuOf = (samples) => {
+    const cpu = cpuOf(samples);
+    if (!cpu.every((cell) => cell.every((x) => Number.isFinite(x) && x >= 0))) {
+      throw new Error('a subject reported no CPU figure for a span it timed');
     }
+    return cpu;
+  };
+  try {
+    return collectRounds({
+      want: ROUNDS,
+      triplesOf,
+      cpuOf: checkedCpuOf,
+      checkSleep: !SMALL,
+      keepByLoad: (round) => SMALL || keepRound(round.end, ANY_LOAD),
+      takeOne: (order) => {
+        waitForQuietMachine();
+        const start = twoDecimals(load1());
+        const sample = [null, null, null];
+        for (const i of ORDERS[order]) sample[i] = runRound(i);
+        const round = { order, start, end: twoDecimals(load1()), samples: sample };
+        checkedCpuOf(round.samples);
+        return round;
+      },
+    });
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    console.error(err.message);
+    process.exit(2);
   }
-  const ratios = (role) => got[role].map((v, n) => v / got.base[n]);
-  const base = median(got.base);
-  const h = median(got.head) / base;
-  const a = median(got.aa) / base;
-  const band = Math.abs(a - 1);
+}
+
+const rowsOf = (list, figure, toMs) =>
+  list.map((r) => {
+    const [b, h, c] = figure(r.samples).map(toMs);
+    return [r.order, b, h, c, r.start, r.end];
+  });
+
+/** A cell from its kept, discarded and slept rounds, in the form a pass stores (milliseconds, a tenth of a nanosecond). */
+function pairedCell(taken, figure, names) {
+  const toMs = (x) => nsToMs(x, 1);
+  const cell = cellOf(rowsOf(taken.kept, figure, toMs), figurePlaces('tenth', UNIT));
+  const discarded = rowsOf(taken.discarded, figure, toMs);
+  const slept = taken.slept.map((r) => [
+    ...rowsOf([r], figure, toMs)[0],
+    r.evidence.map((e) => ({
+      cell: names[e.cell],
+      subject: e.subject,
+      wall: toMs(e.wall),
+      cpu: toMs(e.cpu),
+    })),
+  ]);
   return {
-    cell: cell.name,
-    baseNs: +base.toFixed(1),
-    headNs: +median(got.head).toFixed(1),
-    headOverBase: +h.toFixed(3),
-    aaOverBase: +a.toFixed(3),
-    band: +band.toFixed(3),
-    headOverBaseByRepeat: ratios('head').map((v) => +v.toFixed(3)),
-    aaOverBaseByRepeat: ratios('aa').map((v) => +v.toFixed(3)),
-    verdict:
-      band > 0.02
-        ? 'noisy: take again'
-        : Math.abs(h - 1) <= Math.max(band, 0.02)
-          ? 'in band'
-          : 'OUT OF BAND',
-    load: +load.toFixed(2),
+    ...cell,
+    ...(discarded.length > 0 ? { discarded } : {}),
+    ...(slept.length > 0 ? { slept } : {}),
   };
 }
 
-function check() {
-  const codec = loadCodec();
-  for (const cell of countCells()) {
-    const [got, want] = cell.answers(codec);
-    if (got !== want) throw new Error(`${cell.name}: counting says ${got}, building says ${want}`);
-    for (const variant of ['count', 'build']) cell.make(codec, variant)();
+function measureGroups(file, only) {
+  const out = [];
+  for (const group of cells.groups()) {
+    const opNames = group.ops.filter((op) => wanted(only, cellName({ dataset: group.name, op })));
+    if (opNames.length === 0) continue;
+    const taken = takeRounds(
+      (i) =>
+        JSON.parse(
+          spawnLast([
+            `--child=${file}:${group.name}:${VARIANTS[i]}`,
+            ...(only ? [`--only=${only}`] : []),
+          ]),
+        ),
+      (samples) => opNames.map((op) => samples.map((x) => x.ops[op].ns)),
+      (samples) => opNames.map((op) => samples.map((x) => x.ops[op].cpuNs)),
+    );
+    const all = [...taken.kept, ...taken.discarded, ...taken.slept];
+    for (const op of opNames) {
+      out.push({
+        dataset: group.name,
+        op,
+        // The build and the count must give one answer for the cell, in every round.
+        answersAgree: allEqual(all.flatMap((r) => r.samples.map((s) => s.ops[op].answer))),
+        ...pairedCell(
+          taken,
+          (s) => s.map((x) => x.ops[op].ns),
+          opNames.map((o) => cellName({ dataset: group.name, op: o })),
+        ),
+      });
+    }
   }
-  if (BASE)
-    for (const cell of hotCells()) for (const c of [loadCodec(BASE), loadCodec()]) cell.make(c)();
-  console.log('count-kernels: every cell ran and the counting answers match building the result');
+  return out;
+}
+
+function environment() {
+  let tree = 'unknown';
+  try {
+    tree = git('status', '--porcelain').length === 0 ? 'clean' : 'dirty';
+  } catch {
+    /* recorded as unknown */
+  }
+  return {
+    node: process.version,
+    platform: `${os.platform()} ${os.arch()}`,
+    cpu: os.cpus()[0]?.model ?? 'unknown',
+    cores: os.cpus().length,
+    head: git('rev-parse', 'HEAD'),
+    tree,
+    anyLoad: ANY_LOAD,
+    smoke: SMOKE,
+    rounds: ROUNDS,
+    maxLoad: MAX_LOAD,
+  };
+}
+
+function wellFormed(doc) {
+  const problems = [];
+  for (const c of doc.ops) {
+    const name = cellName(c);
+    if (c.answersAgree !== true)
+      problems.push(`${name}: the count and the build gave different answers`);
+    if (c.verdict === MALFORMED) problems.push(`${name}: no verdict`);
+    if (!Array.isArray(c.rounds) || c.rounds.length < ROUNDS)
+      problems.push(`${name}: too few rounds`);
+  }
+  if (doc.ops.length === 0) problems.push('no cells');
+  return problems;
+}
+
+function readResults() {
+  const file = fs.existsSync(RESULTS)
+    ? JSON.parse(fs.readFileSync(RESULTS, 'utf8'))
+    : { passes: [] };
+  if (!Array.isArray(file.passes)) throw new Error(`${RESULTS} is not a list of passes`);
+  return file;
+}
+
+/** Adds a pass to the results file, which keeps every earlier pass: a re-take never hides the first reading. */
+function appendPass(doc) {
+  const file = readResults();
+  doc.pass = file.passes.length + 1;
+  file.passes.push(doc);
+  fs.writeFileSync(RESULTS, `${JSON.stringify(file)}\n`);
+}
+
+function printPass(doc) {
+  for (const c of doc.ops) {
+    const [lo, hi] = c.headInterval;
+    console.log(
+      `${cellName(c)}: count ${(c.headVsReference * 100).toFixed(1)}% of build [${(lo * 100).toFixed(1)}, ${(hi * 100).toFixed(1)}], second build ${(c.controlVsBase * 100).toFixed(1)}% (${c.verdict})`,
+    );
+  }
+  const { maxLoadAtEnd, discardedRounds, sleptRounds } = doc.load;
+  console.log(
+    `pass ${doc.pass ?? 'check'} worst: ${doc.verdict}; kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${discardedRounds} round(s) discarded at ${MAX_LOAD} or more; ${sleptRounds} round(s) discarded as slept${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
+  );
+}
+
+/** The gate over every pass, and the stop rule's decision for each operation. Returns the exit code. */
+function applyGate() {
+  const file = readResults();
+  const problems = gateProblems(file.passes);
+  for (const p of problems) console.log(`gate: ${p}`);
+  if (problems.length === 0) console.log(`gate: ${RESULTS}: every pass is clear`);
+  for (const d of cells.decisionsOf(file.passes)) {
+    console.log(
+      d.kept
+        ? `keep ${d.op}: faster than building on every group`
+        : `NOT KEPT ${d.op}: ${d.stoppedBy.map((s) => `${s.cell} (${s.verdict})`).join('; ')}`,
+    );
+  }
+  if (problems.some((p) => p.includes('conclusively slower'))) return 3;
+  return problems.length > 0 ? 4 : 0;
+}
+
+/** One pass, as a document with its time, commits, machine and loads. */
+function takePass(file, only) {
+  const doc = {
+    schema: 2,
+    unit: UNIT,
+    rule: RULE,
+    sleepRule: { factor: SLEEP_FACTOR, maxOnCpu: SLEEP_MAX_ON_CPU },
+    tolerance: TOLERANCE,
+    subjects: { base: 'build', head: 'count', control: 'build again' },
+    environment: environment(),
+    started: new Date().toISOString(),
+  };
+  doc.environment.loadAtStart = twoDecimals(load1());
+  doc.ops = measureGroups(file, only);
+  doc.finished = new Date().toISOString();
+  doc.environment.loadAtEnd = twoDecimals(load1());
+  doc.load = {
+    maxLoadAtEnd: Math.max(0, ...doc.ops.flatMap((c) => c.rounds.map((r) => r[5]))),
+    discardedRounds: Math.max(0, ...doc.ops.map((c) => (c.discarded ?? []).length)),
+    sleptRounds: Math.max(0, ...doc.ops.map((c) => (c.slept ?? []).length)),
+  };
+  doc.verdict = worstPaired(doc.ops.map((c) => c.verdict));
+  return doc;
 }
 
 function main() {
-  const arg = (name) =>
-    process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
-  if (process.argv.includes('--check')) return check();
-  const childCount = arg('child-count');
-  const childHot = arg('child-hot');
-  const role = arg('role');
-  if (childCount) {
-    console.log(JSON.stringify(measureCount(countCells().find((c) => c.name === childCount))));
-    return;
-  }
-  if (childHot) {
-    console.log(
-      JSON.stringify(
-        measureSubject(
-          hotCells().find((c) => c.name === childHot),
-          role,
-        ),
-      ),
-    );
-    return;
-  }
   const only = arg('only');
-  const child = (args) =>
-    JSON.parse(
-      execFileSync(process.execPath, [__filename, ...args], { encoding: 'utf8', env: process.env })
-        .trim()
-        .split('\n')
-        .pop(),
-    );
-  const emit = (row) => {
-    console.log(JSON.stringify(row));
-    return row;
-  };
-  for (const c of countCells().filter((x) => !only || x.name.includes(only))) {
-    emit(child([`--child-count=${c.name}`]));
-  }
-  if (!BASE) {
-    console.log('COUNT_BENCH_BASE is not set: the hot-path part was skipped');
+  if (arg('child')) {
+    const spec = arg('child');
+    const [rest, variant] = [
+      spec.slice(0, spec.lastIndexOf(':')),
+      spec.slice(spec.lastIndexOf(':') + 1),
+    ];
+    const file = rest.slice(0, rest.lastIndexOf(':'));
+    const group = rest.slice(rest.lastIndexOf(':') + 1);
+    console.log(JSON.stringify(child(file, group, variant, only)));
     return;
   }
-  for (const c of hotCells().filter((x) => !only || x.name.includes(only))) {
-    emit(measureHot(c, (name, r) => child([`--child-hot=${name}`, `--role=${r}`])));
+  if (process.argv.includes('--gate')) {
+    process.exitCode = applyGate();
+    return;
   }
+  if (SMOKE && !process.env.COUNT_RESULTS) {
+    console.error('COUNT_SMOKE=1 needs COUNT_RESULTS to name a scratch file');
+    process.exit(2);
+  }
+  if (typeof global.gc !== 'function') {
+    console.error('run with node --expose-gc');
+    process.exit(2);
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'count-kernels-'));
+  try {
+    const file = path.join(dir, 'head.cjs');
+    fs.writeFileSync(file, bundleText({ root: ROOT, entry: ENTRY, sourcefile: 'count-entry.ts' }));
+    const retakes = SMALL ? 0 : Number(process.env.COUNT_RETAKES ?? 2);
+    for (let n = 0; n <= retakes; n++) {
+      const doc = takePass(file, only);
+      const problems = wellFormed(doc);
+      if (problems.length > 0) {
+        console.error(problems.join('\n'));
+        process.exit(1);
+      }
+      if (CHECK) {
+        console.log(`count-kernels --check: ok (${doc.ops.length} cells, ${ROUNDS} rounds each)`);
+        return;
+      }
+      appendPass(doc);
+      printPass(doc);
+      // A pass with a cell the rule could not resolve is recorded and taken again; the earlier reading stays.
+      if (!doc.ops.some((c) => kindOf(c.verdict) === 'inconclusive')) break;
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  process.exitCode = applyGate();
 }
 
 main();

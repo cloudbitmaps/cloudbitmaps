@@ -62,6 +62,13 @@ const lowsSet = fc
         maxLength: 25,
       })
       .map((runs) => runs.flatMap(([s, n]) => range(s, Math.min(65_536, s + n)))),
+    // Many short runs, so a few values against them reach the per-value run search.
+    fc
+      .array(fc.tuple(fc.integer({ min: 0, max: 65_000 }), fc.integer({ min: 1, max: 4 })), {
+        minLength: 100,
+        maxLength: 400,
+      })
+      .map((runs) => runs.flatMap(([s, n]) => range(s, s + n))),
     fc.constantFrom([0], [65_535], [0, 65_535], range(0, 65_536), range(65_000, 65_536)),
   )
   .map((v) => sortedUnique(v));
@@ -127,10 +134,93 @@ describe('the container counting kernels, every pair kind', () => {
       for (const kb of KINDS) {
         const x = container(ka, a);
         const y = container(kb, b);
-        const before = [Array.from(x.data), Array.from(y.data)];
+        const state = (c: Container) => [Array.from(c.data), c.card, c.shared, c.len, c.off];
+        const before = [state(x), state(y)];
         containerAndCard(x, y);
         containersIntersect(x, y);
-        expect([Array.from(x.data), Array.from(y.data)]).toEqual(before);
+        expect([state(x), state(y)]).toEqual(before);
+      }
+    }
+  });
+});
+
+describe('the scratch bits the array kernels use', () => {
+  const evens = range(50, 114).map((v) => v * 2);
+  const odds = evens.map((v) => v + 1);
+
+  it('an array intersect test leaves no bit behind, whether it finds a hit or scans to the end', () => {
+    // Both arrays hold 64 values and are not skewed, so the probe path runs (the shorter as bits).
+    const hits = [evens[0] as number, ...range(3_000, 3_063)];
+    const pairs: Array<[string, number[], number[], boolean]> = [
+      ['a hit on the first value', evens, hits, true],
+      ['no hit after a full scan', evens, odds, false],
+    ];
+    for (const [label, a, b, want] of pairs) {
+      expect(containersIntersect(container(ARRAY, a), container(ARRAY, b)), label).toBe(want);
+      expect(containersIntersect(container(ARRAY, b), container(ARRAY, a)), label).toBe(want);
+      // The evens were the probe's bits; a bit that stayed set would be counted here, where nothing is shared.
+      const x = container(ARRAY, odds);
+      const y = container(ARRAY, evens);
+      expect(containerAndCard(x, y), `after ${label}`).toBe(0);
+      expect(containerAndCard(y, x), `after ${label}`).toBe(0);
+      expect(containersIntersect(x, y), `after ${label}`).toBe(false);
+    }
+  });
+
+  it('the count leaves no bit behind either', () => {
+    expect(containerAndCard(container(ARRAY, evens), container(ARRAY, evens.slice(10)))).toBe(54);
+    expect(containerAndCard(container(ARRAY, odds), container(ARRAY, evens))).toBe(0);
+    expect(containersIntersect(container(ARRAY, odds), container(ARRAY, evens))).toBe(false);
+  });
+});
+
+describe('each branch at the size where it starts', () => {
+  // Arrays of 31, 32 and 33 values (the probe starts at 32); a longer array of 16 times the shorter, less one, exactly
+  // and plus one (the gallop starts at 16 times); runs numbering 16 times the values, less one, exactly and plus one.
+  const check = (a: readonly number[], b: readonly number[], ka: number, kb: number) => {
+    const want = overlap(a, b);
+    const x = container(ka, a);
+    const y = container(kb, b);
+    expect(containerAndCard(x, y)).toBe(want);
+    expect(containerAndCard(y, x)).toBe(want);
+    expect(containersIntersect(x, y)).toBe(want > 0);
+    expect(containersIntersect(y, x)).toBe(want > 0);
+  };
+
+  it('array against array around 32 values and around 16 times', () => {
+    for (const n of [31, 32, 33]) {
+      const a = range(0, n).map((v) => v * 3);
+      check(
+        a,
+        range(0, n).map((v) => v * 2),
+        ARRAY,
+        ARRAY,
+      );
+      check(
+        a,
+        range(0, n).map((v) => v * 3 + 1),
+        ARRAY,
+        ARRAY,
+      );
+    }
+    for (const long of [16 * 4 - 1, 16 * 4, 16 * 4 + 1]) {
+      const big = range(0, long).map((v) => v * 5);
+      check([10, 105, 205, 315], big, ARRAY, ARRAY);
+      check([11, 106, 206, 316], big, ARRAY, ARRAY);
+    }
+  });
+
+  it('array against runs around 16 times as many runs as values', () => {
+    for (const runs of [16 * 8 - 1, 16 * 8, 16 * 8 + 1]) {
+      const covered = range(0, runs).flatMap((k) => range(k * 10, k * 10 + 4));
+      const inside = range(0, 8).map((k) => k * 70 + 2);
+      const outside = range(0, 8).map((k) => k * 70 + 6);
+      for (const values of [
+        inside,
+        outside,
+        [...inside.slice(0, 4), ...outside.slice(0, 4)].sort((p, q) => p - q),
+      ]) {
+        check(values, covered, ARRAY, RUN);
       }
     }
   });

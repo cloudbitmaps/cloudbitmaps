@@ -60,7 +60,8 @@ The `.crbm` chunk index is the upper half of the id. Inside one chunk's payload 
 The same class also serves as a general 32-bit bitmap: it holds any number of containers under ascending 16-bit keys,
 which is what `fromValues`, `add`, `addMany`, the combines and a whole-bitmap `serialize()` use. The engine decodes a
 stored chunk into a one-container `TsBitmap`, combines such bitmaps with `orInPlace` / `andInPlace` / `andNotInPlace`,
-and writes a load through `encodeChunks()`.
+and writes a load through `encodeChunks()`. `TsBitmap` and `tsRoaringCodec` are exported from their file so the tests and the
+benches can build one; no package entry re-exports either.
 
 **Which codec runs.** The shipped store uses this codec. `flagshipCodec()` in `roaring-codec.ts` returns it unless a
 harness has called `setFlagshipCodec(...)`, which is internal: no public entry exports it and a store cannot be
@@ -177,13 +178,14 @@ section 7.)
 
 ## 5. Scratch buffers
 
-`containers.ts` keeps three module-scope scratch buffers:
+`containers.ts` keeps four module-scope scratch buffers:
 
 | Buffer | Size | Used by | Rule |
 |---|---|---|---|
 | `valueScratch` (`Uint16Array`) | starts at 8,192 entries | array results whose size is known only after they are built (`andArrays`, `filterByBits`, `filterByRuns`, `andNotArrays`, `orArrays`) | a kernel writes into it and copies out exactly `n` values (`arrayOfScratch`) |
 | `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`) | same |
-| `probeWords` (`Uint32Array`) | 2,048 words (one bitset) | the scratch-bitset probe in `andArrays` and `andNotArrays` | all zero between calls: each call clears the bits it set |
+| `probeWords` (`Uint32Array`) | 2,048 words (one bitset) | the scratch-bitset probe in `andArrays`, `andNotArrays`, `andCountArrays` and `intersectsArrays` | all zero between calls: each call clears the bits it set, on every exit (`intersectsArrays` clears them after a hit as well as after a full scan) |
+| `andWords` (`Uint32Array`) | 2,048 words (one bitset) | the AND of two bitsets before `popcountWords` counts it (`containerAndCard`) | not zero between calls: every call overwrites all 2,048 words before reading any, and nothing else reads it |
 
 Growth: a request larger than the buffer allocates `max(n, min(2 * length, 65,536))`; the buffer kept for the life of the
 process never exceeds 65,536 entries (one container's worth of 16-bit values); a request above that gets a fresh array
@@ -300,7 +302,7 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
 
 ```
               and count                                       does it intersect (stops at the first shared value)
-  A  A     probe | gallop | merge, counting hits           merge or gallop, returns at the first equal pair
+  A  A     probe | gallop | merge, counting hits           probe | gallop | merge, each stopping at the first hit
   A  B     one bit test per array value                    first set bit found
   A  R     walk runs | binary-search runs per value        walk the runs against the values
   B  B     AND into a scratch, then Harley-Seal            first word whose AND is not zero
@@ -312,13 +314,16 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
   the span of the longer between the shorter's ends tested against them, the bits cleared again) when the shorter has at
   least `PROBE_MIN` values and the lengths are within `GALLOP_SKEW`, the same gallop when one is much longer, else the same
   branch-free merge with `n += x === y`. Below `PROBE_MIN` the merge is shorter than the probe's set-and-clear.
-- `andCountArrayBitset` is a sum of bit tests; `andCountArrayRuns` walks both lists when the runs are not more than 16
-  times the values, and finds each value's run by binary search when they are; `andCountBitsetRuns` is `bitsInRange` per
+- `andCountArrayBitset` is a sum of bit tests; `andCountArrayRuns` walks both lists when the runs number fewer than 16
+  times the values, and finds each value's run by binary search when they number 16 times or more; `andCountBitsetRuns` is `bitsInRange` per
   run (the masked popcount of the covered words); `andCountRuns` adds `hi - lo + 1` for each overlapping pair of runs.
 - Two bitsets AND into `andWords` (2,048 words, overwritten whole by every call) and are counted by `popcountWords`, the
-  Harley-Seal count the building kernels use. Counting each ANDed word with `popcount32` as it goes measured slower.
+  Harley-Seal count the building kernels use. Counting each ANDed word with `popcount32` as it goes was slower on dense against dense when it was tried; that comparison is not recorded.
 - `containersIntersect` is the early-exit form: each pair kind returns at the first shared value instead of counting
-  all of them. Disjoint ranges of two arrays answer before any value is read.
+  all of them. Disjoint ranges of two arrays answer before any value is read. `intersectsArrays` chooses as `andCountArrays`
+  does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a
+  merge), because a pair of similar size that shares nothing is a full scan, and the merge's unpredictable branch loses to
+  building there while the probe does not. The probe pays its set-and-clear even when the first value is shared.
 
 The bitmap-level operations in section 7 call these. A count is exact: `|A and B|` is the sum over shared keys of
 `containerAndCard`, and the other counts are arithmetic on it and the two sizes.
@@ -606,8 +611,10 @@ Everything here is a test, a workflow or a bench, not part of the module.
   offset in a shared slab), over generated sets that pick every branch (few, many, runs, the chunk ends, one side far longer);
   the seven bitmap operations against CRoaring and a `Set` over ids at 2^31 and 0xFFFFFFFF, bitmaps built from ids and
   decoded from run bytes; the identities between the counts and the built union, intersection and difference;
-  `isEqual` after `serialize` and `safeDeserialize`; empty bitmaps; a bitmap that is not a `TsBitmap`. Each kernel was
-  held by mutating it and watching a test fail.
+  `isEqual` after `serialize` and `safeDeserialize`; empty bitmaps; a bitmap that is not a `TsBitmap`; the edge sizes of each
+  branch (31, 32 and 33 values, and 16 times the values less one, exactly and plus one, for array against array and array
+  against runs); and that the probe leaves no scratch bit behind after an intersect test that hits and one that scans to the
+  end (a count on an unrelated pair would see it). Each kernel was held by mutating it and watching a test fail.
 - **The store's suites on this codec.** Every suite runs on this codec by default. A vitest project, `ts-codec`, re-runs
   the flavor's, core's, the engine's end-to-end and the memory and local-file drivers' suites with the switch pinned to
   this codec (`tests/setup-codec-ts.ts`); a first test (`tests/roaring/codec-switch.test.ts`) fails if this codec is not
@@ -646,9 +653,10 @@ Everything here is a test, a workflow or a bench, not part of the module.
   fails if their answers differ or a cell is missing. `pnpm bench:ts-codec-engine:check` runs every part once at tiny scale
   and fails only if the output is malformed, the codecs disagree on an answer, a store ran the wrong codec, the cache was
   not warm, or the two codecs wrote different bytes; it compares no duration with a bound. `bench/README.md` lists both.
-  `bench/count-kernels.cjs` times each counting operation against building the result and taking its size (a clone, `andInPlace`,
-  `size`) on the pairs of `ts-codec.cjs` and two multi-chunk pairs, and the codec's `has`, `count`, `iterate`, `and` and `andNot`
-  against the codec of another commit with an A/A control, each subject in a process of its own; `--check` runs every cell once and
+  `bench/count-kernels.cjs` times each counting operation against building the result and taking its size, on the five data sets
+  of the engine bench, a tiny-against-runs pair and two disjoint pairs, as a paired comparison with a second build as the
+  control; `bench/lib/count-cells.cjs` holds the cells and the stop rule. Whether a change slows the store's hot paths is the
+  paired harness's question (`bench/ts-codec-paired.cjs`), not this one's. `--check` runs every cell once at a tiny scale and
   fails if a count differs from the built result.
 
 ## 12. Behaviours worth knowing

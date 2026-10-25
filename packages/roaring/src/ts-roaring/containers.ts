@@ -1332,6 +1332,27 @@ function intersectsArrays(a: Container, b: Container): boolean {
     }
     return false;
   }
+  if (small.len >= PROBE_MIN) {
+    // As the counting kernel does: the shorter array as bits and the span of the longer between its ends tested against
+    // them, but stopping at the first hit. The scratch bits are cleared on both exits.
+    const from = gallop(l, 0, big.off, le, s[small.off] as number);
+    const to = gallop(l, 0, from, le, (s[se - 1] as number) + 1);
+    const words = probeWords;
+    for (let i = small.off; i < se; i++) {
+      const v = s[i] as number;
+      words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+    }
+    let hit = false;
+    for (let j = from; j < to; j++) {
+      const v = l[j] as number;
+      if ((((words[v >>> 5] as number) >>> (v & 31)) & 1) === 1) {
+        hit = true;
+        break;
+      }
+    }
+    for (let i = small.off; i < se; i++) words[(s[i] as number) >>> 5] = 0;
+    return hit;
+  }
   let i = small.off;
   let j = big.off;
   while (i < se && j < le) {
