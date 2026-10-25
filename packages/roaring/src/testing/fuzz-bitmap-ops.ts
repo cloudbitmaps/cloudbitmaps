@@ -168,10 +168,13 @@ function combine(held: Held, op: number, bytes: Bytes): void {
   const other = op === 8 ? bitmap : new RoaringBitmap(idsFrom(bytes, model));
   const otherIds = new Set(other);
   const before = [...model];
-  const kind = bytes.u8() % 3;
+  const kind = bytes.u8() % 4;
   if (kind === 0) {
     bitmap.andInPlace(other);
     for (const id of before) if (!otherIds.has(id)) model.delete(id);
+  } else if (kind === 3) {
+    if (bitmap.xorInPlace(other) !== bitmap) fail('xorInPlace does not return this');
+    for (const id of otherIds) if (!model.delete(id)) model.add(id);
   } else if (kind === 1) {
     bitmap.orInPlace(other);
     for (const id of otherIds) model.add(id);
@@ -209,6 +212,51 @@ function cloneApart(held: Held, bytes: Bytes): void {
   agree('clone of the clone, taken before the change', frozen);
 }
 
+/**
+ * The combines that return a new bitmap, on the held bitmap and one or two more: the result holds what the model says,
+ * no operand changed, and a change to the result or to an operand afterwards reaches no other bitmap.
+ */
+function algebra(held: Held, bytes: Bytes): void {
+  const first = held.bitmap;
+  const second = new RoaringBitmap(idsFrom(bytes, held.model));
+  const third =
+    bytes.u8() % 2 === 0 ? first.clone() : new RoaringBitmap(idsFrom(bytes, held.model));
+  const [ids2, ids3] = [new Set(second), new Set(third)];
+  const kind = bytes.u8() % 5;
+  const want = new Set<number>();
+  let result: RoaringBitmap;
+  if (kind === 0) {
+    result = RoaringBitmap.and(first, second);
+    for (const id of held.model) if (ids2.has(id)) want.add(id);
+  } else if (kind === 1) {
+    result = RoaringBitmap.or(first, second);
+    for (const id of [...held.model, ...ids2]) want.add(id);
+  } else if (kind === 2) {
+    result = RoaringBitmap.xor(first, second);
+    for (const id of held.model) if (!ids2.has(id)) want.add(id);
+    for (const id of ids2) if (!held.model.has(id)) want.add(id);
+  } else if (kind === 3) {
+    result = RoaringBitmap.andNot(first, second);
+    for (const id of held.model) if (!ids2.has(id)) want.add(id);
+  } else {
+    result = RoaringBitmap.orMany([first, second, third]);
+    for (const id of [...held.model, ...ids2, ...ids3]) want.add(id);
+  }
+  if (result === first || result === second || result === third)
+    fail('a combine returned an operand');
+  const made: Held = { bitmap: result, model: want };
+  agree('combine result', made);
+  agree('first operand', held);
+  agree('second operand', { bitmap: second, model: ids2 });
+  agree('third operand', { bitmap: third, model: ids3 });
+  mutate(made, bytes.u8() % 5, bytes);
+  agree('result after its own change', made);
+  agree('first operand after the result changed', held);
+  agree('second operand after the result changed', { bitmap: second, model: ids2 });
+  mutate(held, bytes.u8() % 5, bytes);
+  agree('result after the operand changed', { bitmap: result, model: made.model });
+}
+
 function refusals(held: Held, bytes: Bytes): void {
   const { bitmap } = held;
   const bad = NOT_IDS[bytes.u8() % NOT_IDS.length];
@@ -220,16 +268,25 @@ function refusals(held: Held, bytes: Bytes): void {
   const add = bitmap.add as (...a: unknown[]) => unknown;
   refused('add with two arguments', () => add.call(bitmap, 1, 2));
   refused('andInPlace with a non-bitmap', () => bitmap.andInPlace(bad as unknown as RoaringBitmap));
+  refused('xorInPlace with a non-bitmap', () => bitmap.xorInPlace(bad as unknown as RoaringBitmap));
+  refused('and with a non-bitmap', () =>
+    RoaringBitmap.and(bitmap, bad as unknown as RoaringBitmap),
+  );
+  refused('xor with a non-bitmap', () =>
+    RoaringBitmap.xor(bad as unknown as RoaringBitmap, bitmap),
+  );
+  refused('orMany with a non-bitmap', () => RoaringBitmap.orMany([bitmap, bad as RoaringBitmap]));
 }
 
 function step(held: Held, bytes: Bytes): void {
-  const op = bytes.u8() % 14;
+  const op = bytes.u8() % 15;
   if (op < 5) mutate(held, op, bytes);
   else if (op <= 8) combine(held, op, bytes);
   else if (op === 9) roundTrip(held, false);
   else if (op === 10) roundTrip(held, true);
   else if (op === 11) cloneApart(held, bytes);
   else if (op === 12) refusals(held, bytes);
+  else if (op === 14) algebra(held, bytes);
   else {
     const id = idFrom(bytes, held.model);
     if (held.bitmap.has(id) !== held.model.has(id)) fail('has answers wrongly');

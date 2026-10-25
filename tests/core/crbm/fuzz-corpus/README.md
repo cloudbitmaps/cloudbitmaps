@@ -6,7 +6,7 @@ reached. [`../fuzz-corpus.test.ts`](../fuzz-corpus.test.ts) replays every file h
 bug stays fixed. A reproducer passes when it is refused with a typed error or decodes self-consistently.
 
 - `safe-deserialize/` — raw serialized-bitmap inputs, replayed through the native codec's safe deserialize, through the TypeScript codec's and through `RoaringBitmap.deserialize`.
-- `bitmap-ops/` — `[u16 n][n bytes of a portable bitmap][operation bytes]` inputs of the `bitmap-ops` target, replayed through the same code the target runs: the bitmap bytes through `RoaringBitmap.deserialize`, then the operations against a plain `Set`. The five here are hand-written: runs with a bitset and arrays combined, a slab of small containers, ids at the top of the id space, refused bytes followed by operations, and no bitmap bytes at all.
+- `bitmap-ops/` — `[u16 n][n bytes of a portable bitmap][operation bytes]` inputs of the `bitmap-ops` target, replayed through the same code the target runs: the bitmap bytes through `RoaringBitmap.deserialize`, then the operations against a plain `Set`. The eight here are hand-written: runs with a bitset and arrays combined, a slab of small containers, ids at the top of the id space, refused bytes followed by operations, no bitmap bytes at all, and three that run every combine that returns a new bitmap (and `orMany`) on decoded runs, on a slab of small containers, and on a bitset, an array and a run together.
 - `crbm-index/` — raw `.crbm` index-region bytes, replayed through `parseIndex`.
 - `crbm-ext/` — raw sections of an extension block, replayed through `parseExtension`.
 - `crbm-reader/` — whole `.crbm` objects, replayed through the full `open → getChunk → safeDeserialize` chain.
