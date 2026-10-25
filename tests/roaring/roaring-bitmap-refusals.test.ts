@@ -243,7 +243,7 @@ describe('an operand that is not a RoaringBitmap', () => {
         yield 1;
       },
     }) as unknown as RoaringBitmap;
-    for (const op of ['andInPlace', 'orInPlace', 'andNotInPlace'] as const) {
+    for (const op of ['andInPlace', 'orInPlace', 'andNotInPlace', 'xorInPlace'] as const) {
       expect(() => fresh()[op](duck)).toThrow(/another RoaringBitmap of this copy/);
     }
   });

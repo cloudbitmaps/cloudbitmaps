@@ -318,6 +318,78 @@ export class RoaringBitmap implements Iterable<number> {
     return this;
   }
 
+  /**
+   * Flip the ids `other` holds: keep those only this bitmap holds, add those only `other` holds; returns this bitmap.
+   * `other` is not changed, and may be this bitmap (the result is then empty).
+   *
+   * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
+   */
+  xorInPlace(other: RoaringBitmap): this {
+    const that = RoaringBitmap.#operand(other);
+    const both = TsBitmap.and(this.#bitmap, that);
+    this.#bitmap.orInPlace(that);
+    this.#bitmap.andNotInPlace(both);
+    return this;
+  }
+
+  /**
+   * The ids both bitmaps hold, as a new bitmap. Neither operand changes, and the result holds storage of its own.
+   *
+   * @throws {ValidationError} if an operand is not a `RoaringBitmap` of this copy of the package.
+   */
+  static and(a: RoaringBitmap, b: RoaringBitmap): RoaringBitmap {
+    return RoaringBitmap.#wrap(TsBitmap.and(RoaringBitmap.#operand(a), RoaringBitmap.#operand(b)));
+  }
+
+  /**
+   * The ids either bitmap holds, as a new bitmap. Neither operand changes. A container only `a` holds is shared with
+   * the result copy-on-write, so the next write to it, on either side, copies it once.
+   *
+   * @throws {ValidationError} if an operand is not a `RoaringBitmap` of this copy of the package.
+   */
+  static or(a: RoaringBitmap, b: RoaringBitmap): RoaringBitmap {
+    return RoaringBitmap.#wrap(TsBitmap.or(RoaringBitmap.#operand(a), RoaringBitmap.#operand(b)));
+  }
+
+  /**
+   * The ids exactly one of the bitmaps holds, as a new bitmap. Neither operand changes (see {@link RoaringBitmap.or}
+   * for what is shared).
+   *
+   * @throws {ValidationError} if an operand is not a `RoaringBitmap` of this copy of the package.
+   */
+  static xor(a: RoaringBitmap, b: RoaringBitmap): RoaringBitmap {
+    return RoaringBitmap.#wrap(TsBitmap.xor(RoaringBitmap.#operand(a), RoaringBitmap.#operand(b)));
+  }
+
+  /**
+   * The ids of `a` that `b` lacks, as a new bitmap. Neither operand changes (see {@link RoaringBitmap.or} for what is
+   * shared).
+   *
+   * @throws {ValidationError} if an operand is not a `RoaringBitmap` of this copy of the package.
+   */
+  static andNot(a: RoaringBitmap, b: RoaringBitmap): RoaringBitmap {
+    return RoaringBitmap.#wrap(
+      TsBitmap.andNot(RoaringBitmap.#operand(a), RoaringBitmap.#operand(b)),
+    );
+  }
+
+  /**
+   * The union of every bitmap of `bitmaps`, as a new bitmap that owns its storage (an empty list gives the empty set).
+   * No operand changes, and none is flagged: the result accumulates in containers of its own.
+   *
+   * @throws {ValidationError} if `bitmaps` is not an iterable, or holds anything that is not a `RoaringBitmap` of this
+   * copy of the package; nothing is combined then.
+   */
+  static orMany(bitmaps: Iterable<RoaringBitmap>): RoaringBitmap {
+    if (typeof bitmaps !== 'object' || bitmaps === null || !(Symbol.iterator in bitmaps)) {
+      throw new ValidationError('orMany takes an iterable of RoaringBitmap');
+    }
+    const parts = Array.from(bitmaps, (b) => RoaringBitmap.#operand(b));
+    const out = TsBitmap.empty();
+    for (const part of parts) out.orInPlace(part);
+    return RoaringBitmap.#wrap(out);
+  }
+
   /** The ids in ascending order, each once. A bitmap that changes during the walk gives unspecified ids, and no error. */
   [Symbol.iterator](): IterableIterator<number> {
     return this.#bitmap[Symbol.iterator]();
