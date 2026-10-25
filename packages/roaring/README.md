@@ -50,9 +50,35 @@ To persist, pass a different **backend** as `storage`. Nothing else changes:
 | `GcsStorage({ bucket, prefix })` | `@cloudbitmaps/gcs` | Google Cloud Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
 | `AzureBlobStorage({ connectionString, container })` | `@cloudbitmaps/azure-blob` | Azure Blob Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
 
-There is no `add` or `remove`: a segment changes only by loading a new generation. A load is a batch job, not a
+`RoaringBitmap` is the codec's bitmap as a public class: a mutable set of unsigned 32-bit ids with the portable Roaring
+bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring/bitmap` to load no store and no Node
+builtin, or from `@cloudbitmaps/roaring`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
+door for bytes you did not write.
+
+<!-- typecheck -->
+```ts
+import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring';
+
+const store = new CloudRoaring({ storage: new MemoryStorage() });
+
+const vip = new RoaringBitmap([5, 99_999, 1_234_567_890]); // any iterable of ids
+vip.add(7);
+vip.removeMany([99_999]);
+vip.addMany(new RoaringBitmap([8, 9])); // another bitmap, or a Uint32Array, works too
+
+await store.load({ segment: 'vip' }, vip); // read, never changed or kept
+
+// Bytes from another process go through the one safe door: capped, checked, one whole bitmap.
+const received = RoaringBitmap.deserialize(vip.serialize());
+console.log(received.size, received.minimum(), received.maximum()); // 5 5 1234567890
+```
+
+[The API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
+has every method and where it differs from the `roaring` package.
+
+A stored segment has no `add` or `remove` (`RoaringBitmap` does, for a bitmap in memory): a segment changes only by loading a new generation. A load is a batch job, not a
 request handler. `store.exists(ref)` says whether a segment has been loaded. A load takes ids, or a bitmap you already
-hold: `store.load(ref, { bitmap })` for a `RoaringBitmap32`, or `{ serialized }` for portable Roaring bytes, checked
+hold: `store.load(ref, bitmap)` for a `RoaringBitmap` (or a `RoaringBitmap32`), or `{ serialized }` for portable Roaring bytes, checked
 before anything is written and loaded with no per-id work, into a generation holding chunk for chunk what its ids would write (its footer carries its own write identity).
 
 To write many results over the same stored operands, `store.materializeMany` reads each operand once for a whole batch of

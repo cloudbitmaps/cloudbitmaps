@@ -6,7 +6,7 @@ same portable Roaring bytes as CRoaring (through the `roaring` package, which on
 reference), byte for byte: a `.crbm` generation written through one is read by the other, and the same set written
 twice is the same object.
 
-Users of the package: [docs/guide/roaring-codec.md](../../../../docs/guide/roaring-codec.md) says what this codec guarantees, what it costs and what can be used by itself.
+Users of the package: [docs/guide/roaring-codec.md](../../../../docs/guide/roaring-codec.md) says what this codec guarantees, what it costs and how to use its bitmap on its own. The public class over this module's bitmap is [section 13](#13-the-public-class-roaringbitmap).
 
 Where a statement below is about a test, a bench or a workflow rather than the module, it says so.
 
@@ -24,7 +24,8 @@ Where a statement below is about a test, a bench or a workflow rather than the m
 10. [Every error it raises, and what a caller sees](#10-errors)
 11. [What watches it](#11-what-watches-it)
 12. [Behaviours worth knowing](#12-behaviours-worth-knowing)
-13. [Credits](#13-credits)
+13. [The public class, `RoaringBitmap`](#13-the-public-class-roaringbitmap)
+14. [Credits](#14-credits)
 
 ## 1. Where it sits
 
@@ -308,8 +309,9 @@ whose output files, not this README, hold the figures.
 
 All of these are in `bitmap.ts`.
 
-- **Id checking.** A write of anything that is not an integer from 0 to 4,294,967,295 throws `ValidationError`. A read
-  (`has`) answers false; `remove` and `removeMany` ignore it. `collect` checks an array with `v >>> 0 !== v` (which is
+- **Id checking.** A write of anything that is not an integer from 0 to 4,294,967,295 throws `ValidationError`, whose
+  message is core's `refusalOfId` wording and never repeats the value. In this module a read (`has`) answers false and
+  `remove` and `removeMany` ignore a bad id; the public class checks every id first and throws instead (section 13). `collect` checks an array with `v >>> 0 !== v` (which is
   exactly an integer in range: NaN, fractions, strings and `null` fail it); a `Uint32Array` needs no check; another
   iterable is read once into a doubling buffer, checked as it goes. Checking happens before any container is touched, so a
   bad id leaves the bitmap unchanged.
@@ -468,7 +470,7 @@ Thrown only by decoding. `safeDeserialize` (bitmap.ts) throws it directly for th
 | `safeDeserialize` with `{ whole: true }` -> `trailingBytes` (wire.ts) | `portable roaring: N bytes follow the bitmap's last container, which ends at byte E. One buffer holds one bitmap...` | bytes after the last container; without `whole` they are ignored |
 | layout | `the cookie` / `the container count` / `the run-container bitmap` / `the descriptive header` / `the offset header` needs bytes [a, b) of a N-byte buffer | a header field runs past the buffer |
 | layout | `unrecognized cookie 0x..., not a portable-format bitmap` | the first four bytes are neither cookie |
-| layout | `container keys are not strictly ascending (previousKey then key at index i)` | keys out of order or repeated |
+| layout | `container keys are not strictly ascending at index i` | keys out of order or repeated |
 | layout | `the offset header puts container i at byte S, but it starts at P` | an offset that is not where the container starts |
 | layout | `container i (array) needs bytes...` / `(bitmap)` / `(run count)` / `(run)` | a body runs past the buffer |
 | layout | `container i (array) is not strictly ascending at or after element e` | array values not strictly ascending |
@@ -485,10 +487,11 @@ throws `TypeError` on anything that is not a typed array. The caller-facing entr
 
 | Raised by | Message gist | Condition |
 |---|---|---|
-| `add`, `addMany`, `fromValues` (`checkedId`, `collect`) | `<value> is not an integer from 0 to 4294967295` | an id that is not an integer in range; `addMany` / `fromValues` throw before changing the bitmap |
+| `add`, `addMany`, `fromValues` (`checkedId`, `collect`) | core's `refusalOfId` wording: `an id must be an integer from 0 to 4294967295; got a string`, and so on | an id that is not an integer in range (a BigInt or a Symbol included); the message names the kind of value and never repeats it; `addMany` / `fromValues` throw before changing the bitmap |
 | `orInPlace`, `andInPlace`, `andNotInPlace` (`#of`) | `a TypeScript roaring bitmap combines only with another one` | the other operand is not a `TsBitmap` (the seam promises one codec per store, so the engine never does this) |
 
-`has` of a bad id answers false; `remove` and `removeMany` of a bad id do nothing.
+In this module `has` of a bad id answers false, and `remove` and `removeMany` of a bad id do nothing (`remove` answers
+`false`); the public class refuses a bad id in all three.
 
 `containerMax` has one `RangeError` (`a bitset container holds no bits`) for a state the module's own invariants rule out
 (a bitset container is never empty); no input reaches it.
@@ -500,7 +503,7 @@ throws `TypeError` on anything that is not a typed array. The caller-facing entr
   there; it propagates up the read as an `IntegrityError` naming the problem (the reader of the `.crbm` object treats it
   as a corrupt object; some core paths, such as erasure and the consistency check, inspect `IntegrityError` to decide what
   to do with a bad object).
-- **Bytes a caller supplies** (a `{ serialized }` load, or `deserializePortable`): core's `decodeSerialized` checks the
+- **Bytes a caller supplies** (a `{ serialized }` load, or `RoaringBitmap.deserialize`): core's `decodeSerialized` checks the
   value is a `Uint8Array` and under the load cap, calls `safeDeserialize(..., { whole: true })`, and converts the
   `IntegrityError` into `ValidationError`: `<what> is not a valid bitmap: <the message above>`. Those bytes are the
   caller's input, not a corrupt stored object.
@@ -545,12 +548,23 @@ Everything here is a test, a workflow or a bench, not part of the module.
   full-strength workflow sets (`tests/helpers/strength.ts`: oracle properties 40 reduced, 200 full; subsets 4,096 and
   65,536; mutated payloads 10,000 and 100,000). The nightly workflow also names the two oracle test files among its
   triggers.
-- **Fuzz.** One coverage-guided target, `fuzz/targets/safe-deserialize.mjs` (`pnpm fuzz:deser`, in the nightly fuzz
-  matrix), feeds adversarial bytes to this codec's `safeDeserialize`, each input read with and without `whole`, and holds
-  what it accepts to `assertConsistentDecode` (a self-consistent bitmap, or a typed `CloudRoaringError`). All of it is
+- **Fuzz.** Two coverage-guided targets, both in the nightly fuzz matrix. `fuzz/targets/safe-deserialize.mjs`
+  (`pnpm fuzz:deser`) feeds adversarial bytes to this codec's `safeDeserialize`, each input read with and without
+  `whole`, and a second leg sends each input through `RoaringBitmap.deserialize`; it holds what either accepts to
+  `assertConsistentDecode` (a self-consistent bitmap, or a typed `CloudRoaringError`), and what the public door accepts to
+  a `serialize` then `deserialize` that gives an equal bitmap. `fuzz/targets/bitmap-ops.mjs` decodes bytes into a
+  `RoaringBitmap` and then runs a byte-driven sequence of the class's operations against a `Set` model, so guidance
+  reaches the kernels through shapes only a decode produces (run containers, a slab of small containers). All of it is
   instrumented JavaScript, so guidance reaches `decodeContainers`, the slab and the aliasing paths after the shared
   structural check (`portable/layout.ts`). The committed reproducers are replayed through the same decoder on every pull
-  request (`tests/core/crbm/fuzz-corpus.test.ts`); `fuzz/README.md` describes the target.
+  request (`tests/core/crbm/fuzz-corpus.test.ts`); `fuzz/README.md` describes the targets.
+- **The public class** (`tests/roaring/roaring-bitmap*.test.ts`): section 13 lists what each file holds.
+- **The paired bench** (`bench/ts-codec-paired.cjs`, recorded, never asserted). A change under this directory is held
+  to the store's hot paths by a paired comparison: the codec at the base commit, the codec at the head and the codec at the
+  base again as an A/A control, rotated within one run, one subject per process, over the engine bench's cells and the
+  write path. Each cell is judged by `bench/lib/paired-verdict.cjs`: the distribution-free 95% interval of the median
+  difference between the head and the mean of the base and the control must sit within a fixed 2% bar, with the control
+  itself within 2% of the base; every pass is kept and gated, and a round that ends at a load of 6 or more, or in which a figure is both more than 100 times its median and under half on CPU (the machine slept; a slow head burns CPU and is kept), is taken again.
 - **The benches** (recorded, never asserted). `bench/ts-codec.cjs` times one operation at a time on one chunk against the
   native codec (`has`, `decode`, `serialize`, `iterate`, `toUint32`, `optimize`, `count`, `clone`, `build`, `addMany`; and,
   or, andNot on six operand pairs; `--memory` adds bytes per decoded chunk by kind). `bench/ts-codec-engine.cjs` compares
@@ -585,7 +599,95 @@ Everything here is a test, a workflow or a bench, not part of the module.
 - **Ids above 65,535 inside one chunk.** The codec itself accepts any container keys in a bitmap; a stored chunk is held to
   remainders `0..65535` by core's `maximum()` check after decode, not by this module.
 
-## 13. Credits
+## 13. The public class, `RoaringBitmap`
+
+`packages/roaring/src/bitmap.ts` is a public class around `TsBitmap`. The module's own files stay internal: `TsBitmap`,
+`encodeChunks`, `optimize` and the containers are not exported, so the seam is not frozen into the promise.
+
+```
+  import ... from '@cloudbitmaps/roaring/bitmap'      import ... from '@cloudbitmaps/roaring'
+            |                                                   |
+            +-------------------- one class ------------------+
+                                       |
+                 RoaringBitmap  (src/bitmap.ts)  #bitmap: TsBitmap
+                    |  checks every argument, then forwards
+                    v
+                 TsBitmap (this module)  ---->  containers: array | bitset | run
+                    ^
+   RoaringBitmap.deserialize(bytes) --> core decodeSerialized (type, size cap, copy, layout check, whole)
+                                        --> TsBitmap.safeDeserialize(..., { detached: true })
+```
+
+**What the shell adds and nothing else.**
+
+- **Ids are checked, and a refusal never repeats the value.** `has`, `add`, `addMany`, `remove`, `removeMany` and the
+  constructor throw `ValidationError` for anything that is not an integer from 0 to 4,294,967,295, using core's
+  `refusalOfId` (exported from core's main entry, which is outside the stability promise). The check runs before any
+  container is touched, so a refused call leaves the bitmap unchanged. `TsBitmap` keeps its own lenient rules for the
+  engine: `has` of a bad id answers false and a removal ignores it.
+- **`add` and `remove` take one id.** The shell reads `arguments.length` and refuses a second argument with a message that
+  names `addMany` or `removeMany`; no rest array is built on the per-id path. `remove` answers whether the id was there.
+- **Typed arrays are read safely.** A `Uint32Array` is read in place when it already ascends and sorted on a copy
+  otherwise, never changed or kept; one in a `SharedArrayBuffer` is copied first, because it is read twice (the sortedness
+  check, then the build) and another thread could write between the reads. A `Uint8Array`, `Uint8ClampedArray` or
+  `Buffer` passed as ids is refused: each byte would be read as an id.
+- **Operands are branded.** `andInPlace`, `orInPlace`, `andNotInPlace` and a bitmap passed to `addMany` or `removeMany`
+  are recognised by the class's private field, so one from a second installed copy of the package is refused rather than
+  read through members it does not share. `addMany(bitmap)` is `orInPlace` and `removeMany(bitmap)` is `andNotInPlace`.
+- **`minimum()`, `maximum()` are `undefined` when empty.** `minimum` reads the first container's smallest value
+  (`containerMin`, beside `containerMax`); neither scans.
+- **`clear()`** drops the key and container lists. A container a clone shares is left to the clone, so it does not copy.
+- **`runOptimize()`** runs `optimize` (each container in its smallest form; a run only where strictly smaller than the plain
+  body) and answers whether any container is a run afterwards (`hasRunContainer`), not whether anything changed.
+
+**The detached decode.** The store's chunk decode reads a bitset in place as a view over the private copy of the input and
+puts the arrays and runs of a multi-container decode in one slab. That is free for a one-container chunk and a hazard for a
+long-lived public bitmap: one decoded from 300 MB and then reduced by `andInPlace` to a few containers would keep the
+whole input alive. `RoaringBitmap.deserialize` passes `detached: true`, which gives every bitset, array and run its own
+storage and no slab, so the copy of the input is garbage when the call returns. The store's decode does not pass the flag
+and keeps its aliasing. The price is one more copy of the live data at decode.
+
+**The one door for bytes.**
+
+| Step | Where | Refusal |
+|---|---|---|
+| second argument is `undefined` or an object whose only key is `maxBytes` | the shell | a format argument, any other key, a bad `maxBytes` |
+| a zero-length or detached `Uint8Array` | the shell | an empty buffer is not a bitmap |
+| length over `maxBytes` when it is lower than the cap | the shell | before any byte is read |
+| type, the 537,403,396-byte cap, one copy of the input, the layout check, one whole bitmap | core's `decodeSerialized` | converted to `ValidationError`, `<what> is not a valid bitmap: <reason>`, with no container key |
+
+Core's own rule that an empty buffer is the empty bitmap stays for a store load, where an empty object means nothing was
+stored; the public door refuses it because a failed or truncated upload would otherwise become "no ids".
+
+**Errors the class raises.** Only `ValidationError`, never `IntegrityError` (that is for a stored object that is damaged),
+and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array` on a bitmap too large to allocate.
+
+| Raised by | Condition |
+|---|---|
+| the constructor, `add`, `addMany`, `has`, `remove`, `removeMany` | an id that is not an integer from 0 to 4294967295; a constructor or `addMany` argument that is not an iterable (a string included) |
+| `add`, `remove` | more than one argument |
+| the constructor | a `Uint8Array`, `Uint8ClampedArray` or `Buffer` |
+| `andInPlace`, `orInPlace`, `andNotInPlace` | an operand that is not a `RoaringBitmap` of this copy of the package |
+| `deserialize` | not a `Uint8Array`; empty or detached; over the cap or `maxBytes`; not one well-formed bitmap; a second argument other than `undefined` or `{ maxBytes }`; a `maxBytes` outside 0 to the cap |
+| `serialize` | an argument other than `undefined` or `'portable'` |
+
+**What watches it.**
+
+- `tests/roaring/roaring-bitmap.test.ts`: every method against CRoaring (through `roaring`), the stored-byte rule and a
+  plain `Set`, on generators biased to container boundaries, run ties, and ids at 2^31 and at 0xFFFFFFFF.
+- `tests/roaring/roaring-bitmap.property.test.ts`: round trips, `clone` independence under every mutator and across
+  generations of clones, ascending iteration, and a load of a bitmap writing what a load of its ids writes.
+- `tests/roaring/roaring-bitmap-refusals.test.ts` and `tests/roaring/errors-carry-no-id.test.ts`: each refusal, the
+  bitmap unchanged after it, and no message carrying an id, a bound or a container key.
+- `tests/roaring/roaring-bitmap-deserialize.test.ts`: the door's table of inputs and the hostile shapes from the codec's
+  hostile-bytes test, run through the public door.
+- `tests/roaring/roaring-bitmap-retention.test.ts`: decodes a multi-container bitmap, reduces it, drops the input and checks
+  the heap falls, with a control that decodes without `detached` and does not.
+- The fuzz targets (section 11) and, on every build, `pnpm smoke`: the `./bitmap` entry is walked for `node:*` specifiers,
+  bundled for a runtime-neutral platform and loaded in a context with web globals only, and the class from the main entry
+  and from `./bitmap` is one object under ESM and `require()`. `tests/arch` fires planted inputs at that gate both ways.
+
+## 14. Credits
 
 The Roaring Bitmap format and its algorithms are the work of Daniel Lemire and colleagues. See
 [roaringbitmap.org](https://roaringbitmap.org/) and the [Roaring format specification](https://github.com/RoaringBitmap/RoaringFormatSpec),

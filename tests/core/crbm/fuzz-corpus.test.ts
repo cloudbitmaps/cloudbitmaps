@@ -4,8 +4,14 @@ import { dirname, join } from 'node:path';
 import { CrbmReader, parseExtension, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { DEFAULT_MAX_BITMAP_BYTES, DEFAULT_MAX_PAYLOAD_BYTES } from '@/core/crbm/format';
-import { assertConsistentDecode, tsRoaringCodec } from '@/testing/fuzz-codec';
-import { CloudRoaringError, IntegrityError } from '@/core/errors';
+import {
+  assertConsistentDecode,
+  checkPublicDoor,
+  runBitmapOps,
+  tsRoaringCodec,
+} from '@/testing/fuzz-codec';
+import { CloudRoaringError, IntegrityError, ValidationError } from '@/core/errors';
+import { RoaringBitmap } from '@/bitmap';
 import type { BlobReader } from '@/core/blob';
 import type { CrbmCrypto } from '@/core/crypto';
 
@@ -17,8 +23,9 @@ import type { CrbmCrypto } from '@/core/crypto';
  *
  * The contract mirrors the fuzz targets exactly: arbitrary bytes fed through the real read path either succeed
  * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/hang is a bug,
- * and so is a decode that is not self-consistent (see {@link assertConsistentDecode}). Four corpora mirror the four
- * targets: raw serialized bitmaps (the TypeScript decoder), raw index regions, raw extension-block sections, and whole
+ * and so is a decode that is not self-consistent (see {@link assertConsistentDecode}). Five corpora mirror the five
+ * targets: raw serialized bitmaps (the TypeScript decoder and the public door), byte-driven operation sequences on a decoded
+ * bitmap (checked against a plain `Set`), raw index regions, raw extension-block sections, and whole
  * `.crbm` objects.
  */
 const MAX_BYTES = DEFAULT_MAX_BITMAP_BYTES; // the decode cap the fuzz targets run under
@@ -33,8 +40,9 @@ function reproducers(sub: string): Array<{ name: string; bytes: Uint8Array }> {
     .map((f) => ({ name: f, bytes: new Uint8Array(readFileSync(join(dir, f))) }));
 }
 
-/** The bitmap-decoder target's contract (mirrors fuzz/targets/safe-deserialize.mjs, whole-buffer read included). */
+/** The bitmap-decoder target's contract (mirrors fuzz/targets/safe-deserialize.mjs, whole-buffer read and public door included). */
 function deserialize(bytes: Uint8Array): void {
+  checkPublicDoor(bytes);
   assertConsistentDecode(tsRoaringCodec.safeDeserialize(bytes, MAX_BYTES));
   try {
     assertConsistentDecode(tsRoaringCodec.safeDeserialize(bytes, MAX_BYTES, { whole: true }));
@@ -130,15 +138,16 @@ async function readChain(bytes: Uint8Array): Promise<void> {
 
 describe('fuzz crash-reproducer replay (the committed regression corpus)', () => {
   const deser = reproducers('safe-deserialize');
+  const ops = reproducers('bitmap-ops');
   const crbm = reproducers('crbm-reader');
   const index = reproducers('crbm-index');
   const ext = reproducers('crbm-ext');
 
-  if (deser.length + crbm.length + index.length + ext.length === 0) {
+  if (deser.length + ops.length + crbm.length + index.length + ext.length === 0) {
     // No reproducers committed yet — the campaign has found nothing that violates the contract. This
     // placeholder keeps the suite honest (the mechanism is wired) until a crash is promoted here.
     it('has no outstanding fuzz crash reproducers to replay', () => {
-      expect(deser.length + crbm.length + index.length + ext.length).toBe(0);
+      expect(deser.length + ops.length + crbm.length + index.length + ext.length).toBe(0);
     });
   }
 
@@ -151,6 +160,12 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
           if (!(err instanceof CloudRoaringError)) throw err;
         }
       }).not.toThrow();
+    });
+  }
+
+  for (const { name, bytes } of ops) {
+    it(`bitmap-ops reproducer ${name} keeps every answer equal to the model`, () => {
+      expect(() => runBitmapOps(bytes)).not.toThrow();
     });
   }
 
@@ -183,4 +198,40 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
       await expect(readChain(bytes)).resolves.toBeUndefined();
     });
   }
+});
+
+describe('the fuzz targets surface a typed error that is the wrong one', () => {
+  const ids = new RoaringBitmap([1, 2, 3, 2 ** 31, 0xffff_ffff]).serialize();
+
+  it('checkPublicDoor: a round trip the door refuses is a plain Error, which a target that tolerates typed errors cannot swallow', () => {
+    vi.spyOn(RoaringBitmap.prototype, 'serialize').mockReturnValue(new Uint8Array(0));
+    try {
+      checkPublicDoor(ids);
+      expect.unreachable('the refused round trip was not reported');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(CloudRoaringError);
+      expect((err as Error).cause).toBeInstanceOf(ValidationError);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('runBitmapOps: a ValidationError from add on a valid id escapes, the replay of ids-at-the-top.bin included', () => {
+    const real = RoaringBitmap.prototype.add;
+    vi.spyOn(RoaringBitmap.prototype, 'add').mockImplementation(function (
+      this: RoaringBitmap,
+      id: number,
+    ) {
+      if (id >= 2 ** 31) throw new ValidationError('an id this bitmap refuses');
+      return real.call(this, id);
+    });
+    try {
+      const replay = reproducers('bitmap-ops').find((r) => r.name === 'ids-at-the-top.bin');
+      expect(replay).toBeDefined();
+      expect(() => runBitmapOps(replay!.bytes)).toThrow(ValidationError);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 });

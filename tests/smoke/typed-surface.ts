@@ -14,7 +14,7 @@ import {
   BudgetExceededError,
   CloudRoaring,
   MemoryStorage,
-  deserializePortable,
+  RoaringBitmap,
   errorKind,
 } from '@cloudbitmaps/roaring';
 import type {
@@ -83,7 +83,7 @@ import type {
   PortableBitmap,
   PreflightCheck,
   PreflightResult,
-  ReadonlyBitmap,
+  RoaringBitmapDeserializeOptions,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -177,7 +177,7 @@ export type Named = [
   PortableBitmap,
   PreflightCheck,
   PreflightResult,
-  ReadonlyBitmap,
+  RoaringBitmapDeserializeOptions,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -210,7 +210,7 @@ export const derived: {
   readonly storageDriver: Same<MemoryStorage['storage'], IStorageDriver>;
   readonly registryDriver: Same<MemoryStorage['registry'], IRegistryDriver>;
   readonly keystore: Same<NonNullable<EncryptionOptions['keystore']>, IKeystore>;
-  readonly decodedType: Same<ReturnType<typeof deserializePortable>, ReadonlyBitmap>;
+  readonly decodedType: Same<ReturnType<typeof RoaringBitmap.deserialize>, RoaringBitmap>;
 } = { storage: true, storageDriver: true, registryDriver: true, keystore: true, decodedType: true };
 
 /** What a refusal carries, typed: the option to raise, the bound in force and what the call reached. */
@@ -235,8 +235,12 @@ export async function loadOne(ref: SegmentRef, ids: readonly number[]): Promise<
 }
 
 /** A decoded bitmap read through its members, and loaded as `{ bitmap }`. */
-export async function loadDecoded(ref: SegmentRef, bytes: Uint8Array): Promise<number> {
-  const decoded: ReadonlyBitmap = deserializePortable(bytes);
+export async function loadDecoded(
+  ref: SegmentRef,
+  bytes: Uint8Array,
+  options?: RoaringBitmapDeserializeOptions,
+): Promise<number> {
+  const decoded: RoaringBitmap = RoaringBitmap.deserialize(bytes, options);
   await new CloudRoaring({ storage: new MemoryStorage() }).load(ref, { bitmap: decoded });
   return decoded.size;
 }

@@ -99,7 +99,7 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
 - **Ascending, with repeats.** An id equal to the one before it is skipped. An id lower than the one before it throws
   `ValidationError` naming its position and never the id (`ids[41]: lower than the id before it; …`): sort at the
   source, or leave `sorted` off. A bad id is refused as it is without the option, at its position.
-- **For ids only.** With `{ serialized }`, `{ bitmap }`, a bitmap `deserializePortable` returned, or
+- **For ids only.** With `{ serialized }`, `{ bitmap }`, a `RoaringBitmap`, or
   any iterable with a `serialize` method (a `RoaringBitmap32` is one), `sorted: true` throws `ValidationError` before any request:
   those are held whole already and written from their own containers. A `sorted` that is not a boolean throws too. The `*Into`
   verbs do not take it.
@@ -175,7 +175,7 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
   re-encoded bytes, each about the size of the serialization, on top of the bytes you passed and what the backend
   buffers of the object it writes (one 8 MiB part on S3).
 - **A bare bitmap takes the same path where ids go.** An iterable with a `serialize` method (a `RoaringBitmap32` from
-  any copy of `roaring`, or a bitmap `deserializePortable` returned) passed where ids go loads as `{ bitmap }`: its
+  any copy of `roaring`, or a `RoaringBitmap`) passed where ids go loads as `{ bitmap }`: its
   `serialize` decides, and it is not iterated. Its `serialize('portable')` must return portable Roaring bytes. An
   object that is not iterable is not read this way: it is `{ serialized }` or `{ bitmap }` as the only key, or refused.
 - **A byte array is not ids.** A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids is refused with
@@ -202,13 +202,11 @@ generation from one process, so the parts reach one process, which checks them, 
 
 <!-- typecheck -->
 ```ts
-import roaring from 'roaring';
-import { CloudRoaring, ValidationError, deserializePortable } from '@cloudbitmaps/roaring';
-const { RoaringBitmap32 } = roaring;
+import { CloudRoaring, RoaringBitmap, ValidationError } from '@cloudbitmaps/roaring';
 
 // In each worker: its range's part, as portable Roaring bytes. Send these to the joining process.
-export function partBytes(part: InstanceType<typeof RoaringBitmap32>): Uint8Array {
-  return part.serialize('portable');
+export function partBytes(part: RoaringBitmap): Uint8Array {
+  return part.serialize();
 }
 
 // In the joining process: check and decode every part, join them, refuse an overlap, and load once.
@@ -217,12 +215,13 @@ export async function loadParts(
   ref: { segment: string; namespace?: string },
   shipped: Uint8Array[],
 ) {
-  const parts = shipped.map((bytes) => {
-    const checked = deserializePortable(bytes); // ValidationError if malformed
-    return RoaringBitmap32.deserialize(checked.serialize('portable'), 'portable');
-  });
-  const union = RoaringBitmap32.orMany(parts);
-  const total = parts.reduce((sum, part) => sum + part.size, 0);
+  const union = new RoaringBitmap();
+  let total = 0;
+  for (const bytes of shipped) {
+    const part = RoaringBitmap.deserialize(bytes); // ValidationError if malformed
+    total += part.size;
+    union.orInPlace(part);
+  }
   if (union.size !== total) {
     throw new ValidationError(`the parts overlap: ${total} ids in them, ${union.size} in their union`);
   }
@@ -230,22 +229,20 @@ export async function loadParts(
 }
 ```
 
-- **Check with `deserializePortable`, then decode with `roaring`.** Parts that cross between processes are untrusted
-  input, as stored bytes are. `RoaringBitmap32.deserialize` hands the bytes to roaring's native decoder, which bounds its
-  reads and checks nothing else: bytes of the wrong shape decode into a bitmap whose sizes and answers are wrong, and
-  some shapes crash the process. `deserializePortable(bytes)` makes the check a `{ serialized }` load makes first (the
-  size cap, the structural check, exactly one bitmap) and throws `ValidationError` for bytes that fail it. It takes a
-  `Uint8Array`, which a Node `Buffer` is. What it returns is a `ReadonlyBitmap`, with `size`, `has(id)`, ascending
-  iteration and `serialize('portable')`; the rest of `roaring`'s API (the union here) is reached by decoding its bytes
-  with `roaring`, which is the second line of the map. Passing the `ReadonlyBitmap` itself to a method of the `roaring` package from npm answers
-  wrongly, and `JSON.stringify` of one gives `"{}"`: write `JSON.stringify([...bitmap])`
-  ([why](api-reference.md#decode-portable-bytes--deserializeportablebytes)).
-- **The recipe costs about four passes over a part where `RoaringBitmap32.deserialize` alone makes one.** Each part's bytes are checked,
-  decoded twice and serialized once. The second decode is made from the checked bitmap's own bytes, never from the
-  bytes you were sent: a `SharedArrayBuffer` can change between the check and a decode of the original, and the library
-  copies a shared buffer only for its own decode. A single part that needs no joining goes straight to
-  `store.load(ref, { serialized: bytes })`.
-- **Overlap is refused by the size check.** `orMany` merges parts that share ids without a word, so a range that two
+- **Check with `RoaringBitmap.deserialize`, then join.** Parts that cross between processes are untrusted input, as
+  stored bytes are. `RoaringBitmap.deserialize(bytes)` makes the check a `{ serialized }` load makes first (the size cap,
+  the structural check, exactly one bitmap) and throws `ValidationError` for bytes that fail it, an empty buffer included
+  (a part with no ids is `new RoaringBitmap().serialize()`, which is not empty bytes). It takes a `Uint8Array`, which a
+  Node `Buffer` is, and returns a mutable [`RoaringBitmap`](api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
+  that owns its storage, so the union is built in the same package. The parts may also be built with the `roaring`
+  package from npm: decode what its `serialize('portable')` wrote the same way.
+  A `RoaringBitmap` is not a `RoaringBitmap32`: do not pass it to a method of the `roaring` package from npm, and
+  `JSON.stringify(bitmap)` gives `"{}"`, so write `JSON.stringify([...bitmap])` when you mean the ids.
+- **The recipe costs four passes over a part.** Each part's bytes are checked and decoded once, on a copy the
+  library makes first (a `SharedArrayBuffer` can change between a check and a decode of the original), the union is
+  one `orInPlace` per part, and the load serializes the union and checks and decodes it once more. A single part that
+  needs no joining goes straight to `store.load(ref, { serialized: bytes })`.
+- **Overlap is refused by the size check.** `orInPlace` merges parts that share ids without a word, so a range that two
   workers both built would load as if nothing were wrong. The members of disjoint parts add up to the members of their
   union, and they add up to fewer when any id is in two parts, so the recipe compares the two and refuses.
 - **A range boundary may fall inside a chunk.** A chunk is the 65,536 ids that share their high 16 bits. When a

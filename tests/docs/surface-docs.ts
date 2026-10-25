@@ -340,6 +340,9 @@ export function undocumentedSurfaceEntries(
       fail('the symbol did not resolve');
       continue;
     }
+    // The `#private;` line a declaration file keeps for a class with private fields is a brand, not a member a reader can
+    // hover, so it has no doc block to ask for.
+    if (member === '#private') continue;
     if (member === 'constructor') {
       const ctors = sym.members?.get(ts.InternalSymbolName.Constructor)?.declarations ?? [];
       if (ctors.length === 0) {

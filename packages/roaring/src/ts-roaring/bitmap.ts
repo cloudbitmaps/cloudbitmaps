@@ -41,7 +41,7 @@
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */
 import type { CodecBitmap, CodecInterface, EncodedChunk } from '@cloudbitmaps/core';
-import { IntegrityError, ValidationError } from '@cloudbitmaps/core';
+import { IntegrityError, ValidationError, refusalOfId } from '@cloudbitmaps/core';
 import {
   Container,
   appendIds,
@@ -52,10 +52,12 @@ import {
   containerAndNot,
   containerHas,
   containerMax,
+  containerMin,
   containerOr,
   containerRemove,
   fromSortedIds,
   optimize,
+  RUN,
 } from './containers';
 import { BitmapIterator } from './iterator';
 import { decodeContainers, serializeContainers, trailingBytes } from './wire';
@@ -66,12 +68,8 @@ function isId(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= MAX_ID;
 }
 
-function badId(value: unknown): ValidationError {
-  return new ValidationError(`${String(value)} is not an integer from 0 to ${MAX_ID}`);
-}
-
 function checkedId(value: number): number {
-  if (!isId(value)) throw badId(value);
+  if (!isId(value)) throw refusalOfId(value);
   return value;
 }
 
@@ -80,16 +78,27 @@ function checkedId(value: number): number {
  * a new one the caller may sort. An array is read once; another iterable is read once into a buffer that doubles, so no
  * intermediate array of the ids is built.
  */
-function collect(values: Iterable<number>): Uint32Array {
+export function collect(values: Iterable<number>): Uint32Array {
   if (values instanceof Uint32Array) return values;
   if (Array.isArray(values)) {
     const list = values as number[];
     const out = new Uint32Array(list.length);
-    for (let i = 0; i < list.length; i++) {
-      const v = list[i] as number;
-      // `v >>> 0 === v` is an integer from 0 to 2^32 - 1 and nothing else (NaN, fractions, strings and null fail it).
-      if (v >>> 0 !== v) throw badId(v);
-      out[i] = v;
+    let i = 0;
+    try {
+      for (; i < list.length; i++) {
+        const v = list[i] as number;
+        // `v >>> 0 === v` is an integer from 0 to 2^32 - 1 and nothing else (NaN, fractions, strings and null fail it).
+        if (v >>> 0 !== v) throw refusalOfId(v);
+        out[i] = v;
+      }
+    } catch (error) {
+      // `>>>` coerces a value that is not a number, and the coercion can throw (a BigInt, a Symbol, an object with no
+      // primitive form, a `valueOf` that throws): whatever fails on a value that is not a number is that value's
+      // refusal, and a check per value to tell it apart in the loop would cost every build. A failure on a number
+      // (its own refusal, or a getter that throws) is rethrown as it is.
+      const v: unknown = list[i];
+      if (typeof v !== 'number') throw refusalOfId(v);
+      throw error;
     }
     return out;
   }
@@ -108,6 +117,7 @@ function collect(values: Iterable<number>): Uint32Array {
 
 /** The ids of `values` that are ids, in a new `Uint32Array`: what a removal acts on, which ignores the rest. */
 function collectLenient(values: Iterable<number>): Uint32Array {
+  if (values instanceof Uint32Array) return values.slice();
   const list = Array.isArray(values) ? (values as number[]) : Array.from(values);
   const out = new Uint32Array(list.length);
   let n = 0;
@@ -176,7 +186,7 @@ function combineContainers(op: Combine, a: Container, b: Container): Container |
   return containerAndNot(a, b, !a.shared);
 }
 
-class TsBitmap implements CodecBitmap {
+export class TsBitmap implements CodecBitmap {
   #keys: number[];
   #conts: Container[];
   #size: number;
@@ -199,7 +209,9 @@ class TsBitmap implements CodecBitmap {
 
   /**
    * Cap the size, check the structure, then build the containers. With `whole`, bytes after the last container are
-   * refused too; without it they are ignored.
+   * refused too; without it they are ignored. With `detached`, every container gets storage of its own, copied out of
+   * the input, so nothing the result holds is a view of one shared buffer: a bitmap that is kept and then reduced
+   * does not keep the whole input alive.
    *
    * @throws {IntegrityError} if the input exceeds `maxBytes`, is not a well-formed portable bitmap, or (with `whole`)
    * has bytes after it.
@@ -207,12 +219,12 @@ class TsBitmap implements CodecBitmap {
   static safeDeserialize(
     bytes: Uint8Array,
     maxBytes: number,
-    options: { readonly whole?: boolean } = {},
+    options: { readonly whole?: boolean; readonly detached?: boolean } = {},
   ): TsBitmap {
     if (bytes.length > maxBytes) {
       throw new IntegrityError(`serialized bitmap is ${bytes.length}B, exceeds cap ${maxBytes}B`);
     }
-    const { keys, conts, end } = decodeContainers(bytes);
+    const { keys, conts, end } = decodeContainers(bytes, options.detached === true);
     if (options.whole === true && end !== bytes.byteLength) {
       throw trailingBytes(bytes.byteLength, end);
     }
@@ -229,6 +241,13 @@ class TsBitmap implements CodecBitmap {
   optimize(): void {
     const conts = this.#conts;
     for (let i = 0; i < conts.length; i++) conts[i] = optimize(conts[i] as Container);
+  }
+
+  /** Whether at least one container is held as runs. */
+  hasRunContainer(): boolean {
+    for (let i = 0; i < this.#conts.length; i++)
+      if ((this.#conts[i] as Container).kind === RUN) return true;
+    return false;
   }
 
   /**
@@ -254,6 +273,12 @@ class TsBitmap implements CodecBitmap {
         }
       },
     };
+  }
+
+  /** The smallest id, or `undefined` when the bitmap is empty. */
+  minimum(): number | undefined {
+    if (this.#conts.length === 0) return undefined;
+    return (this.#keys[0] as number) * 65_536 + containerMin(this.#conts[0] as Container);
   }
 
   maximum(): number | undefined {
@@ -307,21 +332,30 @@ class TsBitmap implements CodecBitmap {
     if (fresh.length > 0) this.#insertAll(fresh);
   }
 
-  remove(value: number): void {
-    if (!isId(value)) return;
+  /** Remove the id (anything that is not an id is ignored); whether it was there. */
+  remove(value: number): boolean {
+    if (!isId(value)) return false;
     const key = value >>> 16;
     const at = lowerBound(this.#keys, key);
-    if (this.#keys[at] !== key) return;
+    if (this.#keys[at] !== key) return false;
     const before = this.#conts[at] as Container;
     const after = containerRemove(before, value & 0xffff);
     if (after === null) {
       this.#keys.splice(at, 1);
       this.#conts.splice(at, 1);
       this.#size -= before.card;
-      return;
+      return true;
     }
     this.#conts[at] = after;
     this.#size += after.card - before.card;
+    return after.card !== before.card;
+  }
+
+  /** Remove every id. Containers a clone shares are left to it. */
+  clear(): void {
+    this.#keys = [];
+    this.#conts = [];
+    this.#size = 0;
   }
 
   /** Remove the ids (anything that is not an id is ignored), grouped by key; the keys left empty go in one pass. */

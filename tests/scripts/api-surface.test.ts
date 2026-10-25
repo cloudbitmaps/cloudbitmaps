@@ -470,9 +470,7 @@ describe('the committed files', () => {
       true,
     );
     expect(NAMES_ROARING.test('const RoaringBitmap32: typeof roaring.RoaringBitmap32')).toBe(true);
-    expect(
-      NAMES_ROARING.test('function deserializePortable(bytes: Uint8Array): ReadonlyBitmap;'),
-    ).toBe(false);
+    expect(NAMES_ROARING.test('static deserialize(bytes: Uint8Array): RoaringBitmap;')).toBe(false);
     const hits = Object.entries(snap.entries)
       .filter(([key, signature]) => NAMES_ROARING.test(key) || NAMES_ROARING.test(signature))
       .map(([key]) => key);

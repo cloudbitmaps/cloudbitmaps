@@ -238,10 +238,58 @@ describe('the real source loads with no Node builtin', () => {
   it.each([
     ['core main entry', 'packages/core/src/index.ts', 'packages/core/tsconfig.json'],
     ['core driver-kit', 'packages/core/src/driver-kit.ts', 'packages/core/tsconfig.json'],
+    ['roaring bitmap subpath', 'packages/roaring/src/bitmap.ts', 'packages/roaring/tsconfig.json'],
   ])('%s', async (_label, entry, tsconfig) => {
     const { exports } = await loadWithoutNode(join(root, entry), {
       tsconfig: join(root, tsconfig),
     });
     expect(exports.length).toBeGreaterThan(0);
+  });
+});
+
+describe('the bitmap subpath entry fails on a plant beside its real source, and passes without one', () => {
+  const root = resolve(import.meta.dirname, '../..');
+  const bitmap = join(root, 'packages/roaring/src/bitmap.ts');
+  const store = join(root, 'packages/roaring/src/index.ts');
+  const tsconfig = join(root, 'packages/roaring/tsconfig.json');
+
+  /** Load an entry that re-exports the real bitmap entry and `planted`, as the subpath's closure plus one more module. */
+  async function loadWith(planted: string | undefined): Promise<string[]> {
+    const dir = mkdtempSync(join(tmpdir(), 'builtin-free-bitmap-'));
+    try {
+      writeFileSync(
+        join(dir, 'entry.ts'),
+        `export * from ${JSON.stringify(bitmap)};\n` +
+          (planted === undefined ? '' : `export * from './planted';\n`),
+      );
+      if (planted !== undefined) writeFileSync(join(dir, 'planted.ts'), planted);
+      return (await loadWithoutNode(join(dir, 'entry.ts'), { tsconfig })).exports;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('passes with nothing planted, and exposes the class (the control that must hit)', async () => {
+    expect(await loadWith(undefined)).toContain('RoaringBitmap');
+  });
+
+  it.each<[string, string, RegExp]>([
+    ['a node:fs import', "import fs from 'node:fs'; export const planted = fs;", /does not bundle/],
+    [
+      "an import of the store, which reaches core's node entry",
+      `export * from ${JSON.stringify(store)};`,
+      /does not bundle/,
+    ],
+    ['a top-level Buffer', "export const planted = Buffer.from('x');", /Buffer|not defined/],
+    ['a top-level process', 'export const planted = process.env.X;', /process|not defined/],
+  ])('%s', async (_label, planted, message) => {
+    await expect(loadWith(planted)).rejects.toThrow(message);
+  });
+
+  it('does not fire on the legitimate look-alikes: a TextEncoder, a lazy Web Crypto call, a comment naming node:fs', async () => {
+    const exports = await loadWith(
+      "// reads from 'node:fs'\nexport const planted = new TextEncoder();\nexport function r(a: Uint8Array) { return crypto.getRandomValues(a); }",
+    );
+    expect(exports).toContain('planted');
   });
 });

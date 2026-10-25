@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CloudRoaring, MemoryStorage } from '@/index';
-import { deserializePortable, flagshipCodec, setFlagshipCodec } from '@/roaring-codec';
+import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@/index';
+import { flagshipCodec, setFlagshipCodec } from '@/roaring-codec';
 import { roaringCodec } from '@/native-codec';
 import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 import roaring from 'roaring';
@@ -17,12 +17,12 @@ describe('the store package codec switch', () => {
     expect(flagshipCodec()).toBe(tsRoaringCodec);
   });
 
-  it('builds the codec of a store, a load and a decoded bitmap from the switch', async () => {
+  it('builds the codec of a store and a load from the switch, and decodes bytes with the TypeScript codec whatever it holds', async () => {
     const store = new CloudRoaring({ storage: new MemoryStorage() });
     await store.load({ segment: 's' }, [1, 2, 70_000]);
     expect(await store.segment('s').count()).toBe(3);
     const bytes = new RoaringBitmap32([5, 9]).serialize('portable' as never);
-    const decoded = deserializePortable(bytes);
+    const decoded = RoaringBitmap.deserialize(bytes);
     expect([...decoded]).toEqual([5, 9]);
     // a bitmap the codec made reads back through the codec that is in force
     expect(flagshipCodec().owns!(flagshipCodec().fromValues([1]))).toBe(true);
@@ -32,6 +32,21 @@ describe('the store package codec switch', () => {
   it('names which codec asks for the smallest-first intersect order: the TypeScript codec, not the native one', () => {
     expect(tsRoaringCodec.intersectSmallestFirst).toBe(true);
     expect(roaringCodec.intersectSmallestFirst).not.toBe(true);
+  });
+
+  it('does not move the public class: RoaringBitmap.deserialize decodes in TypeScript when the switch is native', () => {
+    const was = setFlagshipCodec(roaringCodec);
+    try {
+      const decoded = RoaringBitmap.deserialize(
+        new RoaringBitmap32([5, 9]).serialize('portable' as never),
+      );
+      expect(tsRoaringCodec.owns!(flagshipCodec().fromValues([1]))).toBe(false);
+      expect([...decoded]).toEqual([5, 9]);
+      decoded.add(11);
+      expect(decoded.toArray()).toEqual([5, 9, 11]);
+    } finally {
+      setFlagshipCodec(was);
+    }
   });
 
   it('flips and restores', () => {

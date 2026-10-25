@@ -138,7 +138,7 @@ import type {
   MaterializeManyStats,
 } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { bitmapAsLoadInput, deserializePortable, flagshipCodec } from './roaring-codec';
+import { bitmapAsLoadInput, flagshipCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { systemEntropy } from './system-entropy';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
@@ -2417,8 +2417,8 @@ export class CloudRoaring {
    * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
    * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
    * containers with no per-id work, and gives the generation chunk for chunk what its ids would. An
-   * iterable with a `serialize` method (a `RoaringBitmap32`, another copy's bitmap, or a bitmap `deserializePortable`
-   * returned) passed as ids loads as `{ bitmap }` and is not iterated. A `Uint8Array` or `Buffer` passed as ids is
+   * iterable with a `serialize` method (a `RoaringBitmap32`, another copy's bitmap, or a `RoaringBitmap`
+   * of this package) passed as ids loads as `{ bitmap }` and is not iterated. A `Uint8Array` or `Buffer` passed as ids is
    * refused with `ValidationError`, since each byte would load as an id, even when it has a `serialize` of its own:
    * pass bytes as `{ serialized }`.
    *
@@ -4441,9 +4441,10 @@ export type {
   LocalFsStorageOptions,
   MemoryStorageOptions,
 } from '@cloudbitmaps/core/node';
-// Decode portable bytes you hold, through the check a `{ serialized }` load makes.
-export { deserializePortable };
-export type { ReadonlyBitmap } from './roaring-codec';
+// The public bitmap class, also the one door that decodes portable bytes you hold. It is defined once, in `./bitmap`,
+// which the `./bitmap` entry exports without the store, so both entries give the same class.
+export { RoaringBitmap } from './bitmap';
+export type { RoaringBitmapDeserializeOptions } from './bitmap';
 export {
   // The retention policy helpers
   excludingReservedRows,
