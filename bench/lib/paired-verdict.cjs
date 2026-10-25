@@ -27,14 +27,29 @@
  * places each form is rounded to, and the ratios the rule derives do not depend on the unit.
  *
  * THE SLEEP RULE. A machine that sleeps in the middle of a round gives a duration of minutes for a call of
- * milliseconds. A round in which any subject's figure in any cell is more than `SLEEP_FACTOR` (10) times the median of
- * that subject's figure in that cell is marked as slept: it is not kept, it is stored under the cell's `slept`, and
- * another round is taken in its place, as for the load rule. Ten is chosen from the record: an ordinary round of the
- * committed passes is at most about five times its cell's median (a cold or tiny operation), and every round a sleep
- * hit is more than a thousand times it, so the threshold sits two orders of magnitude clear of the sleeps and twice
- * clear of the noise. A median is robust to the sleeps that a run would tolerate (the rule gives up after twice as many
- * slept rounds as the pass wants). A pass recorded without the rule is read with its slept rounds left out
- * (`effectiveOf`), its recorded rounds untouched; the first pass, judged by the earlier rule, is read as it is.
+ * milliseconds. A sleeping machine and a slow head look alike in wall time and differ in CPU time: a slow head burns
+ * CPU for the whole of its slow round, a sleeping machine does not. So a subject's figure in a round counts as slept
+ * only when BOTH hold: it is more than `SLEEP_FACTOR` (100) times that subject's median in the cell, AND less than
+ * `SLEEP_MAX_ON_CPU` (half) of its wall time was on CPU (`process.cpuUsage()` deltas around the same timed span, in the
+ * child that times it). A round with a slept figure in any cell is not kept: it is stored under the cell's `slept`, with
+ * the evidence (for each slept figure its cell, subject, wall figure and CPU figure), and another round is taken in its
+ * place, as for the load rule.
+ *
+ * Why these numbers, from the committed record: the largest ordinary round on record is 11.95 times its cell's median
+ * (the first pass, `sparse count`, the control, round 8), and the second and third passes reach 5.1 times; every sleep
+ * on record is at least 1,116 times its median and hit the base, the head and the control alike. A factor alone cannot
+ * tell a sleep from a head that is slow in some rounds (a head 15 times slower in a third of its rounds would be set
+ * aside and the cell read as within the bar), so the CPU condition is what separates them; the factor then only has to
+ * clear the ordinary rounds, and 100 is nearly ten times clear of the largest.
+ *
+ * Backstop: the gate refuses a cell whose slept rounds fall on the head two or more times and more often than on the
+ * base and the control together, unless the cell carries an `explained` note, because a sleep does not pick a subject.
+ * A refusal means the cell is taken again.
+ *
+ * A pass records the rule it was taken under (`sleepRule: { factor, maxOnCpu }`), and only a pass that records it is
+ * read by it. A pass without it carries no CPU figures and is read exactly as stored: its kept rounds are not trimmed
+ * when it is read (they were judged when measured), so the first three recorded passes, taken before the rule, keep the
+ * verdicts and intervals they were stored with.
  *
  * Rounds of the first pass in the committed results file were judged by the earlier rule (the head's median against a
  * band of half the control's interquartile range); `legacyVerdictOf` keeps it so that file can still be recomputed.
@@ -51,8 +66,12 @@ const COVERAGE = 0.95;
 const MAX_LOAD = 6;
 /** The unit a pass records its durations in; a pass that records none holds nanoseconds. */
 const UNIT = 'ms';
-/** A round whose figure is more than this many times its subject's median in the cell is a sleep-hit round. */
-const SLEEP_FACTOR = 10;
+/** A figure is slept only when it is more than this many times its subject's median in the cell... */
+const SLEEP_FACTOR = 100;
+/** ...and less than this fraction of its wall time was on CPU. */
+const SLEEP_MAX_ON_CPU = 0.5;
+/** The subjects of a round, in the order of its figures. */
+const SUBJECTS = ['base', 'head', 'control'];
 /** The name each pass records for the rule that judged it. */
 const RULE = 'median-interval-v2';
 /** Slack for the floating-point error of a ratio that is exactly on a boundary. */
@@ -148,34 +167,50 @@ function medianInterval(values, coverage = COVERAGE) {
 }
 
 /**
- * Which rounds slept. `figureRows[i]` is the list of cells' `[base, head, control]` figures of round `i`; a round slept
- * when any figure of it is more than `SLEEP_FACTOR` times the median of that subject's figures in that cell over all
- * the rounds. Returns one boolean per round.
+ * Whether one figure slept: more than `factor` times its subject's median in the cell (`medianWall`), and less than
+ * `maxOnCpu` of its wall time on CPU. Both bounds are exclusive: a figure exactly at either is awake.
  */
-function sleepHits(figureRows) {
-  const cells = figureRows.length === 0 ? 0 : figureRows[0].length;
-  const limits = [];
-  for (let c = 0; c < cells; c++) {
-    limits.push(
-      [0, 1, 2].map((subject) => SLEEP_FACTOR * median(figureRows.map((row) => row[c][subject]))),
-    );
-  }
-  return figureRows.map((row) =>
-    row.some((triple, c) => triple.some((figure, subject) => figure > limits[c][subject])),
-  );
-}
-
-/** The rounds of a cell (`[order, base, head, control, ...]`) that did not sleep, in their order. */
-function awakeRounds(rounds) {
-  const hits = sleepHits(rounds.map((r) => [[r[1], r[2], r[3]]]));
-  return rounds.filter((_, i) => !hits[i]);
+function sleptFigure(
+  wall,
+  medianWall,
+  cpu,
+  rule = { factor: SLEEP_FACTOR, maxOnCpu: SLEEP_MAX_ON_CPU },
+) {
+  return wall > rule.factor * medianWall && cpu < rule.maxOnCpu * wall;
 }
 
 /**
- * Takes rounds until `want` of them are kept. `takeOne(order)` takes one round (`{ order, start, end, samples }`) and
- * `triplesOf(samples)` gives the `[base, head, control]` figure of each cell in it. A round that `keepByLoad` refuses
- * is set aside (`discarded`); a kept round that slept, judged against every round taken so far, is set aside as well
- * (`slept`) and taken again. With `checkSleep` false no round is marked as slept. Throws a `RangeError` when more
+ * Which rounds slept, and why. `figureRows[i]` is the list of cells' `[base, head, control]` wall figures of round `i`
+ * and `cpuRows[i]` the CPU figures of the same spans, in the same unit; a figure slept as `sleptFigure` says, against
+ * the median of that subject's figures in that cell over all the rounds. Returns, per round, the list of its slept
+ * figures as `{ cell, subject, wall, cpu }` (`cell` an index into the round's cells): empty when the round did not sleep.
+ */
+function sleepEvidence(figureRows, cpuRows) {
+  const cells = figureRows.length === 0 ? 0 : figureRows[0].length;
+  const medians = [];
+  for (let c = 0; c < cells; c++) {
+    medians.push([0, 1, 2].map((s) => median(figureRows.map((row) => row[c][s]))));
+  }
+  return figureRows.map((row, i) => {
+    const found = [];
+    row.forEach((triple, c) =>
+      triple.forEach((wall, s) => {
+        const cpu = cpuRows[i][c][s];
+        if (sleptFigure(wall, medians[c][s], cpu)) {
+          found.push({ cell: c, subject: SUBJECTS[s], wall, cpu });
+        }
+      }),
+    );
+    return found;
+  });
+}
+
+/**
+ * Takes rounds until `want` of them are kept. `takeOne(order)` takes one round (`{ order, start, end, samples }`),
+ * `triplesOf(samples)` gives the `[base, head, control]` wall figure of each cell in it and `cpuOf(samples)` the CPU
+ * figures of the same spans. A round that `keepByLoad` refuses is set aside (`discarded`); a kept round with a slept
+ * figure (see `sleepEvidence`), judged against every round taken so far, is set aside as well (`slept`, each with its
+ * `evidence`) and taken again. With `checkSleep` false no round is marked as slept. Throws a `RangeError` when more
  * than `limit` rounds (default twice `want`) were set aside for either reason, so a machine that never settles stops
  * the run. Returns `{ kept, discarded, slept }`.
  */
@@ -183,6 +218,7 @@ function collectRounds({
   want,
   takeOne,
   triplesOf,
+  cpuOf,
   checkSleep = true,
   keepByLoad = () => true,
   limit = 2 * want,
@@ -190,11 +226,16 @@ function collectRounds({
   const pool = [];
   const discarded = [];
   for (;;) {
-    const hits = checkSleep
-      ? sleepHits(pool.map((r) => triplesOf(r.samples)))
-      : pool.map(() => false);
-    const kept = pool.filter((_, i) => !hits[i]);
-    const slept = pool.filter((_, i) => hits[i]);
+    const evidence = checkSleep
+      ? sleepEvidence(
+          pool.map((r) => triplesOf(r.samples)),
+          pool.map((r) => cpuOf(r.samples)),
+        )
+      : pool.map(() => []);
+    const kept = pool.filter((_, i) => evidence[i].length === 0);
+    const slept = pool.flatMap((r, i) =>
+      evidence[i].length > 0 ? [{ ...r, evidence: evidence[i] }] : [],
+    );
     if (kept.length >= want) return { kept, discarded, slept };
     if (slept.length > limit) throw new RangeError(`${slept.length} rounds slept: not measuring`);
     const round = takeOne(kept.length % 6);
@@ -209,19 +250,6 @@ function collectRounds({
       }
     }
   }
-}
-
-/**
- * The verdict and interval a cell is read by: the stored ones, unless the cell holds slept rounds (a pass recorded
- * before the sleep rule), in which case the cell is judged again on its rounds that did not sleep.
- */
-function effectiveOf(cell) {
-  const awake = awakeRounds(cell.rounds ?? []);
-  if (awake.length === (cell.rounds ?? []).length) {
-    return { verdict: cell.verdict, headInterval: cell.headInterval };
-  }
-  const j = judge(awake);
-  return { verdict: j.verdict, headInterval: j.headInterval };
 }
 
 /** The per-round figures a verdict is drawn from: the head against the reference, and the control against the base. */
@@ -339,11 +367,81 @@ const boundText = (upper) =>
 /** Whether a round that ended at `loadAtEnd` is kept: under `MAX_LOAD`, or with the load rule turned off. */
 const keepRound = (loadAtEnd, anyLoad = false) => anyLoad || loadAtEnd < MAX_LOAD;
 
-/** A cell as its pass is read: the earlier rule's pass as stored, a pass of the current rule without its slept rounds. */
-const effective = (pass, cell) =>
-  pass.rule === RULE
-    ? effectiveOf(cell)
-    : { verdict: cell.verdict, headInterval: cell.headInterval };
+/** Every cell of a pass that holds rounds: the gated cells and the import time. */
+const allCellsOf = (pass) => [
+  ...gatedCellsOf(pass),
+  ...(pass.import?.moduleLoadMs ? [pass.import.moduleLoadMs] : []),
+];
+
+/**
+ * What stops the slept rounds of a pass from being read. Only a pass that records its `sleepRule` (and a rule no weaker
+ * than the current one) may hold slept rounds. Each recorded slept round must carry its evidence, and every item of it
+ * must hold against the record: the named cell holds a slept round with that wall figure for that subject, the figure is
+ * more than the rule's factor times that subject's median over the cell's kept and slept rounds, and less than the rule's
+ * share of it was on CPU. A cell whose slept rounds fall on the head two or more times, and more often than on the base
+ * and the control together, is refused unless it carries an `explained` note.
+ */
+function sleptProblems(label, pass) {
+  const cells = allCellsOf(pass);
+  const holding = cells.filter((c) => (c.slept ?? []).length > 0);
+  if (holding.length === 0) return [];
+  const rule = pass.sleepRule;
+  if (
+    rule === undefined ||
+    !(rule.factor >= SLEEP_FACTOR) ||
+    !(rule.maxOnCpu <= SLEEP_MAX_ON_CPU)
+  ) {
+    return [
+      `${label}: slept rounds are recorded without a sleep rule that judged them (factor at least ${SLEEP_FACTOR}, at most ${SLEEP_MAX_ON_CPU} of the wall time on CPU)`,
+    ];
+  }
+  const problems = [];
+  const byName = new Map(cells.map((c) => [cellName(c), c]));
+  for (const c of holding) {
+    let onHead = 0;
+    let onOthers = 0;
+    for (const row of c.slept) {
+      const evidence = row[6];
+      const at = `${label}: ${cellName(c)} slept round [${row.slice(0, 6).join(', ')}]`;
+      if (!Array.isArray(evidence) || evidence.length === 0) {
+        problems.push(`${at} has no evidence`);
+        continue;
+      }
+      for (const e of evidence) {
+        const s = SUBJECTS.indexOf(e?.subject);
+        const target = byName.get(e?.cell);
+        const sameRound = (r) => r[0] === row[0] && r[4] === row[4] && r[5] === row[5];
+        const figures = (list) => (list ?? []).map((r) => r[1 + s]);
+        if (
+          s < 0 ||
+          target === undefined ||
+          !(target.slept ?? []).some((r) => sameRound(r) && r[1 + s] === e.wall)
+        ) {
+          problems.push(`${at} names a slept figure the record does not hold`);
+        } else if (
+          !sleptFigure(
+            e.wall,
+            median([...figures(target.rounds), ...figures(target.slept)]),
+            e.cpu,
+            rule,
+          )
+        ) {
+          problems.push(
+            `${at}: ${e.subject} in ${e.cell} is not a sleep (wall ${e.wall} ms, CPU ${e.cpu} ms)`,
+          );
+        }
+      }
+      if (evidence.some((e) => e?.subject === 'head')) onHead++;
+      if (evidence.some((e) => e?.subject === 'base' || e?.subject === 'control')) onOthers++;
+    }
+    if (onHead >= 2 && onHead > onOthers && !c.explained) {
+      problems.push(
+        `${label}: ${cellName(c)} has ${onHead} slept rounds on the head against ${onOthers} on the base and the control: take the cell again, or explain it`,
+      );
+    }
+  }
+  return problems;
+}
 
 /**
  * What stops a list of passes from being published, as a list of messages (empty when nothing does). The gate reads
@@ -362,13 +460,13 @@ function gateProblems(passes) {
     const label = `pass ${pass.pass ?? i + 1}`;
     if (pass.environment?.smoke) problems.push(`${label}: a smoke pass is no evidence`);
     for (const c of gatedCellsOf(pass)) {
-      if (kindOf(effective(pass, c).verdict) === 'slower' && !pass.explained) {
+      if (kindOf(c.verdict) === 'slower' && !pass.explained) {
         problems.push(
           `${label}: ${cellName(c)} is conclusively slower and the pass has no "explained" note`,
         );
       }
       if (pass.rule === RULE && !pass.environment?.anyLoad) {
-        for (const r of awakeRounds(c.rounds ?? [])) {
+        for (const r of c.rounds ?? []) {
           if (!keepRound(r[5])) {
             problems.push(`${label}: ${cellName(c)} kept a round that ended at load ${r[5]}`);
             break;
@@ -376,6 +474,7 @@ function gateProblems(passes) {
         }
       }
     }
+    problems.push(...sleptProblems(label, pass));
   });
   const last = passes[passes.length - 1];
   if (last === undefined) return ['no pass is recorded'];
@@ -386,10 +485,9 @@ function gateProblems(passes) {
     return problems;
   }
   for (const c of gatedCellsOf(last)) {
-    const read = effective(last, c);
-    if (kindOf(read.verdict) !== 'inconclusive') continue;
+    if (kindOf(c.verdict) !== 'inconclusive') continue;
     const note = last.unresolved?.[cellName(c)];
-    const bound = boundText(read.headInterval?.[1]);
+    const bound = boundText(c.headInterval?.[1]);
     if (typeof note !== 'string' || !note.includes(bound)) {
       problems.push(
         `last pass: ${cellName(c)} is inconclusive and has no "unresolved" note that quotes its bound ${bound}`,
@@ -406,10 +504,12 @@ module.exports = {
   MAX_LOAD,
   RULE,
   SLEEP_FACTOR,
-  sleepHits,
-  awakeRounds,
+  SLEEP_MAX_ON_CPU,
+  SUBJECTS,
+  sleptFigure,
+  sleepEvidence,
   collectRounds,
-  effectiveOf,
+  allCellsOf,
   UNIT,
   WITHIN,
   SLOWER,

@@ -25,6 +25,17 @@ const NOT_IDS: ReadonlyArray<readonly [string, unknown]> = [
   ['an object with a valueOf', { valueOf: () => 5 }],
   ['an array', [5]],
   ['a function', () => 5],
+  ['an object with no prototype', Object.create(null)],
+  ['an object whose valueOf gives a BigInt', { valueOf: () => 1n }],
+  ['an object whose toPrimitive gives a Symbol', { [Symbol.toPrimitive]: () => Symbol('id') }],
+  [
+    'an object whose valueOf throws',
+    {
+      valueOf: () => {
+        throw new RangeError('the caller own error');
+      },
+    },
+  ],
 ];
 
 const IDS_AT_THE_EDGES = [0, 1, 2 ** 31, TOP];
@@ -65,11 +76,11 @@ describe('an id argument that is not an id', () => {
       ]) {
         expect(make).toThrow(ValidationError);
       }
-      for (const list of [[3, bad as number], new Set([3, bad as number])]) {
+      for (const list of [[1, bad as number], new Set([1, bad as number])]) {
         const b = fresh();
         expect(() => b.addMany(list)).toThrow(ValidationError);
         expect(() => b.removeMany(list)).toThrow(ValidationError);
-        expect(b.toArray(), 'a refused call changes nothing, 3 and 1 included').toEqual([
+        expect(b.toArray(), 'a refused call changes nothing, 1 included').toEqual([
           1,
           2,
           70_000,
@@ -78,6 +89,38 @@ describe('an id argument that is not an id', () => {
       }
     },
   );
+
+  it('lets a failure on a number through as it is: only a value that is not a number is converted', () => {
+    // The first read of each index throws and later reads answer, so the catch finds a number where the loop failed.
+    const call = (run: (list: number[]) => unknown): unknown => {
+      const seen = new Set<string>();
+      const list = new Proxy([1, 2, 3], {
+        get: (target, key, receiver) => {
+          if (typeof key === 'string' && /^\d+$/.test(key) && !seen.has(key)) {
+            seen.add(key);
+            throw new TypeError('a getter of the caller fails');
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      try {
+        run(list);
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+    for (const run of [
+      (list: number[]) => new RoaringBitmap(list),
+      (list: number[]) => fresh().addMany(list),
+      (list: number[]) => fresh().removeMany(list),
+    ]) {
+      const caught = call(run);
+      expect(caught).toBeInstanceOf(TypeError);
+      expect(caught).not.toBeInstanceOf(ValidationError);
+      expect((caught as Error).message).toBe('a getter of the caller fails');
+    }
+  });
 
   it.each(IDS_AT_THE_EDGES)('%i is an id for every method', (id) => {
     const b = new RoaringBitmap();

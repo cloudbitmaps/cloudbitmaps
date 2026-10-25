@@ -273,6 +273,11 @@ function digest(value) {
 }
 
 const nowNs = () => Number(process.hrtime.bigint());
+/** The CPU time this process has used, user and system, in nanoseconds (the clock counts microseconds). */
+const cpuNs = () => {
+  const u = process.cpuUsage();
+  return (u.user + u.system) * 1e3;
+};
 /** Every result lands here, reachable from `globalThis`, so no call is dead code. */
 const keep = new Array(16).fill(0);
 globalThis.__codecOpsKeep = keep;
@@ -281,7 +286,12 @@ globalThis.__codecOpsKeep = keep;
  * The warmed figure of a call, in nanoseconds per operation: warm by time (`warmMs`), size a batch to about `sampleMs`,
  * and time one batch. A harness calls it once per subject per round; the pairing is the harness's.
  */
-function measureSteady(fn, unit = 1, { warmMs = 300, sampleMs = 8 } = {}) {
+function measureSteady(fn, unit = 1, options = {}) {
+  return measureSteadyCpu(fn, unit, options).ns;
+}
+
+/** `measureSteady`, with the CPU nanoseconds per operation over the same timed batch: `{ ns, cpuNs }`. */
+function measureSteadyCpu(fn, unit = 1, { warmMs = 300, sampleMs = 8 } = {}) {
   const end = nowNs() + warmMs * 1e6;
   let reps = 1;
   for (;;) {
@@ -296,15 +306,24 @@ function measureSteady(fn, unit = 1, { warmMs = 300, sampleMs = 8 } = {}) {
     }
   }
   const t0 = nowNs();
+  const c0 = cpuNs();
   for (let i = 0; i < reps; i++) keep[i & 15] = fn();
-  return (nowNs() - t0) / reps / unit;
+  const cpu = cpuNs() - c0;
+  return { ns: (nowNs() - t0) / reps / unit, cpuNs: cpu / reps / unit };
 }
 
 /** The time of the first call, in nanoseconds, nothing warmed. */
 function measureCold(fn) {
+  return measureColdCpu(fn).ns;
+}
+
+/** `measureCold`, with the CPU nanoseconds of the same call: `{ ns, cpuNs }`. */
+function measureColdCpu(fn) {
   const t0 = nowNs();
+  const c0 = cpuNs();
   keep[0] = fn();
-  return nowNs() - t0;
+  const cpu = cpuNs() - c0;
+  return { ns: nowNs() - t0, cpuNs: cpu };
 }
 
 module.exports = {
@@ -317,5 +336,7 @@ module.exports = {
   opCells,
   digest,
   measureSteady,
+  measureSteadyCpu,
   measureCold,
+  measureColdCpu,
 };

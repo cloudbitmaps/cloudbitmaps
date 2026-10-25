@@ -189,10 +189,10 @@ describe('a RoaringBitmap error message never carries an id', () => {
       messages.push(messageSync(() => new RoaringBitmap([1, v])));
       messages.push(messageSync(() => new RoaringBitmap(new Set([1, v]))));
       messages.push(messageSync(() => b.add(v)));
-      messages.push(messageSync(() => b.addMany([v])));
+      messages.push(messageSync(() => b.addMany([1, v])));
       messages.push(messageSync(() => b.has(v)));
       messages.push(messageSync(() => b.remove(v)));
-      messages.push(messageSync(() => b.removeMany([v])));
+      messages.push(messageSync(() => b.removeMany([1, v])));
     }
     for (const message of messages) expectNoId(message);
     expect(messages[0]).toMatch(/an id must be an integer from 0 to 4294967295; got /);
@@ -207,6 +207,17 @@ describe('a RoaringBitmap error message never carries an id', () => {
     expect(messageSync(() => b.has({ toString: () => DIGITS } as unknown as number))).toMatch(
       /got an object$/,
     );
+    // Inside a list the refusal is converted in the build loop's catch: it names the kind, never the value.
+    const big = 14155551234n as unknown as number;
+    const sym = Symbol('14155551234') as unknown as number;
+    for (const [value, kind] of [
+      [big, /got a bigint$/],
+      [sym, /got a symbol$/],
+    ] as const) {
+      expect(messageSync(() => b.addMany([1, value]))).toMatch(kind);
+      expect(messageSync(() => b.removeMany([1, value]))).toMatch(kind);
+      expect(messageSync(() => new RoaringBitmap([1, value]))).toMatch(kind);
+    }
   });
 
   it('the decode door says why bytes are refused without a container key, an offset value or an id', () => {

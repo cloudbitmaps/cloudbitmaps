@@ -50,12 +50,18 @@
  * more (`PAIRED_ANY_LOAD=1` turns the rule off, and the pass records it). A pass's `load` gives the highest load a kept
  * round ended at and the number of rounds discarded.
  *
- * THE SLEEP RULE. A machine that sleeps during a round turns a call of milliseconds into one of minutes. A round in which
- * any subject's figure in any cell is more than ten times the median of that subject's figure in that cell is marked as
- * slept: it is stored under the cell's `slept`, taken again, and counted (a pass's `load.sleptRounds`, and the summary
- * line it prints). Ten sits two orders of magnitude below the sleeps on record and twice clear of the largest ordinary
- * round. A pass recorded without the rule is read with its slept rounds left out, its rounds untouched. A tiny-scale run
- * applies neither this rule nor the load rule.
+ * THE SLEEP RULE. A machine that sleeps during a round turns a call of milliseconds into one of minutes, and a head that is
+ * really slow in some rounds looks the same in wall time; they differ in CPU time, because a slow head burns CPU and a
+ * sleeping machine does not. Every child therefore times each span twice, wall (`process.hrtime`) and CPU
+ * (`process.cpuUsage()` deltas around the same span). A subject's figure in a round counts as slept only when it is more
+ * than 100 times that subject's median in the cell AND less than half of its wall time was on CPU. A round with a slept
+ * figure in any cell is stored under the cell's `slept` with that evidence (cell, subject, wall figure, CPU figure), taken
+ * again, and counted (a pass's `load.sleptRounds`, and the summary line it prints). The pass records the rule it was taken
+ * under (`sleepRule: { factor: 100, maxOnCpu: 0.5 }`); the gate re-checks every recorded slept round against it, and
+ * refuses a cell whose slept rounds fall on the head two or more times and more often than on the base and the control
+ * together unless the cell carries an `explained` note. The reasons for the numbers are in `bench/lib/paired-verdict.cjs`.
+ * A pass recorded before the rule has no `sleepRule` and is read as stored. A tiny-scale run applies neither this rule nor
+ * the load rule.
  *
  * Every subject must give the same answer for a cell, or the run fails.
  *
@@ -100,6 +106,8 @@ const {
   gateProblems,
   keepRound,
   collectRounds,
+  SLEEP_FACTOR,
+  SLEEP_MAX_ON_CPU,
 } = require('./lib/paired-verdict.cjs');
 const ops = require('./lib/codec-ops.cjs');
 
@@ -140,6 +148,11 @@ const ENTRY = [
 ].join('\n');
 
 const now = () => Number(process.hrtime.bigint());
+/** The CPU time this process has used, user and system, in nanoseconds (the clock counts microseconds). */
+const cpuNow = () => {
+  const u = process.cpuUsage();
+  return (u.user + u.system) * 1e3;
+};
 const load1 = () => os.loadavg()[0];
 const twoDecimals = (x) => +x.toFixed(2);
 const keep = new Array(16).fill(0);
@@ -222,10 +235,13 @@ function opsOf(idLists) {
   };
 }
 
+/** The wall and CPU nanoseconds per call of `reps` calls of `fn`, timed over one span. */
 async function timeCalls(fn, reps) {
   const t0 = now();
+  const c0 = cpuNow();
   for (let i = 0; i < reps; i++) keep[i & 15] = await fn();
-  return (now() - t0) / reps;
+  const cpu = cpuNow() - c0;
+  return { ns: (now() - t0) / reps, cpuNs: cpu / reps };
 }
 
 /** Warm by time, then the batch size that makes one timed sample about `SAMPLE_MS`. */
@@ -257,7 +273,8 @@ async function readsChild(file, dataset, only) {
     const fn = () => ops[op](segs);
     const answer = await fn();
     const reps = await calibrate(fn);
-    out[op] = { ns: +(await timeCalls(fn, reps)).toFixed(0), answer };
+    const timed = await timeCalls(fn, reps);
+    out[op] = { ns: +timed.ns.toFixed(0), cpuNs: +timed.cpuNs.toFixed(0), answer };
   }
   return { dataset, ops: out };
 }
@@ -271,16 +288,26 @@ async function writeChild(file) {
     const store = newStore(engine, new engine.roaring.MemoryStorage());
     global.gc();
     let t0 = now();
+    let c0 = cpuNow();
     const loaded = await store.load({ segment: 'w' }, ids, { sorted: true });
     const loadNs = now() - t0;
+    const loadCpuNs = cpuNow() - c0;
     if (!loaded.published) throw new Error('the write-path load was not published');
     const victim = ids[ids.length >> 1];
     global.gc();
     t0 = now();
+    c0 = cpuNow();
     const erased = await store.eraseSubject(victim, { allNamespaces: true });
     const eraseNs = now() - t0;
+    const eraseCpuNs = cpuNow() - c0;
     if (!JSON.stringify(erased).includes('"erased":true')) throw new Error('nothing was erased');
-    timed = { load: loadNs, erase: eraseNs, answer: `${ids.length}:${victim}` };
+    timed = {
+      load: loadNs,
+      erase: eraseNs,
+      loadCpu: loadCpuNs,
+      eraseCpu: eraseCpuNs,
+      answer: `${ids.length}:${victim}`,
+    };
   }
   return timed;
 }
@@ -289,8 +316,9 @@ async function writeChild(file) {
 async function importChild(file) {
   const url = require('node:url').pathToFileURL(file).href;
   const t0 = now();
+  const c0 = cpuNow();
   keep[0] = await import(url);
-  return { ms: +((now() - t0) / 1e6).toFixed(3) };
+  return { ms: +((now() - t0) / 1e6).toFixed(3), cpuMs: +((cpuNow() - c0) / 1e6).toFixed(3) };
 }
 
 /** The codec of a subject bundle: the TypeScript codec the bundle exports. */
@@ -308,12 +336,8 @@ function opsChild(file, onlyOps) {
     const fn = cell.make(codec);
     const answer = ops.digest(fn());
     global.gc();
-    out[cell.name] = {
-      ns: +ops
-        .measureSteady(fn, cell.unit, { warmMs: WARM_MS, sampleMs: SMALL ? 0 : 8 })
-        .toFixed(1),
-      answer,
-    };
+    const timed = ops.measureSteadyCpu(fn, cell.unit, { warmMs: WARM_MS, sampleMs: SMALL ? 0 : 8 });
+    out[cell.name] = { ns: +timed.ns.toFixed(1), cpuNs: +timed.cpuNs.toFixed(1), answer };
   }
   return out;
 }
@@ -323,8 +347,8 @@ function opsColdChild(file, name) {
   const cell = opsInputs().find((c) => c.cold && c.name === name);
   if (cell === undefined) throw new Error(`no cold cell ${JSON.stringify(name)}`);
   const fn = cell.make(codecOf(file));
-  const ns = ops.measureCold(fn);
-  return { ns, answer: ops.digest(fn()) };
+  const timed = ops.measureColdCpu(fn);
+  return { ns: timed.ns, cpuNs: +timed.cpuNs.toFixed(0), answer: ops.digest(fn()) };
 }
 
 // ---- orchestration -------------------------------------------------------------------------------------------------
@@ -385,17 +409,27 @@ function allEqual(answers) {
 
 /**
  * Takes `ROUNDS` kept rounds of `runRound(i)`, which returns subject `i`'s output (0 base, 1 head, 2 control).
- * `triplesOf(samples)` gives the `[base, head, control]` figure of each cell the round measured. Each round records the
- * load before and after; a round that ended at `MAX_LOAD` or more is set aside and taken again, and so is a round in
- * which a subject's figure in any cell is more than ten times its median in that cell (the machine slept; see
- * `bench/lib/paired-verdict.cjs`). The machine is waited for before every round. A tiny-scale run applies neither
- * rule. Returns `{ kept, discarded, slept }`, each a list of `{ order, start, end, samples }`.
+ * `triplesOf(samples)` gives the `[base, head, control]` wall figure of each cell the round measured and `cpuOf(samples)`
+ * the CPU figures of the same spans. Each round records the load before and after; a round that ended at `MAX_LOAD` or
+ * more is set aside and taken again, and so is a round with a slept figure (more than 100 times its subject's median in
+ * its cell, with less than half of its wall time on CPU: the machine slept; see `bench/lib/paired-verdict.cjs`). The
+ * machine is waited for before every round. A tiny-scale run applies neither rule, but still requires every child to
+ * report its CPU figures. Returns `{ kept, discarded, slept }`, each a list of `{ order, start, end, samples }` (a slept
+ * round also carries its `evidence`).
  */
-function takeRounds(runRound, triplesOf) {
+function takeRounds(runRound, triplesOf, cpuOf) {
+  const checkedCpuOf = (samples) => {
+    const cpu = cpuOf(samples);
+    if (!cpu.every((cell) => cell.every((x) => Number.isFinite(x) && x >= 0))) {
+      throw new Error('a subject reported no CPU figure for a span it timed');
+    }
+    return cpu;
+  };
   try {
     return collectRounds({
       want: ROUNDS,
       triplesOf,
+      cpuOf: checkedCpuOf,
       checkSleep: !SMALL,
       keepByLoad: (round) => SMALL || keepRound(round.end, ANY_LOAD),
       takeOne: (order) => {
@@ -403,7 +437,9 @@ function takeRounds(runRound, triplesOf) {
         const start = twoDecimals(load1());
         const sample = [null, null, null];
         for (const i of ORDERS[order]) sample[i] = runRound(i);
-        return { order, start, end: twoDecimals(load1()), samples: sample };
+        const round = { order, start, end: twoDecimals(load1()), samples: sample };
+        checkedCpuOf(round.samples);
+        return round;
       },
     });
   } catch (err) {
@@ -424,15 +460,25 @@ const rowsOf = (list, figure, toMs) =>
   });
 
 /**
- * A cell from its kept and discarded rounds. `kind` says how the figure is measured: `whole` nanoseconds, `tenth` (a
- * tenth of a nanosecond) or `import` (already milliseconds); the cell stores milliseconds.
+ * A cell from its kept, discarded and slept rounds. `kind` says how the figure is measured: `whole` nanoseconds, `tenth`
+ * (a tenth of a nanosecond) or `import` (already milliseconds); the cell stores milliseconds. `names` are the names of the
+ * cells a round measured, in the order of `triplesOf`, so a slept round's evidence names its cell as the gate finds it.
+ * A slept row is a round's six figures and then its evidence: `{ cell, subject, wall, cpu }` for each slept figure.
  */
-function pairedCell(taken, figure, kind = 'whole') {
+function pairedCell(taken, figure, kind, names) {
   const decimals = kind === 'tenth' ? 1 : 0;
   const toMs = kind === 'import' ? (x) => x : (x) => nsToMs(x, decimals);
   const cell = cellOf(rowsOf(taken.kept, figure, toMs), figurePlaces(kind, UNIT));
   const discarded = rowsOf(taken.discarded, figure, toMs);
-  const slept = rowsOf(taken.slept, figure, toMs);
+  const slept = taken.slept.map((r) => [
+    ...rowsOf([r], figure, toMs)[0],
+    r.evidence.map((e) => ({
+      cell: names[e.cell],
+      subject: e.subject,
+      wall: toMs(e.wall),
+      cpu: toMs(e.cpu),
+    })),
+  ]);
   return {
     ...cell,
     ...(discarded.length > 0 ? { discarded } : {}),
@@ -453,6 +499,7 @@ function readsMeasure(subjects, only) {
           ]),
         ),
       (samples) => opNames.map((op) => samples.map((x) => x.ops[op].ns)),
+      (samples) => opNames.map((op) => samples.map((x) => x.ops[op].cpuNs)),
     );
     for (const op of opNames) {
       const answers = [...taken.kept, ...taken.discarded, ...taken.slept].flatMap((r) =>
@@ -462,7 +509,12 @@ function readsMeasure(subjects, only) {
         dataset,
         op,
         answersAgree: allEqual(answers),
-        ...pairedCell(taken, (s) => s.map((x) => x.ops[op].ns)),
+        ...pairedCell(
+          taken,
+          (s) => s.map((x) => x.ops[op].ns),
+          'whole',
+          opNames.map((o) => cellName({ dataset, op: o })),
+        ),
       });
     }
   }
@@ -473,6 +525,7 @@ function writeMeasure(subjects) {
   const taken = takeRounds(
     (i) => JSON.parse(spawnLast([`--child-write=${subjects.files[i]}`])),
     (samples) => ['load', 'erase'].map((op) => samples.map((x) => x[op])),
+    (samples) => ['load', 'erase'].map((op) => samples.map((x) => x[`${op}Cpu`])),
   );
   const answers = [...taken.kept, ...taken.discarded, ...taken.slept].flatMap((r) =>
     r.samples.map((s) => s.answer),
@@ -481,7 +534,12 @@ function writeMeasure(subjects) {
     dataset: `spread ${WRITE_CHUNKS} chunks`,
     op,
     answersAgree: allEqual(answers),
-    ...pairedCell(taken, (s) => s.map((x) => x[op])),
+    ...pairedCell(
+      taken,
+      (s) => s.map((x) => x[op]),
+      'whole',
+      ['load', 'erase'].map((o) => cellName({ dataset: `spread ${WRITE_CHUNKS} chunks`, op: o })),
+    ),
   }));
 }
 
@@ -511,14 +569,16 @@ function opsMeasure(subjects, onlyOps) {
       ),
     }),
     (samples) => [...steady, ...cold].map((name) => samples.map((x) => at(x, name).ns)),
+    (samples) => [...steady, ...cold].map((name) => samples.map((x) => at(x, name).cpuNs)),
   );
+  const names = [...steady, ...cold].map((name) => cellName({ dataset: 'ops', op: name }));
   const all = [...taken.kept, ...taken.discarded, ...taken.slept];
   return [...steady, ...cold].map((name) => {
     return {
       dataset: 'ops',
       op: name,
       answersAgree: allEqual(all.flatMap((r) => r.samples.map((x) => at(x, name).answer))),
-      ...pairedCell(taken, (s) => s.map((x) => at(x, name).ns), 'tenth'),
+      ...pairedCell(taken, (s) => s.map((x) => at(x, name).ns), 'tenth', names),
     };
   });
 }
@@ -564,13 +624,14 @@ function importMeasure() {
     if (!fs.existsSync(f)) throw new Error(`${f} is missing: run pnpm build first`);
   // Round layout here is [order, main entry, ./bitmap, main entry again]: the "head" column is the ./bitmap entry.
   const taken = takeRounds(
-    (i) => JSON.parse(spawnLast([`--child-import=${files[i]}`])).ms,
-    (samples) => [samples],
+    (i) => JSON.parse(spawnLast([`--child-import=${files[i]}`])),
+    (samples) => [samples.map((x) => x.ms)],
+    (samples) => [samples.map((x) => x.cpuMs)],
   );
   return {
     runs: ROUNDS,
     informational: true,
-    moduleLoadMs: pairedCell(taken, (s) => s, 'import'),
+    moduleLoadMs: pairedCell(taken, (s) => s.map((x) => x.ms), 'import', ['import']),
     bundle: { mainEntry: bundleBytes(files[0]), bitmapEntry: bundleBytes(files[1]) },
   };
 }
@@ -702,6 +763,7 @@ function takePass(run, only, onlyOps) {
     schema: 2,
     unit: UNIT,
     rule: RULE,
+    sleepRule: { factor: SLEEP_FACTOR, maxOnCpu: SLEEP_MAX_ON_CPU },
     tolerance: TOLERANCE,
     environment: environment(),
     started: new Date().toISOString(),
@@ -759,7 +821,7 @@ function printPass(doc) {
   }
   const { maxLoadAtEnd, discardedRounds, sleptRounds } = doc.load;
   console.log(
-    `pass ${doc.pass} worst: ${doc.verdict}; kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${discardedRounds} round(s) discarded at ${MAX_LOAD} or more; ${sleptRounds} round(s) discarded as slept (a figure over ten times its median)${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
+    `pass ${doc.pass} worst: ${doc.verdict}; kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${discardedRounds} round(s) discarded at ${MAX_LOAD} or more; ${sleptRounds} round(s) discarded as slept (a figure over ${SLEEP_FACTOR} times its median with under half of its wall time on CPU)${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
   );
 }
 

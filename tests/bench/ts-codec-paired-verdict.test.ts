@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +22,7 @@ type Cell = {
   answersAgree: boolean;
   rounds: Round[];
   discarded?: Round[];
+  slept?: Round[];
   verdict: string;
   headInterval: number[];
   [field: string]: unknown;
@@ -30,6 +32,7 @@ type Pass = {
   schema?: number;
   unit?: string;
   rule?: string;
+  sleepRule?: { factor: number; maxOnCpu: number };
   explained?: string;
   unresolved?: Record<string, string>;
   reads: Cell[];
@@ -77,19 +80,34 @@ const rule = require_('./lib/paired-verdict.cjs') as {
   keepRound: (loadAtEnd: number, anyLoad?: boolean) => boolean;
   gateProblems: (passes: unknown[]) => string[];
   SLEEP_FACTOR: number;
-  sleepHits: (figureRows: number[][][]) => boolean[];
-  awakeRounds: (rounds: Round[]) => Round[];
+  SLEEP_MAX_ON_CPU: number;
+  sleptFigure: (
+    wall: number,
+    medianWall: number,
+    cpu: number,
+    rule?: { factor: number; maxOnCpu: number },
+  ) => boolean;
+  sleepEvidence: (
+    figureRows: number[][][],
+    cpuRows: number[][][],
+  ) => { cell: number; subject: string; wall: number; cpu: number }[][];
   collectRounds: (options: {
     want: number;
     takeOne: (order: number) => TakenRound;
     triplesOf: (samples: number[]) => number[][];
+    cpuOf: (samples: number[]) => number[][];
     checkSleep?: boolean;
     keepByLoad?: (round: TakenRound) => boolean;
     limit?: number;
   }) => { kept: TakenRound[]; discarded: TakenRound[]; slept: TakenRound[] };
-  effectiveOf: (cell: Cell) => { verdict: string; headInterval: number[] };
 };
-type TakenRound = { order: number; start: number; end: number; samples: number[] };
+type TakenRound = {
+  order: number;
+  start: number;
+  end: number;
+  samples: number[];
+  evidence?: { cell: number; subject: string; wall: number; cpu: number }[];
+};
 const codec = require_('./lib/codec-verdict.cjs') as {
   MIN_ROUNDS: number;
   summarise: (rounds: Round[], places?: number) => Record<string, number | number[]>;
@@ -303,71 +321,218 @@ function flatRounds(plant: Record<string, number> = {}, n = 31): Round[] {
   });
 }
 
+/** A deterministic stream of numbers in [0, 1), so a planted case is the same on every run. */
+function stream(seed: number): () => number {
+  let x = seed >>> 0;
+  return () => {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    return x / 2 ** 32;
+  };
+}
+
+/** `n` rows of one cell, each `[base, head, control]` at 100, with `plant` (round:subject, subject 0..2) set. */
+function flatRows(plant: Record<string, number> = {}, n = 31): number[][][] {
+  return Array.from({ length: n }, (_, i) => [[0, 1, 2].map((s) => plant[`${i}:${s}`] ?? 100)]);
+}
+/** The CPU figures of `rows`: each a `share` of its wall figure, unless `cpu` names one (round:subject). */
+function cpuRowsOf(
+  rows: number[][][],
+  share: number,
+  cpu: Record<string, number> = {},
+): number[][][] {
+  return rows.map((row, i) => row.map((t) => t.map((x, s) => cpu[`${i}:${s}`] ?? x * share)));
+}
+const slept = (rows: number[][][], cpuRows: number[][][]): number[] =>
+  rule.sleepEvidence(rows, cpuRows).flatMap((e, i) => (e.length > 0 ? [i] : []));
+
 describe('the sleep rule', () => {
-  it('is ten times the median of that subject in the cell', () => {
-    expect(rule.SLEEP_FACTOR).toBe(10);
+  it('needs a figure more than 100 times its subject median and less than half of its wall time on CPU', () => {
+    expect(rule.SLEEP_FACTOR).toBe(100);
+    expect(rule.SLEEP_MAX_ON_CPU).toBe(0.5);
   });
-  it('keeps a round whose figure is exactly ten times the median and sets aside one just above it, for each subject', () => {
-    for (const subject of [1, 2, 3]) {
-      const at = rule.awakeRounds(flatRounds({ [`7:${subject}`]: 1000 }));
-      expect(at, `subject ${subject} at 10x`).toHaveLength(31);
-      const above = rule.awakeRounds(flatRounds({ [`7:${subject}`]: 1000.001 }));
-      expect(above, `subject ${subject} above 10x`).toHaveLength(30);
-      expect(above.some((r) => r[0] === 7 && r[subject] === 1000.001)).toBe(false);
+
+  it('keeps a figure exactly 100 times the median and sets aside one just above it, for each subject, when no CPU was used', () => {
+    for (const subject of [0, 1, 2]) {
+      const at = flatRows({ [`7:${subject}`]: 10000 });
+      expect(slept(at, cpuRowsOf(at, 0)), `subject ${subject} at 100x`).toEqual([]);
+      const above = flatRows({ [`7:${subject}`]: 10000.001 });
+      expect(slept(above, cpuRowsOf(above, 0)), `subject ${subject} above 100x`).toEqual([7]);
     }
   });
-  it('sets aside a planted sleep-hit round whole, whichever subject slept, and leaves the other rounds as they were', () => {
-    const rounds = flatRounds({ '3:2': 1e6, '20:1': 5e5 });
-    const awake = rule.awakeRounds(rounds);
-    expect(awake).toHaveLength(29);
-    expect(awake).toEqual(rounds.filter((_, i) => i !== 3 && i !== 20));
+
+  it('keeps a figure that was exactly half on CPU and sets aside one just under half', () => {
+    for (const subject of [0, 1, 2]) {
+      const rows = flatRows({ [`7:${subject}`]: 20000 });
+      expect(
+        slept(rows, cpuRowsOf(rows, 1, { [`7:${subject}`]: 10000 })),
+        `half, ${subject}`,
+      ).toEqual([]);
+      expect(
+        slept(rows, cpuRowsOf(rows, 1, { [`7:${subject}`]: 9999.99 })),
+        `under, ${subject}`,
+      ).toEqual([7]);
+    }
   });
-  it('does not touch an ordinary slow round (five times the median), nor a cell with no outlier', () => {
-    expect(rule.awakeRounds(flatRounds({ '4:2': 500, '9:3': 499 }))).toHaveLength(31);
-    expect(rule.awakeRounds(flatRounds())).toHaveLength(31);
+
+  it('records, for a slept round, the cell, the subject, the wall figure and the CPU figure', () => {
+    const rows = flatRows({ '3:1': 1e6 });
+    const evidence = rule.sleepEvidence(rows, cpuRowsOf(rows, 0.01));
+    expect(evidence[3]).toEqual([{ cell: 0, subject: 'head', wall: 1e6, cpu: 1e4 }]);
+    expect(evidence.filter((e) => e.length > 0)).toHaveLength(1);
   });
+
+  it('sets aside planted sleeps on random subjects when the CPU stayed flat, and nothing else', () => {
+    const random = stream(7);
+    const plant: Record<string, number> = {};
+    const planted: number[] = [];
+    for (let i = 2; i < 31; i += 6) {
+      const subject = Math.floor(random() * 3);
+      plant[`${i}:${subject}`] = 1e6 * (1 + random());
+      planted.push(i);
+    }
+    const rows = flatRows(plant);
+    expect(slept(rows, cpuRowsOf(rows, 0.001))).toEqual(planted);
+  });
+
+  it('does not set aside a slow round whose CPU tracked its wall time, at any size', () => {
+    const rows = flatRows({ '4:1': 1500, '9:2': 1e6, '11:0': 1e9 });
+    expect(slept(rows, cpuRowsOf(rows, 0.98))).toEqual([]);
+    expect(slept(rows, cpuRowsOf(rows, 1.4))).toEqual([]);
+  });
+
   it('judges each subject against its own median, so a slow subject is not a sleeping one', () => {
-    const rounds: Round[] = flatRounds().map((r) => [r[0]!, 100, 900, 100, 1, 2]);
-    expect(rule.awakeRounds(rounds)).toHaveLength(31);
+    const rows = flatRows().map(() => [[100, 9000, 100]]);
+    expect(slept(rows, cpuRowsOf(rows, 0))).toEqual([]);
   });
+
   it('sets a round aside when any one cell of it slept', () => {
     const rows = Array.from({ length: 31 }, () => [
       [10, 10, 10],
       [20, 20, 20],
     ]);
-    rows[5]![1] = [20, 20, 201];
-    const hits = rule.sleepHits(rows);
-    expect(hits.filter(Boolean)).toHaveLength(1);
-    expect(hits[5]).toBe(true);
-    rows[5]![1] = [20, 20, 200];
-    expect(rule.sleepHits(rows).some(Boolean)).toBe(false);
+    rows[5]![1] = [20, 20, 2001];
+    const cpu = cpuRowsOf(rows, 0);
+    expect(slept(rows, cpu)).toEqual([5]);
+    expect(rule.sleepEvidence(rows, cpu)[5]).toEqual([
+      { cell: 1, subject: 'control', wall: 2001, cpu: 0 },
+    ]);
+    rows[5]![1] = [20, 20, 2000];
+    expect(slept(rows, cpuRowsOf(rows, 0))).toEqual([]);
   });
+
+  /** A feed of taken rounds: base and control at 100 with noise of `noise`, the head at 100 or `slow` times it. */
+  function feedOf(options: {
+    n: number;
+    share: number;
+    slow: number;
+    noise: number;
+    seed: number;
+  }): TakenRound[] {
+    const random = stream(options.seed);
+    const wiggle = (): number => 100 * (1 + options.noise * (2 * random() - 1));
+    return Array.from({ length: options.n }, (_, i) => {
+      const base = wiggle();
+      const head = wiggle() * (random() < options.share ? options.slow : 1);
+      const control = wiggle();
+      return {
+        order: i % 6,
+        start: 1,
+        end: 2,
+        samples: [base, head, control],
+      };
+    });
+  }
+  const collect = (feed: TakenRound[], want: number, checkSleep = true) => {
+    let next = 0;
+    return rule.collectRounds({
+      want,
+      takeOne: () => feed[next++]!,
+      triplesOf: (samples) => [samples],
+      cpuOf: (samples) => [samples.map((x) => x * 0.5)],
+      checkSleep,
+    });
+  };
+
+  it('keeps a head that is 15 times slower in some rounds, with its CPU tracking its wall time, and the cell is not within the bar', () => {
+    // Twelve of 31 rounds with a slow head: the rule that set them aside read this cell as within the bar.
+    const plant: Record<string, number> = {};
+    for (let i = 0; i < 12; i++) plant[`${i * 2}:2`] = 1500;
+    const rows = flatRounds(plant);
+    let next = 0;
+    const out = rule.collectRounds({
+      want: 31,
+      takeOne: () => {
+        const r = rows[next++]!;
+        return { order: r[0]!, start: r[4]!, end: r[5]!, samples: [r[1]!, r[2]!, r[3]!] };
+      },
+      triplesOf: (samples) => [samples],
+      cpuOf: (samples) => [samples.map((x) => x * 0.98)],
+    });
+    expect(out.slept).toEqual([]);
+    expect(out.kept).toHaveLength(31);
+    expect(next).toBe(31);
+    const verdict = rule.cellOf(out.kept.map((r) => [r.order, ...r.samples, 1, 2])).verdict;
+    expect(verdict).not.toBe(WITHIN);
+    expect(verdict).toBe(INCONCLUSIVE);
+  });
+
+  it('does not set aside a round of a head that is 15 times slower in a fifth or a third of its rounds, base and control at 3% noise', () => {
+    for (const share of [0.2, 0.35]) {
+      const feed = feedOf({ n: 61, share, slow: 15, noise: 0.03, seed: 11 });
+      let next = 0;
+      const out = rule.collectRounds({
+        want: 61,
+        takeOne: () => feed[next++]!,
+        triplesOf: (samples) => [samples],
+        cpuOf: (samples) => [samples],
+      });
+      expect(out.slept, `share ${share}`).toEqual([]);
+      expect(out.kept, `share ${share}`).toHaveLength(61);
+      expect(next).toBe(61);
+    }
+    const third = feedOf({ n: 61, share: 0.35, slow: 15, noise: 0.03, seed: 11 });
+    expect(rule.cellOf(third.map((r) => [r.order, ...r.samples, 1, 2])).verdict).not.toBe(WITHIN);
+  });
+
+  it('sets aside the same rounds when the machine was asleep (CPU flat), and the gate then wants the cell taken again', () => {
+    const feed = feedOf({ n: 120, share: 0.2, slow: 15000, noise: 0.03, seed: 11 });
+    let next = 0;
+    const out = rule.collectRounds({
+      want: 61,
+      takeOne: () => feed[next++]!,
+      triplesOf: (samples) => [samples],
+      cpuOf: (samples) => [samples.map((x) => x * 0.0001)],
+      limit: 100,
+    });
+    expect(out.slept.length).toBeGreaterThan(5);
+    expect(out.slept.every((r) => r.evidence!.every((e) => e.subject === 'head'))).toBe(true);
+  });
+
   it('takes a replacement for a slept round, counts it, and keeps the rounds it wants', () => {
-    const feed = flatRounds({ '2:1': 1e9 }, 40).map((r, i) => ({
-      order: r[0]!,
-      start: 1,
-      end: 2,
-      samples: [r[1]!, r[2]!, r[3]!],
-      i,
-    }));
+    const feed = feedOf({ n: 40, share: 0, slow: 1, noise: 0, seed: 1 });
+    feed[2]!.samples[0] = 1e6;
     let next = 0;
     const out = rule.collectRounds({
       want: 31,
       takeOne: () => feed[next++]!,
       triplesOf: (samples) => [samples],
+      cpuOf: (samples) => [samples.map((x) => (x === 1e6 ? 1 : x))],
     });
     expect(out.kept).toHaveLength(31);
     expect(out.slept).toHaveLength(1);
-    expect(out.slept[0]!.samples[0]).toBe(1e9);
+    expect(out.slept[0]!.samples[0]).toBe(1e6);
+    expect(out.slept[0]!.evidence).toEqual([{ cell: 0, subject: 'base', wall: 1e6, cpu: 1 }]);
     expect(next).toBe(32);
     expect(out.discarded).toEqual([]);
   });
+
   it('counts a load discard apart from a slept round, and gives up when too many rounds sleep', () => {
     let n = 0;
     const out = rule.collectRounds({
       want: 5,
       takeOne: () => ({ order: 0, start: 1, end: n++ === 1 ? 9 : 2, samples: [1, 1, 1] }),
       triplesOf: (samples) => [samples],
+      cpuOf: (samples) => [samples],
       keepByLoad: (r) => r.end < 6,
     });
     expect(out.discarded).toHaveLength(1);
@@ -377,43 +542,207 @@ describe('the sleep rule', () => {
       rule.collectRounds({
         want: 6,
         limit: 1,
-        takeOne: () => ({ order: 0, start: 1, end: 2, samples: [t++ % 4 === 0 ? 1e9 : 1, 1, 1] }),
+        takeOne: () => ({ order: 0, start: 1, end: 2, samples: [t++ % 4 === 0 ? 1e6 : 1, 1, 1] }),
         triplesOf: (samples) => [samples],
+        cpuOf: (samples) => [samples.map(() => 0)],
       }),
     ).toThrow(/slept/);
   });
+
   it('is not applied when switched off (a tiny-scale run)', () => {
-    const feed = flatRounds({ '1:1': 1e9 }, 3).map((r) => ({
-      order: r[0]!,
-      start: 1,
-      end: 2,
-      samples: [r[1]!, r[2]!, r[3]!],
-    }));
-    let next = 0;
-    const out = rule.collectRounds({
-      want: 3,
-      takeOne: () => feed[next++]!,
-      triplesOf: (samples) => [samples],
-      checkSleep: false,
-    });
+    const feed = feedOf({ n: 3, share: 0, slow: 1, noise: 0, seed: 1 });
+    feed[1]!.samples[0] = 1e9;
+    const out = collect(feed, 3, false);
     expect(out.kept).toHaveLength(3);
     expect(out.slept).toEqual([]);
   });
-  it('reads a recorded cell without its slept rounds: twelve slept heads leave it within, not open', () => {
-    const plant: Record<string, number> = {};
-    for (let i = 0; i < 12; i++) plant[`${i * 2}:2`] = 1e8;
-    const rounds = flatRounds(plant);
-    const stored = rule.cellOf(rounds, 6);
-    expect(stored.verdict).toBe(INCONCLUSIVE);
-    const cell = { ...stored, dataset: 'dense', op: 'has', answersAgree: true };
-    expect(rule.effectiveOf(cell).verdict).toBe(WITHIN);
-    expect(rule.effectiveOf({ ...cell, rounds: flatRounds() }).verdict).toBe(stored.verdict);
-    const pass = passOf([], { reads: [cell] });
-    expect(rule.gateProblems([pass])).toEqual([]);
-    const unread = passOf([], { reads: [{ ...cell, rounds: [[0, 100, 100, 100, 1, 2]] }] });
-    expect(rule.gateProblems([unread])).toEqual([
-      expect.stringContaining('dense has is inconclusive'),
+});
+
+describe('the sleep rule against a stopped process', () => {
+  /** A child that spins until it has used `spinMs` of CPU, then prints its wall and CPU milliseconds. */
+  const SPIN = [
+    'const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1e3; };',
+    'const t0 = process.hrtime.bigint(); const c0 = cpu();',
+    "console.log('started');",
+    'while (cpu() - c0 < Number(process.argv[1])) {}',
+    'console.log(JSON.stringify({ wall: Number(process.hrtime.bigint() - t0) / 1e6, cpu: cpu() - c0 }));',
+  ].join('\n');
+  const run = (spinMs: number, stopMs: number): Promise<{ wall: number; cpu: number }> =>
+    new Promise((resolveRun, reject) => {
+      const child = spawn(process.execPath, ['-e', SPIN, String(spinMs)], {
+        stdio: ['ignore', 'pipe', 'inherit'],
+      });
+      let out = '';
+      let stopped = false;
+      child.stdout.on('data', (chunk: Buffer) => {
+        out += chunk.toString();
+        if (stopMs > 0 && !stopped && out.includes('started')) {
+          stopped = true;
+          setTimeout(() => {
+            child.kill('SIGSTOP');
+            setTimeout(() => child.kill('SIGCONT'), stopMs);
+          }, 100);
+        }
+      });
+      child.on('error', reject);
+      child.on('close', () => {
+        const line = out.trim().split('\n').pop()!;
+        resolveRun(JSON.parse(line) as { wall: number; cpu: number });
+      });
+    });
+
+  it.skipIf(process.platform === 'win32')(
+    'a process stopped for two seconds mid-span: wall advances, CPU does not, and the figure is slept',
+    async () => {
+      const got = await run(400, 2000);
+      expect(got.wall).toBeGreaterThan(2000);
+      expect(got.cpu).toBeLessThan(0.5 * got.wall);
+      expect(rule.sleptFigure(got.wall, 10, got.cpu)).toBe(true);
+    },
+    20000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'the same span made 15 times longer with no stop: CPU tracks wall, and the figure is not slept even past 100 times a small median',
+    async () => {
+      let best = { wall: 0, cpu: 0 };
+      // The share is the machine's to give; the best of three keeps a busy runner from deciding the test.
+      for (let attempt = 0; attempt < 3 && best.cpu < 0.5 * best.wall + 1e-9; attempt++) {
+        const got = await run(450, 0);
+        if (attempt === 0 || got.cpu / got.wall > best.cpu / best.wall) best = got;
+      }
+      expect(best.cpu).toBeGreaterThan(0.5 * best.wall);
+      expect(best.wall).toBeGreaterThan(100 * 3);
+      expect(rule.sleptFigure(best.wall, 3, best.cpu)).toBe(false);
+    },
+    20000,
+  );
+});
+
+/** A pass with one read cell: 31 flat rounds and the given slept rows (the import cell holds none). */
+function passWithSlept(
+  sleptRows: unknown[][],
+  extra: Partial<Pass> = {},
+  cellExtra: Partial<Cell> = {},
+): Pass {
+  const cell: Cell = {
+    dataset: 'dense',
+    op: 'op0',
+    answersAgree: true,
+    verdict: WITHIN,
+    headInterval: [0, 0.0321],
+    rounds: flatRounds(),
+    slept: sleptRows as Round[],
+    ...cellExtra,
+  };
+  return passOf([], { reads: [cell], sleepRule: { factor: 100, maxOnCpu: 0.5 }, ...extra });
+}
+const headSleep = (order: number, evidence?: unknown): unknown[] => [
+  order,
+  100,
+  1e6,
+  100,
+  1,
+  2,
+  evidence ?? [{ cell: 'dense op0', subject: 'head', wall: 1e6, cpu: 10 }],
+];
+const baseSleep = (order: number): unknown[] => [
+  order,
+  1e6,
+  100,
+  100,
+  1,
+  2,
+  [{ cell: 'dense op0', subject: 'base', wall: 1e6, cpu: 10 }],
+];
+describe('the gate and slept rounds', () => {
+  const problemsOf = (
+    rows: unknown[][],
+    extra: Partial<Pass> = {},
+    cellExtra: Partial<Cell> = {},
+  ) => rule.gateProblems([passWithSlept(rows, extra, cellExtra)]);
+
+  it('passes a recorded slept round whose evidence holds against the cell', () => {
+    expect(problemsOf([headSleep(0)])).toEqual([]);
+  });
+
+  it('refuses a slept round recorded with no evidence, or with an empty list', () => {
+    for (const row of [[0, 100, 1e6, 100, 1, 2], headSleep(0, [])]) {
+      expect(problemsOf([row]), JSON.stringify(row)).toEqual([
+        expect.stringContaining('has no evidence'),
+      ]);
+    }
+  });
+
+  it('refuses evidence whose CPU is half the wall time or more, or whose wall is not over 100 times the median', () => {
+    const half = headSleep(0, [{ cell: 'dense op0', subject: 'head', wall: 1e6, cpu: 5e5 }]);
+    expect(problemsOf([half])).toEqual([
+      expect.stringContaining('head in dense op0 is not a sleep'),
     ]);
+    const near = [
+      0,
+      100,
+      9000,
+      100,
+      1,
+      2,
+      [{ cell: 'dense op0', subject: 'head', wall: 9000, cpu: 1 }],
+    ];
+    expect(problemsOf([near])).toEqual([expect.stringContaining('is not a sleep')]);
+  });
+
+  it('refuses evidence that names a figure the record does not hold (another wall, a subject, a cell)', () => {
+    for (const evidence of [
+      [{ cell: 'dense op0', subject: 'head', wall: 2e6, cpu: 10 }],
+      [{ cell: 'dense op0', subject: 'base', wall: 1e6, cpu: 10 }],
+      [{ cell: 'dense nowhere', subject: 'head', wall: 1e6, cpu: 10 }],
+      [{ cell: 'dense op0', subject: 'tail', wall: 1e6, cpu: 10 }],
+    ]) {
+      expect(problemsOf([headSleep(0, evidence)]), JSON.stringify(evidence)).toEqual([
+        expect.stringContaining('names a slept figure the record does not hold'),
+      ]);
+    }
+  });
+
+  it('refuses slept rounds in a pass that records no sleep rule, or a weaker one', () => {
+    for (const sleepRule of [
+      undefined,
+      { factor: 10, maxOnCpu: 0.5 },
+      { factor: 100, maxOnCpu: 0.9 },
+    ]) {
+      expect(problemsOf([headSleep(0)], { sleepRule }), JSON.stringify(sleepRule)).toEqual([
+        expect.stringContaining('slept rounds are recorded without a sleep rule'),
+      ]);
+    }
+  });
+
+  it('refuses a cell whose slept rounds fall on the head twice and more often than on the base and the control, unless it is explained', () => {
+    const rows = [headSleep(0), headSleep(1)];
+    expect(problemsOf(rows)).toEqual([
+      expect.stringContaining('2 slept rounds on the head against 0 on the base and the control'),
+    ]);
+    expect(problemsOf(rows, {}, { explained: 'the head was rebuilt mid-run' })).toEqual([]);
+  });
+
+  it('leaves a cell alone whose slept rounds fall on the head once, or on the head no more often than on the others', () => {
+    expect(problemsOf([headSleep(0), baseSleep(1)])).toEqual([]);
+    expect(problemsOf([headSleep(0), headSleep(1), baseSleep(2), baseSleep(3)])).toEqual([]);
+    expect(problemsOf([baseSleep(0), baseSleep(1), headSleep(2)])).toEqual([]);
+  });
+
+  it('reads a pass with no sleep rule as stored: its kept rounds are not trimmed, and a stored slower still fails', () => {
+    const spiked = flatRounds(
+      Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`${i * 2}:2`, 1e8])),
+    );
+    const stored = rule.cellOf(spiked, 6);
+    expect(stored.verdict).toBe(INCONCLUSIVE);
+    const cell = { ...stored, dataset: 'dense', op: 'op0', answersAgree: true };
+    // As stored the cell is open: it needs the note that quotes its bound, and is not read as within.
+    expect(rule.gateProblems([passOf([], { reads: [cell] })])).toEqual([
+      expect.stringContaining('dense op0 is inconclusive'),
+    ]);
+    const slower = passOf([SLOWER], {}, { rounds: spiked });
+    expect(rule.gateProblems([slower])).toEqual([expect.stringContaining('conclusively slower')]);
   });
 });
 
@@ -595,7 +924,7 @@ describe('the committed paired results', () => {
             const kind =
               c === doc.import?.moduleLoadMs ? 'import' : c.dataset === 'ops' ? 'tenth' : 'whole';
             const places = rule.figurePlaces(kind, doc.unit);
-            const left = new Set(['rounds', 'discarded', 'dataset', 'op', 'answersAgree']);
+            const left = new Set(['rounds', 'discarded', 'slept', 'dataset', 'op', 'answersAgree']);
             const figures = Object.fromEntries(Object.entries(c).filter(([k]) => !left.has(k)));
             // Through JSON, as the file holds it: a recomputed -0 is stored as 0.
             const fresh = JSON.parse(
@@ -616,21 +945,25 @@ describe('the committed paired results', () => {
   );
 
   it.skipIf(passes === null)(
-    'holds slept rounds only where a pass was recorded before the sleep rule, and reading it without them changes no verdict',
+    'holds slept rounds only in a pass that records its sleep rule, each with the evidence the rule asks for (none is held now)',
     () => {
       const found: string[] = [];
       for (const doc of passes!) {
-        if (doc.rule !== rule.RULE) continue;
         const cells = [...cellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
         for (const c of cells) {
-          const slept = c.rounds.length - rule.awakeRounds(c.rounds).length;
-          if (slept > 0) found.push(`pass ${doc.pass} ${c.dataset} ${c.op}: ${slept}`);
-          expect(rule.effectiveOf(c).verdict, `pass ${doc.pass} ${c.dataset} ${c.op}`).toBe(
-            c.verdict,
-          );
+          const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`.trim();
+          if (c.slept === undefined) continue;
+          found.push(name);
+          expect(doc.sleepRule, name).toEqual({ factor: 100, maxOnCpu: 0.5 });
+          for (const row of c.slept) {
+            expect(row, name).toHaveLength(7);
+            const evidence = row[6] as unknown as { wall: number; cpu: number }[];
+            expect(evidence.length, name).toBeGreaterThan(0);
+            for (const e of evidence) expect(e.cpu, name).toBeLessThan(0.5 * e.wall);
+          }
         }
       }
-      expect(found).toEqual(['pass 2 runs iterate: 4']);
+      expect(found).toEqual([]);
     },
   );
 

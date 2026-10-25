@@ -92,11 +92,12 @@ export function collect(values: Iterable<number>): Uint32Array {
         out[i] = v;
       }
     } catch (error) {
-      // `>>>` throws a TypeError for a BigInt or a Symbol; that is a refusal of the id like any other, and a check per
-      // value to tell it apart in the loop would cost every build. Anything else is rethrown as it is.
+      // `>>>` coerces a value that is not a number, and the coercion can throw (a BigInt, a Symbol, an object with no
+      // primitive form, a `valueOf` that throws): whatever fails on a value that is not a number is that value's
+      // refusal, and a check per value to tell it apart in the loop would cost every build. A failure on a number
+      // (its own refusal, or a getter that throws) is rethrown as it is.
       const v: unknown = list[i];
-      if (error instanceof TypeError && (typeof v === 'bigint' || typeof v === 'symbol'))
-        throw refusalOfId(v);
+      if (typeof v !== 'number') throw refusalOfId(v);
       throw error;
     }
     return out;
