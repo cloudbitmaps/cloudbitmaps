@@ -580,7 +580,11 @@
     "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the union of an iterable of bitmaps as a new bitmap, so the recipe for parts of one segment built separately needs one package"
   },
   {
-    "entry": "@cloudbitmaps/roaring/bitmap *",
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap*",
+    "reason": "the @cloudbitmaps/roaring/bitmap subpath never shipped in a release, and the class is exported from the main entry: RoaringBitmap and RoaringBitmapDeserializeOptions are imported from @cloudbitmaps/roaring only"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmapDeserializeOptions*",
     "reason": "the @cloudbitmaps/roaring/bitmap subpath never shipped in a release, and the class is exported from the main entry: RoaringBitmap and RoaringBitmapDeserializeOptions are imported from @cloudbitmaps/roaring only"
   }
 ]
