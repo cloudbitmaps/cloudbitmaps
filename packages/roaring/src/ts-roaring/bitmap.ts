@@ -59,6 +59,7 @@ import {
   containerMin,
   containerOr,
   containerRemove,
+  containersEqual,
   containersIntersect,
   fromSortedIds,
   optimize,
@@ -513,9 +514,7 @@ export class TsBitmap implements CodecBitmap {
     if (this.#size !== that.#size || this.#keys.length !== that.#keys.length) return false;
     for (let i = 0; i < this.#keys.length; i++) {
       if (this.#keys[i] !== that.#keys[i]) return false;
-      const c = this.#conts[i] as Container;
-      const d = that.#conts[i] as Container;
-      if (c.card !== d.card || containerAndCard(c, d) !== c.card) return false;
+      if (!containersEqual(this.#conts[i] as Container, that.#conts[i] as Container)) return false;
     }
     return true;
   }

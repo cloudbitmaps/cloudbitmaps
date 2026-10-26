@@ -1307,6 +1307,30 @@ export function containerAndCard(a: Container, b: Container): number {
   return b.kind === RUN && a.kind === RUN ? andCountRuns(a, b) : andCountBitsetRuns(a, b);
 }
 
+/**
+ * Whether two containers hold the same values. Two containers of one kind compare their storage and stop at the first
+ * difference: bitset words, array values, run pairs. That is exact for runs because every run container is canonical
+ * (the decoder refuses runs that touch or overlap, and {@link optimize} writes maximal runs), so one set has one list
+ * of pairs. Containers of different kinds can hold the same set (a run against an array), so they fall back to the
+ * count of the values they share.
+ */
+export function containersEqual(a: Container, b: Container): boolean {
+  if (a.card !== b.card) return false;
+  if (a.kind !== b.kind) return containerAndCard(a, b) === a.card;
+  if (a.kind === BITSET) {
+    const x = words32(a);
+    const y = words32(b);
+    for (let i = 0; i < WORDS; i++) if (x[i] !== y[i]) return false;
+    return true;
+  }
+  if (a.len !== b.len) return false;
+  const x = lows16(a);
+  const y = lows16(b);
+  const n = a.kind === ARRAY ? a.len : 2 * a.len;
+  for (let i = 0; i < n; i++) if (x[a.off + i] !== y[b.off + i]) return false;
+  return true;
+}
+
 /** Whether two arrays share a value; stops at the first. */
 function intersectsArrays(a: Container, b: Container): boolean {
   const small = a.len <= b.len ? a : b;
