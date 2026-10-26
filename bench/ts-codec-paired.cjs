@@ -109,6 +109,7 @@ const {
   collectRounds,
   SLEEP_FACTOR,
   SLEEP_MAX_ON_CPU,
+  exitWhenDone,
 } = require('./lib/paired-verdict.cjs');
 const ops = require('./lib/codec-ops.cjs');
 
@@ -838,7 +839,10 @@ function printPass(doc) {
   );
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main().then(
+  () => exitWhenDone(),
+  (err) => {
+    console.error(err);
+    exitWhenDone(1);
+  },
+);

@@ -1,15 +1,19 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TsBitmap, tsRoaringCodec } from '@/ts-roaring/bitmap';
 
 /**
  * The cells of the counting-kernels bench (`bench/lib/count-cells.cjs`): every group and operation is there, a count and
- * the build it is timed against give one answer on every cell, the stop rule keeps an operation only when it is faster on
- * every group, and the committed record (`bench/count-kernels-results.json`), when it is committed, is held to the paired
- * rule and its gate. Nothing here times anything.
+ * the build it is timed against give one answer on every cell, each cell times the call it is named for, the decision
+ * (`decisionOf`) is one for the family and fails closed on a record that is not whole, the script's gate prints one
+ * result line with its own exit status, `--check` fails when the head does not time the count, and the committed record
+ * (`bench/count-kernels-results.json`), when it is committed, is held to the paired rule and its gate. Nothing here
+ * times anything against a bound.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
@@ -17,24 +21,51 @@ const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
 type Op = { count: () => unknown; build: () => unknown };
 type Group = { name: string; ops: string[]; ids: (small: boolean) => [number[], number[]] };
 type Verdicted = { dataset: string; op: string; verdict: string; rounds: number[][] };
+type Cell = {
+  dataset: string;
+  op: string;
+  verdict: string;
+  answersAgree: boolean;
+  rounds: number[][];
+  headInterval: number[];
+  headVsReference: number;
+  controlVsBase: number;
+};
+type Pass = {
+  rule: string;
+  subjects: Record<string, string>;
+  environment: { rounds: number; smoke?: boolean };
+  ops: Cell[];
+};
+type Decision = {
+  status: 'kept' | 'derived' | 'invalid';
+  problems: string[];
+  stoppedBy: Array<{ cell: string; verdict: string }>;
+  recorded: Array<{ cell: string; verdict: string }>;
+};
 const cells = require_('./lib/count-cells.cjs') as {
   ALL_OPS: string[];
   DISJOINT_OPS: string[];
   DATASETS: string[];
+  JUDGED_OP: string;
+  EXIT: Record<string, number>;
   groups: () => Group[];
+  stored: (codec: unknown, ids: number[]) => TsBitmap;
   operationsOf: (codec: unknown, ids: [number[], number[]]) => Record<string, Op>;
   cellNames: () => string[];
-  decisionsOf: (
-    passes: Array<{ ops: Array<{ dataset: string; op: string; verdict: string }> }>,
-  ) => Array<{ op: string; kept: boolean; stoppedBy: Array<{ cell: string; verdict: string }> }>;
+  decisionOf: (
+    passes: Pass[],
+    options?: { rule?: string; problemsOf?: (passes: Pass[]) => string[] },
+  ) => Decision;
 };
 const rule = require_('./lib/paired-verdict.cjs') as {
+  RULE: string;
   FASTER: string;
   WITHIN: string;
   SLOWER: string;
   INCONCLUSIVE: string;
   cellOf: (rounds: number[][], places: number) => { verdict: string; headInterval: number[] };
-  gateProblems: (passes: unknown[]) => string[];
+  gateProblems: (passes: unknown[], options?: { verdicts?: boolean }) => string[];
 };
 
 describe('the cells', () => {
@@ -49,12 +80,9 @@ describe('the cells', () => {
     expect(cells.DATASETS).toEqual(['dense', 'sparse', 'runs', 'mixed', 'spread8k']);
   });
 
-  it('time the and, or, xor and andNot counts, intersects, a true and a false isSubset and isEqual', () => {
+  it('time the and count, intersects, a true and a false isSubset and isEqual, and no derived count', () => {
     expect(cells.ALL_OPS).toEqual([
       'andCardinality',
-      'orCardinality',
-      'andNotCardinality',
-      'xorCardinality',
       'intersects',
       'isSubsetTrue',
       'isSubsetFalse',
@@ -63,23 +91,29 @@ describe('the cells', () => {
     for (const g of cells.groups()) {
       expect(g.ops).toEqual(g.name.startsWith('disjoint') ? cells.DISJOINT_OPS : cells.ALL_OPS);
     }
-    expect(cells.cellNames()).toContain('spread8k xorCardinality');
+    expect(cells.cellNames()).toContain('spread8k intersects');
     expect(cells.cellNames()).toContain('disjoint sparse intersects');
+    expect(
+      cells.cellNames().some((n) => /orCardinality|xorCardinality|andNotCardinality/.test(n)),
+    ).toBe(false);
     expect(new Set(cells.cellNames()).size).toBe(cells.cellNames().length);
   });
 
-  it('give the count and the build one answer on every cell, and the answer the cell is named for', () => {
-    for (const g of cells.groups()) {
-      const ops = cells.operationsOf(tsRoaringCodec, g.ids(true));
-      for (const op of g.ops) {
-        const cell = ops[op] as Op;
-        expect(cell.count(), `${g.name} ${op}`).toEqual(cell.build());
-      }
-      if (g.ops.includes('isSubsetTrue')) expect((ops.isSubsetTrue as Op).count()).toBe(true);
-      if (g.ops.includes('isEqual')) expect((ops.isEqual as Op).count()).toBe(true);
-      if (g.name.startsWith('disjoint')) {
-        expect((ops.intersects as Op).count()).toBe(false);
-        expect((ops.andCardinality as Op).count()).toBe(0);
+  it('give the count and the build one answer on every cell, and the answer the cell is named for, at both scales', () => {
+    for (const small of [true, false]) {
+      for (const g of cells.groups()) {
+        const ops = cells.operationsOf(tsRoaringCodec, g.ids(small));
+        for (const op of g.ops) {
+          const cell = ops[op] as Op;
+          expect(cell.count(), `${g.name} ${op} (small ${small})`).toEqual(cell.build());
+        }
+        if (g.ops.includes('isSubsetTrue')) expect((ops.isSubsetTrue as Op).count()).toBe(true);
+        if (g.ops.includes('isSubsetFalse')) expect((ops.isSubsetFalse as Op).count()).toBe(false);
+        if (g.ops.includes('isEqual')) expect((ops.isEqual as Op).count()).toBe(true);
+        if (g.name.startsWith('disjoint')) {
+          expect((ops.intersects as Op).count()).toBe(false);
+          expect((ops.andCardinality as Op).count()).toBe(0);
+        }
       }
     }
   });
@@ -98,61 +132,349 @@ describe('the cells', () => {
     const inA = new Set(a);
     expect(b.some((v) => inA.has(v))).toBe(false);
   });
+});
 
-  it('isSubsetFalse never takes the size shortcut', () => {
-    for (const name of cells.DATASETS) {
-      const [a, b] = (cells.groups().find((g) => g.name === name) as Group).ids(true);
-      const x = TsBitmap.fromValues(a);
-      const y = TsBitmap.fromValues(b);
-      const [lo, hi] = x.size <= y.size ? [x, y] : [y, x];
-      expect(lo.size).toBeLessThanOrEqual(hi.size);
-      expect(lo.isSubset(hi), name).toBe(false);
+/** What each cell hands the bitmap method it times: the receiver and the argument of every call, recorded. */
+function callsOf(method: 'isSubset' | 'isEqual', run: () => unknown) {
+  const spy = vi.spyOn(TsBitmap.prototype, method);
+  try {
+    const result = run();
+    return {
+      result,
+      calls: spy.mock.calls.map((args, i) => ({
+        self: spy.mock.contexts[i] as TsBitmap,
+        arg: args[0] as TsBitmap,
+      })),
+    };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+describe('each cell times the call it is named for', () => {
+  const opsOf = (g: Group, small: boolean) => cells.operationsOf(tsRoaringCodec, g.ids(small));
+  const withIsSubset = cells.groups().filter((g) => g.ops.includes('isSubsetFalse'));
+
+  it('isSubsetFalse asks the smaller bitmap about the larger, a full walk that the size check does not answer', () => {
+    let unequal = 0;
+    for (const small of [true, false]) {
+      for (const g of withIsSubset) {
+        const [a, b] = g.ids(small).map((ids) => cells.stored(tsRoaringCodec, ids)) as [
+          TsBitmap,
+          TsBitmap,
+        ];
+        const ops = opsOf(g, small);
+        const { result, calls } = callsOf('isSubset', () => (ops.isSubsetFalse as Op).count());
+        expect(result, g.name).toBe(false);
+        expect(calls.length, g.name).toBe(1);
+        const [{ self, arg }] = calls as [{ self: TsBitmap; arg: TsBitmap }];
+        expect(
+          self.size,
+          `${g.name} (small ${small}): the receiver is not the larger`,
+        ).toBeLessThanOrEqual(arg.size);
+        expect(self, g.name).not.toBe(arg);
+        if (a.size !== b.size) unequal++;
+        if (a.size !== b.size) expect(self.size, g.name).toBeLessThan(arg.size);
+      }
     }
+    expect(unequal).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('isSubsetTrue asks A about the union of A and B, which is not A itself', () => {
+    for (const small of [true, false]) {
+      for (const g of withIsSubset) {
+        const ops = opsOf(g, small);
+        const { result, calls } = callsOf('isSubset', () => (ops.isSubsetTrue as Op).count());
+        expect(result, g.name).toBe(true);
+        const [{ self, arg }] = calls as [{ self: TsBitmap; arg: TsBitmap }];
+        expect(arg, g.name).not.toBe(self);
+        expect(arg.size, g.name).toBeGreaterThanOrEqual(self.size);
+        expect(arg.andCardinality(self), g.name).toBe(self.size);
+      }
+    }
+  }, 60_000);
+
+  it('isEqual compares A with a second decode of A, a different object', () => {
+    for (const small of [true, false]) {
+      for (const g of withIsSubset) {
+        const ops = opsOf(g, small);
+        const { result, calls } = callsOf('isEqual', () => (ops.isEqual as Op).count());
+        expect(result, g.name).toBe(true);
+        const [{ self, arg }] = calls as [{ self: TsBitmap; arg: TsBitmap }];
+        expect(arg, g.name).not.toBe(self);
+        expect(arg.size, g.name).toBe(self.size);
+      }
+    }
+  }, 60_000);
+});
+
+describe('the decision', () => {
+  const cell = (dataset: string, op: string, verdict: string, extra: Partial<Cell> = {}): Cell => ({
+    dataset,
+    op,
+    verdict,
+    answersAgree: true,
+    rounds: Array.from({ length: 31 }, () => [0, 1, 1, 1, 1, 1]),
+    headInterval: [-0.5, -0.4],
+    headVsReference: -0.5,
+    controlVsBase: 0,
+    ...extra,
+  });
+  const names = () => cells.groups().flatMap((g) => g.ops.map((op) => ({ dataset: g.name, op })));
+  /** A whole pass in which every cell has `verdict`, except as `overrides` says (`"<group> <op>"` to a verdict). */
+  const wholePass = (verdict: string, overrides: Record<string, string> = {}): Pass => ({
+    rule: rule.RULE,
+    subjects: { base: 'build', head: 'count', control: 'build again' },
+    environment: { rounds: 31 },
+    ops: names().map(({ dataset, op }) =>
+      cell(dataset, op, overrides[`${dataset} ${op}`] ?? verdict),
+    ),
+  });
+  const decide = (passes: Pass[]) => cells.decisionOf(passes, { rule: rule.RULE });
+
+  it('keeps the family when andCardinality is faster on every group', () => {
+    const d = decide([wholePass(rule.FASTER)]);
+    expect(d).toEqual({ status: 'kept', problems: [], stoppedBy: [], recorded: expect.any(Array) });
+    expect(d.recorded.length).toBe(cells.cellNames().length - cells.groups().length);
+  });
+
+  it('derives the family when one andCardinality group is within the bar, slower or inconclusive, naming the cell', () => {
+    for (const verdict of [rule.WITHIN, rule.SLOWER, rule.INCONCLUSIVE]) {
+      const d = decide([wholePass(rule.FASTER, { 'sparse andCardinality': verdict })]);
+      expect(d.status).toBe('derived');
+      expect(d.problems).toEqual([]);
+      expect(d.stoppedBy).toEqual([{ cell: 'sparse andCardinality', verdict }]);
+    }
+  });
+
+  it('judges andCardinality alone: a recorded cell that is slower does not derive the family', () => {
+    for (const op of ['intersects', 'isSubsetTrue', 'isSubsetFalse', 'isEqual']) {
+      const d = decide([wholePass(rule.FASTER, { [`runs ${op}`]: rule.SLOWER })]);
+      expect(d.status, op).toBe('kept');
+      expect(d.recorded).toContainEqual({ cell: `runs ${op}`, verdict: rule.SLOWER });
+    }
+  });
+
+  it('is decided by the last pass alone', () => {
+    expect(decide([wholePass(rule.WITHIN), wholePass(rule.FASTER)]).status).toBe('kept');
+    expect(decide([wholePass(rule.FASTER), wholePass(rule.WITHIN)]).status).toBe('derived');
+  });
+
+  it('is invalid, never kept, on a record that does not hold every cell of every group', () => {
+    const whole = wholePass(rule.FASTER);
+    const without = (drop: (c: Cell) => boolean): Pass => ({
+      ...whole,
+      ops: whole.ops.filter((c) => !drop(c)),
+    });
+    const partials: Array<[string, Pass]> = [
+      ['one cell only', without((c) => `${c.dataset} ${c.op}` !== 'dense andCardinality')],
+      ['one group missing', without((c) => c.dataset === 'tiny/runs')],
+      ['one operation missing', without((c) => c.op === 'isEqual')],
+      ['a disjoint group missing', without((c) => c.dataset === 'disjoint sparse')],
+      [
+        'the judged cell of one group missing',
+        without((c) => c.dataset === 'mixed' && c.op === 'andCardinality'),
+      ],
+    ];
+    for (const [label, pass] of partials) {
+      const d = decide([pass]);
+      expect(d.status, label).toBe('invalid');
+      expect(d.problems.join('\n'), label).toMatch(/has no cell/);
+    }
+  });
+
+  it('is invalid on a cell no group has', () => {
+    const pass = wholePass(rule.FASTER);
+    pass.ops.push(cell('dense', 'orCardinality', rule.FASTER));
+    expect(decide([pass]).status).toBe('invalid');
+  });
+
+  it("is invalid when a cell's answers disagree, it has no verdict, or it has too few rounds", () => {
+    const bad: Array<[string, Partial<Cell>]> = [
+      ['answers disagree', { answersAgree: false }],
+      ['no verdict', { verdict: 'malformed' }],
+      ['too few rounds', { rounds: [[0, 1, 1, 1, 1, 1]] }],
+    ];
+    for (const [label, change] of bad) {
+      const pass = wholePass(rule.FASTER);
+      pass.ops[3] = { ...(pass.ops[3] as Cell), ...change };
+      expect(decide([pass]).status, label).toBe('invalid');
+    }
+  });
+
+  it('is invalid for a smoke pass, no pass, another rule, or subjects that are not build, count, build again', () => {
+    const smoke = wholePass(rule.FASTER);
+    smoke.environment.smoke = true;
+    expect(decide([smoke]).status).toBe('invalid');
+    expect(decide([]).status).toBe('invalid');
+    expect(decide([{ ...wholePass(rule.FASTER), rule: 'older-rule' }]).status).toBe('invalid');
+    for (const subjects of [
+      { base: 'build', head: 'build', control: 'build again' },
+      { base: 'count', head: 'build', control: 'build again' },
+    ]) {
+      expect(decide([{ ...wholePass(rule.FASTER), subjects }]).status).toBe('invalid');
+    }
+  });
+
+  it('is invalid when the paired gate refuses a pass, and says what it refused', () => {
+    const d = cells.decisionOf([wholePass(rule.FASTER)], {
+      rule: rule.RULE,
+      problemsOf: () => ['pass 1: a round was kept at a high load'],
+    });
+    expect(d.status).toBe('invalid');
+    expect(d.problems).toContain('pass 1: a round was kept at a high load');
+  });
+
+  it('exits with a status of its own for kept, derived and invalid', () => {
+    expect(cells.EXIT).toEqual({ kept: 0, derived: 3, invalid: 4 });
   });
 });
 
-describe('the stop rule', () => {
-  const pass = (verdicts: Record<string, string[]>) => ({
-    ops: Object.entries(verdicts).flatMap(([op, list]) =>
-      list.map((verdict, i) => ({ dataset: `set${i}`, op, verdict })),
-    ),
+/** Runs the script's `--gate` over a record written to a scratch file: its exit status and its output. */
+function gateOf(record: unknown) {
+  const dir = mkdtempSync(join(tmpdir(), 'count-gate-'));
+  try {
+    const file = join(dir, 'results.json');
+    writeFileSync(file, JSON.stringify(record));
+    const run = spawnSync(process.execPath, [join(ROOT, 'bench', 'count-kernels.cjs'), '--gate'], {
+      cwd: ROOT,
+      env: { ...process.env, COUNT_RESULTS: file },
+      encoding: 'utf8',
+    });
+    return { code: run.status, out: run.stdout + run.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("the script's gate", () => {
+  const record = (
+    verdictOf: (dataset: string, op: string) => string,
+    keep: (c: Cell) => boolean = () => true,
+  ) => ({
+    passes: [
+      {
+        pass: 1,
+        schema: 2,
+        rule: rule.RULE,
+        subjects: { base: 'build', head: 'count', control: 'build again' },
+        environment: { rounds: 31, anyLoad: false, smoke: false },
+        ops: cells
+          .groups()
+          .flatMap((g) =>
+            g.ops.map((op) => ({
+              dataset: g.name,
+              op,
+              verdict: verdictOf(g.name, op),
+              answersAgree: true,
+              rounds: Array.from({ length: 31 }, () => [0, 1, 1, 1, 1, 1]),
+              headInterval: [-0.5, -0.4],
+              headVsReference: -0.5,
+              controlVsBase: 0,
+            })),
+          )
+          .filter(keep),
+      },
+    ],
   });
 
-  it('keeps an operation faster than building on every group', () => {
-    const d = cells.decisionsOf([pass({ andCardinality: [rule.FASTER, rule.FASTER] })]);
-    expect(d).toEqual([{ op: 'andCardinality', kept: true, stoppedBy: [] }]);
+  it('prints one result line and exits 0 when the family is kept', () => {
+    const { code, out } = gateOf(record(() => rule.FASTER));
+    expect(code).toBe(0);
+    expect(out.match(/^RESULT /gm)).toEqual(['RESULT ']);
+    expect(out).toMatch(/^RESULT kept: /m);
   });
 
-  it('does not keep it for one group that is within the bar, slower or inconclusive, and names the cell', () => {
-    for (const verdict of [rule.WITHIN, rule.SLOWER, rule.INCONCLUSIVE]) {
-      const [d] = cells.decisionsOf([pass({ intersects: [rule.FASTER, verdict, rule.FASTER] })]);
-      expect(d).toEqual({
-        op: 'intersects',
-        kept: false,
-        stoppedBy: [{ cell: 'set1 intersects', verdict }],
+  it('prints one result line naming the cell and exits 3 when the family is derived', () => {
+    const { code, out } = gateOf(
+      record((d, op) => (d === 'runs' && op === 'andCardinality' ? rule.SLOWER : rule.FASTER)),
+    );
+    expect(code).toBe(3);
+    expect(out.match(/^RESULT /gm)?.length).toBe(1);
+    expect(out).toMatch(/^RESULT derived: .*runs andCardinality/m);
+  });
+
+  it('exits 4 on a partial record, even when every cell it holds is faster', () => {
+    const { code, out } = gateOf(
+      record(
+        () => rule.FASTER,
+        (c) => c.dataset === 'dense',
+      ),
+    );
+    expect(code).toBe(4);
+    expect(out).toMatch(/^RESULT invalid: /m);
+    expect(out).not.toMatch(/^RESULT kept/m);
+  });
+
+  it("exits 4 when a cell's answers disagree", () => {
+    const r = record(() => rule.FASTER);
+    (r.passes[0] as { ops: Cell[] }).ops[0]!.answersAgree = false;
+    const { code, out } = gateOf(r);
+    expect(code).toBe(4);
+    expect(out).toMatch(/different answers/);
+  });
+
+  it('exits 4 on a record with no pass', () => {
+    expect(gateOf({ passes: [] }).code).toBe(4);
+  });
+});
+
+describe('--check asserts that the head times the count', () => {
+  /** Runs the script's `--check` with its `VARIANTS` replaced by `variants` (its children are the unchanged script). */
+  function checkWith(variants: string): Promise<{ code: number | null; out: string }> {
+    const script = join(ROOT, 'bench', 'count-kernels.cjs');
+    const loader = [
+      "const Module = require('node:module'), fs = require('node:fs'), path = require('node:path');",
+      'const file = process.argv[1];',
+      "const original = \"const VARIANTS = ['build', 'count', 'build'];\";",
+      "const text = fs.readFileSync(file, 'utf8');",
+      "if (!text.includes(original)) throw new Error('VARIANTS not found');",
+      'const m = new Module(file);',
+      'm.filename = file;',
+      'm.paths = Module._nodeModulePaths(path.dirname(file));',
+      "m._compile(text.replace(original, 'const VARIANTS = ' + process.env.TEST_VARIANTS + ';'), file);",
+    ].join('\n');
+    return new Promise((done) => {
+      const child = spawn(process.execPath, ['--expose-gc', '-e', loader, script, '--check'], {
+        cwd: ROOT,
+        env: { ...process.env, TEST_VARIANTS: variants },
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
-    }
-  });
+      let out = '';
+      child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+      child.stderr.on('data', (d: Buffer) => (out += d.toString()));
+      const timer = setTimeout(() => child.kill('SIGKILL'), 120_000);
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        done({ code, out });
+      });
+    });
+  }
 
-  it('is decided by the last pass alone, and by operation', () => {
-    const first = pass({ orCardinality: [rule.WITHIN], isEqual: [rule.FASTER] });
-    const last = pass({ orCardinality: [rule.FASTER], isEqual: [rule.SLOWER] });
-    const d = cells.decisionsOf([first, last]);
-    expect(d.find((x) => x.op === 'orCardinality')?.kept).toBe(true);
-    expect(d.find((x) => x.op === 'isEqual')?.kept).toBe(false);
-  });
+  it('passes with the build, the count and the build again', async () => {
+    const run = await checkWith("['build', 'count', 'build']");
+    expect(run.out).toContain('count-kernels --check: ok');
+    expect(run.code).toBe(0);
+  }, 130_000);
+
+  it('fails when the count is never timed', async () => {
+    const run = await checkWith("['build', 'build', 'build']");
+    expect(run.code).not.toBe(0);
+    expect(run.out).toMatch(/timed the build, not the count/);
+  }, 130_000);
 });
 
 describe('the committed count record', () => {
   const file = join(ROOT, 'bench', 'count-kernels-results.json');
-  const passes: Array<{ ops: Verdicted[]; pass: number; rule: string }> = existsSync(file)
+  const passes: Array<Pass & { pass: number }> = existsSync(file)
     ? (JSON.parse(readFileSync(file, 'utf8')) as { passes: never[] }).passes
     : [];
 
-  it.skipIf(passes.length === 0)('is recomputed from its rounds and passes the gate', () => {
-    expect(rule.gateProblems(passes)).toEqual([]);
+  it.skipIf(passes.length === 0)('is recomputed from its rounds, is whole, and decides', () => {
+    expect(rule.gateProblems(passes, { verdicts: false })).toEqual([]);
+    expect(cells.decisionOf(passes, { rule: rule.RULE }).status).not.toBe('invalid');
     for (const p of passes) {
-      for (const c of p.ops) {
+      for (const c of p.ops as unknown as Verdicted[]) {
         expect(rule.cellOf(c.rounds, 7).verdict, `pass ${p.pass} ${c.dataset} ${c.op}`).toBe(
           c.verdict,
         );
