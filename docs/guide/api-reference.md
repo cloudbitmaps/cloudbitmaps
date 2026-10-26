@@ -360,9 +360,11 @@ iterable, a string included. An operand of `andInPlace`, `orInPlace`, `andNotInP
 a `RoaringBitmap` of this copy of the package, or `ValidationError`.
 
 **Counting and comparing.** `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality` and `intersects` answer
-whichever way the release computes them: the answer is the one `roaring` gives, neither bitmap changes and nothing is
-kept. `isSubset` and `isEqual` compare by membership. Each is held to the `roaring` package's answer and to the identities `andCardinality(a, b) == and(a, b).size`,
-`intersects(a, b) == (andCardinality(a, b) > 0)` and `isSubset(a, b) == andNot(a, b).isEmpty`. No speed claim is made for them.
+from the containers of the two bitmaps with the codec's counting kernels, without building the combination: the answer is
+the one `roaring` gives, neither bitmap changes and nothing is kept. The kernels ship because the count bench's record
+(`bench/count-kernels-results.json`, four passes, in #449) has the count's median below the build's on every data set, and
+its gate prints `RESULT kept`. `isSubset` and `isEqual` compare by membership. Each is held to the `roaring` package's answer and to the identities `andCardinality(a, b) == and(a, b).size`,
+`intersects(a, b) == (andCardinality(a, b) > 0)` and `isSubset(a, b) == andNot(a, b).isEmpty`. No speed figure is stated here.
 
 **Copy-on-write.** `clone()` shares every container between the copy and the original until one side writes it, and the
 first write to a shared container copies it once. The flag is never cleared, so a bitmap that was ever cloned pays that
