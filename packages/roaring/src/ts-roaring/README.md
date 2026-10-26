@@ -270,6 +270,27 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
 `orIntoBitset` counts as it sets when the other side is an array (a per-bit test of the old word), and recounts with
 `popcountWords` when it ORs words or runs.
 
+### The many-way union: `orManyContainers`
+
+`orMany` does not fold `orInPlace`, which would recount all 2,048 words of the accumulator after every input. For each key,
+`TsBitmap.orMany` gathers the containers of every input into a list (a `Map` from key to containers, then the keys sorted)
+and `orManyContainers` unites the list in one pass:
+
+```
+  one container for the key         copied as it is (a run stays a run)
+  all arrays, at most 4,096 values  values concatenated into valueScratch, sorted, de-duplicated, copied out
+  anything else                     words = copy of the first bitset (or zeros);
+                                    for each other container:  bitset -> OR the words
+                                                               array  -> set one bit per value
+                                                               run    -> setRange per run
+                                    popcountWords(words) once; at most 4,096 -> array, else the words are the bitset
+```
+
+The count happens once, after the last input. The result is an array or a bitset, never a run (as every combine of a
+pair), in storage of its own: a copied container, a fresh array, or a fresh word array. No input container is written,
+kept or flagged, so a later write to an input or to the result never reaches the other, and the same bitmap may appear any
+number of times in the list.
+
 ### Runs
 
 - `andRuns`, `orRuns` (merges touching runs: `s <= end + 1`), `andNotRuns`: one walk over both run lists into
@@ -730,8 +751,8 @@ Everything here is a test, a workflow or a bench, not part of the module.
   `Buffer` passed as ids is refused: each byte would be read as an id.
 - **The statics and `xorInPlace`.** `RoaringBitmap.and`, `or`, `xor` and `andNot` check both operands, call the matching
   `TsBitmap` static and wrap the result. `orMany` checks every element first (so nothing is combined when one is refused),
-  then folds each into an empty bitmap with `orInPlace`: the accumulator's containers are its own and unflagged, so each
-  part is added in place, the first part is deep-copied in, and no operand is written or flagged. `xorInPlace` takes the
+  then calls `TsBitmap.orMany` (the many-way union above): the result's containers are its own and unflagged, and no
+  operand is written or flagged. `xorInPlace` takes the
   intersection with `TsBitmap.and`, ORs the operand in, and removes the intersection (three passes, no new kernel); the
   intersection is built first, so a bitmap xor-ed with itself is empty.
 - **Operands are branded.** `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics and a bitmap passed to `addMany` or `removeMany`

@@ -972,6 +972,60 @@ function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Cont
   return bitsetContainer(words, popcountWords(words));
 }
 
+/**
+ * The values of every container of `list` (two or more, all of one key), as a container of its own: an array up to
+ * 4,096 values, a bitset above, never a run. No input is written and none is kept. Arrays whose total fits an array are
+ * sorted together; anything else is OR-ed into one accumulator of words (a bitset's words, an array's values set
+ * bit by bit, a run's range filled) whose bits are counted once at the end, where a pairwise fold would count the
+ * whole accumulator after every input.
+ */
+export function orManyContainers(list: readonly Container[]): Container {
+  let total = 0;
+  let allArrays = true;
+  let firstBitset: Container | undefined;
+  for (const c of list) {
+    total += c.card;
+    if (c.kind !== ARRAY) allArrays = false;
+    if (c.kind === BITSET && firstBitset === undefined) firstBitset = c;
+  }
+  if (allArrays && total <= ARRAY_MAX_CARDINALITY) {
+    const out = values16(total);
+    let n = 0;
+    for (const c of list) {
+      out.set(lows16(c).subarray(c.off, c.off + c.len), n);
+      n += c.len;
+    }
+    const sorted = out.subarray(0, n).sort();
+    let distinct = 0;
+    for (let i = 0; i < n; i++) {
+      const v = sorted[i] as number;
+      if (i === 0 || v !== (sorted[distinct - 1] as number)) sorted[distinct++] = v;
+    }
+    return arrayContainer(sorted.slice(0, distinct), distinct);
+  }
+  const words = firstBitset === undefined ? new Uint32Array(WORDS) : words32(firstBitset).slice();
+  for (const c of list) {
+    if (c === firstBitset) continue;
+    if (c.kind === BITSET) {
+      const o = words32(c);
+      for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
+    } else if (c.kind === ARRAY) {
+      const u16 = lows16(c);
+      for (let i = c.off; i < c.off + c.len; i++) {
+        const v = u16[i] as number;
+        words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+      }
+    } else {
+      const pairs = lows16(c);
+      for (let r = 0; r < c.len; r++) {
+        const start = pairs[c.off + 2 * r] as number;
+        setRange(words, start, start + (pairs[c.off + 2 * r + 1] as number));
+      }
+    }
+  }
+  return fromWordsCard(words, popcountWords(words)) as Container;
+}
+
 /** A result built from the first `runs` pairs of `pairs`, whose values number `card`: an array up to 4,096 values, else a bitset. */
 function fromRunPairs(pairs: Uint16Array, runs: number, card: number): Container | null {
   if (card === 0) return null;
