@@ -7,4 +7,4 @@
 '@cloudbitmaps/tools': minor
 ---
 
-`@cloudbitmaps/roaring` gains a public `RoaringBitmap` class, importable from `@cloudbitmaps/roaring/bitmap` and the main entry, and `RoaringBitmap.deserialize` as the one door for portable bytes; `deserializePortable` and `ReadonlyBitmap` are removed (call `RoaringBitmap.deserialize`; the result is mutable).
+`@cloudbitmaps/roaring` gains a public `RoaringBitmap` class, exported from the main entry, and `RoaringBitmap.deserialize` as the one door for portable bytes; `deserializePortable` and `ReadonlyBitmap` are removed (call `RoaringBitmap.deserialize`; the result is mutable).

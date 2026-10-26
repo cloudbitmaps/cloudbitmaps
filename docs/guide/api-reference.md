@@ -35,7 +35,6 @@ reads nothing of a store and needs none to run:
 
 ```
 @cloudbitmaps/roaring         the store + memory/localfs backends + the errors, helpers and types an application uses, and RoaringBitmap
-@cloudbitmaps/roaring/bitmap  RoaringBitmap alone: no store, no Node builtin on its import path
 @cloudbitmaps/s3              S3Storage                                           (dep: @aws-sdk/client-s3)
 @cloudbitmaps/gcs             GcsStorage                                          (dep: @google-cloud/storage)
 @cloudbitmaps/azure-blob      AzureBlobStorage                                    (dep: @azure/storage-blob)
@@ -309,9 +308,8 @@ request; the `*Into` verbs do not take it
 
 `RoaringBitmap` is a mutable set of integers from 0 to 4,294,967,295 (unsigned 32-bit ids), in TypeScript on typed
 arrays, with no native addon. It is the codec's own bitmap behind a checked shell, and it writes and reads the portable
-Roaring bytes a store loads and holds. Import it from `@cloudbitmaps/roaring/bitmap`, an entry that loads no store and
-no Node builtin, or from `@cloudbitmaps/roaring`, which re-exports the same class. It is not designed for subclassing,
-and it is synchronous: a large `deserialize`, `toArray` or combine holds the event loop for its duration
+Roaring bytes a store loads and holds. Import it from `@cloudbitmaps/roaring`, with the store (the package's main entry also loads the store's in-process
+backends and their Node builtins). It is not designed for subclassing, and it is synchronous: a large `deserialize`, `toArray` or combine holds the event loop for its duration
 ([where to run it](production.md#what-blocks-the-event-loop-and-where-to-run-it)).
 
 <!-- typecheck-skip: a fragment: `ids` and `bytes` are the reader's -->
@@ -1327,10 +1325,6 @@ driver contracts, the ports the store's signatures stop at among them, are under
 `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` · `RetryPolicy` ·
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `Clock` ·
 `Rng` · `Entropy` · `Budget` · `BudgetOption` · `ErrorKind` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` · `PreflightResult` · `PreflightCheck`
-
-### `@cloudbitmaps/roaring/bitmap`
-
-`RoaringBitmap` · `RoaringBitmapDeserializeOptions`
 
 ### `@cloudbitmaps/core/driver-kit`
 

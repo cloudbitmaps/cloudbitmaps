@@ -51,9 +51,9 @@ To persist, pass a different **backend** as `storage`. Nothing else changes:
 | `AzureBlobStorage({ connectionString, container })` | `@cloudbitmaps/azure-blob` | Azure Blob Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
 
 `RoaringBitmap` is the codec's bitmap as a public class: a mutable set of unsigned 32-bit ids with the portable Roaring
-bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring/bitmap` to load no store and no Node
-builtin, or from `@cloudbitmaps/roaring`. A store loads one as it is, and `RoaringBitmap.deserialize(bytes)` is the one
-door for bytes you did not write.
+bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring`, the same line as the store:
+`import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring'`. A store loads one as it is, and
+`RoaringBitmap.deserialize(bytes)` is the one door for bytes you did not write.
 
 <!-- typecheck -->
 ```ts

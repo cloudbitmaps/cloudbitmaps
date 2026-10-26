@@ -7,7 +7,6 @@
     "paths": {
       "@/index": ["./packages/roaring/src/index.ts"],
       "@/roaring-codec": ["./packages/roaring/src/roaring-codec.ts"],
-      "@/bitmap": ["./packages/roaring/src/bitmap.ts"],
       "@/native-codec": ["./tests/helpers/native-codec.ts"],
       "@/option-keys": ["./packages/roaring/src/option-keys.ts"],
       "@/lease-guards": ["./packages/roaring/src/lease-guards.ts"],

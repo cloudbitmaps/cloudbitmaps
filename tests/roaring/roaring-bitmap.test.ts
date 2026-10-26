@@ -2,7 +2,6 @@ import fc from 'fast-check';
 import { RoaringBitmap32 } from 'roaring';
 import { describe, expect, it } from 'vitest';
 import { RoaringBitmap, ValidationError } from '@/index';
-import { RoaringBitmap as FromSubpath } from '@/bitmap';
 import {
   buildSet,
   crOf,
@@ -78,10 +77,6 @@ describe('RoaringBitmap against CRoaring: building', () => {
 
   it('repeated ids and unsorted ids give the set', () => {
     expect(new RoaringBitmap([5, 3, 5, 9, 3]).toArray()).toEqual([3, 5, 9]);
-  });
-
-  it('the main entry and the ./bitmap subpath give one class', () => {
-    expect(FromSubpath).toBe(RoaringBitmap);
   });
 
   it('an iterable that is not an array is read once', () => {

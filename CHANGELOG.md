@@ -34,17 +34,15 @@ so, and so do the module headers in the code.
   copy of the package is a `ValidationError`, as for the in-place combines. `RoaringBitmap.orMany` replaces the
   `orMany` of the `roaring` package in the recipe for parts of one segment built separately.
 
-- **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, importable from `@cloudbitmaps/roaring/bitmap` or the
-  main entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
+- **`RoaringBitmap`, a public bitmap class in `@cloudbitmaps/roaring`, exported from the main
+  entry.** A mutable set of unsigned 32-bit ids with the portable Roaring bytes, in TypeScript with no native code:
   `new RoaringBitmap(ids?)`, `add`, `addMany`, `remove` (answers whether the id was there), `removeMany`, `clear`,
   `clone` (copy-on-write), `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics `RoaringBitmap.and`,
   `or`, `xor`, `andNot` and `orMany` that return a new bitmap, `RoaringBitmap.deserialize`, `has`, `size`, `isEmpty`,
   `minimum` and `maximum` (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`,
-  `serialize()` and `runOptimize()`.
-  The `./bitmap` entry loads no store and imports no Node builtin, which `pnpm smoke` proves on every build. Every id
-  argument is checked and throws `ValidationError` with a message that never repeats the value, `add` and `remove` take
-  exactly one id (a second argument names `addMany` or `removeMany`), and there is no `toJSON`, so `JSON.stringify(bitmap)`
-  gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. The class does not
+  `serialize()` and `runOptimize()`. Every id argument is checked and throws `ValidationError` with a message that never
+  repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
+  is no `toJSON`, so `JSON.stringify(bitmap)` gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. The class does not
   yet have the count-only combines, `isEqual`, `isSubset` or `intersects`. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   lists each method and where it differs from the `roaring` package.
 

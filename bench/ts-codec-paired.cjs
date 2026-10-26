@@ -21,10 +21,6 @@
  *            `removeMany`, and `and`, `or`, `andNot` on six operand pairs, on dense, sparse and run chunks and on a
  *            128-container bitmap, and the four combines that return a new bitmap (`and new`, `or new`, `xor new`,
  *            `andNot new`) on the same pairs. Cells are named `ops <operation> <shape>`.
- *   import   the time to import `packages/roaring/dist/bitmap.js` against `packages/roaring/dist/index.js` (the
- *            built entries), each in a fresh process, with the main entry a second time as the control, and the bytes
- *            of an esbuild bundle (minified, and gzipped) of a one-line importer of the class from each entry.
- *            Needs `pnpm build` first; `--no-import` leaves it out.
  *
  * HOW A COMPARISON IS JUDGED
  *
@@ -72,10 +68,10 @@
  *
  * `--check` runs everything once at a tiny scale and fails only if the output is malformed or the subjects disagree;
  * it compares no duration with any bound. `--all` takes the full measurement and writes
- * `bench/ts-codec-paired-results.json` (`PAIRED_RESULTS` names another file). `--reads`, `--write`, `--ops` and
- * `--import` run one part; `--only=<text>` keeps the read cells whose "<data set> <op>" contains the text (`a|b` keeps
- * either), `--only-ops=<text>` the same for the per-operation cells. `--all` is the reads, the write path, the
- * per-operation cells and the import time. Environment: `PAIRED_ROUNDS` (at least 31), `PAIRED_ANY_LOAD=1`,
+ * `bench/ts-codec-paired-results.json` (`PAIRED_RESULTS` names another file). `--reads`, `--write` and `--ops`
+ * run one part; `--only=<text>` keeps the read cells whose "<data set> <op>" contains the text (`a|b` keeps
+ * either), `--only-ops=<text>` the same for the per-operation cells. `--all` is the reads, the write path and the
+ * per-operation cells. Environment: `PAIRED_ROUNDS` (at least 31), `PAIRED_ANY_LOAD=1`,
  * `PAIRED_SMOKE=1` (a few rounds at a tiny scale through the whole pipeline, writing a pass that the gate refuses; it
  * needs `PAIRED_RESULTS` to name a scratch file).
  *
@@ -86,7 +82,6 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const zlib = require('node:zlib');
 const { execFileSync } = require('node:child_process');
 const { bundleText, evaluate } = require('./lib/codec-engine.cjs');
 const { idsOf } = require('./lib/codec-data.cjs');
@@ -322,18 +317,6 @@ async function writeChild(file) {
   return timed;
 }
 
-/** The time to import one built entry in a fresh process (`--child-import=<file>`). */
-async function importChild(file) {
-  const url = require('node:url').pathToFileURL(file).href;
-  warmCpuClock();
-  const c0 = cpuNow();
-  const t0 = now();
-  keep[0] = await import(url);
-  const wall = now() - t0;
-  const cpu = cpuNow() - c0;
-  return { ms: +(wall / 1e6).toFixed(3), cpuMs: +(cpu / 1e6).toFixed(3) };
-}
-
 /** The codec of a subject bundle: the TypeScript codec the bundle exports. */
 const codecOf = (file) => evaluate(fs.readFileSync(file, 'utf8'), ROOT).tsRoaringCodec;
 
@@ -475,13 +458,13 @@ const rowsOf = (list, figure, toMs) =>
 
 /**
  * A cell from its kept, discarded and slept rounds. `kind` says how the figure is measured: `whole` nanoseconds, `tenth`
- * (a tenth of a nanosecond) or `import` (already milliseconds); the cell stores milliseconds. `names` are the names of the
+ * (a tenth of a nanosecond); the cell stores milliseconds. `names` are the names of the
  * cells a round measured, in the order of `triplesOf`, so a slept round's evidence names its cell as the gate finds it.
  * A slept row is a round's six figures and then its evidence: `{ cell, subject, wall, cpu }` for each slept figure.
  */
 function pairedCell(taken, figure, kind, names) {
   const decimals = kind === 'tenth' ? 1 : 0;
-  const toMs = kind === 'import' ? (x) => x : (x) => nsToMs(x, decimals);
+  const toMs = (x) => nsToMs(x, decimals);
   const cell = cellOf(rowsOf(taken.kept, figure, toMs), figurePlaces(kind, UNIT));
   const discarded = rowsOf(taken.discarded, figure, toMs);
   const slept = taken.slept.map((r) => [
@@ -607,49 +590,6 @@ function nativeCodec() {
   return evaluate(text, ROOT).roaringCodec;
 }
 
-/** The bytes of a minified esbuild bundle of a one-line importer of `RoaringBitmap` from a built entry. */
-function bundleBytes(entryFile) {
-  const { buildSync } = require('esbuild');
-  const out = buildSync({
-    stdin: {
-      contents: `export { RoaringBitmap } from ${JSON.stringify(entryFile)};`,
-      resolveDir: ROOT,
-      loader: 'js',
-    },
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    minify: true,
-    write: false,
-    logLevel: 'error',
-  }).outputFiles[0].contents;
-  return { bytes: out.length, gzipBytes: zlib.gzipSync(out).length };
-}
-
-/** The import time of the built `./bitmap` entry against the main entry; informational, outside the hot-path verdict. */
-function importMeasure() {
-  const dist = path.join(ROOT, 'packages/roaring/dist');
-  const files = [
-    path.join(dist, 'index.js'),
-    path.join(dist, 'bitmap.js'),
-    path.join(dist, 'index.js'),
-  ];
-  for (const f of files)
-    if (!fs.existsSync(f)) throw new Error(`${f} is missing: run pnpm build first`);
-  // Round layout here is [order, main entry, ./bitmap, main entry again]: the "head" column is the ./bitmap entry.
-  const taken = takeRounds(
-    (i) => JSON.parse(spawnLast([`--child-import=${files[i]}`])),
-    (samples) => [samples.map((x) => x.ms)],
-    (samples) => [samples.map((x) => x.cpuMs)],
-  );
-  return {
-    runs: ROUNDS,
-    informational: true,
-    moduleLoadMs: pairedCell(taken, (s) => s.map((x) => x.ms), 'import', ['import']),
-    bundle: { mainEntry: bundleBytes(files[0]), bitmapEntry: bundleBytes(files[1]) },
-  };
-}
-
 function environment() {
   let tree = 'unknown';
   try {
@@ -682,8 +622,6 @@ function wellFormed(doc) {
   }
   if (doc.reads !== undefined && doc.reads.length === 0) problems.push('no read cells');
   if (doc.ops !== undefined && doc.ops.length === 0) problems.push('no per-operation cells');
-  if (doc.import !== undefined && doc.import.moduleLoadMs.verdict === MALFORMED)
-    problems.push('the import time has no verdict');
   return problems;
 }
 
@@ -710,10 +648,6 @@ async function main() {
     console.log(JSON.stringify(await writeChild(arg('child-write'))));
     return;
   }
-  if (arg('child-import')) {
-    console.log(JSON.stringify(await importChild(arg('child-import'))));
-    return;
-  }
   if (arg('child-ops')) {
     console.log(JSON.stringify(opsChild(arg('child-ops'), arg('only-ops'))));
     return;
@@ -730,10 +664,9 @@ async function main() {
     console.error('PAIRED_SMOKE=1 needs PAIRED_RESULTS to name a scratch file');
     process.exit(2);
   }
-  const parts = ['reads', 'write', 'ops', 'import'].filter((p) => process.argv.includes(`--${p}`));
+  const parts = ['reads', 'write', 'ops'].filter((p) => process.argv.includes(`--${p}`));
   const everything = process.argv.includes('--all') || CHECK || parts.length === 0;
-  const run = (p) =>
-    everything ? !(p === 'import' && process.argv.includes('--no-import')) : parts.includes(p);
+  const run = (p) => everything || parts.includes(p);
   if (typeof global.gc !== 'function') {
     console.error('run with node --expose-gc');
     process.exit(2);
@@ -795,10 +728,9 @@ function takePass(run, only, onlyOps) {
   } finally {
     if (subjects) fs.rmSync(subjects.dir, { recursive: true, force: true });
   }
-  if (run('import')) doc.import = importMeasure();
   doc.finished = new Date().toISOString();
   doc.environment.loadAtEnd = twoDecimals(load1());
-  const cells = [...gatedCellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
+  const cells = gatedCellsOf(doc);
   doc.load = {
     maxLoadAtEnd: Math.max(0, ...cells.flatMap((c) => c.rounds.map((r) => r[5]))),
     discardedRounds: Math.max(0, ...cells.map((c) => (c.discarded ?? []).length)),
