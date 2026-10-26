@@ -340,15 +340,18 @@ number of times in the list.
   same on a chunk whose runs cover about half the words, so the single count stays). The trade: the small branch pays one
   bit-extraction step per result value, which is cheaper than the allocation and the 2,048-word count it replaces
   whenever the result is at most 4,096 values, the only case it is taken for.
-- Run against array for `or` (`orRunArray`): the two merge into one run list in `pairScratch` without expanding to words. For
-  each array value, `runsAfter` gallops to the first run that starts after it; the runs before are appended by one block copy
-  (only the first of them can touch the pair written last, and the one just before the value may hold or touch it), then the
-  value extends the last pair, starts a new one, or is already inside. The cardinality is the run container's plus the values
-  that were new, so nothing is counted. `runsOrPlain` then keeps a run container (a copy of the pairs) when `2 + 4 * runs` is
-  strictly under the plain body, else `fromRunPairs` builds an array or a bitset. When the array adds nothing and the caller
-  owns the first operand (`inPlace`, which the bitmap-level writers also pass for any run container, since runs are never
-  written in place), the result is the run container itself. `containerAdd` on a run container is the same edit for one
-  value (`addToRuns`: extend, join two neighbours, or insert), copying only the pairs.
+- Run against array for `or` (`orRunArray`): the two merge into one run list in `pairScratch` without expanding to words.
+  One walk takes whichever of the next run and the next value starts first, and joins it to the pair being built when they
+  touch or overlap, so the cost is the runs plus the values, with no search or view per value (a per-value search with a
+  block copy of the runs between values was tried and was slower for batches of a few hundred ids or more). A value
+  already inside what is written adds nothing, and the cardinality is the run container's plus the values that were new,
+  so nothing is counted. `runsOrPlain` then keeps a run container (a copy of the pairs) when `2 + 4 * runs` is strictly
+  under the plain body, else `fromRunPairs` builds an array or a bitset. A very large batch into many runs, whose result
+  is a bitset, pays the merge before it learns that; the expansion to words would have been cheaper there, and gives no
+  canonical kind. When the array adds nothing and the caller owns the first operand (`inPlace`, which the bitmap-level
+  writers also pass for any run container, since runs are never written in place), the result is the run container itself.
+  `containerAdd` on a run container is the same edit for one value (`addToRuns`: extend, join two neighbours, or insert),
+  copying only the pairs.
 - A run as the first operand of `andNot` with a non-run second operand: the run is expanded to words (`toWords`, which it
   owns), then the other operand's bits are set or cleared.
 
@@ -357,7 +360,9 @@ number of times in the list.
 - `containerHas`: array by binary search, bitset by bit test, run by finding the last run starting at or before the value.
 - `appendIds(c, out, at, base)`: writes ids plus `base`. An array of 32 values or more with `base === 0` is one
   widening `out.set`, a shorter one is counted out (`SMALL_IDS`: a view over a few values costs more than they do); a run
-  container is one loop that writes each id once with `base` added as it goes, no view or table per run.
+  container is written run by run: a run of fewer than `LONG_RUN` (48) values is counted out, each id written once with
+  `base` added as it goes, and a longer one is one widening copy out of a table of 0 to 65,535 (`iota`, built on the
+  first long run and kept), with `base` added over the copied ids where it is not 0.
 - `runCount`: for arrays, counts breaks in consecutive values; for bitsets, counts set bits whose lower neighbour is clear
   (a word-parallel `w & ~((w << 1) | carry)`), skipping words of all ones or none.
 - `toRun` for a bitset reads starts and ends word by word and alternates them across words; a run of one value is both at
@@ -430,6 +435,7 @@ The bitmap-level operations in section 7 call these. A count is exact: `|A and B
 | `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays`, `andCountArrays`, `intersectsArrays`, `andCountArrayRuns` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
 | `PROBE_MIN` | 32 | `andArrays` and `andCountArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
 | `SMALL_IDS` | 32 | `appendIds` | an array shorter than this is counted out; from here `base === 0` is one widening copy |
+| `LONG_RUN` | 48 | `appendIds` (runs) | a run of fewer values (counted from its start) is counted out; from here it is one widening copy out of the `iota` table |
 | `SMALL_BODY` | 64 | `putU16s` in `wire.ts` | a body of fewer `u16`s is written by a byte loop (little-endian on any machine); from here it is one view and `set` |
 | `SCRATCH_KEEP` | 65,536 | `values16`, `pairs16` | the most a scratch keeps for the life of the process |
 | `filterByRuns` rule | `a.len >= b.len` | array against runs | runs-first walk wins when values are at least as many as runs; the value walk skips runs a short array does not need |
