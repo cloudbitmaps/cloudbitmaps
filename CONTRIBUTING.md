@@ -122,11 +122,14 @@ Every change must pass these locally, and CI runs each of them on every pull req
 CI runs more than these. Its `build & test` job also holds the site and the benchmark pages to their sources
 (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,
 `bench:range-counts:check`, `bench:materialize-many-counts:check`, `bench:expected-figures:check`, `bench:check`,
-`bench:event-loop:check`, `bench:load-input:check`, `api:surface:check`), scans the tracked tree and the packed tarballs
+`bench:event-loop:check`, `bench:load-input:check`, `bench:ts-codec:check`, `bench:ts-codec-engine:check`,
+`bench:count-kernels:check`, `bench:ts-codec-paired:check`, `bench:bitmap-api:check`, `bench:bitmap-api:table:check`,
+`api:surface:check`), scans the tracked tree and the packed tarballs
 for leaks, runs the spawned `export-segments` tests against the built bin
 (`CB_REQUIRE_BUILT_BIN=1 pnpm exec vitest run tests/bin/export-segments-cli.test.ts`, after `pnpm build`), and checks
 the fuzz lockfile; separate jobs run the dependency audit, the smoke test on the declared Node
-floor, the Lambda deployability smoke, the hard RSS ceiling and the install, build and smoke on Linux, Windows and macOS.
+floor, the consumer install (the packed tarballs installed with npm in a throwaway container), the Lambda deployability
+smoke and the prebuilt layer, the hard RSS ceiling and the install, build and smoke on Linux, Windows and macOS.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) says why each one is there.
 
 `pnpm test` runs a few heavy tests at a reduced size, so a push stays cheap. A scheduled run keeps the coverage:
@@ -168,7 +171,7 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 | Path | Package | Holds |
 |---|---|---|
 | `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers (exported from `@cloudbitmaps/core/node`, the internal subpath for what needs a Node builtin), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
-| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
+| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the public `RoaringBitmap` class (0.25.0 and later), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit`, and from core's main entry the S3 and GCS drivers take only the types `Clock` and `Rng`, type-only imports the build erases — never a flavor, never a sibling |
 | `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec selection point, `@/native-codec` → the native reference codec in `tests/helpers`, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |

@@ -245,7 +245,7 @@ import { S3Storage } from '@cloudbitmaps/s3';
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
 
 // Yours: idsFromWarehouse() and engagedFromWarehouse() each yield ids (an array, a generator, a cursor), and
-// `retained` is a RoaringBitmap32 you computed.
+// `retained` is a `RoaringBitmap` you computed.
 const r = await store.load({ segment: 'vips' }, idsFromWarehouse());
 if (!r.published) console.warn({ reason: r.reason, had: r.cardinalityBefore });
 await store.load({ segment: 'engaged' }, engagedFromWarehouse()); // an operand has to exist: load it first

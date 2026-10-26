@@ -25,8 +25,9 @@
  * object never sits beside an unflagged one over the same storage.
  *
  * COMBINES, by the kinds of the pair (the result kind of a pair is a written rule: an array up to 4,096 values or a
- * bitset above, except that a run with an array stays a run while the run form is smaller, and two run containers keep
- * a run result while its body, `2 + 4 * runs` bytes, is strictly smaller than that array or bitset, so a combine of
+ * bitset above, except that an `or` of a run with an array stays a run while the run form is smaller (an and, andNot
+ * or xor of a run with an array gives an array or a bitset), and two run containers keep
+ * a run result, for every one of the four combines, while its body, `2 + 4 * runs` bytes, is strictly smaller than that array or bitset, so a combine of
  * two runs of a few long intervals does not expand them to 8 KB of words and every later operation on the result stays
  * a walk of the intervals; every run a combine writes is maximal, its runs ascending with at least one value between
  * them, as the decoder requires; a container that has no partner in the other bitmap is not combined, and `TsBitmap`

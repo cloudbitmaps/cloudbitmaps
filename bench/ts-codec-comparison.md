@@ -1,5 +1,11 @@
 # The TypeScript codec against the native one: the comparison for the decision to switch
 
+> **A record of 2026-10-22, written before the switch shipped in 0.24.0 (2026-10-23), and not updated since.** Where a
+> row below says "cannot be judged yet", "prepared, not run" or that the facade bundle loads the native addon, it says
+> what was true that day: `roaring` has since left the dependencies, and the store runs the TypeScript codec. The row
+> still open is the in-region run on this codec, which has not been made. The kernels changed after the commits named
+> here; the in-memory table of the public class ([the codec page](../docs/guide/roaring-codec.md)) is the newer figure.
+
 Every figure carries a label: **measured** (taken by a run named here), **derived** (computed from measured figures by the
 rule stated beside it) or **expected** (what the code is expected to do, not taken). The evidence is
 `bench/ts-codec-comparison-results.json`: every round of every figure, with the medians, quartiles and verdicts computed
@@ -182,7 +188,7 @@ What the table says, in the order of the gate:
 
   Derived from the paired medians (not from a ratio across runs): **on mixed four operands the smallest-first order
   slows the native codec by +7.7% per-process (quartiles +5.2% to +10.6%) and +8.8% in-process (+5.5% to +11.4%)**, with
-  controls at -0.1% and +1.1%. Why is not measured: ordering native by size changes three things at once (the `size`
+  controls at -0.1% and +1.1%. Why is not established: ordering native by size changes three things at once (the `size`
   reads, which operand is cloned, and the order of the ANDs), and nothing in the record separates them; the `size` reads
   across the addon boundary are one hypothesis. On the other cells it does not help native either: mixed two operands +1.2% and +0.1%,
   spread8k two operands -0.2% and -0.9%, spread8k four operands +2.8% and +3.8%. The spread8k four-operand in-process

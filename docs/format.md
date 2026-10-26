@@ -165,7 +165,7 @@ its run list, so a payload is `16 + 2 · cardinality`, 8,208 or `11 + 4 · runs`
 with no ids is not written, and a writer of your own must not write a zero-length payload.
 
 **Reader rules (reader today).** A reader of this library refuses touching and overlapping runs in a payload it is
-given. It reads a zero-length payload as the empty bitmap (CRoaring's decoder does), so one that arrives is not refused
+given. The store's layout check reads a zero-length payload as the empty bitmap, so one that arrives is not refused
 here; a writer of your own should not rely on that.
 
 **Which shape the writer picks (writer today).** The choice is Roaring's, made on the size of the container *body*, not

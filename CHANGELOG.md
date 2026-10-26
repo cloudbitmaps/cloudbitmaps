@@ -31,9 +31,11 @@ so, and so do the module headers in the code.
   bitmap is a subset of every bitmap); `isEqual(other)` whether they hold the same ids, by membership and not by
   container kinds or serialized bytes. The other bitmap may be this one. A value that is not a `RoaringBitmap` of this copy
   of the package is a `ValidationError`, for `isSubset` too, where the `roaring` package answers `false`. The four
-  counts and `intersects` use the codec's counting kernels, which count from the containers without building the
-  combination; the count bench's record (`bench/count-kernels-results.json`, four passes) has the count's median below the
-  build's on every data set, and its gate prints `RESULT kept`. No speed figure is stated here.
+  counts use the codec's counting kernels, which count from the containers without building the combination; the count
+  bench's record (`bench/count-kernels-results.json`) has the count's median below the build's on every data set, and its
+  gate prints `RESULT kept`. `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
+  soon as it meets a container the two bitmaps share. The speed of each, against the `roaring` package, is the table in
+  [the API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
 - **`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`, the combines that return a new bitmap, and `xorInPlace`.**
   `RoaringBitmap.and(a, b)` and the others take two bitmaps (`orMany` takes an iterable of them) and return a new one that
@@ -51,9 +53,9 @@ so, and so do the module headers in the code.
   `clone` (copy-on-write), `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics `RoaringBitmap.and`,
   `or`, `xor`, `andNot` and `orMany` that return a new bitmap, `RoaringBitmap.deserialize`, `has`, `size`, `isEmpty`,
   `minimum` and `maximum` (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`,
-  `serialize()` and `runOptimize()`. A write into a run container keeps it a run container while the run form is the
-  smaller one, so `serialize()` without `runOptimize()` can write a run container where an earlier version wrote an array
-  or a bitset: a valid encoding of the same set, and only `runOptimize()` makes the bytes depend on the set alone. Every id
+  `serialize()` and `runOptimize()`. A write into a run container, a combine of two run containers, and an `or` of a run container with an array keep
+  the result a run container while the run form is the smaller one, so `serialize()` without `runOptimize()` can write a
+  run container where an earlier version wrote an array or a bitset: a valid encoding of the same set, and only `runOptimize()` makes the bytes depend on the set alone. Every id
   argument is checked and throws `ValidationError` with a message that never
   repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
   is no `toJSON`, so `JSON.stringify(bitmap)` gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)

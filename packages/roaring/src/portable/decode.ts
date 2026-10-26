@@ -1,11 +1,11 @@
 /**
  * A dependency-free **reader** for the portable RoaringBitmap serialization.
  *
- * WHY A READER IS ENOUGH. `SegmentEngine.has()` calls exactly two codec capabilities: deserialize a chunk, and
- * test one value in it. It never reaches `add`, `remove`, `orInPlace`, `andNotInPlace`, `optimize`, `clone` or
- * `serialize`. So read-only membership over a loaded generation needs a decoder, not a whole bitmap implementation,
- * and this file is deliberately the former. It stands apart from the codec's own bitmap class (`ts-roaring/`), which
- * also decodes and mutates, so a reader that answers membership alone stays small and checkable.
+ * WHAT IT IS FOR. The store does not run this file: it decodes every chunk through the codec's own decoder in
+ * `ts-roaring/wire.ts`, and only the tests import this module. It is a second, independent reader of the same bytes,
+ * kept as a reference the tests hold the layout check and the codec's decoder against (the differential tests below
+ * decode the same inputs both ways). Membership is all it answers: a decoder, not a bitmap implementation, so it stays
+ * small and checkable, and it stands apart from the codec's bitmap class (`ts-roaring/`), which also mutates.
  *
  * WHAT IT IS NOT. There is no mutation here and there will not be. A set you can query is a much smaller and much
  * more verifiable artifact than a set you can modify. Anything wanting `add` should use the codec's bitmap.

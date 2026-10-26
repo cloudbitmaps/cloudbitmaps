@@ -122,27 +122,27 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
   deleted under the `destroyed` row ([how a load stays correct](correctness.md#how-a-load-stays-correct)).
 
 **A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
-rather than its ids. `{ bitmap }` takes anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`;
+rather than its ids. A `RoaringBitmap` (0.25.0 and later) loads as it is; `{ bitmap }` takes anything with
+`serialize('portable')`, such as `roaring`'s `RoaringBitmap32`;
 `{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
 export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
 
-The samples that build a bitmap import the `roaring` package from npm, a native bitmap library of your own (not
-`@cloudbitmaps/roaring`, which uses none), so add it to your own `package.json`: `pnpm add roaring@2.7.0` is the
-version the samples are tested against, and any version whose bitmaps have `serialize('portable')` works, since a
-load recognises a bitmap by that method. `roaring` has an install script of its own, so allow it as that package
-documents. Under pnpm a package your own `package.json` does not list cannot be imported.
+The sample builds its bitmaps with `RoaringBitmap` from `@cloudbitmaps/roaring`, which needs nothing else installed. A
+bitmap from the `roaring` package on npm (a native library of your own) loads the same way, with no change to the load:
+`pnpm add roaring@2.7.0` is the version the tests hold the codec to, any version whose bitmaps have `serialize('portable')`
+works, since a load recognises a bitmap by that method, and `roaring` has an install script of its own, so allow it as that
+package documents. Under pnpm a package your own `package.json` does not list cannot be imported.
 
 <!-- typecheck: store -->
 ```ts
-import roaring from 'roaring';
-const { RoaringBitmap32 } = roaring;
+import { RoaringBitmap } from '@cloudbitmaps/roaring';
 // Your bitmaps: conditions evaluated once each, combined in memory.
-declare const active: InstanceType<typeof RoaringBitmap32>;
-declare const churned: InstanceType<typeof RoaringBitmap32>;
+declare const active: RoaringBitmap;
+declare const churned: RoaringBitmap;
 declare const bytes: Uint8Array; // portable Roaring, from wherever you keep it
 
-const retained = RoaringBitmap32.andNot(active, churned);
-await store.load({ segment: 'audience:retained' }, { bitmap: retained });
+const retained = RoaringBitmap.andNot(active, churned);
+await store.load({ segment: 'audience:retained' }, retained);
 await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 ```
 
@@ -194,6 +194,11 @@ one that does not is expected to cost about the same. Its figures have not been 
 change is that a 12M-member load from a bitmap calls none of the per-id routes: no iteration, no build from values,
 no id split (`tests/roaring/load-no-per-id.test.ts`).
 <!-- load-input:end -->
+
+That bench is a different measurement from the in-memory table of a load of a `RoaringBitmap`
+([the class against native](roaring-codec.md#the-public-class-against-native-in-memory)), which times `store.load(ref,
+{ bitmap })` on memory storage and the `serialize` and `deserialize` inside it, and does not compare a load from ids with
+one from a bitmap.
 
 ### Parts of one segment, built separately
 

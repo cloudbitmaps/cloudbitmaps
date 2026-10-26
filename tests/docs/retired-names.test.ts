@@ -1,6 +1,7 @@
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -1154,5 +1155,155 @@ describe("the flavor's and driver-kit's hover docs name only what a reader can i
         '({@link https://www.rfc-editor.org/rfc/rfc5116 | RFC 5116}, {@link http://x.test}) and {@link DEFAULT_RETRY_POLICY}',
       ),
     ).toEqual(['DEFAULT_RETRY_POLICY']);
+  });
+});
+
+/**
+ * The names of the bitmap API this release replaced (`deserializePortable`, the `ReadonlyBitmap` type, and the
+ * `@cloudbitmaps/roaring/bitmap` subpath that never shipped) are named in two places only: the changelog's Breaking
+ * entry, which announces the removal, and the released sections of the changelog, which are history. Nowhere else a
+ * reader looks: not a page of the site (`site/**` markup and the `llms*.txt` files), not the README, `docs/**` or a
+ * package README, and not a comment or line of `packages/*` source, where a doc comment reaches a reader on hover and
+ * ships in the published `.d.ts`.
+ *
+ * The page half is also held by the lists above, which read every page; this section adds the halves they leave out
+ * (the source of the packages, and the `[Unreleased]` entries other than the Breaking one) and proves the page
+ * reading reaches the site's two kinds of file, so no page falls out of it unseen.
+ */
+const REPLACED_BITMAP_API: ReadonlyArray<{ name: string }> = [
+  { name: 'deserializePortable' },
+  { name: 'ReadonlyBitmap' },
+  // The subpath's full and shorthand spellings. The bare `./bitmap` is not here: the package's own sources import
+  // a sibling file of that name.
+  ...RETIRED.filter((r) => r.name.endsWith('/(?:dist/)?bitmap')),
+];
+
+/**
+ * The `[Unreleased]` section of a changelog without its `### Breaking` subsection: its lines kept at their numbers
+ * and every other line blank. What the section announces under Breaking is allowed to name what it removed.
+ */
+export function unreleasedOutsideBreaking(text: string): string {
+  const lines = unreleasedSection(text).split('\n');
+  let inBreaking = false;
+  return lines
+    .map((l) => {
+      if (/^### /.test(l)) inBreaking = /^### Breaking\b/.test(l);
+      return inBreaking ? '' : l;
+    })
+    .join('\n');
+}
+
+/** The source files of every package: what a hover shows and a `.d.ts` carries comes from here. */
+const packageSources = (root: string = ROOT): string[] => {
+  const out: string[] = [];
+  const packagesDir = join(root, 'packages');
+  if (!existsSync(packagesDir)) return out;
+  for (const pkg of readdirSync(packagesDir)) {
+    const src = join('packages', pkg, 'src');
+    if (existsSync(join(root, src))) {
+      out.push(...files(CODE_EXTS, join(root, src)).map((f) => join(src, f)));
+    }
+  }
+  return out.sort();
+};
+
+/** `file:line names X` for each replaced name in the given files under `root`. */
+function replacedNamesIn(root: string, paths: readonly string[]): string[] {
+  return paths.flatMap((path) =>
+    retiredNames(readFileSync(join(root, path), 'utf8'), REPLACED_BITMAP_API).map(
+      (f) => `${path}:${f.line} names ${f.name.startsWith('(?:') ? 'the subpath' : f.name}`,
+    ),
+  );
+}
+
+describe('the replaced bitmap API is named only in the changelog', () => {
+  it('reads the site, the READMEs, the docs and the packages, so the checks below cannot pass vacuously', () => {
+    const read = pages();
+    for (const page of [
+      'README.md',
+      join('site', 'llms.txt'),
+      join('site', 'flavors', 'roaring.html'),
+      join('docs', 'guide', 'roaring-codec.md'),
+      join('packages', 'roaring', 'README.md'),
+    ]) {
+      expect(existsSync(join(ROOT, page)), page).toBe(true);
+      expect(read, page).toContain(page);
+    }
+    const sources = packageSources();
+    for (const file of [
+      join('packages', 'roaring', 'src', 'bitmap.ts'),
+      join('packages', 'core', 'src', 'core', 'codec.ts'),
+    ]) {
+      expect(sources, file).toContain(file);
+    }
+  });
+
+  it('no page, README or doc names one', () => {
+    expect(replacedNamesIn(ROOT, pages())).toEqual([]);
+  });
+
+  it('no comment or line of any package source names one', () => {
+    expect(replacedNamesIn(ROOT, packageSources())).toEqual([]);
+  });
+
+  it('the changelog names them only under Breaking in [Unreleased], and in released sections', () => {
+    const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8');
+    expect(changelog).toMatch(/^### Breaking/m);
+    expect(
+      retiredNames(unreleasedOutsideBreaking(changelog), REPLACED_BITMAP_API).map(
+        (f) => `CHANGELOG.md:${f.line} names ${f.name} outside the Breaking entry`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('finds a stale line in a site page, a text page, a README and a package comment, and passes the look-alikes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'replaced-names-'));
+    try {
+      const write = (rel: string, text: string): void => {
+        mkdirSync(dirname(join(dir, rel)), { recursive: true });
+        writeFileSync(join(dir, rel), text);
+      };
+      write(
+        'site/flavors/roaring.html',
+        '<p>import from <code>@cloudbitmaps/roaring/bitmap</code></p>\n',
+      );
+      write('site/llms.txt', 'Use deserializePortable(bytes) to read bytes\n');
+      write('packages/x/README.md', 'a parameter typed ReadonlyBitmap\n');
+      write(
+        'packages/x/src/a.ts',
+        '/** Decodes with `deserializePortable`. */\nexport const a = 1;\n',
+      );
+      write('packages/x/src/b.ts', "import { t } from './bitmap';\n// see ts-roaring/bitmap.ts\n");
+      write(
+        'docs/ok.md',
+        'RoaringBitmap.deserialize(bytes), `ts-roaring/bitmap.ts`, deserializePortableX, MyReadonlyBitmap\n',
+      );
+      expect(replacedNamesIn(dir, files(PAGE_EXTS, dir))).toEqual([
+        'packages/x/README.md:1 names ReadonlyBitmap',
+        'site/flavors/roaring.html:1 names the subpath',
+        'site/llms.txt:1 names deserializePortable',
+      ]);
+      expect(replacedNamesIn(dir, packageSources(dir))).toEqual([
+        'packages/x/src/a.ts:1 names deserializePortable',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads [Unreleased] outside Breaking: a name there fails, under Breaking or in a released section it passes', () => {
+    const doc = (breaking: string, added: string, released: string): string =>
+      `# Changelog\n\n## [Unreleased]\n\n### Breaking\n\n${breaking}\n\n### Added\n\n${added}\n\n` +
+      `## [0.20.0] - 2026-01-01\n\n### Breaking\n\n${released}\n`;
+    const names = (text: string): number =>
+      retiredNames(unreleasedOutsideBreaking(text), REPLACED_BITMAP_API).length;
+    const stale = '- `deserializePortable(bytes)` reads a buffer.';
+    expect(names(doc('- a thing', stale, '- a thing'))).toBe(1);
+    expect(names(doc('- a thing', '- the `ReadonlyBitmap` type', '- a thing'))).toBe(1);
+    expect(names(doc('- a thing', '- from `@cloudbitmaps/roaring/bitmap`', '- a thing'))).toBe(1);
+    expect(names(doc(stale, '- a thing', '- a thing'))).toBe(0);
+    expect(names(doc('- a thing', '- a thing', stale))).toBe(0);
+    expect(names(doc('- a thing', '- `RoaringBitmap.deserialize(bytes)`', '- a thing'))).toBe(0);
+    expect(unreleasedOutsideBreaking('no heading here')).toBe('');
   });
 });

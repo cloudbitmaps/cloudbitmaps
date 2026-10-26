@@ -49,7 +49,10 @@ change, and the tag goes on the commit that pull request makes on `main`.
    manifests now carry, and open a new, empty `## [Unreleased]` above it. The release notes are that section:
    `scripts/changelog-section.cjs` quotes it, and refuses a tag with no `## [<version>]` heading, or an empty
    one, before anything is published. Then update every version the site, the READMEs and `docs/` state:
-   `tests/docs/version-claims.test.ts` names each one that still disagrees with the manifests.
+   `tests/docs/version-claims.test.ts` names each one that still disagrees with the manifests. Two more edits belong in
+   the same change, and no test names them: in `docs/ROADMAP.md`, each row that says "in the next release" becomes
+   **shipped** and the line that says which release "a bare shipped" means names this one; and `api-surface/allowed.json`
+   is emptied to `[]`, because a row the release base already has excuses nothing (the next change adds its own rows).
 4. **Open the pull request, and squash-merge it** once the gate is green and it is approved.
 5. **Tag the merge commit and push the tag**, once its CI run on `main` is green. Tag it by SHA, so a pull
    request that lands after it cannot take the tag instead: `gh pr view <number> --json mergeCommit -q

@@ -24,9 +24,10 @@
  *   - `safeDeserialize` runs the layout check first (`portable/layout.ts`), so the structure every operation assumes is
  *     proven before a container is built, and refuses what CRoaring's validator refuses, with `IntegrityError`;
  *   - a combine never changes its operand. A key only this bitmap holds keeps its container by reference (it can be a
- *     run), an unshared bitset's words are reused in place, and a key only the operand holds is copied in for a union;
- *     a pair of containers combines into an array or a bitset, except that two run containers keep a run result while
- *     it is the smaller form (the written rule is in `containers.ts`).
+ *     run), an unshared bitset's words are reused in place, and a key only the operand holds is copied in for a union or
+ *     an exclusive-or; a pair of containers combines into an array or a bitset, except that two run containers (for
+ *     and, or, andNot and xor) and a run with an array (for or alone) keep a run result while it is the smaller form
+ *     (the written rule is in `containers.ts`).
  *   - `clone` shares every container with the original and flags it, so the first write on either side copies it.
  *
  * `andCardinality` (and the or, xor and andNot counts derived from it), `intersects`, `isSubset` and `isEqual` answer from

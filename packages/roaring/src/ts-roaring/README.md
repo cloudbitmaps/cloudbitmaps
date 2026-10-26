@@ -79,7 +79,7 @@ for the length of one test. Nothing in `packages/` loads CRoaring.
 | `iterator.ts` | `BitmapIterator`, the ascending iterator: a class with its own state, not a generator. |
 
 ```
-  tsRoaringCodec.safeDeserialize(bytes, maxBytes, { whole? })
+  tsRoaringCodec.safeDeserialize(bytes, maxBytes, { whole?, detached? })
        |  size cap
        v
   wire.decodeContainers --> portable/layout.parsePortableLayout   (the one structural check, which the tests' native codec runs too)
@@ -141,9 +141,10 @@ Where a container's kind comes from:
   removal (`containerRemove`) first `demote`s a run container. An array
   at 4,096 values that gains one more becomes a bitset; a bitset that drops to 4,096 or fewer becomes an array
   (`fromWordsCard`).
-- The result of combining one pair of containers is an array up to 4,096 values or a bitset above, except for a run with
-  an array and for two runs. A run container combined with an array stays a run while the run form is the smaller one.
-  Two run containers keep a run result while its body, `2 + 4 * runs` bytes, is strictly smaller than the array or
+- The result of combining one pair of containers is an array up to 4,096 values or a bitset above, except for two runs
+  (for every combine: and, or, andNot, xor) and for an `or` of a run with an array. An `and`, `andNot` or `xor` of a run
+  with an array gives an array or a bitset. A run container `or`ed with an array stays a run while the run form is the
+  smaller one. Two run containers keep a run result while its body, `2 + 4 * runs` bytes, is strictly smaller than the array or
   bitset body (`runsOrPlain`, the same test a write into a run uses), because a run list of a few long intervals is much
   smaller than the 8 KiB bitset it would otherwise be expanded to, and every later `and`, `isSubset` or `intersects` on
   it then walks intervals instead of words. Every run a combine writes is maximal: `andRuns` pieces are separated because
@@ -201,7 +202,7 @@ section 7.)
 
 ## 5. Scratch buffers
 
-`containers.ts` keeps four module-scope scratch buffers:
+`containers.ts` keeps three module-scope scratch buffers:
 
 | Buffer | Size | Used by | Rule |
 |---|---|---|---|
@@ -237,8 +238,8 @@ first (array, bitset, run).
   R  R     interval intersection        interval union (touching joins)  interval difference
 ```
 
-Every result is an array up to 4,096 values, a bitset above, a run container for two run containers while that is the
-smaller form, or nothing (`null`, and the key is dropped).
+Every result is an array up to 4,096 values, a bitset above, a run container (for two run containers, and for an `or` of
+a run with an array, while that is the smaller form), or nothing (`null`, and the key is dropped).
 
 ### Exclusive-or: `containerXor`
 
@@ -429,6 +430,7 @@ The bitmap-level operations in section 7 call these. A count is exact: `|A and B
 | `ARRAY_MAX_CARDINALITY` | 4,096 | everywhere a kind is chosen | the format's own array/bitset boundary: array body `2*card` reaches the bitset's 8,192 bytes at 4,096 |
 | `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays`, `andCountArrays`, `intersectsArrays`, `andCountArrayRuns` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
 | `PROBE_MIN` | 32 | `andArrays` and `andCountArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
+| `MERGE_FIRST` | 64 | `intersectsArrays` | the merge steps a pair takes before the scratch-bitset probe: a higher value finds an early shared value without setting a bit, and a lower one reaches the probe sooner on a pair that shares nothing |
 | `SMALL_IDS` | 32 | `appendIds` | an array shorter than this is counted out; from here `base === 0` is one widening copy |
 | `SMALL_BODY` | 64 | `putU16s` in `wire.ts` | a body of fewer `u16`s is written by a byte loop (little-endian on any machine); from here it is one view and `set` |
 | `SCRATCH_KEEP` | 65,536 | `values16`, `pairs16` | the most a scratch keeps for the life of the process |
@@ -476,7 +478,7 @@ All of these are in `bitmap.ts`.
   built from runs. A pair of operands keeps its order. The cost is one `size` read per operand per chunk. The native
   codec does not set it: sorting by it made the native four-operand mixed intersect about 8% slower (measured, paired
   against native as shipped over 31 rounds: +7.7% with one codec per process, +8.8% in one process, A/A control in
-  band), and it did not make native faster on the other intersect cells measured. Why is not measured: the order
+  band), and it did not make native faster on the other intersect cells measured. Why it did not help is not established: the order
   changes the `size` reads (across the addon boundary for native), which operand is cloned and the order of the ANDs
   together.
 - **Counting without building (`andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality`, `intersects`,
@@ -559,8 +561,8 @@ Portable Roaring, little-endian throughout (`wire.ts` header; `portable/layout.t
 ```
 
 `serializeContainers` writes the run cookie when any container is a run, otherwise the no-run cookie. The empty bitmap is
-the 8-byte header (`3a 30 00 00 00 00 00 00`); the run cookie cannot state a count of zero. An empty buffer also decodes
-as the empty bitmap. A container's kind on the wire is: run if its flag is set, else bitset if `card > 4096`, else array.
+the 8-byte header (`3a 30 00 00 00 00 00 00`); the run cookie cannot state a count of zero. At the codec level an empty buffer also decodes
+as the empty bitmap (the public `RoaringBitmap.deserialize` refuses one, section 13). A container's kind on the wire is: run if its flag is set, else bitset if `card > 4096`, else array.
 
 A stored chunk payload is the one-container case of this: 16 bytes of header then the body (no run), or an 11-byte header
 for the run cookie (cookie, one flag byte, key, `card-1`, then the run count) with no offset field, because under four
@@ -727,12 +729,11 @@ Everything here is a test, a workflow or a bench, not part of the module.
   branch (31, 32 and 33 values, and 16 times the values less one, exactly and plus one, for array against array and array
   against runs); and that the probe leaves no scratch bit behind after an intersect test that hits and one that scans to the
   end (a count on an unrelated pair would see it). Each kernel was held by mutating it and watching a test fail.
-- **The store's suites on this codec.** Every suite runs on this codec by default. A vitest project, `ts-codec`, re-runs
-  the flavor's, core's, the engine's end-to-end and the memory and local-file drivers' suites with the switch pinned to
-  this codec (`tests/setup-codec-ts.ts`); a first test (`tests/roaring/codec-switch.test.ts`) fails if this codec is not
-  the one in force, and the setup fails a test in which the native codec ran when it was not meant to. A test that
-  compares the two, or needs the native binding, runs under `withNativeCodec`, and one that cannot run on this codec
-  skips itself with `codecLeg()`.
+- **The store's suites on this codec.** This codec is the store's default in every vitest project, so the flavor's,
+  core's, the engine's end-to-end and the memory and local-file drivers' suites all run on it. A first test
+  (`tests/roaring/codec-switch.test.ts`) fails if this codec is not the one in force. A test that compares the two
+  codecs, or needs the native binding, runs under `withNativeCodec` (`tests/helpers/codec-leg.ts`), which puts the native
+  codec behind the store for that test alone.
 - **Strength and nightly runs.** The oracle's property counts, its small-window subset counts and the hostile-byte
   mutation count are reduced on a pull request and full strength when `CB_TEST_STRENGTH=full`, which the nightly
   full-strength workflow sets (`tests/helpers/strength.ts`: oracle properties 40 reduced, 200 full; subsets 4,096 and
@@ -843,8 +844,8 @@ Everything here is a test, a workflow or a bench, not part of the module.
   check the operand with the brand, then answer through one switch (`COUNT_BY_KERNELS`, in `src/count-route.ts`): `true`
   calls the codec's counting members above, `false` builds the combination with the matching `TsBitmap` static and reads
   its `size` (or `isEmpty` for `intersects`). The switch is `true`: the count bench's record
-  (`bench/count-kernels-results.json`, four passes, in #449) has the count's median below the build's on every data set and
-  its gate prints `RESULT kept`; no speed figure is stated here. Both routes give the same answers and change neither operand, and the test
+  (`bench/count-kernels-results.json`) has the count's median below the build's on every data set and
+  its gate prints `RESULT kept`; the speed of each answer against native is in the generated table of the API reference. Both routes give the same answers and change neither operand, and the test
   suite runs once on each (`tests/roaring/roaring-bitmap-counts.kernels.test.ts` and `.derived.test.ts`, one shared
   suite). `isSubset` and `isEqual` always call their codec members. A non-bitmap operand is a `ValidationError` for all
   seven, `isSubset` included.

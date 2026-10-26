@@ -36,9 +36,9 @@
  * 2 KB array container, and 2.5 to 3.2 us for an 8 KB one of any kind. That is a third to a half of the CRC32C the
  * `.crbm` reader already computes over the stored payload before it gets here.
  *
- * Both decoders run it: the codec's bitmap decoder in `ts-roaring/`, before it builds a container, and the
- * membership-only reader in `decode.ts`, which builds on the layout it returns. One check in one place is what
- * keeps the two decoders from disagreeing about which bytes are a bitmap.
+ * The codec's bitmap decoder in `ts-roaring/` runs it before it builds a container. The membership-only reader in
+ * `decode.ts`, which the tests use as a second reader of the same bytes, builds on the layout it returns. One check in
+ * one place is what keeps the two decoders from disagreeing about which bytes are a bitmap.
  *
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */

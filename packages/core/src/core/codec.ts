@@ -16,9 +16,9 @@
  * different codecs, or a cached bitmap from codec A could reach codec B's in-place op. The `CloudRoaring` facade
  * mints the cache per store, so this cannot arise in normal use.)
  *
- * **Interface surface = exactly what the engine needs**, kept general enough for the known fast-follow codecs
- * (positional/rank-select access + raw-bitset interop that `@cloudbitmaps/bitset` will add live on that
- * package's own extended value type, not here — the engine never calls them). The one codec-linked concern
+ * **Interface surface = exactly what the engine needs**, and nothing a codec might one day offer: an operation the
+ * engine never calls (positional or rank/select access, say) is not on {@link CodecBitmap}, and a second codec that
+ * has such operations would carry them on its own value type. The one codec-linked concern
  * this seam intentionally leaves in the format layer is the `.crbm` **payload codec id**
  * (`PAYLOAD_CODEC_ROARING_PORTABLE` / `KNOWN_PAYLOAD_CODEC_IDS` in `crbm/format.ts`): it is stamped in the footer
  * and validated on read, as membership of a registry rather than equality with one constant, so a codec-specific
