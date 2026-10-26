@@ -70,7 +70,10 @@ const rule = require_('./lib/paired-verdict.cjs') as {
   WITHIN: string;
   SLOWER: string;
   INCONCLUSIVE: string;
-  cellOf: (rounds: number[][], places: number) => { verdict: string; headInterval: number[] };
+  cellOf: (
+    rounds: number[][],
+    places: number,
+  ) => { verdict: string; headVsReference: number; headInterval: number[] };
   gateProblems: (passes: unknown[], options?: { verdicts?: boolean }) => string[];
 };
 
