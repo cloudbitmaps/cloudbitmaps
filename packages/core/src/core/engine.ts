@@ -1930,7 +1930,7 @@ export class SegmentEngine {
         streamed.moves.moved = true;
       }
       if (read.bytes === null) return null;
-      const bitmap = decodeChunkBytes(this.codec, read.bytes, chunkKey, this.maxBitmapBytes);
+      const bitmap = decodeChunkBytes(this.codec, read.bytes, this.maxBitmapBytes);
       // Cached under the version the bytes came from, not the one the read planned under: a source that re-resolved
       // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
       // segment was invalidated while the read ran, through this engine or another sharing its invalidations.
@@ -2194,7 +2194,7 @@ export class SegmentEngine {
       }
     }
     if (!bytes) return null;
-    const bitmap = decodeChunkBytes(this.codec, bytes, ref.chunkKey, this.maxBitmapBytes);
+    const bitmap = decodeChunkBytes(this.codec, bytes, this.maxBitmapBytes);
     // A read whose entry an invalidation dropped is not cached: its bytes may be older than what a newer read cached.
     if (key !== '' && this.scope.isOpen(cacheKey, token)) this.cache?.set(key, bitmap);
     return bitmap;

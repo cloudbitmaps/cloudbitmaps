@@ -1511,10 +1511,7 @@ class Run<R> {
                   throw this.refuse(resident, `operand "${c.op.spec.name}" at chunk ${key}`);
                 }
                 held += resident;
-                decoded.set(
-                  c.op.index,
-                  decodeChunkBytes(this.codec, bytes, key, this.maxBitmapBytes),
-                );
+                decoded.set(c.op.index, decodeChunkBytes(this.codec, bytes, this.maxBitmapBytes));
               } catch (error) {
                 failOperand(c, error, victims ?? wanting(c));
               }

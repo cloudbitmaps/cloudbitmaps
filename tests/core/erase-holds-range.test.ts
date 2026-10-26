@@ -28,6 +28,13 @@ async function build(other: number[]) {
   return { storage, registry };
 }
 
+/** The bucket's object keys and the row's pointer, to prove nothing moved. */
+async function snapshot(p: Awaited<ReturnType<typeof build>>) {
+  const keys: number[] = [];
+  for await (const key of p.storage.list(SEG)) keys.push(key.generation);
+  return { keys: keys.sort(), row: await p.registry.get(SEG) };
+}
+
 const erase = (p: Awaited<ReturnType<typeof build>>) =>
   eraseIdFromSegment(SEG, ID, { ...p, codec: storeCodec, entropy: zeroEntropy });
 
@@ -35,8 +42,37 @@ describe('the erasure scan reads a stored chunk through the shared range check',
   it('refuses a stored chunk with a container key above 0 instead of reporting the id not held', async () => {
     // 65_537 sits in container 1 and has remainder 1: a lookup of remainder 1 does not see it.
     const p = await build([2, 65_537]);
-    await expect(erase(p)).rejects.toBeInstanceOf(IntegrityError);
-    await expect(erase(p)).rejects.toThrow(/65537/);
+    const err = await erase(p).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(IntegrityError);
+    // The refusal names neither the stored value nor a chunk key (which here is part of the erased id).
+    expect((err as Error).message).not.toMatch(/65537|chunk \d/);
+  });
+
+  it('writes and deletes nothing after the refusal', async () => {
+    const p = await build([2, 65_537]);
+    const calls: string[] = [];
+    const watch = <T extends object>(name: string, target: T): T =>
+      new Proxy(target, {
+        get(t, prop, receiver) {
+          const v = Reflect.get(t, prop, receiver) as unknown;
+          if (typeof v !== 'function') return v;
+          return (...args: unknown[]) => {
+            calls.push(`${name}.${String(prop)}`);
+            return (v as (...a: unknown[]) => unknown).apply(t, args);
+          };
+        },
+      });
+    const before = await snapshot(p);
+    await expect(
+      eraseIdFromSegment(SEG, ID, {
+        storage: watch('storage', p.storage),
+        registry: watch('registry', p.registry),
+        codec: storeCodec,
+        entropy: zeroEntropy,
+      }),
+    ).rejects.toBeInstanceOf(IntegrityError);
+    expect(calls.filter((c) => /put|delete|create|update|cas|write|set/i.test(c))).toEqual([]);
+    expect(await snapshot(p)).toEqual(before);
   });
 
   it('leaves a well-formed chunk unaffected: a holder is erased, a non-holder is reported not held', async () => {

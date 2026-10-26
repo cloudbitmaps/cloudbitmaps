@@ -744,7 +744,7 @@ async function holds(c: HoldsCall, generation: number): Promise<boolean | null> 
       }
       throw err;
     }
-    return bytes !== null && decodeChunkBytes(codec, bytes, chunkKey, maxBytes).has(remainder);
+    return bytes !== null && decodeChunkBytes(codec, bytes, maxBytes).has(remainder);
   } catch (err) {
     if (isNotFoundError(err)) return null;
     throw err;
@@ -1611,7 +1611,7 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
     // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
     // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
     if (bytes === null) return await notInCurrent(c);
-    const target = decodeChunkBytes(codec, bytes, chunkKey, maxBytes);
+    const target = decodeChunkBytes(codec, bytes, maxBytes);
     if (!target.has(remainder)) return await notInCurrent(c);
     target.remove(remainder);
 
@@ -2129,7 +2129,7 @@ async function* rewrite(
       }
       const bytes = item.value.bytes;
       if (bytes === null) continue; // listed but absent: nothing to carry forward
-      const bitmap = decodeChunkBytes(codec, bytes, k, maxBytes);
+      const bitmap = decodeChunkBytes(codec, bytes, maxBytes);
       yield { chunkKey: k, bitmap };
     }
   } finally {

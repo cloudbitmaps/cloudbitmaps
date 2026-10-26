@@ -66,7 +66,10 @@ so, and so do the module headers in the code.
 - **The erasure's search of the other generations range-checks the stored chunk it reads.** A chunk read there holding
   a value outside the 16-bit remainder range (a container key above 0, which the lookup of the id cannot see) was
   taken for "does not hold the id", so an erasure could report the id as not held. It now fails with `IntegrityError`,
-  as the rewrite does, through the one shared chunk check. Reaching it needs write access to the bucket.
+  as the rewrite does, through the one shared chunk check. That check's message no longer carries the stored value or
+  the chunk key (on an erasure the key is part of the id being erased): it says a chunk payload holds a value outside
+  the 16-bit remainder range, on every read path. A corrupt old generation now blocks the erasure of ids in its chunk
+  until its object is removed (the erasure guide says how). Reaching it needs write access to the bucket.
 
 ## [0.24.0] — 2026-10-23
 

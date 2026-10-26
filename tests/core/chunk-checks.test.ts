@@ -73,17 +73,29 @@ describe('checkedChunkKeys', () => {
 
 describe('assertChunkPayloadInRange', () => {
   it('accepts a maximum of exactly 65,535, and a codec that cannot answer', () => {
-    expect(() => assertChunkPayloadInRange(withMax(65_535), 3)).not.toThrow();
-    expect(() => assertChunkPayloadInRange(withMax(0), 3)).not.toThrow();
-    expect(() => assertChunkPayloadInRange(withMax(undefined), 3)).not.toThrow();
+    expect(() => assertChunkPayloadInRange(withMax(65_535))).not.toThrow();
+    expect(() => assertChunkPayloadInRange(withMax(0))).not.toThrow();
+    expect(() => assertChunkPayloadInRange(withMax(undefined))).not.toThrow();
   });
 
-  it('refuses a maximum of 65,536 and names the chunk and the value', () => {
-    expect(() => assertChunkPayloadInRange(withMax(65_536), 9)).toThrow(IntegrityError);
-    expect(() => assertChunkPayloadInRange(withMax(65_536), 9)).toThrow(
-      'chunk 9 payload holds value 65536, outside the 16-bit remainder range [0, 65535] — ' +
-        'the stored object is corrupt or was not written by this codec',
+  it('refuses a maximum of 65,536 with a message that carries neither the value nor a chunk key', () => {
+    expect(() => assertChunkPayloadInRange(withMax(65_536))).toThrow(IntegrityError);
+    expect(() => assertChunkPayloadInRange(withMax(65_536))).toThrow(
+      'a chunk payload holds a value outside the 16-bit remainder range [0, 65535] ' +
+        '(a container key other than 0) — the stored object is corrupt or was not written by this codec',
     );
+    for (const max of [65_536, 70_123, 4_000_000_000]) {
+      const message = (() => {
+        try {
+          assertChunkPayloadInRange(withMax(max));
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return '';
+      })();
+      expect(message).not.toMatch(new RegExp(String(max)));
+      expect(message).not.toMatch(/chunk \d/);
+    }
   });
 });
 
@@ -92,18 +104,18 @@ describe('decodeChunkBytes', () => {
     new RoaringBitmap32(values).serialize(SerializationFormat.portable);
 
   it('decodes a payload whose maximum is exactly 65,535', () => {
-    const bitmap = decodeChunkBytes(storeCodec, bytes([0, 65_535]), 1, 1 << 20);
+    const bitmap = decodeChunkBytes(storeCodec, bytes([0, 65_535]), 1 << 20);
     expect(bitmap.maximum?.()).toBe(65_535);
   });
 
   it('refuses a payload above 65,535', () => {
-    expect(() => decodeChunkBytes(storeCodec, bytes([65_536]), 2, 1 << 20)).toThrow(
-      /chunk 2 payload holds value 65536/,
+    expect(() => decodeChunkBytes(storeCodec, bytes([65_536]), 1 << 20)).toThrow(
+      /a chunk payload holds a value outside the 16-bit remainder range/,
     );
   });
 
   it('applies the size cap before decoding', () => {
-    expect(() => decodeChunkBytes(storeCodec, bytes([1, 2, 3]), 0, 4)).toThrow();
+    expect(() => decodeChunkBytes(storeCodec, bytes([1, 2, 3]), 4)).toThrow();
   });
 });
 
