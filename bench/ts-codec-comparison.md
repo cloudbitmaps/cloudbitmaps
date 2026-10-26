@@ -188,7 +188,7 @@ What the table says, in the order of the gate:
 
   Derived from the paired medians (not from a ratio across runs): **on mixed four operands the smallest-first order
   slows the native codec by +7.7% per-process (quartiles +5.2% to +10.6%) and +8.8% in-process (+5.5% to +11.4%)**, with
-  controls at -0.1% and +1.1%. Why is not established: ordering native by size changes three things at once (the `size`
+  controls at -0.1% and +1.1%. Why it did not help is not established (as of this record's date): ordering native by size changes three things at once (the `size`
   reads, which operand is cloned, and the order of the ANDs), and nothing in the record separates them; the `size` reads
   across the addon boundary are one hypothesis. On the other cells it does not help native either: mixed two operands +1.2% and +0.1%,
   spread8k two operands -0.2% and -0.9%, spread8k four operands +2.8% and +3.8%. The spread8k four-operand in-process

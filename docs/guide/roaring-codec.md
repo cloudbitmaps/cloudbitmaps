@@ -5,7 +5,7 @@ arrays, with no native code. This page says what that is, what it guarantees (th
 for byte) and the evidence for it, what it costs and gains against the native codec, and the one public class,
 `RoaringBitmap` (0.25.0 and later; unreleased), that lets you use it by itself.
 
-Everything here is about the next release, 0.25.0 (unreleased); a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
+Everything here is about 0.25.0 and later (unreleased); a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
 **derived** (computed from measured figures by the rule beside it) or **expected** (what the code is expected to do, not
 taken).
 

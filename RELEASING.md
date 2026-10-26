@@ -24,6 +24,7 @@ nothing at all, so those are an edit to remember rather than one a gate will ask
 ## Table of contents
 
 - [TL;DR — cutting a release](#tldr--cutting-a-release)
+- [Security checklist before the tag](#security-checklist-before-the-tag)
 - [The version bump](#the-version-bump)
 - [What the automation does](#what-the-automation-does)
 - [A manual run](#a-manual-run)
@@ -70,6 +71,25 @@ change, and the tag goes on the commit that pull request makes on `main`.
 The approval comes first: nothing in the job runs until it is given, and nothing reaches npm before it.
 After it, every check in [What the automation does](#what-the-automation-does) can still refuse the run; the
 publish step is the one that cannot be taken back.
+
+## Security checklist before the tag
+
+Walk this list on the commit the tag will go on, before step 5 above. Each line is a thing to look at, not a gate that
+runs for you.
+
+- [ ] **Dependency audit clean.** `node scripts/audit.cjs` (the release job runs it again and refuses what it refuses).
+- [ ] **CodeQL clean on `main`.** Read the default branch's code-scanning alerts: a pull request's check shows only the
+      lines it changed.
+- [ ] **The nightly fuzz is green on the release code.** The latest scheduled `fuzz-nightly` run on `main` ran on a
+      commit that holds the code being released, not on an earlier one.
+- [ ] **The leak scan is clean,** on the tracked tree (`pnpm leak-scan`) and on the packed tarballs (the release job scans
+      them too).
+- [ ] **No new `api-surface/allowed.json` row is unexplained.** Every row the release adds names the change and why it
+      was agreed.
+- [ ] **The workflows' permissions are unchanged,** or each change was reviewed: compare the `permissions:` blocks of
+      `.github/workflows/release.yml` and the others with the previous tag.
+- [ ] **The `release` environment still requires a reviewer** (repository settings, Environments), and the reviewer is not
+      the only person who can bypass it.
 
 ## The version bump
 
