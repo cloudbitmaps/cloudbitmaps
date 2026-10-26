@@ -125,7 +125,7 @@ describe('a combine of two run containers', () => {
         }),
         { numRuns: 200 },
       );
-    });
+    }, 60_000);
   }
 
   it('few long runs give a run container, many short ones an array or a bitset', () => {

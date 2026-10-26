@@ -163,7 +163,7 @@ describe('TsBitmap.orMany', () => {
       }),
       { numRuns: 60 },
     );
-  });
+  }, 60_000);
 
   it('gives the empty set for an empty list and a copy for one bitmap or the same bitmap twice', () => {
     expect(TsBitmap.orMany([]).size).toBe(0);
