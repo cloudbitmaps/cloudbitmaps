@@ -10,7 +10,8 @@
  * The gate is applied first, with the count kernels' own decision read live (`node bench/count-kernels.cjs --gate`),
  * and nothing is written when it stops the record (exit 1, or 5 when the record holds passes and none is complete:
  * only a complete pass is ever published from). `BITMAP_API_TABLE_ROOT` points either mode at a copy of the tree. While
- * the record holds no pass the regions say the table is not measured yet.
+ * the record holds no pass the regions say the table is not measured yet. The methods the maintainer accepted above
+ * 10 times native are read from `bench/bitmap-api-decisions.json`.
  */
 'use strict';
 
@@ -25,6 +26,13 @@ const ROOT = process.env.BITMAP_API_TABLE_ROOT || path.resolve(__dirname, '..');
 
 const file = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/bitmap-api-results.json'), 'utf8'));
 const passes = file.passes ?? [];
+let decisions = table.NO_DECISIONS;
+try {
+  decisions = table.readDecisions(ROOT);
+} catch (err) {
+  console.error(`bitmap-api-table: ${table.DECISIONS_FILE}: ${err.message}`);
+  process.exit(1);
+}
 const check = process.argv.includes('--check');
 let failed = false;
 
@@ -43,14 +51,14 @@ for (const page of REGION_PAGES) {
   const abs = path.join(ROOT, page);
   const text = fs.readFileSync(abs, 'utf8');
   if (check) {
-    for (const problem of table.problemsOf(page, text, file)) {
+    for (const problem of table.problemsOf(page, text, file, decisions)) {
       console.error(`bitmap-api-table: ${problem}`);
       failed = true;
     }
     continue;
   }
   if (failed) continue;
-  const next = table.withRegion(page, text, file);
+  const next = table.withRegion(page, text, file, decisions);
   if (next !== text) {
     fs.writeFileSync(abs, next);
     console.log(`bitmap-api-table: wrote ${page}`);

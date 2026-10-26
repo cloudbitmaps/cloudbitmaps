@@ -13,9 +13,17 @@
  * control of the group is in band, and a method with a cell above 10 times native is named. `problemsOf` reports every
  * disagreement of a region with the record, a figure, a commit, a Node version or a phrase included, and `phraseProblems`
  * holds every other public page to the phrase.
+ *
+ * A method above 10 times native does not ship unless the maintainer decides it does. That decision is a committed
+ * file (`bench/bitmap-api-decisions.json`: its date, the maintainer's words and the methods accepted), and the
+ * generated text names each accepted method above the bar as shipping by that decision, its figure disclosed, and
+ * keeps the "not shipped" sentence for every method above the bar that is not listed. A listed method that is not above
+ * the bar on the last complete pass is a stale acceptance, and `problemsOf` refuses it.
  */
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const verdict = require('./bitmap-api-verdict.cjs');
 
 const START = '<!-- BITMAP_API:TABLE:START -->';
@@ -24,6 +32,46 @@ const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k'];
 /** What a region says while the record holds no pass. */
 const NOT_MEASURED =
   'Not measured yet: `bench/bitmap-api-results.json` holds no pass, so this page states no figure of the class against `roaring`. The table is generated from that file by `pnpm bench:bitmap-api:table`.';
+
+/** The committed file of the maintainer's decisions, relative to the repository root. */
+const DECISIONS_FILE = 'bench/bitmap-api-decisions.json';
+/** No method accepted. */
+const NO_DECISIONS = Object.freeze({ date: null, words: '', accepted: Object.freeze([]) });
+
+/** Every way a decisions object is malformed, as messages. */
+function decisionProblems(decisions) {
+  if (decisions === null || typeof decisions !== 'object' || Array.isArray(decisions))
+    return [`${DECISIONS_FILE} must hold one object`];
+  const problems = [];
+  const { date, words, accepted } = decisions;
+  if (!Array.isArray(accepted) || accepted.some((m) => typeof m !== 'string' || m === '')) {
+    problems.push(`${DECISIONS_FILE}: accepted must be a list of method names`);
+  } else {
+    const seen = new Set();
+    for (const m of accepted) {
+      if (seen.has(m)) problems.push(`${DECISIONS_FILE}: ${m} is listed twice`);
+      seen.add(m);
+    }
+    if (accepted.length > 0) {
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date))
+        problems.push(`${DECISIONS_FILE}: a listed method needs a date as YYYY-MM-DD`);
+      if (typeof words !== 'string' || words.trim() === '')
+        problems.push(`${DECISIONS_FILE}: a listed method needs the maintainer's words`);
+    }
+  }
+  return problems;
+}
+
+/** The decisions committed under a repository root; throws when the file is missing, not JSON or malformed. */
+function readDecisions(root) {
+  const decisions = JSON.parse(fs.readFileSync(path.join(root, DECISIONS_FILE), 'utf8'));
+  const problems = decisionProblems(decisions);
+  if (problems.length > 0) throw new Error(problems.join('; '));
+  return decisions;
+}
+
+/** How the sentence about the accepted methods above the bar begins. */
+const DECIDED_PREFIX = "Shipping by the maintainer's decision of";
 
 const times = (x) => x.toFixed(2);
 const ms = (x) => (x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toFixed(3));
@@ -64,7 +112,7 @@ function ratioTable(pass, field, title, rowsFilter) {
 const rated = (pass) => verdict.cellsOfPass(pass).filter((c) => !c.malformed);
 
 /** The sentences the stop rules allow, from the groups and methods of a pass. */
-function ruleLines(pass) {
+function ruleLines(pass, decisions) {
   const cells = rated(pass);
   const groups = verdict.groupsOf(cells);
   const close = groups.filter((g) => g.close).map((g) => g.group);
@@ -86,13 +134,24 @@ function ruleLines(pass) {
     );
   }
   const over = verdict.overShipBar(cells);
-  lines.push(
-    over.length === 0
-      ? `No method is more than ${verdict.SHIP_BAR} times native on any data set.`
-      : `More than ${verdict.SHIP_BAR} times native on some data set, so not shipped unless the maintainer decides otherwise having seen this table: ${over
-          .map((o) => `\`${o.method}\` (${times(o.worst)} times, ${o.cell})`)
-          .join('; ')}.`,
-  );
+  const listed = new Set(decisions.accepted);
+  const shipping = over.filter((o) => listed.has(o.method));
+  const unlisted = over.filter((o) => !listed.has(o.method));
+  const named = (list) =>
+    list.map((o) => `\`${o.method}\` (${times(o.worst)} times, ${o.cell})`).join('; ');
+  if (over.length === 0) {
+    lines.push(`No method is more than ${verdict.SHIP_BAR} times native on any data set.`);
+  }
+  if (shipping.length > 0) {
+    lines.push(
+      `${DECIDED_PREFIX} ${decisions.date} ("${decisions.words}"), more than ${verdict.SHIP_BAR} times native on some data set and its figure disclosed: ${named(shipping)}.`,
+    );
+  }
+  if (unlisted.length > 0) {
+    lines.push(
+      `More than ${verdict.SHIP_BAR} times native on some data set, so not shipped unless the maintainer decides otherwise having seen this table: ${named(unlisted)}.`,
+    );
+  }
   return lines;
 }
 
@@ -135,7 +194,7 @@ const NOTES = [
 ];
 
 /** The text of a region for a results file: the table of its last complete pass, or `NOT_MEASURED`. */
-function render(file) {
+function render(file, decisions = NO_DECISIONS) {
   const recorded = verdict.passOfRecord(file);
   if (recorded === undefined) return NOT_MEASURED;
   const pass = verdict.fresh(recorded);
@@ -190,7 +249,7 @@ function render(file) {
       '\\* The A/A control of this cell differed from the class by more than 2%, so the figure is not resolved.',
     );
   }
-  parts.push(ruleLines(pass).join('\n'));
+  parts.push(ruleLines(pass, decisions).join('\n'));
   parts.push(countLines(pass).join('\n'));
   parts.push(
     `Notes on rows that are not a like-for-like call:\n\n${NOTES.map((n) => `- ${n}`).join('\n')}`,
@@ -214,9 +273,9 @@ function regionIn(doc, text) {
 }
 
 /** The page with its region rewritten from the record. */
-function withRegion(doc, text, file) {
+function withRegion(doc, text, file, decisions = NO_DECISIONS) {
   const { i, j } = regionIn(doc, text);
-  return `${text.slice(0, i)}\n\n${render(file)}\n\n${text.slice(j)}`;
+  return `${text.slice(0, i)}\n\n${render(file, decisions)}\n\n${text.slice(j)}`;
 }
 
 /** The text of a page's region, trimmed. */
@@ -273,8 +332,8 @@ function printedRows(region) {
  * renderer that drifted from the record would not hide a wrong figure; and the words "close to native" may stand
  * nowhere but in the region, and there only for a group that stop rule 2 allows.
  */
-function problemsOf(doc, text, file) {
-  const problems = [];
+function problemsOf(doc, text, file, decisions = NO_DECISIONS) {
+  const problems = decisionProblems(decisions).map((m) => `${doc}: ${m}`);
   let region;
   let at;
   try {
@@ -290,6 +349,10 @@ function problemsOf(doc, text, file) {
     problems.push(`${doc}: "${phrase}" stands outside the generated region`);
   }
   if (recorded === undefined) {
+    for (const m of decisions.accepted)
+      problems.push(
+        `${doc}: ${m} is accepted by the maintainer's decision, but the record holds no complete pass to be above ${verdict.SHIP_BAR} times native on`,
+      );
     if (region !== NOT_MEASURED)
       problems.push(`${doc}: the record holds no pass, so the region must say it is not measured`);
     return problems;
@@ -297,7 +360,7 @@ function problemsOf(doc, text, file) {
   const pass = verdict.fresh(recorded);
   if (region === NOT_MEASURED)
     problems.push(`${doc}: the record holds a pass, but the region says it is not measured`);
-  const expected = render(file);
+  const expected = render(file, decisions);
   if (region !== expected)
     problems.push(`${doc}: the region is not what bench/bitmap-api-results.json renders to`);
   // Read the figures back out of the page's own text.
@@ -388,10 +451,24 @@ function problemsOf(doc, text, file) {
   ) {
     problems.push(`${doc}: "${phrase}" stands more often than the generated sentences say it`);
   }
-  for (const o of verdict.overShipBar(rated(pass))) {
-    if (!region.includes(`\`${o.method}\` (${times(o.worst)} times`)) {
+  const over = verdict.overShipBar(rated(pass));
+  for (const m of decisions.accepted) {
+    if (!over.some((o) => o.method === m))
+      problems.push(
+        `${doc}: ${m} is accepted by the maintainer's decision, but it is not above ${verdict.SHIP_BAR} times native on the last complete pass`,
+      );
+  }
+  const decidedLine = region.split('\n').find((l) => l.startsWith(DECIDED_PREFIX)) ?? '';
+  const listed = new Set(decisions.accepted);
+  for (const o of over) {
+    const entry = `\`${o.method}\` (${times(o.worst)} times`;
+    if (!region.includes(entry)) {
       problems.push(
         `${doc}: ${o.method} is above ${verdict.SHIP_BAR} times native and the region does not say so`,
+      );
+    } else if (listed.has(o.method) !== decidedLine.includes(entry)) {
+      problems.push(
+        `${doc}: ${o.method} is above ${verdict.SHIP_BAR} times native and the region ${listed.has(o.method) ? 'does not say the maintainer decided it ships' : 'says the maintainer decided it ships, which the decisions file does not'}`,
       );
     }
   }
@@ -403,6 +480,10 @@ module.exports = {
   END,
   DATASETS,
   NOT_MEASURED,
+  DECISIONS_FILE,
+  NO_DECISIONS,
+  decisionProblems,
+  readDecisions,
   render,
   regionIn,
   regionText,
