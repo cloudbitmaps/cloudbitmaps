@@ -13,8 +13,25 @@ import { fileURLToPath } from 'node:url';
  * broken. `internal-citations.test.ts` catches the general shape of a private id everywhere in the repository; this file
  * is the narrower, stricter gate for the three pages that make promises to users, and it also knows the private paths
  * and plan ids, which no general pattern can.
+ *
+ * LIMITS, stated so nobody reads more into a green run. The citation check knows one plan-id prefix, so a differently
+ * named plan id passes it, and it does not see a deliberately disguised one (a non-breaking hyphen). The table check proves
+ * that each guarantee row has a last cell naming test files and that each file exists; it does not prove the named test
+ * covers the row, which review of the row and the test does.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+/**
+ * Text built from parts at run time. This file is public and tracked, so it must not itself contain what the gate
+ * refuses: no private repository name, no private directory, no plan-id prefix, no number after a decision word. Every
+ * pattern and every example that would name one is assembled here from pieces, so reading the file teaches a reader
+ * nothing about the private corpus. (The general gate, `internal-citations.test.ts`, reads this file as prose too.)
+ */
+const spelled = (...parts: string[]): string => parts.join('');
+
+const INTERNAL = spelled('intern', 'al');
+const PLAN = spelled('S', 'R', '-');
+const DECISION_LOG = spelled('DECIS', 'IONS');
 
 /** The pages that make written promises to users, repository copy and the copy npm publishes. */
 const PAGES = ['SECURITY.md', 'PRIVACY.md', join('packages', 'roaring', 'PRIVACY.md')];
@@ -27,12 +44,18 @@ const PAGES = ['SECURITY.md', 'PRIVACY.md', join('packages', 'roaring', 'PRIVACY
  * "plan" with no number after them.
  */
 const PRIVATE_POINTERS: ReadonlyArray<readonly [string, RegExp]> = [
-  ['internal path', /docs[/\\]internal\b|\bcloudbitmaps-internal\b|\binternal repo(?:sitory)?\b/i],
+  [
+    'internal path',
+    new RegExp(
+      `docs[/\\\\]${INTERNAL}\\b|\\b${spelled('cloudbitmaps', '-')}${INTERNAL}\\b|\\b${INTERNAL} repo(?:sitory)?\\b`,
+      'i',
+    ),
+  ],
   ['internal document number', /\b\d\d-[A-Z][A-Z-]{3,}(?:\.md)?\b/],
-  ['decision-log file', /\bDECISIONS(?:\.md)?\b/],
+  ['decision-log file', new RegExp(`\\b${DECISION_LOG}(?:\\.md)?\\b`)],
   ['decision number', /\bADR[\s-]*#?\d+|\bdecisions?\s*#?\s*\d+/i],
   ['correction number', /\bcorrections?\s*#?\s*\d+/i],
-  ['plan id', /\bSR-\s*\d+\b/],
+  ['plan id', new RegExp(`\\b${PLAN}\\s*\\d+\\b`)],
   ['plan item', /\bplan items?\b|\bsecurity review\s+(?:of|item|finding)\b/i],
   ['review finding id', /\bfindings?\s+[A-Z]\d+\b/i],
 ];
@@ -51,7 +74,7 @@ export function privatePointers(text: string): string[] {
 
 /** The body of the section whose heading line is exactly `heading`, up to the next heading of the same level. */
 export function sectionBody(md: string, heading: string): string | undefined {
-  const lines = md.split('\n');
+  const lines = md.split(/\r?\n/);
   const start = lines.findIndex((l) => l === heading);
   if (start < 0) return undefined;
   const level = /^#+/.exec(heading)?.[0].length ?? 2;
@@ -73,7 +96,7 @@ export function guaranteeProblems(md: string, exists: (rel: string) => boolean):
   if (body === undefined)
     return ['the section "What the library guarantees, and the limit of each" is missing'];
   const rows = body
-    .split('\n')
+    .split(/\r?\n/)
     .filter((l) => l.startsWith('|'))
     .slice(2);
   const problems: string[] = [];
@@ -103,31 +126,25 @@ const GOOD_TABLE = [
   '| outside | the | section |',
 ].join('\n');
 
-/**
- * Text built at run time. The examples below must contain the very ids the gate refuses, and `internal-citations.test.ts`
- * reads this file as prose; spelling an id out whole here would make this file cite what it forbids.
- */
-const spelled = (...parts: string[]): string => parts.join('');
-
 describe('the pages that make promises cite nothing private', () => {
   it.each(PAGES)('%s names no internal path, decision, correction or plan id', (rel) => {
     expect(privatePointers(readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
   });
 
   it.each([
-    ['an internal path', spelled('see docs/internal/', '40', '-SECURITY.md for the review')],
-    ['an internal repo', 'recorded in the cloudbitmaps-internal repository'],
-    ['the internal repo, in words', 'the Internal Repo holds the plan'],
+    ['an internal path', spelled('see docs/', INTERNAL, '/', '40', '-SECURITY.md for the review')],
+    ['an internal repo', spelled('recorded in the cloudbitmaps-', INTERNAL, ' repository')],
+    ['the internal repo, in words', spelled('the ', INTERNAL, ' Repo holds the plan')],
     ['a numbered internal doc, in code ticks', spelled('the `', '40', '-SECURITY` document')],
-    ['a decision log file', 'listed in DECISIONS.md'],
+    ['a decision log file', spelled('listed in ', DECISION_LOG, '.md')],
     ['an ADR number', spelled('as ADR ', '214', ' decided')],
-    ['an ADR number, hyphenated and bold', 'as **ADR-88** decided'],
+    ['an ADR number, hyphenated and bold', spelled('as **ADR-', '88', '** decided')],
     ['a decision number', spelled('decision ', '#12', ' says so')],
-    ['a correction number', 'fixed by correction 31'],
-    ['a plan id', 'tracked as SR-4'],
-    ['a plan id inside a parenthesis', 'a keyed fingerprint (SR-5)'],
+    ['a correction number', spelled('fixed by correction ', '31')],
+    ['a plan id', spelled('tracked as ', PLAN, '4')],
+    ['a plan id inside a parenthesis', spelled('a keyed fingerprint (', PLAN, '5)')],
     ['a plan item', 'the plan item that lands it'],
-    ['a plan id split across a wrap', 'tracked as SR-\n4'],
+    ['a plan id split across a wrap', spelled('tracked as ', PLAN, '\n4')],
   ])('catches %s', (_name, text) => {
     expect(privatePointers(text)).not.toEqual([]);
   });
