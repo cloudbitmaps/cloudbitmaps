@@ -341,6 +341,9 @@ function writeLows(c: Container, out: Uint16Array): void {
   }
 }
 
+/** An array with fewer values than this is written out by a loop, not by a view and a copy. */
+const SMALL_IDS = 32;
+
 /**
  * Write the container's ids, each plus `base`, ascending, to `out` from index `at`; returns the index after the last.
  * The one step a `toUint32Array` takes per container.
@@ -349,8 +352,8 @@ export function appendIds(c: Container, out: Uint32Array, at: number, base: numb
   if (c.kind === ARRAY) {
     const u16 = lows16(c);
     const end = c.off + c.len;
-    if (base === 0) {
-      // One widening copy.
+    if (base === 0 && c.len >= SMALL_IDS) {
+      // One widening copy (a short array is counted out instead: a view over it costs more than its ids).
       out.set(u16.subarray(c.off, end), at);
       return at + c.len;
     }
@@ -370,35 +373,14 @@ export function appendIds(c: Container, out: Uint32Array, at: number, base: numb
     }
     return at;
   }
+  // Runs: each id written once, `base` added as it goes (no view or table per run).
   const u16 = lows16(c);
   for (let r = 0; r < c.len; r++) {
     const start = u16[c.off + 2 * r] as number;
-    const last = start + (u16[c.off + 2 * r + 1] as number);
-    if (last - start < LONG_RUN) {
-      for (let v = base + start; v <= base + last; v++) out[at++] = v;
-      continue;
-    }
-    // A long run is one widening copy of `start..last` out of a table of 0..65,535, then `base` added where it is not 0.
-    const from = at;
-    out.set(iota().subarray(start, last + 1), at);
-    at += last - start + 1;
-    if (base !== 0) for (let i = from; i < at; i++) out[i] = (out[i] as number) + base;
+    const last = base + start + (u16[c.off + 2 * r + 1] as number);
+    for (let v = base + start; v <= last; v++) out[at++] = v;
   }
   return at;
-}
-
-/** A run of at least this many values (less one) is copied out of {@link iota} rather than counted out. */
-const LONG_RUN = 48;
-
-let iotaTable: Uint16Array | undefined;
-
-/** The numbers 0 to 65,535 as `u16`s, built when the first long run is expanded and kept. */
-function iota(): Uint16Array {
-  if (iotaTable === undefined) {
-    iotaTable = new Uint16Array(65_536);
-    for (let i = 0; i < 65_536; i++) iotaTable[i] = i;
-  }
-  return iotaTable;
 }
 
 /**

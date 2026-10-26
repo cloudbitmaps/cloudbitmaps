@@ -201,9 +201,6 @@ another while it holds one. Each worker thread loads its own module instance and
 is cleared by walking the values that set it (not by zeroing 2,048 words), so its cost follows the arrays, not the
 bitset's size.
 
-`iota()` is a lazily built table of 0..65,535 as `u16`s (128 KiB), used by `appendIds` to expand a long run with one
-widening copy; it is built on the first long run and kept.
-
 ## 6. The kernels
 
 The kernel for a pair is chosen by the kinds of the two operands. `containerAnd` is commutative and puts the lower kind
@@ -306,9 +303,9 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
 ### Single-container operations
 
 - `containerHas`: array by binary search, bitset by bit test, run by finding the last run starting at or before the value.
-- `appendIds(c, out, at, base)`: writes ids plus `base`. An array with `base === 0` is one widening `out.set`; a run
-  longer than 48 values (`LONG_RUN`) is one `out.set` from the `iota()` table, then `base` added if nonzero; shorter runs
-  are counted out.
+- `appendIds(c, out, at, base)`: writes ids plus `base`. An array of 32 values or more with `base === 0` is one
+  widening `out.set`, a shorter one is counted out (`SMALL_IDS`: a view over a few values costs more than they do); a run
+  container is one loop that writes each id once with `base` added as it goes, no view or table per run.
 - `runCount`: for arrays, counts breaks in consecutive values; for bitsets, counts set bits whose lower neighbour is clear
   (a word-parallel `w & ~((w << 1) | carry)`), skipping words of all ones or none.
 - `toRun` for a bitset reads starts and ends word by word and alternates them across words; a run of one value is both at
@@ -378,7 +375,8 @@ The bitmap-level operations in section 7 call these. A count is exact: `|A and B
 | `ARRAY_MAX_CARDINALITY` | 4,096 | everywhere a kind is chosen | the format's own array/bitset boundary: array body `2*card` reaches the bitset's 8,192 bytes at 4,096 |
 | `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays`, `andCountArrays`, `intersectsArrays`, `andCountArrayRuns` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
 | `PROBE_MIN` | 32 | `andArrays` and `andCountArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
-| `LONG_RUN` | 48 | `appendIds` | a run shorter than this is counted out; longer is copied from the `iota` table |
+| `SMALL_IDS` | 32 | `appendIds` | an array shorter than this is counted out; from here `base === 0` is one widening copy |
+| `SMALL_BODY` | 64 | `putU16s` in `wire.ts` | a body of fewer `u16`s is written by a byte loop (little-endian on any machine); from here it is one view and `set` |
 | `SCRATCH_KEEP` | 65,536 | `values16`, `pairs16` | the most a scratch keeps for the life of the process |
 | `filterByRuns` rule | `a.len >= b.len` | array against runs | runs-first walk wins when values are at least as many as runs; the value walk skips runs a short array does not need |
 
@@ -657,6 +655,8 @@ Everything here is a test, a workflow or a bench, not part of the module.
   copy-on-write against every mutator (before, during and with a clone during an `encodeChunks`), a bitmap combined with
   itself, and decodes that must not alias their input (a `Uint8Array`, a `Buffer`, a pooled `Buffer`, a
   `SharedArrayBuffer`, an offset subarray).
+- **The small-body loops** (`tests/roaring/small-body-loops.test.ts`): `appendIds` of run containers at every length around the
+  old table threshold and with every base, and the bytes of bodies of 0 to 70 values against CRoaring.
 - **The subset kernel** (`tests/roaring/container-subset.test.ts`): `containersSubset` and `containersIntersect` on every pair
   of kinds against a plain set, at the first and last element, and on whole bitmaps against CRoaring.
 - **The counting kernels** (`tests/roaring/count-kernels.test.ts`): `containerAndCard` and `containersIntersect` against a

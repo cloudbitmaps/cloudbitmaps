@@ -39,8 +39,20 @@ function bodySize(c: Container): number {
   return 2 + 4 * c.len;
 }
 
+/** A body of fewer `u16`s than this is written with a loop, not a view and a copy. */
+const SMALL_BODY = 64;
+
 /** Write `count` `u16`s of `src` from index `from` at byte `at` of `out`, little-endian. */
 function putU16s(out: Uint8Array, at: number, src: Uint16Array, from: number, count: number): void {
+  if (count < SMALL_BODY) {
+    // A short body is written by a loop: a view over it costs more than its bytes. Byte by byte is little-endian on any machine.
+    for (let i = 0; i < count; i++) {
+      const v = src[from + i] as number;
+      out[at++] = v & 255;
+      out[at++] = v >>> 8;
+    }
+    return;
+  }
   if (LITTLE_ENDIAN) {
     out.set(new Uint8Array(src.buffer, src.byteOffset + 2 * from, 2 * count), at);
     return;
