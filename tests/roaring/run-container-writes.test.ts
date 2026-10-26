@@ -309,3 +309,59 @@ describe('a bitmap holding run containers, written to', () => {
     expect(m.has(130)).toBe(false);
   });
 });
+
+describe('a run container written with an array, either side of the 2,047 runs where a run body stops being smaller than a bitset', () => {
+  // Runs of three values six apart, so an id lands inside a run (offset 1), joins one on its right (3) or left (5), or
+  // stands alone between two (4).
+  const OFFSETS = [1, 3, 4, 5];
+  const runsOfCount = (n: number) =>
+    sortedUnique(range(0, n).flatMap((k) => range(10 + 6 * k, 13 + 6 * k)));
+  const idsOfCount = (runCount: number, m: number) =>
+    sortedUnique(
+      range(0, m).map(
+        (j) => 10 + 6 * (j % runCount) + (OFFSETS[Math.floor(j / runCount) % 4] as number),
+      ),
+    );
+
+  // (runs, ids) pairs whose lengths sum to 2,046, 2,047, 2,048 and 2,049: the last sum whose result can still be a run body under a bitset's 8,192 bytes, and the first that cannot.
+  const splits: Array<[number, number]> = [];
+  for (const sum of [2_046, 2_047, 2_048, 2_049]) {
+    for (const r of [1, 100, 1_000, 2_000, 2_040]) splits.push([r, sum - r]);
+  }
+
+  for (const [r, m] of splits) {
+    it(`${r} runs with ${m} ids (${r + m} pairs) is canonical, adds the exact count and agrees with a plain set`, () => {
+      const base = runsOfCount(r);
+      const add = idsOfCount(r, m);
+      const want = sortedUnique([...base, ...add]);
+      const run = runs(base);
+      expect(run.len).toBe(r);
+      expectCanonical(containerOr(run, arrayOf(add), false), want, 'run | array');
+      expectCanonical(containerOr(arrayOf(add), run, false), want, 'array | run');
+      // Ids that add something are never the run container itself, even when the caller allows it.
+      const kept = containerOr(run, arrayOf(add), true);
+      expect(kept === run).toBe(want.length === base.length);
+      expectCanonical(kept, want, 'run | array, may keep');
+      // Nothing added: the run container itself when the caller allows it.
+      const again = arrayOf(add.filter((v) => base.includes(v)));
+      if (again.card > 0) {
+        expect(containerOr(run, again, true) === run).toBe(true);
+        expect(containerOr(run, again, false) === run).toBe(false);
+      }
+    });
+  }
+
+  it('a result of 2,047 runs and 6,141 values is a run container, and 2,048 runs of the same width is a bitset', () => {
+    const near = runs(runsOfCount(2_046));
+    // One alone id between two runs: 2,047 runs, a body of 8,190 bytes.
+    const a = containerOr(near, arrayOf([10 + 6 * 2_046]), false);
+    expect(a.kind).toBe(RUN);
+    expect(a.len).toBe(2_047);
+    // A second one: 2,048 runs is a body of 8,194 bytes, over the 8,192 of a bitset.
+    const b = containerOr(near, arrayOf([10 + 6 * 2_046, 10 + 6 * 2_047]), false);
+    expect(b.kind).toBe(BITSET);
+    expect(valuesOf(b)).toEqual(
+      sortedUnique([...runsOfCount(2_046), 10 + 6 * 2_046, 10 + 6 * 2_047]),
+    );
+  });
+});

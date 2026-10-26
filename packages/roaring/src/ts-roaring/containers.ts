@@ -468,14 +468,37 @@ export function appendIds(c: Container, out: Uint32Array, at: number, base: numb
     }
     return at;
   }
-  // Runs: each id written once, `base` added as it goes (no view or table per run).
+  // Runs: a short run is counted out, each id written once with `base` added as it goes; a long one is one widening copy.
   const u16 = lows16(c);
   for (let r = 0; r < c.len; r++) {
     const start = u16[c.off + 2 * r] as number;
-    const last = base + start + (u16[c.off + 2 * r + 1] as number);
-    for (let v = base + start; v <= last; v++) out[at++] = v;
+    const length = u16[c.off + 2 * r + 1] as number;
+    if (length < LONG_RUN) {
+      const last = base + start + length;
+      for (let v = base + start; v <= last; v++) out[at++] = v;
+      continue;
+    }
+    // `start..start + length` out of a table of 0..65,535, then `base` added where it is not 0.
+    const from = at;
+    out.set(iota().subarray(start, start + length + 1), at);
+    at += length + 1;
+    if (base !== 0) for (let i = from; i < at; i++) out[i] = (out[i] as number) + base;
   }
   return at;
+}
+
+/** A run of at least this many values (less one) is copied out of {@link iota} rather than counted out. */
+const LONG_RUN = 48;
+
+let iotaTable: Uint16Array | undefined;
+
+/** The numbers 0 to 65,535 as `u16`s, built when the first long run is expanded and kept. */
+function iota(): Uint16Array {
+  if (iotaTable === undefined) {
+    iotaTable = new Uint16Array(65_536);
+    for (let i = 0; i < 65_536; i++) iotaTable[i] = i;
+  }
+  return iotaTable;
 }
 
 /**
@@ -1334,8 +1357,9 @@ export function containerOr(a: Container, b: Container, inPlace = false): Contai
 }
 
 /**
- * A run container with an array's values: the two merged into a run list, built from the runs before each value in one
- * block copy, so a few values cost a search each and the copy of the list, not an expansion to 8 KB of words. The
+ * A run container with an array's values, merged in one walk over both lists: each step takes whichever of the next run
+ * and the next value starts first and appends it to the result, joining it to the pair being built when they touch or
+ * overlap. Cost is the runs plus the values, with no search or view per value, and no expansion to 8 KB of words. The
  * result is a run container while that is the smaller form (see {@link runsOrPlain}). When the array adds nothing and
  * `keep` allows, the run container itself is the result: runs are never written in place, so aliasing it is safe.
  */
@@ -1343,49 +1367,65 @@ function orRunArray(runs: Container, array: Container, keep: boolean): Container
   const x = lows16(runs);
   const v = lows16(array);
   const out = pairs16(2 * (runs.len + array.len));
-  let n = 0;
-  // The last value of the last pair written (-2 before there is one, so no value is next to it).
-  let last = -2;
+  const runEnd = runs.off + 2 * runs.len;
+  const valueEnd = array.off + array.len;
+  let r = runs.off;
+  let vi = array.off;
+  let at = 0;
+  // The pair being built, `[from, to]`; `to` is -2 before there is one, so nothing is next to it.
+  let from = 0;
+  let to = -2;
   let added = 0;
-  let i = 0;
-  for (let vi = 0; vi <= array.len; vi++) {
-    const value = vi < array.len ? (v[array.off + vi] as number) : 0x1_0000;
-    // The runs that start at or before `value`, whole: the last may hold or touch it, the ones before it end well short.
-    const k = runsAfter(x, runs.off, i, runs.len, value);
-    if (k > i) {
-      const start = x[runs.off + 2 * i] as number;
-      const end = start + (x[runs.off + 2 * i + 1] as number);
-      if (start <= last + 1) {
-        if (end > last) {
-          last = end;
-          out[2 * n - 1] = last - (out[2 * n - 2] as number);
-        }
+  while (vi < valueEnd) {
+    const value = v[vi++] as number;
+    // Every run that starts at or before the value comes first; one that reaches it holds it.
+    while (r < runEnd && (x[r] as number) <= value) {
+      const start = x[r] as number;
+      const end = start + (x[r + 1] as number);
+      r += 2;
+      if (start <= to + 1) {
+        if (end > to) to = end;
       } else {
-        out[2 * n] = start;
-        out[2 * n + 1] = end - start;
-        n++;
-        last = end;
+        if (to >= 0) {
+          out[at++] = from;
+          out[at++] = to - from;
+        }
+        from = start;
+        to = end;
       }
-      if (k - i > 1) {
-        out.set(x.subarray(runs.off + 2 * (i + 1), runs.off + 2 * k), 2 * n);
-        n += k - i - 1;
-        last = (out[2 * n - 2] as number) + (out[2 * n - 1] as number);
-      }
-      i = k;
     }
-    if (vi === array.len || value <= last) continue;
+    if (value <= to) continue;
     added++;
-    if (value === last + 1) {
-      out[2 * n - 1] = (out[2 * n - 1] as number) + 1;
+    if (value === to + 1) {
+      to = value;
     } else {
-      out[2 * n] = value;
-      out[2 * n + 1] = 0;
-      n++;
+      if (to >= 0) {
+        out[at++] = from;
+        out[at++] = to - from;
+      }
+      from = value;
+      to = value;
     }
-    last = value;
   }
+  while (r < runEnd) {
+    const start = x[r] as number;
+    const end = start + (x[r + 1] as number);
+    r += 2;
+    if (start <= to + 1) {
+      if (end > to) to = end;
+    } else {
+      if (to >= 0) {
+        out[at++] = from;
+        out[at++] = to - from;
+      }
+      from = start;
+      to = end;
+    }
+  }
+  out[at++] = from;
+  out[at++] = to - from;
   if (added === 0 && keep) return runs;
-  return runsOrPlain(out, n, runs.card + added, true);
+  return runsOrPlain(out, at >>> 1, runs.card + added, true);
 }
 
 /** The values of `a` that `b` lacks, or `null` when there are none. */

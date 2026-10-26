@@ -961,7 +961,7 @@ describe('the committed paired results', () => {
   );
 
   it.skipIf(passes === null)(
-    'holds slept rounds only in a pass that records its sleep rule, each with the evidence the rule asks for (none is held now)',
+    'holds slept rounds only in a pass that records its sleep rule, each with the evidence the rule asks for (only the sixth pass holds one)',
     () => {
       const found: string[] = [];
       for (const doc of passes!) {
@@ -979,7 +979,9 @@ describe('the committed paired results', () => {
           }
         }
       }
-      expect(found).toEqual([]);
+      // The one slept round on file is in pass 6, in every cell of the mixed data set; no earlier pass holds one.
+      expect(found.length).toBeGreaterThan(0);
+      expect(found.filter((n) => !n.startsWith('pass 6 '))).toEqual([]);
     },
   );
 
