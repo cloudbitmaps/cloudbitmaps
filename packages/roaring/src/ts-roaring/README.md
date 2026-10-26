@@ -320,12 +320,12 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
   times the values, and finds each value's run by binary search when they number 16 times or more; `andCountBitsetRuns` is `bitsInRange` per
   run (the masked popcount of the covered words); `andCountRuns` adds `hi - lo + 1` for each overlapping pair of runs.
 - Two bitsets AND into `andWords` (2,048 words, overwritten whole by every call) and are counted by `popcountWords`, the
-  Harley-Seal count the building kernels use. Counting each ANDed word with `popcount32` as it goes was slower on dense against dense when it was tried; that comparison is not recorded.
+  Harley-Seal count the building kernels use.
 - `containersIntersect` is the early-exit form: each pair kind returns at the first shared value instead of counting
-  all of them. Disjoint ranges of two arrays answer before any value is read. `intersectsArrays` chooses as `andCountArrays`
+  all of them. Disjoint ranges of two arrays answer after reading only the four end values. `intersectsArrays` chooses as `andCountArrays`
   does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a
-  merge), because a pair of similar size that shares nothing is a full scan, and the merge's unpredictable branch loses to
-  building there while the probe does not. The probe pays its set-and-clear even when the first value is shared.
+  merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count. The
+  probe pays its set-and-clear even when the first value is shared.
 
 The bitmap-level operations in section 7 call these. A count is exact: `|A and B|` is the sum over shared keys of
 `containerAndCard`, and the other counts are arithmetic on it and the two sizes.
@@ -666,11 +666,14 @@ Everything here is a test, a workflow or a bench, not part of the module.
   fails if their answers differ or a cell is missing. `pnpm bench:ts-codec-engine:check` runs every part once at tiny scale
   and fails only if the output is malformed, the codecs disagree on an answer, a store ran the wrong codec, the cache was
   not warm, or the two codecs wrote different bytes; it compares no duration with a bound. `bench/README.md` lists both.
-  `bench/count-kernels.cjs` times each counting operation against building the result and taking its size, on the five data sets
-  of the engine bench, a tiny-against-runs pair and two disjoint pairs, as a paired comparison with a second build as the
-  control; `bench/lib/count-cells.cjs` holds the cells and the stop rule. Whether a change slows the store's hot paths is the
+  `bench/count-kernels.cjs` times `andCardinality`, `intersects`, `isSubset` and `isEqual` against building the result and
+  taking its size, on the five data sets of the engine bench, a tiny-against-runs pair and two disjoint pairs, as a paired
+  comparison with a second build as the control; `bench/lib/count-cells.cjs` holds the cells and the stop rule, one decision
+  for the family: the four cardinalities and `intersects` call the kernels if `andCardinality` is faster than build-then-size on
+  every group, and are otherwise all derived by building then counting. `--gate` prints one `RESULT` line and exits 0 (kept),
+  3 (derived) or 4 (the record is incomplete or invalid). Whether a change slows the store's hot paths is the
   paired harness's question (`bench/ts-codec-paired.cjs`), not this one's. `--check` runs every cell once at a tiny scale and
-  fails if a count differs from the built result.
+  fails if a count differs from the built result, a cell is missing, or the head does not time the count.
 
 ## 12. Behaviours worth knowing
 

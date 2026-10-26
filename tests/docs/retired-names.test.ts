@@ -654,6 +654,16 @@ export function retiredNames(
   return found;
 }
 
+/** The `[Unreleased]` section of a changelog, its lines kept at their numbers and every other line blank. */
+export function unreleasedSection(text: string): string {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => /^## \[Unreleased\]/.test(l));
+  if (start < 0) return '';
+  const end = lines.findIndex((l, i) => i > start && /^## \[/.test(l));
+  // Keep the line numbers of the whole file: blank every line outside the section.
+  return lines.map((l, i) => (i > start && (end < 0 || i < end) ? l : '')).join('\n');
+}
+
 /** `file:line names X; use Y` for every name from `names` that `paths` contain, with that name's `instead`. */
 function offenders(
   paths: readonly string[],
@@ -791,6 +801,34 @@ describe('a removed export is named nowhere a reader looks', () => {
 
   it('no page names one', () => {
     expect(offenders(pages(), RETIRED)).toEqual([]);
+  });
+
+  it("the changelog's [Unreleased] section never names the subpath that never shipped", () => {
+    const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8');
+    expect(changelog).toMatch(/^## \[Unreleased\]/m);
+    const subpath = RETIRED.filter((r) => r.name.endsWith('/(?:dist/)?bitmap'));
+    expect(subpath).toHaveLength(1);
+    expect(
+      retiredNames(unreleasedSection(changelog), subpath).map(
+        (f) => `CHANGELOG.md:${f.line} names the subpath, which never shipped`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('reads only [Unreleased] of a changelog: the subpath named there fails, named in a released section passes', () => {
+    const subpath = RETIRED.filter((r) => r.name.endsWith('/(?:dist/)?bitmap'));
+    const doc = (unreleased: string, released: string): string =>
+      `# Changelog\n\n## [Unreleased]\n\n${unreleased}\n\n## [0.20.0] - 2026-01-01\n\n${released}\n`;
+    const sentence = '- `RoaringBitmap` imports from `@cloudbitmaps/roaring/bitmap`.';
+    expect(retiredNames(unreleasedSection(doc(sentence, '- a thing')), subpath)).toHaveLength(1);
+    expect(retiredNames(unreleasedSection(doc('- a thing', sentence)), subpath)).toEqual([]);
+    expect(
+      retiredNames(unreleasedSection(doc('- the `roaring/bitmap` entry', '')), subpath),
+    ).toHaveLength(1);
+    expect(
+      retiredNames(unreleasedSection(doc('- see `ts-roaring/bitmap.ts`', '')), subpath),
+    ).toEqual([]);
+    expect(unreleasedSection('no heading here')).toBe('');
   });
 
   it('reads the code, so the check below cannot pass vacuously', () => {
