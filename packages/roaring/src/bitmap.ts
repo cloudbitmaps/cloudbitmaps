@@ -325,10 +325,7 @@ export class RoaringBitmap implements Iterable<number> {
    * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
    */
   xorInPlace(other: RoaringBitmap): this {
-    const that = RoaringBitmap.#operand(other);
-    const both = TsBitmap.and(this.#bitmap, that);
-    this.#bitmap.orInPlace(that);
-    this.#bitmap.andNotInPlace(both);
+    this.#bitmap.xorInPlace(RoaringBitmap.#operand(other));
     return this;
   }
 

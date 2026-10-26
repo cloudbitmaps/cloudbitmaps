@@ -40,8 +40,8 @@ so, and so do the module headers in the code.
   owns its storage; no operand's ids change, and a result and its operands change apart afterwards. `and` keeps no
   container of either operand. `or`, `xor` and `andNot` keep a container only the first operand holds by reference,
   flagged copy-on-write, so the next write to that container, on either side, copies it once. `orMany` builds the
-  union in containers of its own and flags nothing. `xorInPlace(other)` is the symmetric difference in place, derived from
-  the intersection, a union and a removal, with no kernel of its own. An operand that is not a `RoaringBitmap` of this
+  union in containers of its own and flags nothing. `xorInPlace(other)` is the symmetric difference in place, one pass over each pair of
+  containers that share a key. An operand that is not a `RoaringBitmap` of this
   copy of the package is a `ValidationError`, as for the in-place combines. `RoaringBitmap.orMany` replaces the
   `orMany` of the `roaring` package in the recipe for parts of one segment built separately.
 
