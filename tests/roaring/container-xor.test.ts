@@ -65,14 +65,21 @@ describe('containerXor, every pair of kinds', () => {
         const want = xorOf(a, b);
         for (const kb of KINDS) {
           const owned = containerOf(BITSET, a);
-          const got = containerXor(owned, containerOf(kb, b), true);
+          const second = containerOf(kb, b);
+          const got = containerXor(owned, second, true);
           expect(got === null ? [] : valuesOf(got)).toEqual(want);
+          // the second operand is read, never written
+          expect(valuesOf(second)).toEqual(b);
         }
         for (const ka of [ARRAY, RUN] as const) {
           const first = containerOf(ka, a);
-          const got = containerXor(first, containerOf(BITSET, b), true);
+          const second = containerOf(BITSET, b);
+          const got = containerXor(first, second, true);
           expect(got === null ? [] : valuesOf(got)).toEqual(want);
           expect(valuesOf(first)).toEqual(a);
+          // a bitset second operand holds the words an in-place write would reuse: they stay as they were
+          expect(valuesOf(second)).toEqual(b);
+          expect(got === second).toBe(false);
         }
       }),
       { numRuns: 80 },

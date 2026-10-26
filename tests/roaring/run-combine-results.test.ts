@@ -82,8 +82,8 @@ function expectCanonical(c: Container | null, want: readonly number[], label: st
     }
     expect(
       (got.data as Uint16Array).length - got.off,
-      `${label}: storage holds the pairs`,
-    ).toBeGreaterThanOrEqual(2 * got.len);
+      `${label}: storage holds exactly the pairs`,
+    ).toBe(2 * got.len);
   }
 }
 

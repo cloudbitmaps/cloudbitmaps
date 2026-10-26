@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { RoaringBitmap32 } from 'roaring';
 import { TsBitmap } from '@/ts-roaring/bitmap';
-import { RUN, appendIds } from '@/ts-roaring/containers';
+import { ARRAY, RUN, appendIds } from '@/ts-roaring/containers';
 import { containerOf, range, sortedUnique } from '../helpers/container-kinds';
 
 /**
@@ -54,6 +54,21 @@ describe('appendIds of a run container', () => {
         const out = new Uint32Array(n);
         expect(appendIds(containerOf(RUN, lows), out, 0, 7 * 65_536)).toBe(n);
         expect(Array.from(out)).toEqual(lows.map((v) => v + 7 * 65_536));
+      }
+    }
+  });
+
+  it('an array of 1, 31, 32 and 33 values, with the base 0 and a nonzero base, from any start index', () => {
+    for (const n of [1, 31, 32, 33]) {
+      const lows = range(0, n).map((v) => v * 5 + 2);
+      for (const base of [0, 65_536]) {
+        for (const at of [0, 3]) {
+          const out = new Uint32Array(at + n + 2).fill(0xdead_beef);
+          expect(appendIds(containerOf(ARRAY, lows, 2), out, at, base)).toBe(at + n);
+          expect(Array.from(out.subarray(at, at + n))).toEqual(lows.map((v) => v + base));
+          expect(out[at + n]).toBe(0xdead_beef);
+          for (let i = 0; i < at; i++) expect(out[i]).toBe(0xdead_beef);
+        }
       }
     }
   });
