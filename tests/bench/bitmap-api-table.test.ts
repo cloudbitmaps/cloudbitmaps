@@ -108,7 +108,7 @@ describe('the table of a record', () => {
     expect(region).toContain('Node v24.99.0');
     expect(region).toContain('Test CPU (8 cores)');
     expect(region).toContain('31 rounds a figure');
-    expect(region).toContain('at most 1.00 and 0 round(s)');
+    expect(region).toContain('at most 1.00 and no round was set aside at 6 or more');
     expect(region).toMatch(/\| `has` \| has \| 1\.50 \| 1\.50 \| 1\.50 \| 1\.50 \| 1\.50 \|/);
     expect(region).toMatch(
       /\| `or returning` \| combine returning \| 1\.50 \| 1\.50 \| 5\.00 \| 1\.50 \| 1\.50 \|/,
@@ -204,6 +204,15 @@ describe('the count cells of a record', () => {
     expect(region).toContain('bench/count-kernels.cjs`) kept them');
   });
 
+  it('says what the decision reads: andCardinality against building and counting, not every method or group', () => {
+    const region = table.regionText('p.md', rendered(countPass('kernels', 'kept')));
+    expect(region).toContain(
+      '`andCardinality` took less time than building and counting on every operand-pair group it judges',
+    );
+    expect(region).not.toContain('every group it measures');
+    expect(region).not.toContain('they took less time');
+  });
+
   it('names the other route under the other decision', () => {
     const region = table.regionText('p.md', rendered(countPass('build-then-count', 'derived')));
     expect(region).toContain('by building the combination and counting it in this pass');
@@ -278,13 +287,62 @@ describe('a page that disagrees with the record', () => {
     ).toContain('the round count is not the rounds');
     expect(
       table
-        .problemsOf(
-          'p.md',
-          edit('at most 1.00 and 0 round(s)', 'at most 0.50 and 0 round(s)'),
-          GOOD,
-        )
+        .problemsOf('p.md', edit('at most 1.00 and no round', 'at most 0.50 and no round'), GOOD)
         .join('\n'),
     ).toContain('the load line is not the rounds');
+  });
+
+  describe('the rounds set aside at a load of 6 or more', () => {
+    const planted = (): Pass => {
+      const pass = good();
+      for (const name of ['dense has', 'sparse has']) {
+        const cell = cellOfPass(pass, name);
+        cell.discarded = Array.from({ length: 4 }, () => [...cell.rounds[0]!] as Round);
+      }
+      pass.load = gate.loadFiguresOf(pass);
+      return pass;
+    };
+
+    it('prints the total, and scopes the most of any one figure', () => {
+      const file = fileOf(planted());
+      expect(planted().load.discardedRounds).toBe(4);
+      expect(gate.discardedOf(planted())).toEqual({ total: 8, figures: 2, most: 4 });
+      const region = table.regionText('p.md', rendered(file));
+      expect(region).toContain(
+        '8 rounds were set aside at 6 or more and taken again (at most 4 of any one figure, on 2 figures)',
+      );
+      expect(region).not.toContain('4 round(s)');
+      expect(table.problemsOf('p.md', rendered(file), file)).toEqual([]);
+    });
+
+    it('is refused when the page gives the most of one figure as the total', () => {
+      const file = fileOf(planted());
+      const wrong = rendered(file).replace('8 rounds were set aside', '4 rounds were set aside');
+      expect(table.problemsOf('p.md', wrong, file).join('\n')).toContain(
+        'the load line is not the rounds',
+      );
+    });
+
+    it('counts a figure of a load row and says "no round" when none was set aside', () => {
+      const pass = good();
+      expect(gate.discardedOf(pass)).toEqual({ total: 0, figures: 0, most: 0 });
+      pass.loadRoundTrip[0]!.discarded = [[10, 2, 3, 1, 7]] as unknown as Round[];
+      expect(gate.discardedOf(pass)).toEqual({ total: 1, figures: 1, most: 1 });
+      expect(table.regionText('p.md', rendered(fileOf(pass)))).toContain(
+        '1 round was set aside at 6 or more and taken again (at most 1 of any one figure, on 1 figure)',
+      );
+    });
+  });
+
+  it('reads a load row back as the page prints it: the share rounded to four places first', () => {
+    const edge = good();
+    const row = edge.loadRoundTrip[0]!;
+    row.rounds = Array.from({ length: 31 }, () => [1000, 1, 0.549999, 1, 1]);
+    Object.assign(row, gate.loadRowOf(row.rounds));
+    const text = rendered(fileOf(edge));
+    expect(table.regionText('p.md', text)).toContain(`| ${row.dataset} | `);
+    expect(table.regionText('p.md', text)).toMatch(/ \| 0\.1% \|/);
+    expect(table.problemsOf('p.md', text, fileOf(edge))).toEqual([]);
   });
 
   it('is refused for "close to native" said of a group that is not', () => {
@@ -353,6 +411,12 @@ describe('the words "close to native"', () => {
     'the class is close\tto native',
     'the class is **close** to *native*',
     'the class is close\u200b to native',
+    'the class is close to\n> native',
+    '> the class is close to\n> native',
+    '>> close to\n>> native',
+    '- close to\n- native',
+    '1. close to\n2. native',
+    'the class is close&nbsp;to native',
   ];
 
   for (const [name, file] of [
@@ -386,6 +450,9 @@ describe('the words "close to native"', () => {
       'closer to native speed than before',
       'unclose to nativeness',
       'enclose to natives',
+      '> the codec is close\n> to the native one',
+      '> a quoted line\n> about native',
+      '1. close to\n2. the native codec',
     ]) {
       expect(table.phraseProblems('README.md', quiet), quiet).toEqual([]);
       expect(table.problemsOf('p.md', rendered().replace('Intro.', quiet), GOOD), quiet).toEqual(
@@ -477,6 +544,11 @@ describe('the committed pages and record', () => {
   const file = JSON.parse(
     readFileSync(join(ROOT, 'bench/bitmap-api-results.json'), 'utf8'),
   ) as File;
+
+  it('keeps the record as the one compact line the bench writes, byte for byte', () => {
+    const text = readFileSync(join(ROOT, 'bench/bitmap-api-results.json'), 'utf8');
+    expect(text === `${JSON.stringify(JSON.parse(text))}\n`).toBe(true);
+  });
 
   it("hold the record to its gate, with the count kernels' decision read from their own bench", () => {
     expect(file.passes.some((p) => p.environment?.smoke)).toBe(false);

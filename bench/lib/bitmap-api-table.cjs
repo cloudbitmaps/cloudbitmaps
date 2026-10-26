@@ -108,13 +108,21 @@ function countLines(pass) {
         : 'an unrecorded route';
   const decision =
     result === 'kept'
-      ? "the count kernels' own bench (`bench/count-kernels.cjs`) kept them: they took less time than building and counting on every operand-pair group it measures"
+      ? "the count kernels' own bench (`bench/count-kernels.cjs`) kept them: `andCardinality` took less time than building and counting on every operand-pair group it judges"
       : result === 'derived'
         ? "the count kernels' own bench (`bench/count-kernels.cjs`) did not keep them: the counts are derived by building the combination and counting it"
         : "no decision of the count kernels' own bench is recorded";
   return [
     `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\`, \`andNotCardinality\` and \`intersects\` by ${routeText} in this pass; ${decision}. The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.`,
   ];
+}
+
+/** The sentence about the rounds set aside at a high load: the total, and the most of any one figure. */
+function setAsideText(pass) {
+  const d = verdict.discardedOf(pass);
+  if (d.total === 0) return `no round was set aside at ${verdict.MAX_LOAD} or more`;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  return `${plural(d.total, 'round was', 'rounds were')} set aside at ${verdict.MAX_LOAD} or more and taken again (at most ${d.most} of any one figure, on ${plural(d.figures, 'figure', 'figures')})`;
 }
 
 /** What a reader needs to know of how some rows differ from a like-for-like call. */
@@ -138,7 +146,7 @@ function render(file) {
   parts.push(
     `**Measured** on ${e.cpu} (${e.cores} cores), ${e.platform}, Node ${e.node}, commit \`${short(e.head)}\` (${e.tree} tree), \`roaring\` ${e.roaring}, ${rounds} rounds a figure, pass ${pass.pass}, started ${pass.started.slice(0, 10)}. ` +
       `Each figure is the median over the rounds of the class's time divided by the \`roaring\` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. ` +
-      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${load.discardedRounds} round(s) were set aside at ${verdict.MAX_LOAD} or more. Recorded, never asserted.`,
+      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${setAsideText(pass)}. Recorded, never asserted.`,
   );
   parts.push(
     ratioTable(pass, 'vsNative', 'Against `roaring` (class time / native time)', () => true),
@@ -217,9 +225,13 @@ function regionText(doc, text) {
   return text.slice(i, j).trim();
 }
 
-/** The text as a reader of the rendered page sees it: emphasis marks gone, every run of whitespace one space. */
+/** The text as a reader of the rendered page sees it: quote and list markers gone, emphasis marks gone, every run of whitespace one space. */
 const normalised = (text) =>
   text
+    .split('\n')
+    .map((line) => line.replace(/^\s*(?:>\s*)+/, '').replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ''))
+    .join('\n')
+    .replace(/&nbsp;/gi, ' ')
     .replace(/[\u00a0\u200b\u00ad*_`~]/g, ' ')
     .replace(/\s+/g, ' ')
     .toLowerCase();
@@ -299,11 +311,11 @@ function problemsOf(doc, text, file) {
   const load = verdict.loadFiguresOf(pass);
   if (
     !region.includes(
-      `ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${load.discardedRounds} round(s)`,
+      `ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${setAsideText(pass)}.`,
     )
   )
     problems.push(
-      `${doc}: the load line is not the rounds' (${load.maxLoadAtEnd.toFixed(2)}, ${load.discardedRounds})`,
+      `${doc}: the load line is not the rounds' (${load.maxLoadAtEnd.toFixed(2)}, ${setAsideText(pass)})`,
     );
   const rows = new Map();
   const coldRows = new Map();
@@ -354,7 +366,8 @@ function problemsOf(doc, text, file) {
       problems.push(`${doc}: no load row for ${l.dataset}`);
       continue;
     }
-    const share = verdict.median(l.rounds.map((r) => (r[1] + r[2]) / r[0]));
+    // The record stores the share rounded to four places and the page prints that.
+    const share = +verdict.median(l.rounds.map((r) => (r[1] + r[2]) / r[0])).toFixed(4);
     if (cols[3] !== `${(share * 100).toFixed(1)}%`)
       problems.push(
         `${doc}: load ${l.dataset} prints ${cols[3]}, the rounds say ${(share * 100).toFixed(1)}%`,

@@ -252,6 +252,21 @@ function loadFiguresOf(pass) {
   };
 }
 
+/**
+ * The rounds set aside at a load of `MAX_LOAD` or more: how many in all, on how many figures (a cell, a cold row or a
+ * load row), and the most any one figure set aside. Apart from `loadFiguresOf`, whose shape a pass stores.
+ */
+function discardedOf(pass) {
+  const counts = [...cellsOfPass(pass), ...(pass.loadRoundTrip ?? [])]
+    .map((c) => (c.discarded ?? []).length)
+    .filter((n) => n > 0);
+  return {
+    total: counts.reduce((a, b) => a + b, 0),
+    figures: counts.length,
+    most: Math.max(0, ...counts),
+  };
+}
+
 const heldTimes = (n) => (n === 0 ? 'missing' : `held ${n} times`);
 
 /**
@@ -550,6 +565,7 @@ module.exports = {
   loadRowOf,
   roundCountOf,
   loadFiguresOf,
+  discardedOf,
   inventoryProblems,
   isComplete,
   passOfRecord,
