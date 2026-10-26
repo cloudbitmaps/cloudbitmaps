@@ -20,7 +20,13 @@ const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
 
 type Op = { count: () => unknown; build: () => unknown };
 type Group = { name: string; ops: string[]; ids: (small: boolean) => [number[], number[]] };
-type Verdicted = { dataset: string; op: string; verdict: string; rounds: number[][] };
+type Verdicted = {
+  dataset: string;
+  op: string;
+  verdict: string;
+  headVsReference: number;
+  rounds: number[][];
+};
 type Cell = {
   dataset: string;
   op: string;
@@ -535,9 +541,10 @@ describe('the committed count record', () => {
     expect(cells.decisionOf(passes, { rule: rule.RULE }).status).not.toBe('invalid');
     for (const p of passes) {
       for (const c of p.ops as unknown as Verdicted[]) {
-        expect(rule.cellOf(c.rounds, 7).verdict, `pass ${p.pass} ${c.dataset} ${c.op}`).toBe(
-          c.verdict,
-        );
+        const recomputed = rule.cellOf(c.rounds, 7);
+        const where = `pass ${p.pass} ${c.dataset} ${c.op}`;
+        expect(recomputed.verdict, where).toBe(c.verdict);
+        expect(recomputed.headVsReference, `${where}: stored median`).toBe(c.headVsReference);
       }
     }
   });
