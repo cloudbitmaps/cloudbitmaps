@@ -467,14 +467,37 @@ export function appendIds(c: Container, out: Uint32Array, at: number, base: numb
     }
     return at;
   }
-  // Runs: each id written once, `base` added as it goes (no view or table per run).
+  // Runs: a short run is counted out, each id written once with `base` added as it goes; a long one is one widening copy.
   const u16 = lows16(c);
   for (let r = 0; r < c.len; r++) {
     const start = u16[c.off + 2 * r] as number;
-    const last = base + start + (u16[c.off + 2 * r + 1] as number);
-    for (let v = base + start; v <= last; v++) out[at++] = v;
+    const length = u16[c.off + 2 * r + 1] as number;
+    if (length < LONG_RUN) {
+      const last = base + start + length;
+      for (let v = base + start; v <= last; v++) out[at++] = v;
+      continue;
+    }
+    // `start..start + length` out of a table of 0..65,535, then `base` added where it is not 0.
+    const from = at;
+    out.set(iota().subarray(start, start + length + 1), at);
+    at += length + 1;
+    if (base !== 0) for (let i = from; i < at; i++) out[i] = (out[i] as number) + base;
   }
   return at;
+}
+
+/** A run of at least this many values (less one) is copied out of {@link iota} rather than counted out. */
+const LONG_RUN = 48;
+
+let iotaTable: Uint16Array | undefined;
+
+/** The numbers 0 to 65,535 as `u16`s, built when the first long run is expanded and kept. */
+function iota(): Uint16Array {
+  if (iotaTable === undefined) {
+    iotaTable = new Uint16Array(65_536);
+    for (let i = 0; i < 65_536; i++) iotaTable[i] = i;
+  }
+  return iotaTable;
 }
 
 /**
