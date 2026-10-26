@@ -389,6 +389,7 @@ describe('RoaringBitmap: what is not part of it', () => {
         'size',
         'toArray',
         'toUint32Array',
+        'xorInPlace',
       ].sort(),
     );
     expect(Object.getOwnPropertyNames(new RoaringBitmap([1]))).toEqual([]);

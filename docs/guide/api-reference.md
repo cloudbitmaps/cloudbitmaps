@@ -336,6 +336,9 @@ const fromBytes = RoaringBitmap.deserialize(bytes);        // portable bytes: ca
 | `bm.clear()` | removes every id | constant |
 | `bm.clone()` | a copy, copy-on-write: it costs the key list and one flag per container, not the ids | O(containers) |
 | `bm.andInPlace(other)`, `bm.orInPlace(other)`, `bm.andNotInPlace(other)` → `this` | keeps the ids both hold, adds the ids `other` holds, or removes them; `other` is not changed and may be `bm` itself | linear in the containers of the two |
+| `bm.xorInPlace(other)` → `this` | keeps the ids exactly one of the two holds; `other` is not changed and may be `bm` itself (the result is then empty). Derived: the shared ids are taken first, `other` is added, then the shared ids are removed | three passes over the containers of the two |
+| `RoaringBitmap.and(a, b)`, `RoaringBitmap.or(a, b)`, `RoaringBitmap.xor(a, b)`, `RoaringBitmap.andNot(a, b)` → `RoaringBitmap` | a new bitmap of the ids both hold, either holds, exactly one holds, or `a` holds and `b` lacks. Neither operand's ids change, and the result owns its storage: a change to it never reaches an operand and the reverse. `a` and `b` may be the same bitmap | linear in the containers of the two; `or`, `xor` and `andNot` flag, copy-on-write, each container only `a` holds that the result keeps by reference (below) |
+| `RoaringBitmap.orMany(bitmaps)` → `RoaringBitmap` | a new bitmap of the union of an iterable of bitmaps (the empty set for none), built in containers of its own: nothing is flagged and no operand changes. Every element is checked before any is combined | linear in the containers of all of them |
 | `[Symbol.iterator]()` | the ids, ascending, each once (a promise) | lazy |
 | `bm.toArray()`, `bm.toUint32Array()` | the ids as a new ascending array the caller owns (`toUint32Array` never returns a view of the bitmap's storage); a bitmap too large to allocate throws the runtime's `RangeError` | `size` times 8 bytes (array) or 4 bytes (typed) |
 | `bm.serialize(format?)` → `Uint8Array` | the portable bytes, in a new array; `'portable'` is the only format, and any other argument throws `ValidationError` | linear in the containers |
@@ -350,13 +353,19 @@ error messages. The bitmap is unchanged after a refused call: the check runs bef
 moved from a variadic form fails loudly rather than dropping the second id. The constructor and `addMany` read an
 iterable of ids once; a `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError`
 (each byte would be read as an id; call `RoaringBitmap.deserialize` for bytes), and so does anything that is not an
-iterable, a string included. An operand of `andInPlace`, `orInPlace` or `andNotInPlace` must be a `RoaringBitmap` of this
-copy of the package, or `ValidationError`.
+iterable, a string included. An operand of `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace` or a static combine,
+and each element of `orMany`, must be a `RoaringBitmap` of this copy of the package, or `ValidationError`.
 
 **Copy-on-write.** `clone()` shares every container between the copy and the original until one side writes it, and the
 first write to a shared container copies it once. The flag is never cleared, so a bitmap that was ever cloned pays that
 one copy per container it writes, even after the clone is dropped: the right trade for snapshot-and-continue, and
 `clone()` is not free to call in a loop on a bitmap you keep writing.
+
+The static combines are built to avoid that cost: they do not clone `a` and combine in place. `RoaringBitmap.and` builds
+its result from new containers and flags nothing, so `snap = RoaringBitmap.and(acc, filter); acc.addMany(batch)` in a loop
+pays no copy for the snapshot. `or`, `xor` and `andNot` keep, by reference, a container only `a` holds, and flag it, so the
+next write to that container, on `a` or on the result, copies it once; a container both operands hold is combined into a
+new one, and a container only `b` holds is copied into the result. The ids of an operand never change.
 
 **Iterating while changing is unsupported.** An iteration of an unchanged bitmap yields every id once, ascending. If the
 bitmap changes during the walk the iterator neither throws nor reads outside the bitmap's storage, and what it yields is
@@ -366,7 +375,7 @@ unspecified: collect first with `toUint32Array()`, or iterate a `clone()`.
 does not write every id into a log. Write `JSON.stringify([...bitmap])` or `bitmap.toArray()` when you mean the ids. Do
 not pass a `RoaringBitmap` to a method of the `roaring` package from npm: it is not a `RoaringBitmap32`, so the predicates
 and counts (`intersects`, `andCardinality`, `isSubset` and the like) answer wrongly without throwing in JavaScript
-(TypeScript refuses the call), the static `RoaringBitmap32.and`, `or` and `orMany` throw, and the constructor and the
+(TypeScript refuses the call), the static `RoaringBitmap32.and`, `or`, `xor`, `andNot` and `orMany` throw, and the constructor and the
 in-place operations (`orInPlace`, `addMany` and the like) read it as ids. To use one of that package's operations, decode
 the bitmap's `serialize()` bytes with it.
 
@@ -381,10 +390,11 @@ the bitmap's `serialize()` bytes with it.
 | `serialize` | returns a `Buffer`, the format required | returns a `Uint8Array`; `'portable'` is optional |
 | `runOptimize()` | true if a run container exists | the same meaning (it also demotes runs that are not smaller) |
 | `toJSON` | present | absent |
+| the combines that return a new bitmap | statics `and`, `or`, `xor`, `andNot`, `orMany` and `xorMany` | the same statics except `xorMany`, with the argument rules of the in-place forms (a non-bitmap is a `ValidationError`) |
 
 **Not provided.** Ranges, `rank`, `select`, frozen views, Array-style helpers, `toSet`, `getSerializationSizeInBytes`
-and 64-bit ids are left out. In this release the class also has no `xorInPlace`, no static combine that returns a new
-bitmap, no count-only combine, and no `isEqual`, `isSubset` or `intersects`.
+and 64-bit ids are left out, and so are `xorMany` and `delete`. In this release the class also has no
+count-only combine, and no `isEqual`, `isSubset` or `intersects`.
 
 **A load reads your bitmap and never changes it.** `store.load(ref, bitmap)` and `store.load(ref, { bitmap })` serialize
 it once, check and decode those bytes as any `{ serialized }` load does, and keep no reference to it. A bitmap decoded

@@ -165,6 +165,8 @@ What flags a container as shared:
 - `encodeChunks()` takes a snapshot of the key and container lists and flags every container, so a change made to the
   bitmap while the chunks are being read copies a container instead of altering what the chunks will say.
 - A decode that puts several small containers in one slab flags those that share it (see section 8).
+- The returning combines (`TsBitmap.or`, `xor` and `andNot`, section 7) flag each container only their first operand holds
+  that the result keeps by reference; `TsBitmap.and` and the union `orMany` builds flag nothing.
 
 A write that may go in place returns a new `Container` object over the same storage with `shared` clear. That is safe
 because a clone or snapshot flagged the object its bitmap held at that moment, so a flagged object never sits beside an
@@ -352,6 +354,15 @@ All of these are in `bitmap.ts`.
   exactly an integer in range: NaN, fractions, strings and `null` fail it); a `Uint32Array` needs no check; another
   iterable is read once into a doubling buffer, checked as it goes. Checking happens before any container is touched, so a
   bad id leaves the bitmap unchanged.
+- **The combines that return a new bitmap (`TsBitmap.and`, `or`, `xor`, `andNot`).** One static walk of the two key lists
+  (the same shape as the in-place combine, which rewrites its own lists) that builds a new bitmap and never writes an
+  operand: a key both hold combines into a fresh container (the in-place form of the container kernel is never taken, so no
+  operand storage is written), a container only the first operand holds is kept by reference and flagged shared (never for
+  `and`, which keeps none), and a container only the second holds is deep-copied in for a union or an exclusive-or. `xor`
+  of a pair of containers is the union less the intersection, taken in place on the union's own fresh storage, so it needs no
+  kernel of its own; a pair with nothing left drops its key. Building the result as `clone()` followed by an in-place combine
+  would flag every container of the first operand for good and make each later write to it copy a container, which is why
+  these are separate walks.
 - **`add` / `remove`.** Binary search of the key list, then `containerAdd` / `containerRemove`. A new key splices in a
   one-value array. Removing a key's last value splices the key out.
 - **`addMany`.** Sorts the ids (in place if the array is the call's own; on a copy if it is the caller's `Uint32Array`),
@@ -717,7 +728,13 @@ Everything here is a test, a workflow or a bench, not part of the module.
   otherwise, never changed or kept; one in a `SharedArrayBuffer` is copied first, because it is read twice (the sortedness
   check, then the build) and another thread could write between the reads. A `Uint8Array`, `Uint8ClampedArray` or
   `Buffer` passed as ids is refused: each byte would be read as an id.
-- **Operands are branded.** `andInPlace`, `orInPlace`, `andNotInPlace` and a bitmap passed to `addMany` or `removeMany`
+- **The statics and `xorInPlace`.** `RoaringBitmap.and`, `or`, `xor` and `andNot` check both operands, call the matching
+  `TsBitmap` static and wrap the result. `orMany` checks every element first (so nothing is combined when one is refused),
+  then folds each into an empty bitmap with `orInPlace`: the accumulator's containers are its own and unflagged, so each
+  part is added in place, the first part is deep-copied in, and no operand is written or flagged. `xorInPlace` takes the
+  intersection with `TsBitmap.and`, ORs the operand in, and removes the intersection (three passes, no new kernel); the
+  intersection is built first, so a bitmap xor-ed with itself is empty.
+- **Operands are branded.** `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics and a bitmap passed to `addMany` or `removeMany`
   are recognised by the class's private field, so one from a second installed copy of the package is refused rather than
   read through members it does not share. `addMany(bitmap)` is `orInPlace` and `removeMany(bitmap)` is `andNotInPlace`.
 - **`minimum()`, `maximum()` are `undefined` when empty.** `minimum` reads the first container's smallest value
@@ -753,7 +770,7 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
 | the constructor, `add`, `addMany`, `has`, `remove`, `removeMany` | an id that is not an integer from 0 to 4294967295; a constructor or `addMany` argument that is not an iterable (a string included) |
 | `add`, `remove` | more than one argument |
 | the constructor | a `Uint8Array`, `Uint8ClampedArray` or `Buffer` |
-| `andInPlace`, `orInPlace`, `andNotInPlace` | an operand that is not a `RoaringBitmap` of this copy of the package |
+| `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, `RoaringBitmap.and`, `or`, `xor`, `andNot`, `orMany` | an operand (for `orMany`, any element, or a list that is not an iterable) that is not a `RoaringBitmap` of this copy of the package; nothing is combined |
 | `deserialize` | not a `Uint8Array`; empty or detached; over the cap or `maxBytes`; not one well-formed bitmap; a second argument other than `undefined` or `{ maxBytes }`; a `maxBytes` outside 0 to the cap |
 | `serialize` | an argument other than `undefined` or `'portable'` |
 
@@ -761,6 +778,17 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
 
 - `tests/roaring/roaring-bitmap.test.ts`: every method against CRoaring (through `roaring`), the stored-byte rule and a
   plain `Set`, on generators biased to container boundaries, run ties, and ids at 2^31 and at 0xFFFFFFFF.
+- `tests/roaring/roaring-bitmap-algebra.test.ts`: the statics and `xorInPlace` against CRoaring on every pair of the oracle's
+  shapes (ids at 2^31 and 0xFFFFFFFF included) and on random container shapes; the laws (commutativity, associativity, `a xor a`
+  empty, `andNot` against `and` with a complement over the universe of the test, `orMany` equal to the fold of `or`,
+  `xorInPlace` equal to `xor`, absorption); that a result never changes when an operand later does and an operand never changes
+  when the result does, under every mutator, including a container only the second operand holds and `orMany` of one bitmap or
+  of the same bitmap twice; that a result keeps neither a decoded operand nor its input alive, `orMany`'s own result included;
+  and each refusal.
+- `tests/roaring/ts-bitmap-sharing.test.ts`: at the codec level, which containers each static flags shared and which container
+  objects it hands back (`and` and the union `orMany` builds flag nothing; `or`, `xor` and `andNot` flag exactly the containers
+  only the first operand holds, and keep those objects; a container only the second operand holds is always a copy; no pair
+  kernel returns an operand's object).
 - `tests/roaring/roaring-bitmap.property.test.ts`: round trips, `clone` independence under every mutator and across
   generations of clones, ascending iteration, and a load of a bitmap writing what a load of its ids writes.
 - `tests/roaring/roaring-bitmap-refusals.test.ts` and `tests/roaring/errors-carry-no-id.test.ts`: each refusal, the

@@ -562,5 +562,53 @@
   {
     "entry": "@cloudbitmaps/roaring ReadonlyBitmap*",
     "reason": "removed, agreed with the maintainer on 2026-10-24: the read-only view existed only as the result of deserializePortable; RoaringBitmap.deserialize returns the public RoaringBitmap, and a parameter that only reads can be typed Iterable<number>"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.xorInPlace",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: the symmetric difference in place, derived from the intersection, a union and a removal, with the argument rules of the other in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.and",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.or",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.xor",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.andNot",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RoaringBitmap.orMany",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the union of an iterable of bitmaps as a new bitmap, so the recipe for parts of one segment built separately needs one package"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.xorInPlace",
+    "reason": "a new method on RoaringBitmap, agreed with the maintainer on 2026-10-24: the symmetric difference in place, derived from the intersection, a union and a removal, with the argument rules of the other in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.and",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.or",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.xor",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.andNot",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the combine that returns a new bitmap and changes neither operand (statics, as the roaring package names them, beside the in-place forms), with the argument rules of the in-place combines"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring/bitmap RoaringBitmap.orMany",
+    "reason": "a new static on RoaringBitmap, agreed with the maintainer on 2026-10-24: the union of an iterable of bitmaps as a new bitmap, so the recipe for parts of one segment built separately needs one package"
   }
 ]

@@ -665,6 +665,106 @@ export class TsBitmap implements CodecBitmap {
     this.#conts = conts;
     this.#size = size;
   }
+
+  /** The ids both bitmaps hold, as a new bitmap; neither operand changes and no container of either is kept. */
+  static and(a: CodecBitmap, b: CodecBitmap): TsBitmap {
+    return TsBitmap.#fresh(TsBitmap.#of(a), TsBitmap.#of(b), AND);
+  }
+
+  /** The ids either holds, as a new bitmap; neither operand changes. */
+  static or(a: CodecBitmap, b: CodecBitmap): TsBitmap {
+    return TsBitmap.#fresh(TsBitmap.#of(a), TsBitmap.#of(b), OR);
+  }
+
+  /** The ids exactly one holds, as a new bitmap; neither operand changes. */
+  static xor(a: CodecBitmap, b: CodecBitmap): TsBitmap {
+    return TsBitmap.#fresh(TsBitmap.#of(a), TsBitmap.#of(b), XOR);
+  }
+
+  /** The ids of `a` that `b` lacks, as a new bitmap; neither operand changes. */
+  static andNot(a: CodecBitmap, b: CodecBitmap): TsBitmap {
+    return TsBitmap.#fresh(TsBitmap.#of(a), TsBitmap.#of(b), AND_NOT);
+  }
+
+  /**
+   * The same walk as {@link TsBitmap.#combine}, building a new bitmap and leaving both operands whole. Where both hold
+   * a key, the pair combines into a fresh container (the in-place form is never taken, so no storage of either operand
+   * is written). A container only `x` holds is kept by reference and flagged shared, so a later write to `x` or to the
+   * result copies it once; for an intersection nothing of `x` is kept, so nothing is flagged. A container only `y`
+   * holds is copied in for a union or a symmetric difference.
+   */
+  static #fresh(x: TsBitmap, y: TsBitmap, op: Combine | typeof XOR): TsBitmap {
+    const a = x.#keys;
+    const b = y.#keys;
+    const ca = x.#conts;
+    const cb = y.#conts;
+    const keys: number[] = [];
+    const conts: Container[] = [];
+    let size = 0;
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+      const ka = a[i] as number;
+      const kb = b[j] as number;
+      if (ka === kb) {
+        const c = freshPair(op, ca[i++] as Container, cb[j++] as Container);
+        if (c !== null) {
+          keys.push(ka);
+          conts.push(c);
+          size += c.card;
+        }
+      } else if (ka < kb) {
+        if (op === AND) {
+          i = gallopKeys(a, kb, i + 1);
+        } else {
+          const c = ca[i++] as Container;
+          c.shared = true;
+          keys.push(ka);
+          conts.push(c);
+          size += c.card;
+        }
+      } else if (op === AND) {
+        j = gallopKeys(b, ka, j + 1);
+      } else {
+        if (op === OR || op === XOR) {
+          keys.push(kb);
+          conts.push(cloneContainer(cb[j] as Container));
+          size += (cb[j] as Container).card;
+        }
+        j++;
+      }
+    }
+    if (op !== AND) {
+      for (; i < a.length; i++) {
+        const c = ca[i] as Container;
+        c.shared = true;
+        keys.push(a[i] as number);
+        conts.push(c);
+        size += c.card;
+      }
+    }
+    if (op === OR || op === XOR) {
+      for (; j < b.length; j++) {
+        keys.push(b[j] as number);
+        conts.push(cloneContainer(cb[j] as Container));
+        size += (cb[j] as Container).card;
+      }
+    }
+    return new TsBitmap(keys, conts, size);
+  }
+}
+
+const XOR = 3;
+
+/** A pair of containers combined into a container of its own (`null` when nothing is left); neither is written. */
+function freshPair(op: Combine | typeof XOR, a: Container, b: Container): Container | null {
+  if (op === OR) return containerOr(a, b, false);
+  if (op === AND) return containerAnd(a, b, false);
+  if (op === AND_NOT) return containerAndNot(a, b, false);
+  // The values in one and not the other: the union less the intersection, taken from the union's own storage.
+  const union = containerOr(a, b, false);
+  const both = containerAnd(a, b, false);
+  return both === null ? union : containerAndNot(union, both, true);
 }
 
 /** Stands for a container {@link TsBitmap.removeMany} emptied, until the keys left empty are dropped. */

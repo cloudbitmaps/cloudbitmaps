@@ -121,7 +121,8 @@ self-check ran the codec inside a store, not this class, and no isolate or brows
   `new RoaringBitmap()` is the empty set. The result owns its storage, so decoding a large input and reducing the result
   does not keep the input alive.
 - **Build and change.** `new RoaringBitmap(ids)`, `add`, `addMany`, `remove`, `removeMany`, `clear`, `clone`, and the
-  in-place `andInPlace`, `orInPlace` and `andNotInPlace`; `has`, `size`, `isEmpty`, `minimum`, `maximum`, iteration in
+  in-place `andInPlace`, `orInPlace`, `xorInPlace` and `andNotInPlace`; the statics that return a new bitmap and change no
+  operand (`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`); `has`, `size`, `isEmpty`, `minimum`, `maximum`, iteration in
   ascending order (a promise), `toArray`, `toUint32Array`, `serialize()` and `runOptimize()`.
 - **Every id is checked**, and a refusal never repeats the value.
 - **It loads as itself.** `store.load(ref, bitmap)` reads a bitmap and never changes it.

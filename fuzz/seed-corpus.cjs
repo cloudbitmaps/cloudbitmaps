@@ -93,7 +93,7 @@ function seedSafeDeserialize(target) {
  */
 function seedBitmapOps(target) {
   const everyOperation = Uint8Array.from(
-    Array.from({ length: 14 }, (_, op) => [op, 0, 7, 0, 0, 3, 1, 0, 0, 0, 2]).flat(),
+    Array.from({ length: 15 }, (_, op) => [op, 0, 7, 0, 0, 3, 1, 0, 0, 0, 2]).flat(),
   );
   for (const [name, vals] of Object.entries(valueSets())) {
     for (const [form, runs] of [
