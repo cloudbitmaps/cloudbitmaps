@@ -210,6 +210,17 @@ describe('each branch at the size where it starts', () => {
     }
   });
 
+  it("a shared value at the shorter array's largest value is found", () => {
+    // 32 values against 32 values (both on the probe path); the only shared one is the shorter array's last.
+    const evens = range(0, 32).map((v) => v * 2);
+    const other = [...range(0, 31).map((v) => v * 2 + 1), 62];
+    check(evens, other, ARRAY, ARRAY);
+    expect(containersIntersect(container(ARRAY, evens), container(ARRAY, other))).toBe(true);
+    expect(containersIntersect(container(ARRAY, other), container(ARRAY, evens))).toBe(true);
+    // And the same at the longer array's side: the shared value is the longer array's last, and the shorter's first.
+    check([62, ...range(100, 131)], [...range(0, 31).map((v) => v * 2), 62], ARRAY, ARRAY);
+  });
+
   it('array against runs around 16 times as many runs as values', () => {
     for (const runs of [16 * 8 - 1, 16 * 8, 16 * 8 + 1]) {
       const covered = range(0, runs).flatMap((k) => range(k * 10, k * 10 + 4));
@@ -291,6 +302,32 @@ describe('the bitmap counting operations against CRoaring', () => {
       }),
       { numRuns: 150 },
     );
+  });
+
+  it('a bitmap inside a bigger one is a subset, and equal only when the extra ids are already there', () => {
+    let subsets = 0;
+    let equals = 0;
+    fc.assert(
+      fc.property(idsSet, idsSet, fc.boolean(), fc.boolean(), (a, extra, storedA, storedB) => {
+        const b = sortedUnique([...a, ...extra]);
+        const x = ts(a, storedA);
+        const y = ts(b, storedB);
+        const cx = new RoaringBitmap32(a);
+        const cy = new RoaringBitmap32(b);
+        expect(x.isSubset(y)).toBe(true);
+        expect(x.isSubset(y)).toBe(cx.isSubset(cy));
+        expect(x.isEqual(y)).toBe(b.length === a.length);
+        expect(x.isEqual(y)).toBe(cx.isEqual(cy));
+        expect(y.isSubset(x)).toBe(b.length === a.length);
+        expect(x.andCardinality(y)).toBe(a.length);
+        if (a.length > 0) subsets++;
+        if (a.length > 0 && b.length === a.length) equals++;
+      }),
+      { numRuns: 150 },
+    );
+    // The generator reaches both a true subset that is proper and one that is equal.
+    expect(subsets).toBeGreaterThan(20);
+    expect(equals).toBeGreaterThan(0);
   });
 
   it('the ids 2^31 and 0xFFFFFFFF count, and a bitmap differing only there is not equal', () => {

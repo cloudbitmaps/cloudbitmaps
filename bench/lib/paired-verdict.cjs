@@ -491,14 +491,17 @@ function sleptProblems(label, pass) {
  *   - the last pass must have been judged by the current rule (a pass that names none was judged by the earlier one);
  *   - a cell still `inconclusive` in the last pass needs an entry for it in that pass's `unresolved` notes that quotes
  *     its bound (what its interval cannot rule out), so it is published with that bound and never called within.
+ *
+ * `{ verdicts: false }` leaves out the first and the last of these, for a bench whose own rule turns a cell's verdict into
+ * a decision (a slower or inconclusive cell is then a result, not a failure to explain).
  */
-function gateProblems(passes) {
+function gateProblems(passes, { verdicts = true } = {}) {
   const problems = [];
   passes.forEach((pass, i) => {
     const label = `pass ${pass.pass ?? i + 1}`;
     if (pass.environment?.smoke) problems.push(`${label}: a smoke pass is no evidence`);
     for (const c of gatedCellsOf(pass)) {
-      if (kindOf(c.verdict) === 'slower' && !pass.explained) {
+      if (verdicts && kindOf(c.verdict) === 'slower' && !pass.explained) {
         problems.push(
           `${label}: ${cellName(c)} is conclusively slower and the pass has no "explained" note`,
         );
@@ -523,7 +526,7 @@ function gateProblems(passes) {
     return problems;
   }
   for (const c of gatedCellsOf(last)) {
-    if (kindOf(c.verdict) !== 'inconclusive') continue;
+    if (!verdicts || kindOf(c.verdict) !== 'inconclusive') continue;
     const note = last.unresolved?.[cellName(c)];
     const bound = boundText(c.headInterval?.[1]);
     if (typeof note !== 'string' || !note.includes(bound)) {
@@ -535,7 +538,16 @@ function gateProblems(passes) {
   return problems;
 }
 
+/**
+ * Ends the process once what it printed has been written, with `code` (or the status already set). A bench process is
+ * done when its pass is written: a handle left open by a helper it started must not keep it alive.
+ */
+function exitWhenDone(code = process.exitCode ?? 0) {
+  process.stdout.write('', () => process.stderr.write('', () => process.exit(code)));
+}
+
 module.exports = {
+  exitWhenDone,
   CONTROL_BAND,
   TOLERANCE,
   COVERAGE,
