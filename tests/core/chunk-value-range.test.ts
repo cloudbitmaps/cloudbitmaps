@@ -25,7 +25,7 @@ import { withNativeCodec } from '../helpers/codec-leg';
 // entry point, also used for full-segment exports where u32 values are entirely legitimate. The 16-bit rule
 // belongs where a payload is interpreted AS A CHUNK: `SegmentEngine`'s storage-chunk decode
 // (`assertChunkPayloadInRange`), and the erasure rewrite's decode of each chunk it carries into a new generation
-// (`assertRemaindersInRange` in `erase-id.ts`).
+// (`decodeChunkBytes` in `chunk-checks.ts`, which `erase-id.ts` calls).
 const CAP = 1 << 20;
 
 /** A chunk payload carrying an illegal (>16-bit) value, bypassing every writer guard the way corrupt bytes do. */

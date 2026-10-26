@@ -61,6 +61,13 @@ so, and so do the module headers in the code.
   one bitmap), refuses an empty buffer and a format argument, and returns a bitmap that owns its storage, so a large input
   that is decoded and then reduced does not stay in memory.
 
+### Fixed
+
+- **The erasure's search of the other generations range-checks the stored chunk it reads.** A chunk read there holding
+  a value outside the 16-bit remainder range (a container key above 0, which the lookup of the id cannot see) was
+  taken for "does not hold the id", so an erasure could report the id as not held. It now fails with `IntegrityError`,
+  as the rewrite does, through the one shared chunk check. Reaching it needs write access to the bucket.
+
 ## [0.24.0] — 2026-10-23
 
 ### Breaking

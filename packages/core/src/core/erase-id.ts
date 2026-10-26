@@ -107,7 +107,8 @@
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField, sameIncarnation } from './token';
-import { MAX_REMAINDER, splitId } from './bit-route';
+import { splitId } from './bit-route';
+import { decodeChunkBytes } from './chunk-checks';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
@@ -743,7 +744,7 @@ async function holds(c: HoldsCall, generation: number): Promise<boolean | null> 
       }
       throw err;
     }
-    return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
+    return bytes !== null && decodeChunkBytes(codec, bytes, chunkKey, maxBytes).has(remainder);
   } catch (err) {
     if (isNotFoundError(err)) return null;
     throw err;
@@ -1610,8 +1611,7 @@ async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
     // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
     // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
     if (bytes === null) return await notInCurrent(c);
-    const target = codec.safeDeserialize(bytes, maxBytes);
-    assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
+    const target = decodeChunkBytes(codec, bytes, chunkKey, maxBytes);
     if (!target.has(remainder)) return await notInCurrent(c);
     target.remove(remainder);
 
@@ -2129,27 +2129,11 @@ async function* rewrite(
       }
       const bytes = item.value.bytes;
       if (bytes === null) continue; // listed but absent: nothing to carry forward
-      const bitmap = codec.safeDeserialize(bytes, maxBytes);
-      assertRemaindersInRange(bitmap, k);
+      const bitmap = decodeChunkBytes(codec, bytes, k, maxBytes);
       yield { chunkKey: k, bitmap };
     }
   } finally {
     // However the rewrite ends, the stream sends nothing more; its reads in flight finish and are dropped.
     await stream.return(undefined);
-  }
-}
-
-/**
- * Invariant 5's range half, for one decoded chunk: every value in a chunk is a 16-bit remainder, so a value above
- * `MAX_REMAINDER` means the object was not written by this codec. `maximum()` is optional on the codec seam (a
- * codec with no size decision to make may omit it); when it is absent the check is skipped rather than faked.
- */
-function assertRemaindersInRange(bitmap: CodecBitmap, chunkKey: number): void {
-  const max = bitmap.maximum?.();
-  if (max !== undefined && max > MAX_REMAINDER) {
-    throw new IntegrityError(
-      `chunk ${chunkKey} payload holds value ${max}, outside the 16-bit remainder range [0, ${MAX_REMAINDER}] — ` +
-        `the stored object is corrupt or was not written by this codec; refusing to carry it into a new generation`,
-    );
   }
 }
