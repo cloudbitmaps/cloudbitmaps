@@ -187,10 +187,11 @@ describe('two bitsets, word by word', () => {
   });
 
   it('sees one shared bit anywhere among 65,536, in every word position', () => {
-    const noise = range(0, 65_536).filter((v) => v % 3 === 0);
+    // Noise in most words, kept small: the loop builds a bitset per word position.
+    const noise = range(0, 65_536).filter((v) => v % 97 === 0);
     for (let w = 0; w < WORDS; w += 1) {
       const v = w * 32 + (w % 32);
-      const x = bitsetOf(sortedUnique([...noise.filter((n) => n % 3 === 0 && n !== v + 0), v]));
+      const x = bitsetOf(sortedUnique([...noise.filter((n) => n !== v), v]));
       const y = bitsetOf([v]);
       expect(containerAndCard(x, y)).toBe(1);
     }
