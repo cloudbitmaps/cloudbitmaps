@@ -135,15 +135,19 @@ export function decodeContainers(input: Uint8Array, detached = false): Decoded {
   // The arrays and run containers of one bitmap share a single `Uint16Array`, each reading its own stretch of it, so a
   // run container of a few bytes costs its bytes and one small object, not a typed array of its own. When the bitmap
   // has only one of them it is the whole slab and owns it.
+  // A detached decode gives every container storage of its own, so it has no slab to size and no lone container to
+  // find: the pass over the layout that measures them is skipped.
   let slabLength = 0;
   let small = 0;
-  for (const { cardinality, kind, offset } of layout) {
-    if (kind === LAYOUT_ARRAY) {
-      slabLength += cardinality;
-      small++;
-    } else if (kind !== LAYOUT_BITMAP) {
-      slabLength += 2 * view.getUint16(offset, true);
-      small++;
+  if (!detached) {
+    for (const { cardinality, kind, offset } of layout) {
+      if (kind === LAYOUT_ARRAY) {
+        slabLength += cardinality;
+        small++;
+      } else if (kind !== LAYOUT_BITMAP) {
+        slabLength += 2 * view.getUint16(offset, true);
+        small++;
+      }
     }
   }
   // The private copy's memory is its own when the copy starts at its buffer's first byte and fills it, which a copy made
