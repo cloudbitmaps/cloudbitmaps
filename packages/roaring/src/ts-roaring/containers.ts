@@ -43,9 +43,10 @@
  *
  * A combine takes `inPlace` when its first operand is a bitset nothing else can see: the words are written, not copied.
  *
- * COUNTS. `containerAndCard` says how many values a pair shares and `containersIntersect` whether it shares any (stopping
- * at the first), each by the kinds of the pair and each building nothing: the answers the bitmap's counting operations
- * are made from.
+ * COUNTS. `containerAndCard` says how many values a pair shares, `containersIntersect` whether it shares any (stopping
+ * at the first) and `containersSubset` whether every value of one is in the other (stopping at the first that is not), each
+ * by the kinds of the pair and each building nothing: the answers the bitmap's counting operations are made from. The
+ * last two never count.
  */
 import { ARRAY_MAX_CARDINALITY } from '../portable/layout';
 
@@ -759,6 +760,10 @@ function skewed(shorter: number, longer: number): boolean {
 // reads both arrays once, in order, with no unpredictable branch. A lower value pays the bitset's set-and-clear for
 // pairs the merge finishes sooner; a higher one leaves mid-sized pairs on the slower merge.
 const PROBE_MIN = 32;
+
+// How many merge steps `intersectsArrays` takes before it falls back to the scratch bitset: two random sets of a thousand values
+// in a chunk share a value within a few dozen steps, so the common overlapping pair never sets a bit.
+const MERGE_FIRST = 64;
 
 // Scratch bitset for the array probe: all zero between calls (each call clears what it set).
 const probeWords = new Uint32Array(WORDS);
@@ -1582,6 +1587,169 @@ export function containerAndCard(a: Container, b: Container): number {
   return b.kind === RUN && a.kind === RUN ? andCountRuns(a, b) : andCountBitsetRuns(a, b);
 }
 
+/** Whether any bit from `start` to `end`, both inclusive, is set in `words`; stops at the first word that has one. */
+function anyBitInRange(words: Uint32Array, start: number, end: number): boolean {
+  const first = start >>> 5;
+  const last = end >>> 5;
+  const head = (0xffff_ffff << (start & 31)) >>> 0;
+  const tail = 0xffff_ffff >>> (31 - (end & 31));
+  if (first === last) return ((words[first] as number) & head & tail) !== 0;
+  if (((words[first] as number) & head) !== 0 || ((words[last] as number) & tail) !== 0)
+    return true;
+  for (let i = first + 1; i < last; i++) if (words[i] !== 0) return true;
+  return false;
+}
+
+/** Whether every bit from `start` to `end`, both inclusive, is set in `words`; stops at the first word that lacks one. */
+function allBitsInRange(words: Uint32Array, start: number, end: number): boolean {
+  const first = start >>> 5;
+  const last = end >>> 5;
+  const head = (0xffff_ffff << (start & 31)) >>> 0;
+  const tail = 0xffff_ffff >>> (31 - (end & 31));
+  if (first === last) return (~(words[first] as number) & head & tail) === 0;
+  if ((~(words[first] as number) & head) !== 0 || (~(words[last] as number) & tail) !== 0)
+    return false;
+  for (let i = first + 1; i < last; i++) if (words[i] !== 0xffff_ffff) return false;
+  return true;
+}
+
+/** Whether every value of array `a` is in array `b`: a merge or a gallop that stops at the first value `b` lacks. */
+function subsetArrays(a: Container, b: Container): boolean {
+  const x = lows16(a);
+  const y = lows16(b);
+  const ie = a.off + a.len;
+  const je = b.off + b.len;
+  let j = b.off;
+  if (skewed(a.len, b.len)) {
+    for (let i = a.off; i < ie; i++) {
+      const v = x[i] as number;
+      j = gallop(y, 0, j, je, v);
+      if (j === je || y[j] !== v) return false;
+    }
+    return true;
+  }
+  let i = a.off;
+  while (i < ie && j < je) {
+    const p = x[i] as number;
+    const q = y[j] as number;
+    if (p < q) return false;
+    i += p === q ? 1 : 0;
+    j++;
+  }
+  return i === ie;
+}
+
+/** Whether every value of array `a` is covered by a run of `b`: one walk of the runs, stopping at the first value outside them. */
+function subsetArrayRuns(a: Container, b: Container): boolean {
+  const u16 = lows16(a);
+  const pairs = lows16(b);
+  let r = 0;
+  for (let i = a.off; i < a.off + a.len; i++) {
+    const v = u16[i] as number;
+    while (r < b.len && (pairs[b.off + 2 * r] as number) + (pairs[b.off + 2 * r + 1] as number) < v)
+      r++;
+    if (r === b.len || (pairs[b.off + 2 * r] as number) > v) return false;
+  }
+  return true;
+}
+
+/** Whether every value of the runs of `a` is in the array `b`: each run is `length` consecutive entries of `b`, since both ascend without repeats. */
+function subsetRunsArray(a: Container, b: Container): boolean {
+  const pairs = lows16(a);
+  const y = lows16(b);
+  const je = b.off + b.len;
+  let j = b.off;
+  for (let r = 0; r < a.len; r++) {
+    const start = pairs[a.off + 2 * r] as number;
+    const last = start + (pairs[a.off + 2 * r + 1] as number);
+    j = gallop(y, 0, j, je, start);
+    const end = j + (last - start);
+    if (end >= je || y[j] !== start || y[end] !== last) return false;
+    j = end + 1;
+  }
+  return true;
+}
+
+/** Whether every value of the run containers `a` lies inside a run of `b` (whose runs are maximal, so inside one run). */
+function subsetRuns(a: Container, b: Container): boolean {
+  const x = lows16(a);
+  const y = lows16(b);
+  let j = 0;
+  for (let i = 0; i < a.len; i++) {
+    const start = x[a.off + 2 * i] as number;
+    const last = start + (x[a.off + 2 * i + 1] as number);
+    while (j < b.len && (y[b.off + 2 * j] as number) + (y[b.off + 2 * j + 1] as number) < start)
+      j++;
+    if (j === b.len || (y[b.off + 2 * j] as number) > start) return false;
+    if ((y[b.off + 2 * j] as number) + (y[b.off + 2 * j + 1] as number) < last) return false;
+  }
+  return true;
+}
+
+/** Whether every set bit of the bitset `a` lies in a run of `b`: no set bit before the first run, between two, or after the last. */
+function subsetBitsetRuns(a: Container, b: Container): boolean {
+  const words = words32(a);
+  const pairs = lows16(b);
+  let from = 0;
+  for (let r = 0; r < b.len; r++) {
+    const start = pairs[b.off + 2 * r] as number;
+    if (start > from && anyBitInRange(words, from, start - 1)) return false;
+    from = start + (pairs[b.off + 2 * r + 1] as number) + 1;
+  }
+  return from > 65_535 || !anyBitInRange(words, from, 65_535);
+}
+
+/**
+ * Whether every value of `a` is in `b`, by the kinds of the pair, stopping at the first value that is not and counting
+ * nothing: no scratch and no popcount, where `containerAndCard(a, b) === a.card` reads both operands whole. A bitset in
+ * an array is the one pair that falls back to that count (it only arises for a bitset of 4,096 values or fewer, which
+ * the codec's own results never are).
+ */
+export function containersSubset(a: Container, b: Container): boolean {
+  if (a.card > b.card) return false;
+  if (a.kind === ARRAY) {
+    if (b.kind === ARRAY) return subsetArrays(a, b);
+    if (b.kind === RUN) return subsetArrayRuns(a, b);
+    const u16 = lows16(a);
+    const words = words32(b);
+    for (let i = a.off; i < a.off + a.len; i++) {
+      const v = u16[i] as number;
+      if ((((words[v >>> 5] as number) >>> (v & 31)) & 1) === 0) return false;
+    }
+    return true;
+  }
+  if (a.kind === BITSET) {
+    if (b.kind === BITSET) {
+      const x = words32(a);
+      const y = words32(b);
+      for (let i = 0; i < WORDS; i += 8) {
+        const lack =
+          ((x[i] as number) & ~(y[i] as number)) |
+          ((x[i + 1] as number) & ~(y[i + 1] as number)) |
+          ((x[i + 2] as number) & ~(y[i + 2] as number)) |
+          ((x[i + 3] as number) & ~(y[i + 3] as number)) |
+          ((x[i + 4] as number) & ~(y[i + 4] as number)) |
+          ((x[i + 5] as number) & ~(y[i + 5] as number)) |
+          ((x[i + 6] as number) & ~(y[i + 6] as number)) |
+          ((x[i + 7] as number) & ~(y[i + 7] as number));
+        if (lack !== 0) return false;
+      }
+      return true;
+    }
+    if (b.kind === RUN) return subsetBitsetRuns(a, b);
+    return containerAndCard(a, b) === a.card;
+  }
+  if (b.kind === ARRAY) return subsetRunsArray(a, b);
+  if (b.kind === RUN) return subsetRuns(a, b);
+  const words = words32(b);
+  const pairs = lows16(a);
+  for (let r = 0; r < a.len; r++) {
+    const start = pairs[a.off + 2 * r] as number;
+    if (!allBitsInRange(words, start, start + (pairs[a.off + 2 * r + 1] as number))) return false;
+  }
+  return true;
+}
+
 /**
  * Whether two containers hold the same values. Two containers of one kind compare their storage and stop at the first
  * difference: bitset words, array values, run pairs. That is exact for runs because every run container is canonical
@@ -1631,29 +1799,40 @@ function intersectsArrays(a: Container, b: Container): boolean {
     }
     return false;
   }
+  let i = small.off;
+  let j = big.off;
   if (small.len >= PROBE_MIN) {
+    // Two sets of this size usually share a value early, and a merge finds it without setting any bits: take a bounded
+    // number of merge steps first and set up the scratch bits only for a pair that shares nothing that soon.
+    for (let step = 0; step < MERGE_FIRST && i < se && j < le; step++) {
+      const x = s[i] as number;
+      const y = l[j] as number;
+      if (x === y) return true;
+      if (x < y) i++;
+      else j++;
+    }
+    if (i === se || j === le) return false;
     // As the counting kernel does: the shorter array as bits and the span of the longer between its ends tested against
     // them, but stopping at the first hit. The scratch bits are cleared on both exits.
-    const from = gallop(l, 0, big.off, le, s[small.off] as number);
+    const left = i;
+    const from = gallop(l, 0, j, le, s[left] as number);
     const to = gallop(l, 0, from, le, (s[se - 1] as number) + 1);
     const words = probeWords;
-    for (let i = small.off; i < se; i++) {
-      const v = s[i] as number;
+    for (let k = left; k < se; k++) {
+      const v = s[k] as number;
       words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
     }
     let hit = false;
-    for (let j = from; j < to; j++) {
-      const v = l[j] as number;
+    for (let k = from; k < to; k++) {
+      const v = l[k] as number;
       if ((((words[v >>> 5] as number) >>> (v & 31)) & 1) === 1) {
         hit = true;
         break;
       }
     }
-    for (let i = small.off; i < se; i++) words[(s[i] as number) >>> 5] = 0;
+    for (let k = left; k < se; k++) words[(s[k] as number) >>> 5] = 0;
     return hit;
   }
-  let i = small.off;
-  let j = big.off;
   while (i < se && j < le) {
     const x = s[i] as number;
     const y = l[j] as number;
@@ -1702,13 +1881,24 @@ export function containersIntersect(a: Container, b: Container): boolean {
     const x = words32(a);
     if (b.kind === BITSET) {
       const y = words32(b);
-      for (let i = 0; i < WORDS; i++) if (((x[i] as number) & (y[i] as number)) !== 0) return true;
+      for (let i = 0; i < WORDS; i += 8) {
+        const both =
+          ((x[i] as number) & (y[i] as number)) |
+          ((x[i + 1] as number) & (y[i + 1] as number)) |
+          ((x[i + 2] as number) & (y[i + 2] as number)) |
+          ((x[i + 3] as number) & (y[i + 3] as number)) |
+          ((x[i + 4] as number) & (y[i + 4] as number)) |
+          ((x[i + 5] as number) & (y[i + 5] as number)) |
+          ((x[i + 6] as number) & (y[i + 6] as number)) |
+          ((x[i + 7] as number) & (y[i + 7] as number));
+        if (both !== 0) return true;
+      }
       return false;
     }
     const pairs = lows16(b);
     for (let r = 0; r < b.len; r++) {
       const start = pairs[b.off + 2 * r] as number;
-      if (bitsInRange(x, start, start + (pairs[b.off + 2 * r + 1] as number)) !== 0) return true;
+      if (anyBitInRange(x, start, start + (pairs[b.off + 2 * r + 1] as number))) return true;
     }
     return false;
   }

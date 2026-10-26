@@ -343,8 +343,30 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
 - `containersIntersect` is the early-exit form: each pair kind returns at the first shared value instead of counting
   all of them. Disjoint ranges of two arrays answer after reading only the four end values. `intersectsArrays` chooses as `andCountArrays`
   does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a
-  merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count. The
-  probe pays its set-and-clear even when the first value is shared.
+  merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count.
+  The probe pays its set-and-clear even when the first value is shared, so a pair that reaches it first takes up to
+  `MERGE_FIRST` (64) merge steps, which find an early shared value (two random sets of a thousand values in a chunk share
+  one within a few dozen steps) without setting a bit; only a pair that shares nothing that soon goes on to the probe,
+  from where the merge stopped. Two bitsets test eight words at a time and stop at the first group with a shared bit; a
+  bitset against runs asks `anyBitInRange` per run (stops at the first nonzero masked word, no popcount).
+
+### Subset without counting: `containersSubset`
+
+`isSubset` does not count. `containersSubset(a, b)` answers "is every value of `a` in `b`" by the kinds of the pair and stops
+at the first value `b` lacks; no scratch is written and nothing is popcounted. It returns false at once when `a` holds more
+values than `b`.
+
+```
+  A in A     merge (a value of `a` below the current value of `b` is missing) | gallop when `b` is 16x longer
+  A in B     one bit test per value, stop at the first clear bit
+  A in R     one walk of the runs against the values
+  B in B     OR of the eight words' (x AND NOT y), stop at the first group that is not zero
+  B in R     no set bit in the gaps before, between and after the runs (`anyBitInRange` per gap)
+  R in A     a run of n values is n consecutive entries of the array (both ascend without repeats), so two compares per run
+  R in B     every bit of each run set (`allBitsInRange`, stop at the first word that lacks one)
+  R in R     each run inside one run of `b` (maximal runs, so a run of `a` cannot straddle two)
+  B in A     the count (`containerAndCard`), taken only for a bitset of 4,096 values or fewer, which no codec result is
+```
 
 The bitmap-level operations in section 7 call these. A count is exact: `|A and B|` is the sum over shared keys of
 `containerAndCard`, and the other counts are arithmetic on it and the two sizes.
@@ -418,8 +440,8 @@ All of these are in `bitmap.ts`.
   ```
 
   `intersects` returns at the first container pair that shares a value (`containersIntersect`). `isSubset` returns false
-  at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when a container's
-  `containerAndCard` with its partner is below its own cardinality. `isEqual` compares the sizes and the key lists, then
+  at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when `containersSubset`
+  finds a container with a value its partner lacks (no count). `isEqual` compares the sizes and the key lists, then
   each container pair's cardinality and `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. The public class exposes all seven (section 13).
 - **`clone`.** Section 4.
@@ -547,7 +569,7 @@ Both hold keys 0, 1 and 65535, so `andCardinality` meets three container pairs a
   |A xor B|    = 4 + 4 - 2 * 3 = 2     (5 and 65537)
   |A andNot B| = 4 - 3         = 1     (5)
   intersects: true at key 0, the first pair, so keys 1 and 65535 are never read
-  isSubset(A, B): false  (A is not larger than B, but key 0's count is 1, below A's 2 values there)
+  isSubset(A, B): false  (A is not larger than B, but key 0's container in A holds a value B's lacks)
 ```
 
 **Splitting an id.** `1234567890`: `1234567890 >>> 16 = 18838` (18838 * 65536 = 1,234,567,168), remainder
@@ -635,6 +657,8 @@ Everything here is a test, a workflow or a bench, not part of the module.
   copy-on-write against every mutator (before, during and with a clone during an `encodeChunks`), a bitmap combined with
   itself, and decodes that must not alias their input (a `Uint8Array`, a `Buffer`, a pooled `Buffer`, a
   `SharedArrayBuffer`, an offset subarray).
+- **The subset kernel** (`tests/roaring/container-subset.test.ts`): `containersSubset` and `containersIntersect` on every pair
+  of kinds against a plain set, at the first and last element, and on whole bitmaps against CRoaring.
 - **The counting kernels** (`tests/roaring/count-kernels.test.ts`): `containerAndCard` and `containersIntersect` against a
   `Set` for each of the nine ordered pairs of kinds (array, bitset, run on both sides, with the 16-bit kinds stored at an
   offset in a shared slab), over generated sets that pick every branch (few, many, runs, the chunk ends, one side far longer);

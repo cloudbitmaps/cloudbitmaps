@@ -62,6 +62,7 @@ import {
   containerXor,
   containersEqual,
   containersIntersect,
+  containersSubset,
   fromSortedIds,
   optimize,
   RUN,
@@ -512,7 +513,7 @@ export class TsBitmap implements CodecBitmap {
       j = gallopKeys(b, a[i] as number, j);
       if (j === b.length || b[j] !== a[i]) return false;
       const c = this.#conts[i] as Container;
-      if (containerAndCard(c, that.#conts[j++] as Container) !== c.card) return false;
+      if (!containersSubset(c, that.#conts[j++] as Container)) return false;
     }
     return true;
   }
