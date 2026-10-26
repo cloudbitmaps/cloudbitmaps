@@ -313,6 +313,19 @@ describe('a page that disagrees with the record', () => {
     expect(table.withRegion('p.md', fixed, GOOD)).toBe(fixed);
   });
 
+  it('accepts a figure whose median sits just below a rounding edge: the page rounds the stored four places, the check does the same', () => {
+    const edge = good();
+    const cell = cellOfPass(edge, 'dense has');
+    withRounds(
+      cell,
+      (cell.rounds as number[][]).map((r) => [r[0]!, r[1]!, r[1]! * 1.164999, ...r.slice(3)]),
+    );
+    expect(cell.vsNative).toBe(1.165);
+    const text = rendered(fileOf(edge));
+    expect(table.regionText('p.md', text)).toMatch(/\| `has` \| has \| 1\.17 /);
+    expect(table.problemsOf('p.md', text, fileOf(edge))).toEqual([]);
+  });
+
   it('prints from the rounds, never from a stored field: a lying stored figure does not reach the page', () => {
     const lying = good();
     cellOfPass(lying, 'dense has').vsNative = 1.1;

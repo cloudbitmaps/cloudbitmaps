@@ -325,7 +325,8 @@ function problemsOf(doc, text, file) {
       problems.push(`${doc}: no row for ${verdict.cellName(c)}`);
       continue;
     }
-    const recomputed = verdict.median(c.rounds.map((r) => r[2] / r[1]));
+    // The record stores each ratio rounded to four places and the page prints that, so the check rounds the same way.
+    const recomputed = +verdict.median(c.rounds.map((r) => r[2] / r[1])).toFixed(4);
     const printed = Number(cols[col].replace(/ \*$/, ''));
     if (printed !== Number(times(recomputed))) {
       problems.push(
@@ -340,7 +341,8 @@ function problemsOf(doc, text, file) {
       problems.push(`${doc}: no row for ${verdict.cellName(c)}`);
       continue;
     }
-    const recomputed = verdict.median(c.rounds.map((r) => r[2] / r[1]));
+    // The record stores each ratio rounded to four places and the page prints that, so the check rounds the same way.
+    const recomputed = +verdict.median(c.rounds.map((r) => r[2] / r[1])).toFixed(4);
     if (Number(cols[0].replace(/ \*$/, '')) !== Number(times(recomputed)))
       problems.push(
         `${doc}: ${verdict.cellName(c)} prints ${cols[0]}, the rounds say ${times(recomputed)}`,
