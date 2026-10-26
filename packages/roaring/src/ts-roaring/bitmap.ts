@@ -187,7 +187,7 @@ const AND_NOT = 2;
 type Combine = typeof OR | typeof AND | typeof AND_NOT;
 
 function combineContainers(op: Combine, a: Container, b: Container): Container | null {
-  if (op === OR) return containerOr(a, b, !a.shared);
+  if (op === OR) return containerOr(a, b, !a.shared || a.kind === RUN);
   if (op === AND) return containerAnd(a, b, !a.shared);
   return containerAndNot(a, b, !a.shared);
 }
@@ -327,7 +327,8 @@ export class TsBitmap implements CodecBitmap {
       at = gallopKeys(this.#keys, key, at);
       if (this.#keys[at] === key) {
         const before = this.#conts[at] as Container;
-        const after = containerOr(before, group, !before.shared);
+        // A run container is never written in place, so the result may be it when the ids add nothing.
+        const after = containerOr(before, group, !before.shared || before.kind === RUN);
         this.#conts[at] = after;
         this.#size += after.card - before.card;
       } else {

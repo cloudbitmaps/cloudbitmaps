@@ -476,35 +476,109 @@ export function containerHas(c: Container, low: number): boolean {
   return low <= (u16[r] as number) + (u16[r + 1] as number);
 }
 
+/** The index of the first of the `len` runs at `data[off + 2 * i]`, from index `from`, that starts after `value`; `len` if none. */
+function runsAfter(
+  data: Uint16Array,
+  off: number,
+  from: number,
+  len: number,
+  value: number,
+): number {
+  let step = 1;
+  let lo = from;
+  let hi = from;
+  while (hi < len && (data[off + 2 * hi] as number) <= value) {
+    lo = hi + 1;
+    hi += step;
+    step *= 2;
+  }
+  if (hi > len) hi = len;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((data[off + 2 * mid] as number) <= value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * The container for the first `runs` pairs of `pairs`, whose values number `card`: a run container (over a copy when
+ * `copy`, else over `pairs` itself) while its body is strictly smaller than the plain one, the rule {@link optimize}
+ * applies, and an array or a bitset otherwise.
+ */
+function runsOrPlain(pairs: Uint16Array, runs: number, card: number, copy: boolean): Container {
+  const plain = card <= ARRAY_MAX_CARDINALITY ? 2 * card : BITSET_BYTES;
+  if (2 + 4 * runs < plain) {
+    return runContainer(copy ? pairs.slice(0, 2 * runs) : pairs, runs, card);
+  }
+  return fromRunPairs(pairs, runs, card) as Container;
+}
+
+/** The run container `c` with the value `low` (which it lacks) added: the run list edited, never expanded to words. */
+function addToRuns(c: Container, low: number): Container {
+  const u16 = lows16(c);
+  // `next` is the first run that starts after `low`; the run before it, if any, ends before `low`.
+  const next = runsAfter(u16, c.off, 0, c.len, low);
+  const prev = next - 1;
+  const joinPrev =
+    prev >= 0 &&
+    (u16[c.off + 2 * prev] as number) + (u16[c.off + 2 * prev + 1] as number) + 1 === low;
+  const joinNext = next < c.len && (u16[c.off + 2 * next] as number) === low + 1;
+  const runs = c.len + 1 - (joinPrev ? 1 : 0) - (joinNext ? 1 : 0);
+  const out = new Uint16Array(2 * runs);
+  const head = joinPrev ? prev : next;
+  out.set(u16.subarray(c.off, c.off + 2 * head));
+  let at = 2 * head;
+  if (joinPrev && joinNext) {
+    out[at++] = u16[c.off + 2 * prev] as number;
+    out[at++] =
+      (u16[c.off + 2 * next] as number) +
+      (u16[c.off + 2 * next + 1] as number) -
+      (u16[c.off + 2 * prev] as number);
+  } else if (joinPrev) {
+    out[at++] = u16[c.off + 2 * prev] as number;
+    out[at++] = (u16[c.off + 2 * prev + 1] as number) + 1;
+  } else if (joinNext) {
+    out[at++] = low;
+    out[at++] = (u16[c.off + 2 * next + 1] as number) + 1;
+  } else {
+    out[at++] = low;
+    out[at++] = 0;
+  }
+  const rest = joinNext ? next + 1 : next;
+  out.set(u16.subarray(c.off + 2 * rest, c.off + 2 * c.len), at);
+  return runsOrPlain(out, runs, c.card + 1, false);
+}
+
 /**
  * Add `low`; returns the container that now holds it, which is `c` itself unless the kind changed or the storage had to
  * be copied. `c.card` of the result is the new cardinality either way.
  */
 export function containerAdd(c: Container, low: number): Container {
   if (containerHas(c, low)) return c;
-  const plain = demote(c);
-  if (plain.kind === BITSET) {
-    const words = writableWords(plain);
+  if (c.kind === RUN) return addToRuns(c, low);
+  if (c.kind === BITSET) {
+    const words = writableWords(c);
     words[low >>> 5] = (words[low >>> 5] as number) | (1 << (low & 31));
-    return bitsetContainer(words, plain.card + 1);
+    return bitsetContainer(words, c.card + 1);
   }
-  if (plain.card === ARRAY_MAX_CARDINALITY) {
-    const words = toWords(plain);
+  if (c.card === ARRAY_MAX_CARDINALITY) {
+    const words = toWords(c);
     words[low >>> 5] = (words[low >>> 5] as number) | (1 << (low & 31));
-    return bitsetContainer(words, plain.card + 1);
+    return bitsetContainer(words, c.card + 1);
   }
-  const old = lows16(plain);
-  const at = lowerBound(old, plain.off, plain.len, low, 1);
+  const old = lows16(c);
+  const at = lowerBound(old, c.off, c.len, low, 1);
   let u16 = old;
-  if (!plain.shared && plain.off === 0 && old.length > plain.len) {
-    u16.copyWithin(at + 1, at, plain.len);
+  if (!c.shared && c.off === 0 && old.length > c.len) {
+    u16.copyWithin(at + 1, at, c.len);
   } else {
-    u16 = new Uint16Array(Math.min(ARRAY_MAX_CARDINALITY, Math.max(8, plain.len * 2)));
-    u16.set(old.subarray(plain.off, plain.off + at));
-    u16.set(old.subarray(plain.off + at, plain.off + plain.len), at + 1);
+    u16 = new Uint16Array(Math.min(ARRAY_MAX_CARDINALITY, Math.max(8, c.len * 2)));
+    u16.set(old.subarray(c.off, c.off + at));
+    u16.set(old.subarray(c.off + at, c.off + c.len), at + 1);
   }
   u16[at] = low;
-  return arrayContainer(u16, plain.card + 1);
+  return arrayContainer(u16, c.card + 1);
 }
 
 /**
@@ -1101,18 +1175,62 @@ export function containerOr(a: Container, b: Container, inPlace = false): Contai
   if (b.kind === BITSET) return orIntoBitset(b, a, false);
   if (a.kind === ARRAY && b.kind === ARRAY) return orArrays(a, b);
   if (a.kind === RUN && b.kind === RUN) return orRuns(a, b);
-  const words = toWords(a.kind === RUN ? a : b);
-  return orIntoBitsetWords(words, a.kind === RUN ? b : a);
+  return a.kind === RUN ? orRunArray(a, b, inPlace) : orRunArray(b, a, false);
 }
 
-/** An array's values added to `words` (owned by the caller), as a container. */
-function orIntoBitsetWords(words: Uint32Array, array: Container): Container {
-  const u16 = lows16(array);
-  for (let i = array.off; i < array.off + array.len; i++) {
-    const v = u16[i] as number;
-    words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+/**
+ * A run container with an array's values: the two merged into a run list, built from the runs before each value in one
+ * block copy, so a few values cost a search each and the copy of the list, not an expansion to 8 KB of words. The
+ * result is a run container while that is the smaller form (see {@link runsOrPlain}). When the array adds nothing and
+ * `keep` allows, the run container itself is the result: runs are never written in place, so aliasing it is safe.
+ */
+function orRunArray(runs: Container, array: Container, keep: boolean): Container {
+  const x = lows16(runs);
+  const v = lows16(array);
+  const out = pairs16(2 * (runs.len + array.len));
+  let n = 0;
+  // The last value of the last pair written (-2 before there is one, so no value is next to it).
+  let last = -2;
+  let added = 0;
+  let i = 0;
+  for (let vi = 0; vi <= array.len; vi++) {
+    const value = vi < array.len ? (v[array.off + vi] as number) : 0x1_0000;
+    // The runs that start at or before `value`, whole: the last may hold or touch it, the ones before it end well short.
+    const k = runsAfter(x, runs.off, i, runs.len, value);
+    if (k > i) {
+      const start = x[runs.off + 2 * i] as number;
+      const end = start + (x[runs.off + 2 * i + 1] as number);
+      if (start <= last + 1) {
+        if (end > last) {
+          last = end;
+          out[2 * n - 1] = last - (out[2 * n - 2] as number);
+        }
+      } else {
+        out[2 * n] = start;
+        out[2 * n + 1] = end - start;
+        n++;
+        last = end;
+      }
+      if (k - i > 1) {
+        out.set(x.subarray(runs.off + 2 * (i + 1), runs.off + 2 * k), 2 * n);
+        n += k - i - 1;
+        last = (out[2 * n - 2] as number) + (out[2 * n - 1] as number);
+      }
+      i = k;
+    }
+    if (vi === array.len || value <= last) continue;
+    added++;
+    if (value === last + 1) {
+      out[2 * n - 1] = (out[2 * n - 1] as number) + 1;
+    } else {
+      out[2 * n] = value;
+      out[2 * n + 1] = 0;
+      n++;
+    }
+    last = value;
   }
-  return fromWordsCard(words, popcountWords(words)) as Container;
+  if (added === 0 && keep) return runs;
+  return runsOrPlain(out, n, runs.card + added, true);
 }
 
 /** The values of `a` that `b` lacks, or `null` when there are none. */
