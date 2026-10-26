@@ -135,11 +135,13 @@ Where a container's kind comes from:
 - Built from ids (`fromSortedIds`): an array when the group has at most 4,096 distinct low values, else a bitset.
 - Decoded from bytes: whatever kind the bytes say, run containers included (the layout check has already proved the
   structure). A decoded run container stays a run until it is changed.
-- A write (`containerAdd`, `containerRemove`) first `demote`s a run container, so no mutating path edits runs. An array
+- A write that adds ids (`containerAdd`, and `containerOr` of a run container with an array) merges them into the run list
+  and keeps the result a run container while the rule above says run (`runsOrPlain`), otherwise an array or a bitset; a
+  removal (`containerRemove`) first `demote`s a run container. An array
   at 4,096 values that gains one more becomes a bitset; a bitset that drops to 4,096 or fewer becomes an array
   (`fromWordsCard`).
 - The result of combining one pair of containers is an array up to 4,096 values or a bitset above, never a run, whatever
-  the pair was. A bitmap-level combine can still hold a run: a key held by one side only keeps that side's container as
+  the pair was, with one exception: a run container with an array stays a run while the run form is the smaller one. A bitmap-level combine can still hold a run: a key held by one side only keeps that side's container as
   it is (section 7).
 - `optimize()` (the bitmap method) re-encodes every container by the rule. `encodeChunks()` optimizes each container
   when it is asked for, on a snapshot, without changing the bitmap's own containers.
@@ -281,8 +283,17 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
   same on a chunk whose runs cover about half the words, so the single count stays). The trade: the small branch pays one
   bit-extraction step per result value, which is cheaper than the allocation and the 2,048-word count it replaces
   whenever the result is at most 4,096 values, the only case it is taken for.
-- Run against array for `or`, and a run as the first operand of `andNot` with a non-run second operand: the run is
-  expanded to words (`toWords`, which it owns), then the other operand's bits are set or cleared.
+- Run against array for `or` (`orRunArray`): the two merge into one run list in `pairScratch` without expanding to words. For
+  each array value, `runsAfter` gallops to the first run that starts after it; the runs before are appended by one block copy
+  (only the first of them can touch the pair written last, and the one just before the value may hold or touch it), then the
+  value extends the last pair, starts a new one, or is already inside. The cardinality is the run container's plus the values
+  that were new, so nothing is counted. `runsOrPlain` then keeps a run container (a copy of the pairs) when `2 + 4 * runs` is
+  strictly under the plain body, else `fromRunPairs` builds an array or a bitset. When the array adds nothing and the caller
+  owns the first operand (`inPlace`, which the bitmap-level writers also pass for any run container, since runs are never
+  written in place), the result is the run container itself. `containerAdd` on a run container is the same edit for one
+  value (`addToRuns`: extend, join two neighbours, or insert), copying only the pairs.
+- A run as the first operand of `andNot` with a non-run second operand: the run is expanded to words (`toWords`, which it
+  owns), then the other operand's bits are set or cleared.
 
 ### Single-container operations
 
@@ -402,7 +413,10 @@ All of these are in `bitmap.ts`.
   `intersects` returns at the first container pair that shares a value (`containersIntersect`). `isSubset` returns false
   at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when a container's
   `containerAndCard` with its partner is below its own cardinality. `isEqual` compares the sizes and the key lists, then
-  each container pair's cardinality and `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
+  each container pair (`containersEqual`): two containers of one kind compare their words, values or run pairs and stop at the
+  first difference (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
+  `toRun` writes maximal ones, so one set has one list of pairs), and only a pair of different kinds falls back to
+  `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. The public class exposes all seven (section 13).
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a

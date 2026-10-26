@@ -9,9 +9,10 @@
  *   - BITSET: 65,536 bits, a `Uint32Array` of 2,048 words, for more than 4,096 values;
  *   - RUN:    `(start, length - 1)` pairs of maximal runs of consecutive remainders, a `Uint16Array`.
  *
- * A container keeps its cardinality; nothing recounts it per call. A container is a RUN only because it was decoded
- * from one or because {@link optimize} chose it: the first change to a run container turns it back into an array or a
- * bitset, so a mutating path never has to edit runs.
+ * A container keeps its cardinality; nothing recounts it per call. A container is a RUN because it was decoded from
+ * one or because {@link optimize} chose it. Adding ids to a run container edits its run list and keeps it a run while
+ * the run form is the smaller one (see {@link optimize}); removing an id turns it back into an array or a bitset. A run
+ * container's storage is never written in place: a write builds a new list.
  *
  * STORAGE. An ARRAY or RUN container reads its values from `data[off, off + len)` (`len` values, or `len` run pairs
  * at `off + 2 * i`), so the small containers of one decoded bitmap can sit side by side in a single `Uint16Array` (a
@@ -23,7 +24,8 @@
  * object never sits beside an unflagged one over the same storage.
  *
  * COMBINES, by the kinds of the pair (the result kind of a pair is a written rule: an array up to 4,096 values, a bitset
- * above, never a run, whatever the operands were; a container that has no partner in the other bitmap is not combined,
+ * above, never a run, whatever the operands were, except that a run with an array stays a run while the run form is
+ * smaller; a container that has no partner in the other bitmap is not combined,
  * and `TsBitmap` keeps it by reference, so a result bitmap can hold a run; `optimize` picks runs before anything is
  * stored, so stored bytes depend on the set alone):
  *
@@ -34,8 +36,8 @@
  *   A  B     probe each value          copy the bitset, set bits  keep values whose bit is clear
  *   B  B     word loop                 word loop                  word loop
  *   R  R     interval intersection     interval union             interval difference
- *   others   array or bitset against   through bitset words       through bitset words
- *            runs: probe / range copy
+ *   A  R     probe / range copy        merge into the run list    through bitset words
+ *   B  R     probe / range copy        through bitset words       through bitset words
  *
  * A combine takes `inPlace` when its first operand is a bitset nothing else can see: the words are written, not copied.
  *

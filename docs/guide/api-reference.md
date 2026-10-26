@@ -328,7 +328,7 @@ const fromBytes = RoaringBitmap.deserialize(bytes);        // portable bytes: ca
 | `bm.has(id)` | membership | one container lookup |
 | `bm.minimum()`, `bm.maximum()` | the smallest and the largest id, or `undefined` when it is empty | constant per container |
 | `bm.add(id)` → `this` | adds one id | one container lookup, plus a copy of the container the first time it is written after a clone |
-| `bm.addMany(values)` → `this` | adds every id of an iterable, a `Uint32Array` or a `RoaringBitmap`; nothing is added if any id is refused | linear in the ids |
+| `bm.addMany(values)` → `this` | adds every id of an iterable, a `Uint32Array` or a `RoaringBitmap`; nothing is added if any id is refused; a run container the ids land in stays a run container, the ids merged into its run list | linear in the ids |
 | `bm.remove(id)` → `boolean` | removes one id; whether it was there | as `add` |
 | `bm.removeMany(values)` → `this` | removes every id of an iterable, a `Uint32Array` or a `RoaringBitmap`; nothing is removed if any id is refused | linear in the ids |
 | `bm.clear()` | removes every id | constant |
@@ -340,7 +340,7 @@ const fromBytes = RoaringBitmap.deserialize(bytes);        // portable bytes: ca
 | `bm.andCardinality(other)`, `bm.orCardinality(other)`, `bm.xorCardinality(other)`, `bm.andNotCardinality(other)` → `number` | how many ids both hold, either holds, exactly one holds, or `bm` holds and `other` lacks, answered without a result bitmap you can keep. Neither bitmap changes, and `other` may be `bm` itself | no cost stated |
 | `bm.intersects(other)` → `boolean` | whether the two share an id; equal to `andCardinality(other) > 0` | no cost stated |
 | `bm.isSubset(other)` → `boolean` | whether every id of `bm` is in `other`; an empty bitmap is a subset of every bitmap, itself included. Unlike `roaring`, a value that is not a bitmap is a `ValidationError`, not `false` | no cost stated |
-| `bm.isEqual(other)` → `boolean` | whether the two hold exactly the same ids: by membership, not by container kinds or serialized bytes, so a bitmap with run containers equals the same ids held as arrays | no cost stated |
+| `bm.isEqual(other)` → `boolean` | whether the two hold exactly the same ids: by membership, not by container kinds or serialized bytes, so a bitmap with run containers equals the same ids held as arrays | compares the two containers of each key by their stored values, and stops at the first difference |
 | `[Symbol.iterator]()` | the ids, ascending, each once (a promise) | lazy |
 | `bm.toArray()`, `bm.toUint32Array()` | the ids as a new ascending array the caller owns (`toUint32Array` never returns a view of the bitmap's storage); a bitmap too large to allocate throws the runtime's `RangeError` | `size` times 8 bytes (array) or 4 bytes (typed) |
 | `bm.serialize(format?)` → `Uint8Array` | the portable bytes, in a new array; `'portable'` is the only format, and any other argument throws `ValidationError` | linear in the containers |
