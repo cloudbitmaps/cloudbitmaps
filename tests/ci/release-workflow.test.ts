@@ -20,6 +20,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 interface Step {
   name?: string;
+  if?: string;
   uses?: string;
   run?: string;
   env?: Record<string, unknown>;
@@ -246,6 +247,141 @@ describe('release workflow shape', () => {
         /-lt\s+"\$EXPECTED_PACKAGES"/,
       );
     }
+  });
+
+  describe('a real publish runs only from a version tag', () => {
+    type Ctx = { event: 'push' | 'workflow_dispatch'; ref: string; dryRun: boolean };
+    const tagPush: Ctx = { event: 'push', ref: 'refs/tags/v1.2.3', dryRun: false };
+    const tagDispatchReal: Ctx = {
+      event: 'workflow_dispatch',
+      ref: 'refs/tags/v1.2.3',
+      dryRun: false,
+    };
+    const tagDispatchDry: Ctx = {
+      event: 'workflow_dispatch',
+      ref: 'refs/tags/v1.2.3',
+      dryRun: true,
+    };
+    const branchDispatchReal: Ctx = {
+      event: 'workflow_dispatch',
+      ref: 'refs/heads/main',
+      dryRun: false,
+    };
+    const branchDispatchDry: Ctx = {
+      event: 'workflow_dispatch',
+      ref: 'refs/heads/main',
+      dryRun: true,
+    };
+    const allContexts = [
+      tagPush,
+      tagDispatchReal,
+      tagDispatchDry,
+      branchDispatchReal,
+      branchDispatchDry,
+    ];
+
+    /** Evaluate a step's `if:` for one trigger. The grammar is the small one this workflow uses; anything else throws. */
+    function runs(step: Step, ctx: Ctx): boolean {
+      if (step.if === undefined) return true;
+      const expr = String(step.if);
+      const js = expr.replace(
+        /startsWith\(\s*github\.ref\s*,\s*('[^']*')\s*\)/g,
+        'ref.startsWith($1)',
+      );
+      const rest = js
+        .replace(/ref\.startsWith\('[^']*'\)/g, '')
+        .replace(/github\.event_name|inputs\.dryRun|'[^']*'|==|&&|\|\||!|[()\s]/g, '');
+      if (rest !== '') throw new Error(`unsupported if expression: ${expr}`);
+      const fn = new Function(
+        'ref',
+        'github',
+        'inputs',
+        `return Boolean(${js.replace(/github\.ref/g, 'ref')});`,
+      ) as (ref: string, github: object, inputs: object) => boolean;
+      return fn(ctx.ref, { event_name: ctx.event }, { dryRun: ctx.dryRun });
+    }
+    const named = (n: string): Step => {
+      const s = job('publish').steps.find((x) => x.name === n);
+      if (!s) throw new Error(`the publish job has no step "${n}"`);
+      return s;
+    };
+
+    it('runs every publish-capable step only on a tag ref', () => {
+      // A step is publish-capable when it publishes for real (a `publish` command without --dry-run) or is
+      // one of the guards that exist only for a real publish. The job holds `id-token: write`, so these are
+      // the steps that can use it to publish.
+      const capable = job('publish').steps.filter(
+        (s) =>
+          (/^(pnpm|npm)\b.*\bpublish\b/.test(s.run ?? '') && !/--dry-run/.test(s.run ?? '')) ||
+          s.name === 'Refuse to "publish" a still-private package' ||
+          s.name ===
+            'Refuse to publish an unbootstrapped name or a version already on the registry',
+      );
+      expect(capable.map((s) => s.name)).toContain('Publish (real)');
+      for (const step of capable) {
+        for (const ctx of allContexts) {
+          if (!ctx.ref.startsWith('refs/tags/v')) {
+            expect(
+              runs(step, ctx),
+              `"${step.name}" must not run on ${ctx.ref} (${ctx.event})`,
+            ).toBe(false);
+          }
+        }
+      }
+    });
+
+    it('publishes for real on a tag push or a tag dispatch with dryRun=false, never on a dry run', () => {
+      const real = named('Publish (real)');
+      expect(runs(real, tagPush)).toBe(true);
+      expect(runs(real, tagDispatchReal)).toBe(true);
+      expect(runs(real, tagDispatchDry)).toBe(false);
+      expect(runs(real, branchDispatchReal)).toBe(false);
+      expect(runs(real, branchDispatchDry)).toBe(false);
+    });
+
+    it('runs the tag/version check on every tag ref, including a dispatch with dryRun=false', () => {
+      const check = named('Verify tag matches every package version');
+      for (const ctx of [tagPush, tagDispatchReal, tagDispatchDry])
+        expect(runs(check, ctx)).toBe(true);
+      for (const ctx of [branchDispatchReal, branchDispatchDry])
+        expect(runs(check, ctx)).toBe(false);
+    });
+
+    it('fails a branch dispatch with dryRun=false before checkout, install and build', () => {
+      const steps = job('publish').steps;
+      const failing = steps.findIndex(
+        (s) =>
+          /\bexit 1\b/.test(s.run ?? '') &&
+          runs(s, branchDispatchReal) &&
+          !allContexts.filter((c) => c !== branchDispatchReal).some((c) => runs(s, c)),
+      );
+      expect(failing, 'no step fails a branch dispatch with dryRun=false').toBeGreaterThan(-1);
+      const firstWork = steps.findIndex((s) => s.uses !== undefined || /^pnpm /.test(s.run ?? ''));
+      expect(failing).toBeLessThan(firstWork);
+    });
+
+    it('still dry-runs from a branch, with the guard quiet', () => {
+      const dry = named('Publish (dry-run)');
+      expect(runs(dry, branchDispatchDry)).toBe(true);
+      expect(runs(dry, tagDispatchDry)).toBe(true);
+      expect(runs(dry, branchDispatchReal)).toBe(false);
+      expect(runs(dry, tagPush)).toBe(false);
+      // Nothing that fails a run starts on a dry run from a branch.
+      for (const s of job('publish').steps.filter(
+        (x) => /\bexit 1\b/.test(x.run ?? '') && x.if !== undefined && /dryRun/.test(x.if),
+      )) {
+        expect(
+          runs(s, branchDispatchDry),
+          `"${s.name}" must not run on a dry run from a branch`,
+        ).toBe(false);
+      }
+    });
+
+    it('passes no event text into a run script', () => {
+      for (const s of Object.values(wf.jobs).flatMap((j) => j.steps)) {
+        expect(s.run ?? '').not.toMatch(/\$\{\{\s*github\.event\./);
+      }
+    });
   });
 
   it('expects as many package manifests as the workspace actually has', () => {

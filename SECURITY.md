@@ -172,10 +172,10 @@ produced the package they installed**. The controls:
   (`lint · lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`, plus a `leak-scan` of the
   packed tarball) against the exact commit being published before the tarball is created — a green `main` is
   necessary but not sufficient. CI's site and fuzz-lockfile checks are not repeated here; they guard what is
-  served from `main`, not what is published. A pushed `vX.Y.Z` tag must also match every package's
-  version, or the release fails. A manual dispatch with `dryRun: false` publishes for real too, and checks less: run
-  from a branch, it skips the tag/version check and the release-notes check and ships whatever versions the
-  manifests declare, and from any ref it creates no GitHub Release.
+  served from `main`, not what is published. A real publish runs only from a `vX.Y.Z` tag ref, and every package's
+  version must match that tag, or the release fails. A manual dispatch with `dryRun: false` publishes for real only
+  when dispatched on a tag, where it runs the same tag/version check and release-notes check; dispatched on a branch
+  it fails before any build or publish step. A manual run, from any ref, creates no GitHub Release.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
   on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile. Three CI jobs
   install from the registry without a lockfile, each inside a container: the consumer install (the six packed tarballs
