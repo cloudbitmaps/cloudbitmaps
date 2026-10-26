@@ -132,6 +132,13 @@ jobs:
       # It extracts the base from history, which this job's full clone has, and it imports the built entry, so it runs
       # after the build.
       - run: pnpm bench:ts-codec-paired:check
+      # bench/bitmap-api.cjs times the public bitmap class against the `roaring` package and the codec's own call. This
+      # times nothing a bound reads: it runs every cell once at a tiny scale from the built package and fails if the output
+      # is malformed or the subjects disagree on an answer, so it runs after the build.
+      - run: pnpm bench:bitmap-api:check
+      # The "against native" table on the API reference and the codec page is generated from
+      # bench/bitmap-api-results.json; this fails if a region is not what the record renders to.
+      - run: pnpm bench:bitmap-api:table:check
       # The built package must import cleanly under BOTH module systems (guards the `require()` of the ESM-only entries).
       - run: node scripts/smoke.cjs
       # Both secret scanners, HERE and not only in the release workflow.

@@ -406,6 +406,112 @@ the bitmap's `serialize()` bytes with it.
 **Not provided.** Ranges, `rank`, `select`, frozen views, Array-style helpers, `toSet`, `getSerializationSizeInBytes`
 and 64-bit ids are left out, and so are `xorMany` and `delete`.
 
+**Against the `roaring` package.** What each operation of the class costs next to the pinned `roaring` package (CRoaring
+through its binding, a development dependency the tests hold the codec to; the store does not run it) on the same data,
+and next to the call of the TypeScript codec that the store does run, one data set a column. A store hides these costs
+behind network reads; a loop over in-memory bitmaps does not, so the table prints every cell, losses included. The
+figures are the record in [`bench/bitmap-api-results.json`](../../bench/bitmap-api-results.json), measured by
+[`bench/bitmap-api.cjs`](../../bench/bitmap-api.cjs); this region is generated from it.
+
+<!-- BITMAP_API:TABLE:START -->
+
+**Measured** on Apple M3 Pro (11 cores), darwin arm64, Node v24.22.1, commit `1ac4cf5d` (clean tree), `roaring` 2.7.0, 31 rounds a figure, pass 1, started 2026-10-26. Each figure is the median over the rounds of the class's time divided by the `roaring` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most 5.87 and 259 rounds were set aside at 6 or more and taken again (at most 4 of any one figure, on 67 figures). Recorded, never asserted.
+
+| Against `roaring` (class time / native time) | Group | dense | sparse | runs | mixed | spread8k |
+|---|---|---:|---:|---:|---:|---:|
+| `build array` | build | 2.16 | 1.24 * | 2.15 | 2.38 | 0.54 |
+| `build Uint32Array` | build | 1.67 | 0.92 | 1.64 | 1.65 | 0.45 * |
+| `build addMany` | build | 1.65 | 0.95 | 1.64 | 1.65 | 0.46 * |
+| `build add per id` | build | 1.11 | 2.52 | 1.14 | 1.13 | 1.76 |
+| `has` | has | 0.32 | 0.84 | 0.75 | 0.63 | 0.65 |
+| `and returning` | combine returning | 2.81 | 0.46 | 6.61 * | 2.25 | 0.90 |
+| `or returning` | combine returning | 2.51 | 1.96 | 3.37 | 2.26 * | 1.92 |
+| `xor returning` | combine returning | 6.82 | 2.47 | 9.26 | 4.81 * | 2.89 |
+| `andNot returning` | combine returning | 2.57 * | 0.48 | 1.60 | 2.80 | 1.74 |
+| `and in place` | combine in place | 3.13 * | 0.45 | 4.56 * | 2.15 | 0.88 |
+| `or in place` | combine in place | 2.38 | 1.99 | 2.83 | 1.74 * | 1.20 * |
+| `xor in place` | combine in place | 7.04 | 2.67 | 6.09 | 4.33 | 2.05 |
+| `andNot in place` | combine in place | 3.00 * | 0.47 | 3.52 | 2.75 | 1.91 |
+| `serialize` | serialize | 0.23 * | 0.28 | 0.79 | 0.31 * | 3.38 |
+| `deserialize` | serialize | 2.71 | 5.95 * | 9.91 * | 3.49 * | 3.97 |
+| `runOptimize` | serialize | 0.43 | 1.19 | 0.06 | 0.73 | 0.32 |
+| `iterate` | export | 1.12 | 1.29 * | 1.00 | 1.08 | 1.04 |
+| `toUint32Array` | export | 1.66 | 1.95 * | 4.97 | 2.66 * | 3.03 |
+| `toArray` | export | 0.55 * | 0.55 | 0.49 | 0.49 * | 0.51 * |
+| `orMany 8` | orMany | 8.82 | 8.10 | 8.24 | 3.56 | 2.15 |
+| `orMany 64` | orMany | 37.35 | 4.53 | 10.96 | 3.25 | 4.74 |
+| `clone` | clone | 0.00 | 0.01 | 0.02 | 0.00 | 0.06 |
+| `clone then write` | clone | 1.50 | 3.62 | 22.45 | 2.12 * | 0.78 |
+| `andCardinality` | count | 16.74 | 0.41 | 1.85 | 2.20 | 1.59 |
+| `orCardinality` | count | 15.47 | 0.41 | 1.70 | 2.12 | 1.60 |
+| `isSubset` | compare | 8.34 | 0.38 | 5.02 * | 0.07 | 1.69 |
+| `isEqual` | compare | 12.54 | 35.02 | 44.83 | 18.54 | 12.48 |
+| `intersects overlapping` | count | 0.53 | 7.23 | 0.57 | 0.65 | 2.11 |
+| `intersects disjoint` | count | 5.68 | 0.41 | 5.06 | 2.37 | 1.46 |
+| `write after or` | write after combine | 10.51 * | 4.74 | 39.22 | 11.43 | 1.17 |
+| `write after xor` | write after combine | 14.49 | 5.81 | 47.04 | 11.70 | 1.18 |
+| `write after andNot` | write after combine | 12.96 * | 5.97 | 48.26 | 12.50 | 1.18 |
+
+| The shell against the codec's own call (class time / codec time) | Group | dense | sparse | runs | mixed | spread8k |
+|---|---|---:|---:|---:|---:|---:|
+| `build array` | build | 1.00 | 1.10 * | 0.99 | 1.01 | 0.99 |
+| `build Uint32Array` | build | 1.01 | 1.01 | 1.01 | 1.00 | 1.03 * |
+| `build addMany` | build | 1.00 | 1.00 | 1.00 | 1.00 | 1.07 * |
+| `build add per id` | build | 1.09 | 1.03 | 1.09 | 1.07 | 1.05 |
+| `has` | has | 1.12 | 1.03 | 1.05 | 1.05 | 0.89 |
+| `and returning` | combine returning | 1.66 | 1.02 | 1.00 * | 1.06 | 1.05 |
+| `or returning` | combine returning | 1.57 | 1.01 | 1.04 | 1.17 * | 1.29 |
+| `xor returning` | combine returning | 1.36 | 1.01 | 1.44 | 0.94 * | 1.06 |
+| `andNot returning` | combine returning | 1.54 * | 0.99 | 1.02 | 1.10 | 0.99 |
+| `and in place` | combine in place | 1.51 * | 1.03 | 1.05 * | 1.30 | 1.06 |
+| `or in place` | combine in place | 1.04 | 1.04 | 1.02 | 1.36 * | 1.24 * |
+| `andNot in place` | combine in place | 1.28 * | 0.97 | 1.01 | 1.04 | 1.20 |
+| `serialize` | serialize | 1.15 * | 1.04 | 1.43 | 1.06 * | 1.03 |
+| `deserialize` | serialize | 1.51 | 1.05 * | 2.99 * | 1.76 * | 2.12 |
+| `runOptimize` | serialize | 1.25 | 0.94 | 1.28 | 1.07 | 1.14 |
+| `iterate` | export | 0.99 | 1.12 * | 0.93 | 1.09 | 1.23 |
+| `toUint32Array` | export | 0.98 | 0.99 * | 1.04 | 1.03 * | 0.96 |
+| `toArray` | export | 1.03 * | 1.13 | 1.01 | 1.02 * | 1.02 * |
+| `clone` | clone | 1.10 | 1.04 | 1.03 | 1.04 | 1.41 |
+| `clone then write` | clone | 1.28 | 1.03 | 1.09 | 1.09 * | 1.05 |
+| `andCardinality` | count | 1.11 | 0.93 | 0.29 | 0.58 | 0.99 |
+| `orCardinality` | count | 1.18 | 0.21 | 0.30 | 0.43 | 0.63 |
+| `write after or` | write after combine | 2.47 * | 1.11 | 1.16 | 1.13 | 1.10 |
+| `write after xor` | write after combine | 3.37 | 1.12 | 1.21 | 1.23 | 1.11 |
+| `write after andNot` | write after combine | 3.46 * | 1.07 | 1.24 | 1.24 | 1.10 |
+
+| The first call in a fresh process (`mixed`) | Class / native | Class / codec |
+|---|---:|---:|
+| `first deserialize` | 14.59 * | 1.14 * |
+| `first build` | 2.42 | 1.02 |
+| `first and` | 7.15 | 1.02 |
+
+| `store.load(ref, { bitmap })` | Load (ms) | `serialize` (ms) | `deserialize` (ms) | Round trip, share of a load |
+|---|---:|---:|---:|---:|
+| dense | 1.27 | 0.029 | 0.161 | 14.1% |
+| sparse | 2.55 | 0.057 | 0.453 | 19.3% |
+| runs | 1.14 | 0.026 | 0.152 | 15.3% |
+| mixed | 2.00 | 0.057 | 0.306 | 18.7% |
+| spread8k | 16.3 | 0.560 | 2.47 | 18.5% |
+
+\* The A/A control of this cell differed from the class by more than 2%, so the figure is not resolved.
+
+Close to native (within 3 times native on every cell of the group, every control in band): has.
+Not called close to native: build (worst 2.52 times, sparse build add per id; 3 cell(s) with a control out of band); combine returning (worst 9.26 times, runs xor returning; 4 cell(s) with a control out of band); combine in place (worst 7.04 times, dense xor in place; 5 cell(s) with a control out of band); serialize (worst 9.91 times, runs deserialize; 5 cell(s) with a control out of band); export (worst 4.97 times, runs toUint32Array; 6 cell(s) with a control out of band); orMany (worst 37.35 times, dense orMany 64); clone (worst 22.45 times, runs clone then write; 1 cell(s) with a control out of band); count (worst 16.74 times, dense andCardinality); compare (worst 44.83 times, runs isEqual; 1 cell(s) with a control out of band); write after combine (worst 48.26 times, runs write after andNot; 2 cell(s) with a control out of band); cold (worst 14.59 times, cold first deserialize; 1 cell(s) with a control out of band).
+More than 10 times native on some data set, so not shipped unless the maintainer decides otherwise having seen this table: `RoaringBitmap.andNot` (48.26 times, runs write after andNot); `RoaringBitmap.xor` (47.04 times, runs write after xor); `isEqual` (44.83 times, runs isEqual); `RoaringBitmap.or` (39.22 times, runs write after or); `RoaringBitmap.orMany` (37.35 times, dense orMany 64); `clone` (22.45 times, runs clone then write); `andCardinality` (16.74 times, dense andCardinality); `orCardinality` (15.47 times, dense orCardinality); `RoaringBitmap.deserialize` (14.59 times, cold first deserialize).
+
+The class answered `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality` and `intersects` by the count kernels in this pass; the count kernels' own bench (`bench/count-kernels.cjs`) kept them: `andCardinality` took less time than building and counting on every operand-pair group it judges. The codec column of `andCardinality` and `orCardinality` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.
+
+Notes on rows that are not a like-for-like call:
+
+- `deserialize` and `first deserialize`: the class caps the size and checks the layout of the bytes before it decodes them; the `roaring` package's decode is called with no validating option, so these rows compare the class with its check against native without one.
+- `clone` and `clone then write`: the class's clone shares the containers and copies one on the first write that reaches it; native's clone copies everything at once. These rows are that policy difference, not two copies of the same work.
+- `write after or`, `write after xor` and `write after andNot`: only the first operand's next write is timed, on an operand decoded fresh for each repetition, after a returning combine that flagged the containers it keeps by reference. The codec has no such flag, so its figure is the same write on an unflagged bitmap.
+- `intersects overlapping` answers `true` at the first container the two bitmaps share, so it times how fast each subject finds a first hit; `intersects disjoint` answers `false` after walking every key. `isSubset` and `isEqual` answer `true`, which is the full scan.
+- `serialize` is held to identical bytes on every subject; every other answer is held to the same value.
+
+<!-- BITMAP_API:TABLE:END -->
+
 **A load reads your bitmap and never changes it.** `store.load(ref, bitmap)` and `store.load(ref, { bitmap })` serialize
 it once, check and decode those bytes as any `{ serialized }` load does, and keep no reference to it. A bitmap decoded
 from bytes another writer made keeps its run containers as they were, and one that serializes above the size cap is
