@@ -272,14 +272,20 @@ describe('release workflow shape', () => {
       ref: 'refs/heads/main',
       dryRun: true,
     };
+    // A tag that is not a version tag: loosening a condition from `refs/tags/v` to any tag must go red.
+    const nonVersionTagContexts: Ctx[] = ['refs/tags/foo', 'refs/tags/release-1'].map((ref) => ({
+      event: 'workflow_dispatch',
+      ref,
+      dryRun: false,
+    }));
+    const badRefContexts = [branchDispatchReal, ...nonVersionTagContexts];
     const allContexts = [
       tagPush,
       tagDispatchReal,
       tagDispatchDry,
-      branchDispatchReal,
       branchDispatchDry,
+      ...badRefContexts,
     ];
-
     /** Evaluate a step's `if:` for one trigger. The grammar is the small one this workflow uses; anything else throws. */
     function runs(step: Step, ctx: Ctx): boolean {
       if (step.if === undefined) return true;
@@ -307,12 +313,16 @@ describe('release workflow shape', () => {
     };
 
     it('runs every publish-capable step only on a tag ref', () => {
-      // A step is publish-capable when it publishes for real (a `publish` command without --dry-run) or is
-      // one of the guards that exist only for a real publish. The job holds `id-token: write`, so these are
-      // the steps that can use it to publish.
+      // A step is publish-capable when it publishes for real (a `publish` command of pnpm, npm, yarn or npx,
+      // on one line or several, or an action named for publishing, without --dry-run) or is one of the guards
+      // that exist only for a real publish. The job holds `id-token: write`, so these are the steps that can
+      // use it to publish. Known limit: a publish done through a script or an action not named for it is not
+      // found by this detector.
       const capable = job('publish').steps.filter(
         (s) =>
-          (/^(pnpm|npm)\b.*\bpublish\b/.test(s.run ?? '') && !/--dry-run/.test(s.run ?? '')) ||
+          ((/\b(pnpm|npm|yarn|npx)\b[\s\S]*\bpublish\b/.test(s.run ?? '') ||
+            /publish/i.test(s.uses ?? '')) &&
+            !/--dry-run/.test(s.run ?? '')) ||
           s.name === 'Refuse to "publish" a still-private package' ||
           s.name ===
             'Refuse to publish an unbootstrapped name or a version already on the registry',
@@ -321,6 +331,7 @@ describe('release workflow shape', () => {
       for (const step of capable) {
         for (const ctx of allContexts) {
           if (!ctx.ref.startsWith('refs/tags/v')) {
+            // Covers a branch and a tag that is not a version tag.
             expect(
               runs(step, ctx),
               `"${step.name}" must not run on ${ctx.ref} (${ctx.event})`,
@@ -335,27 +346,39 @@ describe('release workflow shape', () => {
       expect(runs(real, tagPush)).toBe(true);
       expect(runs(real, tagDispatchReal)).toBe(true);
       expect(runs(real, tagDispatchDry)).toBe(false);
-      expect(runs(real, branchDispatchReal)).toBe(false);
       expect(runs(real, branchDispatchDry)).toBe(false);
+      for (const ctx of badRefContexts) expect(runs(real, ctx), ctx.ref).toBe(false);
     });
 
     it('runs the tag/version check on every tag ref, including a dispatch with dryRun=false', () => {
       const check = named('Verify tag matches every package version');
       for (const ctx of [tagPush, tagDispatchReal, tagDispatchDry])
         expect(runs(check, ctx)).toBe(true);
-      for (const ctx of [branchDispatchReal, branchDispatchDry])
+      for (const ctx of [branchDispatchDry, ...badRefContexts])
         expect(runs(check, ctx)).toBe(false);
     });
 
-    it('fails a branch dispatch with dryRun=false before checkout, install and build', () => {
+    it('checks the release notes on every version tag ref and on no other ref', () => {
+      const notes = named('Require release notes to exist before publishing');
+      for (const ctx of [tagPush, tagDispatchReal, tagDispatchDry])
+        expect(runs(notes, ctx)).toBe(true);
+      for (const ctx of [branchDispatchDry, ...badRefContexts])
+        expect(runs(notes, ctx)).toBe(false);
+    });
+
+    it('fails a dispatch with dryRun=false off a version tag before checkout, install and build', () => {
       const steps = job('publish').steps;
       const failing = steps.findIndex(
         (s) =>
           /\bexit 1\b/.test(s.run ?? '') &&
-          runs(s, branchDispatchReal) &&
-          !allContexts.filter((c) => c !== branchDispatchReal).some((c) => runs(s, c)),
+          badRefContexts.every((c) => runs(s, c)) &&
+          !allContexts.filter((c) => !badRefContexts.includes(c)).some((c) => runs(s, c)),
       );
-      expect(failing, 'no step fails a branch dispatch with dryRun=false').toBeGreaterThan(-1);
+      expect(failing, 'no step fails a dispatch with dryRun=false off a tag').toBeGreaterThan(-1);
+      // It must really stop the run: a failing step that may continue lets the later steps start.
+      expect(
+        (steps[failing] as unknown as { 'continue-on-error'?: unknown })['continue-on-error'],
+      ).toBeUndefined();
       const firstWork = steps.findIndex((s) => s.uses !== undefined || /^pnpm /.test(s.run ?? ''));
       expect(failing).toBeLessThan(firstWork);
     });
@@ -366,9 +389,9 @@ describe('release workflow shape', () => {
       expect(runs(dry, tagDispatchDry)).toBe(true);
       expect(runs(dry, branchDispatchReal)).toBe(false);
       expect(runs(dry, tagPush)).toBe(false);
-      // Nothing that fails a run starts on a dry run from a branch.
+      // Nothing that is gated and fails a run starts on a dry run from a branch.
       for (const s of job('publish').steps.filter(
-        (x) => /\bexit 1\b/.test(x.run ?? '') && x.if !== undefined && /dryRun/.test(x.if),
+        (x) => /\bexit 1\b/.test(x.run ?? '') && x.if !== undefined,
       )) {
         expect(
           runs(s, branchDispatchDry),

@@ -202,10 +202,13 @@ which defaults to `true`. It waits for the same approval as a tag push.
 - **`dryRun: false` publishes for real, and only from a version tag.** Dispatched on a tag ref (`refs/tags/v…`) it
   runs the tag/version check, the release-notes check, the gate, the still-private check, the registry probes and the
   tarball leak scan, then publishes the version the manifests carry (which the tag check has proved equals the tag).
-  Dispatched on a branch, it fails in its first step, before the checkout, the install or the build, so nothing is
-  installed, packed or published.
+  Dispatched on a branch, or on any ref that is not a version tag, it fails in its first step, before the checkout,
+  the install or the build, so nothing is installed, packed or published. The job sits in the `release` environment,
+  so the approval prompt still comes first and the run then fails.
 - **A dry run works on a branch or a tag.** On a branch it skips the tag check and the release-notes check, which key
-  on a tag ref; on a tag ref both run.
+  on a tag ref; on a tag ref both run. The job holds the `id-token: write` permission on a branch dry run too, and
+  that is safe: no publish step runs there (the real publish needs a version tag ref), and a dry run mints no
+  attestation. Splitting the job so that installs never share a job with the permission is a separate hardening.
 - **No run started by hand creates a GitHub Release**: that job runs only on a tag push. After a real manual
   publish, create it yourself, as the [break-glass](#manual--break-glass-release) steps do.
 

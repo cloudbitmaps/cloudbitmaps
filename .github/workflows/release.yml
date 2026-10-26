@@ -98,12 +98,12 @@ jobs:
     environment: release # manual-approval gate (required reviewer on the environment)
     steps:
       # A real publish by hand is allowed only from a version tag. A dispatch with dryRun=false on a branch
-      # fails here, first, before the checkout, the install or the build: no dependency code has run and
-      # nothing was packed. (A dry run on a branch still works; it never reaches a publish step.)
+      # (or on any ref that is not a version tag) fails here, first, before the checkout, the install or the build:
+      # no dependency code has run and nothing was packed. (A dry run on a branch still works; it never reaches a publish step.)
       - name: Refuse a real publish that does not start from a version tag
         if: github.event_name == 'workflow_dispatch' && !inputs.dryRun && !startsWith(github.ref, 'refs/tags/v')
         run: |
-          echo "::error::a real publish runs only from a version tag (refs/tags/v...); this run was started on a branch. Tag the release and dispatch on the tag, or push the tag."
+          echo "::error::a real publish runs only from a version tag (refs/tags/v...); this run is on ${GITHUB_REF}, which is not one. Tag the release and dispatch on the tag, or push the tag."
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
