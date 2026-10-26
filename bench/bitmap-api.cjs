@@ -625,9 +625,10 @@ function printPass(doc) {
       `load ${l.dataset}: the round trip is ${(l.roundTripShare * 100).toFixed(1)}% of a load of a bitmap`,
     );
   }
-  const { maxLoadAtEnd, discardedRounds, sleptRounds } = doc.load;
+  const { maxLoadAtEnd, sleptRounds } = doc.load;
+  const set = verdict.discardedOf(doc);
   console.log(
-    `pass ${doc.pass ?? '-'}: kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${discardedRounds} round(s) discarded at ${MAX_LOAD} or more; ${sleptRounds} round(s) discarded as slept${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
+    `pass ${doc.pass ?? '-'}: kept rounds ended at a load of at most ${maxLoadAtEnd.toFixed(2)}; ${set.total} round(s) discarded at ${MAX_LOAD} or more (at most ${set.most} of any one figure, on ${set.figures} figure(s)); ${sleptRounds} round(s) discarded as slept${doc.environment.anyLoad ? ' (the load rule was OFF for this pass)' : ''}${doc.environment.smoke ? ' (SMOKE: nothing here is evidence)' : ''}`,
   );
 }
 
