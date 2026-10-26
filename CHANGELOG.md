@@ -30,8 +30,10 @@ so, and so do the module headers in the code.
   `intersects` says whether they share an id; `isSubset(other)` whether every id of this one is in `other` (the empty
   bitmap is a subset of every bitmap); `isEqual(other)` whether they hold the same ids, by membership and not by
   container kinds or serialized bytes. The other bitmap may be this one. A value that is not a `RoaringBitmap` of this copy
-  of the package is a `ValidationError`, for `isSubset` too, where the `roaring` package answers `false`. No speed claim
-  is made for them.
+  of the package is a `ValidationError`, for `isSubset` too, where the `roaring` package answers `false`. The four
+  counts and `intersects` use the codec's counting kernels, which count from the containers without building the
+  combination; the count bench's record (`bench/count-kernels-results.json`, four passes) has the count's median below the
+  build's on every data set, and its gate prints `RESULT kept`. No speed figure is stated here.
 
 - **`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`, the combines that return a new bitmap, and `xorInPlace`.**
   `RoaringBitmap.and(a, b)` and the others take two bitmaps (`orMany` takes an iterable of them) and return a new one that

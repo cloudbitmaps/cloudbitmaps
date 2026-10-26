@@ -5,8 +5,9 @@ import { RoaringBitmap } from '@/index';
 import { runBitmapOps } from '@/testing/fuzz-bitmap-ops';
 
 /**
- * The committed `bitmap-ops` reproducers for the counting methods: each starts from a decode that holds an array, a
- * bitset and a run container, and each makes the target call every counting method. The target's check is shown to fire
+ * The committed `bitmap-ops` reproducers for the counting methods: two start from a decode that holds an array, a
+ * bitset and a run container and make the target call every counting method; the third has no bitmap bytes and asks every
+ * counting method to take a value that is not a bitmap. The target's check is shown to fire
  * on a wrong count and on a non-bitmap operand that is accepted, and to stay quiet on right ones. Which container pairs a
  * count compares is the public count suite's to prove, not these files'.
  */

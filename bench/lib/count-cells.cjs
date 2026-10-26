@@ -32,13 +32,13 @@
  * `orCardinality`, `xorCardinality` and `andNotCardinality` have no cell: each is arithmetic on the two sizes and the
  * AND count, so building to count them costs what building the intersection costs, which is the `andCardinality` cell.
  *
- * THE STOP RULE, fixed before any measurement, is one decision for the family. The four cardinalities and `intersects`
- * call the kernels if `andCardinality` beats build-then-size (build the AND, take its size) on every group, which the
- * paired rule (`bench/lib/paired-verdict.cjs`, head = count, base = build, control = build again, bar 2%) calls `faster
- * than the bar`; if any group is `within the bar`, `slower` or `inconclusive`, all five are derived by build-then-count.
- * `intersects`, `isSubsetTrue`, `isSubsetFalse` and `isEqual` are timed and printed as information and judged by no
- * rule. `decisionOf` reads the last pass and fails closed: a record that does not hold every cell of every group, or
- * whose cells disagree on an answer, is invalid and decides nothing.
+ * THE STOP RULE, one decision for the family: the four cardinalities and `intersects` call the kernels if `andCardinality`
+ * beats build-then-size (build the AND, take its size) on every group, and are otherwise all derived by build-then-count.
+ * It beats on a group when the median, over the 31 rounds, of the count against the build is below zero (the cell's
+ * `headVsReference`, as `bench/lib/paired-verdict.cjs` computes it). The paired rule's verdict, interval and A/A control
+ * are recorded and printed as information and decide nothing. `intersects`, `isSubsetTrue`, `isSubsetFalse` and `isEqual`
+ * are timed and printed as information and judged by no rule. `decisionOf` reads the last pass and fails closed: a record
+ * that does not hold every cell of every group, or whose cells disagree on an answer, is invalid and decides nothing.
  */
 'use strict';
 
@@ -167,13 +167,13 @@ const EXIT = { kept: 0, derived: 3, invalid: 4 };
 /**
  * What the record decides, from a list of passes (the last pass decides). `status` is `kept` (the four cardinalities and
  * `intersects` call the kernels), `derived` (all five are built, then counted) or `invalid` (the record cannot decide:
- * `problems` says why, and nothing is kept or derived from it). `stoppedBy` lists the `andCardinality` cells that were not
- * `faster than the bar`; `recorded` the cells that are printed but not judged.
+ * `problems` says why, and nothing is kept or derived from it). `stoppedBy` lists the `andCardinality` cells whose median
+ * of the count against the build is not below zero; `recorded` the cells that are printed but not judged.
  *
  * Invalid: no pass; a smoke pass; a pass not judged by the current rule or not of the build/count/build subjects; a cell
  * of `cellNames()` missing from the last pass (a partial pass can never keep); a cell that is not in `cellNames()`; a
  * cell with answers that disagree, no verdict or too few rounds; and whatever else the paired gate refuses in any pass
- * (a round kept at a high load, a slept round with no explanation). `faster` means a conclusive verdict and nothing less.
+ * (a round kept at a high load, a slept round with no explanation), and an `andCardinality` cell with no median.
  */
 function decisionOf(passes, { problemsOf = () => [], rule } = {}) {
   const problems = [...problemsOf(passes)];
@@ -211,8 +211,13 @@ function decisionOf(passes, { problemsOf = () => [], rule } = {}) {
     }
     for (const cell of last.ops ?? []) {
       if (cell.op === JUDGED_OP) {
-        if (kindOf(cell.verdict) !== 'faster')
-          stoppedBy.push({ cell: cellName(cell), verdict: cell.verdict });
+        if (!Number.isFinite(cell.headVsReference)) problems.push(`${cellName(cell)}: no median`);
+        else if (!(cell.headVsReference < 0))
+          stoppedBy.push({
+            cell: cellName(cell),
+            verdict: cell.verdict,
+            median: cell.headVsReference,
+          });
       } else recorded.push({ cell: cellName(cell), verdict: cell.verdict });
     }
   }

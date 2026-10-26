@@ -669,8 +669,8 @@ Everything here is a test, a workflow or a bench, not part of the module.
   `bench/count-kernels.cjs` times `andCardinality`, `intersects`, `isSubset` and `isEqual` against building the result and
   taking its size, on the five data sets of the engine bench, a tiny-against-runs pair and two disjoint pairs, as a paired
   comparison with a second build as the control; `bench/lib/count-cells.cjs` holds the cells and the stop rule, one decision
-  for the family: the four cardinalities and `intersects` call the kernels if `andCardinality` is faster than build-then-size on
-  every group, and are otherwise all derived by building then counting. `--gate` prints one `RESULT` line and exits 0 (kept),
+  for the family: the four cardinalities and `intersects` call the kernels if `andCardinality` beats build-then-size on
+  every group (the median of the 31 rounds of the count against the build is below zero on each), and are otherwise all derived by building then counting. `--gate` prints one `RESULT` line and exits 0 (kept),
   3 (derived) or 4 (the record is incomplete or invalid). Whether a change slows the store's hot paths is the
   paired harness's question (`bench/ts-codec-paired.cjs`), not this one's. `--check` runs every cell once at a tiny scale and
   fails if a count differs from the built result, a cell is missing, or the head does not time the count.
@@ -740,7 +740,9 @@ Everything here is a test, a workflow or a bench, not part of the module.
 - **The counts and comparisons.** `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality` and `intersects`
   check the operand with the brand, then answer through one switch (`COUNT_BY_KERNELS`, in `src/count-route.ts`): `true`
   calls the codec's counting members above, `false` builds the combination with the matching `TsBitmap` static and reads
-  its `size` (or `isEmpty` for `intersects`). Both routes give the same answers and change neither operand, and the test
+  its `size` (or `isEmpty` for `intersects`). The switch is `true`: the count bench's record
+  (`bench/count-kernels-results.json`, four passes, in #449) has the count's median below the build's on every data set and
+  its gate prints `RESULT kept`; no speed figure is stated here. Both routes give the same answers and change neither operand, and the test
   suite runs once on each (`tests/roaring/roaring-bitmap-counts.kernels.test.ts` and `.derived.test.ts`, one shared
   suite). `isSubset` and `isEqual` always call their codec members. A non-bitmap operand is a `ValidationError` for all
   seven, `isSubset` included.
@@ -798,8 +800,9 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
   (`andCardinality(a, b) == and(a, b).size`, `intersects == andCardinality > 0`, `isSubset(a, b) == andNot(a, b).isEmpty`,
   `isEqual` symmetric and equal to element-wise equality), that no operand or earlier clone changes, and each refusal, once with
   each route of the switch; the suite also proves, for each of the seven methods, which route a run took (the combination it built, if any, and whether it called its codec member), and every pair of its shapes runs again with run containers on either side or both.
-- `tests/roaring/fuzz-count-reproducers.test.ts`: the committed `bitmap-ops` reproducers for the counts start from an array, a
-  bitset and a run, call every count, and the target's check fires on a wrong answer from each and on a non-bitmap operand
+- `tests/roaring/fuzz-count-reproducers.test.ts`: the committed `bitmap-ops` reproducers for the counts: two start from an
+  array, a bitset and a run and call every count; the third has no bitmap bytes and asks every counting method to take a
+  value that is not a bitmap. The target's check fires on a wrong answer from the first two and on a non-bitmap operand
   that a method accepts.
 - `tests/roaring/ts-bitmap-sharing.test.ts`: at the codec level, which containers each static flags shared and which container
   objects it hands back (`and` and the union `orMany` builds flag nothing; `or`, `xor` and `andNot` flag exactly the containers

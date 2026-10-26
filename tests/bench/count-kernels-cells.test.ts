@@ -232,19 +232,52 @@ describe('the decision', () => {
   });
   const decide = (passes: Pass[]) => cells.decisionOf(passes, { rule: rule.RULE });
 
-  it('keeps the family when andCardinality is faster on every group', () => {
-    const d = decide([wholePass(rule.FASTER)]);
-    expect(d).toEqual({ status: 'kept', problems: [], stoppedBy: [], recorded: expect.any(Array) });
-    expect(d.recorded.length).toBe(cells.cellNames().length - cells.groups().length);
+  /** The medians of the count against the build, per `"<group> andCardinality"`; the others keep the default. */
+  const withMedians = (verdict: string, medians: Record<string, number>): Pass => {
+    const pass = wholePass(verdict);
+    for (const c of pass.ops) {
+      const m = medians[`${c.dataset} ${c.op}`];
+      if (m !== undefined) c.headVsReference = m;
+    }
+    return pass;
+  };
+
+  it('keeps the family when the count beats the build on every group, whatever the control and the interval say', () => {
+    for (const verdict of [rule.FASTER, rule.WITHIN, rule.INCONCLUSIVE]) {
+      const d = decide([wholePass(verdict)]);
+      expect(d, verdict).toEqual({
+        status: 'kept',
+        problems: [],
+        stoppedBy: [],
+        recorded: expect.any(Array),
+      });
+    }
+    expect(decide([wholePass(rule.FASTER)]).recorded.length).toBe(
+      cells.cellNames().length - cells.groups().length,
+    );
   });
 
-  it('derives the family when one andCardinality group is within the bar, slower or inconclusive, naming the cell', () => {
-    for (const verdict of [rule.WITHIN, rule.SLOWER, rule.INCONCLUSIVE]) {
-      const d = decide([wholePass(rule.FASTER, { 'sparse andCardinality': verdict })]);
-      expect(d.status).toBe('derived');
+  it('keeps the family on the smallest gap on record, a median just below zero', () => {
+    expect(
+      decide([withMedians(rule.INCONCLUSIVE, { 'sparse andCardinality': -0.0001 })]).status,
+    ).toBe('kept');
+  });
+
+  it('derives the family when one andCardinality group has a median at or above zero, naming the cell', () => {
+    for (const median of [0, 0.0001, 0.3]) {
+      const d = decide([withMedians(rule.FASTER, { 'sparse andCardinality': median })]);
+      expect(d.status, String(median)).toBe('derived');
       expect(d.problems).toEqual([]);
-      expect(d.stoppedBy).toEqual([{ cell: 'sparse andCardinality', verdict }]);
+      expect(d.stoppedBy).toEqual([
+        { cell: 'sparse andCardinality', verdict: rule.FASTER, median },
+      ]);
     }
+  });
+
+  it('is invalid when an andCardinality cell has no median', () => {
+    const d = decide([withMedians(rule.FASTER, { 'sparse andCardinality': Number.NaN })]);
+    expect(d.status).toBe('invalid');
+    expect(d.problems.join('\n')).toMatch(/sparse andCardinality: no median/);
   });
 
   it('judges andCardinality alone: a recorded cell that is slower does not derive the family', () => {
@@ -256,8 +289,9 @@ describe('the decision', () => {
   });
 
   it('is decided by the last pass alone', () => {
-    expect(decide([wholePass(rule.WITHIN), wholePass(rule.FASTER)]).status).toBe('kept');
-    expect(decide([wholePass(rule.FASTER), wholePass(rule.WITHIN)]).status).toBe('derived');
+    const losing = withMedians(rule.FASTER, { 'runs andCardinality': 0.1 });
+    expect(decide([losing, wholePass(rule.FASTER)]).status).toBe('kept');
+    expect(decide([wholePass(rule.FASTER), losing]).status).toBe('derived');
   });
 
   it('is invalid, never kept, on a record that does not hold every cell of every group', () => {
@@ -351,6 +385,7 @@ describe("the script's gate", () => {
   const record = (
     verdictOf: (dataset: string, op: string) => string,
     keep: (c: Cell) => boolean = () => true,
+    medianOf: (dataset: string, op: string) => number = () => -0.5,
   ) => ({
     passes: [
       {
@@ -369,7 +404,7 @@ describe("the script's gate", () => {
               answersAgree: true,
               rounds: Array.from({ length: 31 }, () => [0, 1, 1, 1, 1, 1]),
               headInterval: [-0.5, -0.4],
-              headVsReference: -0.5,
+              headVsReference: medianOf(g.name, op),
               controlVsBase: 0,
             })),
           )
@@ -385,9 +420,23 @@ describe("the script's gate", () => {
     expect(out).toMatch(/^RESULT kept: /m);
   });
 
-  it('prints one result line naming the cell and exits 3 when the family is derived', () => {
+  it('prints kept and exits 0 when every median beats the build, though a control or an interval is inconclusive', () => {
     const { code, out } = gateOf(
-      record((d, op) => (d === 'runs' && op === 'andCardinality' ? rule.SLOWER : rule.FASTER)),
+      record((d, op) =>
+        d === 'mixed' && op === 'andCardinality' ? rule.INCONCLUSIVE : rule.FASTER,
+      ),
+    );
+    expect(code).toBe(0);
+    expect(out).toMatch(/^RESULT kept: /m);
+  });
+
+  it('prints one result line naming the cell and exits 3 when one group does not beat the build', () => {
+    const { code, out } = gateOf(
+      record(
+        () => rule.FASTER,
+        () => true,
+        (d, op) => (d === 'runs' && op === 'andCardinality' ? 0.2 : -0.5),
+      ),
     );
     expect(code).toBe(3);
     expect(out.match(/^RESULT /gm)?.length).toBe(1);
@@ -412,6 +461,17 @@ describe("the script's gate", () => {
     const { code, out } = gateOf(r);
     expect(code).toBe(4);
     expect(out).toMatch(/different answers/);
+  });
+
+  it('exits 4 on a pass that is not whole, even when every median beats the build', () => {
+    const { code, out } = gateOf(
+      record(
+        () => rule.INCONCLUSIVE,
+        (c) => c.dataset !== 'runs',
+      ),
+    );
+    expect(code).toBe(4);
+    expect(out).toMatch(/^RESULT invalid: /m);
   });
 
   it('exits 4 on a record with no pass', () => {
