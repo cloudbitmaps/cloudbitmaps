@@ -8,6 +8,7 @@
       "@/index": ["./packages/roaring/src/index.ts"],
       "@/roaring-codec": ["./packages/roaring/src/roaring-codec.ts"],
       "@/native-codec": ["./tests/helpers/native-codec.ts"],
+      "@/count-route": ["./packages/roaring/src/count-route.ts"],
       "@/option-keys": ["./packages/roaring/src/option-keys.ts"],
       "@/lease-guards": ["./packages/roaring/src/lease-guards.ts"],
       "@/reserved-namespace": ["./packages/roaring/src/reserved-namespace.ts"],

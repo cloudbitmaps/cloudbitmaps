@@ -42,7 +42,7 @@ describe('the codec page example', () => {
     const expected = [...source.matchAll(/console\.log\([^\n]*\); \/\/ ([^\n]+)/g)].map(
       (m) => m[1]!,
     );
-    expect(expected).toHaveLength(8);
+    expect(expected).toHaveLength(10);
     expect(await run(source)).toEqual(expected);
   });
 

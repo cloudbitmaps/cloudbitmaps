@@ -70,6 +70,7 @@ export default defineConfig({
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },
       { find: /^@\/roaring-codec$/, replacement: ROARING + '/roaring-codec.ts' },
       { find: /^@\/native-codec$/, replacement: TESTS + '/helpers/native-codec.ts' },
+      { find: /^@\/count-route$/, replacement: ROARING + '/count-route.ts' },
       { find: /^@\/option-keys$/, replacement: ROARING + '/option-keys.ts' },
       { find: /^@\/lease-guards$/, replacement: ROARING + '/lease-guards.ts' },
       { find: /^@\/reserved-namespace$/, replacement: ROARING + '/reserved-namespace.ts' },
