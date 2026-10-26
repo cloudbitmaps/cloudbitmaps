@@ -405,10 +405,11 @@ the bitmap's `serialize()` bytes with it.
 and 64-bit ids are left out, and so are `xorMany` and `delete`.
 
 **Against the `roaring` package.** What each operation of the class costs next to the pinned `roaring` package (CRoaring
-through its binding) on the same data, and next to the codec's own call that the store runs, one data set a column. A
-store hides these costs behind network reads; a loop over in-memory bitmaps does not, so the table prints every cell,
-losses included. The figures are the record in [`bench/bitmap-api-results.json`](../../bench/bitmap-api-results.json),
-measured by [`bench/bitmap-api.cjs`](../../bench/bitmap-api.cjs); this region is generated from it.
+through its binding, a development dependency the tests hold the codec to; the store does not run it) on the same data,
+and next to the call of the TypeScript codec that the store does run, one data set a column. A store hides these costs
+behind network reads; a loop over in-memory bitmaps does not, so the table prints every cell, losses included. The
+figures are the record in [`bench/bitmap-api-results.json`](../../bench/bitmap-api-results.json), measured by
+[`bench/bitmap-api.cjs`](../../bench/bitmap-api.cjs); this region is generated from it.
 
 <!-- BITMAP_API:TABLE:START -->
 

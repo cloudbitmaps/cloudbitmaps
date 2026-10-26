@@ -1,29 +1,31 @@
-import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  cellOfPass,
+  completePass,
+  copyOf,
+  verdict as gate,
+  withRounds,
+  type File,
+  type Pass,
+  type Round,
+} from '../helpers/bitmap-api-pass';
 
 /**
  * The generated "against native" table of the public bitmap class: what it renders to for a record, what a page may
  * hold (the record's figures, commit, Node version and machine, the words "close to native" only for a group stop rule
- * 2 allows, every method above 10 times native named), each of those fired at a mutated copy, and the committed pages
- * and record held to all of it. Nothing here times anything.
+ * 2 allows, every method above 10 times native named, the cold rows read like the others), each of those fired at a
+ * planted record or page, and the committed pages and record held to all of it, with the committed-record checks
+ * themselves fired at lying records so they cannot pass vacuously. Nothing here times anything.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
 
-type Round = Array<number | null>;
-type Cell = Record<string, unknown> & { rounds: Round[]; dataset: string; op: string };
-type Pass = {
-  environment: Record<string, unknown>;
-  cells?: Cell[];
-  cold?: Cell[];
-  [key: string]: unknown;
-};
-type File = { passes: Pass[] };
 const table = require_('./lib/bitmap-api-table.cjs') as {
   START: string;
   END: string;
@@ -32,96 +34,33 @@ const table = require_('./lib/bitmap-api-table.cjs') as {
   regionText: (doc: string, text: string) => string;
   withRegion: (doc: string, text: string, file: File) => string;
   problemsOf: (doc: string, text: string, file: File) => string[];
+  phraseProblems: (doc: string, text: string) => string[];
 };
-const verdict = require_('./lib/bitmap-api-verdict.cjs') as {
-  cellOf: (rounds: Round[], places?: number) => Record<string, unknown>;
-  gateProblems: (passes: unknown[]) => string[];
+const count = require_('./lib/bitmap-api-count.cjs') as { readResult: (root: string) => string };
+const pages = require_('./lib/bitmap-api-pages.cjs') as {
+  REGION_PAGES: string[];
+  otherPages: (root: string) => string[];
 };
 
-const PAGES = ['docs/guide/api-reference.md', 'docs/guide/roaring-codec.md'];
+const PAGES = pages.REGION_PAGES;
 const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k'];
 
-const rounds = (
-  native: number,
-  ours: number,
-  control = ours,
-  internal: number | null = null,
-): Round[] => Array.from({ length: 31 }, (_, i) => [i % 6, native, ours, control, internal, 1, 1]);
-
-/** A pass with the given cells: `[dataset, op, group, method, native, ours, control, internal]`. */
-function passOf(cells: Array<[string, string, string, string, number, number, number?, number?]>) {
-  return {
-    schema: 1,
-    unit: 'ms',
-    rule: 'bitmap-api-v1',
-    pass: 1,
-    environment: {
-      node: 'v24.99.0',
-      platform: 'darwin arm64',
-      cpu: 'Test CPU',
-      cores: 8,
-      head: 'abcdef0123456789abcdef0123456789abcdef01',
-      tree: 'clean',
-      roaring: '2.7.0',
-      countRoute: 'kernels',
-      anyLoad: false,
-      smoke: false,
-      rounds: 31,
-      maxLoad: 6,
-    },
-    started: '2026-10-26T10:00:00.000Z',
-    cells: cells.map(([dataset, op, group, method, native, ours, control, internal]) => ({
-      dataset,
-      op,
-      group,
-      method,
-      answersAgree: true,
-      ...verdict.cellOf(rounds(native, ours, control ?? ours, internal ?? null)),
-    })) as unknown as Cell[],
-    load: { maxLoadAtEnd: 4.5, discardedRounds: 2, sleptRounds: 0 },
-  };
-}
-
-const GOOD: File = {
-  passes: [
-    passOf([
-      ...DATASETS.map((d): [string, string, string, string, number, number, number, number] => [
-        d,
-        'has',
-        'has',
-        'has',
-        10,
-        15,
-        15,
-        12,
-      ]),
-      ...DATASETS.map((d): [string, string, string, string, number, number] => [
-        d,
-        'or returning',
-        'combine returning',
-        'RoaringBitmap.or',
-        10,
-        d === 'runs' ? 50 : 20,
-      ]),
-      ...DATASETS.map((d): [string, string, string, string, number, number] => [
-        d,
-        'toArray',
-        'export',
-        'toArray',
-        10,
-        d === 'dense' ? 130 : 12,
-      ]),
-    ]),
-  ],
-};
+/** A record whose `has` cells are within 3 times native, `or returning` is 5 times on `runs`, `toArray` 13 on `dense`. */
+const good = (): Pass =>
+  completePass({
+    'runs or returning': { native: 10, ours: 50 },
+    'dense toArray': { native: 10, ours: 130 },
+  });
+const fileOf = (...passes: Pass[]): File => ({ passes });
+const GOOD: File = fileOf(good());
 
 const page = (body = ''): string =>
   `# Page\n\nIntro.\n\n${table.START}\n\n${body}\n\n${table.END}\n\nOutro.\n`;
 const rendered = (file: File = GOOD) => page(table.render(file));
 
-describe('the region of a record that holds no pass', () => {
+describe('the region of a record that holds no complete pass', () => {
   it('says it is not measured, and nothing else is accepted', () => {
-    const empty: File = { passes: [] };
+    const empty = fileOf();
     expect(table.render(empty)).toBe(table.NOT_MEASURED);
     expect(table.problemsOf('p.md', page(table.NOT_MEASURED), empty)).toEqual([]);
     expect(
@@ -129,16 +68,30 @@ describe('the region of a record that holds no pass', () => {
     ).toContain('must say it is not measured');
   });
 
-  it('is not accepted once the record holds a pass, and a smoke pass does not count as one', () => {
+  it('is not accepted once the record holds a complete pass', () => {
     expect(table.problemsOf('p.md', page(table.NOT_MEASURED), GOOD).join('\n')).toContain(
       'says it is not measured',
     );
-    const smoke: File = {
-      passes: [
-        { ...GOOD.passes[0]!, environment: { ...GOOD.passes[0]!.environment, smoke: true } },
-      ],
-    };
-    expect(table.render(smoke)).toBe(table.NOT_MEASURED);
+  });
+
+  it('is the state of a record whose passes are a smoke pass, a partial pass or an incomplete one', () => {
+    const smoke = good();
+    smoke.environment.smoke = true;
+    const partial = good();
+    partial.partial = '--only=has';
+    const lacking = good();
+    lacking.cells = lacking.cells.slice(1);
+    for (const file of [fileOf(smoke), fileOf(partial), fileOf(lacking), fileOf(smoke, partial)]) {
+      expect(table.render(file)).toBe(table.NOT_MEASURED);
+    }
+  });
+
+  it('judges the last complete pass: a later partial pass changes nothing on the page', () => {
+    const later = good();
+    later.pass = 2;
+    later.partial = '--only=has';
+    later.cells = later.cells.filter((c) => c.op === 'has');
+    expect(table.render(fileOf(good(), later))).toBe(table.render(GOOD));
   });
 });
 
@@ -149,25 +102,32 @@ describe('the table of a record', () => {
     expect(table.problemsOf('p.md', text, GOOD)).toEqual([]);
   });
 
-  it('prints each ratio from the rounds, the commit, Node, the machine, the load and every cell', () => {
+  it('prints each ratio from the rounds, the commit, Node, the machine, the load, the round count and every cell', () => {
     const region = table.regionText('p.md', text);
     expect(region).toContain('commit `abcdef01`');
     expect(region).toContain('Node v24.99.0');
     expect(region).toContain('Test CPU (8 cores)');
-    expect(region).toContain('at most 4.50 and 2 round(s)');
+    expect(region).toContain('31 rounds a figure');
+    expect(region).toContain('at most 1.00 and 0 round(s)');
     expect(region).toMatch(/\| `has` \| has \| 1\.50 \| 1\.50 \| 1\.50 \| 1\.50 \| 1\.50 \|/);
     expect(region).toMatch(
-      /\| `or returning` \| combine returning \| 2\.00 \| 2\.00 \| 5\.00 \| 2\.00 \| 2\.00 \|/,
+      /\| `or returning` \| combine returning \| 1\.50 \| 1\.50 \| 5\.00 \| 1\.50 \| 1\.50 \|/,
     );
-    // The codec's figure has its own table.
     expect(region).toMatch(/\| `has` \| has \| 1\.25 \|/);
+    expect(region).toMatch(/\| `first build` \| 1\.50 \| 1\.25 \|/);
+    expect(region).toMatch(/\| dense \| 10\.0 \| 2\.00 \| 3\.00 \| 50\.0% \|/);
   });
 
   it('calls a group close only when stop rule 2 allows it, and names what it does not', () => {
     const region = table.regionText('p.md', text);
-    expect(region).toContain(
-      'Close to native (within 3 times native on every cell of the group, every control in band): has.',
-    );
+    const said =
+      /Close to native \(within 3 times native on every cell of the group, every control in band\): ([^.]*)\./.exec(
+        region,
+      );
+    expect(said).not.toBeNull();
+    expect(said![1]!.split(', ')).toContain('has');
+    expect(said![1]!.split(', ')).toContain('cold');
+    expect(said![1]!.split(', ')).not.toContain('export');
     expect(region).toContain(
       'Not called close to native: combine returning (worst 5.00 times, runs or returning)',
     );
@@ -178,60 +138,89 @@ describe('the table of a record', () => {
     expect(table.regionText('p.md', text)).toContain('`toArray` (13.00 times, dense toArray)');
   });
 
-  it('says there is none when no method is above 10', () => {
-    const calm: File = {
-      passes: [passOf(DATASETS.map((d) => [d, 'has', 'has', 'has', 10, 15, 15, 12] as never))],
-    };
+  it('says there is none when no method is above 10 on any row', () => {
+    const calm = fileOf(completePass());
     expect(table.regionText('p.md', rendered(calm))).toContain(
       'No method is more than 10 times native on any data set.',
     );
   });
 
   it('stars a figure whose control was out of band, and never calls its group close', () => {
-    const noisy: File = {
-      passes: [
-        passOf(
-          DATASETS.map((d) => [d, 'has', 'has', 'has', 10, 15, d === 'sparse' ? 17 : 15] as never),
-        ),
-      ],
-    };
-    const region = table.regionText('p.md', rendered(noisy));
+    const noisy = completePass({ 'sparse has': { native: 10, ours: 15, control: 17 } });
+    const file = fileOf(noisy);
+    const region = table.regionText('p.md', rendered(file));
     expect(region).toContain('1.50 * |');
     expect(region).toContain('not resolved');
-    expect(region).not.toContain('Close to native');
-    expect(table.problemsOf('p.md', rendered(noisy), noisy)).toEqual([]);
+    expect(region).toContain(
+      'has (worst 1.50 times, dense has; 1 cell(s) with a control out of band)',
+    );
+    expect(table.problemsOf('p.md', rendered(file), file)).toEqual([]);
+  });
+
+  it('labels the rows that are not a like-for-like call', () => {
+    const region = table.regionText('p.md', text);
+    expect(region).toContain('compare the class with its check against native without one');
+    expect(region).toContain('that policy difference');
+    expect(region).toContain('only the first operand');
+    expect(region).toContain('`intersects disjoint` answers `false` after walking every key');
+    expect(region).toContain('held to identical bytes');
+  });
+});
+
+describe('the cold rows are read by the stop rules like every other row', () => {
+  it('names a method with a cold row above 10 times native, and prints no "No method" sentence', () => {
+    const file = fileOf(completePass({ 'cold first deserialize': { native: 10, ours: 200 } }));
+    const region = table.regionText('p.md', rendered(file));
+    expect(region).toContain('`RoaringBitmap.deserialize` (20.00 times, cold first deserialize)');
+    expect(region).not.toContain('No method is more than');
+    expect(table.problemsOf('p.md', rendered(file), file)).toEqual([]);
+  });
+
+  it('keeps the cold group from "close to native" beyond 3 times, and says why', () => {
+    const file = fileOf(completePass({ 'cold first and': { native: 10, ours: 35 } }));
+    const region = table.regionText('p.md', rendered(file));
+    expect(region).toContain('cold (worst 3.50 times, cold first and)');
+    const closeLine = /Close to native \([^)]*\): ([^.]*)\./.exec(region);
+    expect(closeLine![1]!.split(', ')).not.toContain('cold');
+  });
+
+  it('refuses a page that says there is no method above 10 times beside a cold row above 10', () => {
+    const file = fileOf(completePass({ 'cold first deserialize': { native: 10, ours: 200 } }));
+    const lying = rendered(file).replace(
+      /More than 10 times native[^\n]*\n/,
+      'No method is more than 10 times native on any data set.\n',
+    );
+    expect(table.problemsOf('p.md', lying, file).length).toBeGreaterThan(0);
   });
 });
 
 describe('the count cells of a record', () => {
-  const countPass = (route: string, andCard: number) => {
-    const base = passOf([
-      ...DATASETS.map(
-        (d) => [d, 'andCardinality', 'count', 'andCardinality', 10, 12, 12, andCard] as never,
-      ),
-    ]);
-    return {
-      passes: [{ ...base, environment: { ...base.environment, countRoute: route } }],
-    } as File;
-  };
+  const countPass = (route: string, result: string) =>
+    fileOf(completePass({}, { countRoute: route, countResult: result }));
 
-  it('names the route the class ran, and says the kernels won when every data set is below build-then-count', () => {
-    const region = table.regionText('p.md', rendered(countPass('kernels', 20)));
+  it("names the route the class ran and the decision of the count kernels' own bench, kept", () => {
+    const region = table.regionText('p.md', rendered(countPass('kernels', 'kept')));
     expect(region).toContain('by the count kernels in this pass');
-    expect(region).toContain(
-      'The count kernels took less time than build-then-count on every data set (`andCardinality`).',
-    );
+    expect(region).toContain('bench/count-kernels.cjs`) kept them');
   });
 
-  it('says so, with each figure, when the kernels did not win everywhere, and names the other route', () => {
-    const region = table.regionText('p.md', rendered(countPass('build-then-count', 10)));
+  it('names the other route under the other decision', () => {
+    const region = table.regionText('p.md', rendered(countPass('build-then-count', 'derived')));
     expect(region).toContain('by building the combination and counting it in this pass');
-    expect(region).toContain('did not take less time than build-then-count on every data set');
-    expect(region).toContain('dense 1.20');
+    expect(region).toContain('did not keep them');
+  });
+
+  it("does not recompute the decision from the class's own count cells", () => {
+    const losing = completePass(
+      Object.fromEntries(DATASETS.map((d) => [`${d} andCardinality`, { ours: 30, internal: 10 }])),
+    );
+    const region = table.regionText('p.md', rendered(fileOf(losing)));
+    expect(region).toContain('kept them');
+    expect(region).not.toContain('did not take less time');
   });
 
   it('is refused when a page names the other route than the record', () => {
-    const file = countPass('kernels', 20);
+    const file = countPass('kernels', 'kept');
     const wrong = rendered(file).replace(
       'by the count kernels in this pass',
       'by building the combination and counting it in this pass',
@@ -249,13 +238,26 @@ describe('a page that disagrees with the record', () => {
     return out;
   };
 
-  it('is refused for a changed figure', () => {
-    const problems = table.problemsOf(
-      'p.md',
-      edit('| `has` | has | 1.50 |', '| `has` | has | 1.40 |'),
-      GOOD,
-    );
-    expect(problems.join('\n')).toContain('dense has prints 1.40, the rounds say 1.50');
+  it('is refused for a changed figure, in a cell, a cold row or a load row', () => {
+    expect(
+      table
+        .problemsOf('p.md', edit('| `has` | has | 1.50 |', '| `has` | has | 1.40 |'), GOOD)
+        .join('\n'),
+    ).toContain('dense has prints 1.40, the rounds say 1.50');
+    expect(
+      table
+        .problemsOf('p.md', edit('| `first build` | 1.50 |', '| `first build` | 1.10 |'), GOOD)
+        .join('\n'),
+    ).toContain('cold first build prints 1.10, the rounds say 1.50');
+    expect(
+      table
+        .problemsOf(
+          'p.md',
+          edit('| dense | 10.0 | 2.00 | 3.00 | 50.0% |', '| dense | 10.0 | 2.00 | 3.00 | 5.0% |'),
+          GOOD,
+        )
+        .join('\n'),
+    ).toContain('load dense prints 5.0%, the rounds say 50.0%');
   });
 
   it('is refused for another commit, another Node version, another machine', () => {
@@ -270,20 +272,24 @@ describe('a page that disagrees with the record', () => {
     );
   });
 
-  it('is refused for "close to native" said of a group that is not, or outside the region', () => {
-    const said = edit(
-      'Close to native (within 3 times native on every cell of the group, every control in band): has.',
-      'Close to native (within 3 times native on every cell of the group, every control in band): has, export.',
-    );
+  it('is refused for another round count or load line', () => {
+    expect(
+      table.problemsOf('p.md', edit('31 rounds a figure', '99 rounds a figure'), GOOD).join('\n'),
+    ).toContain('the round count is not the rounds');
+    expect(
+      table
+        .problemsOf(
+          'p.md',
+          edit('at most 1.00 and 0 round(s)', 'at most 0.50 and 0 round(s)'),
+          GOOD,
+        )
+        .join('\n'),
+    ).toContain('the load line is not the rounds');
+  });
+
+  it('is refused for "close to native" said of a group that is not', () => {
+    const said = edit(/(Close to native \([^)]*\): [^.]*)\./, '$1, export.');
     expect(table.problemsOf('p.md', said, GOOD).join('\n')).toContain('said of export');
-    const outside = text.replace('Intro.', 'Intro: the class is close to native.');
-    expect(table.problemsOf('p.md', outside, GOOD).join('\n')).toContain(
-      'stands outside the generated region',
-    );
-    const loud = text.replace('Outro.', 'Close To Native, they say.');
-    expect(table.problemsOf('p.md', loud, GOOD).join('\n')).toContain(
-      'stands outside the generated region',
-    );
   });
 
   it('is refused when the sentence about a method above 10 times native is removed', () => {
@@ -300,16 +306,157 @@ describe('a page that disagrees with the record', () => {
     );
   });
 
-  it('stays quiet on look-alikes: the phrase "native" alone and a marker-like comment elsewhere', () => {
-    const plain = text.replace('Intro.', 'Intro: native is CRoaring. <!-- BITMAP_API:OTHER -->');
-    expect(table.problemsOf('p.md', plain, GOOD)).toEqual([]);
-  });
-
   it('is rewritten to what the record renders to, and rewriting changes nothing twice', () => {
     const stale = page('stale');
     const fixed = table.withRegion('p.md', stale, GOOD);
     expect(table.problemsOf('p.md', fixed, GOOD)).toEqual([]);
     expect(table.withRegion('p.md', fixed, GOOD)).toBe(fixed);
+  });
+
+  it('prints from the rounds, never from a stored field: a lying stored figure does not reach the page', () => {
+    const lying = good();
+    cellOfPass(lying, 'dense has').vsNative = 1.1;
+    lying.loadRoundTrip[0]!.roundTripShare = 0.02;
+    lying.load = { maxLoadAtEnd: 0.5, discardedRounds: 0, sleptRounds: 0 };
+    lying.environment.rounds = 99;
+    const region = table.regionText('p.md', rendered(fileOf(lying)));
+    expect(region).toContain('| `has` | has | 1.50 |');
+    expect(region).toContain('50.0% |');
+    expect(region).toContain('at most 1.00');
+    expect(region).toContain('31 rounds a figure');
+    expect(region).not.toContain('99 rounds');
+  });
+});
+
+describe('the words "close to native"', () => {
+  const FORMS = [
+    'the class is close to native',
+    'the class is Close To Native',
+    'the class is close to\nnative',
+    'the class is close  to native',
+    'the class is close\u00a0to native',
+    'the class is close to\u00a0\nnative',
+    'the class is close-to-native',
+    'the class is close\tto native',
+    'the class is **close** to *native*',
+    'the class is close\u200b to native',
+  ];
+
+  for (const [name, file] of [
+    ['an empty record', fileOf()],
+    ['a record with a complete pass', GOOD],
+  ] as const) {
+    it(`are refused outside the region, in every spelling, with ${name}`, () => {
+      const body = file === GOOD ? table.render(GOOD) : table.NOT_MEASURED;
+      for (const form of FORMS) {
+        const text = `# Page\n\n${form}.\n\n${table.START}\n\n${body}\n\n${table.END}\n`;
+        expect(table.problemsOf('p.md', text, file).join('\n'), JSON.stringify(form)).toContain(
+          'stands outside the generated region',
+        );
+      }
+    });
+  }
+
+  it('are refused on every other page, in every spelling', () => {
+    for (const form of FORMS) {
+      expect(table.phraseProblems('README.md', `Intro\n\n${form}.\n`).join('\n')).toContain(
+        'stands on a page',
+      );
+    }
+  });
+
+  it('stay quiet on look-alikes, on every page and beside a region', () => {
+    for (const quiet of [
+      'native is CRoaring',
+      'close to the native codec',
+      'the native codec, close by',
+      'closer to native speed than before',
+      'unclose to nativeness',
+      'enclose to natives',
+    ]) {
+      expect(table.phraseProblems('README.md', quiet), quiet).toEqual([]);
+      expect(table.problemsOf('p.md', rendered().replace('Intro.', quiet), GOOD), quiet).toEqual(
+        [],
+      );
+    }
+    const plain = rendered().replace('Intro.', 'Intro <!-- BITMAP_API:OTHER -->');
+    expect(table.problemsOf('p.md', plain, GOOD)).toEqual([]);
+  });
+
+  it('are said in the region only as many times as the generated sentences say them', () => {
+    const extra = rendered().replace(
+      'Not called close to native',
+      'Not called close to native, close to\nnative',
+    );
+    expect(table.problemsOf('p.md', extra, GOOD).join('\n')).toContain('more often than');
+  });
+
+  it('are searched for on every public page of this repository', () => {
+    const others = pages.otherPages(ROOT);
+    expect(others).toContain('README.md');
+    expect(others).toContain('docs/README.md');
+    expect(others).toContain('docs/benchmarks.md');
+    expect(others).toContain('packages/roaring/README.md');
+    expect(others.every((p) => !PAGES.includes(p))).toBe(true);
+    for (const p of others) {
+      expect(table.phraseProblems(p, readFileSync(join(ROOT, p), 'utf8')), p).toEqual([]);
+    }
+  });
+});
+
+/** What the committed-record checks run: the gate with the count kernels' decision read live, as the script does. */
+const recordProblems = (file: File, countResult?: string) =>
+  gate.gateProblems(file.passes, { countResult });
+
+describe('the checks that hold the committed record, fired at lying records', () => {
+  const lie = (mutate: (pass: Pass) => void): string => {
+    const pass = good();
+    mutate(pass);
+    return recordProblems(fileOf(pass), 'kept').join('\n');
+  };
+
+  it('accept a record that tells the truth', () => {
+    expect(recordProblems(GOOD, 'kept')).toEqual([]);
+  });
+
+  it('refuse a hand-typed figure', () => {
+    expect(lie((p) => (cellOfPass(p, 'dense has').vsNative = 1.1))).toContain('stored vsNative');
+    expect(lie((p) => (p.loadRoundTrip[0]!.roundTripShare = 0.02))).toContain(
+      'stored roundTripShare',
+    );
+    expect(
+      lie((p) => (p.load = { maxLoadAtEnd: 0, discardedRounds: 0, sleptRounds: 0 })),
+    ).toContain('stored load summary');
+  });
+
+  it('refuse a wrong route, an unknown route and a count decision the record does not give', () => {
+    expect(lie((p) => (p.environment.countRoute = 'build-then-count'))).toContain(
+      'the class ran build-then-count',
+    );
+    expect(lie((p) => (p.environment.countRoute = 'other'))).toContain('unknown');
+    expect(recordProblems(GOOD, 'derived').join('\n')).toContain('now says derived');
+  });
+
+  it('refuse a pass with a cell missing, and a pass of a smoke run', () => {
+    expect(lie((p) => (p.cells = p.cells.slice(1)))).toContain('missing');
+    expect(lie((p) => (p.environment.smoke = true))).toContain('smoke pass');
+  });
+
+  it('refuse a pass whose kept rounds are fewer than the floor or ended at a load of 6', () => {
+    expect(
+      lie((p) =>
+        withRounds(
+          cellOfPass(p, 'dense has'),
+          cellOfPass(p, 'dense has').rounds.slice(0, 10) as Round[],
+        ),
+      ),
+    ).toContain('fewer than 31');
+    expect(lie((p) => (cellOfPass(p, 'dense has').rounds[2]![6] = 6))).toContain('ended at load 6');
+  });
+
+  it('refuse a page that says "close to native" of a group the rules do not allow', () => {
+    const said = rendered().replace(/(Close to native \([^)]*\): [^.]*)\./, '$1, export.');
+    expect(table.problemsOf('p.md', said, GOOD).join('\n')).toContain('said of export');
   });
 });
 
@@ -318,55 +465,122 @@ describe('the committed pages and record', () => {
     readFileSync(join(ROOT, 'bench/bitmap-api-results.json'), 'utf8'),
   ) as File;
 
-  it('hold the record to its gate and to no smoke pass', () => {
+  it("hold the record to its gate, with the count kernels' decision read from their own bench", () => {
     expect(file.passes.some((p) => p.environment?.smoke)).toBe(false);
-    if (file.passes.length > 0) expect(verdict.gateProblems(file.passes)).toEqual([]);
-  });
-
-  it('recompute every stored cell figure from the rounds beside it', () => {
-    for (const pass of file.passes) {
-      for (const cell of [...(pass.cells ?? []), ...(pass.cold ?? [])]) {
-        const again = verdict.cellOf(cell.rounds, 7);
-        for (const key of [
-          'vsNative',
-          'vsNativeInterval',
-          'controlVsOurs',
-          'controlInBand',
-          'vsInternal',
-        ]) {
-          expect(cell[key], `${cell.dataset} ${cell.op} ${key}`).toEqual(again[key]);
-        }
-      }
-    }
+    const live = file.passes.length > 0 ? count.readResult(ROOT) : undefined;
+    expect(recordProblems(file, live)).toEqual([]);
   });
 
   for (const doc of PAGES) {
-    it(`${doc} carries the table of the record, and the not-measured state only while it holds no pass`, () => {
+    it(`${doc} carries the table of the record, and the not-measured state only while it holds no complete pass`, () => {
       expect(table.problemsOf(doc, readFileSync(join(ROOT, doc), 'utf8'), file)).toEqual([]);
     });
   }
+});
 
-  it('is checked by the script, which fails on a stale page', () => {
+describe('the script', () => {
+  const run = (root: string, ...args: string[]) =>
+    spawnSync(process.execPath, [join(ROOT, 'bench/bitmap-api-table.cjs'), ...args], {
+      env: { ...process.env, BITMAP_API_TABLE_ROOT: root },
+      encoding: 'utf8',
+    });
+
+  /** A tree with the bench, the two region pages and a README, the record planted, the count bench saying `result`. */
+  const tree = (file: File, result: string, readme = '# Readme\n') => {
     const copy = mkdtempSync(join(tmpdir(), 'bitmap-api-table-'));
+    cpSync(join(ROOT, 'bench'), join(copy, 'bench'), { recursive: true });
+    writeFileSync(join(copy, 'bench/bitmap-api-results.json'), JSON.stringify(file));
+    writeFileSync(
+      join(copy, 'bench/count-kernels.cjs'),
+      `console.log('RESULT ${result}: planted');\nprocess.exitCode = 0;\n`,
+    );
+    for (const doc of PAGES) {
+      mkdirSync(dirname(join(copy, doc)), { recursive: true });
+      const text = readFileSync(join(ROOT, doc), 'utf8');
+      writeFileSync(join(copy, doc), table.withRegion(doc, text, file));
+    }
+    writeFileSync(join(copy, 'README.md'), readme);
+    return copy;
+  };
+  const using = (file: File, result: string, body: (copy: string) => void, readme?: string) => {
+    const copy = tree(file, result, readme);
     try {
-      for (const f of ['bench/bitmap-api-results.json', ...PAGES]) {
-        cpSync(join(ROOT, f), join(copy, f), { recursive: true });
-      }
-      const run = () =>
-        execFileSync(process.execPath, [join(ROOT, 'bench/bitmap-api-table.cjs'), '--check'], {
-          env: { ...process.env, BITMAP_API_TABLE_ROOT: copy },
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-      expect(run()).toContain('ok');
+      body(copy);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+  };
+
+  it('passes the committed tree', () => {
+    const out = spawnSync(process.execPath, [join(ROOT, 'bench/bitmap-api-table.cjs'), '--check'], {
+      env: { ...process.env, BITMAP_API_TABLE_ROOT: ROOT },
+      encoding: 'utf8',
+    });
+    expect(out.stderr).toBe('');
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain('ok');
+  });
+
+  it('passes a complete record whose pages were generated from it, and fails the moment a page goes stale', () => {
+    using(GOOD, 'kept', (copy) => {
+      const ok = run(copy, '--check');
+      expect(ok.stderr).toBe('');
+      expect(ok.status).toBe(0);
       const stale = join(copy, PAGES[0]!);
       writeFileSync(
         stale,
         readFileSync(stale, 'utf8').replace(table.END, `an unrecorded 1.00 figure\n${table.END}`),
       );
-      expect(run).toThrow();
-    } finally {
-      rmSync(copy, { recursive: true, force: true });
-    }
+      expect(run(copy, '--check').status).toBe(1);
+    });
+  });
+
+  it("fails when the count kernels' record gives another decision than the pass was taken under, and writes nothing", () => {
+    using(GOOD, 'derived', (copy) => {
+      const out = run(copy, '--check');
+      expect(out.status).toBe(1);
+      expect(out.stderr).toContain('now says derived');
+      const doc = PAGES[0]!;
+      const stale = table.withRegion(doc, readFileSync(join(copy, doc), 'utf8'), fileOf());
+      writeFileSync(join(copy, doc), stale);
+      const before = readFileSync(join(copy, doc), 'utf8');
+      const written = run(copy);
+      expect(written.status).toBe(1);
+      expect(readFileSync(join(copy, doc), 'utf8')).toBe(before);
+    });
+  });
+
+  it('refuses to publish from a record whose passes are all partial, with its own exit code', () => {
+    const partial = good();
+    partial.partial = '--only=has';
+    partial.cells = partial.cells.filter((c) => c.op === 'has');
+    using(fileOf(partial), 'kept', (copy) => {
+      const out = run(copy);
+      expect(out.status).toBe(5);
+      expect(out.stderr).toContain('no complete pass');
+    });
+  });
+
+  it('fails on a page that says "close to native" across a line break, and passes one that does not', () => {
+    using(fileOf(), 'kept', (copy) => expect(run(copy, '--check').status).toBe(0));
+    using(
+      fileOf(),
+      'kept',
+      (copy) => {
+        const out = run(copy, '--check');
+        expect(out.status).toBe(1);
+        expect(out.stderr).toContain('README.md');
+      },
+      '# Readme\n\nIt is close to\nnative.\n',
+    );
+  });
+});
+
+describe('a planted pass is not mutated by the helpers', () => {
+  it('copies deeply', () => {
+    const a = good();
+    const b = copyOf(a);
+    cellOfPass(b, 'dense has').vsNative = 9;
+    expect(cellOfPass(a, 'dense has').vsNative).toBe(1.5);
   });
 });

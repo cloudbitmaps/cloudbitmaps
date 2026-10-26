@@ -15,7 +15,13 @@ import { tsRoaringCodec } from '@/ts-roaring/bitmap';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
 
-type Api = { name: string };
+type Api = {
+  name: string;
+  deserialize: (b: Uint8Array) => unknown;
+  combine: (op: string, a: unknown, b: unknown) => unknown;
+  toUint32: (b: unknown) => Uint32Array;
+  intersects: (a: unknown, b: unknown) => boolean;
+};
 type Cell = { name: string; method: string; group: string; who: string[] };
 const lib = require_('./lib/bitmap-api-cells.cjs') as {
   DATASETS: string[];
@@ -35,6 +41,13 @@ const lib = require_('./lib/bitmap-api-cells.cjs') as {
   timeCold: (cell: Cell, api: Api) => { ns: number; answer: string };
   bytesToJson: (b: Record<string, Uint8Array>) => string;
   bytesFromJson: (t: string) => Record<string, Uint8Array>;
+  digest: (api: Api, value: unknown) => string;
+  inventory: () => {
+    datasets: string[];
+    steady: Array<{ op: string; internal: boolean }>;
+    cold: Array<{ op: string }>;
+    load: string[];
+  };
 };
 
 const apis = () => [
@@ -88,7 +101,8 @@ describe('the cells', () => {
       'orCardinality',
       'isSubset',
       'isEqual',
-      'intersects',
+      'intersects overlapping',
+      'intersects disjoint',
     ]) {
       expect(names, want).toContain(want);
     }
@@ -108,7 +122,7 @@ describe('the cells', () => {
     // The codec runs the two counts as build-then-count, and has no counterpart for the rest.
     expect(lib.runsOn(at('andCardinality'), internal)).toBe(true);
     expect(lib.runsOn(at('orCardinality'), internal)).toBe(true);
-    for (const n of ['isSubset', 'isEqual', 'intersects']) {
+    for (const n of ['isSubset', 'isEqual', 'intersects overlapping', 'intersects disjoint']) {
       expect(lib.runsOn(at(n), native), n).toBe(true);
       expect(lib.runsOn(at(n), ours), n).toBe(true);
       expect(lib.runsOn(at(n), internal), n).toBe(false);
@@ -133,6 +147,9 @@ describe('the cells', () => {
       // The two comparisons are the full-scan case: both answer true, so neither can end at its first element.
       for (const n of ['isSubset', 'isEqual'])
         expect([...answers.get(n)!.values()], n).toEqual(['true', 'true']);
+      // `intersects` has both cases: the stored pair meets at its first shared container, the disjoint pair never.
+      expect([...answers.get('intersects overlapping')!.values()]).toEqual(['true', 'true']);
+      expect([...answers.get('intersects disjoint')!.values()]).toEqual(['false', 'false']);
       for (const [cell, per] of answers) {
         expect(new Set(per.values()).size, `${dataset} ${cell}: ${JSON.stringify([...per])}`).toBe(
           1,
@@ -140,6 +157,49 @@ describe('the cells', () => {
       }
     });
   }
+
+  it('compare a serialization as bytes: every subject writes the same bytes, and a different byte is a different answer', () => {
+    const [native, ours, internal] = apis() as [Api, Api, Api];
+    for (const dataset of lib.DATASETS) {
+      const data = lib.dataOf(dataset, true, bytes);
+      const cell = lib.cellsOf(data).find((c) => c.name === 'serialize')!;
+      const answers = [native, ours, internal].map(
+        (api) => lib.timeCell(cell, api, { warmMs: 0, sampleMs: 0 }).answer,
+      );
+      expect(new Set(answers).size, dataset).toBe(1);
+    }
+    const one = new Uint8Array([1, 2, 3, 4]);
+    const other = new Uint8Array([1, 2, 3, 5]);
+    expect(lib.digest(native, one)).toBe(lib.digest(ours, new Uint8Array([1, 2, 3, 4])));
+    expect(lib.digest(native, one)).not.toBe(lib.digest(native, other));
+    expect(lib.digest(native, one)).not.toBe(lib.digest(native, new Uint8Array([1, 2, 3])));
+  });
+
+  it('hold a disjoint pair that is not trivial: the second without the first is non-empty and shares its container keys', () => {
+    const [native] = apis() as [Api];
+    for (const dataset of lib.DATASETS) {
+      const a = native.deserialize(bytes[`${dataset} a`]!);
+      const b = native.deserialize(bytes[`${dataset} b`]!);
+      const apart = native.combine('andNot', b, a);
+      expect(native.toUint32(apart).length, dataset).toBeGreaterThan(0);
+      expect(native.intersects(a, apart), dataset).toBe(false);
+      expect(native.intersects(a, b), dataset).toBe(true);
+      const keys = (x: unknown) => new Set([...native.toUint32(x)].map((v) => v >>> 16));
+      const shared = [...keys(apart)].filter((k) => keys(a).has(k));
+      expect(shared.length, dataset).toBeGreaterThan(0);
+    }
+  });
+
+  it('list every cell of the full run once, with the codec figure where the codec has a counterpart', () => {
+    const inv = lib.inventory();
+    expect(inv.steady.map((c) => c.op)).toEqual(names);
+    expect(inv.steady.find((c) => c.op === 'xor in place')!.internal).toBe(false);
+    expect(inv.steady.find((c) => c.op === 'andCardinality')!.internal).toBe(true);
+    expect(inv.steady.find((c) => c.op === 'isSubset')!.internal).toBe(false);
+    expect(inv.cold.map((c) => c.op)).toEqual(['first deserialize', 'first build', 'first and']);
+    expect(inv.datasets).toEqual(lib.DATASETS);
+    expect(inv.load).toEqual(lib.DATASETS);
+  });
 
   it('give one answer for the cold cells on every subject', () => {
     const data = lib.dataOf('mixed', true, bytes);

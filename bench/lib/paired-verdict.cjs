@@ -229,30 +229,65 @@ function collectRounds({
   const pool = [];
   const discarded = [];
   for (;;) {
-    const evidence = checkSleep
-      ? sleepEvidence(
-          pool.map((r) => triplesOf(r.samples)),
-          pool.map((r) => cpuOf(r.samples)),
-        )
-      : pool.map(() => []);
-    const kept = pool.filter((_, i) => evidence[i].length === 0);
-    const slept = pool.flatMap((r, i) =>
-      evidence[i].length > 0 ? [{ ...r, evidence: evidence[i] }] : [],
-    );
-    if (kept.length >= want) return { kept, discarded, slept };
-    if (slept.length > limit) throw new RangeError(`${slept.length} rounds slept: not measuring`);
-    const round = takeOne(kept.length % 6);
-    if (keepByLoad(round)) {
-      pool.push(round);
-    } else {
-      discarded.push(round);
-      if (discarded.length > limit) {
-        throw new RangeError(
-          `${discarded.length} rounds ended at a load of ${MAX_LOAD} or more: not measuring`,
-        );
-      }
-    }
+    const settled = settlePool(pool, { triplesOf, cpuOf, checkSleep });
+    if (settled.kept.length >= want) return { kept: settled.kept, discarded, slept: settled.slept };
+    if (settled.slept.length > limit)
+      throw new RangeError(`${settled.slept.length} rounds slept: not measuring`);
+    const round = takeOne(settled.kept.length % 6);
+    admit(round, { pool, discarded, keepByLoad, limit });
   }
+}
+
+/** `collectRounds` for a `takeOne` that returns a promise (a round that awaits); the rules are the same code. */
+async function collectRoundsAsync({
+  want,
+  takeOne,
+  triplesOf,
+  cpuOf,
+  checkSleep = true,
+  keepByLoad = () => true,
+  limit = 2 * want,
+}) {
+  const pool = [];
+  const discarded = [];
+  for (;;) {
+    const settled = settlePool(pool, { triplesOf, cpuOf, checkSleep });
+    if (settled.kept.length >= want) return { kept: settled.kept, discarded, slept: settled.slept };
+    if (settled.slept.length > limit)
+      throw new RangeError(`${settled.slept.length} rounds slept: not measuring`);
+    admit(await takeOne(settled.kept.length % 6), { pool, discarded, keepByLoad, limit });
+  }
+}
+
+/** The pool's rounds judged against the evidence of sleep: `{ kept, slept }`, each slept round with its `evidence`. */
+function settlePool(pool, { triplesOf, cpuOf, checkSleep }) {
+  const evidence = checkSleep
+    ? sleepEvidence(
+        pool.map((r) => triplesOf(r.samples)),
+        pool.map((r) => cpuOf(r.samples)),
+      )
+    : pool.map(() => []);
+  return {
+    kept: pool.filter((_, i) => evidence[i].length === 0),
+    slept: pool.flatMap((r, i) =>
+      evidence[i].length > 0 ? [{ ...r, evidence: evidence[i] }] : [],
+    ),
+  };
+}
+
+/** Puts a taken round in the pool, or sets it aside for its load; throws once too many were set aside. */
+function admit(round, { pool, discarded, keepByLoad, limit }) {
+  if (keepByLoad(round)) {
+    pool.push(round);
+    return true;
+  }
+  discarded.push(round);
+  if (discarded.length > limit) {
+    throw new RangeError(
+      `${discarded.length} rounds ended at a load of ${MAX_LOAD} or more: not measuring`,
+    );
+  }
+  return false;
 }
 
 /** The per-round figures a verdict is drawn from: the head against the reference, and the control against the base. */
@@ -512,6 +547,8 @@ module.exports = {
   sleptFigure,
   sleepEvidence,
   collectRounds,
+  collectRoundsAsync,
+  sleptProblems,
   allCellsOf,
   UNIT,
   WITHIN,

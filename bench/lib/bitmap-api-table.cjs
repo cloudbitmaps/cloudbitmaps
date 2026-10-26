@@ -5,12 +5,14 @@
  * `tests/bench/bitmap-api-table.test.ts` holds them to the record.
  *
  * A region sits between `<!-- BITMAP_API:TABLE:START -->` and `<!-- BITMAP_API:TABLE:END -->`, once on each page the
- * table appears on. While the record holds no pass that is not a smoke pass, a region says `NOT_MEASURED` and nothing
- * else; the moment the record holds one, only its table is accepted. Nothing outside a region may carry the words
- * "close to native": they appear in a region, for a group, only when the group's worst cell is within 3 times native
- * and every control of the group is in band (stop rule 2), and a method with a cell above 10 times native is named
- * (stop rule 3). `problemsOf` reports every disagreement of a region with the record, a figure, a commit, a Node
- * version or a phrase included.
+ * table appears on. While the record holds no complete pass, a region says `NOT_MEASURED` and nothing else; the moment
+ * it holds one, only the table of its last complete pass is accepted. Every printed figure is recomputed from the
+ * rounds (`verdict.fresh`), never copied from a stored field. Nothing on any public page outside a region may carry the
+ * words "close to native" (whitespace, line breaks and no-break spaces between the words included): they appear in a
+ * region, for a group, only when the group's worst cell, a cold row included, is within 3 times native and every
+ * control of the group is in band, and a method with a cell above 10 times native is named. `problemsOf` reports every
+ * disagreement of a region with the record, a figure, a commit, a Node version or a phrase included, and `phraseProblems`
+ * holds every other public page to the phrase.
  */
 'use strict';
 
@@ -58,9 +60,12 @@ function ratioTable(pass, field, title, rowsFilter) {
   return lines.join('\n');
 }
 
+/** Every cell the rules read: the steady cells and the cold rows. */
+const rated = (pass) => verdict.cellsOfPass(pass).filter((c) => !c.malformed);
+
 /** The sentences the stop rules allow, from the groups and methods of a pass. */
 function ruleLines(pass) {
-  const cells = (pass.cells ?? []).filter((c) => !c.malformed);
+  const cells = rated(pass);
   const groups = verdict.groupsOf(cells);
   const close = groups.filter((g) => g.close).map((g) => g.group);
   const far = groups.filter((g) => !g.close);
@@ -91,41 +96,49 @@ function ruleLines(pass) {
   return lines;
 }
 
-/** What the record says of the count cells: the route the class ran, and rule 1's reading of `andCardinality`. */
+/** What the record says of the count cells: the route the class ran, and the decision of the count kernels' own bench. */
 function countLines(pass) {
   const route = pass.environment.countRoute;
+  const result = pass.environment.countResult;
   const routeText =
     route === 'kernels'
       ? 'the count kernels'
       : route === 'build-then-count'
         ? 'building the combination and counting it'
         : 'an unrecorded route';
-  const rule = verdict.countKernelsRule((pass.cells ?? []).filter((c) => !c.malformed));
-  const lines = [
-    `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\`, \`andNotCardinality\` and \`intersects\` by ${routeText} in this pass. The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it.`,
+  const decision =
+    result === 'kept'
+      ? "the count kernels' own bench (`bench/count-kernels.cjs`) kept them: they took less time than building and counting on every operand-pair group it measures"
+      : result === 'derived'
+        ? "the count kernels' own bench (`bench/count-kernels.cjs`) did not keep them: the counts are derived by building the combination and counting it"
+        : "no decision of the count kernels' own bench is recorded";
+  return [
+    `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\`, \`andNotCardinality\` and \`intersects\` by ${routeText} in this pass; ${decision}. The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.`,
   ];
-  if (rule.perDataset.length > 0) {
-    lines.push(
-      rule.beats
-        ? 'The count kernels took less time than build-then-count on every data set (`andCardinality`).'
-        : `The count kernels did not take less time than build-then-count on every data set (\`andCardinality\`: ${rule.perDataset
-            .map((d) => `${d.dataset} ${times(d.vsInternal)}${d.controlInBand ? '' : ' *'}`)
-            .join(', ')}).`,
-    );
-  }
-  return lines;
 }
 
-/** The text of a region for a results file: the table of its last pass that is not a smoke pass, or `NOT_MEASURED`. */
+/** What a reader needs to know of how some rows differ from a like-for-like call. */
+const NOTES = [
+  "`deserialize` and `first deserialize`: the class caps the size and checks the layout of the bytes before it decodes them; the `roaring` package's decode is called with no validating option, so these rows compare the class with its check against native without one.",
+  "`clone` and `clone then write`: the class's clone shares the containers and copies one on the first write that reaches it; native's clone copies everything at once. These rows are that policy difference, not two copies of the same work.",
+  "`write after or`, `write after xor` and `write after andNot`: only the first operand's next write is timed, on an operand decoded fresh for each repetition, after a returning combine that flagged the containers it keeps by reference. The codec has no such flag, so its figure is the same write on an unflagged bitmap.",
+  '`intersects overlapping` answers `true` at the first container the two bitmaps share, so it times how fast each subject finds a first hit; `intersects disjoint` answers `false` after walking every key. `isSubset` and `isEqual` answer `true`, which is the full scan.',
+  '`serialize` is held to identical bytes on every subject; every other answer is held to the same value.',
+];
+
+/** The text of a region for a results file: the table of its last complete pass, or `NOT_MEASURED`. */
 function render(file) {
-  const pass = verdict.passOfRecord(file);
-  if (pass === undefined) return NOT_MEASURED;
+  const recorded = verdict.passOfRecord(file);
+  if (recorded === undefined) return NOT_MEASURED;
+  const pass = verdict.fresh(recorded);
   const e = pass.environment;
+  const load = verdict.loadFiguresOf(pass);
+  const rounds = verdict.roundCountOf(pass);
   const parts = [];
   parts.push(
-    `**Measured** on ${e.cpu} (${e.cores} cores), ${e.platform}, Node ${e.node}, commit \`${short(e.head)}\` (${e.tree} tree), \`roaring\` ${e.roaring}, ${e.rounds} rounds a figure, pass ${pass.pass}, started ${pass.started.slice(0, 10)}. ` +
+    `**Measured** on ${e.cpu} (${e.cores} cores), ${e.platform}, Node ${e.node}, commit \`${short(e.head)}\` (${e.tree} tree), \`roaring\` ${e.roaring}, ${rounds} rounds a figure, pass ${pass.pass}, started ${pass.started.slice(0, 10)}. ` +
       `Each figure is the median over the rounds of the class's time divided by the \`roaring\` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. ` +
-      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most ${pass.load.maxLoadAtEnd.toFixed(2)} and ${pass.load.discardedRounds} round(s) were set aside at ${verdict.MAX_LOAD} or more. Recorded, never asserted.`,
+      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${load.discardedRounds} round(s) were set aside at ${verdict.MAX_LOAD} or more. Recorded, never asserted.`,
   );
   parts.push(
     ratioTable(pass, 'vsNative', 'Against `roaring` (class time / native time)', () => true),
@@ -164,13 +177,16 @@ function render(file) {
       ].join('\n'),
     );
   }
-  if ((pass.cells ?? []).some((c) => !c.malformed && !c.controlInBand)) {
+  if (rated(pass).some((c) => !c.controlInBand)) {
     parts.push(
       '\\* The A/A control of this cell differed from the class by more than 2%, so the figure is not resolved.',
     );
   }
   parts.push(ruleLines(pass).join('\n'));
   parts.push(countLines(pass).join('\n'));
+  parts.push(
+    `Notes on rows that are not a like-for-like call:\n\n${NOTES.map((n) => `- ${n}`).join('\n')}`,
+  );
   return parts.join('\n\n');
 }
 
@@ -201,32 +217,72 @@ function regionText(doc, text) {
   return text.slice(i, j).trim();
 }
 
+/** The text as a reader of the rendered page sees it: emphasis marks gone, every run of whitespace one space. */
+const normalised = (text) =>
+  text
+    .replace(/[\u00a0\u200b\u00ad*_`~]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+/** A pattern for the words, hyphens and any whitespace between them allowed. */
+const PHRASE = /\bclose[\s-]+to[\s-]+native\b/g;
+
+/** How many times the words stand in a text, however they are wrapped or spaced. */
+const phrasesIn = (text) => (normalised(text).match(PHRASE) ?? []).length;
+
+/**
+ * A page with no region: the words "close to native" may not stand anywhere on it, however the line is wrapped or the
+ * space between the words is written (a plain space, a new line, a no-break space, a hyphen).
+ */
+function phraseProblems(doc, text) {
+  return phrasesIn(text) > 0
+    ? [`${doc}: "${verdict.CLOSE_PHRASE}" stands on a page that carries no generated table`]
+    : [];
+}
+
+/** The figures of the table's `|`-separated rows, by the first cell's text, as printed. */
+function printedRows(region) {
+  const rows = [];
+  for (const line of region.split('\n')) {
+    if (!line.startsWith('| ')) continue;
+    const cells = line
+      .slice(1, -1)
+      .split('|')
+      .map((x) => x.trim());
+    rows.push(cells);
+  }
+  return rows;
+}
+
 /**
  * Every way a page disagrees with the record, as messages. The region must equal what `render` makes from the record
- * (so every figure, the commit, the Node version and the machine are the record's); the same figures are read back out
- * of the region's text and recomputed from the rounds, so a renderer that drifted from the record would not hide a
- * wrong figure; and the words "close to native" may stand nowhere but in the region, and there only for a group that
- * stop rule 2 allows.
+ * (so every figure, the commit, the Node version and the machine are the record's, each recomputed from the rounds);
+ * the same figures are read back out of the region's text and compared with a recomputation from the rounds, so a
+ * renderer that drifted from the record would not hide a wrong figure; and the words "close to native" may stand
+ * nowhere but in the region, and there only for a group that stop rule 2 allows.
  */
 function problemsOf(doc, text, file) {
   const problems = [];
   let region;
+  let at;
   try {
     region = regionText(doc, text);
+    at = regionIn(doc, text);
   } catch (err) {
     return [err.message];
   }
-  const pass = verdict.passOfRecord(file);
+  const recorded = verdict.passOfRecord(file);
   const phrase = verdict.CLOSE_PHRASE;
-  const outside = text.slice(0, regionIn(doc, text).i) + text.slice(regionIn(doc, text).j);
-  if (outside.toLowerCase().includes(phrase)) {
+  const outside = text.slice(0, at.i) + '\n' + text.slice(at.j);
+  if (phrasesIn(outside) > 0) {
     problems.push(`${doc}: "${phrase}" stands outside the generated region`);
   }
-  if (pass === undefined) {
+  if (recorded === undefined) {
     if (region !== NOT_MEASURED)
       problems.push(`${doc}: the record holds no pass, so the region must say it is not measured`);
     return problems;
   }
+  const pass = verdict.fresh(recorded);
   if (region === NOT_MEASURED)
     problems.push(`${doc}: the record holds a pass, but the region says it is not measured`);
   const expected = render(file);
@@ -238,45 +294,86 @@ function problemsOf(doc, text, file) {
     problems.push(`${doc}: the Node version is not the record's (${e.node})`);
   if (!region.includes(`commit \`${short(e.head)}\``))
     problems.push(`${doc}: the commit is not the record's (${short(e.head)})`);
+  if (!region.includes(`${verdict.roundCountOf(pass)} rounds a figure`))
+    problems.push(`${doc}: the round count is not the rounds' (${verdict.roundCountOf(pass)})`);
+  const load = verdict.loadFiguresOf(pass);
+  if (
+    !region.includes(
+      `ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${load.discardedRounds} round(s)`,
+    )
+  )
+    problems.push(
+      `${doc}: the load line is not the rounds' (${load.maxLoadAtEnd.toFixed(2)}, ${load.discardedRounds})`,
+    );
   const rows = new Map();
-  for (const line of region.split('\n')) {
-    const m = /^\| `([^`]+)` \| ([^|]+) \| (.*) \|$/.exec(line);
-    if (m === null) continue;
-    const cols = m[3].split('|').map((s) => s.trim());
-    if (cols.length === DATASETS.length && !rows.has(m[1])) rows.set(m[1], cols);
+  const coldRows = new Map();
+  const loadRows = new Map();
+  for (const cells of printedRows(region)) {
+    const op = /^`([^`]+)`$/.exec(cells[0]);
+    if (op !== null && cells.length === 2 + DATASETS.length && !rows.has(op[1]))
+      rows.set(op[1], cells.slice(2));
+    else if (op !== null && cells.length === 3 && !coldRows.has(op[1]))
+      coldRows.set(op[1], cells.slice(1));
+    else if (op === null && cells.length === 5 && DATASETS.includes(cells[0]))
+      loadRows.set(cells[0], cells.slice(1));
   }
   for (const c of pass.cells ?? []) {
     if (c.malformed) continue;
     const cols = rows.get(c.op);
-    const at = DATASETS.indexOf(c.dataset);
-    if (cols === undefined || at < 0) {
+    const col = DATASETS.indexOf(c.dataset);
+    if (cols === undefined || col < 0) {
       problems.push(`${doc}: no row for ${verdict.cellName(c)}`);
       continue;
     }
     const recomputed = verdict.median(c.rounds.map((r) => r[2] / r[1]));
-    const printed = Number(cols[at].replace(/ \*$/, ''));
+    const printed = Number(cols[col].replace(/ \*$/, ''));
     if (printed !== Number(times(recomputed))) {
       problems.push(
-        `${doc}: ${verdict.cellName(c)} prints ${cols[at]}, the rounds say ${times(recomputed)}`,
+        `${doc}: ${verdict.cellName(c)} prints ${cols[col]}, the rounds say ${times(recomputed)}`,
       );
     }
   }
-  const allowed = verdict
-    .groupsOf((pass.cells ?? []).filter((c) => !c.malformed))
-    .filter((g) => g.close);
+  for (const c of pass.cold ?? []) {
+    if (c.malformed) continue;
+    const cols = coldRows.get(c.op);
+    if (cols === undefined) {
+      problems.push(`${doc}: no row for ${verdict.cellName(c)}`);
+      continue;
+    }
+    const recomputed = verdict.median(c.rounds.map((r) => r[2] / r[1]));
+    if (Number(cols[0].replace(/ \*$/, '')) !== Number(times(recomputed)))
+      problems.push(
+        `${doc}: ${verdict.cellName(c)} prints ${cols[0]}, the rounds say ${times(recomputed)}`,
+      );
+  }
+  for (const l of pass.loadRoundTrip ?? []) {
+    const cols = loadRows.get(l.dataset);
+    if (cols === undefined) {
+      problems.push(`${doc}: no load row for ${l.dataset}`);
+      continue;
+    }
+    const share = verdict.median(l.rounds.map((r) => (r[1] + r[2]) / r[0]));
+    if (cols[3] !== `${(share * 100).toFixed(1)}%`)
+      problems.push(
+        `${doc}: load ${l.dataset} prints ${cols[3]}, the rounds say ${(share * 100).toFixed(1)}%`,
+      );
+  }
+  const allowed = verdict.groupsOf(rated(pass)).filter((g) => g.close);
   const said = /Close to native \([^)]*\): ([^.]*)\./.exec(region);
   const saidGroups = said === null ? [] : said[1].split(', ');
   for (const g of saidGroups) {
     if (!allowed.some((a) => a.group === g))
-      problems.push(`${doc}: "${phrase}" is said of ${g}, which stop rule 2 does not allow`);
+      problems.push(
+        `${doc}: "${phrase}" is said of ${g}, which the bar of 3 times native does not allow`,
+      );
   }
   if (
-    region.toLowerCase().split(phrase).length - 1 !==
+    phrasesIn(region) !==
     (said === null ? 0 : 1) + (/Not called close to native/i.test(region) ? 1 : 0)
   ) {
     problems.push(`${doc}: "${phrase}" stands more often than the generated sentences say it`);
   }
-  for (const o of verdict.overShipBar((pass.cells ?? []).filter((c) => !c.malformed))) {
+  for (const o of verdict.overShipBar(rated(pass))) {
     if (!region.includes(`\`${o.method}\` (${times(o.worst)} times`)) {
       problems.push(
         `${doc}: ${o.method} is above ${verdict.SHIP_BAR} times native and the region does not say so`,
@@ -296,4 +393,6 @@ module.exports = {
   regionText,
   withRegion,
   problemsOf,
+  phraseProblems,
+  phrasesIn,
 };

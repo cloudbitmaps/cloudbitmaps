@@ -162,12 +162,17 @@ function hashWords(words) {
   return `${words.length}:${h}`;
 }
 
-/** A call's result as a string two subjects can be compared by. */
+/**
+ * A call's result as a string two subjects can be compared by: a number or boolean as itself, a list of ids by its
+ * hash, a bitmap by the hash of its ids, and the bytes of a serialization by the hash of the bytes themselves.
+ */
 function digest(api, value) {
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (Array.isArray(value)) return hashWords(Uint32Array.from(value));
   if (value instanceof Uint32Array) return hashWords(value);
-  if (value instanceof Uint8Array) return hashWords(api.toUint32(api.deserialize(value)));
+  // Bytes are compared as bytes: two subjects that wrote different bytes for one bitmap disagree, even when each
+  // subject's own decoder would read its own bytes back to the same ids.
+  if (value instanceof Uint8Array) return hashWords(value);
   return hashWords(api.toUint32(value));
 }
 
@@ -472,14 +477,28 @@ function cellsOf(data) {
       return () => api.equal(a, copy);
     },
   });
+  // The stored pair shares containers, so this answers `true` at the first shared one: the early-exit case.
   add({
-    name: 'intersects',
+    name: 'intersects overlapping',
     method: 'intersects',
     group: 'count',
     who: NATIVE_OURS,
     make: (api) => {
       const [a, b] = operands(api);
       return () => api.intersects(a, b);
+    },
+  });
+  // The second operand without the first's ids shares every container key with it and no id: the answer is `false`,
+  // and the call cannot end before it has walked every key.
+  add({
+    name: 'intersects disjoint',
+    method: 'intersects',
+    group: 'count',
+    who: NATIVE_OURS,
+    make: (api) => {
+      const [a, b] = operands(api);
+      const apart = api.combine('andNot', b, a);
+      return () => api.intersects(a, apart);
     },
   });
   // The first operand's next write after a combine that returns a new bitmap. A returning `or`, `xor` or `andNot`
@@ -516,6 +535,27 @@ function cellsOf(data) {
     });
   }
   return cells;
+}
+
+/**
+ * Every cell the full run takes, as a list, so that a record can be checked against it: the steady cells (each with
+ * whether the codec has a counterpart, `internal`), the cold cells and the data sets of the load part. One source: the
+ * bench takes these cells and the gate asks a pass for exactly these.
+ */
+function inventory() {
+  const steady = cellsOf({ some: [], small: true }).map((c) => ({
+    op: c.name,
+    method: c.method,
+    group: c.group,
+    internal: c.who.includes('internal') && !/^xor in place$/.test(c.name),
+  }));
+  const cold = coldCellsOf({ small: true }).map((c) => ({
+    op: c.name,
+    method: c.method,
+    group: c.group,
+    internal: c.who.includes('internal'),
+  }));
+  return { datasets: DATASETS.slice(), steady, cold, load: DATASETS.slice() };
 }
 
 /** The cold cells: the first call of a fresh process, nothing warmed, on the `mixed` data set. */
@@ -590,6 +630,7 @@ module.exports = {
   bytesFromJson,
   cellsOf,
   coldCellsOf,
+  inventory,
   runsOn,
   timeCell,
   timeCold,
