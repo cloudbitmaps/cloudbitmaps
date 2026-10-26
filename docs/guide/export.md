@@ -100,7 +100,7 @@ The manifest of a command run also carries a `generatedAt` timestamp.
 ## Read an export back
 
 A `.roaring` file needs no CloudBitmaps: any Roaring library deserializes the portable format. With
-`@cloudbitmaps/roaring` installed, `RoaringBitmap.deserialize` (0.25.0 and later) reads it: the bytes are capped and
+`@cloudbitmaps/roaring` installed, `RoaringBitmap.deserialize` (0.25.0 and later; unreleased) reads it: the bytes are capped and
 checked, and an empty file is refused.
 
 <!-- typecheck -->
@@ -110,9 +110,9 @@ import { RoaringBitmap } from '@cloudbitmaps/roaring';
 const ids = RoaringBitmap.deserialize(readFileSync('dump/_default/vips.roaring')).toArray();
 ```
 
-Another Roaring library reads the same file: with the `roaring` package from npm (a native library of your own, so add
-it to your own `package.json` and allow its install script, [which version](loading.md#what-a-load-accepts)),
-`RoaringBitmap32.deserialize(bytes, DeserializationFormat.portable)` does.
+Another Roaring library reads the same file. With the `roaring` package from npm (a native library of your own), first
+add it to your own `package.json` and allow its install script ([which version](loading.md#what-a-load-accepts)), then
+call `RoaringBitmap32.deserialize(bytes, DeserializationFormat.portable)`.
 
 And a store loads one straight back, with no per-id work:
 `await store.load({ segment: 'vips' }, { serialized: readFileSync('dump/_default/vips.roaring') })`

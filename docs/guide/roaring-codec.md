@@ -3,9 +3,9 @@
 `@cloudbitmaps/roaring` keeps its bitmaps with a Roaring implementation of its own, written in TypeScript on typed
 arrays, with no native code. This page says what that is, what it guarantees (the same portable bytes as CRoaring, byte
 for byte) and the evidence for it, what it costs and gains against the native codec, and the one public class,
-`RoaringBitmap` (0.25.0 and later), that lets you use it by itself.
+`RoaringBitmap` (0.25.0 and later; unreleased), that lets you use it by itself.
 
-Everything here is about the release this page ships in, 0.25.0; a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
+Everything here is about the next release, 0.25.0 (unreleased); a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
 **derived** (computed from measured figures by the rule beside it) or **expected** (what the code is expected to do, not
 taken).
 
@@ -103,7 +103,7 @@ wall-clock, recorded and not asserted:
   pair of `or` is 1.2 to 4.2 times slower in the per-operation record (measured on 2026-10-21 on an Apple M3 Pro under Node
   v24.18.1 at commit `7bf70e54`; the kernels changed after that commit, so that figure is a record of that day), and that
   does not show in the combines that were timed through the store. The `or` of the public class in memory is timed against
-  native in [the table below](#cost-of-the-class-against-native); what a store `union` costs on this codec is expected to
+  native in [the table below](#the-public-class-against-native-in-memory); what a store `union` costs on this codec is expected to
   be inside the same bar, and is not measured.
 - **Not measured:** in region against real S3, Alpine, arm64 Lambda; Bun and Deno ran a local self-check only. CI runs Node
   22 and 24.

@@ -11,7 +11,7 @@
 > is the ceiling's record. The in-region run, the large-operand run, the read, fleet-memory and at-scale figures were
 > measured on the native codec, in the release each section names, and are to be re-measured. The cost model and the
 > crossover do not depend on the codec. [The TypeScript codec against native](#the-typescript-codec-against-native)
-> has the comparison, and [the public bitmap class against native, in memory](#the-public-bitmap-class-against-native-in-memory-0250-and-later)
+> has the comparison, and [the public bitmap class against native, in memory](#the-public-bitmap-class-against-native-in-memory)
 > is a third body of figures, taken in a loop with no store.
 
 CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
@@ -562,9 +562,9 @@ sets up to 14.4M members, has no figure yet.
 
 [Our own Roaring](guide/roaring-codec.md) says what the codec guarantees and what it can be used for alone.
 
-## The public bitmap class against native, in memory (0.25.0 and later)
+## The public bitmap class against native, in memory
 
-A third body of figures, apart from the store comparison above and the native-codec figures elsewhere on this page: the
+A third body of figures (the class is in 0.25.0, unreleased), apart from the store comparison above and the native-codec figures elsewhere on this page: the
 public `RoaringBitmap` class, timed in a loop in memory against the pinned `roaring` package (CRoaring through its
 binding) and against the codec call the store runs, one cell per operation and data set, losses printed. It has no
 store and no network, so nothing hides a slow combine. The table is generated from
