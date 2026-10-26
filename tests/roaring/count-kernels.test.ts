@@ -144,6 +144,59 @@ describe('the container counting kernels, every pair kind', () => {
   });
 });
 
+describe('two bitsets, word by word', () => {
+  const bitsetOf = (lows: readonly number[]) => container(BITSET, lows);
+  const shared = (a: readonly number[], b: readonly number[]) => overlap(a, b);
+
+  it('counts the shared bits at the first and last bit of a word, of each block of sixteen words, and of the chunk', () => {
+    const words = [0, 1, 15, 16, 17, 31, 32, 33, 1_023, 1_024, 2_030, 2_031, 2_032, 2_046, 2_047];
+    const bits = [0, 1, 30, 31];
+    const at = (ws: readonly number[], bs: readonly number[]) =>
+      ws.flatMap((w) => bs.map((b) => w * 32 + b));
+    for (const w of words) {
+      for (const b of bits) {
+        const one = [w * 32 + b];
+        for (const other of [
+          one,
+          [w * 32 + (b ^ 1)],
+          [((w + 1) % WORDS) * 32 + b],
+          at(words, bits),
+          at([w], bits),
+        ]) {
+          const x = bitsetOf(sortedUnique(at(words, bits)));
+          const y = bitsetOf(sortedUnique(other));
+          const want = shared(at(words, bits), other);
+          expect(containerAndCard(x, y)).toBe(want);
+          expect(containerAndCard(y, x)).toBe(want);
+          expect(containersIntersect(x, y)).toBe(want > 0);
+        }
+      }
+    }
+  });
+
+  it('counts a full chunk against itself, against half of it, and against nothing shared, call after call', () => {
+    const full = range(0, 65_536);
+    const evens = full.filter((v) => v % 2 === 0);
+    const odds = full.filter((v) => v % 2 === 1);
+    for (let round = 0; round < 3; round++) {
+      expect(containerAndCard(bitsetOf(full), bitsetOf(full))).toBe(65_536);
+      expect(containerAndCard(bitsetOf(full), bitsetOf(evens))).toBe(32_768);
+      expect(containerAndCard(bitsetOf(evens), bitsetOf(odds))).toBe(0);
+      expect(containerAndCard(bitsetOf(range(0, 32_768)), bitsetOf(range(32_767, 65_536)))).toBe(1);
+    }
+  });
+
+  it('sees one shared bit anywhere among 65,536, in every word position', () => {
+    const noise = range(0, 65_536).filter((v) => v % 3 === 0);
+    for (let w = 0; w < WORDS; w += 1) {
+      const v = w * 32 + (w % 32);
+      const x = bitsetOf(sortedUnique([...noise.filter((n) => n % 3 === 0 && n !== v + 0), v]));
+      const y = bitsetOf([v]);
+      expect(containerAndCard(x, y)).toBe(1);
+    }
+  });
+});
+
 describe('the scratch bits the array kernels use', () => {
   const evens = range(50, 114).map((v) => v * 2);
   const odds = evens.map((v) => v + 1);

@@ -465,9 +465,7 @@ export class RoaringBitmap implements Iterable<number> {
       throw new ValidationError('orMany takes an iterable of RoaringBitmap');
     }
     const parts = Array.from(bitmaps, (b) => RoaringBitmap.#operand(b));
-    const out = TsBitmap.empty();
-    for (const part of parts) out.orInPlace(part);
-    return RoaringBitmap.#wrap(out);
+    return RoaringBitmap.#wrap(TsBitmap.orMany(parts));
   }
 
   /** The ids in ascending order, each once. A bitmap that changes during the walk gives unspecified ids, and no error. */

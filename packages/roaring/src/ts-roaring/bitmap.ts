@@ -63,6 +63,7 @@ import {
   containersIntersect,
   fromSortedIds,
   optimize,
+  orManyContainers,
   RUN,
 } from './containers';
 import { BitmapIterator } from './iterator';
@@ -674,6 +675,34 @@ export class TsBitmap implements CodecBitmap {
   /** The ids either holds, as a new bitmap; neither operand changes. */
   static or(a: CodecBitmap, b: CodecBitmap): TsBitmap {
     return TsBitmap.#fresh(TsBitmap.#of(a), TsBitmap.#of(b), OR);
+  }
+
+  /**
+   * The ids any of `bitmaps` holds, as a new bitmap that owns all its storage; no operand changes and none is flagged.
+   * The containers of each key are gathered across the inputs and united in one pass (see {@link orManyContainers}),
+   * counted once. A key only one input holds is copied as it is, a run included.
+   */
+  static orMany(bitmaps: readonly CodecBitmap[]): TsBitmap {
+    const byKey = new Map<number, Container[]>();
+    for (const input of bitmaps) {
+      const that = TsBitmap.#of(input);
+      for (let i = 0; i < that.#keys.length; i++) {
+        const key = that.#keys[i] as number;
+        const held = byKey.get(key);
+        if (held === undefined) byKey.set(key, [that.#conts[i] as Container]);
+        else held.push(that.#conts[i] as Container);
+      }
+    }
+    const keys = Array.from(byKey.keys()).sort((x, y) => x - y);
+    const conts: Container[] = [];
+    let size = 0;
+    for (const key of keys) {
+      const held = byKey.get(key) as Container[];
+      const c = held.length === 1 ? cloneContainer(held[0] as Container) : orManyContainers(held);
+      conts.push(c);
+      size += c.card;
+    }
+    return new TsBitmap(keys, conts, size);
   }
 
   /** The ids exactly one holds, as a new bitmap; neither operand changes. */

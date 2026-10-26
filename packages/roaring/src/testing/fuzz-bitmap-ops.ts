@@ -247,7 +247,7 @@ function algebra(held: Held, bytes: Bytes): void {
     result = RoaringBitmap.andNot(first, second);
     for (const id of held.model) if (!ids2.has(id)) want.add(id);
   } else {
-    result = RoaringBitmap.orMany([first, second, third]);
+    result = RoaringBitmap.orMany([first, second, third, first, second]);
     for (const id of [...held.model, ...ids2, ...ids3]) want.add(id);
   }
   if (result === first || result === second || result === third)
