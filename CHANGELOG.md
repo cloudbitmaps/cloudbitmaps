@@ -51,7 +51,10 @@ so, and so do the module headers in the code.
   `clone` (copy-on-write), `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics `RoaringBitmap.and`,
   `or`, `xor`, `andNot` and `orMany` that return a new bitmap, `RoaringBitmap.deserialize`, `has`, `size`, `isEmpty`,
   `minimum` and `maximum` (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`,
-  `serialize()` and `runOptimize()`. Every id argument is checked and throws `ValidationError` with a message that never
+  `serialize()` and `runOptimize()`. A write into a run container keeps it a run container while the run form is the
+  smaller one, so `serialize()` without `runOptimize()` can write a run container where an earlier version wrote an array
+  or a bitset: a valid encoding of the same set, and only `runOptimize()` makes the bytes depend on the set alone. Every id
+  argument is checked and throws `ValidationError` with a message that never
   repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
   is no `toJSON`, so `JSON.stringify(bitmap)` gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   lists each method and where it differs from the `roaring` package.

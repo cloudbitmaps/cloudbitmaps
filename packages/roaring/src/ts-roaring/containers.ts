@@ -1875,9 +1875,10 @@ export function containersSubset(a: Container, b: Container): boolean {
 
 /**
  * Whether two containers hold the same values. Two containers of one kind compare their storage and stop at the first
- * difference: bitset words, array values, run pairs. That is exact for runs because every run container is canonical
- * (the decoder refuses runs that touch or overlap, and {@link optimize} writes maximal runs), so one set has one list
- * of pairs. Containers of different kinds can hold the same set (a run against an array), so they fall back to the
+ * difference: bitset words, array values, run pairs. That is exact for runs because every run container is canonical:
+ * the decoder refuses runs that touch or overlap, and every writer of a run container ({@link optimize}, a write into
+ * a run, the union of a run with an array, the run results of `and`, `or`, `andNot` and `xor`) leaves the runs
+ * maximal and the container in its smallest kind, so one set has one list of pairs. Containers of different kinds can hold the same set (a run against an array), so they fall back to the
  * count of the values they share.
  */
 export function containersEqual(a: Container, b: Container): boolean {
