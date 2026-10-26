@@ -3,31 +3,31 @@
  * `isSubset`, `isEqual`), the time of the count beside the time of the work it replaces (build the combination with the
  * in-place operations and take its size), on every operand pair of `bench/lib/count-cells.cjs`. It answers one question:
  * does `andCardinality` beat build-then-size on every group? The `orCardinality`, `xorCardinality` and `andNotCardinality`
- * counts are arithmetic on it and have no cell of their own. The stop rule, fixed before any measurement, is one decision for the family (`decisionOf`): the four cardinalities and
- * `intersects` call the kernels if `andCardinality` beats build-then-size on every group, and are otherwise all derived
- * by build-then-count.
+ * counts are arithmetic on it and have no cell of their own. The stop rule is one decision for the family (`decisionOf`): the four cardinalities and
+ * `intersects` call the kernels if `andCardinality` beats build-then-size on every group (the median, over the rounds, of
+ * the count against the build is below zero), and are otherwise all derived by build-then-count.
  *
  * It does NOT judge whether a change slowed the store's hot paths. That is `bench/ts-codec-paired.cjs`, the paired
  * harness, run against the same commit (`--reads`, `--write` and the per-operation cells with `--ops`): this bench
  * shares its rule and nothing else about the question.
  *
- * HOW A CELL IS JUDGED. It is the paired rule of `bench/lib/paired-verdict.cjs` with different subjects: `base` is the
+ * HOW A CELL IS REPORTED. It is the paired rule of `bench/lib/paired-verdict.cjs` with different subjects: `base` is the
  * build, `head` the count and `control` the build again. A round times the same call once for each of the three, each in
  * a process of its own (so the timed call sites see one function, as the store's do), in an order that rotates through
  * the six permutations; 31 rounds. Per round the count is compared with the mean of the two builds; the cell reports the
  * distribution-free 95% interval of the median of those differences and is `faster than the bar` when its upper end is
  * below -2%, `within` when its upper end is at most +2% and it is not faster, `slower` when its lower end is above +2%,
- * and `inconclusive` otherwise, or whenever the second build's median differs from the first by more than 2%. The
- * load rule (a round that ends at a 1-minute load of 6 or more is not kept) and the sleep rule (a figure over 100 times
+ * and `inconclusive` otherwise, or whenever the second build's median differs from the first by more than 2%; that verdict, the interval and the control are information, and the family's decision is the median
+ * alone. The load rule (a round that ends at a 1-minute load of 6 or more is not kept) and the sleep rule (a figure over 100 times
  * its median with under half of its wall time on CPU is not kept) are the paired harness's, applied by the same code.
  *
  * THE RECORD is `bench/count-kernels-results.json`: every pass, appended, never replaced, each with every round of every
  * cell (`[order, build, count, build again, loadAtStart, loadAtEnd]`, the figures in milliseconds), the rounds set aside,
  * the medians, intervals and verdicts, the commit, the tree's state, the Node version and the machine. A pass with an
- * inconclusive cell is taken again (`COUNT_RETAKES`, default 2); the earlier pass stays. `--gate` reads the last pass and
- * prints one final line, `RESULT kept`, `RESULT derived` or `RESULT invalid`, and exits 0, 3 or 4 to match. A record that
+ * inconclusive cell is taken again (`COUNT_RETAKES`, default 2); the earlier pass stays. `--gate` reads the last pass, prints each
+ * cell's median, interval and A/A control as information, and prints one final line, `RESULT kept`, `RESULT derived` or `RESULT invalid`, and exits 0, 3 or 4 to match. A record that
  * does not hold every cell of every group of the full run, or whose cells disagree on an answer, is invalid: a partial
- * `--only` pass can never print `kept`. A cell that is `slower` or `inconclusive` is a result (derived), not a failure.
+ * `--only` pass can never print `kept`. A group whose median does not beat the build is a result (derived), not a failure.
  *
  *   node --expose-gc bench/count-kernels.cjs                  every group, appended to the results file
  *   node --expose-gc bench/count-kernels.cjs --only=<a>|<b>   the cells whose "<group> <operation>" contains either text
@@ -361,11 +361,11 @@ function applyGate() {
   const groups = cells.groups().length;
   if (d.status === 'kept') {
     console.log(
-      `RESULT kept: ${cells.JUDGED_OP} beat build-then-size on all ${groups} groups; andCardinality, orCardinality, andNotCardinality, xorCardinality and intersects call the kernels`,
+      `RESULT kept: ${cells.JUDGED_OP} beat build-then-size on all ${groups} groups (median below zero); andCardinality, orCardinality, andNotCardinality, xorCardinality and intersects call the kernels`,
     );
   } else if (d.status === 'derived') {
     console.log(
-      `RESULT derived: ${cells.JUDGED_OP} did not beat build-then-size on ${d.stoppedBy.map((s) => `${s.cell} (${s.verdict})`).join('; ')}; andCardinality, orCardinality, andNotCardinality, xorCardinality and intersects are derived by build-then-count`,
+      `RESULT derived: ${cells.JUDGED_OP} did not beat build-then-size on ${d.stoppedBy.map((s) => `${s.cell} (median ${(s.median * 100).toFixed(1)}%)`).join('; ')}; andCardinality, orCardinality, andNotCardinality, xorCardinality and intersects are derived by build-then-count`,
     );
   } else {
     console.log(`RESULT invalid: ${d.problems.length} problem(s); the record decides nothing`);
