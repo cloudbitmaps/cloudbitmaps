@@ -187,7 +187,6 @@ section 7.)
 | `valueScratch` (`Uint16Array`) | starts at 8,192 entries | array results whose size is known only after they are built (`andArrays`, `filterByBits`, `filterByRuns`, `andNotArrays`, `orArrays`) | a kernel writes into it and copies out exactly `n` values (`arrayOfScratch`) |
 | `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`) | same |
 | `probeWords` (`Uint32Array`) | 2,048 words (one bitset) | the scratch-bitset probe in `andArrays`, `andNotArrays`, `andCountArrays` and `intersectsArrays` | all zero between calls: each call clears the bits it set, on every exit (`intersectsArrays` clears them after a hit as well as after a full scan) |
-| `andWords` (`Uint32Array`) | 2,048 words (one bitset) | the AND of two bitsets before `popcountWords` counts it (`containerAndCard`) | not zero between calls: every call overwrites all 2,048 words before reading any, and nothing else reads it |
 
 Growth: a request larger than the buffer allocates `max(n, min(2 * length, 65,536))`; the buffer kept for the life of the
 process never exceeds 65,536 entries (one container's worth of 16-bit values); a request above that gets a fresh array
@@ -328,7 +327,7 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
   A  A     probe | gallop | merge, counting hits           probe | gallop | merge, each stopping at the first hit
   A  B     one bit test per array value                    first set bit found
   A  R     walk runs | binary-search runs per value        walk the runs against the values
-  B  B     AND into a scratch, then Harley-Seal            first word whose AND is not zero
+  B  B     fused AND and Harley-Seal count                first word whose AND is not zero
   B  R     popcount of the words inside each run           first run whose covered words hold a set bit
   R  R     sum of the overlap of each pair of runs         first pair of runs that overlap
 ```
@@ -340,8 +339,9 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
 - `andCountArrayBitset` is a sum of bit tests; `andCountArrayRuns` walks both lists when the runs number fewer than 16
   times the values, and finds each value's run by binary search when they number 16 times or more; `andCountBitsetRuns` is `bitsInRange` per
   run (the masked popcount of the covered words); `andCountRuns` adds `hi - lo + 1` for each overlapping pair of runs.
-- Two bitsets AND into `andWords` (2,048 words, overwritten whole by every call) and are counted by `popcountWords`, the
-  Harley-Seal count the building kernels use.
+- Two bitsets are counted by `popcountAnd`, the Harley-Seal tree of `popcountWords` with each word read as the AND of the
+  two operands' words, so nothing is written to a scratch and read back: one pass over 4,096 words, no module state.
+  `isSubset` and `isEqual` across kinds count through the same kernel.
 - `containersIntersect` is the early-exit form: each pair kind returns at the first shared value instead of counting
   all of them. Disjoint ranges of two arrays answer after reading only the four end values. `intersectsArrays` chooses as `andCountArrays`
   does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a

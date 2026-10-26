@@ -225,6 +225,94 @@ function popcountWords(d: Uint32Array): number {
   );
 }
 
+/**
+ * Set bits in the AND of two bitsets, counted as the words are read: {@link popcountWords}'s tree with each word taken
+ * as `d[i] & e[i]`, so the AND is never written to memory and read back.
+ */
+function popcountAnd(d: Uint32Array, e: Uint32Array): number {
+  let total = 0;
+  let ones = 0;
+  let twos = 0;
+  let fours = 0;
+  let eights = 0;
+  for (let i = 0; i < WORDS; i += 16) {
+    let u: number;
+    let twosA: number;
+    let twosB: number;
+    let foursA: number;
+    let foursB: number;
+    let x = (d[i] as number) & (e[i] as number);
+    let y = (d[i + 1] as number) & (e[i + 1] as number);
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = (d[i + 2] as number) & (e[i + 2] as number);
+    y = (d[i + 3] as number) & (e[i + 3] as number);
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursA = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    x = (d[i + 4] as number) & (e[i + 4] as number);
+    y = (d[i + 5] as number) & (e[i + 5] as number);
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = (d[i + 6] as number) & (e[i + 6] as number);
+    y = (d[i + 7] as number) & (e[i + 7] as number);
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursB = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    u = fours ^ foursA;
+    const eightsA = (fours & foursA) | (u & foursB);
+    fours = u ^ foursB;
+    x = (d[i + 8] as number) & (e[i + 8] as number);
+    y = (d[i + 9] as number) & (e[i + 9] as number);
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = (d[i + 10] as number) & (e[i + 10] as number);
+    y = (d[i + 11] as number) & (e[i + 11] as number);
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursA = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    x = (d[i + 12] as number) & (e[i + 12] as number);
+    y = (d[i + 13] as number) & (e[i + 13] as number);
+    u = ones ^ x;
+    twosA = (ones & x) | (u & y);
+    ones = u ^ y;
+    x = (d[i + 14] as number) & (e[i + 14] as number);
+    y = (d[i + 15] as number) & (e[i + 15] as number);
+    u = ones ^ x;
+    twosB = (ones & x) | (u & y);
+    ones = u ^ y;
+    u = twos ^ twosA;
+    foursB = (twos & twosA) | (u & twosB);
+    twos = u ^ twosB;
+    u = fours ^ foursA;
+    const eightsB = (fours & foursA) | (u & foursB);
+    fours = u ^ foursB;
+    u = eights ^ eightsA;
+    const sixteens = (eights & eightsA) | (u & eightsB);
+    eights = u ^ eightsB;
+    total += popcount32(sixteens);
+  }
+  return (
+    16 * total +
+    8 * popcount32(eights) +
+    4 * popcount32(fours) +
+    2 * popcount32(twos) +
+    popcount32(ones)
+  );
+}
+
 /** Set the bits `start` to `end`, both inclusive, in `words`. */
 function setRange(words: Uint32Array, start: number, end: number): void {
   const first = start >>> 5;
@@ -1458,17 +1546,10 @@ function andCountRuns(a: Container, b: Container): number {
   return n;
 }
 
-// Scratch for the AND of two bitsets before its bits are counted: overwritten whole by every call.
-const andWords = new Uint32Array(WORDS);
-
 /** How many values both containers hold; builds nothing and changes neither operand. */
 export function containerAndCard(a: Container, b: Container): number {
   if (a.kind === BITSET && b.kind === BITSET) {
-    const x = words32(a);
-    const y = words32(b);
-    const both = andWords;
-    for (let i = 0; i < WORDS; i++) both[i] = (x[i] as number) & (y[i] as number);
-    return popcountWords(both);
+    return popcountAnd(words32(a), words32(b));
   }
   // Commutative: put the lower kind first (array, bitset, run).
   if (a.kind > b.kind) return containerAndCard(b, a);
