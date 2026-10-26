@@ -664,6 +664,17 @@ export function unreleasedSection(text: string): string {
   return lines.map((l, i) => (i > start && (end < 0 || i < end) ? l : '')).join('\n');
 }
 
+/**
+ * What the `[Unreleased]` section may not name: the subpath's full and shorthand spellings, and the bare `./bitmap` a
+ * sentence about the entry uses. The bare form is refused there only, so `../bitmap` and `./ts-roaring/bitmap` stay legitimate.
+ */
+function unreleasedSubpathNames(): Array<{ name: string }> {
+  return [
+    ...RETIRED.filter((r) => r.name.endsWith('/(?:dist/)?bitmap')),
+    { name: '(?<![\\w./$-])\\./bitmap' },
+  ];
+}
+
 /** `file:line names X; use Y` for every name from `names` that `paths` contain, with that name's `instead`. */
 function offenders(
   paths: readonly string[],
@@ -806,8 +817,8 @@ describe('a removed export is named nowhere a reader looks', () => {
   it("the changelog's [Unreleased] section never names the subpath that never shipped", () => {
     const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8');
     expect(changelog).toMatch(/^## \[Unreleased\]/m);
-    const subpath = RETIRED.filter((r) => r.name.endsWith('/(?:dist/)?bitmap'));
-    expect(subpath).toHaveLength(1);
+    const subpath = unreleasedSubpathNames();
+    expect(subpath).toHaveLength(2);
     expect(
       retiredNames(unreleasedSection(changelog), subpath).map(
         (f) => `CHANGELOG.md:${f.line} names the subpath, which never shipped`,
@@ -816,7 +827,7 @@ describe('a removed export is named nowhere a reader looks', () => {
   });
 
   it('reads only [Unreleased] of a changelog: the subpath named there fails, named in a released section passes', () => {
-    const subpath = RETIRED.filter((r) => r.name.endsWith('/(?:dist/)?bitmap'));
+    const subpath = unreleasedSubpathNames();
     const doc = (unreleased: string, released: string): string =>
       `# Changelog\n\n## [Unreleased]\n\n${unreleased}\n\n## [0.20.0] - 2026-01-01\n\n${released}\n`;
     const sentence = '- `RoaringBitmap` imports from `@cloudbitmaps/roaring/bitmap`.';
@@ -828,6 +839,21 @@ describe('a removed export is named nowhere a reader looks', () => {
     expect(
       retiredNames(unreleasedSection(doc('- see `ts-roaring/bitmap.ts`', '')), subpath),
     ).toEqual([]);
+    const entry = '- The `./bitmap` entry loads no store and imports no Node builtin.';
+    expect(retiredNames(unreleasedSection(doc(entry, '- a thing')), subpath)).toHaveLength(1);
+    expect(retiredNames(unreleasedSection(doc('- a thing', entry)), subpath)).toEqual([]);
+    expect(retiredNames(unreleasedSection(doc('- `from "./bitmap"`', '')), subpath)).toHaveLength(
+      1,
+    );
+    for (const quiet of [
+      '../bitmap',
+      './ts-roaring/bitmap',
+      'ts-roaring/bitmap.ts',
+      './bitmaps',
+      'x./bitmap',
+    ]) {
+      expect(retiredNames(unreleasedSection(doc(`- see \`${quiet}\``, '')), subpath)).toEqual([]);
+    }
     expect(unreleasedSection('no heading here')).toBe('');
   });
 
