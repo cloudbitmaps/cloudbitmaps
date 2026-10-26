@@ -58,7 +58,7 @@ export type Figures = { native?: number; ours?: number; control?: number; intern
 
 export const roundsOf = (
   n: number,
-  f: Required<Figures> | (Figures & { internal: number | null }),
+  f: { native: number; ours: number; control: number; internal: number | null },
 ) =>
   Array.from(
     { length: n },
