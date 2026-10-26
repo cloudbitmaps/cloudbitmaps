@@ -138,9 +138,16 @@ Where a container's kind comes from:
 - A write (`containerAdd`, `containerRemove`) first `demote`s a run container, so no mutating path edits runs. An array
   at 4,096 values that gains one more becomes a bitset; a bitset that drops to 4,096 or fewer becomes an array
   (`fromWordsCard`).
-- The result of combining one pair of containers is an array up to 4,096 values or a bitset above, never a run, whatever
-  the pair was. A bitmap-level combine can still hold a run: a key held by one side only keeps that side's container as
-  it is (section 7).
+- The result of combining one pair of containers is an array up to 4,096 values or a bitset above, except for two run
+  containers: their result stays a run container while its body, `2 + 4 * runs` bytes, is strictly smaller than the array
+  or bitset body (`runsOrPlain`, the same test a write into a run uses), because a run list of a few long intervals is much
+  smaller than the 8 KiB bitset it would otherwise be expanded to, and every later `and`, `isSubset` or `intersects` on
+  it then walks intervals instead of words. Every run a combine writes is maximal: `andRuns` pieces are separated because
+  both inputs' runs are maximal (two values that are next to each other in the result are next to each other in both
+  inputs, hence in one run of each, hence in one piece); `andNotRuns` pieces are separated by a run of `b` or by a gap of
+  `a`; `orRuns` joins pieces that touch (`s <= end + 1`); `xorRuns` cancels a shared boundary, so touching pieces join.
+  The decoder refuses runs that touch or overlap, so this is what lets a combine's result be serialized as it is. A bitmap-level
+  combine can also hold a run for a key held by one side only, which keeps that side's container as it is (section 7).
 - `optimize()` (the bitmap method) re-encodes every container by the rule. `encodeChunks()` optimizes each container
   when it is asked for, on a snapshot, without changing the bitmap's own containers.
 
@@ -217,7 +224,8 @@ first (array, bitset, run).
   R  R     interval intersection        interval union (touching joins)  interval difference
 ```
 
-Every result is an array up to 4,096 values, a bitset above, or nothing (`null`, and the key is dropped).
+Every result is an array up to 4,096 values, a bitset above, a run container for two run containers while that is the
+smaller form, or nothing (`null`, and the key is dropped).
 
 ### Exclusive-or: `containerXor`
 
@@ -229,14 +237,14 @@ One kernel per pair, one pass, one count; the result kind follows the same rule 
   B  A     the bitset's words (a copy, or its own) with each array value's bit flipped; the count is adjusted per flip
   B  R     the bitset's words with each run's range flipped, then one count
   A  R     the run expanded to words (it owns them), then the array's bits flipped, the count adjusted per flip
-  R  R     one walk over the run boundaries of both lists (`xorRuns`)
+  R  R     one walk over the run boundaries of both lists (`xorRuns`); a run result while smaller
 ```
 
 `xorRuns` treats a run `(start, length - 1)` as a boundary at `start` and one at `start + length`. The boundaries of one
 canonical list ascend strictly, so a merge of the two lists sees each position at most twice, and a position both lists
 have cancels. What is left alternates open, close, and two pieces that touch (the end of one run is the start of the
-other) have already joined because the shared boundary cancelled. The pairs go to `pairScratch` and `fromRunPairs` builds
-the array or bitset.
+other) have already joined because the shared boundary cancelled. The pairs go to `pairScratch` and `runsOrPlain` keeps a run
+container while that is the smaller form, else builds the array or bitset.
 
 ### Array against array: `andArrays`
 
@@ -288,8 +296,9 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
 
 ### Runs
 
-- `andRuns`, `orRuns` (merges touching runs: `s <= end + 1`), `andNotRuns`: one walk over both run lists into
-  `pairScratch`, then `fromRunPairs` builds an array (up to 4,096 values) or a bitset from the pairs.
+- `andRuns`, `orRuns` (merges touching runs: `s <= end + 1`), `andNotRuns`, `xorRuns`: one walk over both run lists into
+  `pairScratch`, then `runsOrPlain` copies the pairs out as a run container when `2 + 4 * runs` is strictly smaller than the
+  array or bitset body, else `fromRunPairs` builds an array (up to 4,096 values) or a bitset from them.
 - `bitsetInRuns`: reads only the bitset words each run covers, each masked to the run's ends. A run container of at
   most 4,096 values cannot yield more than an array holds, so its result is written straight to a scratch array of
   positions and copied out: no 8 KiB bitset, no popcount. A larger run container copies the covered words into a fresh
@@ -657,6 +666,8 @@ Everything here is a test, a workflow or a bench, not part of the module.
   `SharedArrayBuffer`, an offset subarray).
 - **The small-body loops** (`tests/roaring/small-body-loops.test.ts`): `appendIds` of run containers at every length around the
   old table threshold and with every base, and the bytes of bodies of 0 to 70 values against CRoaring.
+- **Run results** (`tests/roaring/run-combine-results.test.ts`): every combine of two run containers is exact, canonical (maximal
+  ascending runs) and in its smallest kind, on whole bitmaps against CRoaring, through serialize and decode.
 - **The subset kernel** (`tests/roaring/container-subset.test.ts`): `containersSubset` and `containersIntersect` on every pair
   of kinds against a plain set, at the first and last element, and on whole bitmaps against CRoaring.
 - **The counting kernels** (`tests/roaring/count-kernels.test.ts`): `containerAndCard` and `containersIntersect` against a
@@ -731,9 +742,10 @@ Everything here is a test, a workflow or a bench, not part of the module.
   have been written in place; `encodeChunks` flags containers shared, so a write after it copies and leaves what the
   iterator holds untouched. To change a bitmap while walking it, collect the ids first (`toUint32Array()`) or iterate a
   `clone()`.
-- **A combine can leave a run in the result.** A pair of containers combines into an array or a bitset, never a run, but a
-  key held by only one side keeps that side's container by reference (a union copies the other side's), and that
-  container may be a run. `optimize()` before `serialize()` is what makes stored bytes depend on the set alone.
+- **A combine can leave a run in the result.** A pair of containers combines into an array or a bitset, except that two run
+  containers keep a run result while it is the smaller form, and a key held by only one side keeps that side's container by
+  reference (a union copies the other side's), and that container may be a run. `optimize()` before `serialize()` is what
+  makes stored bytes depend on the set alone.
 - **`encodeChunks` flags the bitmap's containers shared.** Membership and bytes are untouched; the next write to each
   container then copies it once.
 - **`safeDeserialize` copies its input** before checking it, once per decode.

@@ -9,9 +9,9 @@
  *   - BITSET: 65,536 bits, a `Uint32Array` of 2,048 words, for more than 4,096 values;
  *   - RUN:    `(start, length - 1)` pairs of maximal runs of consecutive remainders, a `Uint16Array`.
  *
- * A container keeps its cardinality; nothing recounts it per call. A container is a RUN only because it was decoded
- * from one or because {@link optimize} chose it: the first change to a run container turns it back into an array or a
- * bitset, so a mutating path never has to edit runs.
+ * A container keeps its cardinality; nothing recounts it per call. A container is a RUN because it was decoded
+ * from one, because {@link optimize} chose it, or because a write into a run or a combine of two runs left a run while that
+ * is the smaller form.
  *
  * STORAGE. An ARRAY or RUN container reads its values from `data[off, off + len)` (`len` values, or `len` run pairs
  * at `off + 2 * i`), so the small containers of one decoded bitmap can sit side by side in a single `Uint16Array` (a
@@ -22,10 +22,13 @@
  * clear; that is safe because a clone or snapshot flags the container its bitmap holds at that moment, so a flagged
  * object never sits beside an unflagged one over the same storage.
  *
- * COMBINES, by the kinds of the pair (the result kind of a pair is a written rule: an array up to 4,096 values, a bitset
- * above, never a run, whatever the operands were; a container that has no partner in the other bitmap is not combined,
- * and `TsBitmap` keeps it by reference, so a result bitmap can hold a run; `optimize` picks runs before anything is
- * stored, so stored bytes depend on the set alone):
+ * COMBINES, by the kinds of the pair (the result kind of a pair is a written rule: an array up to 4,096 values or a
+ * bitset above, except that two run containers keep a run result while its body, `2 + 4 * runs` bytes, is strictly
+ * smaller than that array or bitset, so a combine of two runs of a few long intervals does not expand them to 8 KB of
+ * words and every later operation on the result stays a walk of the intervals; every run a combine writes is maximal,
+ * its runs ascending with at least one value between them, as the decoder requires; a container that has no partner in
+ * the other bitmap is not combined, and `TsBitmap` keeps it by reference, so a result bitmap can hold a run; `optimize`
+ * picks runs before anything is stored, so stored bytes depend on the set alone):
  *
  *            and                       or                         andNot
  *   A  A     merge, or gallop when     merge while the union      scratch bitset from 32 values,
@@ -1024,7 +1027,7 @@ function andRuns(a: Container, b: Container): Container | null {
     if (ae < be) i++;
     else j++;
   }
-  return fromRunPairs(out, runs, card);
+  return card === 0 ? null : runsOrPlain(out, runs, card, true);
 }
 
 /** The values either run container holds. */
@@ -1066,7 +1069,7 @@ function orRuns(a: Container, b: Container): Container {
     }
   }
   flush();
-  return fromRunPairs(out, runs, card) as Container;
+  return runsOrPlain(out, runs, card, true);
 }
 
 /** The values of `a` that `b` lacks, both run containers. */
@@ -1102,7 +1105,7 @@ function andNotRuns(a: Container, b: Container): Container | null {
       k++;
     }
   }
-  return fromRunPairs(out, runs, card);
+  return card === 0 ? null : runsOrPlain(out, runs, card, true);
 }
 
 /**
@@ -1346,7 +1349,7 @@ function xorRuns(a: Container, b: Container): Container | null {
       open = -1;
     }
   }
-  return fromRunPairs(out, runs, card);
+  return card === 0 ? null : runsOrPlain(out, runs, card, true);
 }
 
 /** Boundary `k` of a run list at `off`: pair `k >> 1`'s start when `k` is even and one past its last value when odd. */

@@ -66,3 +66,20 @@ export const lowsSet = fc
     fc.constantFrom([0], [65_535], [0, 65_535], range(0, 65_536), range(65_000, 65_536)),
   )
   .map((v) => sortedUnique(v));
+
+/** What the kind rule says a container of these values is: a run only when strictly smaller than the plain body. */
+export function ruleKind(lows: readonly number[]): number {
+  let n = 0;
+  for (let i = 0; i < lows.length; i++) if (i === 0 || lows[i] !== (lows[i - 1] as number) + 1) n++;
+  const plain = lows.length <= 4_096 ? 2 * lows.length : 8_192;
+  return 2 + 4 * n < plain ? RUN : lows.length <= 4_096 ? ARRAY : BITSET;
+}
+
+/** The run pairs of a run container as ascending `[start, end]` intervals. */
+export function intervalsOf(c: Container): Array<[number, number]> {
+  const u16 = c.data as Uint16Array;
+  return range(0, c.len).map((r) => {
+    const s = u16[c.off + 2 * r] as number;
+    return [s, s + (u16[c.off + 2 * r + 1] as number)];
+  });
+}

@@ -10,6 +10,7 @@ import {
   containerOf,
   lowsSet,
   range,
+  ruleKind,
   sortedUnique,
   valuesOf,
 } from '../helpers/container-kinds';
@@ -40,8 +41,10 @@ describe('containerXor, every pair of kinds', () => {
               expect(got).not.toBeNull();
               expect(valuesOf(got!)).toEqual(want);
               expect(got!.card).toBe(want.length);
-              // A combine's result is an array up to 4,096 values and a bitset above, never a run.
-              expect(got!.kind).toBe(want.length <= 4_096 ? ARRAY : BITSET);
+              // An array up to 4,096 values and a bitset above; two run containers keep a run while that is smaller.
+              expect(got!.kind).toBe(
+                ka === RUN && kb === RUN ? ruleKind(want) : want.length <= 4_096 ? ARRAY : BITSET,
+              );
               expect(got!.shared).toBe(false);
             }
             // Neither operand is written, and the swap gives the same set.
