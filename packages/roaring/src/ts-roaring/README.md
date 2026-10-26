@@ -222,6 +222,25 @@ first (array, bitset, run).
 
 Every result is an array up to 4,096 values, a bitset above, or nothing (`null`, and the key is dropped).
 
+### Exclusive-or: `containerXor`
+
+One kernel per pair, one pass, one count; the result kind follows the same rule as the others.
+
+```
+  A  A     one merge that writes each value once and skips a value both hold; a result over 4,096 values is set into words
+  B  B     one word loop `x ^ y` (into the first operand's own words when it may be written), one Harley-Seal count
+  B  A     the bitset's words (a copy, or its own) with each array value's bit flipped; the count is adjusted per flip
+  B  R     the bitset's words with each run's range flipped, then one count
+  A  R     the run expanded to words (it owns them), then the array's bits flipped, the count adjusted per flip
+  R  R     one walk over the run boundaries of both lists (`xorRuns`)
+```
+
+`xorRuns` treats a run `(start, length - 1)` as a boundary at `start` and one at `start + length`. The boundaries of one
+canonical list ascend strictly, so a merge of the two lists sees each position at most twice, and a position both lists
+have cancels. What is left alternates open, close, and two pieces that touch (the end of one run is the start of the
+other) have already joined because the shared boundary cancelled. The pairs go to `pairScratch` and `fromRunPairs` builds
+the array or bitset.
+
 ### Array against array: `andArrays`
 
 Let `small` be the shorter, `big` the longer.
@@ -359,8 +378,7 @@ All of these are in `bitmap.ts`.
   operand: a key both hold combines into a fresh container (the in-place form of the container kernel is never taken, so no
   operand storage is written), a container only the first operand holds is kept by reference and flagged shared (never for
   `and`, which keeps none), and a container only the second holds is deep-copied in for a union or an exclusive-or. `xor`
-  of a pair of containers is the union less the intersection, taken in place on the union's own fresh storage, so it needs no
-  kernel of its own; a pair with nothing left drops its key. Building the result as `clone()` followed by an in-place combine
+  of a pair of containers is `containerXor` (section 6), one pass over the pair; a pair with nothing left drops its key. Building the result as `clone()` followed by an in-place combine
   would flag every container of the first operand for good and make each later write to it copy a container, which is why
   these are separate walks.
 - **`add` / `remove`.** Binary search of the key list, then `containerAdd` / `containerRemove`. A new key splices in a
@@ -731,9 +749,9 @@ Everything here is a test, a workflow or a bench, not part of the module.
 - **The statics and `xorInPlace`.** `RoaringBitmap.and`, `or`, `xor` and `andNot` check both operands, call the matching
   `TsBitmap` static and wrap the result. `orMany` checks every element first (so nothing is combined when one is refused),
   then folds each into an empty bitmap with `orInPlace`: the accumulator's containers are its own and unflagged, so each
-  part is added in place, the first part is deep-copied in, and no operand is written or flagged. `xorInPlace` takes the
-  intersection with `TsBitmap.and`, ORs the operand in, and removes the intersection (three passes, no new kernel); the
-  intersection is built first, so a bitmap xor-ed with itself is empty.
+  part is added in place, the first part is deep-copied in, and no operand is written or flagged. `xorInPlace` is one in-place combine
+  (the same walk as `orInPlace`, with `containerXor` per shared key, a container only the operand holds copied in): a
+  bitset nobody else can see is written in place, and a bitmap xor-ed with itself is empty.
 - **Operands are branded.** `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics and a bitmap passed to `addMany` or `removeMany`
   are recognised by the class's private field, so one from a second installed copy of the package is refused rather than
   read through members it does not share. `addMany(bitmap)` is `orInPlace` and `removeMany(bitmap)` is `andNotInPlace`.

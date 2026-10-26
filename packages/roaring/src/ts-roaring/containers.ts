@@ -37,6 +37,10 @@
  *   others   array or bitset against   through bitset words       through bitset words
  *            runs: probe / range copy
  *
+ * XOR is one pass per pair, not the union less the intersection: two arrays merge once, two bitsets are one word loop and
+ * one count, two run lists are one walk over their boundaries, and any pair with a bitset flips the other side's bits in
+ * the bitset's words (`containerXor`).
+ *
  * A combine takes `inPlace` when its first operand is a bitset nothing else can see: the words are written, not copied.
  *
  * COUNTS. `containerAndCard` says how many values a pair shares and `containersIntersect` whether it shares any (stopping
@@ -253,6 +257,21 @@ function clearRange(words: Uint32Array, start: number, end: number): void {
   words[first] = (words[first] as number) & ~head;
   for (let i = first + 1; i < last; i++) words[i] = 0;
   words[last] = (words[last] as number) & ~tail;
+}
+
+/** Flip the bits `start` to `end`, both inclusive, in `words`. */
+function flipRange(words: Uint32Array, start: number, end: number): void {
+  const first = start >>> 5;
+  const last = end >>> 5;
+  const head = (0xffff_ffff << (start & 31)) >>> 0;
+  const tail = 0xffff_ffff >>> (31 - (end & 31));
+  if (first === last) {
+    words[first] = (words[first] as number) ^ (head & tail);
+    return;
+  }
+  words[first] = (words[first] as number) ^ head;
+  for (let i = first + 1; i < last; i++) words[i] = ~(words[i] as number);
+  words[last] = (words[last] as number) ^ tail;
 }
 
 /**
@@ -1259,6 +1278,144 @@ export function containerAndNot(a: Container, b: Container, inPlace = false): Co
     }
   }
   return fromWordsCard(words, popcountWords(words));
+}
+
+/** The values exactly one array holds: one merge that drops a value both hold. */
+function xorArrays(a: Container, b: Container): Container | null {
+  const x = lows16(a);
+  const y = lows16(b);
+  const ie = a.off + a.len;
+  const je = b.off + b.len;
+  const out = values16(a.len + b.len);
+  let n = 0;
+  let i = a.off;
+  let j = b.off;
+  while (i < ie && j < je) {
+    const p = x[i] as number;
+    const q = y[j] as number;
+    out[n] = p < q ? p : q;
+    // A value both hold is written over by the next one.
+    n += p === q ? 0 : 1;
+    i += p <= q ? 1 : 0;
+    j += p >= q ? 1 : 0;
+  }
+  while (i < ie) out[n++] = x[i++] as number;
+  while (j < je) out[n++] = y[j++] as number;
+  if (n <= ARRAY_MAX_CARDINALITY) return arrayOfScratch(out, n);
+  const words = new Uint32Array(WORDS);
+  for (let k = 0; k < n; k++) {
+    const v = out[k] as number;
+    words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
+  }
+  return bitsetContainer(words, n);
+}
+
+/**
+ * The values exactly one run container holds, as one walk over the run boundaries of both. A run `(start, length - 1)`
+ * opens at `start` and closes at `start + length`; the boundaries of one list ascend strictly (its runs neither touch
+ * nor overlap), and a boundary both lists have cancels, so what is left alternates open, close and any two pieces that
+ * touch have already joined.
+ */
+function xorRuns(a: Container, b: Container): Container | null {
+  const x = lows16(a);
+  const y = lows16(b);
+  const na = 2 * a.len;
+  const nb = 2 * b.len;
+  const out = pairs16(2 * (a.len + b.len));
+  const NONE = 0x7fff_ffff;
+  let i = 0;
+  let j = 0;
+  let pa = na > 0 ? boundary(x, a.off, 0) : NONE;
+  let pb = nb > 0 ? boundary(y, b.off, 0) : NONE;
+  let open = -1;
+  let runs = 0;
+  let card = 0;
+  while (i < na || j < nb) {
+    let p: number;
+    if (pa === pb) {
+      // The boundary is in both lists: it cancels.
+      i++;
+      j++;
+      pa = i < na ? boundary(x, a.off, i) : NONE;
+      pb = j < nb ? boundary(y, b.off, j) : NONE;
+      continue;
+    }
+    if (pa < pb) {
+      p = pa;
+      i++;
+      pa = i < na ? boundary(x, a.off, i) : NONE;
+    } else {
+      p = pb;
+      j++;
+      pb = j < nb ? boundary(y, b.off, j) : NONE;
+    }
+    if (open < 0) {
+      open = p;
+    } else {
+      out[2 * runs] = open;
+      out[2 * runs + 1] = p - 1 - open;
+      runs++;
+      card += p - open;
+      open = -1;
+    }
+  }
+  return fromRunPairs(out, runs, card);
+}
+
+/** Boundary `k` of a run list at `off`: pair `k >> 1`'s start when `k` is even and one past its last value when odd. */
+function boundary(u16: Uint16Array, off: number, k: number): number {
+  const at = off + (k & ~1);
+  return (u16[at] as number) + ((k & 1) === 0 ? 0 : (u16[at + 1] as number) + 1);
+}
+
+/**
+ * The values exactly one of the two holds, or `null` when there are none, built in one pass over the pair by their
+ * kinds: one word loop and one count for two bitsets, one merge for two arrays, one walk for two run containers, and
+ * for any pair with a bitset the bitset's words (a copy, or its own when `inPlace` and `a` is the bitset) with the
+ * other side's values flipped in. Array against run goes through words. Neither operand is changed unless `inPlace`
+ * and `a` is a bitset (see the module comment).
+ */
+export function containerXor(a: Container, b: Container, inPlace = false): Container | null {
+  if (a.kind === BITSET || b.kind === BITSET) {
+    const base = a.kind === BITSET ? a : b;
+    const other = base === a ? b : a;
+    if (other.kind === BITSET) {
+      const x = words32(a);
+      const y = words32(b);
+      const out = inPlace ? x : new Uint32Array(WORDS);
+      for (let i = 0; i < WORDS; i++) out[i] = (x[i] as number) ^ (y[i] as number);
+      return fromWordsCard(out, popcountWords(out));
+    }
+    const words = inPlace && base === a ? words32(base) : words32(base).slice();
+    if (other.kind === ARRAY) {
+      return fromWordsCard(words, flipValues(words, other, base.card));
+    }
+    const pairs = lows16(other);
+    for (let r = 0; r < other.len; r++) {
+      const start = pairs[other.off + 2 * r] as number;
+      flipRange(words, start, start + (pairs[other.off + 2 * r + 1] as number));
+    }
+    return fromWordsCard(words, popcountWords(words));
+  }
+  if (a.kind === ARRAY && b.kind === ARRAY) return xorArrays(a, b);
+  if (a.kind === RUN && b.kind === RUN) return xorRuns(a, b);
+  const runs = a.kind === RUN ? a : b;
+  const array = runs === a ? b : a;
+  const words = toWords(runs);
+  return fromWordsCard(words, flipValues(words, array, runs.card));
+}
+
+/** Flip the bits of `array`'s values in `words`, which hold `card` set bits; returns the count after. */
+function flipValues(words: Uint32Array, array: Container, card: number): number {
+  const u16 = lows16(array);
+  let n = card;
+  for (let i = array.off; i < array.off + array.len; i++) {
+    const v = u16[i] as number;
+    const w = words[v >>> 5] as number;
+    words[v >>> 5] = w ^ (1 << (v & 31));
+    n += 1 - 2 * ((w >>> (v & 31)) & 1);
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
