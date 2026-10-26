@@ -78,6 +78,8 @@
     "bench:load-input:check": "node bench/load-input.cjs --check",
     "bench:ts-codec": "node --expose-gc bench/ts-codec.cjs --memory",
     "bench:ts-codec:check": "node bench/ts-codec.cjs --check",
+    "bench:count-kernels": "node --expose-gc bench/count-kernels.cjs",
+    "bench:count-kernels:check": "node --expose-gc bench/count-kernels.cjs --check",
     "bench:ts-codec-engine": "node --expose-gc bench/ts-codec-engine.cjs --all",
     "bench:ts-codec-engine:check": "node bench/ts-codec-engine.cjs --check",
     "bench:ts-codec-paired": "node --expose-gc bench/ts-codec-paired.cjs --all",
