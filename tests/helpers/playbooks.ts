@@ -150,16 +150,19 @@ function unrunFences(
     while (k >= 0 && (lines[k] as string).trim() === '') k -= 1;
     return k >= 0 ? (lines[k] as string) : '';
   };
-  let inside = false;
+  // An opening fence is three or more backticks or tildes, indented or not; it closes on a run of the same character
+  // at least as long.
+  let closer: RegExp | null = null;
   lines.forEach((l, n) => {
-    if (inside) {
-      if (CLOSE_FENCE.test(l)) inside = false;
+    if (closer !== null) {
+      if (closer.test(l)) closer = null;
       return;
     }
-    const open = /^```(\S*)/.exec(l);
+    const open = /^[ \t]*(`{3,}|~{3,})[ \t]*(\S*)/.exec(l);
     if (open === null) return;
-    inside = true;
-    const lang = open[1] as string;
+    const run = open[1] as string;
+    closer = new RegExp(`^[ \\t]*${run[0]}{${run.length},}[ \\t]*$`);
+    const lang = open[2] as string;
     if (runnable.has(n)) return;
     if (lang === 'text' && OUTPUT_MARKER.test(above(n))) return;
     if (NOT_RUN.test(above(n))) return;

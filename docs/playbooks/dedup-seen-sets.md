@@ -205,8 +205,8 @@ ValidationError
   itself idempotent.
 - **Expiry is per segment, never per id.** An id leaves the window when its whole day's bucket is retired, and the sweep is
   yours to schedule ([the pattern, and why there is no per-id expiry](../guide/retention.md#there-is-no-per-id-ttl)).
-- **An empty batch records nothing.** A load of no ids is refused unless it says `allowEmpty: true`, so skip `record` when a
-  batch has no fresh ids.
+- **A batch with no fresh ids changes nothing.** `record` rebuilds the bucket from its own ids, so skip the call. A load of no
+  ids over a segment that has ids is refused unless it says `allowEmpty: true`.
 - **One writer per bucket.** A load replaces a segment; two jobs recording into one day's bucket race, and the loser is
   told (`superseded`) rather than merged.
 - **Scale and tenancy.** The validated envelope is single-tenant and single-region on S3, up to about 100,000 segments, and it lists the `*Into` verbs and the other combine shapes as outside it
