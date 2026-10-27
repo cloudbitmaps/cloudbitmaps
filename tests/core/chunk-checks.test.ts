@@ -28,7 +28,7 @@ describe('assertChunkKeyInRange', () => {
     'refuses key %s with the out-of-range message',
     (k) => {
       expect(() => assertChunkKeyInRange(k)).toThrow(IntegrityError);
-      expect(() => assertChunkKeyInRange(k)).toThrow(`chunk key from a tier is out of range: ${k}`);
+      expect(() => assertChunkKeyInRange(k)).toThrow('a chunk key from a tier is out of range');
     },
   );
 });
@@ -59,31 +59,62 @@ describe('checkedChunkKeys', () => {
   });
 
   it('refuses an out-of-range key', () => {
-    expect(() => checkedChunkKeys([1, 65_536])).toThrow(
-      'chunk key from a tier is out of range: 65536',
-    );
+    expect(() => checkedChunkKeys([1, 65_536])).toThrow('a chunk key from a tier is out of range');
     expect(() => checkedChunkKeys([-1])).toThrow(IntegrityError);
   });
 
-  it('refuses a key listed twice, and says which', () => {
+  it('refuses a key listed twice, without naming it', () => {
     expect(() => checkedChunkKeys([4, 7, 4])).toThrow(IntegrityError);
-    expect(() => checkedChunkKeys([4, 7, 4])).toThrow('chunk key from a tier is listed twice: 4');
+    expect(() => checkedChunkKeys([4, 7, 4])).toThrow('a chunk key from a tier is listed twice');
+  });
+});
+
+describe('a refused key is never named', () => {
+  it('carries neither the key nor a digit', () => {
+    for (const run of [
+      () => assertChunkKeyInRange(70_000),
+      () => checkedChunkKeys([5, 70_000]),
+      () => checkedChunkKeys([5, 5]),
+    ]) {
+      const message = (() => {
+        try {
+          run();
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return '';
+      })();
+      expect(message).not.toBe('');
+      expect(message).not.toMatch(/\d/);
+    }
   });
 });
 
 describe('assertChunkPayloadInRange', () => {
   it('accepts a maximum of exactly 65,535, and a codec that cannot answer', () => {
-    expect(() => assertChunkPayloadInRange(withMax(65_535), 3)).not.toThrow();
-    expect(() => assertChunkPayloadInRange(withMax(0), 3)).not.toThrow();
-    expect(() => assertChunkPayloadInRange(withMax(undefined), 3)).not.toThrow();
+    expect(() => assertChunkPayloadInRange(withMax(65_535))).not.toThrow();
+    expect(() => assertChunkPayloadInRange(withMax(0))).not.toThrow();
+    expect(() => assertChunkPayloadInRange(withMax(undefined))).not.toThrow();
   });
 
-  it('refuses a maximum of 65,536 and names the chunk and the value', () => {
-    expect(() => assertChunkPayloadInRange(withMax(65_536), 9)).toThrow(IntegrityError);
-    expect(() => assertChunkPayloadInRange(withMax(65_536), 9)).toThrow(
-      'chunk 9 payload holds value 65536, outside the 16-bit remainder range [0, 65535] — ' +
-        'the stored object is corrupt or was not written by this codec',
+  it('refuses a maximum of 65,536 with a message that carries neither the value nor a chunk key', () => {
+    expect(() => assertChunkPayloadInRange(withMax(65_536))).toThrow(IntegrityError);
+    expect(() => assertChunkPayloadInRange(withMax(65_536))).toThrow(
+      'a chunk payload holds a value outside the 16-bit remainder range [0, 65535] ' +
+        '(a container key other than 0) — the stored object is corrupt or was not written by this codec',
     );
+    for (const max of [65_536, 70_123, 4_000_000_000]) {
+      const message = (() => {
+        try {
+          assertChunkPayloadInRange(withMax(max));
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return '';
+      })();
+      expect(message).not.toMatch(new RegExp(String(max)));
+      expect(message).not.toMatch(/chunk \d/);
+    }
   });
 });
 
@@ -92,18 +123,18 @@ describe('decodeChunkBytes', () => {
     new RoaringBitmap32(values).serialize(SerializationFormat.portable);
 
   it('decodes a payload whose maximum is exactly 65,535', () => {
-    const bitmap = decodeChunkBytes(storeCodec, bytes([0, 65_535]), 1, 1 << 20);
+    const bitmap = decodeChunkBytes(storeCodec, bytes([0, 65_535]), 1 << 20);
     expect(bitmap.maximum?.()).toBe(65_535);
   });
 
   it('refuses a payload above 65,535', () => {
-    expect(() => decodeChunkBytes(storeCodec, bytes([65_536]), 2, 1 << 20)).toThrow(
-      /chunk 2 payload holds value 65536/,
+    expect(() => decodeChunkBytes(storeCodec, bytes([65_536]), 1 << 20)).toThrow(
+      /a chunk payload holds a value outside the 16-bit remainder range/,
     );
   });
 
   it('applies the size cap before decoding', () => {
-    expect(() => decodeChunkBytes(storeCodec, bytes([1, 2, 3]), 0, 4)).toThrow();
+    expect(() => decodeChunkBytes(storeCodec, bytes([1, 2, 3]), 4)).toThrow();
   });
 });
 
@@ -118,7 +149,7 @@ describe('the engine reaches each check', () => {
     };
     const engine = new SegmentEngine({ storage, codec: storeCodec });
     await expect(engine.count({ segment: 's' })).rejects.toThrow(
-      'chunk key from a tier is out of range: 65536',
+      'a chunk key from a tier is out of range',
     );
   });
 
@@ -159,14 +190,14 @@ describe('the engine reaches each check', () => {
     };
     await expect(
       collect(new SegmentEngine({ storage: dup, codec: storeCodec }).iterate({ segment: 's' })),
-    ).rejects.toThrow('chunk key from a tier is listed twice: 2');
+    ).rejects.toThrow('a chunk key from a tier is listed twice');
     const wide: StorageChunkSource = {
       getChunk: never,
       listChunkKeys: () => Promise.resolve([-3]),
     };
     await expect(
       collect(new SegmentEngine({ storage: wide, codec: storeCodec }).iterate({ segment: 's' })),
-    ).rejects.toThrow('chunk key from a tier is out of range: -3');
+    ).rejects.toThrow('a chunk key from a tier is out of range');
   });
 
   it('everyNth refuses an out-of-range chunk cardinality', async () => {

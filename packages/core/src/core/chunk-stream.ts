@@ -27,12 +27,13 @@ export class ChunkStream {
     return this.iterator.next().then(
       (step) => {
         if (step.done === true) {
-          throw this.failure?.error ?? new IntegrityError(`chunk stream ended before chunk ${key}`);
+          throw (
+            this.failure?.error ??
+            new IntegrityError('chunk stream ended before a chunk it was opened over')
+          );
         }
         if (step.value.key !== key) {
-          throw new IntegrityError(
-            `chunk stream answered chunk ${step.value.key} where ${key} was due`,
-          );
+          throw new IntegrityError('chunk stream answered a chunk other than the one due');
         }
         return step.value;
       },

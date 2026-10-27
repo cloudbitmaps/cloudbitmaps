@@ -486,7 +486,7 @@ describe('every chunk of the stream passes the checks of a read of it alone', ()
     ) {
       return real.call(this, keys.slice(0, 5), options);
     });
-    await expect(eraseFrom(w, joinId(0, 1))).rejects.toThrow(/ended before chunk/);
+    await expect(eraseFrom(w, joinId(0, 1))).rejects.toThrow(/ended before a chunk/);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
   });
 

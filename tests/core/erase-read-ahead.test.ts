@@ -97,6 +97,20 @@ async function probe(
   return { storage, registry, stats, held };
 }
 
+/** The store codec, noting the maximum of every chunk it decodes, in decode order. */
+function recordingCodec(): { codec: typeof storeCodec; decoded: (number | undefined)[] } {
+  const decoded: (number | undefined)[] = [];
+  const codec = {
+    ...storeCodec,
+    safeDeserialize: (b: Uint8Array, max: number) => {
+      const bitmap = storeCodec.safeDeserialize(b, max);
+      decoded.push(bitmap.maximum?.());
+      return bitmap;
+    },
+  };
+  return { codec, decoded };
+}
+
 const erase = (p: Probe, id: number, deps: object = {}) =>
   eraseIdFromSegment(SEG, id, {
     storage: p.storage,
@@ -175,7 +189,12 @@ describe('the erasure rewrite reads through the coalesced chunk stream', () => {
           ? storeCodec.fromValues([1, 70_000 + k])
           : storeCodec.fromValues([1 + k]),
     });
-    await expect(erase(p, joinId(0, 1))).rejects.toThrow(/chunk 6 payload holds value 70006/);
+    const { codec, decoded } = recordingCodec();
+    const err = await erase(p, joinId(0, 1), { codec }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(IntegrityError);
+    expect((err as Error).message).not.toMatch(/70006|70020/);
+    // The decode that threw is the last one: chunk 6's, not chunk 20's, which was read ahead of it.
+    expect(decoded.at(-1)).toBe(70_006);
     expect((await p.registry.get(SEG))!.currentGen).toBe(0);
   });
 
@@ -196,10 +215,14 @@ describe('the erasure rewrite reads through the coalesced chunk stream', () => {
     const undecodableFirst = await probe(20, { bitmaps: bitmaps(3, 12) });
     const err = await erase(undecodableFirst, joinId(0, 1)).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).not.toMatch(/chunk 12 payload holds value/);
+    expect((err as Error).message).not.toMatch(/outside the 16-bit remainder range/);
 
     const overFirst = await probe(20, { bitmaps: bitmaps(12, 3) });
-    await expect(erase(overFirst, joinId(0, 1))).rejects.toThrow(/chunk 3 payload holds value/);
+    const { codec, decoded } = recordingCodec();
+    await expect(erase(overFirst, joinId(0, 1), { codec })).rejects.toThrow(
+      /outside the 16-bit remainder range/,
+    );
+    expect(decoded.at(-1)).toBe(70_000); // chunk 3's decode threw; chunk 12 was never decoded
     await expect(erase(overFirst, joinId(0, 1))).rejects.toBeInstanceOf(IntegrityError);
   });
 
