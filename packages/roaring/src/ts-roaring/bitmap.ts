@@ -52,6 +52,7 @@ import {
   arrayContainer,
   cloneContainer,
   containerAdd,
+  containerAddSorted,
   containerAnd,
   containerAndCard,
   containerAndNot,
@@ -137,6 +138,9 @@ function collectLenient(values: Iterable<number>): Uint32Array {
   }
   return out.subarray(0, n);
 }
+
+/** The most ids one key's group of an `addMany` can hold and still go into its container one id at a time. */
+const FEW_IDS = 4;
 
 /**
  * `ids` ascending: itself when it already is, else sorted, in place when `owned` (a new array that is the caller's own)
@@ -328,16 +332,25 @@ export class TsBitmap implements CodecBitmap {
       const key = (ids[i] as number) >>> 16;
       let end = i + 1;
       while (end < ids.length && (ids[end] as number) >>> 16 === key) end++;
-      const group = fromSortedIds(ids, i, end);
+      const first = i;
       i = end;
       at = gallopKeys(this.#keys, key, at);
       if (this.#keys[at] === key) {
         const before = this.#conts[at] as Container;
-        // A run container is never written in place, so the result may be it when the ids add nothing.
-        const after = containerOr(before, group, !before.shared || before.kind === RUN);
+        // A group of a few goes into the container it meets without a container of its own. A run container is never
+        // written in place, so the result may be it when the ids add nothing.
+        const after =
+          end - first <= FEW_IDS
+            ? containerAddSorted(before, ids, first, end)
+            : containerOr(
+                before,
+                fromSortedIds(ids, first, end),
+                !before.shared || before.kind === RUN,
+              );
         this.#conts[at] = after;
         this.#size += after.card - before.card;
       } else {
+        const group = fromSortedIds(ids, first, end);
         fresh.push({ key, group });
         this.#size += group.card;
       }

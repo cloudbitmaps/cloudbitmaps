@@ -136,7 +136,7 @@ Where a container's kind comes from:
 - Decoded from bytes: whatever kind the bytes say, run containers included (the layout check has already proved the
   structure). A decoded run container stays as it was decoded until a write changes it; a write that adds ids keeps it a
   run only while the run form is still the smaller one (below).
-- A write that adds ids (`containerAdd`, and `containerOr` of a run container with an array) merges them into the run list
+- A write that adds ids (`containerAdd`, `containerAddSorted` for a group of a few, and `containerOr` of a run container with an array) merges them into the run list
   and keeps the result a run container while the rule above says run (`runsOrPlain`), otherwise an array or a bitset; a
   removal (`containerRemove`) first `demote`s a run container. An array
   at 4,096 values that gains one more becomes a bitset; a bitset that drops to 4,096 or fewer becomes an array
@@ -156,7 +156,7 @@ Where a container's kind comes from:
 - **Who writes a run container, and the rule each keeps.** The decoder (which refuses runs that touch or overlap, so a
   decoded list is maximal), `toRun` (from an array or a bitset, through `optimize`), `runsOrPlain` (the exit of every
   kernel that builds a run list in `pairScratch`: the run results of `and`, `or`, `andNot` and `xor` of two runs,
-  `orRunArray`, and `addToRuns`, which `containerAdd` uses on a run), and nothing else. Every one of them leaves the runs
+  `orRunArray`, `addToRuns`, which `containerAdd` uses on a run, and `addFewToRuns`, which `containerAddSorted` uses), and nothing else. Every one of them leaves the runs
   maximal (ascending, no two touching or overlapping, inside 0..65,535) and the container in its smallest kind by the
   rule above. That is what the same-kind run compare in `isEqual` depends on (one set has one list of pairs), and what
   the decoder requires of the bytes a bitmap writes. A new writer of a run container has to keep both, and the property
@@ -464,8 +464,11 @@ All of these are in `bitmap.ts`.
 - **`add` / `remove`.** Binary search of the key list, then `containerAdd` / `containerRemove`. A new key splices in a
   one-value array. Removing a key's last value splices the key out.
 - **`addMany`.** Sorts the ids (in place if the array is the call's own; on a copy if it is the caller's `Uint32Array`),
-  groups them by key, builds one container per group with `fromSortedIds`, and for a key already held does
-  `containerOr(before, group, !before.shared)`. The key list is searched by `gallopKeys`, resuming from where the last
+  groups them by key and, for a key already held, writes a group of one to four ids with `containerAddSorted` (each id
+  put into the container it meets, with no container built for the group: a run container is edited by one gallop
+  search per id into a single working copy of its run list, a bitset has its bits set, in place unless it is shared, an
+  array has each id inserted), and a larger group by building a container with `fromSortedIds` and
+  `containerOr(before, group, !before.shared)`; a key not held always gets its container from `fromSortedIds`. The key list is searched by `gallopKeys`, resuming from where the last
   group ended. New keys are collected and put in with one pass: pushed after the last key when they all follow it, else
   one merge pass over the key list.
 - **`removeMany`.** Same grouping; a container emptied by it is replaced by a sentinel and all emptied keys are dropped in

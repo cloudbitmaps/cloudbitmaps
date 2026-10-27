@@ -701,6 +701,76 @@ export function containerAdd(c: Container, low: number): Container {
 }
 
 /**
+ * A run container with the ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits
+ * kept) added, for a group of a few: each id is found in the run list by a gallop search and written into one working
+ * copy of the list (the tail moved by a block copy), so the cost is a few searches and moves, not a walk of every run.
+ * The result is the same container {@link orRunArray} gives for the same values: a run container while that is the
+ * smaller form, and `c` itself when no id adds anything.
+ */
+function addFewToRuns(c: Container, ids: Uint32Array, from: number, to: number): Container {
+  const x = lows16(c);
+  let data = x;
+  let base = c.off;
+  let out: Uint16Array | null = null;
+  let n = c.len;
+  let added = 0;
+  for (let k = from; k < to; k++) {
+    const low = (ids[k] as number) & 0xffff;
+    const next = runsAfter(data, base, 0, n, low);
+    const prev = next - 1;
+    const prevEnd =
+      prev >= 0 ? (data[base + 2 * prev] as number) + (data[base + 2 * prev + 1] as number) : -2;
+    if (prevEnd >= low) continue;
+    if (out === null) {
+      out = new Uint16Array(2 * (c.len + to - from));
+      out.set(x.subarray(c.off, c.off + 2 * c.len));
+      data = out;
+      base = 0;
+    }
+    const joinPrev = prevEnd + 1 === low;
+    const joinNext = next < n && (out[2 * next] as number) === low + 1;
+    if (joinPrev && joinNext) {
+      out[2 * prev + 1] =
+        (out[2 * next] as number) + (out[2 * next + 1] as number) - (out[2 * prev] as number);
+      out.copyWithin(2 * next, 2 * next + 2, 2 * n);
+      n--;
+    } else if (joinPrev) {
+      out[2 * prev + 1] = (out[2 * prev + 1] as number) + 1;
+    } else if (joinNext) {
+      out[2 * next] = low;
+      out[2 * next + 1] = (out[2 * next + 1] as number) + 1;
+    } else {
+      out.copyWithin(2 * next + 2, 2 * next, 2 * n);
+      out[2 * next] = low;
+      out[2 * next + 1] = 0;
+      n++;
+    }
+    added++;
+  }
+  if (out === null) return c;
+  return runsOrPlain(out, n, c.card + added, true);
+}
+
+/**
+ * The ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits kept) added to `c`; the
+ * container that holds them, `c` itself when they add nothing. For a group of a few, where building a container for the
+ * group and merging two containers costs more than putting each id in: a run container is edited by one search per id,
+ * a bitset has its bits set (in place unless `c` is shared), an array has each id inserted. `c.card` of the result is the
+ * new cardinality.
+ */
+export function containerAddSorted(
+  c: Container,
+  ids: Uint32Array,
+  from: number,
+  to: number,
+): Container {
+  if (c.kind === RUN) return addFewToRuns(c, ids, from, to);
+  let cur = c;
+  for (let k = from; k < to; k++) cur = containerAdd(cur, (ids[k] as number) & 0xffff);
+  return cur;
+}
+
+/**
  * Remove `low`; returns the container that now holds the rest, `c` itself unless the kind changed or the storage had
  * to be copied, or `null` when nothing is left.
  */
