@@ -199,14 +199,21 @@ which defaults to `true`. It waits for the same approval as a tag push.
   still exits 0: it exercises the publish step only on a version not yet released, such as `main` after the
   version-bump pull request merges and before the tag (the `release` environment's policy refuses a branch ref unless
   `main` is added to it, so otherwise dispatch it on a tag). It skips the still-private check and the registry probes.
-- **`dryRun: false` publishes for real.** It runs the gate, the still-private check, the registry probes and the
-  tarball leak scan, then publishes whatever version the manifests carry.
-- **On a branch ref, either one skips the tag check and the release-notes check**, because both key on a tag
-  ref, so a real run there publishes with no notes checked. Dispatched on a tag ref (`refs/tags/v…`), both run.
+- **`dryRun: false` publishes for real, and only from a version tag.** Dispatched on a tag ref (`refs/tags/v…`) it
+  runs the tag/version check, the release-notes check, the gate, the still-private check, the registry probes and the
+  tarball leak scan, then publishes the version the manifests carry (which the tag check has proved equals the tag).
+  Dispatched on a branch, or on any ref that is not a version tag, it fails in its first step, before the checkout,
+  the install or the build, so nothing is installed, packed or published. The job sits in the `release` environment,
+  so the approval prompt still comes first and the run then fails.
+- **A dry run works on a branch or a tag.** On a branch it skips the tag check and the release-notes check, which key
+  on a tag ref; on a tag ref both run. The job holds the `id-token: write` permission on a branch dry run too. What holds: no publish step runs
+  there (the real publish needs a version tag ref) and a dry run mints no attestation. What does not: code from an
+  installed dependency running in that job could still request the token. Isolating the publish job from dependency
+  installs is planned before 1.0.
 - **No run started by hand creates a GitHub Release**: that job runs only on a tag push. After a real manual
   publish, create it yourself, as the [break-glass](#manual--break-glass-release) steps do.
 
-So `dryRun: false` is for a deliberate manual release, and a tag push is the release path.
+So a real publish always starts from a version tag: a pushed tag, or a dispatch on that tag with `dryRun: false`.
 
 ## Why tokenless
 

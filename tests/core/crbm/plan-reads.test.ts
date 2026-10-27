@@ -180,7 +180,7 @@ describe('planChunkReads: cases', () => {
     );
     expect(planChunkReads([{ key: 0, offset: 990, length: 10 }], region)).toHaveLength(1);
     expect(() => planChunkReads([{ key: 0, offset: 7, length: 10 }], region)).toThrow(
-      'chunk 0 is not inside the chunk region, in order; re-load from source or roll back',
+      'a chunk is not inside the chunk region, in order; re-load from source or roll back',
     );
     expect(() =>
       planChunkReads(

@@ -25,8 +25,15 @@ import { withNativeCodec } from '../helpers/codec-leg';
 // entry point, also used for full-segment exports where u32 values are entirely legitimate. The 16-bit rule
 // belongs where a payload is interpreted AS A CHUNK: `SegmentEngine`'s storage-chunk decode
 // (`assertChunkPayloadInRange`), and the erasure rewrite's decode of each chunk it carries into a new generation
-// (`assertRemaindersInRange` in `erase-id.ts`).
+// (`decodeChunkBytes` in `chunk-checks.ts`, which `erase-id.ts` calls).
 const CAP = 1 << 20;
+
+/** The message a rejected promise carries ('' when it resolves). */
+const messageOf = (p: Promise<unknown>): Promise<string> =>
+  p.then(
+    () => '',
+    (e: unknown) => (e as Error).message,
+  );
 
 /** A chunk payload carrying an illegal (>16-bit) value, bypassing every writer guard the way corrupt bytes do. */
 function forgeChunk(values: number[]): Uint8Array {
@@ -46,7 +53,7 @@ describe('chunk payload value range', () => {
     // Every verb that decodes a chunk must refuse it — a read that answered from one path and threw from
     // another would let a fabricated id reach a caller intermittently.
     await expect(seg.has(joinId(3, 1))).rejects.toBeInstanceOf(IntegrityError);
-    await expect(seg.has(joinId(3, 1))).rejects.toThrow(/70000/);
+    expect(await messageOf(seg.has(joinId(3, 1)))).not.toMatch(/70000/);
     await expect(seg.count()).rejects.toBeInstanceOf(IntegrityError);
     await expect(collect(seg.iterate())).rejects.toBeInstanceOf(IntegrityError);
   });
@@ -103,14 +110,14 @@ describe('chunk payload value range', () => {
     ]);
     await publishGeneration(registry, { ...SEG, generation: 0 });
 
-    await expect(
-      eraseIdFromSegment(SEG, joinId(0, 1), {
-        storage,
-        registry,
-        entropy: testEntropy,
-        codec: roaringCodec,
-      }),
-    ).rejects.toThrow(/70000/);
+    const refused = eraseIdFromSegment(SEG, joinId(0, 1), {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+    });
+    await expect(refused).rejects.toBeInstanceOf(IntegrityError);
+    expect(await messageOf(refused)).not.toMatch(/70000/);
     expect((await registry.get(SEG))!.currentGen).toBe(0);
   });
 

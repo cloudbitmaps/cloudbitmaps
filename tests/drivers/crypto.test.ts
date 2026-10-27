@@ -51,6 +51,9 @@ describe('NodeAead (AES-256-GCM)', () => {
     expect(() => aead.open(sealed, aadFor(SEG, 1, 5))).toThrow(IntegrityError);
     expect(() => aead.open(sealed, aadFor({ segment: 'other' }, 0, 5))).toThrow(IntegrityError);
     expect(() => aead.open(sealed, aadFor(SEG, 0, 'index'))).toThrow(IntegrityError);
+    expect(() => aead.open(sealed, aadFor({ ...SEG, namespace: 'other' }, 0, 5))).toThrow(
+      IntegrityError,
+    );
   });
 
   it('rejects decryption under the wrong key', () => {
@@ -199,6 +202,17 @@ describe('InProcessKeystore (envelope BYOK)', () => {
     expect(
       () => new InProcessKeystore({ keys: { constructor: key() }, activeKeyId: 'constructor' }),
     ).not.toThrow();
+  });
+
+  it('a wrapping is bound to its key id: the same KEK under another id will not open it', async () => {
+    const shared = key();
+    const ks = new InProcessKeystore({ keys: { k1: shared, k2: shared }, activeKeyId: 'k1' });
+    const { wrapped } = await ks.createDek();
+    expect(wrapped[0]?.keyId).toBe('k1');
+    await expect(ks.openDek(wrapped)).resolves.toBeDefined();
+    // The same bytes presented as the wrapping under the other id, which holds the very same KEK.
+    const relabelled = [{ keyId: 'k2', wrapped: wrapped[0]!.wrapped }];
+    await expect(ks.openDek(relabelled)).rejects.toBeInstanceOf(IntegrityError);
   });
 
   it('rejects a corrupt/foreign wrapped blob under a held keyId (IntegrityError)', async () => {

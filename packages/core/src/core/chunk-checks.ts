@@ -12,7 +12,7 @@ import { IntegrityError } from './errors';
  */
 export function assertChunkKeyInRange(k: number): void {
   if (!Number.isInteger(k) || k < 0 || k >= CHUNK_COUNT) {
-    throw new IntegrityError(`chunk key from a tier is out of range: ${k}`);
+    throw new IntegrityError('a chunk key from a tier is out of range');
   }
 }
 
@@ -48,7 +48,7 @@ export function checkedChunkKeys(listed: Iterable<number>): number[] {
   // A key listed twice would be read and yielded twice; the `.crbm` reader refuses one, a custom source may not.
   for (let i = 1; i < keys.length; i++) {
     if (keys[i] === keys[i - 1]) {
-      throw new IntegrityError(`chunk key from a tier is listed twice: ${keys[i]}`);
+      throw new IntegrityError('a chunk key from a tier is listed twice');
     }
   }
   return keys;
@@ -72,12 +72,12 @@ export function checkedChunkKeys(listed: Iterable<number>): number[] {
  * largest value and pass here while holding values above 65,535. The codec's `safeDeserialize` refuses that
  * payload, and every other shape that would make this answer wrong, before it reaches this check.
  */
-export function assertChunkPayloadInRange(bitmap: CodecBitmap, chunkKey: number): void {
+export function assertChunkPayloadInRange(bitmap: CodecBitmap): void {
   const max = bitmap.maximum?.();
   if (max !== undefined && max > MAX_REMAINDER) {
     throw new IntegrityError(
-      `chunk ${chunkKey} payload holds value ${max}, outside the 16-bit remainder range ` +
-        `[0, ${MAX_REMAINDER}] — the stored object is corrupt or was not written by this codec`,
+      `a chunk payload holds a value outside the 16-bit remainder range [0, ${MAX_REMAINDER}] ` +
+        `(a container key other than 0) — the stored object is corrupt or was not written by this codec`,
     );
   }
 }
@@ -89,10 +89,9 @@ export function assertChunkPayloadInRange(bitmap: CodecBitmap, chunkKey: number)
 export function decodeChunkBytes(
   codec: CodecInterface,
   bytes: Uint8Array,
-  chunkKey: number,
   maxBitmapBytes: number,
 ): CodecBitmap {
   const bitmap = codec.safeDeserialize(bytes, maxBitmapBytes);
-  assertChunkPayloadInRange(bitmap, chunkKey);
+  assertChunkPayloadInRange(bitmap);
   return bitmap;
 }

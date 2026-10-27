@@ -433,7 +433,7 @@ describe('.crbm extension block, reader: a malformed trailer or block is refused
     cut.set(base.subarray(0, indexOffset - 3), 0);
     cut.set(base.subarray(indexOffset), indexOffset - 3);
     const overlapping = spliceBlock(withIndexAt(cut, indexOffset - 3), extensionBlock(good));
-    await expect(open(overlapping)).rejects.toThrow(/chunk 65535 payload out of bounds/);
+    await expect(open(overlapping)).rejects.toThrow(/payload out of bounds/);
   });
 });
 
