@@ -351,10 +351,13 @@ The controls in full:
   (`lint · lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`, plus a `leak-scan` of the
   packed tarball) against the exact commit being published before the tarball is created — a green `main` is
   necessary but not sufficient. CI's site and fuzz-lockfile checks are not repeated here; they guard what is
-  served from `main`, not what is published. A real publish runs only from a `vX.Y.Z` tag ref, and every package's
-  version must match that tag, or the release fails. A manual dispatch with `dryRun: false` publishes for real only
-  when dispatched on a tag, where it runs the same tag/version check and release-notes check; dispatched on a branch
-  it fails before any build or publish step. A manual run, from any ref, creates no GitHub Release.
+  served from `main`, not what is published. The workflow publishes only from a `vX.Y.Z` tag ref, and every package's
+  version must match that tag, or the release fails. A manual dispatch with `dryRun: false` publishes only when
+  dispatched on a tag, where it runs the same tag/version check and release-notes check; on a branch or any other ref
+  it fails before any build or publish step. That rule stops a mistaken publish from the wrong ref; it is not an access
+  control, because a dispatch on a branch runs that branch's own copy of the workflow file. What stops anyone else from
+  publishing is the `release` environment's required reviewer and the npm Trusted Publisher binding to this repository
+  and workflow. A manual run, from any ref, creates no GitHub Release.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
   on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile. Three CI jobs
   install from the registry without a lockfile, each inside a container: the consumer install (the six packed tarballs
@@ -400,13 +403,16 @@ Releases run through the workflow, apart from the two hand-run paths named above
 prerelease, and the [break-glass release](RELEASING.md#manual--break-glass-release) — neither of which carries
 provenance. The workflow can also be dispatched by hand (`workflow_dispatch`): with `dryRun: true`, the default, it
 runs as a **dry run**, which exercises the **full gate + tarball pack** without publishing — a dry run mints no
-attestation, by design; with `dryRun: false` it publishes only when dispatched on a version tag, under the checks
-described under *Publish only a re-verified tree* above.
+attestation, by design; with `dryRun: false` it publishes only when dispatched on a version tag, where it runs the same checks as a tag push
+(see *Publish only a re-verified tree* above); on any other ref it fails before any build or publish step. Either way a
+manual run creates no GitHub Release.
 
 **One limit, stated as it is.** The publish job runs `pnpm install --frozen-lockfile` and the gate in the same job that
 can ask for the publish token, so a malicious locked dependency whose build script is on the allowlist could run there;
-the frozen lockfile, the allowlist and the reviewer's pause before anything runs are what stand against it. Any publish needs the `release` environment's reviewer, and the Trusted
-Publisher is bound to the workflow and environment, so a publish cannot come from anywhere else.
+the frozen lockfile, the allowlist and the reviewer's pause before anything runs are what stand against it. Any publish through the workflow needs the `release`
+environment's reviewer, and the Trusted Publisher is bound to the workflow and environment. The two hand-run paths above
+(a new name's bootstrap and the break-glass release) need no reviewer: only the maintainer can perform them, on the
+npm account's own protections (its login and two-factor authentication).
 
 ## Out of scope
 

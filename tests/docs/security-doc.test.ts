@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
  * is the narrower, stricter gate for the three pages that make promises to users, and it also knows the private paths
  * and plan ids, which no general pattern can.
  *
- * LIMITS, stated so nobody reads more into a green run. The citation check knows one plan-id prefix, so a differently
+ * LIMITS, stated so nobody reads more into a green run. The words "plan item", "security review of" and "decision <n>"
+ * are ordinary English, so an honest sentence that uses one with a number straight after it trips the check: reword it. The citation check knows one plan-id prefix, so a differently
  * named plan id passes it, and it does not see a deliberately disguised one (a non-breaking hyphen). The table check proves
  * that each guarantee row has a last cell naming test files and that each file exists; it does not prove the named test
  * covers the row, which review of the row and the test does.
@@ -22,10 +23,11 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
- * Text built from parts at run time. This file is public and tracked, so it must not itself contain what the gate
- * refuses: no private repository name, no private directory, no plan-id prefix, no number after a decision word. Every
- * pattern and every example that would name one is assembled here from pieces, so reading the file teaches a reader
- * nothing about the private corpus. (The general gate, `internal-citations.test.ts`, reads this file as prose too.)
+ * Text built from parts at run time. This file is public and tracked, and the general gate
+ * (`internal-citations.test.ts`) reads it as prose, so the plan-id prefix, the private directory word and the decision
+ * words are assembled from pieces rather than written whole. Splitting only keeps a scanner from firing; it hides
+ * nothing from a reader, so every example is an invented identifier of the right shape (a document number, a decision
+ * number and a plan id that nobody uses), never a real one. The patterns are tested; nothing real is published.
  */
 const spelled = (...parts: string[]): string => parts.join('');
 
@@ -44,13 +46,7 @@ const PAGES = ['SECURITY.md', 'PRIVACY.md', join('packages', 'roaring', 'PRIVACY
  * "plan" with no number after them.
  */
 const PRIVATE_POINTERS: ReadonlyArray<readonly [string, RegExp]> = [
-  [
-    'internal path',
-    new RegExp(
-      `docs[/\\\\]${INTERNAL}\\b|\\b${spelled('cloudbitmaps', '-')}${INTERNAL}\\b|\\b${INTERNAL} repo(?:sitory)?\\b`,
-      'i',
-    ),
-  ],
+  ['internal path', new RegExp(`docs[/\\\\]${INTERNAL}\\b|\\b${INTERNAL} repo(?:sitory)?\\b`, 'i')],
   ['internal document number', /\b\d\d-[A-Z][A-Z-]{3,}(?:\.md)?\b/],
   ['decision-log file', new RegExp(`\\b${DECISION_LOG}(?:\\.md)?\\b`)],
   ['decision number', /\bADR[\s-]*#?\d+|\bdecisions?\s*#?\s*\d+/i],
@@ -132,19 +128,19 @@ describe('the pages that make promises cite nothing private', () => {
   });
 
   it.each([
-    ['an internal path', spelled('see docs/', INTERNAL, '/', '40', '-SECURITY.md for the review')],
-    ['an internal repo', spelled('recorded in the cloudbitmaps-', INTERNAL, ' repository')],
+    ['an internal path', spelled('see docs/', INTERNAL, '/', '77', '-WORKBOOK.md for the review')],
+    ['an internal repo', spelled('recorded in the acme-', INTERNAL, ' repository')],
     ['the internal repo, in words', spelled('the ', INTERNAL, ' Repo holds the plan')],
-    ['a numbered internal doc, in code ticks', spelled('the `', '40', '-SECURITY` document')],
+    ['a numbered internal doc, in code ticks', spelled('the `', '77', '-WORKBOOK` document')],
     ['a decision log file', spelled('listed in ', DECISION_LOG, '.md')],
-    ['an ADR number', spelled('as ADR ', '214', ' decided')],
-    ['an ADR number, hyphenated and bold', spelled('as **ADR-', '88', '** decided')],
-    ['a decision number', spelled('decision ', '#12', ' says so')],
-    ['a correction number', spelled('fixed by correction ', '31')],
-    ['a plan id', spelled('tracked as ', PLAN, '4')],
-    ['a plan id inside a parenthesis', spelled('a keyed fingerprint (', PLAN, '5)')],
+    ['an ADR number', spelled('as ADR ', '9999', ' decided')],
+    ['an ADR number, hyphenated and bold', spelled('as **ADR-', '9998', '** decided')],
+    ['a decision number', spelled('decision ', '#987', ' says so')],
+    ['a correction number', spelled('fixed by correction ', '987')],
+    ['a plan id', spelled('tracked as ', PLAN, '977')],
+    ['a plan id inside a parenthesis', spelled('a tidy-up of the cache (', PLAN, '978)')],
     ['a plan item', 'the plan item that lands it'],
-    ['a plan id split across a wrap', spelled('tracked as ', PLAN, '\n4')],
+    ['a plan id split across a wrap', spelled('tracked as ', PLAN, '\n977')],
   ])('catches %s', (_name, text) => {
     expect(privatePointers(text)).not.toEqual([]);
   });
