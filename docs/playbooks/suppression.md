@@ -9,7 +9,8 @@ used, and covers the opt-out that must also be erased. It runs on `MemoryStorage
 what the repo's tests print when they run the blocks as written.
 
 Use it when the audience and the suppression come from different places and have to meet at send time, so a person who
-opts out between the audience build and the send is still left out. It is not a consent management platform: see
+opts out between the audience build and the send is left out of a send that reads the lists when it starts (a send that pins them
+holds what it pinned: [hold the lists fixed](#hold-the-lists-fixed-for-the-length-of-a-send)). It is not a consent management platform: see
 [Limits](#limits).
 
 ## One list per reason, subtracted at send time
@@ -98,8 +99,9 @@ send to [ 11, 13, 16, 17 ]
 Branch on `published` every time. How fresh the list is, to a process that reads it and did not write it, is the reader's
 pointer refresh, which is `cache.genTtlMs` (2 seconds by default): a reader that is not the process that loaded the list
 sees the new opt-out within that time ([how soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load)).
-For a send that must not miss an opt-out that arrived a moment ago, load the list, wait longer than the refresh, then start
-the send; or call `store.invalidate(ref)` on every reader.
+For an unpinned send that must not miss an opt-out that arrived a moment ago, load the list, wait longer than the refresh, then
+start the send; or call `store.invalidate(ref)` on every reader. A send that pins needs no wait: `pin()` takes the generation
+that is current in the registry when it is called, so a pin taken after the load already holds the new list.
 
 ## Hold the lists fixed for the length of a send
 
@@ -134,7 +136,9 @@ a pin names what it held: 0 1 0
 Record the three generation numbers with the send. They are the answer to "what did you suppress against?", and the pin's
 `pinnedAt` carries the fingerprint that names the exact object as well, for a reopen with `pinAt` ([reopen a pinned
 generation](../guide/reading.md#reopen-a-pinned-generation-pinat)). A pin is a hold, not a copy, and a lease is the thing that
-keeps its generation in storage; release both when the send ends.
+keeps its generation in storage; release the lease when the send ends (on a pin with no lease, `release()` does nothing).
+A pinned send deliberately does not see an opt-out that lands after the pin: if a legal deadline on opt-outs means such a person
+must still be left out, start the send again from a fresh pin; the page leaves that decision with you.
 
 <!-- typecheck -->
 ```ts
@@ -171,9 +175,11 @@ still suppressed? false
 ```
 
 Notice what that did to the suppression list: the erasure removed 16 from `opt-out` as well, so the erased person is no longer
-subtracted, and a later import that brings them back would contact them. Keep the fact of the opt-out where the erasure does not
-reach: a do-not-contact record of a **keyed** value (a salted hash of the address, in your own table), never the raw id in a segment
-that an erasure sweeps. The ledger is your proof of deletion and exists only as the return value, so keep it. An erasure does not
+subtracted, and a later import that brings them back would contact them. If the fact of the objection has to
+outlive the erasure, keep it outside the segments an erasure sweeps, in a form you can match at every import and at send time: an
+HMAC of the normalised address (case and whitespace fixed first) under a secret key held outside your tables, computed where that
+key lives. It is still personal data, so whether you may keep it is a question for your own counsel, and the library neither
+implements nor checks any of it. The ledger is your proof of deletion and exists only as the return value, so keep it. An erasure does not
 reach backups or noncurrent object versions ([what it does not reach](../guide/erasure.md#what-an-erasure-does-not-reach)).
 
 ## What goes wrong

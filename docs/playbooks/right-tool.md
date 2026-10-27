@@ -70,9 +70,9 @@ available for your own in-memory sets ([the standalone page](roaring-bitmap.md))
 
 ## Geospatial cells
 
-A set of map cells (the cells a region covers, the cells a fleet visited) is a set of cell ids. The common hierarchical grids
-use 64-bit cell ids ([H3's](https://carto.com/glossary/h3-spatial-index/) are an example), and a segment holds 32-bit integers
-only: an id above 4,294,967,295 is refused.
+A set of map cells (the cells a region covers, the cells a fleet visited) is a set of cell ids. Hierarchical grids ([H3](https://carto.com/glossary/h3-spatial-index/)
+is one) give every cell an identifier of its own, which is not a small dense integer you chose, and a segment holds integers
+from 0 to 4,294,967,295 only: an id above that is refused.
 
 **Use instead:** a geospatial index or the database's geospatial types for "what is near this point" and "what is inside this
 shape". A bitmap answers set questions, not geometry.
@@ -109,8 +109,8 @@ rather than per user (the items in a category, the accounts of a verified list) 
 
 ## What none of these is
 
-None of these is a verdict on bitmaps: the same structure is the right one in every section above, and in the engines it is
-built into. The question is where the set lives, who writes it, and how often. If your answer is "computed in a batch, read by
+None of these is a verdict on bitmaps: the structure is not at fault in any section above, and it is built into the engines that
+use it. The question is where the set lives, who writes it, and how often. If your answer is "computed in a batch, read by
 many, kept in a bucket", the [playbooks index](README.md) lists what is written for it.
 
 ## Limits

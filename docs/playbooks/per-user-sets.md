@@ -18,8 +18,8 @@ validated for sets that are large, few and read often: up to about 100,000 segme
 every part of that:
 
 - **There are too many.** A million users is a million rows and a million objects, ten times the validated count and each
-  holding a handful of ids, so every set pays for the machinery that makes a large one safe. The store lists, collects and
-  erases by walking segments, so each of those grows with the count ([what an erasure
+  holding a handful of ids, so every set pays for the machinery that makes a large one safe. The store lists and
+  erases by walking segments, and a retention sweep does too, so each of those grows with the count ([what an erasure
   costs](../guide/erasure.md#find-an-id-and-erase-it)).
 - **They change one id at a time.** Seeing an item or following an account is a single-id write, and a segment has no `add`:
   it changes by loading a new generation of the whole set ([the README's "when not"](../../README.md#use-it-when-and-when-not)).
@@ -42,20 +42,35 @@ a `Map` standing in for the key-value store, so the page runs.
 ```ts
 import { RoaringBitmap } from '@cloudbitmaps/roaring';
 
-// Your key-value store: a Map stands in for it here. The value is the portable bytes of one user's set.
-const kv = new Map<string, Uint8Array>();
+// Your key-value store: a Map stands in for it here. The value is the portable bytes of one user's set, with a version, as a
+// store that offers conditional writes keeps one.
+interface Entry {
+  version: number;
+  bytes: Uint8Array;
+}
+const kv = new Map<string, Entry>();
+
+/** Writes only if the key is still at the version the caller read (undefined: no entry): the compare-and-set a real store offers. */
+function putIf(key: string, expected: number | undefined, bytes: Uint8Array): boolean {
+  const current = kv.get(key);
+  if (current?.version !== expected) return false;
+  kv.set(key, { version: (expected ?? 0) + 1, bytes });
+  return true;
+}
 
 function markSeen(userId: number, itemId: number): void {
   const key = `seen:${userId}`;
-  const current = kv.get(key);
-  const seen = current ? RoaringBitmap.deserialize(current) : new RoaringBitmap();
-  seen.add(itemId);
-  kv.set(key, seen.serialize()); // one write per user action, on the store built for it
+  for (;;) {
+    const current = kv.get(key);
+    const seen = current ? RoaringBitmap.deserialize(current.bytes) : new RoaringBitmap();
+    seen.add(itemId);
+    if (putIf(key, current?.version, seen.serialize())) return; // another writer got there first: read again and retry
+  }
 }
 
 function hasSeen(userId: number, itemId: number): boolean {
-  const bytes = kv.get(`seen:${userId}`);
-  return bytes ? RoaringBitmap.deserialize(bytes).has(itemId) : false;
+  const entry = kv.get(`seen:${userId}`);
+  return entry ? RoaringBitmap.deserialize(entry.bytes).has(itemId) : false;
 }
 
 markSeen(7, 1001);
@@ -72,6 +87,14 @@ Output:
 true false false
 [ 'seen:7', 'seen:8' ]
 ```
+
+The loop is the point. Reading a value, adding an id and writing it back is a read-modify-write: two workers acting for one user
+at the same moment both read the same bytes, and with a plain `get` and `set` the later write drops the earlier worker's id. For
+a seen-items filter that may be tolerable; for follows it is data loss. Use the store's native set add where it has one, or a
+conditional write (a version, an ETag, a compare-and-set) with a retry, as above. The same race on the library's side is
+refused rather than lost: two loads of one segment at once leave the loser with `published: false` and a `reason` of
+`'superseded'`, or a `WriteConflictError` after its retries ([loading in depth](../guide/loading.md#when-a-load-is-refused)),
+and it loads again.
 
 Reading a value decodes it whole, so the record should stay small enough to read per request: a user's seen items over a
 bounded window, not a lifetime. A bitmap is checked on load (`deserialize` caps and checks the bytes), so a value that is
@@ -133,8 +156,8 @@ and it comes with the limits of a process: the sets last as long as it does, one
 <!-- typecheck -->
 ```ts
 // Persist the graph when the process must survive a restart: one value per user in the key-value store.
-for (const [userId, bitmap] of followers) kv.set(`followers:${userId}`, bitmap.serialize());
-const restored = RoaringBitmap.deserialize(kv.get('followers:1') as Uint8Array);
+for (const [userId, bitmap] of followers) kv.set(`followers:${userId}`, { version: 1, bytes: bitmap.serialize() });
+const restored = RoaringBitmap.deserialize((kv.get('followers:1') as Entry).bytes);
 console.log(restored.isEqual(bitmapOf(followers, 1)), restored.size);
 ```
 

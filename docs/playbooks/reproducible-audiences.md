@@ -58,7 +58,7 @@ Output:
 spring-1 read generation 1 with 4 ids
 ```
 
-`release()` on a pin with no lease only closes the handle. Store `readAt` with the campaign: it is the only thing that lets you
+`release()` on a pin with no lease does nothing: there is no lease to end, and the pin still reads. Store `readAt` with the campaign: it is the only thing that lets you
 find the audience again. A send long enough to overlap refreshes takes a lease instead, so its generation is held while it runs
 ([hold a generation for a job](../guide/reading.md#hold-a-generation-for-a-job-a-lease)).
 
@@ -125,7 +125,8 @@ A generation past the window is gone, and `pinAt` says so with `NotFoundError`: 
 generation. If a campaign must be reproducible for longer than the window, do not widen `keep` for every segment (each retained
 generation is a full copy): write the audience of that send, the ids themselves, to storage you retain (stream the
 pinned handle's `iterate()` or `batches()` into a file or a `RoaringBitmap` and its `serialize()`; [`exportSegments`](../guide/export.md)
-writes every segment's current generation, not a pinned one), and record where you put it.
+writes every segment's current generation, not a pinned one), and record where you put it. That copy is outside the store: `eraseSubject` cannot reach it, so list its location where
+privacy requests look ([copies you made](privacy-requests.md#what-the-receipt-proves-and-what-it-leaves-out)) and give it an expiry.
 
 ## Undo a bad refresh
 
@@ -154,9 +155,11 @@ bad refresh 6 holds 1 id
 [ 'segment.rollback' ]
 ```
 
-A rollback deletes nothing: generation 6 stays in the bucket until a later load collects it. It moves only onto a generation the
-row knows (one a load or an earlier rollback made current, whose object still has the checksum the row recorded); a generation
-the row does not know throws `ValidationError`, and `allowUnknown: true` is the deliberate override, which the audit event records
+A rollback deletes nothing: generation 6 stays in the bucket until a later load collects it. On a row that has a record of its
+generations, it moves only onto one the row knows (one a load or an earlier rollback made current, whose object still has the
+checksum the row recorded); a generation the row does not know throws `ValidationError`, and `allowUnknown: true` is the deliberate
+override, which the audit event records. Two cases are decided by the pointer alone: a target below the pointer needs no flag on a
+row with no usable record or below a full record's bound, and a target above the pointer always needs `allowUnknown`
 ([roll back a segment](../guide/loading.md#roll-back-a-segment)). The pointer otherwise moves only forward, so the next load numbers
 above generation 6 and not above 5. Pass `audit` and the rollback leaves a `segment.rollback` event: that is the record of who moved
 the audience back, and from where.
@@ -199,8 +202,10 @@ ValidationError
   ([a lease keeps superseded generations, and erasure ignores it](../guide/erasure.md#a-lease-keeps-superseded-generations-and-erasure-ignores-it);
   [why every holder goes](../guide/correctness.md#every-holder-goes)).
 - **A pointer only moves forward within one incarnation of a row** ([publish is forward-only](../guide/correctness.md#publish-is-forward-only)).
-  Only `rollback` moves it down, and only onto a generation the row knows. A segment that is purged and loaded again starts at generation 0, so a segment's identity is its row, never its generation
+  Only `rollback` moves it down, and only onto a generation the row knows, except the two cases the pointer decides (above). A segment that is purged and loaded again starts at generation 0, so a segment's identity is its row, never its generation
   number: record the fingerprint with the number, as `pinnedAt` does.
+- **A retained copy is yours to erase.** An export of an audience's ids is beyond `eraseSubject`: keep a list of where copies are, and
+  expire them.
 - **A pin and a rollback are not a snapshot of several segments.** Each segment has its own pointer. A send that read three
   segments records three pins.
 - **This page ran on `MemoryStorage`**, so it says nothing about latency or cost; see [the benchmarks](../benchmarks.md).

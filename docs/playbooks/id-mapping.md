@@ -14,10 +14,12 @@ people you have. If your ids are already small integers handed out by one counte
 ## Why dense integers
 
 A segment is stored as chunks, each holding the ids that share their upper 16 bits: at most 65,536 ids per chunk
-([`batches()`](../guide/reading.md#read-a-chunk-at-a-time-batches) yields one chunk at a time). A combine reads only the chunks
-that can contribute, so ids that sit close together fall in few chunks and ids scattered across the whole 32-bit range fall in
-many. Handing out ids one after another from 0 keeps every audience in as few chunks as it can be, and it keeps every id
-well inside the 32-bit limit. A hash of an email is the other common choice, and the wrong one here: it spreads people
+([`batches()`](../guide/reading.md#read-a-chunk-at-a-time-batches) yields one chunk at a time). An `intersect` reads only the chunks
+that every operand holds, so sets whose ids sit in the same low range share few chunks, while ids scattered across the whole
+32-bit range fall in many (a `union` reads every chunk of every operand, and an `andNot` every chunk of the set it subtracts
+from: [what each combine reads](../guide/reading.md#combine-segments-intersect-union-andnot)). Handing out ids one after another
+from 0 keeps the whole id space in as few chunks as the people number, and keeps every id well inside the 32-bit limit; it does
+not make any one audience minimal, since a scattered subset of the people still spans the chunks its members fall in. A hash of an email is the other common choice, and the wrong one here: it spreads people
 evenly across the range, and two different people can share a hash.
 
 ## A table you own
@@ -33,15 +35,27 @@ import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
 class IdTable {
   private readonly ids = new Map<string, number>();
   private readonly keys: string[] = [];
+  private readonly erased = new Set<string>();
 
   /** The id of a key, handing out the next unused integer the first time the key is seen. */
   assign(key: string): number {
+    if (this.erased.has(key)) throw new Error('this key was erased and must not be loaded again');
     const known = this.ids.get(key);
     if (known !== undefined) return known;
     const id = this.keys.length; // the counter only grows: an id is never handed out twice
     this.ids.set(key, id);
     this.keys.push(key);
     return id;
+  }
+
+  /** The id of a key that was already assigned, without assigning one. */
+  lookup(key: string): number | undefined {
+    return this.ids.get(key);
+  }
+
+  /** Marks an erased key: its id stays spent, and the key is refused from now on. */
+  retire(key: string): void {
+    this.erased.add(key);
   }
 
   /** The key behind an id, or undefined for an id this table never handed out. */
@@ -89,22 +103,30 @@ the segments you loaded last week still mean what they meant.
    them: back the table up with the same care as the segments ([disaster recovery](../guide/disaster-recovery.md)).
 
 Rule 2 is the one that fails quietly, so here it is acted out. A person asks to be erased: remove the id from every
-segment, and keep the table's row, marked so the key can never be assigned again.
+segment, and keep the table's row, marked: the key keeps its id, that id is never given to another key, and `assign`
+refuses the key from then on.
 
 <!-- typecheck -->
 ```ts
 for (const email of ['dev@example.com', 'eli@example.com']) table.assign(email);
 await store.load({ segment: 'newsletter' }, [0, 1, 3]);
 
-const erasedId = table.assign('ben@example.com'); // an existing key: the same id as before
+const erasedId = table.lookup('ben@example.com');
+if (erasedId === undefined) throw new Error('no such key');
 const report = await store.subjectReport(erasedId, { allNamespaces: true });
 console.log('ben is id', erasedId, 'and is in', report.segments.map((s) => s.segment).sort());
 
 const ledger = await store.eraseSubject(erasedId, { allNamespaces: true });
 console.log(ledger.erasedFrom.map((e) => [e.segment, e.erased]));
 
-// The table keeps the row, so a new key takes the next integer and never the erased one.
+// The table keeps the row, marked: a new key takes the next integer, and the erased key is refused.
+table.retire('ben@example.com');
 console.log('next new key gets', table.assign('fay@example.com'), 'not', erasedId);
+try {
+  table.assign('ben@example.com'); // a later export that still lists the person
+} catch (error) {
+  console.log((error as Error).message);
+}
 ```
 
 Output:
@@ -114,10 +136,13 @@ Output:
 ben is id 1 and is in [ 'buyers', 'newsletter' ]
 [ [ 'buyers', true ], [ 'newsletter', true ] ]
 next new key gets 5 not 1
+this key was erased and must not be loaded again
 ```
 
-The erased person is gone from the segments, and their integer stays spent in the table. Delete the key from the table if the
-law you work under says so, but not the counter's position: that is the number the next person must not take.
+The erased person is gone from the segments, and their integer stays spent in the table. The marker holds the raw key, which is
+itself personal data: if the law you work under says to remove it, replace it with a keyed hash you can match at import (the
+advice on [the suppression page](suppression.md#when-an-opt-out-is-also-an-erasure), which the library does not implement), but
+never give up the counter's position: that is the number the next person must not take.
 
 ## Translate back for a send
 

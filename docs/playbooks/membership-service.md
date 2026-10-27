@@ -64,9 +64,10 @@ true true
 3 2
 ```
 
-`exists` and `count` answer from the segment's registry row, so a service can check at start that every segment it needs is
-there before it takes traffic: a segment that does not exist reads as empty, and a check that reads as empty denies
-everyone ([a missing segment](#what-goes-wrong)).
+`exists` reads the segment's registry row (one point read) and `count` usually answers from the row's summary, so a service
+can check at start that every segment it needs is there before it takes traffic. A segment that does not exist reads as
+empty, and an empty set fails in opposite directions: a missing **allow** set denies everyone, which is safe, and a missing
+**deny** set admits everyone, which is not ([what goes wrong](#what-goes-wrong)).
 
 ## The check a request makes
 
@@ -85,6 +86,29 @@ Output:
 <!-- output -->
 ```text
 true false false
+```
+
+A deny set needs a gate of its own, because nothing in the check notices that it is missing. The block below refuses to
+report ready unless both segments exist and the blocklist holds someone; run it at start and before each deploy, and
+alert on it. Where a blocklist can legitimately be empty, drop the count test and keep the existence test. Pair it with a guard
+on the load that refreshes the list (`guard: { minCardinality: 1 }`, or a `minRetained`), so a broken export is refused instead of
+publishing an empty list ([when a load is refused](../guide/loading.md#when-a-load-is-refused)).
+
+<!-- typecheck -->
+```ts
+async function ready(allow: string, deny: string): Promise<boolean> {
+  if (!(await service.exists({ segment: allow })) || !(await service.exists({ segment: deny }))) return false;
+  return (await service.segment(deny).count()) > 0; // an emptied blocklist would admit everyone
+}
+
+console.log(await ready('beta', 'blocklist'), await ready('beta', 'blocklst'));
+```
+
+Output:
+
+<!-- output -->
+```text
+true false
 ```
 
 `has` costs one read of the id's chunk the first time and then answers from the chunk cache, with no request to storage
@@ -147,7 +171,7 @@ await loader.load({ segment: 'beta' }, [101]); // a load lands while the request
 now += 3_000;
 console.log('the pin sees', await betaAtStart.count(), 'and 102 is in it:', await betaAtStart.has(102));
 console.log('the live handle sees', await beta.count());
-await betaAtStart.release(); // ends the lease; a handle with no lease would only close the handle
+await betaAtStart.release(); // ends the lease
 ```
 
 Output:
@@ -200,7 +224,7 @@ ValidationError
 
 | You see | What to do |
 |---|---|
-| `has` answering `false` for everyone | The segment does not exist or was never loaded. Check `service.exists(ref)` at start and alert on it; a check that reads as empty denies, which is the safe default and an outage all the same. |
+| `has` answering `false` for everyone | The segment does not exist or was never loaded. For an allow set that denies everyone, which is safe and an outage all the same. For a **deny** set it admits everyone, so gate readiness on `service.exists(ref)` and a non-zero `count()` (the `ready` block above), and alert on that, not on the answer. A combine that names a missing segment refuses instead ([the suppression page](suppression.md#what-goes-wrong)). |
 | `ValidationError` | The id is not an integer from 0 to 4,294,967,295. Map identifiers to dense integers before the call ([the id-mapping page](id-mapping.md)); it is raised before any read. |
 | `LeaseExpiredError` from a pinned handle | The lease ended or was released. Never treated as an empty set. Take a pin with a longer lease. |
 | `NotFoundError` | A pin without a lease whose generation was collected. Take a lease. |

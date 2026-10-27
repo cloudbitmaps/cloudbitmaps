@@ -22,6 +22,7 @@ destroyable in one step later. The key below is a placeholder; in production it 
 import { CloudRoaring, InProcessKeystore, MemoryStorage, RecordingAuditSink } from '@cloudbitmaps/roaring';
 
 const backend = new MemoryStorage();
+// A placeholder: never a literal key. In production the keystore reads from your secrets manager or a KMS.
 const keystore = new InProcessKeystore({ keys: { k1: new Uint8Array(32).fill(7) }, activeKeyId: 'k1' });
 const store = new CloudRoaring({ storage: backend, encryption: { keystore, required: true } });
 const audit = new RecordingAuditSink();
@@ -96,9 +97,10 @@ us/newsletter true
 0
 ```
 
-`erased: true` for a segment means the call listed the segment's storage and read what was left, and **no generation of it
+The entries come in no promised order: on another backend they may appear differently. `erased: true` for a segment means the call listed the segment's storage and read what was left, and **no generation of it
 holds the id**, above the pointer or below it. That is the receipt, and it is a return value only: keep it, or route the
-audit events to an append-only log, because the library keeps neither. A segment the id was not in is not listed at all.
+audit events to an append-only log, because the library keeps neither. A segment the id was not in is not listed at all, unless the call cannot search it (a sealed segment on a store with no keystore, or a
+cleartext one under `required: true`): that one is listed as an `error:` entry whatever id you erase.
 
 An entry with `erased: false` is not a failure to read and not a statement that the id is still there: its `note` says why
 (`'superseded'` when a load or another erasure moved the segment while the call worked, or an `error:` note), and the call
@@ -116,10 +118,19 @@ that segment when the call finished. It does not prove, and the page must not be
   erasure reaches it.
 - **A load that ran while the erasure did.** Run the erasure while no load of that id is in flight: a load that read the
   segment before the erasure began is refused, but a load that publishes after it from an export that still lists the person
-  puts them back ([three rules while you erase](../guide/erasure.md#three-rules-while-you-erase)).
+  puts them back. Do not roll the segment back while it runs either: a rollback that lands mid-erasure can move the pointer onto a
+  generation the erasure did not rewrite ([three rules while you erase](../guide/erasure.md#three-rules-while-you-erase)).
+- **An id you put in a generation's metadata.** An erasure carries a generation's metadata over unchanged and unscanned, and the
+  registry row keeps a copy of the current generation's, so an `erased: true` says nothing about it. Put a version, a time or a run id
+  in metadata and nothing that names a person.
+- **An unlisted upload.** The uploaded part of a write that failed or was killed is not reached
+  ([the API reference](../guide/api-reference.md#store-methods) says so under `eraseSubject`).
 - **A reader that already had the id.** After the call, the store that ran it answers from the rewritten generation. Another
   store sees the rewrite within `cache.genTtlMs` (2 seconds by default), and a read in progress can still serve a bounded
   number of chunks it had already taken: [who stops seeing the id, and when](../guide/erasure.md#who-stops-seeing-the-id-and-when).
+  Some readers have no bound: a pinned handle held by another store keeps answering until its lease ends (at most 14 days) or
+  that store invalidates or evicts it, and a store with `cache.genTtlMs: 0` or no registry sees another process's rewrite only
+  when its reader cache evicts the segment or you invalidate.
 
 ## Crypto-shred a whole segment
 
@@ -163,8 +174,9 @@ after it re-resolves: 0
 The confirmation repeats the segment's **name only**, and does not check the namespace: build the ref from a value you have
 checked. The call is a free function over the registry, so it invalidates no store: a store that already had the segment open (the second
 line of the output) keeps answering from what it held until it refreshes, within `cache.genTtlMs`, or until you call
-`store.invalidate(ref)` on it, after which the segment reads as empty. The shred removes a segment's key from its current registry row. It does not reach a backup of
-the registry that holds the row from before, or the master key that wrapped it, until your own retention removes them
+`store.invalidate(ref)` on it, after which the segment reads as empty. The shred removes a segment's key from its current registry row. It is
+complete once no retained copy of the registry row (a backup, a noncurrent version) still holds the wrapped key, or once every
+key-encryption key that wrapped it is destroyed
 ([disaster recovery](../guide/disaster-recovery.md#encryption--dr)). A shredded segment reads as empty and refuses a load.
 
 ## The audit
@@ -173,7 +185,8 @@ The audit sink is not a store option: each call that writes takes `audit`, so a 
 each call of it. What it holds is the list above: a `segment.rewrite` or `segment.collect` for each segment an erasure touched,
 and `segment.erase` for a key shred. Send them to an append-only log (the sink is an object with an `onEvent` method:
 [observability](../guide/observability.md)), and store the ledger beside them with the request's identifier. The ledger and the
-events are what you show a regulator; nothing in the store records that a request happened.
+events are evidence of what the store did, not proof that you met a legal duty and not legal advice; nothing in the store records
+that a request happened.
 
 ## What goes wrong
 
@@ -221,7 +234,7 @@ KeyUnavailableError
   row that held the key is gone ([what an erasure does not reach](../guide/erasure.md#what-an-erasure-does-not-reach)).
 - **A per-person shred does not exist.** One key covers a whole segment, so crypto-shredding removes a segment, not one id from
   it; per-id removal is `eraseSubject`.
-- **The in-flight bound is stated, not zero.** See [who stops seeing the id, and when](../guide/erasure.md#who-stops-seeing-the-id-and-when).
+- **The in-flight bound is stated, not zero, and a pin or a store without a timed refresh has none.** See [who stops seeing the id, and when](../guide/erasure.md#who-stops-seeing-the-id-and-when).
 - **Cost grows with the segments scanned and the generations each holds.** An erasure scans the registry and rewrites each segment
   that holds the id, so a store with many segments pays for every one, whatever few the id is in ([what an erasure
   costs](../guide/erasure.md#find-an-id-and-erase-it)). Run it on a schedule that batches requests where the deadline allows.
