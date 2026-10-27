@@ -86,7 +86,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
      */
     private readonly pins: ReadonlyMap<string, PinnedAt>,
   ) {
-    for (const [key, pin] of pins) {
+    for (const [pinKey, pin] of pins) {
       // Read as loosely as a caller's JavaScript can build it: the type promises both strings, a record made by hand
       // may not.
       const held: { generation: number | null; version: unknown; fingerprint: unknown } = pin;
@@ -95,7 +95,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
         (typeof held.version !== 'string' || typeof held.fingerprint !== 'string')
       )
         throw new ValidationError(
-          `pin for "${key}" names generation ${held.generation} without its version and object fingerprint`,
+          `pin for "${pinKey}" names generation ${held.generation} without its version and object fingerprint`,
         );
     }
   }

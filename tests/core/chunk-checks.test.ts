@@ -28,7 +28,7 @@ describe('assertChunkKeyInRange', () => {
     'refuses key %s with the out-of-range message',
     (k) => {
       expect(() => assertChunkKeyInRange(k)).toThrow(IntegrityError);
-      expect(() => assertChunkKeyInRange(k)).toThrow(`chunk key from a tier is out of range: ${k}`);
+      expect(() => assertChunkKeyInRange(k)).toThrow('a chunk key from a tier is out of range');
     },
   );
 });
@@ -59,15 +59,34 @@ describe('checkedChunkKeys', () => {
   });
 
   it('refuses an out-of-range key', () => {
-    expect(() => checkedChunkKeys([1, 65_536])).toThrow(
-      'chunk key from a tier is out of range: 65536',
-    );
+    expect(() => checkedChunkKeys([1, 65_536])).toThrow('a chunk key from a tier is out of range');
     expect(() => checkedChunkKeys([-1])).toThrow(IntegrityError);
   });
 
-  it('refuses a key listed twice, and says which', () => {
+  it('refuses a key listed twice, without naming it', () => {
     expect(() => checkedChunkKeys([4, 7, 4])).toThrow(IntegrityError);
-    expect(() => checkedChunkKeys([4, 7, 4])).toThrow('chunk key from a tier is listed twice: 4');
+    expect(() => checkedChunkKeys([4, 7, 4])).toThrow('a chunk key from a tier is listed twice');
+  });
+});
+
+describe('a refused key is never named', () => {
+  it('carries neither the key nor a digit', () => {
+    for (const run of [
+      () => assertChunkKeyInRange(70_000),
+      () => checkedChunkKeys([5, 70_000]),
+      () => checkedChunkKeys([5, 5]),
+    ]) {
+      const message = (() => {
+        try {
+          run();
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return '';
+      })();
+      expect(message).not.toBe('');
+      expect(message).not.toMatch(/\d/);
+    }
   });
 });
 
@@ -130,7 +149,7 @@ describe('the engine reaches each check', () => {
     };
     const engine = new SegmentEngine({ storage, codec: storeCodec });
     await expect(engine.count({ segment: 's' })).rejects.toThrow(
-      'chunk key from a tier is out of range: 65536',
+      'a chunk key from a tier is out of range',
     );
   });
 
@@ -171,14 +190,14 @@ describe('the engine reaches each check', () => {
     };
     await expect(
       collect(new SegmentEngine({ storage: dup, codec: storeCodec }).iterate({ segment: 's' })),
-    ).rejects.toThrow('chunk key from a tier is listed twice: 2');
+    ).rejects.toThrow('a chunk key from a tier is listed twice');
     const wide: StorageChunkSource = {
       getChunk: never,
       listChunkKeys: () => Promise.resolve([-3]),
     };
     await expect(
       collect(new SegmentEngine({ storage: wide, codec: storeCodec }).iterate({ segment: 's' })),
-    ).rejects.toThrow('chunk key from a tier is out of range: -3');
+    ).rejects.toThrow('a chunk key from a tier is out of range');
   });
 
   it('everyNth refuses an out-of-range chunk cardinality', async () => {

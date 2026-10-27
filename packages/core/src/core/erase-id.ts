@@ -2125,7 +2125,7 @@ async function* rewrite(
       const item = await stream.next();
       // The stream yields one item per key asked for; it ending early would drop chunks from the new generation.
       if (item.done === true || item.value.key !== k) {
-        throw new IntegrityError(`the chunk stream ended before chunk ${k}`);
+        throw new IntegrityError('the chunk stream ended before a chunk the rewrite needs');
       }
       const bytes = item.value.bytes;
       if (bytes === null) continue; // listed but absent: nothing to carry forward

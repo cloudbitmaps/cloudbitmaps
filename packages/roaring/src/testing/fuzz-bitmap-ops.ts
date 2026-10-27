@@ -70,8 +70,8 @@ function agree(label: string, held: Held): void {
     fail(`${label}: toUint32Array holds ${got.length}, model ${want.length}`);
   let at = 0;
   for (const id of bitmap) {
-    if (id !== want[at]) fail(`${label}: iteration gives ${id} at ${at}, model ${want[at]}`);
-    if (got[at] !== id) fail(`${label}: toUint32Array gives ${got[at]} at ${at}, iteration ${id}`);
+    if (id !== want[at]) fail(`${label}: iteration disagrees with the model at position ${at}`);
+    if (got[at] !== id) fail(`${label}: toUint32Array disagrees with iteration at position ${at}`);
     at++;
   }
   if (at !== want.length) fail(`${label}: iteration ends at ${at}, model ${want.length}`);

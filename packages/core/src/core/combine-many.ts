@@ -1499,7 +1499,7 @@ class Run<R> {
                 failOperand(
                   c,
                   new IntegrityError(
-                    `operand "${c.op.spec.name}" lists chunk ${key} but its generation holds no bytes for it`,
+                    `operand "${c.op.spec.name}" lists a chunk its generation holds no bytes for`,
                   ),
                   victims ?? wanting(c),
                 );
@@ -1508,7 +1508,7 @@ class Run<R> {
               try {
                 const resident = residentBytes(bytes.length);
                 if (!this.ledger.reserve(resident, makeRoom)) {
-                  throw this.refuse(resident, `operand "${c.op.spec.name}" at chunk ${key}`);
+                  throw this.refuse(resident, `operand "${c.op.spec.name}" at one of its chunks`);
                 }
                 held += resident;
                 decoded.set(c.op.index, decodeChunkBytes(this.codec, bytes, this.maxBitmapBytes));

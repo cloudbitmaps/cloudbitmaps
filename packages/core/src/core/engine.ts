@@ -1046,9 +1046,7 @@ export class SegmentEngine {
     const expected = counts.get(chunkKey)!;
     if (chunk === null || chunk.size !== expected) {
       const got = chunk === null ? 'no bytes' : `${chunk.size} ids`;
-      throw new IntegrityError(
-        `chunk ${chunkKey} holds ${got}, but the object's index says ${expected}`,
-      );
+      throw new IntegrityError(`a chunk holds ${got}, but the object's index says ${expected}`);
     }
     return chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
   }

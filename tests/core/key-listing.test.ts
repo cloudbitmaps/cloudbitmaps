@@ -15,13 +15,13 @@ function referenceCheckedChunkKeys(listed: Iterable<number>): number[] {
   const keys = [...listed];
   for (const k of keys) {
     if (!Number.isInteger(k) || k < 0 || k >= CHUNK_COUNT) {
-      throw new IntegrityError(`chunk key from a tier is out of range: ${k}`);
+      throw new IntegrityError('a chunk key from a tier is out of range');
     }
   }
   keys.sort((a, b) => a - b);
   for (let i = 1; i < keys.length; i++) {
     if (keys[i] === keys[i - 1]) {
-      throw new IntegrityError(`chunk key from a tier is listed twice: ${keys[i]}`);
+      throw new IntegrityError('a chunk key from a tier is listed twice');
     }
   }
   return keys;
@@ -106,12 +106,12 @@ describe('checkedChunkKeys agrees with the copy, range-check, sort and scan refe
     );
   });
 
-  it('names the first bad key: an out-of-range key before an unsorted pair, a repeat only after the range checks', () => {
+  it('refuses the first bad key: an out-of-range key before an unsorted pair, a repeat only after the range checks', () => {
     expect(() => checkedChunkKeys([5, 3, 70_000])).toThrow(
-      'chunk key from a tier is out of range: 70000',
+      'a chunk key from a tier is out of range',
     );
-    expect(() => checkedChunkKeys([5, 5])).toThrow('chunk key from a tier is listed twice: 5');
-    expect(() => checkedChunkKeys([9, 5, 5, 1.5])).toThrow('out of range: 1.5');
+    expect(() => checkedChunkKeys([5, 5])).toThrow('a chunk key from a tier is listed twice');
+    expect(() => checkedChunkKeys([9, 5, 5, 1.5])).toThrow('out of range');
   });
 
   // A timing ratio against the reference was tried and flakes: once the property tests above have fed the function

@@ -668,7 +668,7 @@ export class CrbmReader {
     const length = this.index.lengths[slot]!;
     // Re-validate bounds at read time (defense in depth — a buggy caller or future mutable index path).
     if (offset < PAYLOAD_START || offset + length > this.objectSize - FOOTER_BYTES) {
-      throw crbmIntegrity(`chunk ${chunkKey} payload out of bounds`);
+      throw crbmIntegrity(`chunk at position ${slot} payload out of bounds`);
     }
     const held = this.keptRange(offset, length);
     return this.openChunk(slot, chunkKey, held ?? (await this.blob.getRange(offset, length)));
@@ -701,13 +701,13 @@ export class CrbmReader {
    */
   private openChunk(slot: number, chunkKey: number, bytes: Uint8Array): Uint8Array {
     if (crc32c(bytes) !== this.index.crcs[slot]) {
-      throw crbmIntegrity(`chunk ${chunkKey} payload CRC mismatch`);
+      throw crbmIntegrity(`chunk at position ${slot} payload CRC mismatch`);
     }
     if (this.crypto === undefined) return bytes;
     // Encrypted: on-disk frame is nonce ‖ ciphertext ‖ tag. Decrypt (AAD-bound to this chunkKey) after the CRC
     // passes — a wrong key / tamper / relocated chunk fails as an IntegrityError, never a wrong payload.
     if (bytes.length < AEAD_NONCE_BYTES + AEAD_TAG_BYTES) {
-      throw crbmIntegrity(`chunk ${chunkKey} encrypted payload too short`);
+      throw crbmIntegrity(`chunk at position ${slot} encrypted payload too short`);
     }
     return this.crypto.aead.open(
       {
@@ -1075,20 +1075,21 @@ export function parseIndex(
     const offset = prevEnd + offDelta;
     // Unsigned deltas mean keys can only stay flat or rise; a 0 delta after the first is a duplicate.
     if (i > 0 && keyDelta === 0) {
-      throw crbmIntegrity(`.crbm index has a duplicate chunkKey ${chunkKey}`);
+      throw crbmIntegrity(`.crbm index entry ${i} repeats a chunk key`);
     }
-    if (chunkKey > 0xffff) throw crbmIntegrity(`.crbm chunkKey ${chunkKey} out of range`);
+    if (chunkKey > 0xffff)
+      throw crbmIntegrity(`.crbm index entry ${i} has a chunk key out of range`);
     if (len < minPayloadBytes || len > maxPayloadBytes) {
       throw crbmIntegrity(
-        `.crbm chunk ${chunkKey} length ${len} invalid (most is ${maxPayloadBytes})`,
+        `.crbm index entry ${i} has a payload length ${len} invalid (most is ${maxPayloadBytes})`,
       );
     }
     if (card < 1 || card > MAX_CHUNK_CARDINALITY) {
-      throw crbmIntegrity(`.crbm chunk ${chunkKey} cardinality ${card} invalid`);
+      throw crbmIntegrity(`.crbm index entry ${i} has a cardinality ${card} invalid`);
     }
     // `offset` cannot start below the preamble: it is the previous payload's end plus an unsigned gap.
     if (offset + len > payloadEnd) {
-      throw crbmIntegrity(`.crbm chunk ${chunkKey} payload out of bounds`);
+      throw crbmIntegrity(`.crbm index entry ${i} has a payload out of bounds`);
     }
 
     keys[count] = chunkKey;
