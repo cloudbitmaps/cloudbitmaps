@@ -1166,6 +1166,52 @@ function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Cont
 }
 
 /**
+ * A new accumulator holding the OR of the bitset containers of `list` (all zero when there is none), four sources a
+ * step: each word is loaded from the accumulator once per four sources, not once per source, and the first group writes
+ * the accumulator, so no source is copied. Fewer than four sources, and the tail of any more, go one at a time.
+ */
+function orBitsetWords(list: readonly Container[]): Uint32Array {
+  const bits: Uint32Array[] = [];
+  for (const c of list) if (c.kind === BITSET) bits.push(words32(c));
+  const n = bits.length;
+  if (n === 0) return new Uint32Array(WORDS);
+  let k: number;
+  let words: Uint32Array;
+  if (n >= 4) {
+    const a = bits[0] as Uint32Array;
+    const b = bits[1] as Uint32Array;
+    const c = bits[2] as Uint32Array;
+    const d = bits[3] as Uint32Array;
+    words = new Uint32Array(WORDS);
+    for (let i = 0; i < WORDS; i++)
+      words[i] = (a[i] as number) | (b[i] as number) | (c[i] as number) | (d[i] as number);
+    k = 4;
+  } else {
+    words = (bits[0] as Uint32Array).slice();
+    k = 1;
+  }
+  for (; k + 4 <= n; k += 4) {
+    const a = bits[k] as Uint32Array;
+    const b = bits[k + 1] as Uint32Array;
+    const c = bits[k + 2] as Uint32Array;
+    const d = bits[k + 3] as Uint32Array;
+    for (let i = 0; i < WORDS; i++) {
+      words[i] =
+        (words[i] as number) |
+        (a[i] as number) |
+        (b[i] as number) |
+        (c[i] as number) |
+        (d[i] as number);
+    }
+  }
+  for (; k < n; k++) {
+    const o = bits[k] as Uint32Array;
+    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
+  }
+  return words;
+}
+
+/**
  * The values of every container of `list` (two or more, all of one key), as a container of its own: an array up to
  * 4,096 values, a bitset above, never a run. No input is written and none is kept. Arrays whose total fits an array are
  * sorted together; anything else is OR-ed into one accumulator of words (a bitset's words, an array's values set
@@ -1175,11 +1221,9 @@ function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Cont
 export function orManyContainers(list: readonly Container[]): Container {
   let total = 0;
   let allArrays = true;
-  let firstBitset: Container | undefined;
   for (const c of list) {
     total += c.card;
     if (c.kind !== ARRAY) allArrays = false;
-    if (c.kind === BITSET && firstBitset === undefined) firstBitset = c;
   }
   if (allArrays && total <= ARRAY_MAX_CARDINALITY) {
     const out = values16(total);
@@ -1196,19 +1240,15 @@ export function orManyContainers(list: readonly Container[]): Container {
     }
     return arrayContainer(sorted.slice(0, distinct), distinct);
   }
-  const words = firstBitset === undefined ? new Uint32Array(WORDS) : words32(firstBitset).slice();
+  const words = orBitsetWords(list);
   for (const c of list) {
-    if (c === firstBitset) continue;
-    if (c.kind === BITSET) {
-      const o = words32(c);
-      for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
-    } else if (c.kind === ARRAY) {
+    if (c.kind === ARRAY) {
       const u16 = lows16(c);
       for (let i = c.off; i < c.off + c.len; i++) {
         const v = u16[i] as number;
         words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
       }
-    } else {
+    } else if (c.kind === RUN) {
       const pairs = lows16(c);
       for (let r = 0; r < c.len; r++) {
         const start = pairs[c.off + 2 * r] as number;
