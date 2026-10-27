@@ -606,6 +606,31 @@ function timeCell(cell, api, { warmMs, sampleMs }) {
   return { ns: +timed.ns.toFixed(1), cpuNs: +timed.cpuNs.toFixed(1), answer };
 }
 
+/** The fresh processes a cold cell is timed in, for one sample of one subject: each is one first call. */
+function coldProcessesOf(small) {
+  return small ? 1 : 5;
+}
+
+/**
+ * One sample from the outputs of several fresh processes timing the same cold cell on the same subject: the median wall
+ * and CPU figures, and the answer (the processes' common answer, or all of theirs joined when they differ, so the
+ * subjects' answers still disagree visibly).
+ */
+function oneColdSample(outputs) {
+  if (outputs.length === 0) throw new RangeError('a cold sample needs at least one process');
+  const median = (field) => {
+    const v = outputs.map((o) => o[field]).sort((x, y) => x - y);
+    const mid = v.length >> 1;
+    return v.length % 2 === 1 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+  };
+  const answers = outputs.map((o) => o.answer);
+  return {
+    ns: median('ns'),
+    cpuNs: median('cpuNs'),
+    answer: answers.every((a) => a === answers[0]) ? answers[0] : answers.join('|'),
+  };
+}
+
 /** Times one cold cell on one subject, once. */
 function timeCold(cell, api) {
   const fn = cell.make(api);
@@ -634,4 +659,6 @@ module.exports = {
   runsOn,
   timeCell,
   timeCold,
+  coldProcessesOf,
+  oneColdSample,
 };

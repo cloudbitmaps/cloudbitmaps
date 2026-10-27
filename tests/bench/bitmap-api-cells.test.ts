@@ -39,6 +39,12 @@ const lib = require_('./lib/bitmap-api-cells.cjs') as {
     o: { warmMs: number; sampleMs: number },
   ) => { ns: number; answer: string };
   timeCold: (cell: Cell, api: Api) => { ns: number; answer: string };
+  coldProcessesOf: (small: boolean) => number;
+  oneColdSample: (outputs: Array<{ ns: number; cpuNs: number; answer: string }>) => {
+    ns: number;
+    cpuNs: number;
+    answer: string;
+  };
   bytesToJson: (b: Record<string, Uint8Array>) => string;
   bytesFromJson: (t: string) => Record<string, Uint8Array>;
   digest: (api: Api, value: unknown) => string;
@@ -207,5 +213,26 @@ describe('the cells', () => {
       const answers = apis().map((api) => lib.timeCold(cell, api).answer);
       expect(new Set(answers).size, cell.name).toBe(1);
     }
+  });
+});
+
+describe('the cold cells in several fresh processes', () => {
+  it('take one process in a tiny-scale run and five at full scale', () => {
+    expect(lib.coldProcessesOf(true)).toBe(1);
+    expect(lib.coldProcessesOf(false)).toBe(5);
+  });
+
+  it('one sample is the median of the processes, with an even count averaged, and one process is itself', () => {
+    const o = (ns: number, cpuNs: number, answer = 'x') => ({ ns, cpuNs, answer });
+    expect(lib.oneColdSample([o(7, 3)])).toEqual(o(7, 3));
+    expect(lib.oneColdSample([o(9, 1), o(1, 9), o(5, 5), o(100, 2), o(2, 4)])).toEqual(o(5, 4));
+    expect(lib.oneColdSample([o(4, 8), o(2, 2)])).toEqual(o(3, 5));
+    expect(() => lib.oneColdSample([])).toThrow(RangeError);
+  });
+
+  it('keeps a disagreement between processes visible in the answer', () => {
+    const o = (answer: string) => ({ ns: 1, cpuNs: 1, answer });
+    expect(lib.oneColdSample([o('a'), o('a')]).answer).toBe('a');
+    expect(lib.oneColdSample([o('a'), o('b'), o('a')]).answer).toBe('a|b|a');
   });
 });

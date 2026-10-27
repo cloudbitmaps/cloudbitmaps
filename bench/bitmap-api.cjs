@@ -16,7 +16,8 @@
  *   export     iteration, `toUint32Array`, `toArray`
  *   orMany     8 and 64 bitmaps
  *   clone      `clone`, and a clone then a write that lands in every container
- *   cold       the first call of a fresh process, nothing warmed: `deserialize`, a build, an `and`, on `mixed`
+ *   cold       the first call of a fresh process, nothing warmed: `deserialize`, a build, an `and`, on `mixed`; each
+ *              round's figure is the median of five such processes per subject (one in a tiny-scale run)
  *   load       `store.load(ref, { bitmap })` against the serialize and the checked decode it makes, from the built
  *              package (one subject, so no A/A control; the share of a load the round trip is is the figure)
  *
@@ -371,7 +372,11 @@ function coldMeasure(work, only) {
       Object.fromEntries(
         names.map((n) => [
           n,
-          JSON.parse(spawnLast([`--child-cold=${SUBJECT_NAMES[i]}:${n}`, `--work=${work}`])),
+          cellsLib.oneColdSample(
+            Array.from({ length: cellsLib.coldProcessesOf(SMALL) }, () =>
+              JSON.parse(spawnLast([`--child-cold=${SUBJECT_NAMES[i]}:${n}`, `--work=${work}`])),
+            ),
+          ),
         ]),
       ),
     triples('ns'),
