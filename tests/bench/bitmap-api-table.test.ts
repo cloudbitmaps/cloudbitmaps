@@ -674,6 +674,11 @@ describe('the script', () => {
     const copy = mkdtempSync(join(tmpdir(), 'bitmap-api-table-'));
     cpSync(join(ROOT, 'bench'), join(copy, 'bench'), { recursive: true });
     writeFileSync(join(copy, 'bench/bitmap-api-results.json'), JSON.stringify(file));
+    // The planted record is not the committed one, so the committed decisions (which name methods of that record) do not apply to it.
+    writeFileSync(
+      join(copy, 'bench/bitmap-api-decisions.json'),
+      `${JSON.stringify({ date: null, words: '', accepted: [] })}\n`,
+    );
     writeFileSync(
       join(copy, 'bench/count-kernels.cjs'),
       `console.log('RESULT ${result}: planted');\nprocess.exitCode = 0;\n`,
