@@ -36,7 +36,8 @@ import {
  * the clock or the machine would fail here, so a page does not print one.
  *
  * KNOWN LIMITS OF THE RUN.
- *   - Only `ts` and `typescript` fences run. Any other language needs a `not-run` marker, and `~~~` fences are not seen.
+ *   - Only `ts` and `typescript` fences that open at the left margin with three backticks run. Any other fence (another
+ *     language, indented, tilde or four-backtick) needs a `not-run` marker, or the page fails.
  *   - Only `console.log` is captured; `console.error`, `warn` or `table` throw, and the page is reported as throwing.
  *   - The program is a sloppy-mode async function body, not an ES module: each import becomes a binding where it stands
  *     (not hoisted), and a multi-line import clause, `import 'x'`, a default import or an `export` is a failure. The strict
@@ -171,6 +172,19 @@ describe('the gate fires (planted pages)', () => {
     expect(shape(ok + '```ts\nvoid 2;\n```\n')).toEqual([
       expect.stringContaining('a TypeScript fence with no typecheck marker above it'),
     ]);
+    for (const odd of [
+      '  ```ts\n  void 1;\n  ```\n',
+      '~~~js\nvoid 1;\n~~~\n',
+      '````ts\nvoid 1;\n````\n',
+    ]) {
+      expect(shape(ok + odd)).toHaveLength(1);
+    }
+    // A shorter fence inside a longer one is its content, not a fence of its own.
+    expect(
+      shape(
+        ok + '<!-- not-run: shows a fence inside a fence -->\n````md\n```ts\nvoid 1;\n```\n````\n',
+      ),
+    ).toEqual([]);
     expect(shape(ok + '```text\nnot an output\n```\n')).toEqual([
       expect.stringContaining('a text fence is not run'),
     ]);

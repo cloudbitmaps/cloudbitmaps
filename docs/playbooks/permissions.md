@@ -107,7 +107,7 @@ A pin holds a segment at the generation current when it was taken.
 const finance = await acl('acme', 'group:finance').pin();
 await store.load({ namespace: 'tenant:acme', segment: 'group:finance' }, [7001]); // a change lands mid-review
 console.log('pinned review sees', await finance.count(), '- live now', await acl('acme', 'group:finance').count());
-await finance.release(); // ends the handle's lease; this pin took none, so it only closes the handle
+await finance.release(); // a no-op for a pin with no lease
 ```
 
 Output:
