@@ -107,7 +107,8 @@ const detachedCodec: CodecInterface = {
 };
 
 function maxBytesOf(options: unknown): number {
-  if (options !== undefined && (typeof options !== 'object' || options === null)) {
+  if (options === undefined) return MAX_SERIALIZED_LOAD_BYTES;
+  if (typeof options !== 'object' || options === null) {
     throw new ValidationError(
       `deserialize takes no format argument, the format is always portable; its second argument is ` +
         `{ maxBytes } or nothing, not ${kindOf(options)}`,
