@@ -84,6 +84,35 @@ describe('the counting reproducers of the bitmap-ops target', () => {
     expect(() => runBitmapOps(file)).toThrow(new RegExp(`bitmap-ops: .*${method}`));
   });
 
+  describe('the wide paths of the algebra operation', () => {
+    const file = () => readFileSync(join(DIR, FILES[0] as string));
+
+    it('reach a group of one to four ids a key, a four-bitset union and isEqual on wide containers', () => {
+      const addMany = vi.spyOn(RoaringBitmap.prototype, 'addMany');
+      const orMany = vi.spyOn(RoaringBitmap, 'orMany');
+      const isEqual = vi.spyOn(RoaringBitmap.prototype, 'isEqual');
+      runBitmapOps(file());
+      const groups = addMany.mock.calls.filter(([ids]) => (ids as number[]).length <= 10);
+      expect(groups.length, 'addMany called with a few ids').toBeGreaterThan(0);
+      const wide = orMany.mock.calls.filter(([list]) => (list as RoaringBitmap[]).length === 5);
+      expect(wide.length, 'orMany called with five bitmaps').toBeGreaterThan(0);
+      expect(isEqual.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    it('a wide isEqual that always answers true is a finding', () => {
+      vi.spyOn(RoaringBitmap.prototype, 'isEqual').mockReturnValue(true);
+      expect(() => runBitmapOps(file())).toThrow(/bitmap-ops: .*isEqual/);
+    });
+
+    it('an orMany that drops an operand is a finding', () => {
+      const real = RoaringBitmap.orMany.bind(RoaringBitmap);
+      vi.spyOn(RoaringBitmap, 'orMany').mockImplementation((list) =>
+        real((list as RoaringBitmap[]).slice(1)),
+      );
+      expect(() => runBitmapOps(file())).toThrow(/bitmap-ops: /);
+    });
+  });
+
   it.each(METHODS)(
     '%s is asked for a non-bitmap by the refusal reproducer, and refuses',
     (method) => {
