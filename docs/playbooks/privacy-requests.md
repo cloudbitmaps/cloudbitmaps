@@ -123,7 +123,7 @@ that segment when the call finished. It does not prove, and the page must not be
 - **An id you put in a generation's metadata.** An erasure carries a generation's metadata over unchanged and unscanned, and the
   registry row keeps a copy of the current generation's, so an `erased: true` says nothing about it. Put a version, a time or a run id
   in metadata and nothing that names a person.
-- **An unlisted upload.** The uploaded part of a write that failed or was killed is not reached
+- **An unlisted upload.** Bytes a write left behind when it died before finishing are not reached
   ([the API reference](../guide/api-reference.md#store-methods) says so under `eraseSubject`).
 - **A reader that already had the id.** After the call, the store that ran it answers from the rewritten generation. Another
   store sees the rewrite within `cache.genTtlMs` (2 seconds by default), and a read in progress can still serve a bounded

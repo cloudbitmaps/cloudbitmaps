@@ -158,8 +158,8 @@ bad refresh 6 holds 1 id
 A rollback deletes nothing: generation 6 stays in the bucket until a later load collects it. On a row that has a record of its
 generations, it moves only onto one the row knows (one a load or an earlier rollback made current, whose object still has the
 checksum the row recorded); a generation the row does not know throws `ValidationError`, and `allowUnknown: true` is the deliberate
-override, which the audit event records. Two cases are decided by the pointer alone: a target below the pointer needs no flag on a
-row with no usable record or below a full record's bound, and a target above the pointer always needs `allowUnknown`
+override, which the audit event records. Two cases are decided by the pointer alone: a target below the pointer needs no flag when the
+row has no usable record or the target lies under the bound of a full one, and a target above the pointer always needs `allowUnknown`
 ([roll back a segment](../guide/loading.md#roll-back-a-segment)). The pointer otherwise moves only forward, so the next load numbers
 above generation 6 and not above 5. Pass `audit` and the rollback leaves a `segment.rollback` event: that is the record of who moved
 the audience back, and from where.
