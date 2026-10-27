@@ -193,6 +193,14 @@ const NOTES = [
   '`serialize` is held to identical bytes on every subject; every other answer is held to the same value.',
 ];
 
+/** How the first-call figures of a pass were taken: one fresh process a sample, or the median of several. */
+function coldText(pass) {
+  const n = verdict.coldProcessesOf(pass);
+  return n === 1
+    ? 'each first-call figure is one call in one fresh process'
+    : `each first-call figure is the median of ${n} fresh processes, one call in each`;
+}
+
 /** The text of a region for a results file: the table of its last complete pass, or `NOT_MEASURED`. */
 function render(file, decisions = NO_DECISIONS) {
   const recorded = verdict.passOfRecord(file);
@@ -205,7 +213,7 @@ function render(file, decisions = NO_DECISIONS) {
   parts.push(
     `**Measured** on ${e.cpu} (${e.cores} cores), ${e.platform}, Node ${e.node}, commit \`${short(e.head)}\` (${e.tree} tree), \`roaring\` ${e.roaring}, ${rounds} rounds a figure, pass ${pass.pass}, started ${pass.started.slice(0, 10)}. ` +
       `Each figure is the median over the rounds of the class's time divided by the \`roaring\` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. ` +
-      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${setAsideText(pass)}. Recorded, never asserted.`,
+      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; ${coldText(pass)}; the kept rounds ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${setAsideText(pass)}. Recorded, never asserted.`,
   );
   parts.push(
     ratioTable(pass, 'vsNative', 'Against `roaring` (class time / native time)', () => true),

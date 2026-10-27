@@ -45,6 +45,11 @@ const lib = require_('./lib/bitmap-api-cells.cjs') as {
     cpuNs: number;
     answer: string;
   };
+  sleptProcesses: (outputs: Array<{ ns: number; cpuNs: number }>) => boolean[];
+  takeColdSample: (
+    spawn: () => { ns: number; cpuNs: number; answer: string },
+    processes: number,
+  ) => { sample: { ns: number; cpuNs: number; answer: string }; slept: number };
   bytesToJson: (b: Record<string, Uint8Array>) => string;
   bytesFromJson: (t: string) => Record<string, Uint8Array>;
   digest: (api: Api, value: unknown) => string;
@@ -234,5 +239,78 @@ describe('the cold cells in several fresh processes', () => {
     const o = (answer: string) => ({ ns: 1, cpuNs: 1, answer });
     expect(lib.oneColdSample([o('a'), o('a')]).answer).toBe('a');
     expect(lib.oneColdSample([o('a'), o('b'), o('a')]).answer).toBe('a|b|a');
+  });
+});
+
+describe('the sleep rule on each process of a cold sample', () => {
+  const o = (ns: number, cpuNs: number, answer = 'x') => ({ ns, cpuNs, answer });
+  const awake = o(1_000, 900);
+
+  it('calls a process slept only when it is over 100 times the sample median and under half on CPU', () => {
+    const five = (slow: { ns: number; cpuNs: number }) => [awake, awake, awake, awake, slow];
+    expect(lib.sleptProcesses(five(o(100_001, 40_000)))).toEqual([
+      false,
+      false,
+      false,
+      false,
+      true,
+    ]);
+    // Exactly 100 times, or half on CPU or more: awake. A slow process that burned CPU is slow, not asleep.
+    expect(lib.sleptProcesses(five(o(100_000, 40_000)))).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(lib.sleptProcesses(five(o(100_001, 50_001)))).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(lib.sleptProcesses(five(o(100_001, 99_999)))).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it('has no median to judge one or two processes by', () => {
+    expect(lib.sleptProcesses([o(1e9, 1)])).toEqual([false]);
+    expect(lib.sleptProcesses([awake, o(1e9, 1)])).toEqual([false, false]);
+  });
+
+  it('sets a slept process aside before the median and runs another in its place', () => {
+    const queue = [awake, awake, awake, awake, o(5e8, 10), o(1_200, 1_000)];
+    let spawned = 0;
+    const taken = lib.takeColdSample(() => queue[spawned++]!, 5);
+    expect(spawned).toBe(6);
+    expect(taken.slept).toBe(1);
+    // The slept figure is in no median: four of 1,000 and one of 1,200 give 1,000, not the 5e8 or a mean with it.
+    expect(taken.sample.ns).toBe(1_000);
+  });
+
+  it('takes five processes and no more when none slept', () => {
+    let spawned = 0;
+    const taken = lib.takeColdSample(() => (spawned++, awake), 5);
+    expect(spawned).toBe(5);
+    expect(taken.slept).toBe(0);
+  });
+
+  it('takes one process in a tiny-scale run and judges none of it', () => {
+    let spawned = 0;
+    const taken = lib.takeColdSample(() => (spawned++, o(1e9, 1)), 1);
+    expect(spawned).toBe(1);
+    expect(taken.slept).toBe(0);
+  });
+
+  it('stops the run when more processes slept than one sample holds', () => {
+    let spawned = 0;
+    const spawn = () => (spawned++ < 3 ? awake : o(5e8, 10));
+    expect(() => lib.takeColdSample(spawn, 5)).toThrow(RangeError);
   });
 });

@@ -17,7 +17,10 @@
  *   orMany     8 and 64 bitmaps
  *   clone      `clone`, and a clone then a write that lands in every container
  *   cold       the first call of a fresh process, nothing warmed: `deserialize`, a build, an `and`, on `mixed`; each
- *              round's figure is the median of five such processes per subject (one in a tiny-scale run)
+ *              round's figure is the median of five such processes per subject (one in a tiny-scale run). A pass
+ *              records how many (`environment.coldProcesses`; a pass without it was taken at one) and how many it set
+ *              aside as slept (`environment.coldSlept`): a process that slept is judged by the sleep rule against the
+ *              median of its own sample's processes before that median is taken, and another is run in its place
  *   load       `store.load(ref, { bitmap })` against the serialize and the checked decode it makes, from the built
  *              package (one subject, so no A/A control; the share of a load the round trip is is the figure)
  *
@@ -348,6 +351,20 @@ function steadyMeasure(work, only) {
   return out;
 }
 
+/** Cold processes set aside as slept in this run, before the median of a sample. */
+let coldSlept = 0;
+
+/** One subject's sample of one cold cell: the median of its fresh processes, a slept one run again. */
+function takeColdSample(subject, cell, work) {
+  const taken = cellsLib.takeColdSample(
+    () =>
+      JSON.parse(spawnLast([`--child-cold=${SUBJECT_NAMES[subject]}:${cell}`, `--work=${work}`])),
+    cellsLib.coldProcessesOf(SMALL),
+  );
+  coldSlept += taken.slept;
+  return taken.sample;
+}
+
 function coldMeasure(work, only) {
   const data = cellsLib.dataOf(COLD_DATASET, SMALL, bytesIn(work));
   const names = cellsLib
@@ -368,17 +385,7 @@ function coldMeasure(work, only) {
       at(samples[2], p.cell, field),
     ]);
   const taken = takeRounds(
-    (i) =>
-      Object.fromEntries(
-        names.map((n) => [
-          n,
-          cellsLib.oneColdSample(
-            Array.from({ length: cellsLib.coldProcessesOf(SMALL) }, () =>
-              JSON.parse(spawnLast([`--child-cold=${SUBJECT_NAMES[i]}:${n}`, `--work=${work}`])),
-            ),
-          ),
-        ]),
-      ),
+    (i) => Object.fromEntries(names.map((n) => [n, takeColdSample(i, n, work)])),
     triples('ns'),
     triples('cpuNs'),
   );
@@ -524,6 +531,7 @@ function environment() {
     countResult: countRecord.readResult(ROOT),
     anyLoad: ANY_LOAD,
     smoke: SMOKE,
+    coldProcesses: cellsLib.coldProcessesOf(SMALL),
     rounds: ROUNDS,
     maxLoad: MAX_LOAD,
   };
@@ -586,7 +594,11 @@ async function takePass(run, only) {
   const work = run('steady') || run('cold') ? prepare() : undefined;
   try {
     if (run('steady')) doc.cells = steadyMeasure(work, only);
-    if (run('cold')) doc.cold = coldMeasure(work, only);
+    if (run('cold')) {
+      coldSlept = 0;
+      doc.cold = coldMeasure(work, only);
+      doc.environment.coldSlept = coldSlept;
+    }
   } finally {
     if (work) fs.rmSync(work, { recursive: true, force: true });
   }

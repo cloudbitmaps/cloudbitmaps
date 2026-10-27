@@ -415,7 +415,7 @@ figures are the record in [`bench/bitmap-api-results.json`](../../bench/bitmap-a
 
 <!-- BITMAP_API:TABLE:START -->
 
-**Measured** on Apple M3 Pro (11 cores), darwin arm64, Node v24.22.1, commit `3be54a7e` (dirty tree), `roaring` 2.7.0, 31 rounds a figure, pass 2, started 2026-10-27. Each figure is the median over the rounds of the class's time divided by the `roaring` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most 5.96 and 448 rounds were set aside at 6 or more and taken again (at most 7 of any one figure, on 96 figures). Recorded, never asserted.
+**Measured** on Apple M3 Pro (11 cores), darwin arm64, Node v24.22.1, commit `3be54a7e` (dirty tree), `roaring` 2.7.0, 31 rounds a figure, pass 2, started 2026-10-27. Each figure is the median over the rounds of the class's time divided by the `roaring` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; each first-call figure is one call in one fresh process; the kept rounds ended at a load of at most 5.96 and 448 rounds were set aside at 6 or more and taken again (at most 7 of any one figure, on 96 figures). Recorded, never asserted.
 
 | Against `roaring` (class time / native time) | Group | dense | sparse | runs | mixed | spread8k |
 |---|---|---:|---:|---:|---:|---:|

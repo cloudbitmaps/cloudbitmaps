@@ -433,12 +433,21 @@ function routeProblems(label, pass, live, last) {
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+const COLD_PROCESSES = cellsLib.COLD_PROCESSES;
+
+/** The fresh processes each cold sample of a pass took: what it records, or one for a pass taken before it did. */
+const coldProcessesOf = (pass) => pass.environment?.coldProcesses ?? 1;
+
 /** What stops one pass from being read, apart from its inventory, route and sleep rule. */
 function passProblems(label, pass) {
   const problems = [];
   const e = pass.environment ?? {};
   if (e.smoke) problems.push(`${label}: a smoke pass is no evidence`);
   if (e.anyLoad) problems.push(`${label}: the load rule was turned off for this pass`);
+  if (e.coldProcesses !== undefined && e.coldProcesses !== (e.smoke ? 1 : COLD_PROCESSES))
+    problems.push(
+      `${label}: the pass records ${e.coldProcesses} fresh processes a cold sample, but a ${e.smoke ? 'smoke' : 'full'} pass takes ${e.smoke ? 1 : COLD_PROCESSES}`,
+    );
   if (pass.partial !== undefined && (typeof pass.partial !== 'string' || pass.partial === ''))
     problems.push(`${label}: a partial mark must say what the pass left out`);
   const rounds = roundCountOf(pass);
@@ -540,6 +549,8 @@ function gateExit(passes, opts = {}) {
 }
 
 module.exports = {
+  COLD_PROCESSES,
+  coldProcessesOf,
   CONTROL_BAND,
   CLOSE_BAR,
   SHIP_BAR,
