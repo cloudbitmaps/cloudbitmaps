@@ -370,6 +370,16 @@ describe('{ serialized }: portable Roaring bytes, checked before anything is rea
         },
         copied: true,
       },
+      {
+        name: 'a SharedArrayBuffer made in another context',
+        make: (n) => runInNewContext(`new SharedArrayBuffer(${n})`) as SharedArrayBuffer,
+        copied: true,
+      },
+      {
+        name: 'an ArrayBuffer made in another context',
+        make: (n) => runInNewContext(`new ArrayBuffer(${n})`) as ArrayBuffer,
+        copied: false,
+      },
     ];
 
     it.each(kinds)('$name: copied is $copied, seen by a write after the load', async (kind) => {

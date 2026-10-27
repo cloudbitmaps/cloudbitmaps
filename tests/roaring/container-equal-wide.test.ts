@@ -7,6 +7,7 @@ import {
   WORDS,
   bitsetContainer,
   containersEqual,
+  usesEqualView,
 } from '@/ts-roaring/containers';
 
 /**
@@ -72,6 +73,17 @@ const PLACEMENTS = [
 describe('the wide compare of arrays', () => {
   it('has the view threshold the docs of the compare state', () => {
     expect(EQUAL_VIEW_MIN).toBe(512);
+  });
+
+  it('goes through the view from 512 values, and only when both starts are on a 4-byte boundary', () => {
+    expect(usesEqualView(511, 0, 0)).toBe(false);
+    expect(usesEqualView(512, 0, 0)).toBe(true);
+    expect(usesEqualView(513, 4, 8)).toBe(true);
+    expect(usesEqualView(4096, 2, 0)).toBe(false);
+    expect(usesEqualView(4096, 0, 6)).toBe(false);
+    // A run container counts two values a run: 255 runs are 510 values, 256 runs are 512.
+    expect(usesEqualView(2 * 255, 0, 0)).toBe(false);
+    expect(usesEqualView(2 * 256, 0, 0)).toBe(true);
   });
 
   for (const n of LENGTHS) {

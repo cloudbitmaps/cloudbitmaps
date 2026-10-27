@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RoaringBitmap, ValidationError } from '@/index';
 import { TsBitmap } from '@/ts-roaring/bitmap';
@@ -273,6 +274,16 @@ describe('the constructor', () => {
           return new Uint32Array(b);
         },
         true,
+      ],
+      [
+        'a SharedArrayBuffer made in another context',
+        () => new Uint32Array(runInNewContext('new SharedArrayBuffer(16)') as SharedArrayBuffer),
+        true,
+      ],
+      [
+        'an ArrayBuffer made in another context',
+        () => new Uint32Array(runInNewContext('new ArrayBuffer(16)') as ArrayBuffer),
+        false,
       ],
       [
         'a Proxy over a Uint32Array, which is no buffer the brand can name',
