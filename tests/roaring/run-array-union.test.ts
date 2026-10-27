@@ -210,7 +210,9 @@ describe('which way a run container united with an array is written', () => {
     // At 4,096 and 4,097 values of the largest result the body is the same 8,192 bytes.
     expect(choose(1_100, 4_000, 96)).toBe(false);
     expect(choose(1_100, 4_000, 97)).toBe(false);
-    expect(choose(1_100, 3_000, 1_096)).toBe(choose(1_100, 3_000, 1_097));
+    // Both are above the size rule, so the two answers are the same: the 4,096 boundary is not a case the rule can get wrong.
+    expect(choose(1_100, 3_000, 1_096)).toBe(true);
+    expect(choose(1_100, 3_000, 1_097)).toBe(true);
   });
 
   it('a union that stays a run container walks, one that cannot be one expands, and both return the canonical container', () => {
