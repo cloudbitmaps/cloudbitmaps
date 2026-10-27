@@ -206,9 +206,10 @@ which defaults to `true`. It waits for the same approval as a tag push.
   the install or the build, so nothing is installed, packed or published. The job sits in the `release` environment,
   so the approval prompt still comes first and the run then fails.
 - **A dry run works on a branch or a tag.** On a branch it skips the tag check and the release-notes check, which key
-  on a tag ref; on a tag ref both run. The job holds the `id-token: write` permission on a branch dry run too, and
-  that is safe: no publish step runs there (the real publish needs a version tag ref), and a dry run mints no
-  attestation. Splitting the job so that installs never share a job with the permission is a separate hardening.
+  on a tag ref; on a tag ref both run. The job holds the `id-token: write` permission on a branch dry run too. What holds: no publish step runs
+  there (the real publish needs a version tag ref) and a dry run mints no attestation. What does not: code from an
+  installed dependency running in that job could still request the token. Isolating the publish job from dependency
+  installs is planned before 1.0.
 - **No run started by hand creates a GitHub Release**: that job runs only on a tag push. After a real manual
   publish, create it yourself, as the [break-glass](#manual--break-glass-release) steps do.
 
