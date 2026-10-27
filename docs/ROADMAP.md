@@ -493,6 +493,14 @@ move it up.
   another writer's newer load; the way to update a segment is to write a new one and point readers at it. The planned
   form reads the source at a pin and publishes only if the segment is still at the generation it read, a conflict
   otherwise.
+- **Take the cheaper path for a large batch written into run containers.** A batch of ids written into a run container
+  (`addMany`, or the union of a run container with an array) is merged into the run list in one walk, so the result is
+  in its smallest kind. When the batch is about a thousand ids or more and the container holds some thousand runs, the
+  result is a bitset and the merge costs more than expanding the runs to words would have: indicative probes put that
+  corner 20 to 40% above the earlier expansion, and the paired bench's `addMany run` cell reads +4.1% on its shape. The
+  fix is to choose the path from an estimate of the result's size. The same kernel serves the store's unions of decoded
+  chunks (`orInPlace` in the engine's union and in the batch combine), which no store cell of the paired bench times
+  today, so a store union cell is part of this item.
 - **A plain copy verb.** Copying a segment into another is `materializeMany` with the segment as its one operand today,
   which reads once at one instant but is a batch call; a single verb would say it directly.
 - **`analyze` — try it on your own data before adopting anything.** Point a command at a file of your IDs and it
