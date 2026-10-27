@@ -43,12 +43,21 @@ export interface DocSample {
   readonly reason: string;
 }
 
-/** The markdown a sample may be marked in: the guides, the root README and each package's README. */
+/** The folder whose pages are runnable programs: each page's samples are one module, in page order. */
+export const PLAYBOOK_DIR = 'docs/playbooks/';
+
+/**
+ * The markdown a sample may be marked in: the guides, the playbooks, the root README and each package's README.
+ */
 export function sampleFiles(): string[] {
-  return execFileSync('git', ['ls-files', 'README.md', 'docs/guide/*.md', 'packages/*/README.md'], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  })
+  return execFileSync(
+    'git',
+    ['ls-files', 'README.md', 'docs/guide/*.md', 'docs/playbooks/*.md', 'packages/*/README.md'],
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+    },
+  )
     .split('\n')
     .filter(Boolean);
 }
@@ -155,21 +164,64 @@ export function compileSamples(samples: readonly DocSample[]): SampleProblem[] {
     lib: ['lib.es2022.d.ts'],
   };
 
-  const virtual = new Map<string, { sample: DocSample; text: string; offset: number }>();
-  samples.forEach((s, n) => {
-    const prelude = s.preludes.map((p) => {
+  // A sample is its own module, except on a playbook page: its samples run as one program, so they are one module,
+  // in page order, and a name one declares the next may use. `segments` maps a line of the module back to the sample
+  // (and the line of the page) it came from.
+  interface Segment {
+    readonly from: number;
+    readonly sample: DocSample;
+  }
+  interface Virtual {
+    readonly text: string;
+    readonly offset: number;
+    readonly segments: readonly Segment[];
+  }
+  const preludeLines = (s: DocSample): string[] =>
+    s.preludes.map((p) => {
       const line = PRELUDES[p];
       if (line === undefined) throw new Error(`${s.file}:${s.line} — unknown prelude "${p}"`);
       return line;
     });
-    const head = prelude.join('\n');
-    const text = `${head}${head === '' ? '' : '\n'}${s.code}\nexport {};\n`;
+  const groups: DocSample[][] = [];
+  const byPage = new Map<string, DocSample[]>();
+  for (const s of samples) {
+    if (!s.file.startsWith(PLAYBOOK_DIR)) {
+      groups.push([s]);
+      continue;
+    }
+    const page = byPage.get(s.file);
+    if (page === undefined) {
+      const created = [s];
+      byPage.set(s.file, created);
+      groups.push(created);
+    } else {
+      page.push(s);
+    }
+  }
+  const virtual = new Map<string, Virtual>();
+  groups.forEach((group, n) => {
+    const head = [...new Set(group.flatMap(preludeLines))];
+    const segments: Segment[] = [];
+    const bodies: string[] = [];
+    let at = 1;
+    for (const s of group) {
+      segments.push({ from: at, sample: s });
+      bodies.push(s.code);
+      at += s.code.split('\n').length;
+    }
     virtual.set(join(ROOT, '.doc-samples', `sample-${n}.mts`), {
-      sample: s,
-      text,
-      offset: prelude.length,
+      text: `${head.join('\n')}${head.length === 0 ? '' : '\n'}${bodies.join('\n')}\nexport {};\n`,
+      offset: head.length,
+      segments,
     });
   });
+  /** `file:line` of the page for a 1-based `line` of the module text. */
+  const where = (v: Virtual, line: number): string => {
+    const at = line - v.offset;
+    let seg = v.segments[0] as Segment;
+    for (const s of v.segments) if (s.from <= at) seg = s;
+    return `${seg.sample.file}:${seg.sample.line + at - seg.from}`;
+  };
 
   const host = ts.createCompilerHost(options);
   const realRead = host.readFile.bind(host);
@@ -198,9 +250,8 @@ export function compileSamples(samples: readonly DocSample[]): SampleProblem[] {
     const f = d.file;
     const v = f === undefined ? undefined : virtual.get(f.fileName);
     if (f !== undefined && v !== undefined && d.start !== undefined) {
-      const line = f.getLineAndCharacterOfPosition(d.start).line + 1 - v.offset;
       problems.push({
-        where: `${v.sample.file}:${v.sample.line + line - 1}`,
+        where: where(v, f.getLineAndCharacterOfPosition(d.start).line + 1),
         message: `TS${d.code}: ${flatten(d)}`,
       });
     } else if (f === undefined || f.isDeclarationFile) {
@@ -226,19 +277,18 @@ export function compileSamples(samples: readonly DocSample[]): SampleProblem[] {
       if (specifier !== undefined && ts.isStringLiteral(specifier)) {
         const name = specifier.text;
         if ((name.startsWith('@cloudbitmaps/') || name.startsWith('@/')) && !published.has(name)) {
-          const line =
-            source.getLineAndCharacterOfPosition(specifier.getStart(source)).line + 1 - v.offset;
           problems.push({
-            where: `${v.sample.file}:${v.sample.line + line - 1}`,
+            where: where(
+              v,
+              source.getLineAndCharacterOfPosition(specifier.getStart(source)).line + 1,
+            ),
             message: `\`${name}\` is not a module the packages publish`,
           });
         }
       }
       if (node.kind === ts.SyntaxKind.AnyKeyword) {
-        const line =
-          source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 - v.offset;
         problems.push({
-          where: `${v.sample.file}:${v.sample.line + line - 1}`,
+          where: where(v, source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1),
           message: 'an explicit `any`: write the type a reader should use',
         });
       }

@@ -27,8 +27,12 @@ import {
  * later is compiled or skipped on purpose, never by omission. `js` fences are out of this gate's scope: it compiles
  * TypeScript only.
  *
+ * THE PLAYBOOKS. The fences of one page of `docs/playbooks/` are one program, so they are compiled as one module in page
+ * order, and a name one declares the next may use; every other file compiles each sample alone. `playbooks.test.ts`
+ * runs the same fences and holds the output the page shows.
+ *
  * WHAT IT DOES NOT CLAIM. A fence with no marker is neither compiled nor said to compile. A sample is compiled, not
- * run, so what it prints is not held here. The sample is a module compiled alone: a name it uses and does not declare
+ * run, so what it prints is not held here (but see the playbooks). The sample is a module compiled alone: a name it uses and does not declare
  * is an error, except `store`, which the docs elide by convention and a marker may ask for
  * (`<!-- typecheck: store -->`).
  */
@@ -169,6 +173,11 @@ describe('the compile step', () => {
       ].join('\n'),
       ['store'],
     ),
+    // Two fences of one playbook page are one module; the same two on a guide page are two modules.
+    probe('docs/playbooks/shared.md', 'const shared = 1;\nvoid shared;'),
+    { ...probe('docs/playbooks/shared.md', 'void shared;\nconst n: number = "text";'), line: 40 },
+    probe('docs/guide/not-shared.md', 'const shared = 1;\nvoid shared;'),
+    { ...probe('docs/guide/not-shared.md', 'void shared;'), line: 40 },
     probe(
       'own-store.md',
       "import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';\nconst store = new CloudRoaring({ storage: new MemoryStorage() });\nvoid store;",
@@ -201,6 +210,18 @@ describe('the compile step', () => {
     expect(of('own-store.md')).toEqual([]);
   });
 
+  it('compiles the fences of a playbook page as one module, and names the page line of an error in a later one', () => {
+    expect(of('docs/playbooks/shared.md')).toEqual([
+      expect.stringMatching(/^docs\/playbooks\/shared\.md:41 TS2322/),
+    ]);
+  });
+
+  it("keeps the samples of any other page apart: a name one declares is not the next one's", () => {
+    expect(of('docs/guide/not-shared.md')).toEqual([
+      expect.stringMatching(/^docs\/guide\/not-shared\.md:40 TS2304/),
+    ]);
+  });
+
   it('refuses the nullable fields of a pin passed whole to pinAt, which the narrowing on generation avoids', () => {
     const errors = of('pin-at-nullable.md');
     expect(errors.length).toBeGreaterThan(0);
@@ -214,6 +235,7 @@ describe('the documents it reads', () => {
     expect(files).toContain('README.md');
     expect(files).toContain('docs/guide/loading.md');
     expect(files).toContain('packages/roaring/README.md');
+    expect(files).toContain('docs/playbooks/roaring-bitmap.md');
     for (const f of files) expect(readFileSync(join(ROOT, f), 'utf8').length).toBeGreaterThan(0);
   });
 });
