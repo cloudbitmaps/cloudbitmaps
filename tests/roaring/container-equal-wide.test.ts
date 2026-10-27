@@ -22,13 +22,13 @@ function arrayOf(values: readonly number[], pad = 0, byteShift = 0): Container {
   return new Container(ARRAY, data, pad, values.length, values.length, false);
 }
 
-function runsOf(pairs: readonly number[], pad = 0, byteShift = 0): Container {
+function runsOf(pairs: readonly number[], pad = 0, byteShift = 0, cardOf?: number): Container {
   const buffer = new ArrayBuffer(byteShift + 2 * (pad + pairs.length));
   const data = new Uint16Array(buffer, byteShift, pad + pairs.length);
   data.set(pairs, pad);
   let card = 0;
   for (let i = 1; i < pairs.length; i += 2) card += (pairs[i] as number) + 1;
-  return new Container(RUN, data, pad, pairs.length / 2, card, false);
+  return new Container(RUN, data, pad, pairs.length / 2, cardOf ?? card, false);
 }
 
 const arrayValues = (n: number) => Array.from({ length: n }, (_, i) => 3 * i);
@@ -102,8 +102,7 @@ describe('the wide compare of runs', () => {
             const moved = pairs.slice();
             // Shorten a run (its length is odd-indexed) or move a start; either way the set differs, and so does the pair list.
             moved[p] = p % 2 === 0 ? (moved[p] as number) + 1 : (moved[p] as number) - 1;
-            const b = runsOf(moved, right.pad, right.shift);
-            b.card = a.card;
+            const b = runsOf(moved, right.pad, right.shift, a.card);
             expect(containersEqual(a, b)).toBe(false);
             expect(containersEqual(b, a)).toBe(false);
           }
