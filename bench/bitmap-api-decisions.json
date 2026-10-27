@@ -1,12 +1,1 @@
-{
-  "date": "2026-10-26",
-  "words": "- yes to your recommendations",
-  "accepted": [
-    "RoaringBitmap.orMany",
-    "isEqual",
-    "RoaringBitmap.andNot",
-    "RoaringBitmap.deserialize",
-    "RoaringBitmap.xor",
-    "RoaringBitmap.or"
-  ]
-}
+{ "date": null, "words": "", "accepted": [] }
