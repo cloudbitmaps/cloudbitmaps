@@ -189,7 +189,7 @@ const NOTES = [
   "`deserialize` and `first deserialize`: the class caps the size and checks the layout of the bytes before it decodes them; the `roaring` package's decode is called with no validating option, so these rows compare the class with its check against native without one.",
   "`clone` and `clone then write`: the class's clone shares the containers and copies one on the first write that reaches it; native's clone copies everything at once. These rows are that policy difference, not two copies of the same work.",
   "`write after or`, `write after xor` and `write after andNot`: only the first operand's next write is timed, on an operand decoded fresh for each repetition, after a returning combine that flagged the containers it keeps by reference. The codec has no such flag, so its figure is the same write on an unflagged bitmap.",
-  '`intersects overlapping` answers `true` at the first container the two bitmaps share, so it times how fast each subject finds a first hit; `intersects disjoint` answers `false` after walking every key. `isSubset` and `isEqual` answer `true`, which is the full scan.',
+  '`intersects overlapping` answers `true` at the first id the two bitmaps share: the codec walks the two key lists in order, compares the two containers of each key both hold, and returns at the first pair that has a value in common (a pair with none is passed over), so it times how fast each subject finds a first hit; `intersects disjoint` answers `false` after walking every key. `isSubset` and `isEqual` answer `true`, which is the full scan.',
   '`serialize` is held to identical bytes on every subject; every other answer is held to the same value.',
 ];
 

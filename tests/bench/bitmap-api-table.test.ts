@@ -165,6 +165,9 @@ describe('the table of a record', () => {
     expect(region).toContain('compare the class with its check against native without one');
     expect(region).toContain('that policy difference');
     expect(region).toContain('only the first operand');
+    expect(region).toContain(
+      '`intersects overlapping` answers `true` at the first id the two bitmaps share',
+    );
     expect(region).toContain('`intersects disjoint` answers `false` after walking every key');
     expect(region).toContain('held to identical bytes');
   });
