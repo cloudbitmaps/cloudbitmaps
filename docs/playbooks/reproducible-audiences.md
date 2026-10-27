@@ -123,8 +123,9 @@ NotFoundError
 
 A generation past the window is gone, and `pinAt` says so with `NotFoundError`: it never reads empty and never serves another
 generation. If a campaign must be reproducible for longer than the window, do not widen `keep` for every segment (each retained
-generation is a full copy): export the audience of that send, the ids themselves, to storage you retain
-([`exportSegments`](../guide/export.md) writes portable bytes), and record where you put it.
+generation is a full copy): write the audience of that send, the ids themselves, to storage you retain (stream the
+pinned handle's `iterate()` or `batches()` into a file or a `RoaringBitmap` and its `serialize()`; [`exportSegments`](../guide/export.md)
+writes every segment's current generation, not a pinned one), and record where you put it.
 
 ## Undo a bad refresh
 
@@ -195,9 +196,10 @@ ValidationError
 - **A lease is at most 14 days**, and a segment holds at most 64 live leases at once.
 - **An erasure ends reproducibility on purpose.** `eraseSubject` deletes every generation that held the id, whatever `keep` or a
   lease says, so an audience as of the send date no longer exists for a person who asked to be forgotten
-  ([a lease keeps superseded generations, and erasure ignores it](../guide/erasure.md#a-lease-keeps-superseded-generations-and-erasure-ignores-it)).
-- **A pointer only moves forward within one incarnation of a row.** Only `rollback` moves it down, and only onto a generation the row
-  knows. A segment that is purged and loaded again starts at generation 0, so a segment's identity is its row, never its generation
+  ([a lease keeps superseded generations, and erasure ignores it](../guide/erasure.md#a-lease-keeps-superseded-generations-and-erasure-ignores-it);
+  [why every holder goes](../guide/correctness.md#every-holder-goes)).
+- **A pointer only moves forward within one incarnation of a row** ([publish is forward-only](../guide/correctness.md#publish-is-forward-only)).
+  Only `rollback` moves it down, and only onto a generation the row knows. A segment that is purged and loaded again starts at generation 0, so a segment's identity is its row, never its generation
   number: record the fingerprint with the number, as `pinnedAt` does.
 - **A pin and a rollback are not a snapshot of several segments.** Each segment has its own pointer. A send that read three
   segments records three pins.

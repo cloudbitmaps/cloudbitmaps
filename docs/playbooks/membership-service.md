@@ -1,6 +1,6 @@
 # A membership check in a long-running service
 
-Open a few segments when a service starts, answer "is this id in the set" on each request from memory, follow new loads by themselves, and hold a fixed point when one request needs it.
+Open a few segments when a service starts, answer "is this id in the set" on each request from memory, follow new loads by themselves, and hold a fixed point when a check needs it.
 
 A service that gates a request on a set (is this account in the beta, is this device on the blocklist, may this user see
 this document) keeps its segments open for as long as it runs. This page builds that service's shape on `MemoryStorage`
