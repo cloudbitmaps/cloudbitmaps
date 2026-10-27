@@ -128,12 +128,10 @@ export class CrbmWriter {
   async addChunk(chunkKey: number, payload: Uint8Array, cardinality: number): Promise<void> {
     if (this.finished) throw new ValidationError('CrbmWriter already finished');
     if (!Number.isInteger(chunkKey) || chunkKey < 0 || chunkKey > 0xffff) {
-      throw new ValidationError(`chunkKey must be a u16; got ${chunkKey}`);
+      throw new ValidationError('chunkKey must be a u16');
     }
     if (chunkKey <= this.lastKey) {
-      throw new ValidationError(
-        `chunkKey ${chunkKey} not strictly ascending (last ${this.lastKey})`,
-      );
+      throw new ValidationError('chunkKey is not strictly ascending');
     }
     if (!Number.isInteger(cardinality) || cardinality < 1 || cardinality > MAX_CHUNK_CARDINALITY) {
       throw new ValidationError(

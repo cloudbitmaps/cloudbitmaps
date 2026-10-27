@@ -42,10 +42,10 @@ export function assertConsistentDecode(bm: Decoded): void {
   let previous = -1;
   let seen = 0;
   for (const value of bm) {
-    if (value <= previous) throw new Error(`decode iterates ${value} after ${previous}`);
+    if (value <= previous) throw new Error('decode iterates a value out of order');
     if (++seen > bm.size) throw new Error(`decode iterates more values than its size, ${bm.size}`);
     if (seen <= 4_096 && !bm.has(value))
-      throw new Error(`decode iterates ${value}, has() denies it`);
+      throw new Error('decode iterates a value that has() denies');
     previous = value;
   }
   if (seen !== bm.size) throw new Error(`decode's size is ${bm.size}, it iterates ${seen} values`);

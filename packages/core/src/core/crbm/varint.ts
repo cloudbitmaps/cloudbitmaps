@@ -17,7 +17,7 @@ const U32_CEIL = U32_MAX + 1;
  */
 export function varintLength(value: number): number {
   if (!Number.isInteger(value) || value < 0 || value >= U32_CEIL) {
-    throw new RangeError(`varint value must be a u32; got ${value}`);
+    throw new RangeError('varint value must be a u32');
   }
   if (value < 0x80) return 1;
   if (value < 0x4000) return 2;

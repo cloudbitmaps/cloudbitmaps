@@ -70,14 +70,13 @@ function agree(label: string, held: Held): void {
     fail(`${label}: toUint32Array holds ${got.length}, model ${want.length}`);
   let at = 0;
   for (const id of bitmap) {
-    if (id !== want[at]) fail(`${label}: iteration gives ${id} at ${at}, model ${want[at]}`);
-    if (got[at] !== id) fail(`${label}: toUint32Array gives ${got[at]} at ${at}, iteration ${id}`);
+    if (id !== want[at]) fail(`${label}: iteration disagrees with the model at position ${at}`);
+    if (got[at] !== id) fail(`${label}: toUint32Array disagrees with iteration at position ${at}`);
     at++;
   }
   if (at !== want.length) fail(`${label}: iteration ends at ${at}, model ${want.length}`);
-  if (bitmap.minimum() !== want[0]) fail(`${label}: minimum ${bitmap.minimum()}, model ${want[0]}`);
-  if (bitmap.maximum() !== want.at(-1))
-    fail(`${label}: maximum ${bitmap.maximum()}, model ${want.at(-1)}`);
+  if (bitmap.minimum() !== want[0]) fail(`${label}: minimum disagrees with the model`);
+  if (bitmap.maximum() !== want.at(-1)) fail(`${label}: maximum disagrees with the model`);
 }
 
 /** An id: random, an edge, or a member of the model or one next to it. */

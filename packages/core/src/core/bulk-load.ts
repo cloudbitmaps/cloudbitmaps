@@ -638,7 +638,7 @@ async function collectChunks(
       throw new ValidationError("a chunk's key must be an integer in [0, 65535]");
     }
     if (chunkKey <= last) {
-      throw new ValidationError(`chunk ${chunkKey} does not ascend: the last was ${last}`);
+      throw new ValidationError("a chunk's key does not ascend past the previous chunk's");
     }
     last = chunkKey;
     const max = bitmap.maximum?.();
