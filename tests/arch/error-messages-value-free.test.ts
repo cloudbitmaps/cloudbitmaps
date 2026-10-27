@@ -14,13 +14,15 @@ import ts from 'typescript';
  *
  * What it reads. Every `new XError(...)`, `XError(...)` or `new Error(...)` call whose name ends in `Error`, or is one of the HELPERS that build an error from a message: the
  * pieces of its first argument that are interpolated into the text (a template literal's spans, the operands of a
- * `+` chain). Each piece is reduced to its last name (`a.b.key` to `key`; `String(x)`, `Number(x)`, `x.toString()`
- * and `x!` to `x`) and refused when that name is one of SENSITIVE below. It matches by NAME, so a variable named
+ * `+` chain). Each piece is reduced to its last name (`a.b.key` to `key`; `keys[i]` and `ids.at(-1)` to
+ * `keys` and `ids`; `String(x)`, `Number(x)`, `x.toString()` and `x!` to `x`; a call of `minimum`, `maximum` or
+ * `select` to `value`) and refused when that name is one of SENSITIVE below. It matches by NAME, so a variable named
  * for what it holds is what the gate sees: name an id `id`, a chunk key `chunkKey`, a stored value `value`.
  *
  * Known limits. It does not follow a message built in a variable first (`const m = ...; throw new E(m)`), a
  * message from a helper function, a value reached through a differently named
- * variable (`const n = chunkKey; ... ${n}`), a number formatted through a call it does not know (`fmt(k)`), or a
+ * variable (`const n = chunkKey; ... ${n}`), a number formatted through a call it does not know (`fmt(k)`), a value held in a differently named variable
+ * (`const max = bitmap.maximum(); ... ${max}`), or a
  * message passed through an `options.cause` object. It reads `.ts` files only, tests excluded. A sensitive name
  * that is not what it says (a storage object's `key`, a `value` that is a count) is renamed at the site, so the
  * gate keeps its pattern; a message that carries one on purpose is listed in ALLOWED with the reason, and the gate
@@ -80,10 +82,19 @@ function leafName(e: ts.Expression): string | undefined {
       x.arguments.length === 1
     ) {
       x = x.arguments[0]!;
+    } else if (ts.isElementAccessExpression(x)) {
+      x = x.expression;
     } else if (
       ts.isCallExpression(x) &&
       ts.isPropertyAccessExpression(x.expression) &&
-      ['toString', 'toFixed', 'toLocaleString'].includes(x.expression.name.text)
+      ['minimum', 'maximum', 'select'].includes(x.expression.name.text)
+    ) {
+      // A value read out of a bitmap.
+      return 'value';
+    } else if (
+      ts.isCallExpression(x) &&
+      ts.isPropertyAccessExpression(x.expression) &&
+      ['toString', 'toFixed', 'toLocaleString', 'at'].includes(x.expression.name.text)
     ) {
       x = x.expression.expression;
     } else break;
@@ -163,6 +174,16 @@ describe('the error-message detector', () => {
     ['concatenation', "throw new IntegrityError('chunk ' + chunkKey + ' is corrupt');"],
     ['plain call', 'throw IntegrityError(`chunk ${chunkKey}`);'],
     ['plain Error', 'throw new Error(`value ${value}`);'],
+    [
+      'the listed-twice message as it was before it was reworded',
+      'throw new IntegrityError(`chunk key from a tier is listed twice: ${keys[i]}`);',
+    ],
+    ['element access, by index', 'throw new IntegrityError(`bad ${ids[0]}`);'],
+    ['element access, by variable', 'throw new IntegrityError(`bad ${values[slot]}`);'],
+    ['.at() on a values list', 'throw new IntegrityError(`bad ${values.at(-1)}`);'],
+    ['a bitmap extreme', 'throw new Error(`maximum ${bitmap.maximum()}`);'],
+    ['a bitmap minimum', 'throw new Error(`minimum ${bitmap.minimum()}`);'],
+    ['a bitmap select', 'throw new Error(`rank ${bitmap.select(3)}`);'],
     ['helper that builds an integrity error', 'throw crbmIntegrity(`chunk ${chunkKey} is bad`);'],
     ['method helper', 'throw this.refuse(needed, `chunk ${key}`);'],
     ['namespaced class', 'throw new errors.IntegrityError(`chunk ${chunkKey}`);'],
@@ -181,6 +202,9 @@ describe('the error-message detector', () => {
       'throw new IntegrityError(`holds ${size}, index says ${cardinality}`);',
     ],
     ['option name', 'throw new ValidationError(`${name} must be a boolean; got ${kindOf(v)}`);'],
+    ['element of a count list', 'throw new IntegrityError(`${counts[i]} chunks`);'],
+    ['element of a length list', 'throw new IntegrityError(`length ${lengths[slot]} invalid`);'],
+    ['.at() on a count list', 'throw new IntegrityError(`${counts.at(-1)} chunks`);'],
     ['position', 'throw new IntegrityError(`the chunk at position ${index} is corrupt`);'],
     ['segment name', 'throw new NotFoundError(`segment ${ref.segment} has no row`);'],
     ['no interpolation', 'throw new IntegrityError("chunk key is out of range");'],

@@ -75,9 +75,8 @@ function agree(label: string, held: Held): void {
     at++;
   }
   if (at !== want.length) fail(`${label}: iteration ends at ${at}, model ${want.length}`);
-  if (bitmap.minimum() !== want[0]) fail(`${label}: minimum ${bitmap.minimum()}, model ${want[0]}`);
-  if (bitmap.maximum() !== want.at(-1))
-    fail(`${label}: maximum ${bitmap.maximum()}, model ${want.at(-1)}`);
+  if (bitmap.minimum() !== want[0]) fail(`${label}: minimum disagrees with the model`);
+  if (bitmap.maximum() !== want.at(-1)) fail(`${label}: maximum disagrees with the model`);
 }
 
 /** An id: random, an edge, or a member of the model or one next to it. */
