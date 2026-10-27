@@ -37,6 +37,7 @@ async function freshAgainst(batchId: string, ids: number[], against: Segment[]):
   const ref = { namespace: 'batches', segment: batchId };
   await store.load(ref, ids);
   const batch = store.segment(batchId, { namespace: 'batches' });
+  // A throw here leaves the batch segment behind: a job that can fail drops it in a `finally`.
   const fresh = await collect(batch.andNot(against, { allowAbsentOperands: true }));
   await store.dropSegment(ref, { confirmSegment: batchId });
   return fresh;
@@ -110,7 +111,7 @@ const [oldest, ...rest] = window.map(day);
 const merged = await (oldest as ReturnType<typeof day>).unionInto(
   store.segment('window-3d', { namespace: 'seen-windows' }),
   rest,
-  { allowAbsentOperands: true },
+  { allowAbsentOperands: true, keep: 2 },
 );
 console.log('window holds', merged.cardinality);
 
@@ -128,11 +129,15 @@ window holds 7
 run 5 fresh [ 200, 201 ]
 ```
 
-An `*Into` supersedes its destination, so a rolling `window-3d` rebuilt each morning holds exactly that day's window.
+An `*Into` supersedes its destination, so a rolling `window-3d` rebuilt each morning reads as exactly that day's window. It keeps
+every generation it writes unless told otherwise, each one a whole copy in storage, so the call passes `keep`
+([generations and `keep`](../guide/loading.md#generations-and-keep)).
 
 ## Let old days expire
 
-Expiry is per segment. Record when a bucket may go when you create it, and run the sweep from a scheduled job.
+Expiry is per segment. Record when a bucket may go when you create it, and run the sweep from a scheduled job. A policy
+recorded for a segment that has no data yet (`2026-10-24` here was never loaded) is kept on an empty row, which the sweep then
+retires like any other.
 
 <!-- typecheck -->
 ```ts
@@ -200,8 +205,10 @@ ValidationError
   itself idempotent.
 - **Expiry is per segment, never per id.** An id leaves the window when its whole day's bucket is retired, and the sweep is
   yours to schedule ([the pattern, and why there is no per-id expiry](../guide/retention.md#there-is-no-per-id-ttl)).
+- **An empty batch records nothing.** A load of no ids is refused unless it says `allowEmpty: true`, so skip `record` when a
+  batch has no fresh ids.
 - **One writer per bucket.** A load replaces a segment; two jobs recording into one day's bucket race, and the loser is
   told (`superseded`) rather than merged.
-- **Scale and tenancy.** The validated envelope is single-tenant and single-region on S3, up to about 100,000 segments
+- **Scale and tenancy.** The validated envelope is single-tenant and single-region on S3, up to about 100,000 segments, and it lists the `*Into` verbs and the other combine shapes as outside it
   ([what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt)). This page ran on
   `MemoryStorage`, so it says nothing about latency or cost; see [the benchmarks](../benchmarks.md).

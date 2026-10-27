@@ -8,7 +8,7 @@ hands it to a store. Every block runs as written, on invented data, in the repo'
 run prints.
 
 Use it when a job needs set math on integer ids (who is in both lists, who is in this one and not that one) and a
-`Set<number>` is too large or too slow, when you build a set before a `store.load`, or when you read Roaring bytes some
+`Set<number>` is too large, when you build a set before a `store.load`, or when you read Roaring bytes some
 other process wrote. It is not a store: it keeps nothing, and a set you want to survive a restart is a segment.
 
 ## Build a set

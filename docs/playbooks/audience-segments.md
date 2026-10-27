@@ -29,12 +29,12 @@ async function* warehouse(ids: number[]): AsyncGenerator<number> {
   for (const id of ids) yield id;
 }
 
-const exports = {
+const exportsByName = {
   buyers90d: [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008],
   newsletter: [1002, 1003, 1004, 1007, 1009, 1010, 1011],
   euResidents: [1001, 1003, 1005, 1007, 1009, 1011],
 };
-for (const [segment, ids] of Object.entries(exports)) {
+for (const [segment, ids] of Object.entries(exportsByName)) {
   const result = await store.load({ segment }, warehouse(ids), { guard: { minRetained: 0.5 } });
   console.log(segment, result.published, result.cardinality);
 }
@@ -222,9 +222,12 @@ include id 0.
 ## Many audiences in one pass
 
 A refresh that rebuilds hundreds of audiences from the same operands should not read the operands hundreds of times.
-`materializeMany` takes the operand names once and writes every output from one pass, as the blocks above did for three. It
-refuses to publish an output whose operand an opt-out list moved under it, so a suppression list that changes during a long
-call never ships a send that ignores the change ([what it re-checks](../guide/loading.md#many-outputs-from-one-pass-materializemany)).
+`materializeMany` takes the operand names once and reads each operand once per group of outputs: one group while the outputs
+fit the call's memory budget (`maxBufferedBytes`, 256 MiB by default), more when they do not, as the blocks above did for three
+outputs in one. By default it pins each stored operand and, just before publishing, re-reads every pinned operand an output
+subtracts (an `exclude`, or an entry after the first of an `andNot`): an output whose subtracted list moved during the call is
+not published and carries a `StaleOperandError`, so a suppression list that changes during a long call never ships a send that
+ignores the change ([what it re-checks](../guide/loading.md#many-outputs-from-one-pass-materializemany)).
 
 ## What goes wrong
 
@@ -263,13 +266,15 @@ ValidationError
   Events that arrive one at a time belong in the system that receives them; load the set on a cadence.
 - **Counting a combine costs a write or a dry run today.** `count()` answers for one stored segment from its registry row,
   and a combine returns ids. The ways to count one are the dry run above, an `*Into` followed by `count()`, or streaming the
-  ids into a `RoaringBitmap` (`batches()` yields `Uint32Array`s) and asking `andCardinality`. A direct count of a combine is
+  ids into a `RoaringBitmap` (`batches()` yields `Uint32Array`s) and reading its `size`. A direct count of a combine is
   planned; the [roadmap](../ROADMAP.md) lists the playbooks that wait for it.
 - **One id space.** Ids are unsigned 32-bit integers, the same space in every namespace. Mapping an email or a device id to
   a stable integer is the warehouse's job; the library never sees the identifier.
 - **Not a join.** A segment holds ids only: no attributes, no order, no time. "Bought in the last 90 days" is a query in the
   warehouse that loads a segment; the set algebra starts after it.
-- **Scale and tenancy.** The validated envelope is single-tenant and single-region on S3, up to about 100,000 segments:
-  [what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt). This page ran on
+- **An intersect of more than two operands is unmeasured on S3.** The page intersects three; its correctness is tested, its
+  request counts and latency at that width are not published.
+- **Scale and tenancy.** The validated envelope is single-tenant and single-region on S3, up to about 100,000 segments, and
+  it lists `materializeMany` and the other combine shapes as outside it: [what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt). This page ran on
   `MemoryStorage`, so it says nothing about latency or cost; for those, see [the cost guide](../guide/cost.md) and
   [the benchmarks](../benchmarks.md).

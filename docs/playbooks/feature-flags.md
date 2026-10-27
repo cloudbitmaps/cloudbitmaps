@@ -86,9 +86,9 @@ console.log('reader before the flip', await reader.segment('beta-program', { nam
 await store.load({ namespace: 'flags', segment: 'beta-program' }, [11, 12, 13, 14, 15, 16, 17]);
 
 console.log('writer after the flip', await flag('beta-program').has(17));
-console.log('reader 1 s later', await reader.segment('beta-program', { namespace: 'flags' }).has(17));
+console.log('reader before its refresh passes', await reader.segment('beta-program', { namespace: 'flags' }).has(17));
 now += 3_000;
-console.log('reader 3 s later', await reader.segment('beta-program', { namespace: 'flags' }).has(17));
+console.log('reader after its refresh passes', await reader.segment('beta-program', { namespace: 'flags' }).has(17));
 ```
 
 Output:
@@ -97,8 +97,8 @@ Output:
 ```text
 reader before the flip false
 writer after the flip true
-reader 1 s later false
-reader 3 s later true
+reader before its refresh passes false
+reader after its refresh passes true
 ```
 
 The store that made the load sees it at once; every other store sees it once its refresh interval has passed. A lower
@@ -137,7 +137,7 @@ const slice = (i: number) => store.segment(`new-checkout:${i}`, { namespace: 'ro
 async function rollOutTo(tenths: number): Promise<number> {
   const first = slice(0);
   const rest = Array.from({ length: tenths - 1 }, (_, i) => slice(i + 1));
-  await first.unionInto(flag('new-checkout'), rest);
+  await first.unionInto(flag('new-checkout'), rest, { keep: 2 });
   return flag('new-checkout').count();
 }
 for (const tenths of [1, 3, 6]) console.log(`${tenths * 10}%`, await rollOutTo(tenths));
@@ -152,7 +152,8 @@ Output:
 60% 244
 ```
 
-A roll back is a step to a smaller number, and the check is the same `has` as before. Prove the property the recipe relies
+An `*Into` keeps every generation it writes unless told otherwise, and each retained generation is a whole copy in storage, so
+the step passes `keep` (`keep: 2` leaves two older generations). A roll back is a step to a smaller number, and the check is the same `has` as before. Prove the property the recipe relies
 on, that nobody leaves while the percentage grows, with the set comparisons of the standalone class:
 
 <!-- typecheck -->
@@ -255,6 +256,6 @@ ValidationError
 - **Not for a sub-millisecond path without the cache.** A first `has` of a segment reads its registry row, its index and one
   chunk; after that it answers from memory. Keep one store per process.
 - **Scale and tenancy.** One segment per flag and per variant is cheap, but the validated envelope is single-tenant and
-  single-region on S3, up to about 100,000 segments
+  single-region on S3, up to about 100,000 segments, and it lists the `*Into` verbs and the other combine shapes as outside it
   ([what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt)). This page ran on
   `MemoryStorage`, so it says nothing about latency; see [the benchmarks](../benchmarks.md).

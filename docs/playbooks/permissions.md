@@ -75,9 +75,9 @@ console.log('checker before the revoke', await checks(7002));
 await store.load({ namespace: 'tenant:acme', segment: 'group:finance' }, [7001, 7003]); // 7002 left the group
 await acl('acme', 'group:finance').unionInto(acl('acme', 'doc:1001'), [acl('acme', 'doc:1001:direct')], { keep: 2 });
 console.log('the revoking store', await canView('acme', 1001, 7002));
-console.log('the checker, 1 s later', await checks(7002));
+console.log('the checker, before its refresh passes', await checks(7002));
 now += 3_000;
-console.log('the checker, 3 s later', await checks(7002));
+console.log('the checker, after its refresh passes', await checks(7002));
 ```
 
 Output:
@@ -86,8 +86,8 @@ Output:
 ```text
 checker before the revoke true
 the revoking store false
-the checker, 1 s later true
-the checker, 3 s later false
+the checker, before its refresh passes true
+the checker, after its refresh passes false
 ```
 
 Until the checker's refresh passes it still answers from the old generation, so a revoke takes up to `cache.genTtlMs` to
@@ -107,6 +107,7 @@ A pin holds a segment at the generation current when it was taken.
 const finance = await acl('acme', 'group:finance').pin();
 await store.load({ namespace: 'tenant:acme', segment: 'group:finance' }, [7001]); // a change lands mid-review
 console.log('pinned review sees', await finance.count(), '- live now', await acl('acme', 'group:finance').count());
+await finance.release(); // ends the handle's lease; this pin took none, so it only closes the handle
 ```
 
 Output:
@@ -143,7 +144,10 @@ erased from [ 'doc:1002', 'doc:1002:direct', 'group:eng' ]
 false false
 ```
 
-The ledger is your proof of deletion and exists only as the return value, so keep it. The scope is the tenant here; a call
+The ledger is your proof of deletion and exists only as the return value, so keep it. Run it while no load of that id is in
+flight, and know it does not reach backups, replicas or noncurrent object versions, which keep the old object until their
+lifecycle removes it ([what an erasure does not reach](../guide/erasure.md#what-an-erasure-does-not-reach)); a crypto-shred is
+the tool for those. The scope is the tenant here; a call
 with `allNamespaces: true` sweeps every tenant. The cost grows with the segments scanned and the generations each holds
 ([what an erasure costs](../guide/erasure.md#find-an-id-and-erase-it)). The direct lists `doc:1002:direct` and the composed
 `doc:1002` are both segments, so both are rewritten: a composed list is a copy of the id, and an erasure reaches every
@@ -152,7 +156,7 @@ copy that is a segment of this store.
 ## A tenant leaves
 
 Because every segment is sealed under its own key, a tenant's namespace can be made unreadable by removing those keys from
-the registry. The objects stay in the bucket, and no store can open them.
+the registry. The objects stay in the bucket, and no store can open them through the current row.
 
 <!-- typecheck -->
 ```ts
@@ -175,6 +179,11 @@ Output:
 2 [ [ 'group:all', true, true ] ]
 0
 ```
+
+`backend.registry` is the registry half of the backend the store was built on: with a real driver, pass the `registry` of the
+`S3Storage` (or the GCS or Azure Blob backend) you gave the store, as [the encryption
+guide](../guide/encryption.md#erase-a-segment-or-a-namespace-crypto-shred) shows. All tenants here share one keystore and one
+key id: the shred removes each segment's wrapped key from its registry row, never the master key.
 
 The call takes the namespace's name as a confirmation, shreds eight segments at a time and reports one result per segment:
 a segment with `destroyed: false` still holds data and needs a look. A store that already had the segment open keeps
@@ -225,7 +234,8 @@ false false
   stated.
 - **Not a policy engine.** A set says who is in it. Roles, inheritance, deny rules and conditions are computed upstream
   and loaded as sets, as the group union above was; the library evaluates none of them.
-- **A namespace is a name, not a wall.** Any store with the bucket's credentials reads every namespace. A tenant that must
+- **A namespace is a name, not a wall.** Any store with the bucket's credentials, and for sealed segments the keystore's
+  key, reads every namespace it is pointed at; one keystore here covers every tenant. A tenant that must
   be isolated needs a prefix or a bucket and credentials of its own. Multi-tenant isolation is outside the validated
   envelope, which is single-tenant and single-region on S3 and up to about 100,000 segments, so a design with one segment
   per resource per tenant has to stay under that count: [what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt).

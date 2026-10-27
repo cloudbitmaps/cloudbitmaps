@@ -120,6 +120,7 @@ export function parsePlaybook(file: string, text: string): Playbook {
     }
     parts.push({ line: s.line, code: s.code, output });
   }
+  problems.push(...unrunFences(file, lines, samples));
   lines.forEach((l, n) => {
     if (OUTPUT_MARKER.test(l) && !claimed.has(n)) {
       problems.push(`${file}:${n + 1} — an output marker with no runnable fence right before it`);
@@ -127,6 +128,48 @@ export function parsePlaybook(file: string, text: string): Playbook {
   });
   if (parts.length === 0) problems.push(`${file} — a playbook with no runnable fence`);
   return { title, summary, parts, problems };
+}
+
+const NOT_RUN = /^<!--[ \t]*not-run:[ \t]*(\S.{6,}?)[ \t]*-->[ \t]*$/;
+
+/**
+ * Every fence the run does not execute must say so. A page's runnable fences are the marked TypeScript ones; the only other
+ * fence is the `text` output right after an output marker; anything else (a `js`, `bash` or `json` fence, an unmarked
+ * TypeScript one) fails, unless a `<!-- not-run: reason -->` line sits right above it, so a snippet that reads as proven
+ * is never silently untested.
+ */
+function unrunFences(
+  file: string,
+  lines: readonly string[],
+  samples: readonly { line: number }[],
+): string[] {
+  const runnable = new Set(samples.map((s) => s.line - 2));
+  const problems: string[] = [];
+  const above = (n: number): string => {
+    let k = n - 1;
+    while (k >= 0 && (lines[k] as string).trim() === '') k -= 1;
+    return k >= 0 ? (lines[k] as string) : '';
+  };
+  let inside = false;
+  lines.forEach((l, n) => {
+    if (inside) {
+      if (CLOSE_FENCE.test(l)) inside = false;
+      return;
+    }
+    const open = /^```(\S*)/.exec(l);
+    if (open === null) return;
+    inside = true;
+    const lang = open[1] as string;
+    if (runnable.has(n)) return;
+    if (lang === 'text' && OUTPUT_MARKER.test(above(n))) return;
+    if (NOT_RUN.test(above(n))) return;
+    problems.push(
+      /^(ts|typescript)$/.test(lang)
+        ? `${file}:${n + 1} — a TypeScript fence with no typecheck marker above it`
+        : `${file}:${n + 1} — a ${lang === '' ? 'bare' : lang} fence is not run: write it as a runnable TypeScript fence, or put "<!-- not-run: why -->" above it`,
+    );
+  });
+  return problems;
 }
 
 /** The modules a playbook may import, by specifier: the package sources, injected by the caller. */
@@ -182,13 +225,20 @@ export async function runPlaybook(
     }
   }
   const logged: string[][] = parts.map(() => []);
+  const late: string[] = [];
+  const slips: string[] = [];
+  const onRejection = (reason: unknown): void => {
+    slips.push(reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason));
+  };
+  process.on('unhandledRejection', onRejection);
   let current = 0;
   const part = (n: number): void => {
     current = n + 1;
   };
   const sandboxConsole = {
     log: (...args: unknown[]): void => {
-      (logged[current] as string[]).push(format(...args));
+      if (current >= parts.length) late.push(format(...args));
+      else (logged[current] as string[]).push(format(...args));
     },
   };
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
@@ -196,7 +246,15 @@ export async function runPlaybook(
   ) => (...args: unknown[]) => Promise<void>;
   try {
     await new AsyncFunction('__mods', '__part', 'console', program)(mods, part, sandboxConsole);
+    // Let a promise the page left running settle, so a slip is named after its page.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    process.off('unhandledRejection', onRejection);
+    if (slips.length > 0)
+      return [`${file} — a promise the page did not await rejected: ${slips.join('; ')}`];
+    if (late.length > 0)
+      return [`${file} — the code prints after its last fence ended: ${late.join(' | ')}`];
   } catch (error) {
+    process.off('unhandledRejection', onRejection);
     const at = parts[Math.min(current, parts.length - 1)] as PlaybookPart;
     const what = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     return [`${file}:${at.line} — the code throws ${what}`];

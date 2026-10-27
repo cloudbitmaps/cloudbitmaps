@@ -27,12 +27,24 @@ import {
  * WHAT IT HOLDS. Every page opens with a title and a one-sentence summary (a site page is made from them); every fence
  * is marked `<!-- typecheck -->`; a fence that prints is followed by `<!-- output -->` and a `text` fence with exactly
  * what it prints, and a fence that prints nothing has none; the index `docs/playbooks/README.md` has one row for each
- * page and a page for each row, with the size the page's line count gives (S under 150 lines, M to 300, L beyond); and
- * the whole run takes under ten seconds.
+ * page and a page for each row, with the size the page's line count gives (S under 150 lines, M to 300, L beyond); no
+ * fence of another language (or an unmarked one) sits on a page unless a `<!-- not-run: why -->` line says it is not run;
+ * and the whole run takes under ten seconds (the test's own timeout).
  *
  * WHAT IT DOES NOT CLAIM. That a playbook is true of a real cloud backend: it runs on `MemoryStorage`, so latency,
  * request counts and throttling are the guides' to state. Time is not read: a page that prints a figure that depends on
  * the clock or the machine would fail here, so a page does not print one.
+ *
+ * KNOWN LIMITS OF THE RUN.
+ *   - Only `ts` and `typescript` fences run. Any other language needs a `not-run` marker, and `~~~` fences are not seen.
+ *   - Only `console.log` is captured; `console.error`, `warn` or `table` throw, and the page is reported as throwing.
+ *   - The program is a sloppy-mode async function body, not an ES module: each import becomes a binding where it stands
+ *     (not hoisted), and a multi-line import clause, `import 'x'`, a default import or an `export` is a failure. The strict
+ *     typecheck of the same fences covers the sloppy-mode gap.
+ *   - Pages are found with `git ls-files`: a new page is invisible until it is `git add`ed.
+ *   - Lines are split on `\n`: a CRLF checkout would break the markers. CI runs this on Linux only.
+ *   - A promise the page leaves running is reported after its page when it rejects before the next tick; a later slip is
+ *     the runner's own unhandled-rejection report, without the page.
  */
 
 const ROOT = join(__dirname, '..', '..');
@@ -69,15 +81,13 @@ describe('the playbooks folder', () => {
   });
 
   it('runs every page, and each prints what it shows, in under ten seconds in all', async () => {
-    const started = performance.now();
     const problems: string[] = [];
     for (const f of pageFiles) {
       const page = parsePlaybook(f, read(f));
       problems.push(...(await runPlaybook(f, page.parts, MODULES)));
     }
     expect(problems).toEqual([]);
-    expect(performance.now() - started).toBeLessThan(10_000);
-  }, 30_000);
+  }, 10_000);
 });
 
 describe('the gate fires (planted pages)', () => {
@@ -147,6 +157,40 @@ describe('the gate fires (planted pages)', () => {
     expect(await run(fence("import { readFileSync } from 'node:fs';\nvoid readFileSync;"))).toEqual(
       [expect.stringContaining('imports "node:fs", which a playbook may not')],
     );
+  });
+
+  it('refuses a fence of another language, an unmarked one and a bad prelude, and accepts a not-run one and an output', async () => {
+    const shape = (body: string): readonly string[] => parsePlaybook('x.md', page(body)).problems;
+    const ok = fence('void 1;', '');
+    expect(shape(ok + '```bash\nnpm install\n```\n')).toEqual([
+      expect.stringContaining('a bash fence is not run'),
+    ]);
+    expect(shape(ok + '```\nbare\n```\n')).toEqual([
+      expect.stringContaining('a bare fence is not run'),
+    ]);
+    expect(shape(ok + '```ts\nvoid 2;\n```\n')).toEqual([
+      expect.stringContaining('a TypeScript fence with no typecheck marker above it'),
+    ]);
+    expect(shape(ok + '```text\nnot an output\n```\n')).toEqual([
+      expect.stringContaining('a text fence is not run'),
+    ]);
+    expect(
+      shape(ok + '<!-- not-run: an install line the reader types -->\n```bash\nnpm install\n```\n'),
+    ).toEqual([]);
+    expect(shape('<!-- typecheck: store -->\n```ts\nvoid 1;\n```\n')).toEqual([
+      expect.stringContaining('declares its own names (no prelude)'),
+    ]);
+  });
+
+  it('names the page for an un-awaited rejection and for a print after the last fence', async () => {
+    const rejected = await run(fence('void Promise.reject(new Error("late"));'));
+    expect(rejected).toEqual([
+      expect.stringContaining('a promise the page did not await rejected: Error: late'),
+    ]);
+    const printed = await run(fence('setImmediate(() => console.log("after"));'));
+    expect(printed).toEqual([
+      expect.stringContaining('the code prints after its last fence ended: after'),
+    ]);
   });
 
   it('refuses an "Output:" line with no output fence after it', async () => {

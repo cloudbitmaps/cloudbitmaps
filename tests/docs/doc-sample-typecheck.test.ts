@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   PRELUDES,
   ROOT,
+  bareFences,
   compileSamples,
   markedSamples,
   readSamples,
@@ -48,18 +49,9 @@ describe('type-checked documentation samples', () => {
 
   it('has a marker on every TypeScript fence', () => {
     const marked = new Set(samples.map((s) => `${s.file}:${s.line}`));
-    const bare: string[] = [];
-    for (const file of sampleFiles()) {
-      const lines = readFileSync(join(ROOT, file), 'utf8').split('\n');
-      lines.forEach((l, i) => {
-        if (
-          /^[ \t]*```(?:ts|typescript)(?:[ \t]+[^\n]*)?[ \t]*$/.test(l) &&
-          !marked.has(`${file}:${i + 2}`)
-        ) {
-          bare.push(`${file}:${i + 1} — a TypeScript fence with no typecheck marker above it`);
-        }
-      });
-    }
+    const bare = sampleFiles().flatMap((file) =>
+      bareFences(file, readFileSync(join(ROOT, file), 'utf8'), marked),
+    );
     expect(bare).toEqual([]);
   });
 
@@ -87,6 +79,29 @@ describe('type-checked documentation samples', () => {
     const problems = compileSamples(checked);
     expect(problems.map((p) => `${p.where} — ${p.message}`)).toEqual([]);
   }, 300_000);
+});
+
+describe('the bare-fence scan', () => {
+  it('reports a TypeScript fence no marker guards, and not a marked one or one of another language', () => {
+    const text = [
+      '<!-- typecheck -->',
+      '```ts',
+      'void 1;',
+      '```',
+      '',
+      '```ts',
+      'void 2;',
+      '```',
+      '```json',
+      '{}',
+      '```',
+    ].join('\n');
+    const { samples: s } = markedSamples('x.md', text);
+    const marked = new Set(s.map((x) => `${x.file}:${x.line}`));
+    expect(bareFences('x.md', text, marked)).toEqual([
+      'x.md:6 — a TypeScript fence with no typecheck marker above it',
+    ]);
+  });
 });
 
 describe('the marker scan', () => {

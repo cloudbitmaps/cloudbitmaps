@@ -299,6 +299,20 @@ export function compileSamples(samples: readonly DocSample[]): SampleProblem[] {
   return problems;
 }
 
+/**
+ * The TypeScript fences of `text` that no marker guards: `marked` holds `file:line` of the first code line of each
+ * marked fence (what `markedSamples` returns), and a fence not in it is reported.
+ */
+export function bareFences(file: string, text: string, marked: ReadonlySet<string>): string[] {
+  const bare: string[] = [];
+  text.split('\n').forEach((l, i) => {
+    if (FENCE.test(l) && !marked.has(`${file}:${i + 2}`)) {
+      bare.push(`${file}:${i + 1} — a TypeScript fence with no typecheck marker above it`);
+    }
+  });
+  return bare;
+}
+
 export function readSamples(): { samples: DocSample[]; orphans: string[] } {
   const samples: DocSample[] = [];
   const orphans: string[] = [];

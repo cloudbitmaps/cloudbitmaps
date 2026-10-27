@@ -483,6 +483,9 @@ None of these are committed and none have dates. If one matters to you,
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) and say so — that's the single best way to
 move it up.
 
+- **A count of a combine, without reading its ids.** Today the size of an intersection, union or difference of stored segments
+  costs a dry-run `materializeMany`, an `*Into` write, or a read of the ids into a `RoaringBitmap`. A count taken directly from
+  the segments would answer without any of those. The design is under review.
 - **A construction-time check that refuses mixed `@cloudbitmaps/*` versions.** Today a flavor beside a driver of another version installs with no warning and fails to compile (two copies of `core`). A check when the store is built could refuse it at run time with a message naming both versions, or an exact `peerDependencies` entry could make the install itself refuse. Considered in a later release.
 - **Answer an encrypted leftover object from its first tail read.** The search `subjectReport` and `eraseSubject` make
   under a destroyed segment reads an encrypted object's tail twice (the open, then the footer that says it is
