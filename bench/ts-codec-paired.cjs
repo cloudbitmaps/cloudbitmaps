@@ -7,10 +7,13 @@
  *
  * WHAT IS MEASURED
  *
- *   reads    `seg.has`, `seg.count()`, a full `iterate()`, `intersect` of two and of four operands and `andNot`, through
- *            `CloudRoaring` over `MemoryStorage` with a cache that holds every chunk, warmed by time, on the data sets
- *            of the engine bench (`bench/lib/codec-data.cjs`): dense, sparse, runs, mixed and spread8k (a million ids
- *            over 62,500 chunks is the write set below, so the combines are timed on 8,192 chunks of that shape).
+ *   reads    `seg.has`, `seg.count()`, a full `iterate()`, `intersect` of two and of four operands, `andNot` and `union`
+ *            of two, through `CloudRoaring` over `MemoryStorage` with a cache that holds every chunk, warmed by time, on
+ *            the data sets of the engine bench (`bench/lib/codec-data.cjs`): dense, sparse, runs, mixed and spread8k (a
+ *            million ids over 62,500 chunks is the write set below, so the combines are timed on 8,192 chunks of that
+ *            shape). Two more data sets time the union alone, because it writes an array into a run container: `runsarray`
+ *            (run chunks united with array chunks of 1,000 ids) and `runs1k` (chunks of 1,200 runs united with array
+ *            chunks of 1,500 ids, where the result is no longer a run container).
  *   write    a bulk `load` of 1,000,000 ids over 62,500 chunks and an `eraseSubject` of one id (the rewrite of that
  *            generation), each timed in a fresh process after one untimed round of the same two calls, with a
  *            collection before each timed call.
@@ -125,11 +128,14 @@ const ROUNDS = CHECK
 const WARM_MS = SMALL ? 0 : 300;
 const SAMPLE_MS = SMALL ? 0 : 25;
 const CHUNK_SCALE = SMALL
-  ? { dense: 2, sparse: 4, runs: 2, mixed: 3, spread8k: 100 }
-  : { dense: 32, sparse: 256, runs: 128, mixed: 128, spread8k: 8192 };
+  ? { dense: 2, sparse: 4, runs: 2, mixed: 3, spread8k: 100, runsarray: 2, runs1k: 2 }
+  : { dense: 32, sparse: 256, runs: 128, mixed: 128, spread8k: 8192, runsarray: 128, runs1k: 128 };
 const WRITE_CHUNKS = SMALL ? 300 : 62500;
-const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k'];
-const OPS = ['has', 'count', 'iterate', 'intersect2', 'intersect4', 'andNot'];
+const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k', 'runsarray', 'runs1k'];
+const OPS = ['has', 'count', 'iterate', 'intersect2', 'intersect4', 'andNot', 'union2'];
+/** The two data sets made for the store's union (segment 0 runs, the others arrays) time that one call. */
+const UNION_ONLY = new Set(['runsarray', 'runs1k']);
+const opsOfDataset = (dataset) => (UNION_ONLY.has(dataset) ? ['union2'] : OPS);
 const ORDERS = [
   [0, 1, 2],
   [2, 1, 0],
@@ -234,6 +240,7 @@ function opsOf(idLists) {
     intersect2: ([a, b]) => drain(a.intersect([b])),
     intersect4: ([a, b, c, d]) => drain(a.intersect([b, c, d])),
     andNot: ([a, b]) => drain(a.andNot([b])),
+    union2: ([a, b]) => drain(a.union([b])),
   };
 }
 
@@ -272,7 +279,7 @@ async function readsChild(file, dataset, only) {
   global.gc();
   warmCpuClock();
   const out = {};
-  for (const op of OPS) {
+  for (const op of opsOfDataset(dataset)) {
     if (!wanted(only, `${dataset} ${op}`)) continue;
     const fn = () => ops[op](segs);
     const answer = await fn();
@@ -486,7 +493,7 @@ function pairedCell(taken, figure, kind, names) {
 function readsMeasure(subjects, only) {
   const cells = [];
   for (const dataset of DATASETS) {
-    const opNames = OPS.filter((op) => wanted(only, `${dataset} ${op}`));
+    const opNames = opsOfDataset(dataset).filter((op) => wanted(only, `${dataset} ${op}`));
     const taken = takeRounds(
       (i) =>
         JSON.parse(

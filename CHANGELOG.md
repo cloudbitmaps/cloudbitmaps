@@ -53,7 +53,10 @@ so, and so do the module headers in the code.
   `minimum` and `maximum` (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`,
   `serialize()` and `runOptimize()`. A write into a run container keeps it a run container while the run form is the
   smaller one, so `serialize()` without `runOptimize()` can write a run container where an earlier version wrote an array
-  or a bitset: a valid encoding of the same set, and only `runOptimize()` makes the bytes depend on the set alone. Every id
+  or a bitset: a valid encoding of the same set, and only `runOptimize()` makes the bytes depend on the set alone. A group
+  of one to four ids of an `addMany` goes into the container it meets without a container built for the group, and the
+  union of a run container with an array is merged into the run list, or, from about a thousand runs and ids and when the
+  result cannot sensibly be a run container, written through words; the result is the same container either way. Every id
   argument is checked and throws `ValidationError` with a message that never
   repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
   is no `toJSON`, so `JSON.stringify(bitmap)` gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)

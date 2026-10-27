@@ -5,6 +5,10 @@
  * A data set is a number of chunks of one kind: `dense` (a bitset in every chunk), `sparse` (arrays), `runs`, `mixed`
  * (the three kinds in turn), `spread` (16 ids in chunks drawn from the whole key space: a million ids over 62,500
  * chunks, the largest load the comparison times) and `spread8k` (the same shape; a separate name so a scale can give it fewer chunks).
+ *
+ * Two data sets exist for the store's union, which writes an array into a run container: `runsarray` (segment 0 holds
+ * run chunks like `runs`, the others array chunks of 1,000 ids) and `runs1k` (segment 0 holds chunks of 1,200 runs, the
+ * others array chunks of 1,500 ids, so a union of segment 0 with another is far past where a run container stays one).
  */
 'use strict';
 
@@ -39,12 +43,36 @@ function runLows(next) {
   return out;
 }
 
+/** The lows of one chunk made of 1,200 runs 2 to 30 long, 20 to 30 apart: about 19,000 values. */
+function run1kLows(next) {
+  const out = [];
+  let at = Math.floor(next() * 50);
+  for (let r = 0; r < 1200 && at <= 65535; r++) {
+    const len = 2 + Math.floor(next() * 29);
+    for (let k = 0; k < len && at + k < 65536; k++) out.push(at + k);
+    at += len + 20 + Math.floor(next() * 11);
+  }
+  return out;
+}
+
 /** The lows of one chunk of the given kind. */
 function lowsOf(kind, next) {
   if (kind === 'dense') return randomLows(next, 32768);
   if (kind === 'sparse') return randomLows(next, 1000);
+  if (kind === 'array1500') return randomLows(next, 1500);
+  if (kind === 'runs1k') return run1kLows(next);
   if (kind === 'spread') return randomLows(next, 16);
   return runLows(next);
+}
+
+const KINDS = ['dense', 'sparse', 'runs'];
+
+/** The kind of chunk `i` of segment `which` of a data set. */
+function kindOf(dataset, which, i) {
+  if (dataset === 'mixed') return KINDS[(i + which) % 3];
+  if (dataset === 'runsarray') return which === 0 ? 'runs' : 'sparse';
+  if (dataset === 'runs1k') return which === 0 ? 'runs1k' : 'array1500';
+  return dataset.replace('spread8k', 'spread');
 }
 
 /**
@@ -67,15 +95,13 @@ function idsOf(dataset, which, scale) {
   } else {
     for (let i = 0; i < chunks; i++) keys.push(i * 3);
   }
-  const kinds = ['dense', 'sparse', 'runs'];
   const ids = [];
   keys.forEach((key, i) => {
-    const kind =
-      dataset === 'mixed' ? kinds[(i + which) % 3] : dataset.replace('spread8k', 'spread');
+    const kind = kindOf(dataset, which, i);
     const next = prng(1000 * (which + 1) + i + 1);
     for (const low of lowsOf(kind, next)) ids.push(key * 65536 + low);
   });
   return ids;
 }
 
-module.exports = { prng, randomLows, runLows, lowsOf, idsOf };
+module.exports = { prng, randomLows, runLows, run1kLows, lowsOf, kindOf, idsOf };

@@ -704,7 +704,7 @@ export function containerAdd(c: Container, low: number): Container {
  * A run container with the ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits
  * kept) added, for a group of a few: each id is found in the run list by a gallop search and written into one working
  * copy of the list (the tail moved by a block copy), so the cost is a few searches and moves, not a walk of every run.
- * The result is the same container {@link orRunArray} gives for the same values: a run container while that is the
+ * The result is the same container {@link orRunArrayWalk} gives for the same values: a run container while that is the
  * smaller form, and `c` itself when no id adds anything.
  */
 function addFewToRuns(c: Container, ids: Uint32Array, from: number, to: number): Container {
@@ -1426,13 +1426,64 @@ export function containerOr(a: Container, b: Container, inPlace = false): Contai
 }
 
 /**
+ * How many steps of the merge walk (the runs plus the values) a run container and an array take before expanding the run
+ * container to words is the cheaper way to write the array into it: the walk costs a few nanoseconds a step, the
+ * expansion a fixed 8 KB of words (zeroed, one range set per run, one pass to count the runs of the result).
+ */
+export const EXPAND_MIN_STEPS = 1024;
+
+/**
+ * Whether {@link orRunArray} writes the array into the run container through words instead of the merge walk: from
+ * {@link EXPAND_MIN_STEPS} steps up, and when the result is unlikely to be a run container. The result has at most
+ * `runs.len + array.len` runs, so when that many runs already fail the size rule against the plain body of the largest
+ * result, the walk would build a run list only to expand it again. A pure function of the two containers' lengths and
+ * cardinalities, so it costs one comparison on the hot path; either choice returns the same container.
+ */
+export function expandsRunArray(runs: Container, array: Container): boolean {
+  const steps = runs.len + array.len;
+  if (steps < EXPAND_MIN_STEPS) return false;
+  const cardMax = runs.card + array.len;
+  const plainMax = cardMax <= ARRAY_MAX_CARDINALITY ? 2 * cardMax : BITSET_BYTES;
+  return 2 + 4 * steps >= plainMax;
+}
+
+/**
+ * A run container with an array's values written through words: the runs are set in a new bitset, then each value, and
+ * the container of the result is the canonical one for its values (a run container only when its body is the smaller
+ * one: {@link optimize}). When the array adds nothing and `keep` allows, the run container itself is the result.
+ */
+export function orRunArrayExpand(runs: Container, array: Container, keep: boolean): Container {
+  const words = toWords(runs);
+  const v = lows16(array);
+  let added = 0;
+  for (let i = array.off; i < array.off + array.len; i++) {
+    const value = v[i] as number;
+    const word = words[value >>> 5] as number;
+    const bit = 1 << (value & 31);
+    if ((word & bit) === 0) {
+      words[value >>> 5] = word | bit;
+      added++;
+    }
+  }
+  if (added === 0 && keep) return runs;
+  return optimize(fromWordsCard(words, runs.card + added) as Container);
+}
+
+/** A run container with an array's values: by the merge walk, or through words when that is cheaper (see {@link expandsRunArray}). */
+function orRunArray(runs: Container, array: Container, keep: boolean): Container {
+  return expandsRunArray(runs, array)
+    ? orRunArrayExpand(runs, array, keep)
+    : orRunArrayWalk(runs, array, keep);
+}
+
+/**
  * A run container with an array's values, merged in one walk over both lists: each step takes whichever of the next run
  * and the next value starts first and appends it to the result, joining it to the pair being built when they touch or
  * overlap. Cost is the runs plus the values, with no search or view per value, and no expansion to 8 KB of words. The
  * result is a run container while that is the smaller form (see {@link runsOrPlain}). When the array adds nothing and
  * `keep` allows, the run container itself is the result: runs are never written in place, so aliasing it is safe.
  */
-function orRunArray(runs: Container, array: Container, keep: boolean): Container {
+export function orRunArrayWalk(runs: Container, array: Container, keep: boolean): Container {
   const x = lows16(runs);
   const v = lows16(array);
   const out = pairs16(2 * (runs.len + array.len));

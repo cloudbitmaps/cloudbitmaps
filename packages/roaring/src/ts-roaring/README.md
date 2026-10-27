@@ -154,9 +154,9 @@ Where a container's kind comes from:
   bitmap-level combine can also hold a run for a key held by one side only, which keeps that side's container as it is
   (section 7).
 - **Who writes a run container, and the rule each keeps.** The decoder (which refuses runs that touch or overlap, so a
-  decoded list is maximal), `toRun` (from an array or a bitset, through `optimize`), `runsOrPlain` (the exit of every
+  decoded list is maximal), `toRun` (from an array or a bitset, through `optimize`, which `orRunArrayExpand` takes its result from), `runsOrPlain` (the exit of every
   kernel that builds a run list in `pairScratch`: the run results of `and`, `or`, `andNot` and `xor` of two runs,
-  `orRunArray`, `addToRuns`, which `containerAdd` uses on a run, and `addFewToRuns`, which `containerAddSorted` uses), and nothing else. Every one of them leaves the runs
+  `orRunArrayWalk`, `addToRuns`, which `containerAdd` uses on a run, and `addFewToRuns`, which `containerAddSorted` uses), and nothing else. Every one of them leaves the runs
   maximal (ascending, no two touching or overlapping, inside 0..65,535) and the container in its smallest kind by the
   rule above. That is what the same-kind run compare in `isEqual` depends on (one set has one list of pairs), and what
   the decoder requires of the bytes a bitmap writes. A new writer of a run container has to keep both, and the property
@@ -206,7 +206,7 @@ section 7.)
 | Buffer | Size | Used by | Rule |
 |---|---|---|---|
 | `valueScratch` (`Uint16Array`) | starts at 8,192 entries | array results whose size is known only after they are built (`andArrays`, `filterByBits`, `filterByRuns`, `andNotArrays`, `orArrays`, `xorArrays`, and `orManyContainers`, which gathers the values of an all-array key before sorting them) | a kernel writes into it and copies out exactly `n` values (`arrayOfScratch`) |
-| `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`, `xorRuns`, and `orRunArray`, which merges an array's values into a run list) | same |
+| `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`, `xorRuns`, and `orRunArrayWalk`, which merges an array's values into a run list) | same |
 | `probeWords` (`Uint32Array`) | 2,048 words (one bitset) | the scratch-bitset probe in `andArrays`, `andNotArrays`, `andCountArrays` and `intersectsArrays` | all zero between calls: each call clears the bits it set, on every exit (`intersectsArrays` clears them after a hit as well as after a full scan) |
 
 Growth: a request larger than the buffer allocates `max(n, min(2 * length, 65,536))`; the buffer kept for the life of the
@@ -340,7 +340,14 @@ number of times in the list.
   same on a chunk whose runs cover about half the words, so the single count stays). The trade: the small branch pays one
   bit-extraction step per result value, which is cheaper than the allocation and the 2,048-word count it replaces
   whenever the result is at most 4,096 values, the only case it is taken for.
-- Run against array for `or` (`orRunArray`): the two merge into one run list in `pairScratch` without expanding to words.
+- Run against array for `or` (`orRunArray`): by one of two ways chosen from the two containers' lengths and
+  cardinalities alone (`expandsRunArray`). `orRunArrayWalk` merges the two into one run list in `pairScratch` without
+  expanding to words, which suits a result that stays a run container. `orRunArrayExpand` sets the runs in a new bitset,
+  then each value, and takes the canonical container of the result (`optimize`), which suits one that does not; it is
+  chosen from 1,024 steps (the runs plus the values) up, when the most runs the result can have (runs plus values) already
+  fail the size rule against the plain body of the largest result (`2 * cardMax` bytes up to 4,096 values, else 8,192).
+  The choice is a guess about the result, never about its correctness: both ways return the same container, so a wrong
+  guess costs time only (the expansion of a union that fills every gap still returns the one run it is).
   One walk takes whichever of the next run and the next value starts first, and joins it to the pair being built when they
   touch or overlap, so the cost is the runs plus the values, with no search or view per value (a per-value search with a
   block copy of the runs between values was tried and was slower for batches of a few hundred ids or more). A value
