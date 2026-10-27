@@ -79,7 +79,7 @@ function oneIdOnly(method: string, bulk: string): ValidationError {
 }
 
 /**
- * The ids to act on, as something the codec reads once and never keeps: a typed array in shared memory is copied first
+ * The ids to act on, as something the codec reads once and never keeps: a typed array that is, or may be, in shared memory is copied first
  * (it is read twice, to see whether it ascends and then to build, and another thread could write between the reads).
  *
  * @throws {ValidationError} for anything that is not an iterable of ids, and for bytes, which would read as ids.

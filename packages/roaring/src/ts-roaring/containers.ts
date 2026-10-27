@@ -1474,9 +1474,10 @@ export const EXPAND_MIN_STEPS = 1024;
 
 /**
  * Whether {@link orRunArray} writes the array into the run container through words instead of the merge walk: from
- * {@link EXPAND_MIN_STEPS} steps up, and when the result is unlikely to be a run container. The result has at most
+ * {@link EXPAND_MIN_STEPS} steps up, and when the result is likely not to be a run container. The result has at most
  * `runs.len + array.len` runs, so when that many runs already fail the size rule against the plain body of the largest
- * result, the walk would build a run list only to expand it again. A pure function of the two containers' lengths and
+ * result, the walk would probably build a run list only to expand it again; the result can have far fewer runs than that
+ * bound (values that fall inside runs add none), so this is a heuristic about speed. A pure function of the two containers' lengths and
  * cardinalities, so it costs one comparison on the hot path; either choice returns the same container.
  */
 export function expandsRunArray(runs: Container, array: Container): boolean {

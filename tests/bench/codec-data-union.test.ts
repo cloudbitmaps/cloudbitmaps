@@ -14,7 +14,7 @@ import {
 
 /**
  * The data sets the paired bench times the store's union on (`bench/lib/codec-data.cjs`): `runsarray`, run chunks
- * with array chunks of 1,000 ids, and `runs1k`, chunks of 1,200 runs with array chunks of 1,500 ids. The shapes are what
+ * with array chunks of 1,000 ids, and `runs1k`, chunks of 1,200 runs with array chunks of 1,500 ids, and the two ends of the union's paths, `runsfew` and `runsedge`. The shapes are what
  * the cells claim they are, the union of each takes the way the cell says it does, and the earlier data sets are the same
  * ids they were. Nothing here times anything.
  */
@@ -39,7 +39,7 @@ function runsOfLows(lows: number[]): Array<[number, number]> {
   return out;
 }
 
-const SCALE = { runsarray: 4, runs1k: 4 };
+const SCALE = { runsarray: 4, runs1k: 4, runsfew: 4, runsedge: 4 };
 
 describe('the data set runs1k', () => {
   const a = data.idsOf('runs1k', 0, SCALE);
@@ -116,6 +116,56 @@ describe('the data set runsarray', () => {
     expect(arr.kind).toBe(ARRAY);
     expect(expandsRunArray(run, arr)).toBe(false);
     expect(containerOr(run, arr, false).kind).toBe(RUN);
+  });
+});
+
+describe('the data set runsfew', () => {
+  const a = data.idsOf('runsfew', 0, SCALE);
+  const b = data.idsOf('runsfew', 1, SCALE);
+
+  it('holds run chunks in segment 0 and 3 ids a chunk in the others, on the same keys', () => {
+    for (let chunk = 0; chunk < SCALE.runsfew; chunk++) {
+      expect(runsOfLows(lowsOfKey(a, chunk * 3)).length).toBeGreaterThan(100);
+      expect(lowsOfKey(b, chunk * 3)).toHaveLength(3);
+    }
+  });
+
+  it('a chunk of it is a run container and a small array, united on the merge walk', () => {
+    const run = optimize(
+      fromSortedIds(Uint32Array.from(lowsOfKey(a, 0)), 0, lowsOfKey(a, 0).length),
+    );
+    const arr = fromSortedIds(Uint32Array.from(lowsOfKey(b, 0)), 0, 3);
+    expect(run.kind).toBe(RUN);
+    expect(arr.kind).toBe(ARRAY);
+    expect(expandsRunArray(run, arr)).toBe(false);
+  });
+});
+
+describe('the data set runsedge', () => {
+  const a = data.idsOf('runsedge', 0, SCALE);
+  const b = data.idsOf('runsedge', 1, SCALE);
+
+  it('holds 1,000 runs of 5 values in every chunk of segment 0 and 1,050 ids in the others', () => {
+    for (let chunk = 0; chunk < SCALE.runsedge; chunk++) {
+      const runs = runsOfLows(lowsOfKey(a, chunk * 3));
+      expect(runs).toHaveLength(1_000);
+      for (const [, length] of runs) expect(length).toBe(5);
+      expect(lowsOfKey(b, chunk * 3)).toHaveLength(1_050);
+    }
+  });
+
+  it('a chunk of it is a run container and an array just over the size rule: the union is written through words', () => {
+    const run = optimize(
+      fromSortedIds(Uint32Array.from(lowsOfKey(a, 0)), 0, lowsOfKey(a, 0).length),
+    );
+    const arr = fromSortedIds(Uint32Array.from(lowsOfKey(b, 0)), 0, 1_050);
+    expect(run.kind).toBe(RUN);
+    expect(run.len).toBe(1_000);
+    expect(arr.kind).toBe(ARRAY);
+    expect(expandsRunArray(run, arr)).toBe(true);
+    // One id fewer is on the other side of the rule.
+    const fewer = fromSortedIds(Uint32Array.from(lowsOfKey(b, 0)), 0, 1_040);
+    expect(expandsRunArray(run, fewer)).toBe(false);
   });
 });
 

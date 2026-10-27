@@ -11,9 +11,10 @@
  *            of two, through `CloudRoaring` over `MemoryStorage` with a cache that holds every chunk, warmed by time, on
  *            the data sets of the engine bench (`bench/lib/codec-data.cjs`): dense, sparse, runs, mixed and spread8k (a
  *            million ids over 62,500 chunks is the write set below, so the combines are timed on 8,192 chunks of that
- *            shape). Two more data sets time the union alone, because it writes an array into a run container: `runsarray`
+ *            shape). Four more data sets time the union alone, because it writes an array into a run container: `runsarray`
  *            (run chunks united with array chunks of 1,000 ids) and `runs1k` (chunks of 1,200 runs united with array
- *            chunks of 1,500 ids, where the result is no longer a run container).
+ *            chunks of 1,500 ids, where the result is no longer a run container), and the two ends of its paths: `runsfew` (run
+ *            chunks united with arrays of 3 ids) and `runsedge` (chunks of 1,000 runs of 5 values united with arrays of 1,050 ids, just over the size rule that sends the union through words).
  *   write    a bulk `load` of 1,000,000 ids over 62,500 chunks and an `eraseSubject` of one id (the rewrite of that
  *            generation), each timed in a fresh process after one untimed round of the same two calls, with a
  *            collection before each timed call.
@@ -128,13 +129,43 @@ const ROUNDS = CHECK
 const WARM_MS = SMALL ? 0 : 300;
 const SAMPLE_MS = SMALL ? 0 : 25;
 const CHUNK_SCALE = SMALL
-  ? { dense: 2, sparse: 4, runs: 2, mixed: 3, spread8k: 100, runsarray: 2, runs1k: 2 }
-  : { dense: 32, sparse: 256, runs: 128, mixed: 128, spread8k: 8192, runsarray: 128, runs1k: 128 };
+  ? {
+      dense: 2,
+      sparse: 4,
+      runs: 2,
+      mixed: 3,
+      spread8k: 100,
+      runsarray: 2,
+      runs1k: 2,
+      runsfew: 2,
+      runsedge: 2,
+    }
+  : {
+      dense: 32,
+      sparse: 256,
+      runs: 128,
+      mixed: 128,
+      spread8k: 8192,
+      runsarray: 128,
+      runs1k: 128,
+      runsfew: 128,
+      runsedge: 128,
+    };
 const WRITE_CHUNKS = SMALL ? 300 : 62500;
-const DATASETS = ['dense', 'sparse', 'runs', 'mixed', 'spread8k', 'runsarray', 'runs1k'];
+const DATASETS = [
+  'dense',
+  'sparse',
+  'runs',
+  'mixed',
+  'spread8k',
+  'runsarray',
+  'runs1k',
+  'runsfew',
+  'runsedge',
+];
 const OPS = ['has', 'count', 'iterate', 'intersect2', 'intersect4', 'andNot', 'union2'];
 /** The two data sets made for the store's union (segment 0 runs, the others arrays) time that one call. */
-const UNION_ONLY = new Set(['runsarray', 'runs1k']);
+const UNION_ONLY = new Set(['runsarray', 'runs1k', 'runsfew', 'runsedge']);
 const opsOfDataset = (dataset) => (UNION_ONLY.has(dataset) ? ['union2'] : OPS);
 const ORDERS = [
   [0, 1, 2],

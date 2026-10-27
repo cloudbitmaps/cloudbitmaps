@@ -136,7 +136,7 @@ Where a container's kind comes from:
 - Decoded from bytes: whatever kind the bytes say, run containers included (the layout check has already proved the
   structure). A decoded run container stays as it was decoded until a write changes it; a write that adds ids keeps it a
   run only while the run form is still the smaller one (below).
-- A write that adds ids (`containerAdd`, `containerAddSorted` for a group of a few, and `containerOr` of a run container with an array) merges them into the run list
+- A write that adds ids (`containerAdd`, `containerAddSorted` for a group of a few, and `containerOr` of a run container with an array) merges them into the run list (a large batch into a thousand or more runs is written through words, below); a group of a few into an array keeps `add`'s capacity rule, so a shared array, or one with no spare room, is copied to up to twice its length on the first id
   and keeps the result a run container while the rule above says run (`runsOrPlain`), otherwise an array or a bitset; a
   removal (`containerRemove`) first `demote`s a run container. An array
   at 4,096 values that gains one more becomes a bitset; a bitset that drops to 4,096 or fewer becomes an array
@@ -155,8 +155,7 @@ Where a container's kind comes from:
   (section 7).
 - **Who writes a run container, and the rule each keeps.** The decoder (which refuses runs that touch or overlap, so a
   decoded list is maximal), `toRun` (from an array or a bitset, through `optimize`, which `orRunArrayExpand` takes its result from), `runsOrPlain` (the exit of every
-  kernel that builds a run list in `pairScratch`: the run results of `and`, `or`, `andNot` and `xor` of two runs,
-  `orRunArrayWalk`, `addToRuns`, which `containerAdd` uses on a run, and `addFewToRuns`, which `containerAddSorted` uses), and nothing else. Every one of them leaves the runs
+  kernel that builds a run list: the run results of `and`, `or`, `andNot` and `xor` of two runs and `orRunArrayWalk`, which build it in `pairScratch`, and `addToRuns`, which `containerAdd` uses on a run, and `addFewToRuns`, which `containerAddSorted` uses, which each allocate their own), and nothing else. Every one of them leaves the runs
   maximal (ascending, no two touching or overlapping, inside 0..65,535) and the container in its smallest kind by the
   rule above. That is what the same-kind run compare in `isEqual` depends on (one set has one list of pairs), and what
   the decoder requires of the bytes a bitmap writes. A new writer of a run container has to keep both, and the property
@@ -512,7 +511,7 @@ All of these are in `bitmap.ts`.
   at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when `containersSubset`
   finds a container with a value its partner lacks (no count). `isEqual` compares the sizes and the key lists, then
   each container pair (`containersEqual`): two containers of one kind compare their words, values or run pairs, eight elements a step with the differences OR-ed and one test per group (arrays and runs
-  of 512 values or more go through a 32-bit view over the same bytes when both starts fall on a four-byte boundary, two values a step), and stop at the
+  of 512 values or more (a run container counts two values a run, so 256 runs) go through a 32-bit view over the same bytes when both starts fall on a four-byte boundary, two values a step), and stop at the
   first differing group (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
   every writer of a run keeps its runs maximal, so one set has one list of pairs), and only a pair of different kinds falls back to
   `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
