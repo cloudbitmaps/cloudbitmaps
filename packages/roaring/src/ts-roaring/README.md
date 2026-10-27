@@ -316,10 +316,11 @@ and `orManyContainers` unites the list in one pass:
 ```
   one container for the key         copied as it is (a run stays a run)
   all arrays, at most 4,096 values  values concatenated into valueScratch, sorted, de-duplicated, copied out
-  anything else                     words = copy of the first bitset (or zeros);
-                                    for each other container:  bitset -> OR the words
-                                                               array  -> set one bit per value
-                                                               run    -> setRange per run
+  anything else                     words = the bitsets OR-ed four at a time (the first group of four writes the
+                                    accumulator, so no bitset is copied; one to three bitsets copy the first, and
+                                    fewer than four left over are OR-ed one at a time), or zeros when there is none;
+                                    for each array: set one bit per value
+                                    for each run:   setRange per run
                                     popcountWords(words) once; at most 4,096 -> array, else the words are the bitset
 ```
 
@@ -510,8 +511,9 @@ All of these are in `bitmap.ts`.
   `intersects` returns at the first container pair that shares a value (`containersIntersect`). `isSubset` returns false
   at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when `containersSubset`
   finds a container with a value its partner lacks (no count). `isEqual` compares the sizes and the key lists, then
-  each container pair (`containersEqual`): two containers of one kind compare their words, values or run pairs and stop at the
-  first difference (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
+  each container pair (`containersEqual`): two containers of one kind compare their words, values or run pairs, eight elements a step with the differences OR-ed and one test per group (arrays and runs
+  of 512 values or more go through a 32-bit view over the same bytes when both starts fall on a four-byte boundary, two values a step), and stop at the
+  first differing group (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
   every writer of a run keeps its runs maximal, so one set has one list of pairs), and only a pair of different kinds falls back to
   `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. The public class exposes all seven (section 13).
