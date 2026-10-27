@@ -231,7 +231,7 @@ KeyUnavailableError
 
 - **Backups and noncurrent versions are not reached.** An erasure rewrites and deletes what the store can list. Bucket versioning,
   replicas and backups keep older objects until their lifecycle ends; a crypto-shred reaches them once every retained copy of the
-  row that held the key is gone ([what an erasure does not reach](../guide/erasure.md#what-an-erasure-does-not-reach)).
+  row that held the key is gone, or once every key-encryption key that wrapped it is destroyed ([what an erasure does not reach](../guide/erasure.md#what-an-erasure-does-not-reach)).
 - **A per-person shred does not exist.** One key covers a whole segment, so crypto-shredding removes a segment, not one id from
   it; per-id removal is `eraseSubject`.
 - **The in-flight bound is stated, not zero, and a pin or a store without a timed refresh has none.** See [who stops seeing the id, and when](../guide/erasure.md#who-stops-seeing-the-id-and-when).

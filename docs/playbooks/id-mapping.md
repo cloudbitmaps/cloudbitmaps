@@ -139,8 +139,8 @@ next new key gets 5 not 1
 this key was erased and must not be loaded again
 ```
 
-The erased person is gone from the segments, and their integer stays spent in the table. The marker holds the raw key, which is
-itself personal data: if the law you work under says to remove it, replace it with a keyed hash you can match at import (the
+The erased person is gone from the segments, and their integer stays spent in the table. The marker holds the raw key, and so does the row (`keys[]` and `ids`, and `keyOf` returns it), so removing the marker alone does
+not remove the address. The key is itself personal data: if the law you work under says to remove it, replace it with a keyed hash you can match at import (the
 advice on [the suppression page](suppression.md#when-an-opt-out-is-also-an-erasure), which the library does not implement), but
 never give up the counter's position: that is the number the next person must not take.
 

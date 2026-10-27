@@ -89,8 +89,8 @@ true false false
 ```
 
 A deny set needs a gate of its own, because nothing in the check notices that it is missing. The block below refuses to
-report ready unless both segments exist and the blocklist holds someone; run it at start and before each deploy, and
-alert on it. Where a blocklist can legitimately be empty, drop the count test and keep the existence test. Pair it with a guard
+report ready unless both segments exist and the blocklist holds someone; run it at start, before each deploy and on a timer while the service runs (a
+deny set can vanish or be emptied later), and alert when it turns false. Where a blocklist can legitimately be empty, drop the count test and keep the existence test. Pair it with a guard
 on the load that refreshes the list (`guard: { minCardinality: 1 }`, or a `minRetained`), so a broken export is refused instead of
 publishing an empty list ([when a load is refused](../guide/loading.md#when-a-load-is-refused)).
 
