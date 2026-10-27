@@ -313,6 +313,103 @@ describe('{ serialized }: portable Roaring bytes, checked before anything is rea
     expect(calls.map((c) => c.shared)).toEqual([false]);
   });
 
+  /** Constructors that take a `maxByteLength`, which the compiled library's types do not yet declare. */
+  const GrowableCtor = ArrayBuffer as unknown as new (
+    n: number,
+    o: { maxByteLength: number },
+  ) => ArrayBuffer;
+  const GrowableShared = SharedArrayBuffer as unknown as new (
+    n: number,
+    o: { maxByteLength: number },
+  ) => SharedArrayBuffer;
+
+  describe('which buffers are copied before the decode', () => {
+    /** A buffer with the portable bytes in it, made the way its kind is made. */
+    type Kind = {
+      name: string;
+      make: (length: number) => ArrayBufferLike;
+      copied: boolean;
+    };
+    const kinds: Kind[] = [
+      { name: 'an ArrayBuffer', make: (n) => new ArrayBuffer(n), copied: false },
+      {
+        name: 'a resizable ArrayBuffer',
+        make: (n) => new GrowableCtor(n, { maxByteLength: n + 16 }),
+        copied: false,
+      },
+      {
+        name: 'an ArrayBuffer whose tag is forged to SharedArrayBuffer',
+        make: (n) => {
+          const b = new ArrayBuffer(n);
+          Object.defineProperty(b, Symbol.toStringTag, { value: 'SharedArrayBuffer' });
+          return b;
+        },
+        copied: false,
+      },
+      { name: 'a SharedArrayBuffer', make: (n) => new SharedArrayBuffer(n), copied: true },
+      {
+        name: 'a growable SharedArrayBuffer',
+        make: (n) => new GrowableShared(n, { maxByteLength: n + 16 }),
+        copied: true,
+      },
+      {
+        name: 'a SharedArrayBuffer whose tag is forged to ArrayBuffer',
+        make: (n) => {
+          const b = new SharedArrayBuffer(n);
+          Object.defineProperty(b, Symbol.toStringTag, { value: 'ArrayBuffer' });
+          return b;
+        },
+        copied: true,
+      },
+      {
+        name: 'a SharedArrayBuffer whose prototype is ArrayBuffer.prototype',
+        make: (n) => {
+          const b = new SharedArrayBuffer(n);
+          Object.setPrototypeOf(b, ArrayBuffer.prototype);
+          return b;
+        },
+        copied: true,
+      },
+    ];
+
+    it.each(kinds)('$name: copied is $copied, seen by a write after the load', async (kind) => {
+      const portable = new RoaringBitmap32(IDS).serialize('portable');
+      const view = new Uint8Array(kind.make(portable.length));
+      view.set(portable);
+      const seen: Uint8Array[] = [];
+      const codec: CodecInterface = {
+        ...storeCodec,
+        safeDeserialize: (bytes) => {
+          seen.push(bytes);
+          return storeCodec.empty();
+        },
+      };
+      await loadSegment(SEG, { serialized: view }, world(codec).deps);
+      expect(seen).toHaveLength(1);
+      view.fill(0xff);
+      // A copy still holds the bytes; a view of the caller's memory reads the write.
+      expect([...seen[0]!]).toEqual(kind.copied ? [...portable] : Array.from(portable, () => 0xff));
+    });
+
+    it('a detached buffer holds no bytes and is read as none, not as a copy', async () => {
+      const view = new Uint8Array(new ArrayBuffer(8));
+      structuredClone(view.buffer, { transfer: [view.buffer] });
+      const w = world();
+      expect(await loadSegment(SEG, { serialized: view }, w.deps)).toBeDefined();
+    });
+
+    it('a Proxy over a Uint8Array is refused, never read as ordinary memory', async () => {
+      const portable = new RoaringBitmap32(IDS).serialize('portable');
+      const proxy = new Proxy(new Uint8Array(portable), {});
+      const { codec, calls } = recordingCodec();
+      const err = await loadSegment(SEG, { serialized: proxy }, world(codec).deps).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(ValidationError);
+      expect(calls).toEqual([]);
+    });
+  });
+
   it('a Uint8Array whose byteLength lies is checked over the bytes it really holds', async () => {
     // A subclass's getters are not what the decoder reads, so the check must not read them either.
     class Lying extends Uint8Array {

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RoaringBitmap, ValidationError } from '@/index';
+import { TsBitmap } from '@/ts-roaring/bitmap';
 
 /**
  * Every refusal of the public class: what is refused, that it is a `ValidationError` (never a `TypeError`, whatever
@@ -222,6 +223,106 @@ describe('the constructor', () => {
     d.removeMany(toRemove);
     expect([...toRemove], 'removeMany leaves its argument as it was').toEqual([70_000, 1]);
     expect(d.toArray()).toEqual([2, TOP]);
+  });
+
+  /** Constructors that take a `maxByteLength`, which the compiled library's types do not yet declare. */
+  const GrowableCtor = ArrayBuffer as unknown as new (
+    n: number,
+    o: { maxByteLength: number },
+  ) => ArrayBuffer;
+  const GrowableShared = SharedArrayBuffer as unknown as new (
+    n: number,
+    o: { maxByteLength: number },
+  ) => SharedArrayBuffer;
+
+  describe('which typed arrays are copied before the codec reads them', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const forged = (b: ArrayBufferLike, tag: string): ArrayBufferLike => {
+      Object.defineProperty(b, Symbol.toStringTag, { value: tag });
+      return b;
+    };
+    const kinds: ReadonlyArray<readonly [string, () => Uint32Array, boolean]> = [
+      ['an ArrayBuffer', () => new Uint32Array(new ArrayBuffer(16)), false],
+      [
+        'a resizable ArrayBuffer',
+        () => new Uint32Array(new GrowableCtor(16, { maxByteLength: 32 })),
+        false,
+      ],
+      [
+        'an ArrayBuffer whose tag is forged to SharedArrayBuffer',
+        () => new Uint32Array(forged(new ArrayBuffer(16), 'SharedArrayBuffer')),
+        false,
+      ],
+      ['a SharedArrayBuffer', () => new Uint32Array(new SharedArrayBuffer(16)), true],
+      [
+        'a growable SharedArrayBuffer',
+        () => new Uint32Array(new GrowableShared(16, { maxByteLength: 32 })),
+        true,
+      ],
+      [
+        'a SharedArrayBuffer whose tag is forged to ArrayBuffer',
+        () => new Uint32Array(forged(new SharedArrayBuffer(16), 'ArrayBuffer')),
+        true,
+      ],
+      [
+        'a SharedArrayBuffer whose prototype is ArrayBuffer.prototype',
+        () => {
+          const b = new SharedArrayBuffer(16);
+          Object.setPrototypeOf(b, ArrayBuffer.prototype);
+          return new Uint32Array(b);
+        },
+        true,
+      ],
+      [
+        'a Proxy over a Uint32Array, which is no buffer the brand can name',
+        () =>
+          new Proxy(new Uint32Array(4), {
+            get: (target, key) => {
+              const v: unknown = Reflect.get(target, key, target);
+              return typeof v === 'function' ? (v as () => unknown).bind(target) : v;
+            },
+          }),
+        true,
+      ],
+    ];
+
+    it.each(kinds)('%s: addMany copies it', (_name, make, copied) => {
+      const source = make();
+      source.set([8, 6, 7, 6]);
+      const spy = vi.spyOn(TsBitmap.prototype, 'addMany');
+      const b = new RoaringBitmap();
+      b.addMany(source);
+      const seen = spy.mock.calls[0]![0] as Uint32Array;
+      source.fill(1);
+      expect(seen === source).toBe(!copied);
+      expect([...seen]).toEqual(copied ? [8, 6, 7, 6] : [1, 1, 1, 1]);
+      expect(b.toArray()).toEqual([6, 7, 8]);
+    });
+
+    it.each(kinds)('%s: the constructor copies it', (_name, make, copied) => {
+      const source = make();
+      source.set([8, 6, 7, 6]);
+      const spy = vi.spyOn(TsBitmap.prototype, 'addMany');
+      const b = new RoaringBitmap(source);
+      const seen = spy.mock.calls[0]![0] as Uint32Array;
+      source.fill(1);
+      expect(seen === source).toBe(!copied);
+      expect([...seen]).toEqual(copied ? [8, 6, 7, 6] : [1, 1, 1, 1]);
+      expect(b.toArray()).toEqual([6, 7, 8]);
+    });
+
+    it.each(kinds)('%s: removeMany copies it', (_name, make, copied) => {
+      const source = make();
+      source.set([8, 6, 7, 6]);
+      const spy = vi.spyOn(TsBitmap.prototype, 'removeMany');
+      const b = new RoaringBitmap([5, 6, 7, 8]);
+      b.removeMany(source);
+      const seen = spy.mock.calls[0]![0] as Uint32Array;
+      source.fill(1);
+      expect(seen === source).toBe(!copied);
+      expect(b.toArray()).toEqual([5]);
+    });
   });
 
   it('a bitmap passed in is cloned: the two are independent', () => {

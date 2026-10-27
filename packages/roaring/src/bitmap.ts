@@ -48,20 +48,23 @@ const viewGetter = (name: 'buffer'): ((this: unknown) => unknown) =>
   Object.getOwnPropertyDescriptor(VIEW, name)?.get as (this: unknown) => unknown;
 const bufferOf = viewGetter('buffer');
 
-const sharedByteLength =
-  typeof SharedArrayBuffer === 'function'
-    ? (Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get as
-        ((this: unknown) => unknown) | undefined)
-    : undefined;
+const plainByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')
+  ?.get as (this: unknown) => unknown;
+const hasSharedMemory = typeof SharedArrayBuffer === 'function';
 
-/** Whether the typed array's memory is a `SharedArrayBuffer`'s, by brand: another thread may write it while it is read. */
+/**
+ * Whether the typed array's memory may be a `SharedArrayBuffer`'s, by brand: another thread may write it while it is
+ * read. `ArrayBuffer`'s own `byteLength` getter returns for a genuine `ArrayBuffer` (so ordinary memory costs no throw)
+ * and throws for anything else, which is then treated as shared and copied; a `Symbol.toStringTag` can be given any
+ * value, the brand cannot. False on a runtime without a `SharedArrayBuffer`.
+ */
 function inSharedMemory(ids: Uint32Array): boolean {
-  if (sharedByteLength === undefined) return false;
+  if (!hasSharedMemory) return false;
   try {
-    sharedByteLength.call(bufferOf.call(ids));
-    return true;
-  } catch {
+    plainByteLength.call(bufferOf.call(ids));
     return false;
+  } catch {
+    return true;
   }
 }
 
