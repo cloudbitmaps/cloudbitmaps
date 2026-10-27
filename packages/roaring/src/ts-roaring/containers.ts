@@ -2045,17 +2045,63 @@ export function containersSubset(a: Container, b: Container): boolean {
 export function containersEqual(a: Container, b: Container): boolean {
   if (a.card !== b.card) return false;
   if (a.kind !== b.kind) return containerAndCard(a, b) === a.card;
-  if (a.kind === BITSET) {
-    const x = words32(a);
-    const y = words32(b);
-    for (let i = 0; i < WORDS; i++) if (x[i] !== y[i]) return false;
-    return true;
-  }
+  if (a.kind === BITSET) return equalWords(words32(a), 0, words32(b), 0, WORDS);
   if (a.len !== b.len) return false;
   const x = lows16(a);
   const y = lows16(b);
   const n = a.kind === ARRAY ? a.len : 2 * a.len;
-  for (let i = 0; i < n; i++) if (x[a.off + i] !== y[b.off + i]) return false;
+  if (n >= EQUAL_VIEW_MIN) {
+    // Two values a step through a 32-bit view over the same bytes, when both starts fall on a 4-byte boundary.
+    const xb = x.byteOffset + 2 * a.off;
+    const yb = y.byteOffset + 2 * b.off;
+    if ((xb & 3) === 0 && (yb & 3) === 0) {
+      const m = n >>> 1;
+      if (!equalWords(new Uint32Array(x.buffer, xb, m), 0, new Uint32Array(y.buffer, yb, m), 0, m))
+        return false;
+      return (n & 1) === 0 || x[a.off + n - 1] === y[b.off + n - 1];
+    }
+  }
+  return equalU16(x, a.off, y, b.off, n);
+}
+
+/** The fewest 16-bit values (an array's values, twice a run container's pairs) from which a compare goes through a 32-bit view: a view costs about as much as a few hundred compares. */
+export const EQUAL_VIEW_MIN = 512;
+
+/** Whether `n` words of `x` from `xo` equal those of `y` from `yo`: eight a step, the differences OR-ed and tested once per group. */
+function equalWords(x: Uint32Array, xo: number, y: Uint32Array, yo: number, n: number): boolean {
+  let i = 0;
+  for (const end = n - 7; i < end; i += 8) {
+    const d =
+      ((x[xo + i] as number) ^ (y[yo + i] as number)) |
+      ((x[xo + i + 1] as number) ^ (y[yo + i + 1] as number)) |
+      ((x[xo + i + 2] as number) ^ (y[yo + i + 2] as number)) |
+      ((x[xo + i + 3] as number) ^ (y[yo + i + 3] as number)) |
+      ((x[xo + i + 4] as number) ^ (y[yo + i + 4] as number)) |
+      ((x[xo + i + 5] as number) ^ (y[yo + i + 5] as number)) |
+      ((x[xo + i + 6] as number) ^ (y[yo + i + 6] as number)) |
+      ((x[xo + i + 7] as number) ^ (y[yo + i + 7] as number));
+    if (d !== 0) return false;
+  }
+  for (; i < n; i++) if (x[xo + i] !== y[yo + i]) return false;
+  return true;
+}
+
+/** {@link equalWords} over 16-bit values. */
+function equalU16(x: Uint16Array, xo: number, y: Uint16Array, yo: number, n: number): boolean {
+  let i = 0;
+  for (const end = n - 7; i < end; i += 8) {
+    const d =
+      ((x[xo + i] as number) ^ (y[yo + i] as number)) |
+      ((x[xo + i + 1] as number) ^ (y[yo + i + 1] as number)) |
+      ((x[xo + i + 2] as number) ^ (y[yo + i + 2] as number)) |
+      ((x[xo + i + 3] as number) ^ (y[yo + i + 3] as number)) |
+      ((x[xo + i + 4] as number) ^ (y[yo + i + 4] as number)) |
+      ((x[xo + i + 5] as number) ^ (y[yo + i + 5] as number)) |
+      ((x[xo + i + 6] as number) ^ (y[yo + i + 6] as number)) |
+      ((x[xo + i + 7] as number) ^ (y[yo + i + 7] as number));
+    if (d !== 0) return false;
+  }
+  for (; i < n; i++) if (x[xo + i] !== y[yo + i]) return false;
   return true;
 }
 
