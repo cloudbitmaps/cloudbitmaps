@@ -448,7 +448,7 @@ describe('the memory ledger', () => {
     const error = (r.outputs[0] as { error: BudgetExceededError }).error;
     expect(error).toBeInstanceOf(BudgetExceededError);
     expect(error.message).toContain(
-      'operand "a" at chunk 4 would hold more than maxBufferedBytes (42790)',
+      'operand "a" at one of its chunks would hold more than maxBufferedBytes (42790)',
     );
     expect(error).toMatchObject({ option: 'maxBufferedBytes', limit: 42_790, spent: 43_640 });
     expect(error.spent).toBeGreaterThan(42_790);
@@ -1176,7 +1176,7 @@ describe('each memory refusal reports what the ledger held plus the charge it re
   const limit = 256 << 20;
   // The publish refusal of a stored output runs it again alone first, so it is held in the feed tests, where it is final.
   const sites: Array<[string, RegExp]> = [
-    ['an operand chunk', /^materializeMany: operand "o0" at chunk \d+ would hold/],
+    ['an operand chunk', /^materializeMany: operand "o0" at one of its chunks would hold/],
     ['an output chunk', /^materializeMany: output 0 would hold/],
     ['a chunk being evaluated', /^materializeMany: a chunk being evaluated would hold/],
   ];

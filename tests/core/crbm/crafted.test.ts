@@ -463,12 +463,12 @@ describe('index consistency — refused at open, before any payload is read', ()
     [
       'a chunk key that repeats',
       () => valid({ rawEntries: [first, { ...second, keyDelta: 0 }] }),
-      /duplicate chunkKey/,
+      /repeats a chunk key/,
     ],
     [
       'a chunk key past 0xffff',
       () => valid({ rawEntries: [{ ...first, keyDelta: 0x1_0000 }, second] }),
-      /chunkKey .* out of range/,
+      /has a chunk key out of range/,
     ],
     [
       'a cardinality of 0',
@@ -629,7 +629,7 @@ describe('payload cap matches the decode cap', () => {
     ['cleartext', false, DEFAULT_MAX_BITMAP_BYTES],
     ['encrypted', true, DEFAULT_MAX_BITMAP_BYTES + FRAME],
   ] as const)(
-    '%s: an entry at the cap opens, one byte over is refused naming the chunk',
+    '%s: an entry at the cap opens, one byte over is refused naming the index entry',
     async (_n, enc, cap) => {
       const ok = await openCounted(object(cap, enc), enc);
       expect(ok.error).toBeUndefined();
@@ -637,7 +637,7 @@ describe('payload cap matches the decode cap', () => {
       const over = await openCounted(object(cap + 1, enc), enc);
       expect(over.error).toBeInstanceOf(IntegrityError);
       expect((over.error as Error).message).toMatch(
-        new RegExp(`chunk 7 length ${cap + 1} invalid \\(most is ${cap}\\)`),
+        new RegExp(`has a payload length ${cap + 1} invalid \\(most is ${cap}\\)`),
       );
       // The first payload starts at PAYLOAD_START: nothing read it (only the index, at most, was requested).
       expect(over.reader.rangeReads.some(([offset]) => offset === PAYLOAD_START)).toBe(false);
@@ -654,6 +654,6 @@ describe('payload cap matches the decode cap', () => {
     // One byte short of the entry still refuses it.
     await expect(
       CrbmReader.open(new BufferReader(bytes), { maxPayloadBytes: length - 1 }),
-    ).rejects.toThrow(/chunk 7 length 1048577 invalid/);
+    ).rejects.toThrow(/has a payload length 1048577 invalid/);
   });
 });
