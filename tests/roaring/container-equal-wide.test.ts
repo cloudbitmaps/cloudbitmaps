@@ -35,9 +35,20 @@ const arrayValues = (n: number) => Array.from({ length: n }, (_, i) => 3 * i);
 const runPairs = (r: number) =>
   Array.from({ length: 2 * r }, (_, i) => (i % 2 === 0 ? 10 * (i / 2) : 3));
 
-/** Positions worth a difference in a list of `n`: both ends, the middle and the edges of every group of eight. */
+/**
+ * Positions to plant a difference in a list of `n`: every position up to 40, and above that every position of the first
+ * group of eight (and the next), of one group in the middle, of the last two groups, and the edges of every group, so each
+ * term of the unrolled step is the only difference somewhere, through the loop and through the 32-bit view.
+ */
 function positions(n: number): number[] {
-  const set = new Set<number>([0, 1, n - 2, n - 1, n >> 1]);
+  if (n <= 40) return Array.from({ length: n }, (_, i) => i);
+  const set = new Set<number>([n >> 1]);
+  const middle = (n >> 1) & ~7;
+  for (let k = 0; k < 16; k++) {
+    set.add(k);
+    set.add(middle + k);
+    set.add(n - 1 - k);
+  }
   for (let g = 8; g < n; g += 8) {
     set.add(g - 1);
     set.add(g);
@@ -46,7 +57,8 @@ function positions(n: number): number[] {
 }
 
 const LENGTHS = [
-  1, 2, 3, 7, 8, 9, 15, 16, 17, 255, 256, 257, 510, 511, 512, 513, 514, 515, 1000, 1001, 4096,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 23, 24, 25, 31, 32, 33, 39, 40, 255,
+  256, 257, 510, 511, 512, 513, 514, 515, 1000, 1001, 4096,
 ];
 const PLACEMENTS = [
   { pad: 0, shift: 0 },
@@ -91,7 +103,7 @@ describe('the wide compare of arrays', () => {
 });
 
 describe('the wide compare of runs', () => {
-  for (const r of [1, 3, 4, 5, 8, 9, 127, 128, 255, 256, 257, 300, 1200]) {
+  for (const r of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 17, 20, 127, 128, 255, 256, 257, 300, 1200]) {
     it(`${r} runs: equal at every pair of placements, a start or a length that differs is seen`, () => {
       const pairs = runPairs(r);
       for (const left of PLACEMENTS) {
@@ -113,13 +125,14 @@ describe('the wide compare of runs', () => {
 });
 
 describe('the wide compare of bitsets', () => {
-  it('a bit that differs in any word is seen, the first, the last and every group edge included', () => {
+  it('a bit that differs in any word is seen, at every offset of every group of eight', () => {
     const base = new Uint32Array(WORDS);
     for (let i = 0; i < WORDS; i++) base[i] = (i * 2654435761) >>> 0;
     const card = 1;
     const a = bitsetContainer(base, card);
     expect(containersEqual(a, bitsetContainer(base.slice(), card))).toBe(true);
-    for (const p of positions(WORDS)) {
+    // Every word, so each offset of every group of eight is the only difference once.
+    for (let p = 0; p < WORDS; p++) {
       const moved = base.slice();
       moved[p] = (moved[p] as number) ^ 0x80000000;
       expect(containersEqual(a, bitsetContainer(moved, card))).toBe(false);
