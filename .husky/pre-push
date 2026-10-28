@@ -1,34 +1,11 @@
-# Runs the public-text check over what this push carries: every commit's message, author and committer, and the
-# branch name. Git gives one line per pushed ref on stdin: <local ref> <local sha> <remote ref> <remote sha>.
-# The range is the remote's old tip when this clone has it, else the merge-base with origin/main (a new branch).
-# A deletion is skipped. Plain node, no install needed at push time. Never bypass it with --no-verify.
-root=$(git rev-parse --show-toplevel) || exit 1
-status=0
-while read -r local_ref local_sha remote_ref remote_sha || [ -n "$local_ref" ]; do
-  case "$local_sha" in
-    '' | *[!0]*) ;;
-    *) continue ;;
-  esac
-  [ -n "$local_sha" ] || continue
-  base=
-  case "$remote_sha" in
-    '' | *[!0]*) git cat-file -e "$remote_sha^{commit}" 2>/dev/null && base=$remote_sha ;;
-  esac
-  if [ -z "$base" ]; then
-    base=$(git merge-base origin/main "$local_sha") || {
-      echo "pre-push: no merge-base of $local_ref with origin/main (run git fetch origin); the push is refused" >&2
-      status=1
-      continue
-    }
-  fi
-  branch=
-  case "$local_ref" in
-    refs/heads/*) branch=${local_ref#refs/heads/} ;;
-  esac
-  if [ -n "$branch" ]; then
-    PR_BRANCH=$branch BASE_SHA=$base HEAD_SHA=$local_sha node "$root/scripts/pr-text-scan.cjs" --push || status=1
-  else
-    env -u PR_BRANCH BASE_SHA=$base HEAD_SHA=$local_sha node "$root/scripts/pr-text-scan.cjs" --push || status=1
-  fi
-done
-exit $status
+# Runs the public-text check over what this push carries: every new commit's message, author and committer, and the
+# name of every branch or tag pushed (a tag's message and tagger too), under the names the remote will show. Git gives
+# one line per pushed ref on stdin and the remote's name as the first argument; node reads the lines itself, once for
+# the whole push, and decides the range: the commits not already on the remote (see scripts/pr-text-scan.cjs).
+# Plain node, no install needed at push time. Never bypass it with --no-verify or HUSKY=0.
+root=$(git rev-parse --show-toplevel) || exit 2
+command -v node >/dev/null 2>&1 || {
+  echo "pre-push: node is not on the PATH, so the public-text check cannot run; the push is refused" >&2
+  exit 2
+}
+node "$root/scripts/pr-text-scan.cjs" --push "$1"

@@ -37,15 +37,26 @@
 //   REQUIRE_NEEDLES   `true` when the needles must be there (the workflow sets it for a pull request from this
 //                     repository): the check then fails with exit 2 instead of running without them.
 //
-// Push mode (`--push`, used by `.husky/pre-push`): checks what one `git push` of one branch carries, before it leaves
-// the machine. PR_TITLE and PR_BODY are not read (a pull request's title and body are written after the push, so CI
-// keeps checking them); BASE_SHA and HEAD_SHA are required (the remote's old tip, or the merge-base with `origin/main`
-// for a new branch, and the commit being pushed) and PR_BRANCH is the branch's name, left unset for a tag. It scans
-// the same things as the CI mode over `git log BASE..HEAD` (every message, author and committer) and the branch name,
-// with the same findings, the same redaction and the same exit codes, and it fails closed the same way. The hook
-// runs it once per pushed ref, only on `git push`, never on a commit; a run takes about 0.15 s.
+// Push mode (`--push <remote name>`, used by `.husky/pre-push`): checks what one `git push` carries, before it leaves
+// the machine, in one run however many refs the push names. Git's own lines go to stdin, one per pushed ref
+// (`<local ref> <local sha> <remote ref> <remote sha>`); PR_TITLE, PR_BODY, PR_BRANCH, BASE_SHA and HEAD_SHA are not
+// read (a pull request's title and body are written after the push, so CI keeps checking them). A deleted ref
+// (all-zero local sha) pushes nothing and is skipped; a push of nothing exits 0.
+//   Commits: those of every pushed tip that are not already on the remote, `git log <tips> --not --remotes=<remote>
+//     <old tips>`: what the remote-tracking refs of that remote hold in this clone, and each ref's old tip when this
+//     clone has it, is public and was checked when it got there. So a rebase onto a moved `main`, a merge of `main`
+//     and a stale `origin/main` do not widen the range, and a force-push reads only the new commits. The hook never
+//     fetches: the range is only as fresh as the last fetch, and an older remote-tracking ref only means more commits
+//     are read, never fewer. A remote with no tracking refs in this clone (a first push to a new remote, or a push by
+//     URL) is measured from `origin/main` instead, and with no `origin/main` either the push is refused (exit 2).
+//   Names: the remote ref's, which is what GitHub shows, whatever the local ref is called (`HEAD:refs/heads/x` and
+//     `good:refs/heads/bad` both scan the remote name): a branch name with the branch rules, and a tag name with the
+//     same rules. An annotated tag's message and tagger are scanned too, with the commit rules; any other ref's name
+//     is scanned as written without its leading `refs/`.
+//   It scans each message, author and committer with the same findings, redaction and exit codes as the CI mode, and
+//   fails closed the same way: a line it cannot read, a git error or a crash is exit 2, a finding exit 1.
 //
-//     BASE_SHA=<sha> HEAD_SHA=<sha> PR_BRANCH='…' node scripts/pr-text-scan.cjs --push
+//     git push's lines on stdin | node scripts/pr-text-scan.cjs --push origin
 //
 // Exit 0 clean; 1 a finding; 2 an input or a tool that could not be read or run. The check fails closed: a missing
 // input, a git error, a scan that crashes or exits in a way this script does not know is a failure, never a pass.
@@ -78,7 +89,7 @@
 // script never reads.
 
 const { execFileSync, spawnSync } = require('node:child_process');
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 
@@ -191,8 +202,7 @@ function identityFindings(source, { name, email }) {
  * own branches. The `coordinator` rule is skipped on the copy: it treats a hyphenated compound as a property
  * (`coordinator-free`), and the copy would undo that. Each phrase is reported once.
  */
-function branchFindings(name) {
-  const source = 'branch name';
+function branchFindings(name, source = 'branch name') {
   const seen = new Set();
   const out = [];
   for (const f of [
@@ -208,6 +218,9 @@ function branchFindings(name) {
 
 class InputError extends Error {}
 
+/** The sources of a ref's name (a branch, a tag or another ref): the findings the branch-name advice goes with. */
+const NAME_SOURCE = /^(?:branch|tag|ref) name/;
+
 /** A trailer a named dependency bot's commit carries: GitHub writes it, so it is not scanned. */
 const BOT_TRAILER =
   /^(?:Signed-off-by|Co-authored-by):\s*(?:dependabot|renovate|github-actions)\[bot\]\s*</i;
@@ -218,26 +231,33 @@ const BOT_TRAILER =
  * The base is the base branch's tip, so what a merge of that branch brought in is behind it and is not listed.
  */
 function commits(base, head) {
-  const SHA = /^[0-9a-f]{7,40}$/i;
   if (!SHA.test(base) || !SHA.test(head))
     throw new InputError('BASE_SHA and HEAD_SHA must be commit ids');
-  let raw;
+  return commitsOf([`${base}..${head}`]);
+}
+
+const SHA = /^[0-9a-f]{7,40}$/i;
+
+/** `git` run in the repository, its output as text; a failure is an input error naming `what`. */
+function gitOut(args, what) {
   try {
-    raw = execFileSync(
-      'git',
-      ['log', '-z', '--format=%H%n%an%n%ae%n%cn%n%ce%n%B', `${base}..${head}`],
-      {
-        cwd: ROOT,
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
+    return execFileSync('git', args, {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   } catch (err) {
-    throw new InputError(
-      `git log ${base}..${head} failed: ${String(err.stderr || err.message).trim()}`,
-    );
+    throw new InputError(`${what} failed: ${String(err.stderr || err.message).trim()}`);
   }
+}
+
+/** The commits `git log` lists for these revision arguments (already validated), as `commits` describes them. */
+function commitsOf(revArgs) {
+  const raw = gitOut(
+    ['log', '-z', '--format=%H%n%an%n%ae%n%cn%n%ce%n%B', ...revArgs],
+    `git log ${revArgs.join(' ')}`,
+  );
   // `-z` ends each record with a NUL, which a commit message cannot hold, so no text of a message can be taken for
   // the end of a record. A record that does not parse stops the check.
   const records = raw.split('\0');
@@ -258,6 +278,112 @@ function commits(base, head) {
   });
 }
 
+const ZEROS = /^0+$/;
+
+/**
+ * What one `git push` carries, from git's lines on stdin (`<local ref> <local sha> <remote ref> <remote sha>`, one per
+ * pushed ref) and the name of the remote being pushed to. Returns `{ revArgs, names, tags }`, or `null` when nothing
+ * is pushed (an empty input, or only deletions).
+ *
+ * The commits are those of every pushed tip that are not already on the remote: `git log <tips> --not
+ * --remotes=<remote> <old tips>`. What this clone's remote-tracking refs and the remote's old tips hold is public and was
+ * checked when it got there, so it is not read again (after a rebase onto a moved `main`, a merge of `main`, or a stale
+ * `origin/main`, only the branch's own commits are read). A remote with no tracking refs in this clone (a first push
+ * to a new remote, or a push by URL) falls back to the commits not on `origin/main`; with no `origin/main` either, the
+ * push is refused. A commit that is on no remote is always read: the range errs toward scanning.
+ *
+ * The names scanned are the remote's (`remote ref`: what GitHub will show), never the local ref's: a branch's name,
+ * or a tag's name with, for an annotated tag, its message and its tagger.
+ */
+function pushInputs(remote, input) {
+  const tips = [];
+  const olds = [];
+  const names = [];
+  const tags = [];
+  for (const line of input.split('\n')) {
+    if (line.trim() === '') continue;
+    const f = line.trim().split(/\s+/);
+    if (f.length !== 4)
+      throw new InputError('a line git gave for the push does not have four fields');
+    const [, localSha, remoteRef, remoteSha] = f;
+    if (!SHA.test(localSha) || !SHA.test(remoteSha))
+      throw new InputError('a line git gave for the push does not hold commit ids');
+    if (ZEROS.test(localSha)) continue; // a deletion pushes nothing
+    tips.push(localSha);
+    if (!ZEROS.test(remoteSha) && commitExists(remoteSha)) olds.push(remoteSha);
+    if (remoteRef.startsWith('refs/heads/'))
+      names.push({ kind: 'branch', text: remoteRef.slice('refs/heads/'.length) });
+    else if (remoteRef.startsWith('refs/tags/')) {
+      names.push({ kind: 'tag', text: remoteRef.slice('refs/tags/'.length) });
+      tags.push({ name: remoteRef.slice('refs/tags/'.length), objects: tagObjects(localSha) });
+    } else names.push({ kind: 'ref', text: remoteRef.replace(/^refs\//, '') });
+  }
+  if (tips.length === 0) return null;
+  let exclude;
+  const safeRemote = /^[A-Za-z0-9._/-]+$/.test(remote || '') && !remote.startsWith('-');
+  const tracked =
+    safeRemote &&
+    gitOut(['for-each-ref', '--count=1', `refs/remotes/${remote}/`], 'git for-each-ref').trim() !==
+      '';
+  if (tracked) exclude = [`--remotes=${remote}`];
+  else {
+    try {
+      execFileSync('git', ['rev-parse', '--verify', '-q', 'refs/remotes/origin/main^{commit}'], {
+        cwd: ROOT,
+        stdio: 'ignore',
+      });
+    } catch {
+      throw new InputError(
+        'this clone has no remote-tracking refs for the remote being pushed to and no origin/main to measure from ' +
+          '(run git fetch origin); the push is refused',
+      );
+    }
+    exclude = ['refs/remotes/origin/main'];
+  }
+  return { revArgs: [...tips, '--not', ...exclude, ...olds], names, tags };
+}
+
+function commitExists(sha) {
+  try {
+    execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: ROOT, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The tag objects a pushed tag sha names (an annotated tag, or a tag of a tag), each `{ message, tagger }`. A
+ * lightweight tag is a commit, which has none.
+ */
+function tagObjects(sha) {
+  const out = [];
+  let cur = sha;
+  for (let depth = 0; depth < 10; depth++) {
+    let type;
+    try {
+      type = gitOut(['cat-file', '-t', cur], 'git cat-file').trim();
+    } catch {
+      return out; // a sha this clone lacks: git log reports it
+    }
+    if (type !== 'tag') return out;
+    const raw = gitOut(['cat-file', '-p', cur], 'git cat-file');
+    const cut = raw.indexOf('\n\n');
+    const header = (cut < 0 ? raw : raw.slice(0, cut)).split('\n');
+    const tagger = /^tagger (.*) <(.*)> \d+ [+-]\d{4}$/.exec(
+      header.find((l) => l.startsWith('tagger ')) || '',
+    );
+    const target = /^object ([0-9a-f]{40,64})$/.exec(header[0] || '');
+    out.push({
+      message: cut < 0 ? '' : raw.slice(cut + 2),
+      tagger: tagger ? { name: tagger[1], email: tagger[2] } : null,
+    });
+    if (!target) return out;
+    cur = target[1];
+  }
+  return out;
+}
+
 /** The leak scan's report with each finding's text withheld (the location stays), and the needle's index dropped. */
 function redact(report) {
   return report
@@ -265,7 +391,18 @@ function redact(report) {
     .replace(/extra needle #\d+/g, 'extra needle');
 }
 
-const ID_FIELDS = ['author name', 'author email', 'committer name', 'committer email'];
+/** The identity fields of a commit, for the needle pass: `{ label, fields: [[field, value]] }`. */
+function commitPerson(c) {
+  return {
+    label: `commit ${c.sha}`,
+    fields: [
+      ['author name', c.author.name],
+      ['author email', c.author.email],
+      ['committer name', c.committer.name],
+      ['committer email', c.committer.email],
+    ],
+  };
+}
 
 /**
  * The private needles alone over every commit's author and committer, name and email: one file per field, scanned by
@@ -276,13 +413,12 @@ const ID_FIELDS = ['author name', 'author email', 'committer name', 'committer e
 function identityNeedleHits(identities, idDir, run) {
   if (identities.length === 0) return { hits: [], unnamed: 0 };
   const files = new Map();
-  for (const c of identities) {
-    const values = [c.author.name, c.author.email, c.committer.name, c.committer.email];
-    ID_FIELDS.forEach((field, i) => {
+  for (const person of identities) {
+    for (const [field, value] of person.fields) {
       const file = `id-${files.size}.txt`;
-      files.set(file, `${field} of commit ${c.sha}`);
-      writeFileSync(join(idDir, file), values[i]);
-    });
+      files.set(file, `${field} of ${person.label}`);
+      writeFileSync(join(idDir, file), value);
+    }
   }
   const r = run(['--snapshot'], idDir);
   const verdict =
@@ -378,7 +514,8 @@ function leakScan(texts, requireNeedles, identities = []) {
   }
 }
 
-function main(env, push = false) {
+function main(env, pushArgs = null) {
+  const push = pushArgs !== null;
   const title = env.PR_TITLE;
   const body = env.PR_BODY;
   const inCi = env.GITHUB_ACTIONS === 'true';
@@ -386,22 +523,20 @@ function main(env, push = false) {
     throw new InputError('PR_TITLE is missing or empty');
   if (!push && body === undefined)
     throw new InputError('PR_BODY is not set (set it to an empty string for no body)');
-  // A push has no title or body, and its range is the whole point: both ends must be there.
-  if (push)
-    for (const name of ['BASE_SHA', 'HEAD_SHA'])
-      if (env[name] === undefined || env[name] === '')
-        throw new InputError(`${name} is not set (a push is checked over a range of commits)`);
   // In CI the workflow always sets all three of these: one that is gone is a broken workflow, not a pass.
   if (inCi && !push)
     for (const name of ['PR_BRANCH', 'BASE_SHA', 'HEAD_SHA'])
       if (env[name] === undefined || env[name] === '')
         throw new InputError(`${name} is not set (the workflow always sets it)`);
-  const hasBase = env.BASE_SHA !== undefined && env.BASE_SHA !== '';
-  const hasHead = env.HEAD_SHA !== undefined && env.HEAD_SHA !== '';
+  const hasBase = !push && env.BASE_SHA !== undefined && env.BASE_SHA !== '';
+  const hasHead = !push && env.HEAD_SHA !== undefined && env.HEAD_SHA !== '';
   if (hasBase !== hasHead)
     throw new InputError(
       `${hasBase ? 'HEAD_SHA' : 'BASE_SHA'} is not set: BASE_SHA and HEAD_SHA go together`,
     );
+
+  const pushed = push ? pushInputs(pushArgs.remote, pushArgs.input) : null;
+  if (push && pushed === null) return 0; // nothing is pushed: no deleted ref, no empty push is scanned
 
   const texts = push
     ? []
@@ -409,15 +544,52 @@ function main(env, push = false) {
         { file: 'title.txt', source: 'title', text: title },
         { file: 'body.txt', source: 'body', text: body },
       ];
-  if (env.PR_BRANCH !== undefined)
-    texts.push({ file: 'branch.txt', source: 'branch name', text: env.PR_BRANCH });
-  else console.log('pr-text-scan: no PR_BRANCH, so the branch name was not scanned.');
   const identities = [];
   const people = [];
-  if (hasBase) {
-    for (const c of commits(env.BASE_SHA, env.HEAD_SHA)) {
+  if (push) {
+    const count = (kind) => pushed.names.filter((n) => n.kind === kind).length;
+    const seen = {};
+    for (const n of pushed.names) {
+      seen[n.kind] = (seen[n.kind] || 0) + 1;
+      const ord = count(n.kind) > 1 ? ` ${seen[n.kind]}` : '';
+      texts.push({
+        file: `${n.kind}-${seen[n.kind]}.txt`,
+        source: `${n.kind} name${ord}`,
+        text: n.text,
+        name: true,
+      });
+    }
+    pushed.tags.forEach((t, i) =>
+      t.objects.forEach((o, j) => {
+        const ord = pushed.tags.length > 1 ? ` ${i + 1}` : '';
+        const at = j === 0 ? '' : ` (nested ${j})`;
+        texts.push({
+          file: `tag-message-${i + 1}-${j}.txt`,
+          source: `tag message${ord}${at}`,
+          text: o.message,
+        });
+        if (o.tagger) {
+          identities.push(...identityFindings(`tagger of tag${ord}${at}`, o.tagger));
+          people.push({
+            label: `tag${ord}${at}`,
+            fields: [
+              ['tagger name', o.tagger.name],
+              ['tagger email', o.tagger.email],
+            ],
+          });
+        }
+      }),
+    );
+  } else if (env.PR_BRANCH !== undefined)
+    texts.push({ file: 'branch.txt', source: 'branch name', text: env.PR_BRANCH, name: true });
+  else console.log('pr-text-scan: no PR_BRANCH, so the branch name was not scanned.');
+  let commitCount = 0;
+  if (hasBase || push) {
+    const list = push ? commitsOf(pushed.revArgs) : commits(env.BASE_SHA, env.HEAD_SHA);
+    for (const c of list) {
+      commitCount += 1;
       texts.push({ file: `commit-${c.sha}.txt`, source: `commit ${c.sha}`, text: c.message });
-      people.push(c);
+      people.push(commitPerson(c));
       identities.push(
         ...identityFindings(`author of commit ${c.sha}`, c.author),
         ...identityFindings(`committer of commit ${c.sha}`, c.committer),
@@ -430,7 +602,7 @@ function main(env, push = false) {
   const leak = leakScan(texts, env.REQUIRE_NEEDLES === 'true', people);
   const findings = [
     ...texts.flatMap((t) =>
-      t.source === 'branch name' ? branchFindings(t.text) : phraseFindings(t.source, t.text),
+      t.name ? branchFindings(t.text, t.source) : phraseFindings(t.source, t.text),
     ),
     ...identities,
     ...leak.identity.hits,
@@ -447,10 +619,11 @@ function main(env, push = false) {
       `pr-text-scan: and ${leak.identity.unnamed} more identity fields hold a private needle (the leak scan names ten per rule)`,
     );
   const count = findings.length + leak.identity.unnamed;
-  const branchLeak = !leak.ok && /^ {4}branch\.txt:\d+/m.test(leak.out);
-  const branchDigits = /AWS account id[^\n]*\n(?: {4}\S+:\d+[^\n]*\n)*? {4}branch\.txt:/.test(
-    leak.out,
-  );
+  const branchLeak = !leak.ok && /^ {4}(?:branch|tag|ref)(?:-\d+)?\.txt:\d+/m.test(leak.out);
+  const branchDigits =
+    /AWS account id[^\n]*\n(?: {4}\S+:\d+[^\n]*\n)*? {4}(?:branch|tag|ref)(?:-\d+)?\.txt:/.test(
+      leak.out,
+    );
   if (count > 0) {
     if (findings.some((f) => f.phrase !== 'private needle')) console.error(`pr-text-scan: ${FIX}`);
     if (findings.some((f) => f.source.includes('commit ') && f.line > 0))
@@ -466,7 +639,7 @@ function main(env, push = false) {
         'pr-text-scan: to fix an author or committer of the last commit: `git commit --amend --no-edit --reset-author` with the right identity configured (an earlier commit: mark it `edit` in `git rebase -i origin/main`, amend it the same way, then `git rebase --continue`)',
       );
   }
-  if (findings.some((f) => f.source === 'branch name') || branchLeak)
+  if (findings.some((f) => NAME_SOURCE.test(f.source)) || branchLeak)
     console.error(
       "pr-text-scan: to fix the branch name: a pull request's branch cannot be renamed, so push the work to a branch with another name and open the pull request from it" +
         (branchDigits
@@ -493,13 +666,27 @@ function main(env, push = false) {
     return 1;
   }
   console.log(
-    `pr-text-scan: clean (${texts.length} text(s), ${people.length} commit(s) with their authors and committers)`,
+    `pr-text-scan: clean (${texts.length} text(s), ${commitCount} commit(s) with their authors and committers)`,
   );
   return 0;
 }
 
+function readStdin() {
+  try {
+    return readFileSync(0, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'EOF') return '';
+    throw new InputError(`the lines git gave for the push could not be read: ${err.message}`);
+  }
+}
+
 try {
-  process.exitCode = main(process.env, process.argv.slice(2).includes('--push'));
+  const args = process.argv.slice(2);
+  const at = args.indexOf('--push');
+  process.exitCode = main(
+    process.env,
+    at < 0 ? null : { remote: args[at + 1], input: readStdin() },
+  );
 } catch (err) {
   console.error(
     `pr-text-scan: FAILED to run: ${err instanceof InputError ? err.message : err && err.stack}`,
