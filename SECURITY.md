@@ -359,10 +359,10 @@ The controls in full:
   publishing is the `release` environment's required reviewer and the npm Trusted Publisher binding to this repository
   and workflow. A manual run, from any ref, creates no GitHub Release.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
-  on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile. Three CI jobs
-  install from the registry without a lockfile, each inside a container: the consumer install (the six packed tarballs
-  and the cloud SDKs), and `lambda-smoke` and `rss-gate` (`roaring` at its locked version, with its own dependencies
-  resolved fresh). The consumer install's container mounts nothing writable from the host and passes no environment
+  on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile. One CI job
+  installs from the registry without a lockfile, inside a container: the consumer install (the six packed tarballs
+  and the cloud SDKs). `lambda-smoke` and `rss-gate` install nothing: they place the packed or built packages by hand
+  and run them in a container. The consumer install's container mounts nothing writable from the host and passes no environment
   in, and its job holds no secret and restores and saves no cache; the release workflow does not run it.
 - **SHA-pinned GitHub Actions.** Every third-party `uses:`, in every workflow and in the composite actions under
   `.github/actions/`, is pinned to a **full commit SHA** (with a `# vX` comment for readability), so a hijacked or

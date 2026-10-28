@@ -148,6 +148,8 @@ more than the request count, use way 1 for the union too.
 When the same operands are counted many times (one audience against forty others, or each facet against the current
 filter), read each into a `RoaringBitmap` and count in memory. The cardinality methods build no result you can keep.
 
+`RoaringBitmap` is in 0.25.0 and later (unreleased), so this block needs a build of `main` until that release is published.
+
 <!-- typecheck -->
 ```ts
 import { RoaringBitmap } from '@cloudbitmaps/roaring';
