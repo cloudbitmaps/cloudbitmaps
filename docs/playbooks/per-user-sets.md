@@ -38,7 +38,7 @@ best: a set type, or the bytes of a bitmap. The store gives you the per-key writ
 The bitmap is a good value: it is compact and the same bytes load back into the standalone class. The block below does that with
 a `Map` standing in for the key-value store, so the page runs.
 
-`RoaringBitmap` is in 0.25.0 and later (unreleased), so this block needs a build of `main` until that release is published.
+This block imports `RoaringBitmap` (0.25.0 and later; unreleased).
 
 <!-- typecheck -->
 ```ts

@@ -53,7 +53,7 @@ change, and the tag goes on the commit that pull request makes on `main`.
    `tests/docs/version-claims.test.ts` names each one that still disagrees with the manifests. Two more edits belong in
    the same change, and no test names them: in `docs/ROADMAP.md`, each row that says "in the next release" becomes
    **shipped** and the line that says which release "a bare shipped" means names this one; and `api-surface/allowed.json`
-   is emptied to `[]`, because a row the release base already has excuses nothing (the next change adds its own rows). Drop each "unreleased" the pages put beside the new version (a page may name
+   is emptied to `[]`, because a row the release base already has excuses nothing (the next change adds its own rows). Drop each "unreleased" the pages put beside the new version (with its "; " or parentheses; `tests/docs/unreleased-notes.test.ts` fails on any that is left) (a page may name
    the next release only with that word beside it, and `tests/docs/version-claims.test.ts` then holds it).
 4. **Open the pull request, and squash-merge it** once the gate is green and it is approved.
 5. **Tag the merge commit and push the tag**, once its CI run on `main` is green. Tag it by SHA, so a pull

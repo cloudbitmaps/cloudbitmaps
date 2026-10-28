@@ -59,7 +59,7 @@ first.
 in the first, each person viewed and then carted, one within the hour and one not; in the second, each carted and then viewed.
 Their step sets are the same.
 
-`RoaringBitmap` is in 0.25.0 and later (unreleased), so this block needs a build of `main` until that release is published.
+This block imports `RoaringBitmap` (0.25.0 and later; unreleased).
 
 <!-- typecheck -->
 ```ts

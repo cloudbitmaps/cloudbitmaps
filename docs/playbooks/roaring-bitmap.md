@@ -7,8 +7,7 @@ it, combines it with others, counts without building a result, round-trips it th
 hands it to a store. Every block runs as written, on invented data, in the repo's tests, and each `Output` is what that
 run prints.
 
-`RoaringBitmap` is in 0.25.0 and later (unreleased): until that release is published, the blocks on this page need a build
-of `main`.
+The blocks on this page use `RoaringBitmap` (0.25.0 and later; unreleased).
 
 Use it when a job needs set math on integer ids (who is in both lists, who is in this one and not that one) and a
 `Set<number>` is too large, when you build a set before a `store.load`, or when you read Roaring bytes some
