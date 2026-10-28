@@ -1,5 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -853,6 +862,350 @@ describe('fails closed', () => {
     expect(run(dir, { PR_TITLE: 't' }).status).toBe(2);
     expect(run(dir, { PR_TITLE: 't', PR_BODY: '', BASE_SHA: sha }).status).toBe(2);
     expect(run(dir, { PR_TITLE: 't', PR_BODY: '', HEAD_SHA: sha }).status).toBe(2);
+  });
+});
+
+/**
+ * Push mode and the hook around it: git's lines (`<local ref> <local sha> <remote ref> <remote sha>`) on stdin and the
+ * remote's name as the argument, one run for the whole push, no title and no body.
+ */
+const ZERO = '0'.repeat(40);
+
+/** A throwaway repository with `origin/main` at its first commit, and the hook beside the scripts. */
+function hookRepo() {
+  const r = repo();
+  mkdirSync(join(r.dir, '.husky'));
+  copyFileSync(join(ROOT, '.husky/pre-push'), join(r.dir, '.husky/pre-push'));
+  const main = r.commit('base');
+  git(r.dir, 'update-ref', 'refs/remotes/origin/main', main);
+  return { ...r, main };
+}
+
+/** Run the hook the way git does: one line per ref on stdin, the remote's name as its argument. */
+function hook(
+  dir: string,
+  lines: string[],
+  { remote = 'origin', path = process.env.PATH }: { remote?: string; path?: string } = {},
+): Run {
+  const x = spawnSync('/bin/sh', [join(dir, '.husky/pre-push'), remote], {
+    cwd: dir,
+    encoding: 'utf8',
+    input: lines.length === 0 ? '' : lines.join('\n') + '\n',
+    env: { ...process.env, LEAK_SCAN_EXTRA: undefined, GITHUB_ACTIONS: undefined, PATH: path },
+  });
+  return { status: x.status, out: `${x.stdout}${x.stderr}` };
+}
+
+const line = (ref: string, sha: string, remoteRef = ref, remoteSha = ZERO) =>
+  `${ref} ${sha} ${remoteRef} ${remoteSha}`;
+
+describe('push mode', () => {
+  const push = (dir: string, input: string, env: Record<string, string | undefined> = {}): Run => {
+    const r = spawnSync(
+      process.execPath,
+      [join(dir, 'scripts/pr-text-scan.cjs'), '--push', 'origin'],
+      {
+        cwd: dir,
+        encoding: 'utf8',
+        input,
+        env: { ...process.env, LEAK_SCAN_EXTRA: undefined, GITHUB_ACTIONS: undefined, ...env },
+      },
+    );
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+
+  it('a clean range passes without a title or a body, and counts its commits', () => {
+    const { dir, commit } = hookRepo();
+    commit('Add a thing');
+    const head = commit('Add another thing');
+    const r = push(dir, line('refs/heads/feature/add-a-thing', head) + '\n');
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('2 commit(s)');
+  });
+
+  it('does not read a title, a body or a branch from the environment', () => {
+    const { dir, commit } = hookRepo();
+    const head = commit('Add a thing');
+    const r = push(dir, line('refs/heads/feature/x', head) + '\n', {
+      PR_TITLE: 'written by Claude',
+      PR_BODY: 'a subagent did it',
+      PR_BRANCH: 'claude/x',
+    });
+    expect(r.status).toBe(0);
+  });
+
+  it('fails closed (exit 2) on a line it cannot read, a bad sha, and a sha git does not have', () => {
+    const { dir, commit } = hookRepo();
+    const head = commit('Add a thing');
+    expect(push(dir, 'refs/heads/x only three\n').status).toBe(2);
+    expect(push(dir, line('refs/heads/x', 'not-a-sha') + '\n').status).toBe(2);
+    expect(push(dir, line('refs/heads/x', '1'.repeat(40)) + '\n').status).toBe(2);
+    expect(push(dir, line('refs/heads/x', head, 'refs/heads/x', 'zz') + '\n').status).toBe(2);
+  });
+
+  it('without --push the title is still required', () => {
+    const { dir, commit } = hookRepo();
+    const base = commit('base');
+    const head = commit('x');
+    expect(run(dir, { BASE_SHA: base, HEAD_SHA: head }).status).toBe(2);
+  });
+});
+
+describe('the pre-push hook', () => {
+  it('is executable, like the pre-commit hook beside it', () => {
+    expect(statSync(join(ROOT, '.husky/pre-push')).mode & 0o111).not.toBe(0);
+  });
+
+  it('a new branch is read from the commits the remote lacks, and a clean one passes', () => {
+    const { dir, commit } = hookRepo();
+    const head = commit('Add a thing');
+    const r = hook(dir, [line('refs/heads/feature/add-a-thing', head)]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('1 commit(s)');
+  });
+
+  it('a refused phrase in a new branch refuses the push (exit 1), naming the commit and never the text', () => {
+    const { dir, commit } = hookRepo();
+    const bad = commit('done by the coordinator');
+    const head = commit('Add a thing');
+    const r = hook(dir, [line('refs/heads/feature/add-a-thing', head)]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"coordinator" in the commit ${bad}, line 1`);
+    expect(r.out).not.toContain('done by');
+  });
+
+  it('an existing remote tip: a finding between the tip and the head refuses; one behind the tip is not read again', () => {
+    const { dir, commit } = hookRepo();
+    commit('done by the coordinator');
+    const tip = commit('Add a thing');
+    const bad = commit('written by Claude');
+    const head = commit('Add another thing');
+    const refused = hook(dir, [line('refs/heads/feature/x', head, 'refs/heads/feature/x', tip)]);
+    expect(refused.status).toBe(1);
+    expect(refused.out).toContain(`"Claude" in the commit ${bad}`);
+    expect(refused.out).not.toContain('coordinator');
+    const behind = hook(dir, [line('refs/heads/feature/x', tip, 'refs/heads/feature/x', tip)]);
+    expect(behind.status).toBe(0);
+    expect(behind.out).toContain('0 commit(s)');
+  });
+
+  it('a remote tip this clone does not have: the commits no remote ref holds are read', () => {
+    const { dir, commit } = hookRepo();
+    const bad = commit('done by the coordinator');
+    const head = commit('Add a thing');
+    const r = hook(dir, [
+      line('refs/heads/feature/x', head, 'refs/heads/feature/x', '1'.repeat(40)),
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"coordinator" in the commit ${bad}`);
+  });
+
+  it('a diverged force-push reads the new commits, not the old tip it replaces', () => {
+    const { dir, commit, main } = hookRepo();
+    const oldTip = commit('written by Claude');
+    git(dir, 'checkout', '-q', '-b', 'redo', main);
+    const clean = commit('Add a thing');
+    const ok = hook(dir, [line('refs/heads/feature/x', clean, 'refs/heads/feature/x', oldTip)]);
+    expect(ok.status).toBe(0);
+    expect(ok.out).toContain('1 commit(s)');
+    const bad = commit('the subagent ran it');
+    const no = hook(dir, [line('refs/heads/feature/x', bad, 'refs/heads/feature/x', oldTip)]);
+    expect(no.status).toBe(1);
+    expect(no.out).toContain(`"subagent" in the commit ${bad}`);
+    expect(no.out).not.toContain('Claude');
+  });
+
+  it('a rebase onto new main commits the remote already has does not read them again', () => {
+    const { dir, commit, main } = hookRepo();
+    const oldTip = commit('Add a thing');
+    git(dir, 'checkout', '-q', '-b', 'main2', main);
+    const moved = commit('done by the coordinator');
+    git(dir, 'update-ref', 'refs/remotes/origin/main', moved);
+    git(dir, 'checkout', '-q', '-b', 'rebased', moved);
+    const head = commit('Add a thing');
+    const r = hook(dir, [line('refs/heads/feature/x', head, 'refs/heads/feature/x', oldTip)]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('1 commit(s)');
+    // a branch the remote has never seen is bounded by the remote's refs too
+    const fresh = hook(dir, [line('refs/heads/feature/y', head)]);
+    expect(fresh.status).toBe(0);
+    expect(fresh.out).toContain('1 commit(s)');
+  });
+
+  it('a first push to a remote with no tracking refs here is measured from origin/main; with none the push is refused', () => {
+    const { dir, commit } = hookRepo();
+    const bad = commit('done by the coordinator');
+    const head = commit('Add a thing');
+    const r = hook(dir, [line('refs/heads/feature/x', head)], { remote: 'upstream' });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"coordinator" in the commit ${bad}`);
+    git(dir, 'update-ref', '-d', 'refs/remotes/origin/main');
+    const none = hook(dir, [line('refs/heads/feature/x', head)], { remote: 'upstream' });
+    expect(none.status).toBe(2);
+    expect(none.out).toContain('no remote-tracking refs');
+  });
+
+  it('a deleted ref is skipped, and so is an empty stdin', () => {
+    const { dir, commit } = hookRepo();
+    const r = hook(dir, [line('(delete)', ZERO, 'refs/heads/feature/x', '1'.repeat(40))]);
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain('pr-text-scan');
+    expect(hook(dir, []).status).toBe(0);
+    const head = commit('Add a thing');
+    const mixed = hook(dir, [
+      line('(delete)', ZERO, 'refs/heads/feature/x', '1'.repeat(40)),
+      line('refs/heads/feature/y', head),
+    ]);
+    expect(mixed.status).toBe(0);
+    expect(mixed.out).toContain('1 commit(s)');
+  });
+
+  it('several refs in one push are read in one run: a bad one refuses the whole push, the good one is still read', () => {
+    const { dir, commit, main } = hookRepo();
+    const good = commit('Add a thing');
+    git(dir, 'checkout', '-q', '-b', 'other', main);
+    const bad = commit('written by Claude');
+    const r = hook(dir, [
+      line('refs/heads/feature/good', good),
+      line('refs/heads/claude/other', bad),
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"Claude" in the commit ${bad}`);
+    expect(r.out).toContain('"coding tool branch prefix" in the branch name 2');
+    expect(r.out).toContain('scanned 4 text(s)');
+    expect(r.out.match(/FAILED:/g)).toHaveLength(1);
+    const fine = hook(dir, [
+      line('refs/heads/feature/good', good),
+      line('refs/heads/feature/other', main),
+    ]);
+    expect(fine.status).toBe(0);
+    expect(fine.out.match(/clean \(/g)).toHaveLength(1);
+    expect(fine.out).toContain('1 commit(s)');
+  });
+
+  it('the name scanned is the remote ref, for every push form', () => {
+    const { dir, commit } = hookRepo();
+    const head = commit('Add a thing');
+    // a detached HEAD pushed to a bad remote name
+    const detached = hook(dir, [line('HEAD', head, 'refs/heads/claude/x')]);
+    expect(detached.status).toBe(1);
+    expect(detached.out).toContain('"coding tool branch prefix" in the branch name');
+    // a good local name pushed to a bad remote name
+    expect(hook(dir, [line('refs/heads/good', head, 'refs/heads/claude/x')]).status).toBe(1);
+    // a bad local name pushed to a good remote name: what GitHub shows is clean
+    expect(
+      hook(dir, [line('refs/heads/claude/local-only', head, 'refs/heads/feature/x')]).status,
+    ).toBe(0);
+    // a detached HEAD pushed to a good remote name
+    expect(hook(dir, [line('HEAD', head, 'refs/heads/feature/x')]).status).toBe(0);
+  });
+
+  it('a bad branch name refuses the push even when the commits are clean', () => {
+    const { dir, commit } = hookRepo();
+    const head = commit('Add a thing');
+    const r = hook(dir, [line('refs/heads/claude/tidy', head)]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('"coding tool branch prefix" in the branch name');
+  });
+
+  it('a tag is read over its commits, and its name, with the branch rules', () => {
+    const { dir, commit } = hookRepo();
+    const head = commit('written by Claude');
+    const r = hook(dir, [line('refs/tags/v1', head)]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('"Claude" in the commit');
+    const clean = commit('Add a thing');
+    expect(hook(dir, [line('refs/tags/v2', clean, 'refs/tags/v2', head)]).status).toBe(0);
+    const named = hook(dir, [line('refs/tags/claude/v2', clean, 'refs/tags/claude/v2', head)]);
+    expect(named.status).toBe(1);
+    expect(named.out).toContain('"coding tool branch prefix" in the tag name');
+  });
+
+  describe('an annotated tag', () => {
+    const annotate = (
+      dir: string,
+      name: string,
+      message: string,
+      tagger: { name: string; email: string } = { name: 'a', email: 'a@users.noreply.github.com' },
+    ): string => {
+      const r = spawnSync('git', ['tag', '-a', '-m', message, name], {
+        cwd: dir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_COMMITTER_NAME: tagger.name,
+          GIT_COMMITTER_EMAIL: tagger.email,
+        },
+      });
+      if (r.status !== 0) throw new Error(r.stderr);
+      return git(dir, 'rev-parse', name).stdout.trim();
+    };
+
+    it('is scanned for its message: a finding in it refuses, a clean one passes', () => {
+      const { dir, commit } = hookRepo();
+      commit('Add a thing');
+      const bad = annotate(dir, 'v1', 'released by the coordinator');
+      expect(git(dir, 'cat-file', '-t', bad).stdout.trim()).toBe('tag');
+      const r = hook(dir, [line('refs/tags/v1', bad)]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('"coordinator" in the tag message, line 1');
+      expect(r.out).not.toContain('released by');
+      const ok = annotate(dir, 'v2', 'release 2');
+      const clean = hook(dir, [line('refs/tags/v2', ok)]);
+      expect(clean.status).toBe(0);
+      expect(clean.out).toContain('1 commit(s)');
+    });
+
+    it('is scanned for its tagger', () => {
+      const { dir, commit } = hookRepo();
+      commit('Add a thing');
+      const sha = annotate(dir, 'v1', 'release 1', {
+        name: 'tool',
+        email: `noreply@${'anthropic'}.com`,
+      });
+      const r = hook(dir, [line('refs/tags/v1', sha)]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('"anthropic address" in the tagger of tag');
+      expect(r.out).not.toContain(`noreply@${'anthropic'}.com`);
+    });
+  });
+
+  it('refuses with exit 2 when node is not on the PATH', () => {
+    const { dir, commit } = hookRepo();
+    const head = commit('Add a thing');
+    const bin = mkdtempSync(join(tmpdir(), 'no-node-bin-'));
+    dirs.push(bin);
+    const gitPath = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+    symlinkSync(gitPath, join(bin, 'git'));
+    const r = hook(dir, [line('refs/heads/feature/x', head)], { path: bin });
+    expect(r.status).toBe(2);
+    expect(r.out).toContain('node is not on the PATH');
+  });
+
+  it('works in a linked worktree', () => {
+    const { dir, commit } = hookRepo();
+    commit('Add a thing');
+    const wt = `${dir}-wt`;
+    expect(git(dir, 'worktree', 'add', '-q', '-b', 'side', wt).status).toBe(0);
+    dirs.push(wt);
+    writeFileSync(join(wt, 'w.txt'), 'w');
+    git(wt, 'add', '-A');
+    const c = spawnSync('git', ['commit', '-q', '--no-verify', '-m', 'written by Claude'], {
+      cwd: wt,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' },
+    });
+    expect(c.status).toBe(0);
+    const head = git(wt, 'rev-parse', 'HEAD').stdout.trim();
+    const r = hook(wt, [line('refs/heads/side', head)]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`"Claude" in the commit ${head}`);
+  });
+
+  it('a line it cannot read refuses the push with exit 2', () => {
+    const { dir } = hookRepo();
+    expect(hook(dir, ['refs/heads/x not four fields']).status).toBe(2);
   });
 });
 

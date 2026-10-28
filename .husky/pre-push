@@ -1,0 +1,11 @@
+# Runs the public-text check over what this push carries: every new commit's message, author and committer, and the
+# name of every branch or tag pushed (a tag's message and tagger too), under the names the remote will show. Git gives
+# one line per pushed ref on stdin and the remote's name as the first argument; node reads the lines itself, once for
+# the whole push, and decides the range: the commits not already on the remote (see scripts/pr-text-scan.cjs).
+# Plain node, no install needed at push time. Never bypass it with --no-verify or HUSKY=0.
+root=$(git rev-parse --show-toplevel) || exit 2
+command -v node >/dev/null 2>&1 || {
+  echo "pre-push: node is not on the PATH, so the public-text check cannot run; the push is refused" >&2
+  exit 2
+}
+node "$root/scripts/pr-text-scan.cjs" --push "$1"
