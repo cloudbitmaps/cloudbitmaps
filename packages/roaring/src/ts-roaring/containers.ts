@@ -1497,12 +1497,13 @@ export function expandsRunSteps(runs: Container, values: number): boolean {
 }
 
 /**
- * Whether a group of `count` ids goes into the run container `runs` by {@link orRunIdsWalk}: a group the size of an
- * array container (at most {@link ARRAY_MAX_CARDINALITY} ids) that the size rule sends to the merge walk. Bigger groups,
- * and those it sends through words, take the container merge.
+ * Whether a group of `count` ids goes into the run container `runs` by {@link orRunIdsWalk}: the size rule sends it to
+ * the merge walk. The rule refuses from 2,047 steps (the runs plus the ids) up, since `2 + 4 * steps` then reaches the
+ * 8,192-byte plain body at most, so the walk takes at most 2,046 ids for one run, fewer for more runs, and fewer
+ * again when the result is small enough for the plain body to be an array. Every other group takes the container merge.
  */
 export function walksRunIds(runs: Container, count: number): boolean {
-  return runs.kind === RUN && count <= ARRAY_MAX_CARDINALITY && !expandsRunSteps(runs, count);
+  return runs.kind === RUN && !expandsRunSteps(runs, count);
 }
 
 /**
@@ -1610,7 +1611,9 @@ export function orRunArrayWalk(runs: Container, array: Container, keep: boolean)
  * The ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits kept) written into a run
  * container by the merge walk of {@link orRunArrayWalk}, reading the ids where they are instead of from a container
  * built for them. The same walk, so the result is the same container for the same values; `runs` itself when the ids add
- * nothing. A copy of the walk, not a shared one: the element access in each stays on one array type.
+ * nothing. A copy of the walk, not a shared one: each walk reads one kind of array (16-bit values here, 32-bit ids
+ * there), so its element reads stay of one kind for the engine, where a shared walk would see both. A test holds the
+ * two to the same container for the same values.
  */
 export function orRunIdsWalk(
   runs: Container,

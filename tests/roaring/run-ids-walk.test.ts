@@ -1,9 +1,8 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { TsBitmap } from '@/ts-roaring/bitmap';
+import { TsBitmap, groupPath } from '@/ts-roaring/bitmap';
 import {
   ARRAY,
-  BITSET,
   Container,
   RUN,
   appendIds,
@@ -11,12 +10,13 @@ import {
   expandsRunArray,
   expandsRunSteps,
   fromSortedIds,
+  orRunArrayWalk,
   orRunIdsWalk,
   walksRunIds,
 } from '@/ts-roaring/containers';
 
 /**
- * A group of five to 4,096 ids written into a run container is merged by a walk that reads the ids where they are,
+ * A group of five or more ids that the size rule sends to the merge walk, written into a run container, is merged by a walk that reads the ids where they are,
  * with no container built for the group. The result is, container for container, what the merge of the run container
  * with a container of the group gives, and the size rule that picks the walk is the one the container merge uses.
  */
@@ -141,12 +141,80 @@ describe('orRunIdsWalk: the walk over ids equals the container merge', () => {
     }
   }
 
-  it('the walk is taken for a few hundred ids, and never for 4,097 or more (the container merge keeps them)', () => {
+  it('the walk is refused above the group sizes the size rule computes, and for 4,097 or more', () => {
     const held = runList(150, 30, 12, 1);
     expect(walksRunIds(runs(held), 5)).toBe(true);
     expect(walksRunIds(runs(held), 800)).toBe(true);
     expect(walksRunIds(runs(held), 4_097)).toBe(false);
     expect(walksRunIds(runs(held), 65_536)).toBe(false);
+  });
+
+  it('the band edges follow from the rule: 2 + 4 * (runs + ids) under the 8,192-byte body, or 1,024 steps for a small result', () => {
+    const spaced = (n: number, len: number) =>
+      Array.from({ length: n }, (_, i) =>
+        Array.from({ length: len }, (_, k) => i * (len + 1) + k),
+      ).flat();
+    // A large result: the plain body is a bitset, so the walk takes ids while runs + ids <= 2,047.
+    const big: Array<[number, number]> = [
+      [1, 30_000],
+      [150, 30],
+      [1_000, 5],
+      [2_000, 5],
+    ];
+    for (const [n, len] of big) {
+      const run =
+        n === 1 ? runs(Array.from({ length: 30_000 }, (_, i) => 100 + i)) : runs(spaced(n, len));
+      const top = 2_047 - run.len;
+      expect(walksRunIds(run, top), `${n} runs, ${top} ids`).toBe(true);
+      expect(walksRunIds(run, top + 1), `${n} runs, ${top + 1} ids`).toBe(false);
+    }
+    // One run of many values holds at most 2,046 ids.
+    expect(2_047 - runs(Array.from({ length: 30_000 }, (_, i) => 100 + i)).len).toBe(2_046);
+    // A small result (an array is its plain body): a rule that refuses at 1,024 steps.
+    const small = runs(spaced(150, 1));
+    expect(walksRunIds(small, 1_023 - small.len)).toBe(true);
+    expect(walksRunIds(small, 1_024 - small.len)).toBe(false);
+  });
+
+  it('addMany chooses its path by the group size and the container: few, walk or merge', () => {
+    const run = runs(runList(150, 30, 12, 1));
+    expect(groupPath(run, 4)).toBe('few');
+    expect(groupPath(run, 5)).toBe('walk');
+    expect(groupPath(run, 800)).toBe('walk');
+    expect(groupPath(run, 4_097)).toBe('merge');
+    const array = new Container(ARRAY, Uint16Array.of(1, 5, 9), 0, 3, 3, false);
+    expect(groupPath(array, 5)).toBe('merge');
+    expect(groupPath(array, 4)).toBe('few');
+  });
+
+  it('property: the two walks return the same container for the same values', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 2_000 }),
+        fc.integer({ min: 1, max: 40 }),
+        fc.integer({ min: 1, max: 25 }),
+        fc.oneof(
+          fc.integer({ min: 1, max: 4_096 }),
+          fc.constantFrom(1, 5, 1_023, 1_024, 2_045, 2_046, 2_047, 2_048, 4_096),
+        ),
+        fc.integer({ min: 0, max: 1_000_000 }),
+        fc.integer({ min: 0, max: 3 }),
+        (n, gap, maxLen, g, seed, pad) => {
+          const held = runList(n, Math.max(gap, maxLen + 1), maxLen, seed);
+          const run = runs(held, pad);
+          const lows = sortedUnique(idsFor(held, g, seed + 1));
+          const ids = ids32(lows);
+          const array = fromSortedIds(ids, 0, ids.length);
+          const fromIds = orRunIdsWalk(run, ids, 0, ids.length);
+          const fromArray = orRunArrayWalk(run, array, true);
+          sameContainer(fromIds, fromArray, 'two walks');
+          expect(fromIds === run, 'two walks: same object when nothing is added').toBe(
+            fromArray === run,
+          );
+        },
+      ),
+      { numRuns: 400 },
+    );
   });
 
   it('a non-run container never takes the walk', () => {
@@ -209,18 +277,14 @@ describe('orRunIdsWalk: the walk over ids equals the container merge', () => {
     expect(valuesOf(got)).toEqual(sortedUnique([...held, ...lows]));
   });
 
-  it('a result that leaves the run form: a bitset past 4,096 values', () => {
-    // 1,500 runs of 3, then a group of 600 isolated values: 2,100 runs against 8,192 bytes plain.
+  it('a group that would leave a bitset is sent through words by the size rule, not the walk', () => {
+    // 1,500 runs of 3, then a group of 600 isolated values: 2,100 steps, so 2 + 8,400 is not under 8,192 bytes.
     const held = Array.from({ length: 1_500 }, (_, i) => i * 20).flatMap((s) => [s, s + 1, s + 2]);
     const run = runs(held);
     const lows = Array.from({ length: 600 }, (_, i) => 30_001 + i * 7);
-    if (walksRunIds(run, lows.length)) {
-      const got = orRunIdsWalk(run, ids32(lows), 0, lows.length);
-      sameContainer(got, today(run, ids32(lows)), 'bitset result');
-      expect(got.kind).toBe(BITSET);
-    } else {
-      expect(expandsRunSteps(run, lows.length)).toBe(true);
-    }
+    expect(walksRunIds(run, lows.length)).toBe(false);
+    expect(expandsRunSteps(run, lows.length)).toBe(true);
+    expect(groupPath(run, lows.length)).toBe('merge');
   });
 
   it('fuzz: any run container and any group of 5 to 4,096 ids that the rule sends to the walk, against the container merge and a set', () => {

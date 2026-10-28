@@ -145,6 +145,16 @@ function collectLenient(values: Iterable<number>): Uint32Array {
 const FEW_IDS = 4;
 
 /**
+ * How `addMany` writes a group of `count` ids into the container `before` that its key already holds: `few` (each id put
+ * into it), `walk` (a run container merged with the ids where they are) or `merge` (a container built for the group,
+ * then merged).
+ */
+export function groupPath(before: Container, count: number): 'few' | 'walk' | 'merge' {
+  if (count <= FEW_IDS) return 'few';
+  return walksRunIds(before, count) ? 'walk' : 'merge';
+}
+
+/**
  * `ids` ascending: itself when it already is, else sorted, in place when `owned` (a new array that is the caller's own)
  * and in a copy when it is the caller's.
  */
@@ -342,10 +352,11 @@ export class TsBitmap implements CodecBitmap {
         // A group of a few goes into the container it meets without a container of its own. A run container is never
         // written in place, so the result may be it when the ids add nothing.
         // A larger group into a run container is walked from the ids, again with no container for the group.
+        const path = groupPath(before, end - first);
         const after =
-          end - first <= FEW_IDS
+          path === 'few'
             ? containerAddSorted(before, ids, first, end)
-            : walksRunIds(before, end - first)
+            : path === 'walk'
               ? orRunIdsWalk(before, ids, first, end)
               : containerOr(
                   before,
