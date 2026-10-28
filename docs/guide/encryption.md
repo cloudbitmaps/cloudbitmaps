@@ -213,13 +213,13 @@ Three things follow:
 - **A crypto-shred removes the summary with the key.** It could not be opened again, and a clear copy would outlive the
   segment on its tombstone, so the shred clears both.
 
-**An error message can name what the seal hides.** An `IntegrityError` names the chunk it refused, by its key (the high
-16 bits of the ids it holds), and a count mismatch gives the two counts, on an encrypted segment as on a cleartext one.
-The key comes from the index, which opens only under the segment's key, but a chunk's stored bytes are checked against
-their CRC32C before they are authenticated, so anyone who can change the object, or a storage fault, can make a read
-raise an error that names a sealed chunk key. A count mismatch is raised only after both counts authenticated. A short
-read of a range, which names a byte range taken from the sealed index, is raised before authentication. Treat these
-messages as carrying what the seal hides.
+**An error message carries no chunk key, value or id.** An `IntegrityError` says what is wrong and where by position
+(the index entry or the chunk's position in the object), never by a chunk key (the high 16 bits of the ids it holds),
+a stored value or an id, on an encrypted segment as on a cleartext one. A count mismatch gives the two counts, which are
+sizes. A chunk's stored bytes are checked against their CRC32C before they are authenticated, so anyone who can change
+the object, or a storage fault, can make a read raise an error; it names a position, which the sealed index does not
+turn into a key. A short read of a range names a byte range taken from the sealed index and is raised before
+authentication, so treat a byte range in a message as carrying what the seal hides.
 
 ## How it stays correct
 

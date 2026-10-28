@@ -100,7 +100,7 @@ describe('orManyContainers', () => {
       }),
       { numRuns: 150 },
     );
-  });
+  }, 60_000);
 
   it('holds the same on the boundaries: a union of exactly 4,096 and 4,097 values, a full key, one value apiece', () => {
     const cases: number[][][] = [

@@ -105,6 +105,24 @@ describe('the table of a record', () => {
     expect(table.problemsOf('p.md', text, GOOD)).toEqual([]);
   });
 
+  it('says how many fresh processes each first-call figure took: one for a pass that does not record it, the median of five otherwise', () => {
+    expect(table.regionText('p.md', text)).toContain(
+      'each first-call figure is one call in one fresh process;',
+    );
+    const five = good();
+    five.environment.coldProcesses = 5;
+    const region = table.render(fileOf(five));
+    expect(region).toContain(
+      'each first-call figure is the median of 5 fresh processes, one call in each;',
+    );
+    expect(region).not.toContain('one call in one fresh process');
+    expect(table.problemsOf('p.md', page(region), fileOf(five))).toEqual([]);
+    // A page that says one while the record says five is refused.
+    expect(table.problemsOf('p.md', page(table.render(GOOD)), fileOf(five)).join('\n')).toContain(
+      'not what',
+    );
+  });
+
   it('prints each ratio from the rounds, the commit, Node, the machine, the load, the round count and every cell', () => {
     const region = table.regionText('p.md', text);
     expect(region).toContain('commit `abcdef01`');
@@ -165,6 +183,9 @@ describe('the table of a record', () => {
     expect(region).toContain('compare the class with its check against native without one');
     expect(region).toContain('that policy difference');
     expect(region).toContain('only the first operand');
+    expect(region).toContain(
+      '`intersects overlapping` answers `true` at the first id the two bitmaps share',
+    );
     expect(region).toContain('`intersects disjoint` answers `false` after walking every key');
     expect(region).toContain('held to identical bytes');
   });
@@ -671,6 +692,11 @@ describe('the script', () => {
     const copy = mkdtempSync(join(tmpdir(), 'bitmap-api-table-'));
     cpSync(join(ROOT, 'bench'), join(copy, 'bench'), { recursive: true });
     writeFileSync(join(copy, 'bench/bitmap-api-results.json'), JSON.stringify(file));
+    // The planted record is not the committed one, so the committed decisions (which name methods of that record) do not apply to it.
+    writeFileSync(
+      join(copy, 'bench/bitmap-api-decisions.json'),
+      `${JSON.stringify({ date: null, words: '', accepted: [] })}\n`,
+    );
     writeFileSync(
       join(copy, 'bench/count-kernels.cjs'),
       `console.log('RESULT ${result}: planted');\nprocess.exitCode = 0;\n`,

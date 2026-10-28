@@ -53,6 +53,7 @@ import {
   arrayContainer,
   cloneContainer,
   containerAdd,
+  containerAddSorted,
   containerAnd,
   containerAndCard,
   containerAndNot,
@@ -68,7 +69,9 @@ import {
   fromSortedIds,
   optimize,
   orManyContainers,
+  orRunIdsWalk,
   RUN,
+  walksRunIds,
 } from './containers';
 import { BitmapIterator } from './iterator';
 import { decodeContainers, serializeContainers, trailingBytes } from './wire';
@@ -137,6 +140,19 @@ function collectLenient(values: Iterable<number>): Uint32Array {
     if (v >>> 0 === v) out[n++] = v;
   }
   return out.subarray(0, n);
+}
+
+/** The most ids one key's group of an `addMany` can hold and still go into its container one id at a time. */
+const FEW_IDS = 4;
+
+/**
+ * How `addMany` writes a group of `count` ids into the container `before` that its key already holds: `few` (each id put
+ * into it), `walk` (a run container merged with the ids where they are) or `merge` (a container built for the group,
+ * then merged).
+ */
+export function groupPath(before: Container, count: number): 'few' | 'walk' | 'merge' {
+  if (count <= FEW_IDS) return 'few';
+  return walksRunIds(before, count) ? 'walk' : 'merge';
 }
 
 /**
@@ -329,16 +345,29 @@ export class TsBitmap implements CodecBitmap {
       const key = (ids[i] as number) >>> 16;
       let end = i + 1;
       while (end < ids.length && (ids[end] as number) >>> 16 === key) end++;
-      const group = fromSortedIds(ids, i, end);
+      const first = i;
       i = end;
       at = gallopKeys(this.#keys, key, at);
       if (this.#keys[at] === key) {
         const before = this.#conts[at] as Container;
-        // A run container is never written in place, so the result may be it when the ids add nothing.
-        const after = containerOr(before, group, !before.shared || before.kind === RUN);
+        // A group of a few goes into the container it meets without a container of its own. A run container is never
+        // written in place, so the result may be it when the ids add nothing.
+        // A larger group into a run container is walked from the ids, again with no container for the group.
+        const path = groupPath(before, end - first);
+        const after =
+          path === 'few'
+            ? containerAddSorted(before, ids, first, end)
+            : path === 'walk'
+              ? orRunIdsWalk(before, ids, first, end)
+              : containerOr(
+                  before,
+                  fromSortedIds(ids, first, end),
+                  !before.shared || before.kind === RUN,
+                );
         this.#conts[at] = after;
         this.#size += after.card - before.card;
       } else {
+        const group = fromSortedIds(ids, first, end);
         fresh.push({ key, group });
         this.#size += group.card;
       }

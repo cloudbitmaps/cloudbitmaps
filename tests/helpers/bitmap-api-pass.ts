@@ -41,6 +41,7 @@ export const verdict = require_('./lib/bitmap-api-verdict.cjs') as {
   cellOf: (rounds: Round[], places?: number) => Record<string, unknown>;
   loadRowOf: (rounds: number[][]) => Record<string, unknown>;
   loadFiguresOf: (pass: unknown) => Record<string, number>;
+  coldProcessesOf: (pass: unknown) => number;
   discardedOf: (pass: unknown) => { total: number; figures: number; most: number };
   inventoryProblems: (pass: unknown) => string[];
   isComplete: (pass: unknown) => boolean;

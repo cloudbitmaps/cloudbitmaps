@@ -70,14 +70,13 @@ function agree(label: string, held: Held): void {
     fail(`${label}: toUint32Array holds ${got.length}, model ${want.length}`);
   let at = 0;
   for (const id of bitmap) {
-    if (id !== want[at]) fail(`${label}: iteration gives ${id} at ${at}, model ${want[at]}`);
-    if (got[at] !== id) fail(`${label}: toUint32Array gives ${got[at]} at ${at}, iteration ${id}`);
+    if (id !== want[at]) fail(`${label}: iteration disagrees with the model at position ${at}`);
+    if (got[at] !== id) fail(`${label}: toUint32Array disagrees with iteration at position ${at}`);
     at++;
   }
   if (at !== want.length) fail(`${label}: iteration ends at ${at}, model ${want.length}`);
-  if (bitmap.minimum() !== want[0]) fail(`${label}: minimum ${bitmap.minimum()}, model ${want[0]}`);
-  if (bitmap.maximum() !== want.at(-1))
-    fail(`${label}: maximum ${bitmap.maximum()}, model ${want.at(-1)}`);
+  if (bitmap.minimum() !== want[0]) fail(`${label}: minimum disagrees with the model`);
+  if (bitmap.maximum() !== want.at(-1)) fail(`${label}: maximum disagrees with the model`);
 }
 
 /** An id: random, an edge, or a member of the model or one next to it. */
@@ -218,6 +217,7 @@ function cloneApart(held: Held, bytes: Bytes): void {
  * no operand changed, and a change to the result or to an operand afterwards reaches no other bitmap.
  */
 function algebra(held: Held, bytes: Bytes): void {
+  widePaths(held);
   const first = held.bitmap;
   const second = new RoaringBitmap(idsFrom(bytes, held.model));
   const third =
@@ -293,8 +293,81 @@ function counts(label: string, x: Held, y: Held): void {
   is('intersects', x.bitmap.intersects(y.bitmap), both > 0);
   is('isSubset', x.bitmap.isSubset(y.bitmap), both === xs);
   is('isEqual', x.bitmap.isEqual(y.bitmap), both === xs && xs === ys);
+  equalness(label, x);
   agree(`${label}: first operand after the counts`, x);
   agree(`${label}: second operand after the counts`, y);
+}
+
+/**
+ * `isEqual` of a bitmap against two separate decodes of its own bytes (equal, whatever the layout the decode gave each
+ * container) and against a copy with one id changed (not equal, in both directions). Reads no input byte.
+ */
+function equalness(label: string, x: Held): void {
+  const bytes = x.bitmap.serialize();
+  const one = RoaringBitmap.deserialize(bytes);
+  const two = RoaringBitmap.deserialize(bytes);
+  if (!one.isEqual(two) || !two.isEqual(one))
+    fail(`${label}: isEqual: two decodes of equal bytes differ`);
+  if (!one.isEqual(x.bitmap) || !x.bitmap.isEqual(two))
+    fail(`${label}: isEqual: a decode differs from its source`);
+  const off = x.bitmap.clone();
+  if (off.isEmpty) off.add(0);
+  else off.remove(off.minimum() as number);
+  if (off.isEqual(x.bitmap) || x.bitmap.isEqual(off))
+    fail(`${label}: isEqual: a set one id off is equal`);
+  const more = x.bitmap.clone();
+  more.add(more.maximum() === 0xffff_ffff ? 0 : (more.maximum() ?? 0) + 1);
+  if (more.size !== x.bitmap.size && (more.isEqual(x.bitmap) || x.bitmap.isEqual(more)))
+    fail(`${label}: isEqual: a set one id larger is equal`);
+}
+
+/** `count` ids, `step` apart from `from`, all within one key. */
+const spread = (from: number, count: number, step: number): number[] =>
+  Array.from({ length: count }, (_, i) => from + i * step);
+
+/**
+ * The paths the model-driven operations seldom reach alone: a group of one to four ids per key written into a held
+ * container of any kind, `isEqual` on arrays and run containers from 512 values (two bitmaps built apart, one off by
+ * one id), and `orMany` of five bitmaps that each hold a bitset in the same key. Reads no input byte; the sizes vary
+ * with the held set.
+ */
+function widePaths(held: Held): void {
+  const { bitmap, model } = held;
+  const members = sorted(model);
+  const keys = [...new Set(members.map((m) => m >>> 16))].slice(0, 4);
+  const copy: Held = { bitmap: bitmap.clone(), model: new Set(model) };
+  const ids: number[] = [];
+  keys.forEach((key, k) => {
+    const low = members.find((m) => m >>> 16 === key) as number;
+    for (let g = 0; g <= k; g++) ids.push(key * 65_536 + (((low & 0xffff) + 1 + 2 * g) & 0xffff));
+  });
+  copy.bitmap.addMany(ids);
+  for (const id of ids) copy.model.add(id);
+  agree('a few ids a key', copy);
+  agree('the original after a few ids a key were added to its clone', held);
+
+  const shift = model.size % 1_000;
+  const array = spread(shift, 700, 3);
+  const runIds = Array.from({ length: 300 }, (_, r) => spread(r * 50 + shift, 5, 1)).flat();
+  for (const list of [array, runIds]) {
+    const a = new RoaringBitmap(list);
+    a.runOptimize();
+    const b = RoaringBitmap.deserialize(a.serialize());
+    const c = new RoaringBitmap(list);
+    if (!a.isEqual(b) || !b.isEqual(a) || !a.isEqual(c) || !c.isEqual(b))
+      fail('isEqual: equal wide containers differ');
+    const gone = list[list.length >> 1] as number;
+    b.remove(gone);
+    if (a.isEqual(b) || b.isEqual(a)) fail('isEqual: a wide container one id short is equal');
+    b.add(gone);
+    b.add(65_535);
+    if (a.isEqual(b) || b.isEqual(a)) fail('isEqual: a wide container one id over is equal');
+  }
+
+  const dense = [0, 1, 2, 3, 4].map((i) => new RoaringBitmap(spread(i + shift, 4_100, 13)));
+  const merged = RoaringBitmap.orMany(dense);
+  const want = new Set(dense.flatMap((d) => [...d]));
+  agree('orMany of five bitsets', { bitmap: merged, model: want });
 }
 
 function refusals(held: Held, bytes: Bytes): void {

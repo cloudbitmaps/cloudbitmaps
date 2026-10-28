@@ -702,6 +702,76 @@ export function containerAdd(c: Container, low: number): Container {
 }
 
 /**
+ * A run container with the ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits
+ * kept) added, for a group of a few: each id is found in the run list by a gallop search and written into one working
+ * copy of the list (the tail moved by a block copy), so the cost is a few searches and moves, not a walk of every run.
+ * The result is the same container {@link orRunArrayWalk} gives for the same values: a run container while that is the
+ * smaller form, and `c` itself when no id adds anything.
+ */
+function addFewToRuns(c: Container, ids: Uint32Array, from: number, to: number): Container {
+  const x = lows16(c);
+  let data = x;
+  let base = c.off;
+  let out: Uint16Array | null = null;
+  let n = c.len;
+  let added = 0;
+  for (let k = from; k < to; k++) {
+    const low = (ids[k] as number) & 0xffff;
+    const next = runsAfter(data, base, 0, n, low);
+    const prev = next - 1;
+    const prevEnd =
+      prev >= 0 ? (data[base + 2 * prev] as number) + (data[base + 2 * prev + 1] as number) : -2;
+    if (prevEnd >= low) continue;
+    if (out === null) {
+      out = new Uint16Array(2 * (c.len + to - from));
+      out.set(x.subarray(c.off, c.off + 2 * c.len));
+      data = out;
+      base = 0;
+    }
+    const joinPrev = prevEnd + 1 === low;
+    const joinNext = next < n && (out[2 * next] as number) === low + 1;
+    if (joinPrev && joinNext) {
+      out[2 * prev + 1] =
+        (out[2 * next] as number) + (out[2 * next + 1] as number) - (out[2 * prev] as number);
+      out.copyWithin(2 * next, 2 * next + 2, 2 * n);
+      n--;
+    } else if (joinPrev) {
+      out[2 * prev + 1] = (out[2 * prev + 1] as number) + 1;
+    } else if (joinNext) {
+      out[2 * next] = low;
+      out[2 * next + 1] = (out[2 * next + 1] as number) + 1;
+    } else {
+      out.copyWithin(2 * next + 2, 2 * next, 2 * n);
+      out[2 * next] = low;
+      out[2 * next + 1] = 0;
+      n++;
+    }
+    added++;
+  }
+  if (out === null) return c;
+  return runsOrPlain(out, n, c.card + added, true);
+}
+
+/**
+ * The ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits kept) added to `c`; the
+ * container that holds them, `c` itself when they add nothing. For a group of a few, where building a container for the
+ * group and merging two containers costs more than putting each id in: a run container is edited by one search per id,
+ * a bitset has its bits set (in place unless `c` is shared), an array has each id inserted. `c.card` of the result is the
+ * new cardinality.
+ */
+export function containerAddSorted(
+  c: Container,
+  ids: Uint32Array,
+  from: number,
+  to: number,
+): Container {
+  if (c.kind === RUN) return addFewToRuns(c, ids, from, to);
+  let cur = c;
+  for (let k = from; k < to; k++) cur = containerAdd(cur, (ids[k] as number) & 0xffff);
+  return cur;
+}
+
+/**
  * Remove `low`; returns the container that now holds the rest, `c` itself unless the kind changed or the storage had
  * to be copied, or `null` when nothing is left.
  */
@@ -1097,6 +1167,52 @@ function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Cont
 }
 
 /**
+ * A new accumulator holding the OR of the bitset containers of `list` (all zero when there is none), four sources a
+ * step: each word is loaded from the accumulator once per four sources, not once per source, and the first group writes
+ * the accumulator, so no source is copied. Fewer than four sources, and the tail of any more, go one at a time.
+ */
+function orBitsetWords(list: readonly Container[]): Uint32Array {
+  const bits: Uint32Array[] = [];
+  for (const c of list) if (c.kind === BITSET) bits.push(words32(c));
+  const n = bits.length;
+  if (n === 0) return new Uint32Array(WORDS);
+  let k: number;
+  let words: Uint32Array;
+  if (n >= 4) {
+    const a = bits[0] as Uint32Array;
+    const b = bits[1] as Uint32Array;
+    const c = bits[2] as Uint32Array;
+    const d = bits[3] as Uint32Array;
+    words = new Uint32Array(WORDS);
+    for (let i = 0; i < WORDS; i++)
+      words[i] = (a[i] as number) | (b[i] as number) | (c[i] as number) | (d[i] as number);
+    k = 4;
+  } else {
+    words = (bits[0] as Uint32Array).slice();
+    k = 1;
+  }
+  for (; k + 4 <= n; k += 4) {
+    const a = bits[k] as Uint32Array;
+    const b = bits[k + 1] as Uint32Array;
+    const c = bits[k + 2] as Uint32Array;
+    const d = bits[k + 3] as Uint32Array;
+    for (let i = 0; i < WORDS; i++) {
+      words[i] =
+        (words[i] as number) |
+        (a[i] as number) |
+        (b[i] as number) |
+        (c[i] as number) |
+        (d[i] as number);
+    }
+  }
+  for (; k < n; k++) {
+    const o = bits[k] as Uint32Array;
+    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
+  }
+  return words;
+}
+
+/**
  * The values of every container of `list` (two or more, all of one key), as a container of its own: an array up to
  * 4,096 values, a bitset above, never a run. No input is written and none is kept. Arrays whose total fits an array are
  * sorted together; anything else is OR-ed into one accumulator of words (a bitset's words, an array's values set
@@ -1106,11 +1222,9 @@ function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Cont
 export function orManyContainers(list: readonly Container[]): Container {
   let total = 0;
   let allArrays = true;
-  let firstBitset: Container | undefined;
   for (const c of list) {
     total += c.card;
     if (c.kind !== ARRAY) allArrays = false;
-    if (c.kind === BITSET && firstBitset === undefined) firstBitset = c;
   }
   if (allArrays && total <= ARRAY_MAX_CARDINALITY) {
     const out = values16(total);
@@ -1127,19 +1241,15 @@ export function orManyContainers(list: readonly Container[]): Container {
     }
     return arrayContainer(sorted.slice(0, distinct), distinct);
   }
-  const words = firstBitset === undefined ? new Uint32Array(WORDS) : words32(firstBitset).slice();
+  const words = orBitsetWords(list);
   for (const c of list) {
-    if (c === firstBitset) continue;
-    if (c.kind === BITSET) {
-      const o = words32(c);
-      for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
-    } else if (c.kind === ARRAY) {
+    if (c.kind === ARRAY) {
       const u16 = lows16(c);
       for (let i = c.off; i < c.off + c.len; i++) {
         const v = u16[i] as number;
         words[v >>> 5] = (words[v >>> 5] as number) | (1 << (v & 31));
       }
-    } else {
+    } else if (c.kind === RUN) {
       const pairs = lows16(c);
       for (let r = 0; r < c.len; r++) {
         const start = pairs[c.off + 2 * r] as number;
@@ -1357,13 +1467,83 @@ export function containerOr(a: Container, b: Container, inPlace = false): Contai
 }
 
 /**
+ * How many steps of the merge walk (the runs plus the values) a run container and an array take before expanding the run
+ * container to words is the cheaper way to write the array into it: the walk costs a few nanoseconds a step, the
+ * expansion a fixed 8 KB of words (zeroed, one range set per run, one pass to count the runs of the result).
+ */
+export const EXPAND_MIN_STEPS = 1024;
+
+/**
+ * Whether {@link orRunArray} writes the array into the run container through words instead of the merge walk: from
+ * {@link EXPAND_MIN_STEPS} steps up, and when the result is likely not to be a run container. The result has at most
+ * `runs.len + array.len` runs, so when that many runs already fail the size rule against the plain body of the largest
+ * result, the walk would probably build a run list only to expand it again; the result can have far fewer runs than that
+ * bound (values that fall inside runs add none), so this is a heuristic about speed. A pure function of the two containers' lengths and
+ * cardinalities, so it costs one comparison on the hot path; either choice returns the same container.
+ */
+export function expandsRunArray(runs: Container, array: Container): boolean {
+  return expandsRunSteps(runs, array.len);
+}
+
+/**
+ * {@link expandsRunArray} for a run container and `values` values to write into it: the one size rule, on numbers, so a
+ * walk that reads its values from an id list and one that reads an array container choose alike.
+ */
+export function expandsRunSteps(runs: Container, values: number): boolean {
+  const steps = runs.len + values;
+  if (steps < EXPAND_MIN_STEPS) return false;
+  const cardMax = runs.card + values;
+  const plainMax = cardMax <= ARRAY_MAX_CARDINALITY ? 2 * cardMax : BITSET_BYTES;
+  return 2 + 4 * steps >= plainMax;
+}
+
+/**
+ * Whether a group of `count` ids goes into the run container `runs` by {@link orRunIdsWalk}: the size rule sends it to
+ * the merge walk. The rule refuses from 2,047 steps (the runs plus the ids) up, since `2 + 4 * steps` then reaches the
+ * 8,192-byte plain body at most, so the walk takes at most 2,046 ids for one run, fewer for more runs, and fewer
+ * again when the result is small enough for the plain body to be an array. Every other group takes the container merge.
+ */
+export function walksRunIds(runs: Container, count: number): boolean {
+  return runs.kind === RUN && !expandsRunSteps(runs, count);
+}
+
+/**
+ * A run container with an array's values written through words: the runs are set in a new bitset, then each value, and
+ * the container of the result is the canonical one for its values (a run container only when its body is the smaller
+ * one: {@link optimize}). When the array adds nothing and `keep` allows, the run container itself is the result.
+ */
+export function orRunArrayExpand(runs: Container, array: Container, keep: boolean): Container {
+  const words = toWords(runs);
+  const v = lows16(array);
+  let added = 0;
+  for (let i = array.off; i < array.off + array.len; i++) {
+    const value = v[i] as number;
+    const word = words[value >>> 5] as number;
+    const bit = 1 << (value & 31);
+    if ((word & bit) === 0) {
+      words[value >>> 5] = word | bit;
+      added++;
+    }
+  }
+  if (added === 0 && keep) return runs;
+  return optimize(fromWordsCard(words, runs.card + added) as Container);
+}
+
+/** A run container with an array's values: by the merge walk, or through words when that is cheaper (see {@link expandsRunArray}). */
+function orRunArray(runs: Container, array: Container, keep: boolean): Container {
+  return expandsRunArray(runs, array)
+    ? orRunArrayExpand(runs, array, keep)
+    : orRunArrayWalk(runs, array, keep);
+}
+
+/**
  * A run container with an array's values, merged in one walk over both lists: each step takes whichever of the next run
  * and the next value starts first and appends it to the result, joining it to the pair being built when they touch or
  * overlap. Cost is the runs plus the values, with no search or view per value, and no expansion to 8 KB of words. The
  * result is a run container while that is the smaller form (see {@link runsOrPlain}). When the array adds nothing and
  * `keep` allows, the run container itself is the result: runs are never written in place, so aliasing it is safe.
  */
-function orRunArray(runs: Container, array: Container, keep: boolean): Container {
+export function orRunArrayWalk(runs: Container, array: Container, keep: boolean): Container {
   const x = lows16(runs);
   const v = lows16(array);
   const out = pairs16(2 * (runs.len + array.len));
@@ -1425,6 +1605,81 @@ function orRunArray(runs: Container, array: Container, keep: boolean): Container
   out[at++] = from;
   out[at++] = to - from;
   if (added === 0 && keep) return runs;
+  return runsOrPlain(out, at >>> 1, runs.card + added, true);
+}
+
+/**
+ * The ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits kept) written into a run
+ * container by the merge walk of {@link orRunArrayWalk}, reading the ids where they are instead of from a container
+ * built for them. The same walk, so the result is the same container for the same values; `runs` itself when the ids add
+ * nothing. A copy of the walk, not a shared one: each walk reads one kind of array (16-bit values here, 32-bit ids
+ * there), so its element reads stay of one kind for the engine, where a shared walk would see both. A test holds the
+ * two to the same container for the same values.
+ */
+export function orRunIdsWalk(
+  runs: Container,
+  ids: Uint32Array,
+  from: number,
+  to: number,
+): Container {
+  const x = lows16(runs);
+  const out = pairs16(2 * (runs.len + to - from));
+  const runEnd = runs.off + 2 * runs.len;
+  let r = runs.off;
+  let vi = from;
+  let at = 0;
+  // The pair being built, `[start, last]`; `last` is -2 before there is one, so nothing is next to it.
+  let start = 0;
+  let last = -2;
+  let added = 0;
+  while (vi < to) {
+    const value = (ids[vi++] as number) & 0xffff;
+    while (r < runEnd && (x[r] as number) <= value) {
+      const s = x[r] as number;
+      const end = s + (x[r + 1] as number);
+      r += 2;
+      if (s <= last + 1) {
+        if (end > last) last = end;
+      } else {
+        if (last >= 0) {
+          out[at++] = start;
+          out[at++] = last - start;
+        }
+        start = s;
+        last = end;
+      }
+    }
+    if (value <= last) continue;
+    added++;
+    if (value === last + 1) {
+      last = value;
+    } else {
+      if (last >= 0) {
+        out[at++] = start;
+        out[at++] = last - start;
+      }
+      start = value;
+      last = value;
+    }
+  }
+  while (r < runEnd) {
+    const s = x[r] as number;
+    const end = s + (x[r + 1] as number);
+    r += 2;
+    if (s <= last + 1) {
+      if (end > last) last = end;
+    } else {
+      if (last >= 0) {
+        out[at++] = start;
+        out[at++] = last - start;
+      }
+      start = s;
+      last = end;
+    }
+  }
+  out[at++] = start;
+  out[at++] = last - start;
+  if (added === 0) return runs;
   return runsOrPlain(out, at >>> 1, runs.card + added, true);
 }
 
@@ -1925,17 +2180,66 @@ export function containersSubset(a: Container, b: Container): boolean {
 export function containersEqual(a: Container, b: Container): boolean {
   if (a.card !== b.card) return false;
   if (a.kind !== b.kind) return containerAndCard(a, b) === a.card;
-  if (a.kind === BITSET) {
-    const x = words32(a);
-    const y = words32(b);
-    for (let i = 0; i < WORDS; i++) if (x[i] !== y[i]) return false;
-    return true;
-  }
+  if (a.kind === BITSET) return equalWords(words32(a), 0, words32(b), 0, WORDS);
   if (a.len !== b.len) return false;
   const x = lows16(a);
   const y = lows16(b);
   const n = a.kind === ARRAY ? a.len : 2 * a.len;
-  for (let i = 0; i < n; i++) if (x[a.off + i] !== y[b.off + i]) return false;
+  const xb = x.byteOffset + 2 * a.off;
+  const yb = y.byteOffset + 2 * b.off;
+  if (usesEqualView(n, xb, yb)) {
+    // Two values a step through a 32-bit view over the same bytes.
+    const m = n >>> 1;
+    if (!equalWords(new Uint32Array(x.buffer, xb, m), 0, new Uint32Array(y.buffer, yb, m), 0, m))
+      return false;
+    return (n & 1) === 0 || x[a.off + n - 1] === y[b.off + n - 1];
+  }
+  return equalU16(x, a.off, y, b.off, n);
+}
+
+/** The fewest 16-bit values (an array's values, twice a run container's pairs) from which a compare goes through a 32-bit view: a view costs about as much as a few hundred compares. */
+export const EQUAL_VIEW_MIN = 512;
+
+/** Whether a compare of `n` 16-bit values, whose two lists start at byte offsets `xb` and `yb`, goes through a 32-bit view: from {@link EQUAL_VIEW_MIN} values, when both starts fall on a 4-byte boundary. */
+export function usesEqualView(n: number, xb: number, yb: number): boolean {
+  return n >= EQUAL_VIEW_MIN && (xb & 3) === 0 && (yb & 3) === 0;
+}
+
+/** Whether `n` words of `x` from `xo` equal those of `y` from `yo`: eight a step, the differences OR-ed and tested once per group. */
+function equalWords(x: Uint32Array, xo: number, y: Uint32Array, yo: number, n: number): boolean {
+  let i = 0;
+  for (const end = n - 7; i < end; i += 8) {
+    const d =
+      ((x[xo + i] as number) ^ (y[yo + i] as number)) |
+      ((x[xo + i + 1] as number) ^ (y[yo + i + 1] as number)) |
+      ((x[xo + i + 2] as number) ^ (y[yo + i + 2] as number)) |
+      ((x[xo + i + 3] as number) ^ (y[yo + i + 3] as number)) |
+      ((x[xo + i + 4] as number) ^ (y[yo + i + 4] as number)) |
+      ((x[xo + i + 5] as number) ^ (y[yo + i + 5] as number)) |
+      ((x[xo + i + 6] as number) ^ (y[yo + i + 6] as number)) |
+      ((x[xo + i + 7] as number) ^ (y[yo + i + 7] as number));
+    if (d !== 0) return false;
+  }
+  for (; i < n; i++) if (x[xo + i] !== y[yo + i]) return false;
+  return true;
+}
+
+/** {@link equalWords} over 16-bit values. */
+function equalU16(x: Uint16Array, xo: number, y: Uint16Array, yo: number, n: number): boolean {
+  let i = 0;
+  for (const end = n - 7; i < end; i += 8) {
+    const d =
+      ((x[xo + i] as number) ^ (y[yo + i] as number)) |
+      ((x[xo + i + 1] as number) ^ (y[yo + i + 1] as number)) |
+      ((x[xo + i + 2] as number) ^ (y[yo + i + 2] as number)) |
+      ((x[xo + i + 3] as number) ^ (y[yo + i + 3] as number)) |
+      ((x[xo + i + 4] as number) ^ (y[yo + i + 4] as number)) |
+      ((x[xo + i + 5] as number) ^ (y[yo + i + 5] as number)) |
+      ((x[xo + i + 6] as number) ^ (y[yo + i + 6] as number)) |
+      ((x[xo + i + 7] as number) ^ (y[yo + i + 7] as number));
+    if (d !== 0) return false;
+  }
+  for (; i < n; i++) if (x[xo + i] !== y[yo + i]) return false;
   return true;
 }
 

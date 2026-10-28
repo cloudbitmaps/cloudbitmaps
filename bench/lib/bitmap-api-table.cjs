@@ -189,9 +189,17 @@ const NOTES = [
   "`deserialize` and `first deserialize`: the class caps the size and checks the layout of the bytes before it decodes them; the `roaring` package's decode is called with no validating option, so these rows compare the class with its check against native without one.",
   "`clone` and `clone then write`: the class's clone shares the containers and copies one on the first write that reaches it; native's clone copies everything at once. These rows are that policy difference, not two copies of the same work.",
   "`write after or`, `write after xor` and `write after andNot`: only the first operand's next write is timed, on an operand decoded fresh for each repetition, after a returning combine that flagged the containers it keeps by reference. The codec has no such flag, so its figure is the same write on an unflagged bitmap.",
-  '`intersects overlapping` answers `true` at the first container the two bitmaps share, so it times how fast each subject finds a first hit; `intersects disjoint` answers `false` after walking every key. `isSubset` and `isEqual` answer `true`, which is the full scan.',
+  '`intersects overlapping` answers `true` at the first id the two bitmaps share: the codec walks the two key lists in order, compares the two containers of each key both hold, and returns at the first pair that has a value in common (a pair with none is passed over), so it times how fast each subject finds a first hit; `intersects disjoint` answers `false` after walking every key. `isSubset` and `isEqual` answer `true`, which is the full scan.',
   '`serialize` is held to identical bytes on every subject; every other answer is held to the same value.',
 ];
+
+/** How the first-call figures of a pass were taken: one fresh process a sample, or the median of several. */
+function coldText(pass) {
+  const n = verdict.coldProcessesOf(pass);
+  return n === 1
+    ? 'each first-call figure is one call in one fresh process'
+    : `each first-call figure is the median of ${n} fresh processes, one call in each`;
+}
 
 /** The text of a region for a results file: the table of its last complete pass, or `NOT_MEASURED`. */
 function render(file, decisions = NO_DECISIONS) {
@@ -205,7 +213,7 @@ function render(file, decisions = NO_DECISIONS) {
   parts.push(
     `**Measured** on ${e.cpu} (${e.cores} cores), ${e.platform}, Node ${e.node}, commit \`${short(e.head)}\` (${e.tree} tree), \`roaring\` ${e.roaring}, ${rounds} rounds a figure, pass ${pass.pass}, started ${pass.started.slice(0, 10)}. ` +
       `Each figure is the median over the rounds of the class's time divided by the \`roaring\` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. ` +
-      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; the kept rounds ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${setAsideText(pass)}. Recorded, never asserted.`,
+      `One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; ${coldText(pass)}; the kept rounds ended at a load of at most ${load.maxLoadAtEnd.toFixed(2)} and ${setAsideText(pass)}. Recorded, never asserted.`,
   );
   parts.push(
     ratioTable(pass, 'vsNative', 'Against `roaring` (class time / native time)', () => true),

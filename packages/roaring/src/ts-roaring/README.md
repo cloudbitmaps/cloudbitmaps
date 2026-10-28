@@ -136,7 +136,7 @@ Where a container's kind comes from:
 - Decoded from bytes: whatever kind the bytes say, run containers included (the layout check has already proved the
   structure). A decoded run container stays as it was decoded until a write changes it; a write that adds ids keeps it a
   run only while the run form is still the smaller one (below).
-- A write that adds ids (`containerAdd`, and `containerOr` of a run container with an array) merges them into the run list
+- A write that adds ids (`containerAdd`, `containerAddSorted` for a group of a few, and `containerOr` of a run container with an array) merges them into the run list (a large batch into a thousand or more runs is written through words, below); a group of a few into an array keeps `add`'s capacity rule, so a shared array, or one with no spare room, is copied to up to twice its length on the first id
   and keeps the result a run container while the rule above says run (`runsOrPlain`), otherwise an array or a bitset; a
   removal (`containerRemove`) first `demote`s a run container. An array
   at 4,096 values that gains one more becomes a bitset; a bitset that drops to 4,096 or fewer becomes an array
@@ -155,9 +155,8 @@ Where a container's kind comes from:
   bitmap-level combine can also hold a run for a key held by one side only, which keeps that side's container as it is
   (section 7).
 - **Who writes a run container, and the rule each keeps.** The decoder (which refuses runs that touch or overlap, so a
-  decoded list is maximal), `toRun` (from an array or a bitset, through `optimize`), `runsOrPlain` (the exit of every
-  kernel that builds a run list in `pairScratch`: the run results of `and`, `or`, `andNot` and `xor` of two runs,
-  `orRunArray`, and `addToRuns`, which `containerAdd` uses on a run), and nothing else. Every one of them leaves the runs
+  decoded list is maximal), `toRun` (from an array or a bitset, through `optimize`, which `orRunArrayExpand` takes its result from), `runsOrPlain` (the exit of every
+  kernel that builds a run list: the run results of `and`, `or`, `andNot` and `xor` of two runs and `orRunArrayWalk` and `orRunIdsWalk`, which build it in `pairScratch`, and `addToRuns`, which `containerAdd` uses on a run, and `addFewToRuns`, which `containerAddSorted` uses, which each allocate their own), and nothing else. Every one of them leaves the runs
   maximal (ascending, no two touching or overlapping, inside 0..65,535) and the container in its smallest kind by the
   rule above. That is what the same-kind run compare in `isEqual` depends on (one set has one list of pairs), and what
   the decoder requires of the bytes a bitmap writes. A new writer of a run container has to keep both, and the property
@@ -207,7 +206,7 @@ section 7.)
 | Buffer | Size | Used by | Rule |
 |---|---|---|---|
 | `valueScratch` (`Uint16Array`) | starts at 8,192 entries | array results whose size is known only after they are built (`andArrays`, `filterByBits`, `filterByRuns`, `andNotArrays`, `orArrays`, `xorArrays`, and `orManyContainers`, which gathers the values of an all-array key before sorting them) | a kernel writes into it and copies out exactly `n` values (`arrayOfScratch`) |
-| `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`, `xorRuns`, and `orRunArray`, which merges an array's values into a run list) | same |
+| `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`, `xorRuns`, `orRunArrayWalk`, which merges an array's values into a run list, and `orRunIdsWalk`, which merges a group of ids into one) | same |
 | `probeWords` (`Uint32Array`) | 2,048 words (one bitset) | the scratch-bitset probe in `andArrays`, `andNotArrays`, `andCountArrays` and `intersectsArrays` | all zero between calls: each call clears the bits it set, on every exit (`intersectsArrays` clears them after a hit as well as after a full scan) |
 
 Growth: a request larger than the buffer allocates `max(n, min(2 * length, 65,536))`; the buffer kept for the life of the
@@ -317,10 +316,11 @@ and `orManyContainers` unites the list in one pass:
 ```
   one container for the key         copied as it is (a run stays a run)
   all arrays, at most 4,096 values  values concatenated into valueScratch, sorted, de-duplicated, copied out
-  anything else                     words = copy of the first bitset (or zeros);
-                                    for each other container:  bitset -> OR the words
-                                                               array  -> set one bit per value
-                                                               run    -> setRange per run
+  anything else                     words = the bitsets OR-ed four at a time (the first group of four writes the
+                                    accumulator, so no bitset is copied; one to three bitsets copy the first, and
+                                    fewer than four left over are OR-ed one at a time), or zeros when there is none;
+                                    for each array: set one bit per value
+                                    for each run:   setRange per run
                                     popcountWords(words) once; at most 4,096 -> array, else the words are the bitset
 ```
 
@@ -341,7 +341,14 @@ number of times in the list.
   same on a chunk whose runs cover about half the words, so the single count stays). The trade: the small branch pays one
   bit-extraction step per result value, which is cheaper than the allocation and the 2,048-word count it replaces
   whenever the result is at most 4,096 values, the only case it is taken for.
-- Run against array for `or` (`orRunArray`): the two merge into one run list in `pairScratch` without expanding to words.
+- Run against array for `or` (`orRunArray`): by one of two ways chosen from the two containers' lengths and
+  cardinalities alone (`expandsRunArray`). `orRunArrayWalk` (and `orRunIdsWalk`, its copy over a group of ids for `addMany`, which a test holds to the same container) merges the two into one run list in `pairScratch` without
+  expanding to words, which suits a result that stays a run container. `orRunArrayExpand` sets the runs in a new bitset,
+  then each value, and takes the canonical container of the result (`optimize`), which suits one that does not; it is
+  chosen from 1,024 steps (the runs plus the values) up, when the most runs the result can have (runs plus values) already
+  fail the size rule against the plain body of the largest result (`2 * cardMax` bytes up to 4,096 values, else 8,192).
+  The choice is a guess about the result, never about its correctness: both ways return the same container, so a wrong
+  guess costs time only (the expansion of a union that fills every gap still returns the one run it is).
   One walk takes whichever of the next run and the next value starts first, and joins it to the pair being built when they
   touch or overlap, so the cost is the runs plus the values, with no search or view per value (a per-value search with a
   block copy of the runs between values was tried and was slower for batches of a few hundred ids or more). A value
@@ -466,8 +473,18 @@ All of these are in `bitmap.ts`.
 - **`add` / `remove`.** Binary search of the key list, then `containerAdd` / `containerRemove`. A new key splices in a
   one-value array. Removing a key's last value splices the key out.
 - **`addMany`.** Sorts the ids (in place if the array is the call's own; on a copy if it is the caller's `Uint32Array`),
-  groups them by key, builds one container per group with `fromSortedIds`, and for a key already held does
-  `containerOr(before, group, !before.shared)`. The key list is searched by `gallopKeys`, resuming from where the last
+  groups them by key and, for a key already held, writes a group of one to four ids with `containerAddSorted` (each id
+  put into the container it meets, with no container built for the group: a run container is edited by one gallop
+  search per id into a single working copy of its run list, a bitset has its bits set, in place unless it is shared, an
+  array has each id inserted). A larger group into a run container goes through `groupPath` (which `addMany` asks) to
+  `orRunIdsWalk` when the size rule of `orRunArray` sends it to the merge walk (`walksRunIds`): the same merge as
+  `orRunArrayWalk`, reading the ids where they are (low 16 bits, duplicates skipped) with no container built for the
+  group, and returning the run container itself when the ids add nothing. The rule refuses from 2,047 steps (the runs
+  plus the ids) up, because `2 + 4 * steps` then reaches the 8,192-byte plain body at most, so the band is about 5 to
+  2,046 ids for a key of one run, fewer for more runs, and fewer again when the result is small enough for the plain body
+  to be an array (then the rule refuses from 1,024 steps). Every other larger group (a run container the rule
+  sends through words, any other kind of container) is built into a container with `fromSortedIds` and merged with
+  `containerOr(before, group, !before.shared || before.kind === RUN)`; a key not held always gets its container from `fromSortedIds`. The key list is searched by `gallopKeys`, resuming from where the last
   group ended. New keys are collected and put in with one pass: pushed after the last key when they all follow it, else
   one merge pass over the key list.
 - **`removeMany`.** Same grouping; a container emptied by it is replaced by a sentinel and all emptied keys are dropped in
@@ -502,8 +519,9 @@ All of these are in `bitmap.ts`.
   `intersects` returns at the first container pair that shares a value (`containersIntersect`). `isSubset` returns false
   at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when `containersSubset`
   finds a container with a value its partner lacks (no count). `isEqual` compares the sizes and the key lists, then
-  each container pair (`containersEqual`): two containers of one kind compare their words, values or run pairs and stop at the
-  first difference (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
+  each container pair (`containersEqual`): two containers of one kind compare their words, values or run pairs, eight elements a step with the differences OR-ed and one test per group (arrays and runs
+  of 512 values or more (a run container counts two values a run, so 256 runs) go through a 32-bit view over the same bytes when both starts fall on a four-byte boundary, two values a step), and stop at the
+  first differing group (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
   every writer of a run keeps its runs maximal, so one set has one list of pairs), and only a pair of different kinds falls back to
   `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. The public class exposes all seven (section 13).

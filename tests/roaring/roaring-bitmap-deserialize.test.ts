@@ -4,7 +4,7 @@ import { CloudRoaring, MemoryStorage, RoaringBitmap, ValidationError } from '@/i
 import type { LoadInput } from '@/index';
 import { MAX_SERIALIZED_LOAD_BYTES, decodeSerialized } from '@/core/load-input';
 import type { CodecInterface } from '@/core/codec';
-import { tsRoaringCodec } from '@/ts-roaring/bitmap';
+import { TsBitmap, tsRoaringCodec } from '@/ts-roaring/bitmap';
 import { craftPortable } from '../helpers/portable-bytes';
 import { zeroEntropy } from '../helpers/entropy';
 
@@ -390,5 +390,37 @@ describe('RoaringBitmap.deserialize: its second argument', () => {
 
   it('refuses any other key', () => {
     expect(() => call({ maxByte: 5 })).toThrow(/unknown option/);
+  });
+
+  it('hands the decoder the default cap when there are no options, as it does for an empty object and an absent key', () => {
+    const capOf = (second: unknown): unknown => {
+      const decode = vi.spyOn(TsBitmap, 'safeDeserialize');
+      try {
+        call(second);
+        return decode.mock.calls[0]?.[1];
+      } finally {
+        decode.mockRestore();
+      }
+    };
+    for (const second of [undefined, {}, { maxBytes: undefined }]) {
+      expect(capOf(second)).toBe(MAX_SERIALIZED_LOAD_BYTES);
+    }
+  });
+
+  it('keeps every refusal of the second argument with no options given either way', () => {
+    const refused = (second: unknown): string => {
+      try {
+        call(second);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return 'accepted';
+    };
+    expect(refused(null)).toMatch(/not null/);
+    expect(refused(5)).toMatch(/no format argument/);
+    expect(refused({ extra: 1 })).toMatch(/unknown option/);
+    expect(refused({ maxBytes: -1 })).toMatch(/maxBytes must be an integer from 0 to/);
+    expect(refused({ maxBytes: 1.5 })).toMatch(/maxBytes must be an integer from 0 to/);
+    expect(refused(undefined)).toBe('accepted');
   });
 });

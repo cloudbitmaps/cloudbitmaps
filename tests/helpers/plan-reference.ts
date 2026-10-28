@@ -28,7 +28,7 @@ export function planAllAtOnce(
       extent.offset >= previousEnd &&
       extentEnd <= region.end
     )) {
-      throw crbmIntegrity(`chunk ${extent.key} is not inside the chunk region, in order`);
+      throw crbmIntegrity('a chunk is not inside the chunk region, in order');
     }
     previousEnd = extentEnd;
     if (
