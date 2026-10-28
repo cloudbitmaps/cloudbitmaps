@@ -1481,11 +1481,28 @@ export const EXPAND_MIN_STEPS = 1024;
  * cardinalities, so it costs one comparison on the hot path; either choice returns the same container.
  */
 export function expandsRunArray(runs: Container, array: Container): boolean {
-  const steps = runs.len + array.len;
+  return expandsRunSteps(runs, array.len);
+}
+
+/**
+ * {@link expandsRunArray} for a run container and `values` values to write into it: the one size rule, on numbers, so a
+ * walk that reads its values from an id list and one that reads an array container choose alike.
+ */
+export function expandsRunSteps(runs: Container, values: number): boolean {
+  const steps = runs.len + values;
   if (steps < EXPAND_MIN_STEPS) return false;
-  const cardMax = runs.card + array.len;
+  const cardMax = runs.card + values;
   const plainMax = cardMax <= ARRAY_MAX_CARDINALITY ? 2 * cardMax : BITSET_BYTES;
   return 2 + 4 * steps >= plainMax;
+}
+
+/**
+ * Whether a group of `count` ids goes into the run container `runs` by {@link orRunIdsWalk}: a group the size of an
+ * array container (at most {@link ARRAY_MAX_CARDINALITY} ids) that the size rule sends to the merge walk. Bigger groups,
+ * and those it sends through words, take the container merge.
+ */
+export function walksRunIds(runs: Container, count: number): boolean {
+  return runs.kind === RUN && count <= ARRAY_MAX_CARDINALITY && !expandsRunSteps(runs, count);
 }
 
 /**
@@ -1586,6 +1603,79 @@ export function orRunArrayWalk(runs: Container, array: Container, keep: boolean)
   out[at++] = from;
   out[at++] = to - from;
   if (added === 0 && keep) return runs;
+  return runsOrPlain(out, at >>> 1, runs.card + added, true);
+}
+
+/**
+ * The ids `ids[from, to)` (ascending, all of one key, duplicates allowed, only the low 16 bits kept) written into a run
+ * container by the merge walk of {@link orRunArrayWalk}, reading the ids where they are instead of from a container
+ * built for them. The same walk, so the result is the same container for the same values; `runs` itself when the ids add
+ * nothing. A copy of the walk, not a shared one: the element access in each stays on one array type.
+ */
+export function orRunIdsWalk(
+  runs: Container,
+  ids: Uint32Array,
+  from: number,
+  to: number,
+): Container {
+  const x = lows16(runs);
+  const out = pairs16(2 * (runs.len + to - from));
+  const runEnd = runs.off + 2 * runs.len;
+  let r = runs.off;
+  let vi = from;
+  let at = 0;
+  // The pair being built, `[start, last]`; `last` is -2 before there is one, so nothing is next to it.
+  let start = 0;
+  let last = -2;
+  let added = 0;
+  while (vi < to) {
+    const value = (ids[vi++] as number) & 0xffff;
+    while (r < runEnd && (x[r] as number) <= value) {
+      const s = x[r] as number;
+      const end = s + (x[r + 1] as number);
+      r += 2;
+      if (s <= last + 1) {
+        if (end > last) last = end;
+      } else {
+        if (last >= 0) {
+          out[at++] = start;
+          out[at++] = last - start;
+        }
+        start = s;
+        last = end;
+      }
+    }
+    if (value <= last) continue;
+    added++;
+    if (value === last + 1) {
+      last = value;
+    } else {
+      if (last >= 0) {
+        out[at++] = start;
+        out[at++] = last - start;
+      }
+      start = value;
+      last = value;
+    }
+  }
+  while (r < runEnd) {
+    const s = x[r] as number;
+    const end = s + (x[r + 1] as number);
+    r += 2;
+    if (s <= last + 1) {
+      if (end > last) last = end;
+    } else {
+      if (last >= 0) {
+        out[at++] = start;
+        out[at++] = last - start;
+      }
+      start = s;
+      last = end;
+    }
+  }
+  out[at++] = start;
+  out[at++] = last - start;
+  if (added === 0) return runs;
   return runsOrPlain(out, at >>> 1, runs.card + added, true);
 }
 

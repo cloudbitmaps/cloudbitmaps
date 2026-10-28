@@ -68,7 +68,9 @@ import {
   fromSortedIds,
   optimize,
   orManyContainers,
+  orRunIdsWalk,
   RUN,
+  walksRunIds,
 } from './containers';
 import { BitmapIterator } from './iterator';
 import { decodeContainers, serializeContainers, trailingBytes } from './wire';
@@ -339,14 +341,17 @@ export class TsBitmap implements CodecBitmap {
         const before = this.#conts[at] as Container;
         // A group of a few goes into the container it meets without a container of its own. A run container is never
         // written in place, so the result may be it when the ids add nothing.
+        // A larger group into a run container is walked from the ids, again with no container for the group.
         const after =
           end - first <= FEW_IDS
             ? containerAddSorted(before, ids, first, end)
-            : containerOr(
-                before,
-                fromSortedIds(ids, first, end),
-                !before.shared || before.kind === RUN,
-              );
+            : walksRunIds(before, end - first)
+              ? orRunIdsWalk(before, ids, first, end)
+              : containerOr(
+                  before,
+                  fromSortedIds(ids, first, end),
+                  !before.shared || before.kind === RUN,
+                );
         this.#conts[at] = after;
         this.#size += after.card - before.card;
       } else {
