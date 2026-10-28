@@ -348,7 +348,13 @@ order:
      `.leak-needles` file exists in the checkout, so without one it is weaker than CI):
      `BASE_SHA=$(git merge-base origin/main HEAD) HEAD_SHA=$(git rev-parse HEAD) PR_TITLE="the title" PR_BODY="$(gh pr view N --json body -q .body)" PR_BRANCH="$(git branch --show-current)" node scripts/pr-text-scan.cjs`
      (leave out `BASE_SHA` and `HEAD_SHA` to skip the commits, `PR_BRANCH` to skip the branch name). It cannot catch a phrase that is not on its list or a
-     leak that is reworded, so it does not replace reading the text. To fix a hit in a title or a body, edit the text
+     leak that is reworded, so it does not replace reading the text.
+     **The pre-push hook** (`.husky/pre-push`) runs the same check in push mode over the commits a `git push`
+     carries (every message, author and committer, and the branch name) and refuses the push on a finding, so a slip
+     is caught before it is public. It runs on `git push` only, never on a commit, and costs about 0.15 s per pushed
+     branch (measured, no install needed at push time: it is plain node). It does not see the pull request's title
+     or body, which exist only after the push, so the CI check keeps reading them. Husky installs it with the
+     `prepare` script, so it runs only in a clone where `pnpm install` has run once. Never bypass it with `--no-verify`. To fix a hit in a title or a body, edit the text
      on the pull request: that triggers the check again, and a re-run from the Actions tab would scan the old text. To
      fix one in a commit message, reword the commit (`git rebase -i origin/main`) and push with
      `git push --force-with-lease --force-if-includes` on the pull request's own branch; a commit already pushed to a

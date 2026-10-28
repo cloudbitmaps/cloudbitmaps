@@ -18,6 +18,7 @@
 //     PR_TITLE='…' PR_BODY='…' PR_BRANCH='…' BASE_SHA=<sha> HEAD_SHA=<sha> node scripts/pr-text-scan.cjs
 //
 //   PR_TITLE   required, non-empty            PR_BODY   required (may be empty: a PR can have no body)
+//              (neither is read in push mode, below)
 //   PR_BRANCH  the head branch's name, scanned with the same phrase list and leak rules as the other texts, and
 //              also with `-`, `_`, `/` and `.` read as spaces (`this-session` is `this session`; the `coordinator`
 //              rule skips that reading), and refused when it starts with a coding tool's own branch prefix
@@ -35,6 +36,16 @@
 //                     of its own reads the main checkout's), so a local run applies needles only where that file exists.
 //   REQUIRE_NEEDLES   `true` when the needles must be there (the workflow sets it for a pull request from this
 //                     repository): the check then fails with exit 2 instead of running without them.
+//
+// Push mode (`--push`, used by `.husky/pre-push`): checks what one `git push` of one branch carries, before it leaves
+// the machine. PR_TITLE and PR_BODY are not read (a pull request's title and body are written after the push, so CI
+// keeps checking them); BASE_SHA and HEAD_SHA are required (the remote's old tip, or the merge-base with `origin/main`
+// for a new branch, and the commit being pushed) and PR_BRANCH is the branch's name, left unset for a tag. It scans
+// the same things as the CI mode over `git log BASE..HEAD` (every message, author and committer) and the branch name,
+// with the same findings, the same redaction and the same exit codes, and it fails closed the same way. The hook
+// runs it once per pushed ref, only on `git push`, never on a commit; a run takes about 0.15 s.
+//
+//     BASE_SHA=<sha> HEAD_SHA=<sha> PR_BRANCH='…' node scripts/pr-text-scan.cjs --push
 //
 // Exit 0 clean; 1 a finding; 2 an input or a tool that could not be read or run. The check fails closed: a missing
 // input, a git error, a scan that crashes or exits in a way this script does not know is a failure, never a pass.
@@ -367,16 +378,21 @@ function leakScan(texts, requireNeedles, identities = []) {
   }
 }
 
-function main(env) {
+function main(env, push = false) {
   const title = env.PR_TITLE;
   const body = env.PR_BODY;
   const inCi = env.GITHUB_ACTIONS === 'true';
-  if (title === undefined || title.trim() === '')
+  if (!push && (title === undefined || title.trim() === ''))
     throw new InputError('PR_TITLE is missing or empty');
-  if (body === undefined)
+  if (!push && body === undefined)
     throw new InputError('PR_BODY is not set (set it to an empty string for no body)');
+  // A push has no title or body, and its range is the whole point: both ends must be there.
+  if (push)
+    for (const name of ['BASE_SHA', 'HEAD_SHA'])
+      if (env[name] === undefined || env[name] === '')
+        throw new InputError(`${name} is not set (a push is checked over a range of commits)`);
   // In CI the workflow always sets all three of these: one that is gone is a broken workflow, not a pass.
-  if (inCi)
+  if (inCi && !push)
     for (const name of ['PR_BRANCH', 'BASE_SHA', 'HEAD_SHA'])
       if (env[name] === undefined || env[name] === '')
         throw new InputError(`${name} is not set (the workflow always sets it)`);
@@ -387,10 +403,12 @@ function main(env) {
       `${hasBase ? 'HEAD_SHA' : 'BASE_SHA'} is not set: BASE_SHA and HEAD_SHA go together`,
     );
 
-  const texts = [
-    { file: 'title.txt', source: 'title', text: title },
-    { file: 'body.txt', source: 'body', text: body },
-  ];
+  const texts = push
+    ? []
+    : [
+        { file: 'title.txt', source: 'title', text: title },
+        { file: 'body.txt', source: 'body', text: body },
+      ];
   if (env.PR_BRANCH !== undefined)
     texts.push({ file: 'branch.txt', source: 'branch name', text: env.PR_BRANCH });
   else console.log('pr-text-scan: no PR_BRANCH, so the branch name was not scanned.');
@@ -481,7 +499,7 @@ function main(env) {
 }
 
 try {
-  process.exitCode = main(process.env);
+  process.exitCode = main(process.env, process.argv.slice(2).includes('--push'));
 } catch (err) {
   console.error(
     `pr-text-scan: FAILED to run: ${err instanceof InputError ? err.message : err && err.stack}`,
