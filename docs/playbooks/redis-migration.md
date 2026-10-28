@@ -107,7 +107,7 @@ returns a fraction of the ids would replace yesterday's set.
 
 Two cautions about the export itself. Its memory is the Redis string's size (up to 512 MB for one `GET`), or read it in
 `GETRANGE` slices. And `SSCAN` can return a set that never existed at one instant when something writes to it during the
-scan: scan a copy (`COPY` or `SUNIONSTORE` to a temporary key, then `SSCAN` it and `DEL` it), or accept it when the set is
+scan: scan a copy (`COPY` or `SUNIONSTORE` to a temporary key, then `SSCAN` it and `DEL` it; the copy is itself one command that blocks the server for the set's size, like `BITOP`), or accept it when the set is
 rebuilt whole on each cadence and nothing writes while the job runs.
 
 <!-- typecheck -->
@@ -151,7 +151,8 @@ Before a reader moves, run the same question against both and compare the member
 followed by `GET dest` gives the Redis answer; the stand-in below does the same on the byte strings, and `BITCOUNT` is a count of set
 bits. For each combine and each count a service relies on, ask both and require equal answers.
 
-Run the real `BITOP` on a replica or a staging copy, never on the primary: it reads whole strings and blocks the server
+Run the real `BITOP` on a staging copy, never on the primary (a replica refuses it: `BITOP` writes `dest`, and a replica is
+read-only): it reads whole strings and blocks the server
 while it runs, it creates the `dest` key (delete it afterwards, and on a cluster all three keys must share a hash slot), and
 `GET dest` pulls the whole result. For large bitmaps, compare `BITCOUNT` on both sides plus a sampled set of `GETBIT` and
 `has` answers instead of a full `BITOP`.

@@ -160,7 +160,7 @@ items [ 3, 4, 8 ]
 The call pins every operand by default, so a load that lands during the call does not change what it reads
 ([many outputs from one pass](../guide/loading.md#many-outputs-from-one-pass-materializemany)). It writes a generation to
 the result segment on every call, so this shape is for a saved search or a cached query, not for each page view: name the
-result by a hash of the query so repeats reuse it (two callers that write one fixed name such as `search-1` race, and the
+result by a hash of the query so repeats replace one segment rather than add one (two callers that write one fixed name such as `search-1` race, and the
 loser gets `WriteConflictError`), and give it a retention so the sweep retires it ([retention](../guide/retention.md)),
 because results otherwise fill the namespace toward the 100,000-segment envelope. A segment holds ids, and a result can be
 paged with a range ([paging](../guide/reading.md#page-through-a-segment)). For a per-request filter with an OR inside a

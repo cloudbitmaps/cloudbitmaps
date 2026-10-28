@@ -121,7 +121,7 @@ Output:
 ```
 
 The cap on the number of names matters because each streamed operand holds a reader outside the cache's bounds. The name
-pattern only checks the shape: the function's role can read everything under its prefix, so a caller who can send a request
+pattern only checks the shape (change it to match your naming: as written it refuses capitals, dots and underscores): the function's role can read everything under its prefix, so a caller who can send a request
 can ask about any segment there. Decide who may combine which sets in the handler (an allow-list of names, or a prefix a
 caller's identity maps to) before you put it behind a URL or a gateway.
 
