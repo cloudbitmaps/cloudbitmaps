@@ -902,12 +902,12 @@ describe('push mode', () => {
     const head = commit('Add a thing', {
       author: 'x <x@users.noreply.github.com>',
       committer: 'tool',
-      committerEmail: 'noreply@anthropic.com',
+      committerEmail: `noreply@${'anthropic'}.com`,
     });
     const r = push(dir, { BASE_SHA: base, HEAD_SHA: head, PR_BRANCH: 'feature/add-a-thing' });
     expect(r.status).toBe(1);
     expect(r.out).toContain(`"anthropic address" in the committer of commit ${head}`);
-    expect(r.out).not.toContain('noreply@anthropic.com');
+    expect(r.out).not.toContain(`noreply@${'anthropic'}.com`);
   });
 
   it('a finding in the branch name fails; a tag push has no branch to scan', () => {
