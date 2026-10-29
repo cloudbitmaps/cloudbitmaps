@@ -581,7 +581,7 @@ describe("the maintainer's decision the table reads", () => {
   it('says a listed method above the bar ships by the decision of that date, its figure disclosed', () => {
     const region = table.render(GOOD, decided('toArray'));
     expect(region).toContain(
-      'Shipping by the maintainer\'s decision of 2026-10-26 ("yes to your recommendations"), more than 10 times native on some data set and its figure disclosed: `toArray` (13.00 times, dense toArray).',
+      "Shipping by the maintainer's decision of 2026-10-26 (yes to your recommendations), more than 10 times native on some data set and its figure disclosed: `toArray` (13.00 times, dense toArray).",
     );
     expect(region).not.toMatch(over);
     expect(table.problemsOf('p.md', page(region), GOOD, decided('toArray'))).toEqual([]);

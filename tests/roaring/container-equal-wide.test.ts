@@ -151,3 +151,35 @@ describe('the wide compare of bitsets', () => {
     }
   });
 });
+
+describe('the compare of two lists that start at the front of their storage', () => {
+  const sizes = [255, 256, 257, 510, 511, 512, 513]; // values; runs use half
+  const starts = [
+    { left: 0, right: 0 },
+    { left: 0, right: 3 },
+    { left: 1, right: 0 },
+    { left: 5, right: 7 },
+  ];
+  for (const n of sizes) {
+    it(`${n} values (or ${n >> 1} runs): equal, and a difference at the first, last and an odd element`, () => {
+      const values = arrayValues(n);
+      const evenN = n - (n % 2);
+      const pairs = runPairs(evenN / 2);
+      for (const { left, right } of starts) {
+        expect(containersEqual(arrayOf(values, left), arrayOf(values, right))).toBe(true);
+        expect(containersEqual(runsOf(pairs, left), runsOf(pairs, right))).toBe(true);
+        for (const p of [0, n - 1, 1, (n >> 1) | 1].filter((q) => q < n)) {
+          const moved = values.slice();
+          moved[p] = (moved[p] as number) + 1;
+          expect(containersEqual(arrayOf(values, left), arrayOf(moved, right))).toBe(false);
+        }
+        for (const p of [0, evenN - 1, 1, (evenN >> 1) | 1].filter((q) => q < evenN)) {
+          const moved = pairs.slice();
+          moved[p] = p % 2 === 0 ? (moved[p] as number) + 1 : (moved[p] as number) - 1;
+          const a = runsOf(pairs, left);
+          expect(containersEqual(a, runsOf(moved, right, 0, a.card))).toBe(false);
+        }
+      }
+    });
+  }
+});

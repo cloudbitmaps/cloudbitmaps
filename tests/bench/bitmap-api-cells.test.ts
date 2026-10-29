@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import roaring from 'roaring';
 import { RoaringBitmap } from '@/index';
-import { tsRoaringCodec } from '@/ts-roaring/bitmap';
+import { TsBitmap, tsRoaringCodec } from '@/ts-roaring/bitmap';
 
 /**
  * The cells of the public bitmap class's bench (`bench/lib/bitmap-api-cells.cjs`) on the three subjects it compares, at
@@ -218,6 +218,22 @@ describe('the cells', () => {
       const answers = apis().map((api) => lib.timeCold(cell, api).answer);
       expect(new Set(answers).size, cell.name).toBe(1);
     }
+  });
+});
+
+describe('the codec subject decodes detached', () => {
+  it('asks the codec for a detached decode, as the public class does, and still decodes the bytes', () => {
+    const asked: unknown[] = [];
+    const api = lib.internalApi({
+      safeDeserialize: (input: Uint8Array, cap: number, options: unknown) => {
+        asked.push(options);
+        return TsBitmap.safeDeserialize(input, cap, options as { detached: boolean });
+      },
+    } as never);
+    const input = bytes['mixed a'] as Uint8Array;
+    const decoded = api.deserialize(input) as { size: number };
+    expect(asked).toEqual([{ detached: true }]);
+    expect(decoded.size).toBe(TsBitmap.safeDeserialize(input, 1 << 27).size);
   });
 });
 

@@ -30,11 +30,12 @@
  * the number of values its runs cover. Anything a real writer produces passes, because a real writer produces
  * exactly this structure.
  *
+ * HOW IT READS. A bitset body is counted in place through a `Uint32Array` (copied to a scratch first when its offset is not
+ * a multiple of 4); every array and run list goes through the `DataView`, which costs less to compile on a first call.
+ * Each path refuses the same bytes with the same message.
+ *
  * WHAT IT COSTS. One pass over the bytes the decode is about to copy anyway, once per decode: never per id, and
- * never on a cache hit. Measured on an M3 Pro under Node 24, with the check, CRoaring's deserialize and a CRC32C
- * of the same bytes timed in alternating rounds: about 70 ns for a payload of one small container, 0.7 us for a
- * 2 KB array container, and 2.5 to 3.2 us for an 8 KB one of any kind. That is a third to a half of the CRC32C the
- * `.crbm` reader already computes over the stored payload before it gets here.
+ * never on a cache hit.
  *
  * The codec's bitmap decoder in `ts-roaring/` runs it before it builds a container. The membership-only reader in
  * `decode.ts`, which the tests use as a second reader of the same bytes, builds on the layout it returns. One check in
@@ -44,6 +45,10 @@
  */
 import { IntegrityError } from '@cloudbitmaps/core';
 import type { EncodedChunk } from '@cloudbitmaps/core';
+import { BITSET_WORDS, popcountWords } from './popcount';
+
+/** Whether this machine stores a typed array's elements little-endian, as the wire does (so a body is a plain copy). */
+export const LITTLE_ENDIAN = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
 
 /** Cookie for a bitmap with no run containers. Followed by a u32 container count. */
 export const SERIAL_COOKIE_NO_RUNCONTAINER = 12_346;
@@ -288,7 +293,7 @@ function checkContainer(
     if (pos + BITMAP_CONTAINER_BYTES > length) {
       throw overrun(bytes, pos, BITMAP_CONTAINER_BYTES, `container ${i} (bitmap)`);
     }
-    const bits = popcount(view, pos);
+    const bits = bitsetBits(bytes, pos);
     if (bits !== cardinality) {
       throw new IntegrityError(
         `portable roaring: container ${i} (bitmap) holds ${bits} values, but its header says ${cardinality}`,
@@ -315,7 +320,7 @@ function checkContainer(
  * An array container's values must strictly ascend: `has` binary-searches them and iteration yields them in order.
  *
  * Read two values per `u32` (little-endian, so the first value is the low half): half the loads and half the loop
- * trips of reading them one at a time, which measured about twice as fast.
+ * trips of reading them one at a time, which measured about twice as fast (probe, indicative).
  */
 function checkArray(view: DataView, at: number, cardinality: number, index: number): void {
   let previous = -1;
@@ -366,14 +371,18 @@ function checkRuns(view: DataView, at: number, runs: number, index: number): num
   return covered;
 }
 
-/** Set bits in a bitset container's 2,048 little-endian `u32` words. */
-function popcount(view: DataView, at: number): number {
-  let bits = 0;
-  for (let p = at, end = at + BITMAP_CONTAINER_BYTES; p < end; p += 4) {
-    let w = view.getUint32(p, true);
-    w -= (w >>> 1) & 0x5555_5555;
-    w = (w & 0x3333_3333) + ((w >>> 2) & 0x3333_3333);
-    bits += Math.imul((w + (w >>> 4)) & 0x0f0f_0f0f, 0x0101_0101) >>> 24;
-  }
-  return bits;
+/**
+ * Set bits in the bitset container's 2,048 words at `at`. A body at a 4-byte-aligned offset is counted in place through
+ * a `Uint32Array`; any other is copied into a scratch of its own first. Counting is the same on either byte order, so
+ * the words need not be read as little-endian.
+ */
+function bitsetBits(bytes: Uint8Array, at: number): number {
+  const offset = bytes.byteOffset + at;
+  if ((offset & 3) === 0) return popcountWords(new Uint32Array(bytes.buffer, offset, BITSET_WORDS));
+  scratchBytes.set(bytes.subarray(at, at + BITMAP_CONTAINER_BYTES));
+  return popcountWords(scratchWords);
 }
+
+/** Where a bitset body that is not 4-byte aligned is copied to be counted. */
+const scratchWords = new Uint32Array(BITSET_WORDS);
+const scratchBytes = new Uint8Array(scratchWords.buffer);
