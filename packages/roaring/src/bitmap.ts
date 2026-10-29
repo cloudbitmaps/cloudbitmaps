@@ -99,7 +99,7 @@ function idsOf(values: unknown): Iterable<number> {
   return values as Iterable<number>;
 }
 
-/** The codec with its decode detached: each container of a decoded bitmap owns its storage. */
+/** The codec with its decode detached: a decoded bitmap holds no view of the input's copy, and its slabs are bounded. */
 const detachedCodec: CodecInterface = {
   ...tsRoaringCodec,
   safeDeserialize: (bytes, maxBytes, options) =>
@@ -161,8 +161,10 @@ export class RoaringBitmap implements Iterable<number> {
 
   /**
    * Decode portable Roaring bytes you hold, through the check a `{ serialized }` load makes first: a size cap, a
-   * structural check and one whole bitmap, and only then the decoder. The result owns its storage: it keeps nothing
-   * of `bytes`, so a large input that is decoded and then reduced can be freed.
+   * structural check and one whole bitmap, and only then the decoder. The result keeps nothing of `bytes` or of
+   * the private copy made of it: a bitset has an array of its own and arrays and runs sit on slabs of at most 64 KB, so
+   * a large input that is decoded and then reduced is freed, except that at most one 64 KB slab stays alive for each
+   * array or run container that survives.
    *
    * @param bytes a `Uint8Array`, which a Node `Buffer` is.
    * @param options `{ maxBytes }` lowers the size cap below the default of 537,403,396 bytes.

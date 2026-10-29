@@ -529,8 +529,9 @@ nothing but its own reads. It is the one door for bytes: `new RoaringBitmap(byte
 `{ maxBytes }` lowers the cap for a service that knows its inputs are small: bytes over it are refused before any is read.
 A `maxBytes` above 537,403,396, or one that is not a non-negative integer, is refused, never honoured: there is no
 trusting variant. The input is copied once before it is checked, so a buffer another thread is writing cannot pass the
-check and then change, and the result keeps nothing of that copy: each container owns its storage, so a large input that
-is decoded and then reduced with `andInPlace` can be freed.
+check and then change, and the result keeps nothing of that copy: a bitset has an array of its own and arrays and runs sit on slabs of at most
+64 KB, so a large input that is decoded and then reduced with `andInPlace` is freed, except that at most one 64 KB slab
+stays alive for each array or run container that survives.
 
 It throws `ValidationError`, never `IntegrityError` (that is for a stored object that is damaged), for:
 

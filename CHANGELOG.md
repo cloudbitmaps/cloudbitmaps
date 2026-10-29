@@ -69,8 +69,9 @@ so, and so do the module headers in the code.
 
 - **`RoaringBitmap.deserialize(bytes, { maxBytes? }?)`, the one door for portable bytes you did not write.** It makes the
   check a `{ serialized }` load makes (the 537,403,396-byte cap, which `maxBytes` can lower, the structural check, exactly
-  one bitmap), refuses an empty buffer and a format argument, and returns a bitmap that owns its storage, so a large input
-  that is decoded and then reduced does not stay in memory.
+  one bitmap), refuses an empty buffer and a format argument, and returns a bitmap that keeps nothing of the input or its
+  copy: a bitset has an array of its own and arrays and runs sit on slabs of at most 64 KB, so a large input that is decoded
+  and then reduced does not stay in memory, apart from at most one 64 KB slab for each array or run container that survives.
 
 ### Changed
 

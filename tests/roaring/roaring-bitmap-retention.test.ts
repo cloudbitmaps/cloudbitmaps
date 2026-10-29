@@ -4,12 +4,14 @@ import { describe, expect, it } from 'vitest';
 import { RoaringBitmap } from '@/index';
 import { MAX_SERIALIZED_LOAD_BYTES } from '@/core/load-input';
 import { TsBitmap } from '@/ts-roaring/bitmap';
+import { DETACHED_SLAB_BYTES } from '@/ts-roaring/wire';
 
 /**
  * A decoded bitmap keeps nothing of its input. The codec reads a bitset in place over its private copy of the input, and
  * the arrays and runs of a many-container decode share one slab, so a long-lived bitmap decoded from a large buffer
  * and then reduced to a small filter would hold the whole buffer for a few kilobytes of ids. The public door decodes
- * detached: every container owns its storage, so the copy is garbage when the call returns.
+ * detached: a bitset owns its array and arrays and runs sit on slabs of at most 64 KB, so the copy is garbage when the
+ * call returns and a surviving container keeps at most one slab.
  */
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -134,6 +136,31 @@ describe('a decoded bitmap of many small containers does not pin its input eithe
           MB / 2,
         );
       }
+    },
+  );
+
+  it.each(shapes)(
+    'the public door, %s containers: the survivor keeps its slab, at the 64 KB bound and not the bitmap',
+    (_name, fill, optimize) => {
+      const ids: number[] = [];
+      const others: number[] = [];
+      for (let key = 0; key < SMALL; key++) fill(key, key === SURVIVOR ? ids : others);
+      const all = new RoaringBitmap(merged(ids, others));
+      if (optimize) all.runOptimize();
+      const base = externalBytes();
+      const { kept, inputBytes } = decodeThenDropInput(
+        (bytes) => RoaringBitmap.deserialize(bytes),
+        () => all.serialize(),
+      );
+      kept.removeMany(others);
+      expect(kept.size).toBe(ids.length);
+      const retained = externalBytes() - base;
+      // One slab at most stays, the bound plus slack for the small objects around it; the input is more than thirty
+      // slabs. The slab's size itself is pinned in detached-slab.test.ts.
+      expect(retained, `retained ${retained} bytes`).toBeLessThanOrEqual(
+        DETACHED_SLAB_BYTES + 16 * 1024,
+      );
+      expect(inputBytes).toBeGreaterThan(30 * DETACHED_SLAB_BYTES);
     },
   );
 

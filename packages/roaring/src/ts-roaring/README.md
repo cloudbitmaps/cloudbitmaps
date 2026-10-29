@@ -552,7 +552,7 @@ All of these are in `bitmap.ts`.
   every writer of a run keeps its runs maximal, so one set has one list of pairs), and only a pair of different kinds falls back to
   `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. A list under 512 values in each of two containers that both
-  start at index 0 (every container of a detached decode) is compared by a loop with no start offsets: a stand-alone probe of 128
+  start at index 0 (a decode that gave the container storage of its own, a container that starts its slab, or one built by a write) is compared by a loop with no start offsets: a stand-alone probe of 128
   runs containers of 300 values timed it 29 percent faster than the loop with offsets (indicative, probe). The public class exposes all seven (section 13).
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
@@ -911,9 +911,18 @@ Everything here is a test, a workflow or a bench, not part of the module.
 **The detached decode.** The store's chunk decode reads a bitset in place as a view over the private copy of the input and
 puts the arrays and runs of a multi-container decode in one slab. That is free for a one-container chunk and a hazard for a
 long-lived public bitmap: one decoded from 300 MB and then reduced by `andInPlace` to a few containers would keep the
-whole input alive. `RoaringBitmap.deserialize` passes `detached: true`, which gives every bitset, array and run its own
-storage and no slab, so the copy of the input is garbage when the call returns. The store's decode does not pass the flag
-and keeps its aliasing. The price is one more copy of the live data at decode.
+whole input alive. `RoaringBitmap.deserialize` passes `detached: true`, which copies every bitset into an array of its own and
+the arrays and runs into slabs of at most 64 KB (`DETACHED_SLAB_BYTES`), so the copy of the input is garbage when the call
+returns. The store's decode does not pass the flag
+and keeps its aliasing.
+
+A detached decode opens a slab at the first array or run that does not fit what is left of the current one, and sizes it by
+looking ahead over the layout for the containers that fit in 64 KB (32,768 `u16`s), so a bitmap of a few small containers
+holds exactly their bytes. The containers on a slab are flagged `shared` when there is more than one, so the first write to
+one copies it out (section 4) and never changes a neighbour; a slab that holds one container is that container's own. An
+array or run container of more than 32,768 `u16`s (a run container of more than 16,384 runs, which a writer of an array or
+bitset never produces but the format allows) takes an array of its own. A bitset keeps an 8 KB array. A container that
+survives a reduction therefore keeps at most one slab alive, 64 KB, and never the input or its copy. The price is one more copy of the live data at decode.
 
 **The one door for bytes.**
 
@@ -971,7 +980,10 @@ and one `RangeError` that is the runtime's own, from `toArray` or `toUint32Array
 - `tests/roaring/roaring-bitmap-deserialize.test.ts`: the door's table of inputs and the hostile shapes from the codec's
   hostile-bytes test, run through the public door.
 - `tests/roaring/roaring-bitmap-retention.test.ts`: decodes a multi-container bitmap, reduces it, drops the input and checks
-  the heap falls, with a control that decodes without `detached` and does not.
+  the heap falls, with a control that decodes without `detached` and does not, and that a survivor keeps at most one slab.
+- `tests/roaring/detached-slab.test.ts`: a decode that spans several slabs, containers that exactly fill a slab, a container
+  above the bound, a bitset between arrays, and a write to one container of a slab (each mutator family, before and after a
+  clone) that leaves every neighbour as it was.
 - The fuzz targets (section 11) and, on every build, `pnpm smoke`: the class from the main entry is one object under ESM and
   `require()`, and it works. The package's main entry also loads the store's in-process backends and their Node builtins,
   so the class runs where the package runs.
