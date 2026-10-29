@@ -1,5 +1,5 @@
 {
   "date": "2026-10-29",
-  "words": "the union of 64 dense bitmaps ships in this release with its figure shown; plain JavaScript stops here because the work is one pass of word-by-word bit operations over 8 KB bodies, and a WebAssembly module would be the next step, so an optional one is on the roadmap for after this release, to be decided on its own",
+  "words": "the union of 64 dense bitmaps ships with its figure shown, and an optional WebAssembly module for the dense word kernels is on the roadmap, to be decided on its own",
   "accepted": ["RoaringBitmap.orMany"]
 }
