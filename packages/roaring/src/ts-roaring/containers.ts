@@ -2164,9 +2164,9 @@ export function containersEqual(a: Container, b: Container): boolean {
   const y = lows16(b);
   const n = a.kind === ARRAY ? a.len : 2 * a.len;
   if (n < EQUAL_VIEW_MIN) {
-    // Short lists that both start at the front of their storage (every container of a detached decode) compare without
-    // the start offsets.
-    if (a.off === 0 && b.off === 0) return equalU16From0(x, y, n);
+    // Short lists that both start at the front of their storage (every container of a detached decode) pass constant
+    // start offsets, which the compiler folds; a separate function for them measured slower on a bitmap that mixes kinds.
+    if (a.off === 0 && b.off === 0) return equalU16(x, 0, y, 0, n);
     return equalU16(x, a.off, y, b.off, n);
   }
   const xb = x.byteOffset + 2 * a.off;
@@ -2224,25 +2224,6 @@ function equalU16(x: Uint16Array, xo: number, y: Uint16Array, yo: number, n: num
     if (d !== 0) return false;
   }
   for (; i < n; i++) if (x[xo + i] !== y[yo + i]) return false;
-  return true;
-}
-
-/** {@link equalU16} for two lists that both start at index 0. */
-function equalU16From0(x: Uint16Array, y: Uint16Array, n: number): boolean {
-  let i = 0;
-  for (const end = n - 7; i < end; i += 8) {
-    const d =
-      ((x[i] as number) ^ (y[i] as number)) |
-      ((x[i + 1] as number) ^ (y[i + 1] as number)) |
-      ((x[i + 2] as number) ^ (y[i + 2] as number)) |
-      ((x[i + 3] as number) ^ (y[i + 3] as number)) |
-      ((x[i + 4] as number) ^ (y[i + 4] as number)) |
-      ((x[i + 5] as number) ^ (y[i + 5] as number)) |
-      ((x[i + 6] as number) ^ (y[i + 6] as number)) |
-      ((x[i + 7] as number) ^ (y[i + 7] as number));
-    if (d !== 0) return false;
-  }
-  for (; i < n; i++) if (x[i] !== y[i]) return false;
   return true;
 }
 
