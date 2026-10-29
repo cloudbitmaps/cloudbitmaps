@@ -836,8 +836,11 @@ function skewed(shorter: number, longer: number): boolean {
 // pairs the merge finishes sooner; a higher one leaves mid-sized pairs on the slower merge.
 const PROBE_MIN = 32;
 
-// How many merge steps `intersectsArrays` takes before it falls back to the scratch bitset: two random sets of a thousand values
-// in a chunk share a value within a few dozen steps, so the common overlapping pair never sets a bit.
+// How many merge steps `intersectsArrays` takes before it falls back to the scratch bitset. The value is chosen, not measured to
+// be the best: a pair that shares a value inside the first steps answers without setting a bit, and a pair that shares nothing
+// there pays the steps and then the scratch bitset. Two random sets of a thousand values in one chunk share about 15 values
+// (derived), so most such pairs share none in 64 steps and reach the bitset; probes of 320 steps made the overlapping pair
+// about four times faster and the disjoint pair about 30 percent slower (indicative), and neither is kept.
 export const MERGE_FIRST = 64;
 
 // Scratch bitset for the array probe: all zero between calls (each call clears what it set).
@@ -2271,8 +2274,9 @@ function intersectsArrays(a: Container, b: Container): boolean {
   let i = small.off;
   let j = big.off;
   if (small.len >= PROBE_MIN) {
-    // Two sets of this size usually share a value early, and a merge finds it without setting any bits: take a bounded
-    // number of merge steps first and set up the scratch bits only for a pair that shares nothing that soon.
+    // A pair that shares a value early is answered by the merge without setting any bits: take a bounded number of merge
+    // steps first and set up the scratch bits only for a pair that shares nothing that soon (most random pairs of this
+    // size still reach them; see MERGE_FIRST).
     for (let step = 0; step < MERGE_FIRST && i < se && j < le; step++) {
       const x = s[i] as number;
       const y = l[j] as number;

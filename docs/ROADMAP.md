@@ -573,7 +573,7 @@ move it up.
   containers are among the cells that stay far from the native binding in plain JavaScript, because they are loops over
   2,048 words that WebAssembly can run several words at a time. In the published table the union of 64 dense bitmaps
   reads about 11 times native (the one method above 10 times that ships with its figure shown) and the dense counts about
-  8 to 9; the cold first `deserialize` is further (about 13.5 times) and is not a word-kernel cost. An optional module, loaded only by a caller that asks for
+  8 to 9; the cold first `deserialize` is further (about 13.5 times) and is a cost of the first call in a fresh process. An optional module, loaded only by a caller that asks for
   it, would leave the default install with nothing to compile. Whether it is worth its size and its second code path is
   decided after the next release, from the published table.
 - **Incremental writes, if there is demand** — immutable delta generations on the same bucket, read as base ∪ deltas at
