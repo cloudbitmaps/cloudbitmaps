@@ -120,6 +120,7 @@ const { execFileSync } = require('node:child_process');
 const { engineWith, evaluate, bundleText } = require('./lib/codec-engine.cjs');
 const { idsOf } = require('./lib/codec-data.cjs');
 const workFolder = require('./lib/work-folder.cjs');
+const { treeState } = require('./lib/tree-state.cjs');
 const {
   BAR,
   CONTROL_BAND,
@@ -975,8 +976,8 @@ function environment() {
   };
   return {
     commit: git('rev-parse', 'HEAD') ?? 'unknown',
-    // Whether a tracked file differed from that commit when the figures were taken.
-    treeClean: git('status', '--porcelain', '--untracked-files=no') === '',
+    // Whether the tree was the commit's own when the figures were taken (the shared rule: this file's results alone are not a change).
+    treeClean: treeState({ root: ROOT, record: RESULTS }).tree === 'clean',
     node: process.version,
     cpu: os.cpus()[0].model,
     cores: os.cpus().length,

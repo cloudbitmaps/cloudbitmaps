@@ -87,7 +87,9 @@ a dollar for a cost. A ratio's binary tail runs to 17 digits, and one of exactly
 ## How a pass records its tree, and where a bench keeps its temp files
 
 A pass records `environment.tree`, whether the measured code was the commit's own. `lib/tree-state.cjs` decides it for
-`ts-codec-paired.cjs` and `bitmap-api.cjs` from `git status` (tracked, staged and untracked files alike):
+`ts-codec-paired.cjs`, `bitmap-api.cjs` and `count-kernels.cjs` from `git status` (tracked, staged and untracked files
+alike), each with its own results file as the one exemption (`ts-codec-engine.cjs` records the same rule as its boolean
+`treeClean`). Passes already committed keep what they recorded:
 
 ```
 nothing differs from the commit                         -> clean
@@ -101,13 +103,23 @@ A pass taken right after another, before the first is committed, is therefore st
 `environment.dirtyPaths` (every path that differs, the results file included, sorted, at most 20) and
 `environment.dirtyTotal` (how many there are), so a stray file reads differently from a change to the code. A pass
 taken before these fields existed has neither and stays valid; a gate refuses a dirty pass whose fields disagree
-(unsorted paths, a total below the paths named) and a clean pass that carries them.
+(unsorted or repeated paths, a total below the paths named, a list over the cap) and a clean pass that carries them.
+
+Files git ignores do not count, `dist/` included: a rebuilt or hand-edited `dist/` reads clean. `bitmap-api.cjs`
+imports the built `packages/roaring/dist`; its `pnpm` script builds first, but `node bench/bitmap-api.cjs` run by hand
+measures whatever `dist/` is there, under a clean tree. A fix, not built here: record a digest of `dist/index.js` in the
+pass beside `head`, or refuse a `dist/` older than the newest source file. `ts-codec-paired.cjs` and `count-kernels.cjs`
+bundle the sources themselves and are not affected.
 
 The benches that make a temp folder (`ts-codec-paired.cjs`, `bitmap-api.cjs`, `count-kernels.cjs`,
 `ts-codec-engine.cjs`, `soak.cjs`, `scale.cjs`) make it through `lib/work-folder.cjs`, which removes it however the
 process ends: on a return, a thrown error, `process.exit`, SIGINT or SIGTERM (a signal can arrive while the bench is in
 a synchronous call, where a JavaScript handler would not run) and a kill. A small detached sentinel holds a pipe from the
-bench and removes the folders when the pipe closes. `tests/bench/work-folder.test.ts` proves each way out and fails on a
+bench and removes the folders when the pipe closes; it covers the folders named by `BITMAP_API_WORKDIR` and
+`PAIRED_WORKDIR` too. If the sentinel cannot start or be reached (a stage that copied `bench/` without it), one line on
+stderr names each folder that a kill would leave behind and the bench carries on. The sentinel is one idle node process
+beside the bench (measured once on this Mac: 37,552 KiB resident, about 37 MiB, beside the bench's 45,072 KiB), inside the 384 MiB limit of `scripts/rss-gate.sh`. Windows hides its console window;
+the signal tests prove POSIX behaviour only. `tests/bench/work-folder.test.ts` proves each way out and fails on a
 direct `mkdtemp` call in `bench/`; `tests/bench/tree-state.test.ts` holds the dirt rule.
 
 ## Real-cloud calibration

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -140,6 +140,33 @@ describe('a bench’s own record is not a dirty tree', () => {
     expect(s.dirtyPaths![0]).toBe('stray-000.txt');
   });
 
+  it('is dirty for a staged-only edit under packages/', () => {
+    const root = repo();
+    writeFileSync(join(root, 'packages/roaring/src/a.ts'), 'export const a = 9;\n');
+    git(root, 'add', 'packages/roaring/src/a.ts');
+    expect(state(root)).toEqual({
+      tree: 'dirty',
+      dirtyPaths: ['packages/roaring/src/a.ts'],
+      dirtyTotal: 1,
+    });
+  });
+
+  it('names a path with a newline whole', () => {
+    const root = repo();
+    writeFileSync(join(root, 'odd\nname.txt'), 'x\n');
+    expect(state(root).dirtyPaths).toEqual(['odd\nname.txt']);
+  });
+
+  it('does not look at files git ignores (a rebuilt dist/ reads clean), so the rule covers tracked and untracked sources only', () => {
+    const root = repo();
+    writeFileSync(join(root, '.gitignore'), 'dist/\n');
+    git(root, 'add', '.gitignore');
+    git(root, 'commit', '-q', '-m', 'ignore dist');
+    mkdirSync(join(root, 'packages/roaring/dist'), { recursive: true });
+    writeFileSync(join(root, 'packages/roaring/dist/index.js'), 'stale\n');
+    expect(state(root)).toEqual({ tree: 'clean' });
+  });
+
   it('says unknown where git cannot say', () => {
     const outside = mkdtempSync(join(tmpdir(), 'tree-state-nogit-'));
     made.push(outside);
@@ -163,15 +190,93 @@ describe('the gates read the tree fields of a pass', () => {
     expect(problems({ tree: 'dirty', dirtyPaths: paths, dirtyTotal: 99 })).toEqual([]);
   });
 
+  const many = Array.from({ length: lib.PATH_CAP + 1 }, (_, i) => `f${String(i).padStart(2, '0')}`);
   it.each([
-    ['paths on a clean tree', { tree: 'clean', dirtyPaths: ['a'], dirtyTotal: 1 }],
-    ['paths without a total', { tree: 'dirty', dirtyPaths: ['a'] }],
-    ['an empty list', { tree: 'dirty', dirtyPaths: [], dirtyTotal: 0 }],
-    ['unsorted paths', { tree: 'dirty', dirtyPaths: ['b', 'a'], dirtyTotal: 2 }],
-    ['a total below the paths named', { tree: 'dirty', dirtyPaths: ['a', 'b'], dirtyTotal: 1 }],
-    ['a short list with a larger total', { tree: 'dirty', dirtyPaths: ['a'], dirtyTotal: 5 }],
-    ['a non-string path', { tree: 'dirty', dirtyPaths: [1], dirtyTotal: 1 }],
-  ])('refuses %s', (_n, environment) => {
-    expect(problems(environment)).toHaveLength(1);
+    [
+      'paths on a clean tree',
+      { tree: 'clean', dirtyPaths: ['a'], dirtyTotal: 1 },
+      /clean tree records dirty paths/,
+    ],
+    [
+      'paths on an unknown tree',
+      { tree: 'unknown', dirtyPaths: ['a'], dirtyTotal: 1 },
+      /unknown tree records dirty paths/,
+    ],
+    ['paths without a total', { tree: 'dirty', dirtyPaths: ['a'] }, /total is not a count/],
+    ['a total without paths', { tree: 'dirty', dirtyTotal: 2 }, /names no paths/],
+    ['an empty list', { tree: 'dirty', dirtyPaths: [], dirtyTotal: 0 }, /names no paths/],
+    [
+      'unsorted paths',
+      { tree: 'dirty', dirtyPaths: ['b', 'a'], dirtyTotal: 2 },
+      /not sorted and distinct/,
+    ],
+    [
+      'duplicated paths',
+      { tree: 'dirty', dirtyPaths: ['a', 'a'], dirtyTotal: 2 },
+      /not sorted and distinct/,
+    ],
+    [
+      'a total below the paths named',
+      { tree: 'dirty', dirtyPaths: ['a', 'b'], dirtyTotal: 1 },
+      /total is not a count/,
+    ],
+    [
+      'a non-integer total',
+      { tree: 'dirty', dirtyPaths: ['a'], dirtyTotal: 1.5 },
+      /total is not a count/,
+    ],
+    [
+      'a short list with a larger total',
+      { tree: 'dirty', dirtyPaths: ['a'], dirtyTotal: 5 },
+      /not capped/,
+    ],
+    [
+      'a list over the cap',
+      { tree: 'dirty', dirtyPaths: many, dirtyTotal: many.length },
+      /not capped/,
+    ],
+    ['a non-string path', { tree: 'dirty', dirtyPaths: [1], dirtyTotal: 1 }, /names no paths/],
+  ])('refuses %s', (_n, environment, message) => {
+    const found = problems(environment);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(message);
+  });
+});
+
+/**
+ * The wiring: the library is right, but a gate that stops calling it or a bench that stops recording its fields would
+ * leave every library test green, so each call is held in the source of the file that must make it.
+ */
+describe('every bench decides its tree through the shared rule', () => {
+  const read = (file: string) => readFileSync(join(ROOT, file), 'utf8');
+
+  it.each([
+    'bench/ts-codec-paired.cjs',
+    'bench/bitmap-api.cjs',
+    'bench/count-kernels.cjs',
+    'bench/ts-codec-engine.cjs',
+  ])('%s calls treeState with its own results file as the record', (file) => {
+    expect(read(file)).toMatch(/treeState\(\{ root: ROOT, record: RESULTS \}\)/);
+  });
+
+  it.each(['bench/ts-codec-paired.cjs', 'bench/bitmap-api.cjs', 'bench/count-kernels.cjs'])(
+    '%s records the dirty paths beside the tree',
+    (file) => {
+      expect(read(file)).toMatch(/const \{ tree, \.\.\.dirt \} = treeState\(/);
+      expect(read(file)).toMatch(/\.\.\.dirt,/);
+    },
+  );
+
+  it.each(['bench/lib/paired-verdict.cjs', 'bench/lib/bitmap-api-verdict.cjs'])(
+    '%s asks treeProblems of each pass',
+    (file) => {
+      expect(read(file)).toMatch(/treeProblems\(/);
+    },
+  );
+
+  it('does not let the other benches keep their own tree check', () => {
+    for (const file of ['bench/count-kernels.cjs', 'bench/ts-codec-engine.cjs']) {
+      expect(read(file)).not.toMatch(/'status', '--porcelain'/);
+    }
   });
 });

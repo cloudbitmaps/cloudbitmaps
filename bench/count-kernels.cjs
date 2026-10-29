@@ -48,6 +48,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { bundleText, evaluate } = require('./lib/codec-engine.cjs');
 const workFolder = require('./lib/work-folder.cjs');
+const { treeState } = require('./lib/tree-state.cjs');
 const { MIN_ROUNDS } = require('./lib/codec-verdict.cjs');
 const { measureSteadyCpu, digest } = require('./lib/codec-ops.cjs');
 const {
@@ -277,12 +278,7 @@ function measureGroups(file, only) {
 }
 
 function environment() {
-  let tree = 'unknown';
-  try {
-    tree = git('status', '--porcelain').length === 0 ? 'clean' : 'dirty';
-  } catch {
-    /* recorded as unknown */
-  }
+  const { tree, ...dirt } = treeState({ root: ROOT, record: RESULTS });
   return {
     node: process.version,
     platform: `${os.platform()} ${os.arch()}`,
@@ -290,6 +286,7 @@ function environment() {
     cores: os.cpus().length,
     head: git('rev-parse', 'HEAD'),
     tree,
+    ...dirt,
     anyLoad: ANY_LOAD,
     smoke: SMOKE,
     rounds: ROUNDS,

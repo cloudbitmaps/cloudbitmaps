@@ -205,6 +205,22 @@ describe('the gate over the record', () => {
     expect(gate.gateProblems([])).toEqual([]);
   });
 
+  it('reads the tree fields: a clean pass with paths, a dirty one with unsorted paths are refused, a named dirty pass and an old one are not', () => {
+    const withTree = (fields: Record<string, unknown>) => {
+      const pass = clean();
+      Object.assign(pass.environment, fields);
+      return gate.gateProblems([pass], COUNT).join('\n');
+    };
+    expect(withTree({ tree: 'clean', dirtyPaths: ['a'], dirtyTotal: 1 })).toContain(
+      'a clean tree records dirty paths',
+    );
+    expect(withTree({ tree: 'dirty', dirtyPaths: ['b', 'a'], dirtyTotal: 2 })).toContain(
+      'not sorted and distinct',
+    );
+    expect(withTree({ tree: 'dirty', dirtyPaths: ['a', 'b'], dirtyTotal: 2 })).toBe('');
+    expect(withTree({ tree: 'dirty' })).toBe('');
+  });
+
   it('reads the processes a cold sample took: absent is one, five at full scale, and a record that disagrees is refused', () => {
     const pass = clean();
     expect(gate.coldProcessesOf(pass)).toBe(1);
