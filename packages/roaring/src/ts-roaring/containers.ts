@@ -55,7 +55,8 @@
  * by the kinds of the pair and each building nothing: the answers the bitmap's counting operations are made from. The
  * last two never count.
  */
-import { ARRAY_MAX_CARDINALITY } from '../portable/layout';
+import { ARRAY_MAX_CARDINALITY, LITTLE_ENDIAN } from '../portable/layout';
+import { BITSET_WORDS, popcount32, popcountWords } from '../portable/popcount';
 
 /** A container of sorted `u16` values. */
 export const ARRAY = 0;
@@ -66,15 +67,14 @@ export const RUN = 2;
 type Kind = typeof ARRAY | typeof BITSET | typeof RUN;
 
 /** 32-bit words in a bitset container. */
-export const WORDS = 2_048;
+export const WORDS = BITSET_WORDS;
 /** Bytes of a bitset container's body. */
 export const BITSET_BYTES = 8_192;
 
 /** How many times longer one array must be than the other for the shorter to gallop over it instead of a linear merge (a larger factor gallops less often, which suits similar sizes better and skewed ones worse). */
 const GALLOP_SKEW = 16;
 
-/** Whether this machine stores a typed array's elements little-endian, as the wire does (so a body is a plain copy). */
-export const LITTLE_ENDIAN = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
+export { LITTLE_ENDIAN };
 
 /**
  * One container. `data` is a `Uint16Array` for an array or a run container and a `Uint32Array` of {@link WORDS} words
@@ -140,101 +140,6 @@ function pairs16(n: number): Uint16Array {
 /** An array container of the first `n` values of `scratch` (copied out), or `null` when there are none. */
 function arrayOfScratch(scratch: Uint16Array, n: number): Container | null {
   return n === 0 ? null : arrayContainer(scratch.slice(0, n), n);
-}
-
-/** Set bits in one 32-bit word. */
-function popcount32(word: number): number {
-  let w = word - ((word >>> 1) & 0x5555_5555);
-  w = (w & 0x3333_3333) + ((w >>> 2) & 0x3333_3333);
-  return Math.imul((w + (w >>> 4)) & 0x0f0f_0f0f, 0x0101_0101) >>> 24;
-}
-
-/**
- * Set bits in the {@link WORDS} words of a bitset: Harley-Seal, which adds sixteen words through a tree of carry-save
- * adders and counts the bits of one word in sixteen instead of every word. Plain 32-bit integer arithmetic, no `BigInt`.
- */
-function popcountWords(d: Uint32Array): number {
-  let total = 0;
-  let ones = 0;
-  let twos = 0;
-  let fours = 0;
-  let eights = 0;
-  for (let i = 0; i < WORDS; i += 16) {
-    let u: number;
-    let twosA: number;
-    let twosB: number;
-    let foursA: number;
-    let foursB: number;
-    let x = d[i] as number;
-    let y = d[i + 1] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 2] as number;
-    y = d[i + 3] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursA = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    x = d[i + 4] as number;
-    y = d[i + 5] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 6] as number;
-    y = d[i + 7] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursB = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    u = fours ^ foursA;
-    const eightsA = (fours & foursA) | (u & foursB);
-    fours = u ^ foursB;
-    x = d[i + 8] as number;
-    y = d[i + 9] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 10] as number;
-    y = d[i + 11] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursA = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    x = d[i + 12] as number;
-    y = d[i + 13] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 14] as number;
-    y = d[i + 15] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursB = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    u = fours ^ foursA;
-    const eightsB = (fours & foursA) | (u & foursB);
-    fours = u ^ foursB;
-    u = eights ^ eightsA;
-    const sixteens = (eights & eightsA) | (u & eightsB);
-    eights = u ^ eightsB;
-    total += popcount32(sixteens);
-  }
-  return (
-    16 * total +
-    8 * popcount32(eights) +
-    4 * popcount32(fours) +
-    2 * popcount32(twos) +
-    popcount32(ones)
-  );
 }
 
 /**

@@ -307,6 +307,33 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
 `orIntoBitset` counts as it sets when the other side is an array (a per-bit test of the old word), and recounts with
 `popcountWords` when it ORs words or runs.
 
+`popcountWords` (and the one-word `popcount32`) live in `portable/popcount.ts`, not in `containers.ts`, because the layout
+check counts a stored bitset with the same function before any container exists, and `portable/` imports nothing from
+`ts-roaring/`.
+
+### How the layout check reads a body
+
+`portable/layout.ts` reads every stored body once and proves its structure (see its header for the rules). The bytes
+are not trusted, so the reads are bounds-checked against the buffer's length before a typed
+array is made over them. The cost of the check is the loops over every value, so each kind is read the cheapest way its
+position allows:
+
+```
+  body          where it sits                         how it is checked
+  bitset        4-byte aligned in the buffer          Uint32Array over the body, counted in place by popcountWords
+                any other offset                      the 8 KiB are copied into a module scratch Uint32Array, then counted
+  array         >= 128 values, 2-byte aligned         Uint16Array over the body, four values a step
+                shorter, or odd offset, or big-endian two values per u32 through the DataView
+  run container >= 64 runs, 2-byte aligned            Uint16Array of (start, length) pairs, one run a step
+                shorter, or odd offset, or big-endian one u32 per run through the DataView
+```
+
+"Aligned" is the buffer's own `byteOffset` plus the body's offset in it, because a typed array needs a multiple of its
+element size. The bit count does not depend on byte order, so a bitset takes the view path on any machine; arrays and runs
+need little-endian and take the `DataView` path otherwise. A group of four array values that fails is read again two at a
+time so the element an error names is the one the two-at-a-time read names: the check refuses the same bytes, with the same
+message, in the same order, at every alignment, and never reads past the buffer it was given.
+
 ### The many-way union: `orManyContainers`
 
 `orMany` does not fold `orInPlace`, which would recount all 2,048 words of the accumulator after every input. For each key,

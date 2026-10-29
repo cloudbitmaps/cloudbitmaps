@@ -72,6 +72,15 @@ so, and so do the module headers in the code.
   one bitmap), refuses an empty buffer and a format argument, and returns a bitmap that owns its storage, so a large input
   that is decoded and then reduced does not stay in memory.
 
+### Changed
+
+- **The structural check on stored bytes counts and compares through typed arrays.** `RoaringBitmap.deserialize`, and
+  every stored chunk the store decodes, runs the same check as before, so the same bytes are refused with the same error
+  and message in the same order, and nothing is read past the buffer. What changed is how it reads: a bitset body is counted
+  in place with the sixteen-words-a-step count the containers use (a body at an odd offset is copied into a scratch first),
+  and a long array or run list is read through a typed array when its offset allows, so the check spends fewer steps per
+  value, which matters most on the first call of a process, before the engine has optimized the loops.
+
 ### Fixed
 
 - **A `Proxy`, or any buffer the check cannot prove ordinary, is copied before ids or bytes are read.** The test for
