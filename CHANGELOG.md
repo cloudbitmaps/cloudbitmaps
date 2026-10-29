@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-10-29
+
 ### Breaking
 
 - **`deserializePortable(bytes)` and the `ReadonlyBitmap` type are removed.** What a caller does: call
