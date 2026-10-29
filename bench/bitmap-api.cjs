@@ -64,7 +64,10 @@
  *
  * The expected time of `--all` on the maintainer's machine: about 4 seconds per subject-process for each data set
  * (the warm-up and the sampling of about 26 cells), four subjects, 31 rounds, five data sets, so about 70 minutes,
- * plus the cold cells and the load part, plus the rounds the load and sleep rules set aside.
+ * plus the cold cells and the load part, plus the rounds the load and sleep rules set aside. The 70 minutes was an
+ * estimate made with one fresh process a cold sample. At eleven, the cold part starts 31 x 4 x 3 x 11 = 4,092
+ * processes (372 at one); a start that loads the built package and the native addon alone took about 0.3 to 0.5 s
+ * (five timings), so the estimate is 20 to 30 minutes more per pass; it has not been timed end to end.
  *
  * Needs `pnpm build` first (the class is imported from the built package). Wall-clock and machine-dependent: recorded,
  * never asserted.

@@ -1,8 +1,8 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { IntegrityError } from '@cloudbitmaps/core';
 import { checkPortableLayout } from '@/portable/layout';
-import { bitsetOf, craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
+import { craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
 
 /**
  * The layout check reads a long array, a long run list and every bitset through typed arrays when the body sits at a
@@ -30,6 +30,42 @@ function outcome(bytes: Uint8Array): number | string {
   }
 }
 
+/** The set bits of one 32-bit word. */
+function bitsIn(word: number): number {
+  let n = 0;
+  for (let w = word >>> 0; w !== 0; w &= w - 1) n++;
+  return n;
+}
+
+/**
+ * A bitset body of whole-word patterns: every byte of every word is non-zero and the words differ from one another, so a
+ * copy that is a byte short, or a scratch that still holds the bytes of an earlier body, changes the count. Word
+ * `special` holds `value` instead, and `value` is stated in full (a word of all ones, or of nothing but its top byte).
+ */
+function wordBody(
+  seed: number,
+  special: number,
+  value: number,
+): { bits: Uint8Array; card: number } {
+  const words = new Uint32Array(2_048);
+  let state = seed >>> 0 || 1;
+  for (let w = 0; w < words.length; w++) {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    words[w] = (state | 0x0101_0101) >>> 0;
+  }
+  words[special] = value >>> 0;
+  let card = 0;
+  for (const w of words) card += bitsIn(w);
+  const bits = new Uint8Array(words.length * 4);
+  const view = new DataView(bits.buffer);
+  words.forEach((w, i) => view.setUint32(i * 4, w, true));
+  return { bits, card };
+}
+
 /** The outcome at every shift, which must be one value. */
 function everywhere(bytes: Uint8Array): number | string {
   const first = outcome(placed(bytes, 0));
@@ -45,50 +81,68 @@ const lead = (n: number): CraftedContainer[] =>
     values: Array.from({ length: j + 1 }, (_, v) => v),
   }));
 
-/** A bitset body of 4,098 values: two in every word and two more in word `word`. */
-function bitsetWithExtraIn(word: number): Uint8Array {
-  const values: number[] = [];
-  for (let w = 0; w < 2_048; w++) values.push(w * 32, w * 32 + 1);
-  values.push(word * 32 + 2, word * 32 + 3);
-  return bitsetOf(values);
-}
-
 describe('a bitset container is counted the same at every alignment', () => {
-  for (const word of [0, 1, 14, 15, 16, 17, 2_046, 2_047]) {
+  const SPECIALS = [0, 1, 14, 15, 16, 17, 2_046, 2_047];
+  for (const special of SPECIALS) {
     for (const before of [0, 1, 2, 3]) {
-      it(`with its extra values in word ${word}, after ${before} other containers: right count accepted, one more or less refused`, () => {
-        const bits = bitsetWithExtraIn(word);
-        const at = (cardinality?: number): Uint8Array =>
-          craftPortable([
-            ...lead(before),
-            {
-              key: before,
-              kind: 'bitset',
-              bits,
-              ...(cardinality === undefined ? {} : { cardinality }),
-            },
-          ]);
-        expect(typeof everywhere(at())).toBe('number');
-        expect(everywhere(at(4_099))).toBe(
-          `portable roaring: container ${before} (bitmap) holds 4098 values, but its header says 4099`,
+      it(`with a word of all ones at word ${special}, after ${before} other containers: the right count is accepted and ends at the buffer's end, one more or one fewer is refused`, () => {
+        const { bits, card } = wordBody(7 + special, special, 0xffff_ffff);
+        const at = (cardinality: number): Uint8Array =>
+          craftPortable([...lead(before), { key: before, kind: 'bitset', bits, cardinality }]);
+        const ok = at(card);
+        expect(everywhere(ok)).toBe(ok.length);
+        expect(everywhere(at(card + 1))).toBe(
+          `portable roaring: container ${before} (bitmap) holds ${card} values, but its header says ${card + 1}`,
         );
-        expect(everywhere(at(4_097))).toMatch(/holds 4098 values, but its header says 4097$/);
+        expect(everywhere(at(card - 1))).toBe(
+          `portable roaring: container ${before} (bitmap) holds ${card} values, but its header says ${card - 1}`,
+        );
       });
     }
   }
 
-  it('counts every word: a single bit moved from one word to another changes nothing, a lost bit is refused', () => {
-    for (const word of [0, 15, 16, 31, 32, 2_047]) {
-      const values: number[] = [];
-      for (let w = 0; w < 2_048; w++) values.push(w * 32, w * 32 + 1);
-      values.push(word * 32 + 2, word * 32 + 3);
-      const lost = values.slice(0, -1);
-      const bytes = craftPortable([
-        { key: 0, kind: 'bitset', bits: bitsetOf(lost), cardinality: 4_098 },
+  it('counts the top byte of the last word: a body that is nothing there but that byte is counted whole', () => {
+    for (const before of [0, 1, 2, 3]) {
+      const { bits, card } = wordBody(99, 2_047, 0x8000_0000);
+      const ok = craftPortable([
+        ...lead(before),
+        { key: before, kind: 'bitset', bits, cardinality: card },
       ]);
-      expect(everywhere(bytes)).toBe(
-        'portable roaring: container 0 (bitmap) holds 4097 values, but its header says 4098',
+      expect(everywhere(ok)).toBe(ok.length);
+      const bad = craftPortable([
+        ...lead(before),
+        { key: before, kind: 'bitset', bits, cardinality: card - 1 },
+      ]);
+      expect(everywhere(bad)).toBe(
+        `portable roaring: container ${before} (bitmap) holds ${card} values, but its header says ${card - 1}`,
       );
+    }
+  });
+
+  it('counts every word: a bit missing from any one word is refused, with the true count in the message', () => {
+    for (const word of [0, 15, 16, 31, 32, 1_000, 2_047]) {
+      const { bits, card } = wordBody(5, 3, 0xffff_ffff);
+      const view = new DataView(bits.buffer);
+      const w = view.getUint32(word * 4, true);
+      view.setUint32(word * 4, (w & (w - 1)) >>> 0, true); // the lowest set bit cleared
+      const bytes = craftPortable([{ key: 0, kind: 'bitset', bits, cardinality: card }]);
+      const held = card - 1;
+      expect(everywhere(bytes)).toBe(
+        `portable roaring: container 0 (bitmap) holds ${held} values, but its header says ${card}`,
+      );
+    }
+  });
+
+  it('is not fooled by the bytes of an earlier body left in the scratch copy', () => {
+    const full = craftPortable([
+      { key: 0, kind: 'bitset', bits: new Uint8Array(8_192).fill(0xff), cardinality: 65_536 },
+    ]);
+    const { bits, card } = wordBody(31, 1_000, 0);
+    const sparse = craftPortable([{ key: 0, kind: 'bitset', bits, cardinality: card }]);
+    for (const shift of SHIFTS) {
+      expect(outcome(placed(full, shift))).toBe(full.length);
+      expect(outcome(placed(sparse, shift))).toBe(sparse.length);
+      expect(outcome(placed(full, shift))).toBe(full.length);
     }
   });
 });
@@ -102,7 +156,7 @@ describe('an array container is checked the same at every alignment', () => {
           ...lead(before),
           { key: before, kind: 'array', values: ascending(n) },
         ]);
-        expect(typeof everywhere(ok)).toBe('number');
+        expect(everywhere(ok)).toBe(ok.length);
         const positions = new Set<number>();
         for (let k = 1; k < Math.min(n, 12); k++) positions.add(k);
         for (let k = Math.max(1, n - 10); k < n; k++) positions.add(k);
@@ -137,10 +191,10 @@ describe('a run container is checked the same at every alignment', () => {
   const runsOf = (n: number): Array<[number, number]> =>
     Array.from({ length: n }, (_, r) => [8 * r, 3] as [number, number]);
   for (const n of [1, 2, 63, 64, 65, 66, 200, 1_000]) {
-    it(`${n} runs: accepted when they ascend; a touching, overlapping or overlong run, or a wrong count, is refused alike`, () => {
+    it(`${n} runs: accepted when they ascend; a touching or overlong run, or a wrong count, is refused alike`, () => {
       for (const before of [0, 1, 2]) {
         const ok = craftPortable([...lead(before), { key: before, kind: 'run', runs: runsOf(n) }]);
-        expect(typeof everywhere(ok)).toBe('number');
+        expect(everywhere(ok)).toBe(ok.length);
         const touching = runsOf(n);
         const r = n - 1;
         if (r >= 1) {
@@ -171,12 +225,16 @@ describe('a run container is checked the same at every alignment', () => {
   }
 });
 
+/** A bitset body of whole-word patterns, and its true count. */
+const denseBody = (special: number): { bits: Uint8Array; card: number } =>
+  wordBody(special + 1, special, 0xffff_ffff);
+
 describe('the order of refusals and the end of the buffer', () => {
   const badBitset: CraftedContainer = {
     key: 0,
     kind: 'bitset',
-    bits: bitsetWithExtraIn(5),
-    cardinality: 4_101,
+    bits: denseBody(5).bits,
+    cardinality: denseBody(5).card + 3,
   };
   const badArray = (key: number): CraftedContainer => ({
     key,
@@ -186,7 +244,7 @@ describe('the order of refusals and the end of the buffer', () => {
 
   it('names the first defective container, whichever kind it is and whichever comes first', () => {
     expect(everywhere(craftPortable([badBitset, badArray(1)]))).toMatch(
-      /container 0 \(bitmap\) holds 4098/,
+      /container 0 \(bitmap\) holds \d+ values, but its header says \d+$/,
     );
     expect(everywhere(craftPortable([{ ...badArray(0) }, { ...badBitset, key: 1 }]))).toMatch(
       /container 0 \(array\) is not strictly ascending at or after element 200$/,
@@ -195,7 +253,7 @@ describe('the order of refusals and the end of the buffer', () => {
 
   it('refuses a body one byte short of the buffer, at every alignment, for each kind', () => {
     const bodies: CraftedContainer[] = [
-      { key: 0, kind: 'bitset', bits: bitsetWithExtraIn(1) },
+      { key: 0, kind: 'bitset', bits: denseBody(1).bits },
       { key: 0, kind: 'array', values: Array.from({ length: 300 }, (_, v) => v) },
       {
         key: 0,
@@ -205,7 +263,7 @@ describe('the order of refusals and the end of the buffer', () => {
     ];
     for (const c of bodies) {
       const bytes = craftPortable([c]);
-      expect(typeof everywhere(bytes)).toBe('number');
+      expect(everywhere(bytes)).toBe(bytes.length);
       for (const shift of SHIFTS) {
         const short = placed(bytes, shift).subarray(0, bytes.length - 1);
         expect(() => checkPortableLayout(short)).toThrow(IntegrityError);
@@ -216,7 +274,7 @@ describe('the order of refusals and the end of the buffer', () => {
 });
 
 describe('damaged bytes get one answer at every alignment', () => {
-  const dense = bitsetWithExtraIn(40);
+  const dense = denseBody(40).bits;
   const sample = craftPortable([
     { key: 0, kind: 'array', values: Array.from({ length: 150 }, (_, v) => 3 * v) },
     { key: 1, kind: 'bitset', bits: dense },
@@ -226,11 +284,11 @@ describe('damaged bytes get one answer at every alignment', () => {
       runs: Array.from({ length: 80 }, (_, r) => [10 * r, 4] as [number, number]),
     },
     { key: 3, kind: 'array', values: [1, 9, 40] },
-    { key: 9, kind: 'bitset', bits: bitsetWithExtraIn(2_047) },
+    { key: 9, kind: 'bitset', bits: denseBody(2_047).bits },
   ]);
 
-  it('agrees on the undamaged bytes', () => {
-    expect(typeof everywhere(sample)).toBe('number');
+  it('agrees on the undamaged bytes, and the check ends where they end', () => {
+    expect(everywhere(sample)).toBe(sample.length);
   });
 
   it('agrees on bytes with one to three changed', () => {
@@ -257,5 +315,145 @@ describe('damaged bytes get one answer at every alignment', () => {
       }),
       { numRuns: 300 },
     );
+  });
+});
+
+describe('the offset header and the bytes after the bitmap, at every alignment', () => {
+  const { bits, card } = denseBody(9);
+  const honest = craftPortable([...lead(2), { key: 2, kind: 'bitset', bits, cardinality: card }]);
+  /** Where the offset header of the third container is: cookie and count (8), three key pairs (12), two offsets (8). */
+  const OFFSET_AT = 8 + 12 + 2 * 4;
+
+  it('refuses an offset that is not where its container starts, naming both', () => {
+    const stated = new DataView(honest.buffer, honest.byteOffset).getUint32(OFFSET_AT, true);
+    for (const wrong of [stated + 1, stated + 2, stated + 3, stated - 2]) {
+      const bytes = honest.slice();
+      new DataView(bytes.buffer).setUint32(OFFSET_AT, wrong, true);
+      expect(everywhere(bytes)).toBe(
+        `portable roaring: the offset header puts container 2 at byte ${wrong}, but it starts at ${stated}`,
+      );
+    }
+  });
+
+  it('ends where the last container ends, however many bytes follow', () => {
+    expect(everywhere(honest)).toBe(honest.length);
+    for (const extra of [1, 2, 3, 4, 7, 8_192]) {
+      const longer = new Uint8Array(honest.length + extra).fill(0xab);
+      longer.set(honest);
+      expect(everywhere(longer)).toBe(honest.length);
+    }
+  });
+});
+
+describe('bytes that sit in other kinds of storage', () => {
+  const { bits, card } = denseBody(3);
+  const small = craftPortable([
+    { key: 0, kind: 'array', values: Array.from({ length: 300 }, (_, v) => 2 * v) },
+    { key: 1, kind: 'array', values: Array.from({ length: 129 }, (_, v) => 3 * v) },
+  ]);
+  const big = craftPortable([
+    { key: 0, kind: 'array', values: Array.from({ length: 300 }, (_, v) => 2 * v) },
+    { key: 1, kind: 'bitset', bits, cardinality: card },
+    {
+      key: 2,
+      kind: 'run',
+      runs: Array.from({ length: 70 }, (_, r) => [9 * r, 4] as [number, number]),
+    },
+  ]);
+
+  it('reads a Buffer taken from the pool, which starts at a byte offset other than 0', () => {
+    let pooled = Buffer.from(small);
+    for (let tries = 0; tries < 8 && pooled.byteOffset === 0; tries++) {
+      Buffer.allocUnsafe(3);
+      pooled = Buffer.from(small);
+    }
+    expect(pooled.byteOffset).not.toBe(0);
+    expect(checkPortableLayout(pooled)).toBe(small.length);
+    const bad = Buffer.from(small);
+    bad[bad.length - 2] = 0; // the last value no longer ascends
+    bad[bad.length - 1] = 0;
+    expect(() => checkPortableLayout(bad)).toThrow(/not strictly ascending/);
+  });
+
+  it('reads a Buffer that is a slice at an odd offset of a larger one', () => {
+    for (const lead3 of [1, 2, 3, 5]) {
+      const whole = Buffer.alloc(lead3 + big.length + 16, 0xff);
+      big.forEach((b, i) => (whole[lead3 + i] = b));
+      expect(checkPortableLayout(whole.subarray(lead3, lead3 + big.length))).toBe(big.length);
+    }
+  });
+
+  it.skipIf(typeof SharedArrayBuffer === 'undefined')(
+    'reads bytes backed by a SharedArrayBuffer at every shift',
+    () => {
+      for (const shift of SHIFTS) {
+        const shared = new SharedArrayBuffer(shift + big.length + 16);
+        const view = new Uint8Array(shared, shift, big.length);
+        view.set(big);
+        expect(checkPortableLayout(view)).toBe(big.length);
+        view[view.length - 2] = (view[view.length - 2] as number) ^ 0xff; // a run's length no longer matches what the header counts
+        expect(() => checkPortableLayout(view)).toThrow(IntegrityError);
+      }
+    },
+  );
+});
+
+/**
+ * The check reads a long array or run list through a `Uint16Array` only on a little-endian machine and through the
+ * `DataView` otherwise. This machine is little-endian, so this forces the module's own probe to say it is not and holds
+ * that the `DataView` path, taken at an aligned offset it would otherwise skip, gives the answers of the typed-array
+ * path. It cannot catch a mutant that drops the guard: on a little-endian machine both paths agree on every input, and
+ * only a big-endian host tells them apart.
+ */
+describe('the check with the byte-order probe forced to big-endian', () => {
+  it('gives the same answers, at every shift', async () => {
+    const real = Uint16Array;
+    const of = vi.spyOn(Uint16Array, 'of').mockImplementation(() => new real([256]) as never);
+    vi.resetModules();
+    let forced: typeof import('@/portable/layout');
+    try {
+      forced = await import('@/portable/layout');
+    } finally {
+      of.mockRestore();
+    }
+    expect(forced.LITTLE_ENDIAN).toBe(false);
+    const cases = [
+      craftPortable([
+        { key: 0, kind: 'array', values: Array.from({ length: 300 }, (_, v) => 2 * v) },
+      ]),
+      craftPortable([
+        {
+          key: 0,
+          kind: 'run',
+          runs: Array.from({ length: 200 }, (_, r) => [8 * r, 3] as [number, number]),
+        },
+      ]),
+      craftPortable([
+        { key: 0, kind: 'array', values: [...Array.from({ length: 300 }, (_, v) => 2 * v), 5] },
+      ]),
+      craftPortable([
+        {
+          key: 0,
+          kind: 'run',
+          runs: [
+            ...Array.from({ length: 100 }, (_, r) => [8 * r, 3] as [number, number]),
+            [790, 3],
+          ],
+        },
+      ]),
+    ];
+    const run = (check: (b: Uint8Array) => number, bytes: Uint8Array): number | string => {
+      try {
+        return check(bytes);
+      } catch (err) {
+        return (err as Error).message;
+      }
+    };
+    for (const bytes of cases) {
+      for (const shift of SHIFTS) {
+        const at = placed(bytes, shift);
+        expect(run(forced.checkPortableLayout, at)).toBe(run(checkPortableLayout, at));
+      }
+    }
   });
 });

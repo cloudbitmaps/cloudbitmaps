@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ARRAY,
+  BITSET,
   Container,
   WORDS,
   appendIds,
@@ -69,7 +71,14 @@ describe.each(OPS)('the four-words-a-step $name of two bitsets', ({ run, word })
       const yw = randomWords(seed + 100);
       const want = expected(xw, yw, word);
       const yCopy = yw.slice();
-      expect(idsOf(run(bitset(xw.slice()), bitset(yw)))).toEqual(want);
+      const xCopy = xw.slice();
+      const left = bitset(xw);
+      const returned = run(left, bitset(yw));
+      expect(idsOf(returned)).toEqual(want);
+      expect(returned).not.toBe(left);
+      expect(returned?.card).toBe(want.length);
+      expect([...xw]).toEqual([...xCopy]);
+      expect([...yw]).toEqual([...yCopy]);
       const target = bitset(xw.slice());
       expect(idsOf(run(target, bitset(yw), true))).toEqual(want);
       expect([...yw]).toEqual([...yCopy]);
@@ -105,4 +114,40 @@ describe.each(OPS)('the four-words-a-step $name of two bitsets', ({ run, word })
     const same = bitset(xw.slice());
     expect(idsOf(run(same, same, true))).toEqual(want);
   });
+});
+
+describe.each(OPS)('the $name of two sparse bitsets', ({ run, word }) => {
+  const withBits = (bits: number[]): Uint32Array => {
+    const words = new Uint32Array(WORDS);
+    for (const b of bits) words[b >>> 5] = ((words[b >>> 5] as number) | (1 << (b & 31))) >>> 0;
+    return words;
+  };
+  const pairs: Array<[string, number[], number[]]> = [
+    ['overlapping', [5, 1_000, 65_535], [5, 2_000]],
+    ['identical', [5, 1_000, 65_535], [5, 1_000, 65_535]],
+    ['disjoint', [5, 1_000], [6, 2_000]],
+    ['both empty', [], []],
+  ];
+  for (const [name, a, b] of pairs) {
+    it(`gives an array, or nothing when it is empty (a union stays a bitset), for ${name} operands, in place or not`, () => {
+      const xw = withBits(a);
+      const yw = withBits(b);
+      const want = expected(xw, yw, word);
+      for (const inPlace of [false, true]) {
+        const x = bitset(xw.slice());
+        const result = run(x, bitset(yw), inPlace);
+        if (run === containerOr) {
+          // A union stays a bitset however few values it holds.
+          expect(result?.kind).toBe(BITSET);
+          expect(result?.card).toBe(want.length);
+          expect(idsOf(result)).toEqual(want);
+        } else if (want.length === 0) expect(result).toBeNull();
+        else {
+          expect(result?.kind).toBe(ARRAY);
+          expect(result?.card).toBe(want.length);
+          expect(idsOf(result)).toEqual(want);
+        }
+      }
+    });
+  }
 });

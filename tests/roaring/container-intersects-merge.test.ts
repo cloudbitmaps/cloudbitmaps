@@ -31,6 +31,10 @@ function metAfter(steps: number, n: number): [number[], number[]] {
 }
 
 describe('intersects of two arrays, around the merge-first step count', () => {
+  it('takes 64 merge steps before the bitset path (the boundary cases below are written from it)', () => {
+    expect(MERGE_FIRST).toBe(64);
+  });
+
   const n = MERGE_FIRST + 40;
   const around = [
     0,
@@ -73,13 +77,9 @@ describe('intersects of two arrays, around the merge-first step count', () => {
     const odd = Array.from({ length: 1_000 }, (_, k) => 2 * k + 1);
     // No shared value, so the bitset path runs to the end (a hit would leave bits only if the clear were skipped).
     expect(intersects(a, odd)).toBe(false);
-    // Same size, same span, values only the first call's bits could have claimed.
-    expect(
-      intersects(
-        a.map((v) => v + 4_001),
-        odd.map((v) => v + 4_001),
-      ),
-    ).toBe(false);
+    // Same size, same span, the other way round: the smaller array is now the odd one and the longer holds the even
+    // values, which are exactly the bits the first call set. Had they been left set, a test of the evens would hit.
+    expect(intersects(odd, a)).toBe(false);
     expect(intersects(a, odd)).toBe(false);
     // A pair that hits late (after the merge-first steps) leaves the scratch clear too.
     const [x, y] = metAfter(MERGE_FIRST + 7, 1_000);
