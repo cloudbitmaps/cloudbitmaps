@@ -320,8 +320,7 @@ function checkContainer(
  * An array container's values must strictly ascend: `has` binary-searches them and iteration yields them in order.
  *
  * Read two values per `u32` (little-endian, so the first value is the low half): half the loads and half the loop
- * trips of reading them one at a time, which measured about twice as fast. A long array later in a bitmap takes
- * {@link checkArrayView} instead.
+ * trips of reading them one at a time, which measured about twice as fast (probe, indicative).
  */
 function checkArray(view: DataView, at: number, cardinality: number, index: number): void {
   let previous = -1;
