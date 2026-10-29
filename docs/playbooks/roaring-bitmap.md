@@ -207,6 +207,8 @@ bytes that are not a bitmap -> ValidationError
   [where to run it](../guide/production.md#what-blocks-the-event-loop-and-where-to-run-it).
 - **Runtimes.** CI runs this on Node 22 and 24. No browser, edge isolate, Bun or Deno run of the class is claimed.
 - **Speed.** What each operation costs next to the `roaring` package on the same data, losses included, is the table in
-  [the TypeScript codec against native](../benchmarks.md#the-typescript-codec-against-native). No figure is stated here.
+  [the public class against native, in memory](../guide/roaring-codec.md#the-public-class-against-native-in-memory); two
+  calls, the union of 64 dense bitmaps with `orMany` and the first `deserialize` in a fresh process, are above 10 times
+  native and ship with their figures shown. No figure is stated here.
 - **Not a store.** It keeps nothing; to keep a set, load it as a segment. For the store's side see
   [using it by itself](../guide/roaring-codec.md#using-it-by-itself).
