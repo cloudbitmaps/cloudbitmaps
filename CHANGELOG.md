@@ -74,6 +74,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`intersects` on two similar-sized arrays takes 320 merge steps before it sets up its scratch bit table.** A pair that shares
+  an id early is answered without setting a bit; a pair whose spans overlap but that shares nothing walks the extra steps first,
+  so it is slower than before (a stand-alone probe of the sparse bench pairs, indicative: about 30 percent for that case, against
+  about four times faster for the overlapping case). The answers are unchanged.
+
 - **`isEqual` compares short container lists without start offsets.** Two arrays or run lists of under 512 values that both
   start at the front of their storage, as every container of a decoded bitmap does, are compared by a loop that skips the
   offset arithmetic; the answers are unchanged.
