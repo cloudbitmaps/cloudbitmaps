@@ -269,6 +269,10 @@ describe('the count cells of a record', () => {
     const region = table.regionText('p.md', rendered(countPass('build-then-count', 'derived')));
     expect(region).toContain('by building the combination and counting it in this pass');
     expect(region).toContain('did not keep them');
+    expect(region).toContain(
+      '`intersects` by building the intersection and testing it for emptiness, and `isSubset` without counting',
+    );
+    expect(region).not.toContain('`intersects` and `isSubset` without counting');
   });
 
   it("does not recompute the decision from the class's own count cells", () => {

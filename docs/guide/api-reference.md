@@ -527,7 +527,7 @@ Roaring bytes you hold (a Node `Buffer` is one) through the check a `{ serialize
 the decoder. Use it for bytes that crossed a process boundary, in place of `RoaringBitmap32.deserialize`, which checks
 nothing but its own reads. It is the one door for bytes: `new RoaringBitmap(bytes)` refuses them.
 
-The first call in a fresh process is about 14.6 times native (the median of five fresh processes); later calls are 2.2 to 5.9 times native (measured; see the table below).
+The first call in a fresh process is about 14.6 times native (the median of five fresh processes); later calls are 2.2 to 5.9 times native (measured; see the first-call table above).
 
 `{ maxBytes }` lowers the cap for a service that knows its inputs are small: bytes over it are refused before any is read.
 A `maxBytes` above 537,403,396, or one that is not a non-negative integer, is refused, never honoured: there is no

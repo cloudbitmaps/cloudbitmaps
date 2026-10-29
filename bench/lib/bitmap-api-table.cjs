@@ -182,8 +182,14 @@ function countLines(pass) {
     result === 'kept' && ratios.length > 0 && ratios.every((r) => r < 1)
       ? ` On the build this table was taken on, each \`andCardinality\` and \`orCardinality\` figure of the codec column is below 1.00 (${Math.min(...ratios).toFixed(2)} to ${Math.max(...ratios).toFixed(2)}).`
       : '';
+  // `isSubset` always answers from the containers; `intersects` does only on the kernels route, and otherwise builds the
+  // intersection and tests it for emptiness.
+  const othersText =
+    route === 'build-then-count'
+      ? '`intersects` by building the intersection and testing it for emptiness, and `isSubset` without counting'
+      : '`intersects` and `isSubset` without counting';
   return [
-    `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\` and \`andNotCardinality\` by ${routeText} in this pass, and \`intersects\` and \`isSubset\` without counting; ${decision}.${onThisBuild} The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.`,
+    `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\` and \`andNotCardinality\` by ${routeText} in this pass, and ${othersText}; ${decision}.${onThisBuild} The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.`,
   ];
 }
 

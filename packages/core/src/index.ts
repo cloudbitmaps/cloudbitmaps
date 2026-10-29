@@ -141,8 +141,8 @@ export {
 
 // Encryption-at-rest: the `.crbm` reader's crypto pair (`core/`, crypto-free). The default in-process AES-256-GCM
 // implementation needs `node:crypto`, so `@cloudbitmaps/core/node` exports it. The keystore port (`IKeystore`,
-// `Aead`, `AeadSealed`, `WrappedDek`) is exported from `@cloudbitmaps/core/driver-kit`; a KMS or Vault adapter would implement the
-// same `IKeystore`; none ships. See the encryption guide for key-management guidance.
+// `Aead`, `AeadSealed`, `WrappedDek`) is exported from `@cloudbitmaps/core/driver-kit`; a KMS or Vault adapter would
+// implement the same `IKeystore`; none ships. See the encryption guide for key-management guidance.
 export type { CrbmCrypto } from './core/crypto';
 // The AAD builder. NOT for an `Aead` implementor — they are handed the associated data. This is for the
 // other seam: `CrbmCrypto` requires an `aadFor` member, and `CrbmReader.open` takes one, so tooling that reads an
