@@ -231,9 +231,8 @@ methods, errors and costs are in [the API reference](api-reference.md#build-and-
 - **One door for bytes.** `RoaringBitmap.deserialize(bytes: Uint8Array)` decodes the portable bytes of one bitmap you hold
   (a Node `Buffer` is one) through the check a `{ serialized }` load makes: the 537,403,396-byte cap, the structural
   check, exactly one bitmap (trailing bytes are refused), then the decoder. An empty buffer is refused, not the empty set:
-  `new RoaringBitmap()` is the empty set. The result keeps nothing of the input or of its private copy: a bitset has an array of its own, and arrays and runs
-  sit on slabs of at most 64 KB, so decoding a large input and reducing the result keeps at most one 64 KB slab alive for
-  each array or run container that survives.
+  `new RoaringBitmap()` is the empty set. The result owns its storage, so decoding a large input and reducing the result
+  does not keep the input alive.
 - **Build and change.** `new RoaringBitmap(ids)`, `add`, `addMany`, `remove`, `removeMany`, `clear`, `clone`, and the
   in-place `andInPlace`, `orInPlace`, `xorInPlace` and `andNotInPlace`; the statics that return a new bitmap and change no
   operand (`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`); the counts and comparisons that build nothing you keep

@@ -238,9 +238,9 @@ export class TsBitmap implements CodecBitmap {
 
   /**
    * Cap the size, check the structure, then build the containers. With `whole`, bytes after the last container are
-   * refused too; without it they are ignored. With `detached`, the containers are copied out of the input (a bitset
-   * to an array of its own, arrays and runs to slabs of at most 64 KB), so nothing the result holds is a view of the
-   * input's buffer: a bitmap that is kept and then reduced keeps at most one slab for each container that survives.
+   * refused too; without it they are ignored. With `detached`, every container gets storage of its own, copied out of
+   * the input, so nothing the result holds is a view of one shared buffer: a bitmap that is kept and then reduced
+   * does not keep the whole input alive.
    *
    * @throws {IntegrityError} if the input exceeds `maxBytes`, is not a well-formed portable bitmap, or (with `whole`)
    * has bytes after it.

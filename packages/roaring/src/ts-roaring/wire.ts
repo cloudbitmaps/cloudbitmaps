@@ -124,10 +124,8 @@ interface Decoded {
 }
 
 /**
- * Read the portable bitmap in `bytes`. An empty buffer is the empty bitmap. With `detached`, the result holds no view of
- * the input's copy: a bitset is copied into an array of its own, and the arrays and runs are copied into slabs of at
- * most {@link DETACHED_SLAB_BYTES} each (a container larger than a slab gets storage of its own), so a container that
- * outlives the rest keeps at most one slab alive.
+ * Read the portable bitmap in `bytes`. An empty buffer is the empty bitmap. With `detached`, each container is copied
+ * into storage of its own, so the result holds no view of the input's copy and no slab shared between containers.
  *
  * @throws {IntegrityError} for every shape {@link parsePortableLayout} refuses.
  */
@@ -149,8 +147,8 @@ export function decodeContainers(input: Uint8Array, detached = false): Decoded {
   // The arrays and run containers of one bitmap share a single `Uint16Array`, each reading its own stretch of it, so a
   // run container of a few bytes costs its bytes and one small object, not a typed array of its own. When the bitmap
   // has only one of them it is the whole slab and owns it.
-  // A detached decode sizes its slabs as it goes (a slab holds the next arrays and runs that fit in the bound), so the
-  // pass over the layout that measures one slab for the whole bitmap is skipped.
+  // A detached decode gives every container storage of its own, so it has no slab to size and no lone container to
+  // find: the pass over the layout that measures them is skipped.
   let slabLength = 0;
   let small = 0;
   if (!detached) {
@@ -173,57 +171,29 @@ export function decodeContainers(input: Uint8Array, detached = false): Decoded {
     bytes.buffer instanceof ArrayBuffer &&
     bytes.buffer.byteLength === bytes.byteLength;
   const alias = !detached && own && small === 1;
-  // A container with storage of its own: the lone array or run container of a bitmap that cannot be read in place.
-  const solo = alias;
-  let slab = solo || detached ? NO_U16 : new Uint16Array(slabLength);
+  // A container with storage of its own: the one a detached decode gives every container, and the lone array or run
+  // container of a bitmap that cannot be read in place.
+  const solo = alias || detached;
+  const slab = solo ? NO_U16 : new Uint16Array(slabLength);
   let used = 0;
-  // Whether the slab in hand holds more than one container, so that a write to one copies it out.
-  let sharers = small > 1;
-  for (let at = 0; at < layout.length; at++) {
-    const { key, cardinality, kind, offset } = layout[at] as (typeof layout)[number];
+  for (const { key, cardinality, kind, offset } of layout) {
     keys[n] = key;
-    // A detached decode opens its next slab when the container does not fit what is left of the current one. A
-    // container above the bound is the exception: it takes an array of its own, as a lone container does.
-    let lone = false;
-    if (detached && kind !== LAYOUT_BITMAP) {
-      const count = kind === LAYOUT_ARRAY ? cardinality : 2 * view.getUint16(offset, true);
-      if (count > DETACHED_SLAB_VALUES) {
-        lone = true;
-      } else if (used + count > slab.length) {
-        let length = 0;
-        let held = 0;
-        for (let j = at; j < layout.length; j++) {
-          const next = layout[j] as (typeof layout)[number];
-          if (next.kind === LAYOUT_BITMAP) continue;
-          const c =
-            next.kind === LAYOUT_ARRAY ? next.cardinality : 2 * view.getUint16(next.offset, true);
-          if (c > DETACHED_SLAB_VALUES) continue;
-          if (length + c > DETACHED_SLAB_VALUES) break;
-          length += c;
-          held++;
-        }
-        slab = new Uint16Array(length);
-        used = 0;
-        sharers = held > 1;
-      }
-    }
     if (kind === LAYOUT_ARRAY) {
       if (alias && offset % 2 === 0) {
         const values = new Uint16Array(bytes.buffer, offset, cardinality);
         conts[n++] = new Container(ARRAY, values, 0, cardinality, cardinality, false);
       } else {
-        const own = solo || lone;
-        const into = own ? new Uint16Array(cardinality) : slab;
-        getU16s(bytes, view, offset, into, own ? 0 : used, cardinality);
+        const into = solo ? new Uint16Array(cardinality) : slab;
+        getU16s(bytes, view, offset, into, solo ? 0 : used, cardinality);
         conts[n++] = new Container(
           ARRAY,
           into,
-          own ? 0 : used,
+          solo ? 0 : used,
           cardinality,
           cardinality,
-          !own && sharers,
+          !solo && small > 1,
         );
-        if (!own) used += cardinality;
+        used += cardinality;
       }
       end = offset + 2 * cardinality;
     } else if (kind === LAYOUT_BITMAP) {
@@ -246,11 +216,17 @@ export function decodeContainers(input: Uint8Array, detached = false): Decoded {
         const pairs = new Uint16Array(bytes.buffer, offset + 2, 2 * runs);
         conts[n++] = new Container(RUN, pairs, 0, runs, cardinality, false);
       } else {
-        const own = solo || lone;
-        const into = own ? new Uint16Array(2 * runs) : slab;
-        getU16s(bytes, view, offset + 2, into, own ? 0 : used, 2 * runs);
-        conts[n++] = new Container(RUN, into, own ? 0 : used, runs, cardinality, !own && sharers);
-        if (!own) used += 2 * runs;
+        const into = solo ? new Uint16Array(2 * runs) : slab;
+        getU16s(bytes, view, offset + 2, into, solo ? 0 : used, 2 * runs);
+        conts[n++] = new Container(
+          RUN,
+          into,
+          solo ? 0 : used,
+          runs,
+          cardinality,
+          !solo && small > 1,
+        );
+        used += 2 * runs;
       }
       end = offset + 2 + 4 * runs;
     }
@@ -259,10 +235,6 @@ export function decodeContainers(input: Uint8Array, detached = false): Decoded {
 }
 
 const NO_U16 = new Uint16Array(0);
-
-/** The most bytes of one slab a detached decode allocates for arrays and runs. */
-export const DETACHED_SLAB_BYTES = 64 * 1024;
-const DETACHED_SLAB_VALUES = DETACHED_SLAB_BYTES / 2;
 
 /** Copy `count` little-endian `u16`s from byte `at` of `bytes` into `slab` from index `to`. */
 function getU16s(
