@@ -73,9 +73,9 @@ export const ELEMENT_WIDTH_32 = 32;
  * see the `.crbm` format section of the API reference). This field is what lets one container hold either, the same way ZIP tags each member
  * with a compression method.
  *
- * **A codec id, not a roaring-specific one.** A second codec is genuinely expected — `soaring` is a planned
- * Roaring *variant*, so its serialized bytes are unlikely to be roaring-portable, and it lands *after* the `1.0`
- * format freeze. A field frozen under a codec-specific meaning could not be reinterpreted later without a major
+ * **A codec id, not a roaring-specific one.** No second codec ships, but one whose serialized bytes are not
+ * roaring-portable (a Roaring variant, which is research and ships only if the algorithm proves out) would need to say
+ * so in the footer, and a field frozen under a codec-specific meaning could not be reinterpreted later without a major
  * format version.
  *
  * **Ids are permanent once published.** Add to {@link KNOWN_PAYLOAD_CODEC_IDS} when a codec ships; never

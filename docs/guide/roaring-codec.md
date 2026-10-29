@@ -2,10 +2,10 @@
 
 `@cloudbitmaps/roaring` keeps its bitmaps with a Roaring implementation of its own, written in TypeScript on typed
 arrays, with no native code. This page says what that is, what it guarantees (the same portable bytes as CRoaring, byte
-for byte) and the evidence for it, what it costs and gains against the native codec, which two names of it you can use by
-itself today, and where it is not yet available as a package of its own.
+for byte) and the evidence for it, what it costs and gains against the native codec, and the one public class,
+`RoaringBitmap` (0.25.0 and later; unreleased), that lets you use it by itself.
 
-Everything here is about the current release. Each figure says whether it was **measured** (a run named here took it),
+Everything here is about 0.25.0 and later (unreleased); a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
 **derived** (computed from measured figures by the rule beside it) or **expected** (what the code is expected to do, not
 taken).
 
@@ -61,9 +61,11 @@ CRoaring versions, so the pin moves only by a deliberate edit and the rule does 
 | the store works on it | the flavor, core, engine and driver suites run on this codec by default, and [`tests/roaring/codec-switch.test.ts`](../../tests/roaring/codec-switch.test.ts) fails if another codec is in force; [`full-nightly.yml`](../../.github/workflows/full-nightly.yml) runs the whole suite at full strength |
 
 **What is still open.** The oracle proves what CRoaring writes for the pinned version, not what every other Roaring
-library writes. "A codec no more than 5% slower" is a measured bar, not a bound. A week of nightly fuzz with no difference
-on this codec was not yet judged when the comparison was taken, and as of 2026-10-23 the switch has not merged, so that
-judgement is still pending; the comparison's report says so.
+library writes. "A codec no more than 5% slower" is a measured bar, not a bound. The week of nightly fuzz with no difference
+on this codec, which the comparison asked for before the switch, had not run when the comparison was taken; the switch
+shipped in 0.24.0 (2026-10-23) without it, so the nightly fuzz that has run since is the evidence, and its history is the
+[fuzz workflow's](../../.github/workflows/fuzz-nightly.yml) run list. The comparison's report is a record of that day and
+says so.
 
 ### Mixing codecs and tools
 
@@ -97,9 +99,12 @@ wall-clock, recorded and not asserted:
 - **Memory:** in V8's counters, a cached dense chunk holds about 8.9 KB more than the native codec's V8-visible figure (the
   native codec keeps part of its memory outside those counters, and how much is not measured); no multiple of native's
   memory is claimed.
-- **No union cell:** the store comparison times `intersect` and `andNot`, not `union`. One container pair of `or` is 1.2 to
-  4.2 times slower in the per-operation record (measured on 2026-10-21 on an Apple M3 Pro under Node v24.18.1 at commit `7bf70e54`; the kernels changed after that commit (clone sharing, intersect and difference paths), so this figure is to be re-measured), and that does not show in the combines that were timed through the store.
-  What a store `union` costs on this codec is expected to be inside the same bar, and is not measured.
+- **No union cell through the store:** the store comparison times `intersect` and `andNot`, not `union`. One container
+  pair of `or` is 1.2 to 4.2 times slower in the per-operation record (measured on 2026-10-21 on an Apple M3 Pro under Node
+  v24.18.1 at commit `7bf70e54`; the kernels changed after that commit, so that figure is a record of that day), and that
+  does not show in the combines that were timed through the store. The `or` of the public class in memory is timed against
+  native in [the table below](#the-public-class-against-native-in-memory); what a store `union` costs on this codec is expected to
+  be inside the same bar, and is not measured.
 - **Not measured:** in region against real S3, Alpine, arm64 Lambda; Bun and Deno ran a local self-check only. CI runs Node
   22 and 24.
 
@@ -284,9 +289,10 @@ not pass one to the `roaring` package's methods, which answer wrongly without th
 `serialize()` bytes with that package instead.
 
 **What is not public.** The codec itself, its containers and its seam are internal, and a store cannot be given a codec.
-The class has no ranges, `rank`, `select`, frozen views or 64-bit ids. No speed claim is made for
-it: the figures above are the codec inside a store, and a loop over the class in memory has no store's network reads to
-hide a slower combine behind.
+The class has no ranges, `rank`, `select`, frozen views or 64-bit ids. How fast the class is in memory is the generated
+table of the class against native above: it is what one build measured on one machine, it prints the cells where the class
+loses, and it is a record, not a promise or a bound. The store figures above are the codec inside a store, where network
+reads hide most of a slower combine; a loop over the class in memory has none to hide behind.
 
 ## Errors you can see from it
 
