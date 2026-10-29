@@ -219,7 +219,7 @@ export type {
 } from './core/consistency';
 
 // Segment export / "eject" (data portability): `store.exportSegments(sink, { format })` dumps every registered
-// segment to a portable file (`roaring` = cross-language RoaringBitmap32 · `ndjson` = newline ids) via an
+// segment to a portable file (`roaring` = the portable 32-bit Roaring format · `ndjson` = newline ids) via an
 // injected sink, using only public read APIs — your data stays readable without CloudRoaring. The
 // `export-segments` CLI wraps it with a filesystem sink. These types let you write a custom sink (S3, stdout, …).
 export type {

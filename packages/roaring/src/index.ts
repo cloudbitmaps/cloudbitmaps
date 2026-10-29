@@ -3094,7 +3094,7 @@ export class CloudRoaring {
   /**
    * **Export ("eject") every registered segment's current generation** through the injected `sink`, using only
    * public read APIs — so your data is readable **without CloudRoaring** (the exit path; see the README's "Your
-   * data stays yours"). `format: 'roaring'` (default) writes one **portable RoaringBitmap32** per segment
+   * data stays yours"). `format: 'roaring'` (default) writes one **portable Roaring bitmap** per segment
    * (loadable by any roaring library); `'ndjson'` writes newline-delimited ids (zero-dependency, streaming).
    * Enumerates via the store's **own** registry (needs one — throws {@link UnsupportedError} otherwise) so the
    * enumeration and the read path provably share one registry. Encrypted segments are decrypted transparently
