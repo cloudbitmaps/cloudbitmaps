@@ -34,7 +34,7 @@ so, and so do the module headers in the code.
   counts use the codec's counting kernels, which count from the containers without building the combination; the count
   bench's record (`bench/count-kernels-results.json`) has the count's median below the build's on every data set, and its
   gate prints `RESULT kept`. `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
-  soon as it finds an id the two bitmaps share, container by container. The speed of each, against the `roaring` package, is the table in
+  soon as it finds an id the two bitmaps share, container by container. Two arrays of similar size are merged for their first 320 steps before `intersects` sets up a scratch bit table, so a pair that shares an id early is answered without setting a bit. The speed of each, against the `roaring` package, is the table in
   [the API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
 - **`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`, the combines that return a new bitmap, and `xorInPlace`.**

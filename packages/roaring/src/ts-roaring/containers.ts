@@ -931,9 +931,11 @@ function skewed(shorter: number, longer: number): boolean {
 // pairs the merge finishes sooner; a higher one leaves mid-sized pairs on the slower merge.
 const PROBE_MIN = 32;
 
-// How many merge steps `intersectsArrays` takes before it falls back to the scratch bitset: two random sets of a thousand values
-// in a chunk share a value within a few dozen steps, so the common overlapping pair never sets a bit.
-const MERGE_FIRST = 64;
+// How many merge steps `intersectsArrays` takes before it falls back to the scratch bitset. Two random sets of a thousand
+// values in a chunk usually share a value within a few hundred steps, and a merge step costs about a nanosecond and a
+// half, so the common overlapping pair finishes before it pays to set and clear a thousand bits; a pair with no early
+// shared value pays at most this many extra steps.
+export const MERGE_FIRST = 320;
 
 // Scratch bitset for the array probe: all zero between calls (each call clears what it set).
 const probeWords = new Uint32Array(WORDS);

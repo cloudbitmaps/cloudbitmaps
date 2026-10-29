@@ -409,8 +409,10 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
   does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a
   merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count.
   The probe pays its set-and-clear even when the first value is shared, so a pair that reaches it first takes up to
-  `MERGE_FIRST` (64) merge steps, which find an early shared value (two random sets of a thousand values in a chunk share
-  one within a few dozen steps) without setting a bit; only a pair that shares nothing that soon goes on to the probe,
+  `MERGE_FIRST` (320) merge steps, which find an early shared value (two random sets of a thousand values in a chunk
+  usually share one within a few hundred steps, and a merge step costs far less than setting and clearing a thousand
+  bits) without setting a bit; the cost is that a pair sharing nothing, with spans that overlap, takes up to 320 extra
+  steps before the probe; only a pair that shares nothing that soon goes on to the probe,
   from where the merge stopped. Two bitsets test eight words at a time and stop at the first group with a shared bit; a
   bitset against runs asks `anyBitInRange` per run (stops at the first nonzero masked word, no popcount).
 
