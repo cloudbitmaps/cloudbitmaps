@@ -569,6 +569,11 @@ move it up.
   loads there. `MemoryStorage` hashes with `node:crypto`, so it is exported by `@cloudbitmaps/core/node` and not the
   main entry. Porting that hash to Web Crypto and returning the backend to the main entry means re-measuring the two
   benches that time loads onto it, since the hash would then settle on the thread pool.
+- **An optional WebAssembly module for the dense word kernels.** The union of many dense bitmaps and the counts over dense
+  containers are the cells that stay furthest from the native binding in plain JavaScript, because they are loops over
+  2,048 words that WebAssembly can run several words at a time. An optional module, loaded only by a caller that asks for
+  it, would leave the default install with nothing to compile. Whether it is worth its size and its second code path is
+  decided after the next release, from the published table.
 - **Incremental writes, if there is demand** — immutable delta generations on the same bucket, read as base ∪ deltas at
   chunk granularity; never a mutable row store. Nothing is queued; an issue describing a workload that genuinely
   cannot micro-batch into a load is what would move it.
