@@ -577,7 +577,8 @@ Compare the two evidence files: the request counts of every stage are identical 
 | `lib/calibration-figures.cjs` | Every figure a calibration run lets the project publish, derived from the run's evidence, the pricing profile and the library's own constants — and a refusal for evidence that does not reconcile with itself. `tests/docs/calibration-reports.test.ts` holds the latest run's report and the benchmarks page to it as it stands, each earlier report to the model recorded for it, and `scripts/site-figures.cjs` takes the site's single-bucket figures from it. |
 | `lib/remove-all.cjs` | Takes markup out of a page's text for the gates that read what a reader sees (`scripts/site-figures.cjs`, `scripts/site-replay.cjs`, `calibration-figures.cjs` and the docs tests): a replace repeated until nothing matches, since removing one comment or tag can join the text around it into another |
 | `lib/tree-state.cjs` | Whether a pass's tree was the commit's own (`treeState`: `clean` when only the bench's own results file differs, else `dirty` with the paths that differ, sorted and capped, and their total) and the gates' reading of those fields (`treeProblems`). |
-| `lib/work-folder.cjs` | A bench's temp folder, removed however the process ends (`make`); `lib/work-folder-sentinel.cjs` is the detached process that removes it when the bench is gone. |
+| `lib/work-folder.cjs` | A bench's temp folder, removed however the process ends (`make`). |
+| `lib/work-folder-sentinel.cjs` | The detached process `work-folder.cjs` starts: it removes the bench's folders when the pipe from the bench closes, which is when the bench is gone. |
 
 ## Adding a harness
 
