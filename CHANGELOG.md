@@ -74,6 +74,10 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The combines of two bitset containers take four words a step.** `and`, `or`, `xor` and `andNot` of two dense containers (and
+  the in-place forms the store uses to union and subtract a chunk it has read) loop over the 2,048 words four at a time; the
+  results are unchanged. A stand-alone probe of the loops timed each 21 percent faster (indicative).
+
 - **`intersects` on two similar-sized arrays takes 320 merge steps before it sets up its scratch bit table.** A pair that shares
   an id early is answered without setting a bit; a pair whose spans overlap but that shares nothing walks the extra steps first,
   so it is slower than before (a stand-alone probe of the sparse bench pairs, indicative: about 30 percent for that case, against

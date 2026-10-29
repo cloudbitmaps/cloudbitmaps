@@ -1043,6 +1043,78 @@ function orArrays(a: Container, b: Container): Container {
   return arrayOfScratch(out, n) as Container;
 }
 
+/** `out` = `x` AND `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function andWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 & Y0;
+    out[i + 1] = X1 & Y1;
+    out[i + 2] = X2 & Y2;
+    out[i + 3] = X3 & Y3;
+  }
+}
+
+/** `out` = `x` OR `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function orWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 | Y0;
+    out[i + 1] = X1 | Y1;
+    out[i + 2] = X2 | Y2;
+    out[i + 3] = X3 | Y3;
+  }
+}
+
+/** `out` = `x` XOR `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function xorWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 ^ Y0;
+    out[i + 1] = X1 ^ Y1;
+    out[i + 2] = X2 ^ Y2;
+    out[i + 3] = X3 ^ Y3;
+  }
+}
+
+/** `out` = `x` AND NOT `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function andNotWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 & ~Y0;
+    out[i + 1] = X1 & ~Y1;
+    out[i + 2] = X2 & ~Y2;
+    out[i + 3] = X3 & ~Y3;
+  }
+}
+
 /** `dest` (a bitset) or `other`, into words: `dest`'s own words when `inPlace`, else a copy. */
 function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Container {
   const words = inPlace ? words32(dest) : words32(dest).slice();
@@ -1061,8 +1133,7 @@ function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Cont
     return bitsetContainer(words, card);
   }
   if (other.kind === BITSET) {
-    const o = words32(other);
-    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
+    orWords(words, words, words32(other));
   } else {
     const pairs = lows16(other);
     for (let r = 0; r < other.len; r++) {
@@ -1352,7 +1423,7 @@ export function containerAnd(a: Container, b: Container, inPlace = false): Conta
     const x = words32(a);
     const y = words32(b);
     const out = inPlace ? x : new Uint32Array(WORDS);
-    for (let i = 0; i < WORDS; i++) out[i] = (x[i] as number) & (y[i] as number);
+    andWords(out, x, y);
     return fromWordsCard(out, popcountWords(out));
   }
   // Commutative: put the lower kind first (array, bitset, run).
@@ -1606,8 +1677,7 @@ export function containerAndNot(a: Container, b: Container, inPlace = false): Co
       words[v >>> 5] = (words[v >>> 5] as number) & ~(1 << (v & 31));
     }
   } else if (b.kind === BITSET) {
-    const y = words32(b);
-    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) & ~(y[i] as number);
+    andNotWords(words, words, words32(b));
   } else {
     const pairs = lows16(b);
     for (let r = 0; r < b.len; r++) {
@@ -1721,7 +1791,7 @@ export function containerXor(a: Container, b: Container, inPlace = false): Conta
       const x = words32(a);
       const y = words32(b);
       const out = inPlace ? x : new Uint32Array(WORDS);
-      for (let i = 0; i < WORDS; i++) out[i] = (x[i] as number) ^ (y[i] as number);
+      xorWords(out, x, y);
       return fromWordsCard(out, popcountWords(out));
     }
     const words = inPlace && base === a ? words32(base) : words32(base).slice();

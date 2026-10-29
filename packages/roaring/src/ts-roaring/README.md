@@ -301,7 +301,7 @@ branch-free; else a merge. The 32 here is a floor on the second operand, where `
 
 ### Bitsets
 
-`B` against `B` is a 2,048-word loop. The result's cardinality is counted by `popcountWords`, a Harley-Seal
+`B` against `B` is a 2,048-word loop, four words a step for `and`, `or`, `xor` and `andNot` (the loads of a group are taken before its stores, so the result may be either operand, as an in-place combine and a combine of a bitset with itself need). A stand-alone probe of the four loops over 128 container pairs timed each 21 percent faster than one word a step (indicative, probe). The result's cardinality is counted by `popcountWords`, a Harley-Seal
 carry-save-adder tree over sixteen words at a time in plain 32-bit integer arithmetic (no `BigInt`), so one word in
 sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is converted to an array (`fromWordsCard`).
 `orIntoBitset` counts as it sets when the other side is an array (a per-bit test of the old word), and recounts with
