@@ -78,7 +78,7 @@ so, and so do the module headers in the code.
 
 - **The combines of two bitset containers take four words a step.** `and`, `or`, `xor` and `andNot` of two dense containers (and
   the in-place forms the store uses to union and subtract a chunk it has read) loop over the 2,048 words four at a time; the
-  results are unchanged. A stand-alone probe of the loops timed each 21 percent faster (indicative).
+  results are unchanged.
 
 - **The structural check on stored bytes counts a bitset through a typed array.** The check a stored chunk goes through
   before it is decoded (and that `RoaringBitmap.deserialize` makes) refuses the same bytes with the same error and message
