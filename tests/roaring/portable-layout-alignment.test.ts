@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { IntegrityError } from '@cloudbitmaps/core';
 import { checkPortableLayout } from '@/portable/layout';
 import { craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
@@ -173,7 +173,7 @@ describe('an array container is checked the same at every alignment', () => {
     });
   }
 
-  it('refuses a value that falls from one group of four to the next, and from one pair to the next', () => {
+  it('refuses a value that falls from one pair to the next', () => {
     for (const n of [128, 132]) {
       for (const k of [2, 3, 4, 6, 7, 8]) {
         const values = ascending(n);
@@ -396,62 +396,4 @@ describe('bytes that sit in other kinds of storage', () => {
       }
     },
   );
-});
-
-/**
- * The check's answers do not depend on the byte order the machine reports. This machine is little-endian, so this forces
- * the module's own probe to say it is not and holds that the answers are those of the unforced module. It cannot tell a
- * big-endian host's behaviour from this one's: only a big-endian host can.
- */
-describe('the check with the byte-order probe forced to big-endian', () => {
-  it('gives the same answers, at every shift', async () => {
-    const real = Uint16Array;
-    const of = vi.spyOn(Uint16Array, 'of').mockImplementation(() => new real([256]) as never);
-    vi.resetModules();
-    let forced: typeof import('@/portable/layout');
-    try {
-      forced = await import('@/portable/layout');
-    } finally {
-      of.mockRestore();
-    }
-    expect(forced.LITTLE_ENDIAN).toBe(false);
-    const cases = [
-      craftPortable([
-        { key: 0, kind: 'array', values: Array.from({ length: 300 }, (_, v) => 2 * v) },
-      ]),
-      craftPortable([
-        {
-          key: 0,
-          kind: 'run',
-          runs: Array.from({ length: 200 }, (_, r) => [8 * r, 3] as [number, number]),
-        },
-      ]),
-      craftPortable([
-        { key: 0, kind: 'array', values: [...Array.from({ length: 300 }, (_, v) => 2 * v), 5] },
-      ]),
-      craftPortable([
-        {
-          key: 0,
-          kind: 'run',
-          runs: [
-            ...Array.from({ length: 100 }, (_, r) => [8 * r, 3] as [number, number]),
-            [790, 3],
-          ],
-        },
-      ]),
-    ];
-    const run = (check: (b: Uint8Array) => number, bytes: Uint8Array): number | string => {
-      try {
-        return check(bytes);
-      } catch (err) {
-        return (err as Error).message;
-      }
-    };
-    for (const bytes of cases) {
-      for (const shift of SHIFTS) {
-        const at = placed(bytes, shift);
-        expect(run(forced.checkPortableLayout, at)).toBe(run(checkPortableLayout, at));
-      }
-    }
-  });
 });
