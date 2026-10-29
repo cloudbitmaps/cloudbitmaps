@@ -105,15 +105,15 @@ describe('the table of a record', () => {
     expect(table.problemsOf('p.md', text, GOOD)).toEqual([]);
   });
 
-  it('says how many fresh processes each first-call figure took: one for a pass that does not record it, the median of five otherwise', () => {
+  it('says how many fresh processes each first-call figure took: one for a pass that does not record it, the median of eleven otherwise', () => {
     expect(table.regionText('p.md', text)).toContain(
       'each first-call figure is one call in one fresh process;',
     );
     const five = good();
-    five.environment.coldProcesses = 5;
+    five.environment.coldProcesses = 11;
     const region = table.render(fileOf(five));
     expect(region).toContain(
-      'each first-call figure is the median of 5 fresh processes, one call in each;',
+      'each first-call figure is the median of 11 fresh processes, one call in each;',
     );
     expect(region).not.toContain('one call in one fresh process');
     expect(table.problemsOf('p.md', page(region), fileOf(five))).toEqual([]);

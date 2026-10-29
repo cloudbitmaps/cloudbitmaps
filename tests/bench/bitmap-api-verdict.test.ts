@@ -205,23 +205,23 @@ describe('the gate over the record', () => {
     expect(gate.gateProblems([])).toEqual([]);
   });
 
-  it('reads the processes a cold sample took: absent is one, five at full scale, and a record that disagrees is refused', () => {
+  it('reads the processes a cold sample took: absent is one, eleven at full scale, and a record that disagrees is refused', () => {
     const pass = clean();
     expect(gate.coldProcessesOf(pass)).toBe(1);
-    expect(gate.coldProcessesOf({ environment: { coldProcesses: 5 } })).toBe(5);
-    pass.environment.coldProcesses = 5;
+    expect(gate.coldProcessesOf({ environment: { coldProcesses: 11 } })).toBe(11);
+    pass.environment.coldProcesses = 11;
     expect(gate.gateProblems([pass], COUNT)).toEqual([]);
     const one = clean();
     one.environment.coldProcesses = 1;
     expect(problems(one)).toContain(
-      'records 1 fresh processes a cold sample, but a full pass takes 5',
+      'records 1 fresh processes a cold sample, but a full pass takes 11',
     );
     const three = clean();
     three.environment.coldProcesses = 3;
     expect(problems(three)).toContain('records 3 fresh processes');
     const smoke = clean();
     smoke.environment.smoke = true;
-    smoke.environment.coldProcesses = 5;
+    smoke.environment.coldProcesses = 11;
     expect(problems(smoke)).toContain('but a smoke pass takes 1');
   });
 

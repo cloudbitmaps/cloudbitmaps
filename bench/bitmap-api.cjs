@@ -17,7 +17,7 @@
  *   orMany     8 and 64 bitmaps
  *   clone      `clone`, and a clone then a write that lands in every container
  *   cold       the first call of a fresh process, nothing warmed: `deserialize`, a build, an `and`, on `mixed`; each
- *              round's figure is the median of five such processes per subject (one in a tiny-scale run). A pass
+ *              round's figure is the median of eleven such processes per subject (one in a tiny-scale run). A pass
  *              records how many (`environment.coldProcesses`; a pass without it was taken at one) and how many it set
  *              aside as slept (`environment.coldSlept`): a process that slept is judged by the sleep rule against the
  *              median of its own sample's processes before that median is taken, and another is run in its place

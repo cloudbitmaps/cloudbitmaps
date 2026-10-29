@@ -137,7 +137,7 @@ function internalApi(codec) {
     hasInPlace: (op) => op !== 'xor',
     optimize: (b) => b.optimize(),
     serialize: (b) => b.serialize(),
-    deserialize: (bytes) => codec.safeDeserialize(bytes, CAP),
+    deserialize: (bytes) => codec.safeDeserialize(bytes, CAP, { detached: true }),
     iterate: (b) => {
       let s = 0;
       for (const v of b) s = (s + v) >>> 0;
@@ -608,7 +608,7 @@ function timeCell(cell, api, { warmMs, sampleMs }) {
 }
 
 /** The fresh processes a cold sample is the median of in a full-scale pass; a tiny-scale (smoke) pass takes one. */
-const COLD_PROCESSES = 5;
+const COLD_PROCESSES = 11;
 
 /** The fresh processes a cold cell is timed in, for one sample of one subject: each is one first call. */
 function coldProcessesOf(small) {
