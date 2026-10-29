@@ -31,8 +31,8 @@
  * exactly this structure.
  *
  * HOW IT READS. A bitset body is counted in place through a `Uint32Array` (copied to a scratch first when its offset is not
- * a multiple of 4), and a long array or run list through a `Uint16Array` when its offset is even and the machine is
- * little-endian; every other body goes through the `DataView`. Each path refuses the same bytes with the same message.
+ * a multiple of 4); every array and run list goes through the `DataView`, which costs less to compile on a first call.
+ * Each path refuses the same bytes with the same message.
  *
  * WHAT IT COSTS. One pass over the bytes the decode is about to copy anyway, once per decode: never per id, and
  * never on a cache hit.
@@ -63,12 +63,6 @@ export const NO_OFFSET_THRESHOLD = 4;
 export const ARRAY_MAX_CARDINALITY = 4_096;
 /** 65,536 bits, flat. */
 const BITMAP_CONTAINER_BYTES = 8_192;
-/**
- * The fewest values an array container, or runs a run container, must hold for its check to read it through a typed
- * array: below it, the view costs about as much as the few reads it saves.
- */
-const VIEW_MIN_ARRAY = 128;
-const VIEW_MIN_RUNS = 64;
 /** The largest value a container holds: its low 16 bits. */
 const MAX_LOW = 0xffff;
 
@@ -292,7 +286,7 @@ function checkContainer(
   if (kind === ARRAY) {
     const size = cardinality * 2;
     if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (array)`);
-    checkArray(bytes, view, pos, cardinality, i);
+    checkArray(view, pos, cardinality, i);
     return size;
   }
   if (kind === BITMAP) {
@@ -311,7 +305,7 @@ function checkContainer(
   const runs = view.getUint16(pos, true);
   const size = 2 + runs * 4;
   if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (run)`);
-  const covered = checkRuns(bytes, view, pos + 2, runs, i);
+  const covered = checkRuns(view, pos + 2, runs, i);
   // A header cannot state zero values, so this is also what refuses a run container with no runs, the shape
   // that crashes CRoaring when anything iterates it.
   if (covered !== cardinality) {
@@ -325,20 +319,11 @@ function checkContainer(
 /**
  * An array container's values must strictly ascend: `has` binary-searches them and iteration yields them in order.
  *
- * A long array at a 2-byte-aligned offset is read through a `Uint16Array` over the same bytes, four values a step; any
- * other is read two values per `u32` (little-endian, so the first value is the low half) through the `DataView`.
+ * Read two values per `u32` (little-endian, so the first value is the low half): half the loads and half the loop
+ * trips of reading them one at a time, which measured about twice as fast. A long array later in a bitmap takes
+ * {@link checkArrayView} instead.
  */
-function checkArray(
-  bytes: Uint8Array,
-  view: DataView,
-  at: number,
-  cardinality: number,
-  index: number,
-): void {
-  if (LITTLE_ENDIAN && cardinality >= VIEW_MIN_ARRAY && ((bytes.byteOffset + at) & 1) === 0) {
-    checkArrayValues(new Uint16Array(bytes.buffer, bytes.byteOffset + at, cardinality), index);
-    return;
-  }
+function checkArray(view: DataView, at: number, cardinality: number, index: number): void {
   let previous = -1;
   let p = at;
   const end = at + cardinality * 2;
@@ -352,43 +337,6 @@ function checkArray(
   if (p < end && view.getUint16(p, true) <= previous) throw unordered(index, (p - at) / 2);
 }
 
-/**
- * {@link checkArray} over the values themselves, four a step. A group that fails is read again two at a time, so the
- * element an error names is the same one the two-at-a-time check names.
- */
-function checkArrayValues(a: Uint16Array, index: number): void {
-  const n = a.length;
-  let previous = -1;
-  let i = 0;
-  for (; i + 4 <= n; i += 4) {
-    const a0 = a[i] as number;
-    const a1 = a[i + 1] as number;
-    const a2 = a[i + 2] as number;
-    const a3 = a[i + 3] as number;
-    if (a0 <= previous || a1 <= a0 || a2 <= a1 || a3 <= a2) unorderedIn(a, i, previous, index);
-    previous = a3;
-  }
-  for (; i + 2 <= n; i += 2) {
-    const first = a[i] as number;
-    const second = a[i + 1] as number;
-    if (first <= previous || second <= first) throw unordered(index, i);
-    previous = second;
-  }
-  if (i < n && (a[i] as number) <= previous) throw unordered(index, i);
-}
-
-/** Throws for the first pair of the four values at `from` that does not ascend from `previous`, named by its first element. */
-function unorderedIn(a: Uint16Array, from: number, previous: number, index: number): never {
-  let before = previous;
-  for (let p = from; p < from + 4; p += 2) {
-    const first = a[p] as number;
-    const second = a[p + 1] as number;
-    if (first <= before || second <= first) throw unordered(index, p);
-    before = second;
-  }
-  throw unordered(index, from);
-}
-
 function unordered(index: number, element: number): IntegrityError {
   return new IntegrityError(
     `portable roaring: container ${index} (array) is not strictly ascending at or after element ${element}`,
@@ -400,30 +348,14 @@ function unordered(index: number, element: number): IntegrityError {
  * count their shared values twice, and touching ones are two runs a writer would have merged into one. Returns the
  * number of values the runs cover. Each run is one `u32`: its start in the low half, its length in the high.
  */
-function checkRuns(
-  bytes: Uint8Array,
-  view: DataView,
-  at: number,
-  runs: number,
-  index: number,
-): number {
-  const aligned = LITTLE_ENDIAN && runs >= VIEW_MIN_RUNS && ((bytes.byteOffset + at) & 1) === 0;
-  // A run is two little-endian u16s, its start and its length, so a 2-byte-aligned body reads as one array of them.
-  const pairs = aligned ? new Uint16Array(bytes.buffer, bytes.byteOffset + at, 2 * runs) : null;
+function checkRuns(view: DataView, at: number, runs: number, index: number): number {
   let covered = 0;
   /** The lowest start the next run may have: one past the value after the previous run's last. */
   let lowest = 0;
   for (let r = 0; r < runs; r++) {
-    let start: number;
-    let last: number;
-    if (pairs !== null) {
-      start = pairs[2 * r] as number;
-      last = start + (pairs[2 * r + 1] as number);
-    } else {
-      const run = view.getUint32(at + r * 4, true);
-      start = run & 0xffff;
-      last = start + (run >>> 16);
-    }
+    const run = view.getUint32(at + r * 4, true);
+    const start = run & 0xffff;
+    const last = start + (run >>> 16);
     if (start < lowest) {
       throw new IntegrityError(
         `portable roaring: container ${index} (run) has run ${r} out of order, overlapping or touching the one before`,

@@ -78,12 +78,12 @@ so, and so do the module headers in the code.
   the in-place forms the store uses to union and subtract a chunk it has read) loop over the 2,048 words four at a time; the
   results are unchanged. A stand-alone probe of the loops timed each 21 percent faster (indicative).
 
-- **The structural check on stored bytes counts and compares through typed arrays.** The check a stored chunk goes through
-  before it is decoded (and that `RoaringBitmap.deserialize` makes) refuses the same bytes with the same error and message in
-  the same order, and reads nothing past the buffer. What changed is how it reads: a bitset body is counted in place with
-  the sixteen-words-a-step count the containers use (a body whose offset is not a multiple of 4 is copied into a scratch
-  first), and a long array or run list is read through a typed array when its offset allows, so the check spends fewer
-  steps per value, which matters most on the first call of a process, before the engine has optimized the loops.
+- **The structural check on stored bytes counts a bitset through a typed array.** The check a stored chunk goes through
+  before it is decoded (and that `RoaringBitmap.deserialize` makes) refuses the same bytes with the same error and message
+  in the same order, and reads nothing past the buffer. A bitset body is counted in place with the sixteen-words-a-step
+  count the containers use (a body whose offset is not a multiple of 4 is copied into a scratch first); array and run
+  bodies are read through the `DataView`, because the typed paths' extra code costs more to compile on the first call of a
+  process than they save on arrays and runs.
 
 ### Fixed
 

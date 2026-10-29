@@ -5,8 +5,8 @@ import { checkPortableLayout } from '@/portable/layout';
 import { craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
 
 /**
- * The layout check reads a long array, a long run list and every bitset through typed arrays when the body sits at a
- * suitable offset of the buffer, and through a scratch copy or the `DataView` when it does not. Every case here runs at
+ * The layout check counts a bitset in place through a typed array when the body sits at a suitable offset of the buffer
+ * (through a scratch copy when it does not), and reads every array and run list through the `DataView`. Every case here runs at
  * the four alignments a buffer can start at (a view of a larger buffer at byte offset 0 to 3, with the container bodies
  * at offsets of both parities), and holds that the answer and the error text are the same at each: the same refusals in
  * the same order, and no read past the end of the bytes it was given.
@@ -399,11 +399,9 @@ describe('bytes that sit in other kinds of storage', () => {
 });
 
 /**
- * The check reads a long array or run list through a `Uint16Array` only on a little-endian machine and through the
- * `DataView` otherwise. This machine is little-endian, so this forces the module's own probe to say it is not and holds
- * that the `DataView` path, taken at an aligned offset it would otherwise skip, gives the answers of the typed-array
- * path. It cannot catch a mutant that drops the guard: on a little-endian machine both paths agree on every input, and
- * only a big-endian host tells them apart.
+ * The check's answers do not depend on the byte order the machine reports. This machine is little-endian, so this forces
+ * the module's own probe to say it is not and holds that the answers are those of the unforced module. It cannot tell a
+ * big-endian host's behaviour from this one's: only a big-endian host can.
  */
 describe('the check with the byte-order probe forced to big-endian', () => {
   it('gives the same answers, at every shift', async () => {
