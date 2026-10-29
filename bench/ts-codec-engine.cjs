@@ -119,6 +119,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { engineWith, evaluate, bundleText } = require('./lib/codec-engine.cjs');
 const { idsOf } = require('./lib/codec-data.cjs');
+const workFolder = require('./lib/work-folder.cjs');
 const {
   BAR,
   CONTROL_BAND,
@@ -860,7 +861,7 @@ function moduleBundle(dir, name, exportLine) {
 
 function startupMeasure() {
   waitForQuietMachine();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-codec-engine-'));
+  const dir = workFolder.make(os.tmpdir(), 'ts-codec-engine-');
   try {
     const files = [
       moduleBundle(

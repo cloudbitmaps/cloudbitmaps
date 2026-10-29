@@ -55,6 +55,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const workFolder = require('./lib/work-folder.cjs');
 
 /**
  * The built library, loaded only by the modes that measure. Rendering and checking the table read the committed
@@ -102,7 +103,7 @@ function segmentIds() {
   return ids;
 }
 function mkTmp(tag) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `crbm-scale-${tag}-`));
+  return workFolder.make(os.tmpdir(), `crbm-scale-${tag}-`);
 }
 function rmTmp(dir) {
   try {

@@ -47,6 +47,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { bundleText, evaluate } = require('./lib/codec-engine.cjs');
+const workFolder = require('./lib/work-folder.cjs');
 const { MIN_ROUNDS } = require('./lib/codec-verdict.cjs');
 const { measureSteadyCpu, digest } = require('./lib/codec-ops.cjs');
 const {
@@ -423,7 +424,7 @@ function main() {
     console.error('run with node --expose-gc');
     process.exit(2);
   }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'count-kernels-'));
+  const dir = workFolder.make(os.tmpdir(), 'count-kernels-');
   try {
     const file = path.join(dir, 'head.cjs');
     fs.writeFileSync(file, bundleText({ root: ROOT, entry: ENTRY, sourcefile: 'count-entry.ts' }));

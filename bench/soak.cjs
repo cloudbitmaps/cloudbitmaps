@@ -54,6 +54,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const workFolder = require('./lib/work-folder.cjs');
 const { CloudRoaring, LocalFsStorage } = require('@cloudbitmaps/roaring');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -97,7 +98,7 @@ function rng(seed) {
   };
 }
 function mkTmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'crbm-soak-'));
+  return workFolder.make(os.tmpdir(), 'crbm-soak-');
 }
 function segName(i) {
   return `s${i}`;
