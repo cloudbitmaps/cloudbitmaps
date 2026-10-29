@@ -14,10 +14,15 @@ import type { Socket } from 'node:net';
  * throws and names what each did, so a machine where something answers fails the test with that and never with a wrong
  * count of attempts.
  *
+ * Port 1 is left out and so is every port on the Fetch standard's list of blocked ports: Node's built-in `fetch` refuses
+ * those before it connects, so a driver whose SDK moved to it would see no connect at all, not a refusal. Today the GCS SDK
+ * uses `node-fetch` and S3 and Azure use Node's `http`, none of which applies that list; the candidates stay off it so a
+ * bump of an SDK's HTTP stack cannot change what these tests see.
+ *
  * Worst case: the probes run at once and each ends by `PROBE_MS`, so the helper returns or throws within `PROBE_MS`
  * (1 s, derived from the constant; a loopback port that is not filtered answers in well under a millisecond).
  */
-export const REFUSING_PORT_CANDIDATES: readonly number[] = [1, 3, 4, 6, 8, 10];
+export const REFUSING_PORT_CANDIDATES: readonly number[] = [3, 4, 6, 8, 10, 12];
 
 export const PROBE_MS = 1_000;
 

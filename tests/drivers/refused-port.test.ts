@@ -49,7 +49,7 @@ describe('probe', () => {
   it('reports `timeout` for a port that never answers, within its timeout', async () => {
     const started = Date.now();
     expect(await probe(1, fakeConnect('never'), 50)).toBe('timeout');
-    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(Date.now() - started).toBeLessThan(500);
   }, 5_000);
 });
 
@@ -66,6 +66,19 @@ describe('refusedPort', () => {
       4: 'ECONNREFUSED',
     };
     expect(await refusedPort([1, 3, 4], async (port) => answers[port]!)).toBe(3);
+  });
+
+  it('probes every candidate at once and returns the first in list order that refuses, not the first to answer', async () => {
+    const delays: Record<number, number> = { 1: 100, 3: 100, 4: 0 };
+    const started = Date.now();
+    const port = await refusedPort(
+      [1, 3, 4],
+      (candidate) =>
+        new Promise((resolve) => setTimeout(() => resolve('ECONNREFUSED'), delays[candidate]!)),
+    );
+    expect(port).toBe(1);
+    // Serially the three would take 200 ms.
+    expect(Date.now() - started).toBeLessThan(180);
   });
 
   it.each(['connected', 'timeout', 'ETIMEDOUT', 'EACCES', 'ENETUNREACH'])(

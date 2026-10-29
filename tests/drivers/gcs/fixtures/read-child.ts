@@ -23,9 +23,11 @@ if (endpoint === undefined || call === undefined)
 // `net.connect` hands it one normalized array, `[options, callback]`, rather than the options themselves.
 const port = Number(new URL(endpoint).port);
 let connects = 0;
-// How each of those connects ended: its error code, or `connected`. The `error` listener it adds is on sockets
-// to the stub's port only; it would keep a socket error nothing else handles from crashing the child, and the SDK
-// attaches its own.
+// How each of those connects ended: its error code, or `connected`. The `connect` and `error` listeners are added in
+// every mode, on sockets to the stub's port only. An `error` listener counts as a handler, so a socket error nothing
+// else handles would no longer crash the child; the SDK's HTTP stack keeps its own `error` listener on every socket it
+// opens, so that changes nothing a real call reaches. The crash these cases guard against is a stream-pipe error thrown
+// outside any socket event, which a listener cannot hide.
 const attempts: { code: string }[] = [];
 const connect = Socket.prototype.connect;
 Socket.prototype.connect = function (this: Socket, ...args: unknown[]): Socket {
