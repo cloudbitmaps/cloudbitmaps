@@ -897,7 +897,7 @@ Everything here is a test, a workflow or a bench, not part of the module.
   calls the codec's counting members above, `false` builds the combination with the matching `TsBitmap` static and reads
   its `size` (or `isEmpty` for `intersects`). The switch is `true`: the count bench's record
   (`bench/count-kernels-results.json`) has the count's median below the build's on every data set and
-  its gate prints `RESULT kept`; the speed of each answer against native is in the generated table of the API reference. Both routes give the same answers and change neither operand, and the test
+  its gate prints `RESULT kept`; the speed of each answer against native is in the generated table of the API reference. Two calls measure more than 10 times native and ship with their figures shown: the first `deserialize` in a fresh process (about 14.6 times, a one-time cost of the first call; later decodes measure 2.2 to 5.9 times) and the union of 64 dense bitmaps with `orMany` (about 11 times). Both routes give the same answers and change neither operand, and the test
   suite runs once on each (`tests/roaring/roaring-bitmap-counts.kernels.test.ts` and `.derived.test.ts`, one shared
   suite). `isSubset` and `isEqual` always call their codec members. A non-bitmap operand is a `ValidationError` for all
   seven, `isSubset` included.
