@@ -134,13 +134,33 @@ Where a container's kind comes from:
 
 - Built from ids (`fromSortedIds`): an array when the group has at most 4,096 distinct low values, else a bitset.
 - Decoded from bytes: whatever kind the bytes say, run containers included (the layout check has already proved the
-  structure). A decoded run container stays a run until it is changed.
-- A write (`containerAdd`, `containerRemove`) first `demote`s a run container, so no mutating path edits runs. An array
+  structure). A decoded run container stays as it was decoded until a write changes it; a write that adds ids keeps it a
+  run only while the run form is still the smaller one (below).
+- A write that adds ids (`containerAdd`, `containerAddSorted` for a group of a few, and `containerOr` of a run container with an array) merges them into the run list (a large batch into a thousand or more runs is written through words, below); a group of a few into an array keeps `add`'s capacity rule, so a shared array, or one with no spare room, is copied to up to twice its length on the first id
+  and keeps the result a run container while the rule above says run (`runsOrPlain`), otherwise an array or a bitset; a
+  removal (`containerRemove`) first `demote`s a run container. An array
   at 4,096 values that gains one more becomes a bitset; a bitset that drops to 4,096 or fewer becomes an array
   (`fromWordsCard`).
-- The result of combining one pair of containers is an array up to 4,096 values or a bitset above, never a run, whatever
-  the pair was. A bitmap-level combine can still hold a run: a key held by one side only keeps that side's container as
-  it is (section 7).
+- The result of combining one pair of containers is an array up to 4,096 values or a bitset above, except for a run with
+  an array and for two runs. A run container combined with an array stays a run while the run form is the smaller one.
+  Two run containers keep a run result while its body, `2 + 4 * runs` bytes, is strictly smaller than the array or
+  bitset body (`runsOrPlain`, the same test a write into a run uses), because a run list of a few long intervals is much
+  smaller than the 8 KiB bitset it would otherwise be expanded to, and every later `and`, `isSubset` or `intersects` on
+  it then walks intervals instead of words. Every run a combine writes is maximal: `andRuns` pieces are separated because
+  both inputs' runs are maximal (two values that are next to each other in the result are next to each other in both
+  inputs, hence in one run of each, hence in one piece); `andNotRuns` pieces are separated by a run of `b` or by a gap of
+  `a`; `orRuns` joins pieces that touch (`s <= end + 1`); `xorRuns` cancels a shared boundary, so touching pieces join.
+  The decoder refuses runs that touch or overlap, so this is what lets a combine's result be serialized as it is. A
+  bitmap-level combine can also hold a run for a key held by one side only, which keeps that side's container as it is
+  (section 7).
+- **Who writes a run container, and the rule each keeps.** The decoder (which refuses runs that touch or overlap, so a
+  decoded list is maximal), `toRun` (from an array or a bitset, through `optimize`, which `orRunArrayExpand` takes its result from), `runsOrPlain` (the exit of every
+  kernel that builds a run list: the run results of `and`, `or`, `andNot` and `xor` of two runs and `orRunArrayWalk` and `orRunIdsWalk`, which build it in `pairScratch`, and `addToRuns`, which `containerAdd` uses on a run, and `addFewToRuns`, which `containerAddSorted` uses, which each allocate their own), and nothing else. Every one of them leaves the runs
+  maximal (ascending, no two touching or overlapping, inside 0..65,535) and the container in its smallest kind by the
+  rule above. That is what the same-kind run compare in `isEqual` depends on (one set has one list of pairs), and what
+  the decoder requires of the bytes a bitmap writes. A new writer of a run container has to keep both, and the property
+  test in `tests/roaring/run-writers-canonical.test.ts` drives every writer from arrays, bitsets and runs at the edges 0
+  and 65,535 and fails on a result that is not canonical.
 - `optimize()` (the bitmap method) re-encodes every container by the rule. `encodeChunks()` optimizes each container
   when it is asked for, on a snapshot, without changing the bitmap's own containers.
 
@@ -184,10 +204,9 @@ section 7.)
 
 | Buffer | Size | Used by | Rule |
 |---|---|---|---|
-| `valueScratch` (`Uint16Array`) | starts at 8,192 entries | array results whose size is known only after they are built (`andArrays`, `filterByBits`, `filterByRuns`, `andNotArrays`, `orArrays`) | a kernel writes into it and copies out exactly `n` values (`arrayOfScratch`) |
-| `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`) | same |
+| `valueScratch` (`Uint16Array`) | starts at 8,192 entries | array results whose size is known only after they are built (`andArrays`, `filterByBits`, `filterByRuns`, `andNotArrays`, `orArrays`, `xorArrays`, and `orManyContainers`, which gathers the values of an all-array key before sorting them) | a kernel writes into it and copies out exactly `n` values (`arrayOfScratch`) |
+| `pairScratch` (`Uint16Array`) | starts at 8,192 entries | run-pair results (`andRuns`, `orRuns`, `andNotRuns`, `xorRuns`, `orRunArrayWalk`, which merges an array's values into a run list, and `orRunIdsWalk`, which merges a group of ids into one) | same |
 | `probeWords` (`Uint32Array`) | 2,048 words (one bitset) | the scratch-bitset probe in `andArrays`, `andNotArrays`, `andCountArrays` and `intersectsArrays` | all zero between calls: each call clears the bits it set, on every exit (`intersectsArrays` clears them after a hit as well as after a full scan) |
-| `andWords` (`Uint32Array`) | 2,048 words (one bitset) | the AND of two bitsets before `popcountWords` counts it (`containerAndCard`) | not zero between calls: every call overwrites all 2,048 words before reading any, and nothing else reads it |
 
 Growth: a request larger than the buffer allocates `max(n, min(2 * length, 65,536))`; the buffer kept for the life of the
 process never exceeds 65,536 entries (one container's worth of 16-bit values); a request above that gets a fresh array
@@ -200,9 +219,6 @@ across a call that could run other code: each kernel fills it and copies out bef
 another while it holds one. Each worker thread loads its own module instance and so has its own buffers. The probe bitset
 is cleared by walking the values that set it (not by zeroing 2,048 words), so its cost follows the arrays, not the
 bitset's size.
-
-`iota()` is a lazily built table of 0..65,535 as `u16`s (128 KiB), used by `appendIds` to expand a long run with one
-widening copy; it is built on the first long run and kept.
 
 ## 6. The kernels
 
@@ -220,7 +236,27 @@ first (array, bitset, run).
   R  R     interval intersection        interval union (touching joins)  interval difference
 ```
 
-Every result is an array up to 4,096 values, a bitset above, or nothing (`null`, and the key is dropped).
+Every result is an array up to 4,096 values, a bitset above, a run container for two run containers while that is the
+smaller form, or nothing (`null`, and the key is dropped).
+
+### Exclusive-or: `containerXor`
+
+One kernel per pair, one pass, one count; the result kind follows the same rule as the others.
+
+```
+  A  A     one merge that writes each value once and skips a value both hold; a result over 4,096 values is set into words
+  B  B     one word loop `x ^ y` (into the first operand's own words when it may be written), one Harley-Seal count
+  B  A     the bitset's words (a copy, or its own) with each array value's bit flipped; the count is adjusted per flip
+  B  R     the bitset's words with each run's range flipped, then one count
+  A  R     the run expanded to words (it owns them), then the array's bits flipped, the count adjusted per flip
+  R  R     one walk over the run boundaries of both lists (`xorRuns`); a run result while smaller
+```
+
+`xorRuns` treats a run `(start, length - 1)` as a boundary at `start` and one at `start + length`. The boundaries of one
+canonical list ascend strictly, so a merge of the two lists sees each position at most twice, and a position both lists
+have cancels. What is left alternates open, close, and two pieces that touch (the end of one run is the start of the
+other) have already joined because the shared boundary cancelled. The pairs go to `pairScratch` and `runsOrPlain` keeps a run
+container while that is the smaller form, else builds the array or bitset.
 
 ### Array against array: `andArrays`
 
@@ -270,10 +306,33 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
 `orIntoBitset` counts as it sets when the other side is an array (a per-bit test of the old word), and recounts with
 `popcountWords` when it ORs words or runs.
 
+### The many-way union: `orManyContainers`
+
+`orMany` does not fold `orInPlace`, which would recount all 2,048 words of the accumulator after every input. For each key,
+`TsBitmap.orMany` gathers the containers of every input into a list (a `Map` from key to containers, then the keys sorted)
+and `orManyContainers` unites the list in one pass:
+
+```
+  one container for the key         copied as it is (a run stays a run)
+  all arrays, at most 4,096 values  values concatenated into valueScratch, sorted, de-duplicated, copied out
+  anything else                     words = the bitsets OR-ed four at a time (the first group of four writes the
+                                    accumulator, so no bitset is copied; one to three bitsets copy the first, and
+                                    fewer than four left over are OR-ed one at a time), or zeros when there is none;
+                                    for each array: set one bit per value
+                                    for each run:   setRange per run
+                                    popcountWords(words) once; at most 4,096 -> array, else the words are the bitset
+```
+
+The count happens once, after the last input. The result is an array or a bitset, never a run (a pair of a run and
+an array, or of two runs, can give a run; the many-way union does not try), in storage of its own: a copied container, a fresh array, or a fresh word array. No input container is written,
+kept or flagged, so a later write to an input or to the result never reaches the other, and the same bitmap may appear any
+number of times in the list.
+
 ### Runs
 
-- `andRuns`, `orRuns` (merges touching runs: `s <= end + 1`), `andNotRuns`: one walk over both run lists into
-  `pairScratch`, then `fromRunPairs` builds an array (up to 4,096 values) or a bitset from the pairs.
+- `andRuns`, `orRuns` (merges touching runs: `s <= end + 1`), `andNotRuns`, `xorRuns`: one walk over both run lists into
+  `pairScratch`, then `runsOrPlain` copies the pairs out as a run container when `2 + 4 * runs` is strictly smaller than the
+  array or bitset body, else `fromRunPairs` builds an array (up to 4,096 values) or a bitset from them.
 - `bitsetInRuns`: reads only the bitset words each run covers, each masked to the run's ends. A run container of at
   most 4,096 values cannot yield more than an array holds, so its result is written straight to a scratch array of
   positions and copied out: no 8 KiB bitset, no popcount. A larger run container copies the covered words into a fresh
@@ -281,15 +340,36 @@ sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is conver
   same on a chunk whose runs cover about half the words, so the single count stays). The trade: the small branch pays one
   bit-extraction step per result value, which is cheaper than the allocation and the 2,048-word count it replaces
   whenever the result is at most 4,096 values, the only case it is taken for.
-- Run against array for `or`, and a run as the first operand of `andNot` with a non-run second operand: the run is
-  expanded to words (`toWords`, which it owns), then the other operand's bits are set or cleared.
+- Run against array for `or` (`orRunArray`): by one of two ways chosen from the two containers' lengths and
+  cardinalities alone (`expandsRunArray`). `orRunArrayWalk` (and `orRunIdsWalk`, its copy over a group of ids for `addMany`, which a test holds to the same container) merges the two into one run list in `pairScratch` without
+  expanding to words, which suits a result that stays a run container. `orRunArrayExpand` sets the runs in a new bitset,
+  then each value, and takes the canonical container of the result (`optimize`), which suits one that does not; it is
+  chosen from 1,024 steps (the runs plus the values) up, when the most runs the result can have (runs plus values) already
+  fail the size rule against the plain body of the largest result (`2 * cardMax` bytes up to 4,096 values, else 8,192).
+  The choice is a guess about the result, never about its correctness: both ways return the same container, so a wrong
+  guess costs time only (the expansion of a union that fills every gap still returns the one run it is).
+  One walk takes whichever of the next run and the next value starts first, and joins it to the pair being built when they
+  touch or overlap, so the cost is the runs plus the values, with no search or view per value (a per-value search with a
+  block copy of the runs between values was tried and was slower for batches of a few hundred ids or more). A value
+  already inside what is written adds nothing, and the cardinality is the run container's plus the values that were new,
+  so nothing is counted. `runsOrPlain` then keeps a run container (a copy of the pairs) when `2 + 4 * runs` is strictly
+  under the plain body, else `fromRunPairs` builds an array or a bitset. A very large batch into many runs, whose result
+  is a bitset, pays the merge before it learns that; the expansion to words would have been cheaper there, and gives no
+  canonical kind. When the array adds nothing and the caller owns the first operand (`inPlace`, which the bitmap-level
+  writers also pass for any run container, since runs are never written in place), the result is the run container itself.
+  `containerAdd` on a run container is the same edit for one value (`addToRuns`: extend, join two neighbours, or insert),
+  copying only the pairs.
+- A run as the first operand of `andNot` with a non-run second operand: the run is expanded to words (`toWords`, which it
+  owns), then the other operand's bits are set or cleared.
 
 ### Single-container operations
 
 - `containerHas`: array by binary search, bitset by bit test, run by finding the last run starting at or before the value.
-- `appendIds(c, out, at, base)`: writes ids plus `base`. An array with `base === 0` is one widening `out.set`; a run
-  longer than 48 values (`LONG_RUN`) is one `out.set` from the `iota()` table, then `base` added if nonzero; shorter runs
-  are counted out.
+- `appendIds(c, out, at, base)`: writes ids plus `base`. An array of 32 values or more with `base === 0` is one
+  widening `out.set`, a shorter one is counted out (`SMALL_IDS`: a view over a few values costs more than they do); a run
+  container is written run by run: a run of fewer than `LONG_RUN` (48) values is counted out, each id written once with
+  `base` added as it goes, and a longer one is one widening copy out of a table of 0 to 65,535 (`iota`, built on the
+  first long run and kept), with `base` added over the copied ids where it is not 0.
 - `runCount`: for arrays, counts breaks in consecutive values; for bitsets, counts set bits whose lower neighbour is clear
   (a word-parallel `w & ~((w << 1) | carry)`), skipping words of all ones or none.
 - `toRun` for a bitset reads starts and ends word by word and alternates them across words; a run of one value is both at
@@ -307,7 +387,7 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
   A  A     probe | gallop | merge, counting hits           probe | gallop | merge, each stopping at the first hit
   A  B     one bit test per array value                    first set bit found
   A  R     walk runs | binary-search runs per value        walk the runs against the values
-  B  B     AND into a scratch, then Harley-Seal            first word whose AND is not zero
+  B  B     fused AND and Harley-Seal count                first word whose AND is not zero
   B  R     popcount of the words inside each run           first run whose covered words hold a set bit
   R  R     sum of the overlap of each pair of runs         first pair of runs that overlap
 ```
@@ -319,13 +399,37 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
 - `andCountArrayBitset` is a sum of bit tests; `andCountArrayRuns` walks both lists when the runs number fewer than 16
   times the values, and finds each value's run by binary search when they number 16 times or more; `andCountBitsetRuns` is `bitsInRange` per
   run (the masked popcount of the covered words); `andCountRuns` adds `hi - lo + 1` for each overlapping pair of runs.
-- Two bitsets AND into `andWords` (2,048 words, overwritten whole by every call) and are counted by `popcountWords`, the
-  Harley-Seal count the building kernels use.
+- Two bitsets are counted by `popcountAnd`, the Harley-Seal tree of `popcountWords` with each word read as the AND of the
+  two operands' words, so nothing is written to a scratch and read back: one pass over 4,096 words, no module state.
+  `isEqual` of two bitsets compares their words and does not count; `isSubset` does not count either (section 7). Only
+  `isEqual` of two containers of different kinds counts, through the kernel for that pair.
 - `containersIntersect` is the early-exit form: each pair kind returns at the first shared value instead of counting
   all of them. Disjoint ranges of two arrays answer after reading only the four end values. `intersectsArrays` chooses as `andCountArrays`
   does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a
-  merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count. The
-  probe pays its set-and-clear even when the first value is shared.
+  merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count.
+  The probe pays its set-and-clear even when the first value is shared, so a pair that reaches it first takes up to
+  `MERGE_FIRST` (64) merge steps, which find an early shared value (two random sets of a thousand values in a chunk share
+  one within a few dozen steps) without setting a bit; only a pair that shares nothing that soon goes on to the probe,
+  from where the merge stopped. Two bitsets test eight words at a time and stop at the first group with a shared bit; a
+  bitset against runs asks `anyBitInRange` per run (stops at the first nonzero masked word, no popcount).
+
+### Subset without counting: `containersSubset`
+
+`isSubset` does not count. `containersSubset(a, b)` answers "is every value of `a` in `b`" by the kinds of the pair and stops
+at the first value `b` lacks; no scratch is written and nothing is popcounted. It returns false at once when `a` holds more
+values than `b`.
+
+```
+  A in A     merge (a value of `a` below the current value of `b` is missing) | gallop when `b` is 16x longer
+  A in B     one bit test per value, stop at the first clear bit
+  A in R     one walk of the runs against the values
+  B in B     OR of the eight words' (x AND NOT y), stop at the first group that is not zero
+  B in R     no set bit in the gaps before, between and after the runs (`anyBitInRange` per gap)
+  R in A     a run of n values is n consecutive entries of the array (both ascend without repeats), so two compares per run
+  R in B     every bit of each run set (`allBitsInRange`, stop at the first word that lacks one)
+  R in R     each run inside one run of `b` (maximal runs, so a run of `a` cannot straddle two)
+  B in A     the count (`containerAndCard`), taken only for a bitset of 4,096 values or fewer, which no codec result is
+```
 
 The bitmap-level operations in section 7 call these. A count is exact: `|A and B|` is the sum over shared keys of
 `containerAndCard`, and the other counts are arithmetic on it and the two sizes.
@@ -337,7 +441,9 @@ The bitmap-level operations in section 7 call these. A count is exact: `|A and B
 | `ARRAY_MAX_CARDINALITY` | 4,096 | everywhere a kind is chosen | the format's own array/bitset boundary: array body `2*card` reaches the bitset's 8,192 bytes at 4,096 |
 | `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays`, `andCountArrays`, `intersectsArrays`, `andCountArrayRuns` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
 | `PROBE_MIN` | 32 | `andArrays` and `andCountArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
-| `LONG_RUN` | 48 | `appendIds` | a run shorter than this is counted out; longer is copied from the `iota` table |
+| `SMALL_IDS` | 32 | `appendIds` | an array shorter than this is counted out; from here `base === 0` is one widening copy |
+| `LONG_RUN` | 48 | `appendIds` (runs) | a run of fewer values (counted from its start) is counted out; from here it is one widening copy out of the `iota` table |
+| `SMALL_BODY` | 64 | `putU16s` in `wire.ts` | a body of fewer `u16`s is written by a byte loop (little-endian on any machine); from here it is one view and `set` |
 | `SCRATCH_KEEP` | 65,536 | `values16`, `pairs16` | the most a scratch keeps for the life of the process |
 | `filterByRuns` rule | `a.len >= b.len` | array against runs | runs-first walk wins when values are at least as many as runs; the value walk skips runs a short array does not need |
 
@@ -359,15 +465,24 @@ All of these are in `bitmap.ts`.
   operand: a key both hold combines into a fresh container (the in-place form of the container kernel is never taken, so no
   operand storage is written), a container only the first operand holds is kept by reference and flagged shared (never for
   `and`, which keeps none), and a container only the second holds is deep-copied in for a union or an exclusive-or. `xor`
-  of a pair of containers is the union less the intersection, taken in place on the union's own fresh storage, so it needs no
-  kernel of its own; a pair with nothing left drops its key. Building the result as `clone()` followed by an in-place combine
+  of a pair of containers is `containerXor` (section 6), one pass over the pair; a pair with nothing left drops its key. Building the result as `clone()` followed by an in-place combine
   would flag every container of the first operand for good and make each later write to it copy a container, which is why
   these are separate walks.
 - **`add` / `remove`.** Binary search of the key list, then `containerAdd` / `containerRemove`. A new key splices in a
   one-value array. Removing a key's last value splices the key out.
 - **`addMany`.** Sorts the ids (in place if the array is the call's own; on a copy if it is the caller's `Uint32Array`),
-  groups them by key, builds one container per group with `fromSortedIds`, and for a key already held does
-  `containerOr(before, group, !before.shared)`. The key list is searched by `gallopKeys`, resuming from where the last
+  groups them by key and, for a key already held, writes a group of one to four ids with `containerAddSorted` (each id
+  put into the container it meets, with no container built for the group: a run container is edited by one gallop
+  search per id into a single working copy of its run list, a bitset has its bits set, in place unless it is shared, an
+  array has each id inserted). A larger group into a run container goes through `groupPath` (which `addMany` asks) to
+  `orRunIdsWalk` when the size rule of `orRunArray` sends it to the merge walk (`walksRunIds`): the same merge as
+  `orRunArrayWalk`, reading the ids where they are (low 16 bits, duplicates skipped) with no container built for the
+  group, and returning the run container itself when the ids add nothing. The rule refuses from 2,047 steps (the runs
+  plus the ids) up, because `2 + 4 * steps` then reaches the 8,192-byte plain body at most, so the band is about 5 to
+  2,046 ids for a key of one run, fewer for more runs, and fewer again when the result is small enough for the plain body
+  to be an array (then the rule refuses from 1,024 steps). Every other larger group (a run container the rule
+  sends through words, any other kind of container) is built into a container with `fromSortedIds` and merged with
+  `containerOr(before, group, !before.shared || before.kind === RUN)`; a key not held always gets its container from `fromSortedIds`. The key list is searched by `gallopKeys`, resuming from where the last
   group ended. New keys are collected and put in with one pass: pushed after the last key when they all follow it, else
   one merge pass over the key list.
 - **`removeMany`.** Same grouping; a container emptied by it is replaced by a sentinel and all emptied keys are dropped in
@@ -400,9 +515,13 @@ All of these are in `bitmap.ts`.
   ```
 
   `intersects` returns at the first container pair that shares a value (`containersIntersect`). `isSubset` returns false
-  at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when a container's
-  `containerAndCard` with its partner is below its own cardinality. `isEqual` compares the sizes and the key lists, then
-  each container pair's cardinality and `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
+  at once when `this` is larger than `other`, when a key of `this` is absent from `other`, or when `containersSubset`
+  finds a container with a value its partner lacks (no count). `isEqual` compares the sizes and the key lists, then
+  each container pair (`containersEqual`): two containers of one kind compare their words, values or run pairs, eight elements a step with the differences OR-ed and one test per group (arrays and runs
+  of 512 values or more (a run container counts two values a run, so 256 runs) go through a 32-bit view over the same bytes when both starts fall on a four-byte boundary, two values a step), and stop at the
+  first differing group (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
+  every writer of a run keeps its runs maximal, so one set has one list of pairs), and only a pair of different kinds falls back to
+  `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. The public class exposes all seven (section 13).
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
@@ -529,7 +648,7 @@ Both hold keys 0, 1 and 65535, so `andCardinality` meets three container pairs a
   |A xor B|    = 4 + 4 - 2 * 3 = 2     (5 and 65537)
   |A andNot B| = 4 - 3         = 1     (5)
   intersects: true at key 0, the first pair, so keys 1 and 65535 are never read
-  isSubset(A, B): false  (A is not larger than B, but key 0's count is 1, below A's 2 values there)
+  isSubset(A, B): false  (A is not larger than B, but key 0's container in A holds a value B's lacks)
 ```
 
 **Splitting an id.** `1234567890`: `1234567890 >>> 16 = 18838` (18838 * 65536 = 1,234,567,168), remainder
@@ -617,6 +736,12 @@ Everything here is a test, a workflow or a bench, not part of the module.
   copy-on-write against every mutator (before, during and with a clone during an `encodeChunks`), a bitmap combined with
   itself, and decodes that must not alias their input (a `Uint8Array`, a `Buffer`, a pooled `Buffer`, a
   `SharedArrayBuffer`, an offset subarray).
+- **The small-body loops** (`tests/roaring/small-body-loops.test.ts`): `appendIds` of run containers at every length around the
+  old table threshold and with every base, and the bytes of bodies of 0 to 70 values against CRoaring.
+- **Run results** (`tests/roaring/run-combine-results.test.ts`): every combine of two run containers is exact, canonical (maximal
+  ascending runs) and in its smallest kind, on whole bitmaps against CRoaring, through serialize and decode.
+- **The subset kernel** (`tests/roaring/container-subset.test.ts`): `containersSubset` and `containersIntersect` on every pair
+  of kinds against a plain set, at the first and last element, and on whole bitmaps against CRoaring.
 - **The counting kernels** (`tests/roaring/count-kernels.test.ts`): `containerAndCard` and `containersIntersect` against a
   `Set` for each of the nine ordered pairs of kinds (array, bitset, run on both sides, with the 16-bit kinds stored at an
   offset in a shared slab), over generated sets that pick every branch (few, many, runs, the chunk ends, one side far longer);
@@ -689,9 +814,10 @@ Everything here is a test, a workflow or a bench, not part of the module.
   have been written in place; `encodeChunks` flags containers shared, so a write after it copies and leaves what the
   iterator holds untouched. To change a bitmap while walking it, collect the ids first (`toUint32Array()`) or iterate a
   `clone()`.
-- **A combine can leave a run in the result.** A pair of containers combines into an array or a bitset, never a run, but a
-  key held by only one side keeps that side's container by reference (a union copies the other side's), and that
-  container may be a run. `optimize()` before `serialize()` is what makes stored bytes depend on the set alone.
+- **A combine can leave a run in the result.** A pair of containers combines into an array or a bitset, except that two run
+  containers, and a run container with an array for `or`, keep a run result while it is the smaller form, and a key held by only one side keeps that side's container by
+  reference (a union copies the other side's), and that container may be a run. `optimize()` before `serialize()` is what
+  makes stored bytes depend on the set alone.
 - **`encodeChunks` flags the bitmap's containers shared.** Membership and bytes are untouched; the next write to each
   container then copies it once.
 - **`safeDeserialize` copies its input** before checking it, once per decode.
@@ -730,10 +856,10 @@ Everything here is a test, a workflow or a bench, not part of the module.
   `Buffer` passed as ids is refused: each byte would be read as an id.
 - **The statics and `xorInPlace`.** `RoaringBitmap.and`, `or`, `xor` and `andNot` check both operands, call the matching
   `TsBitmap` static and wrap the result. `orMany` checks every element first (so nothing is combined when one is refused),
-  then folds each into an empty bitmap with `orInPlace`: the accumulator's containers are its own and unflagged, so each
-  part is added in place, the first part is deep-copied in, and no operand is written or flagged. `xorInPlace` takes the
-  intersection with `TsBitmap.and`, ORs the operand in, and removes the intersection (three passes, no new kernel); the
-  intersection is built first, so a bitmap xor-ed with itself is empty.
+  then calls `TsBitmap.orMany` (the many-way union above): the result's containers are its own and unflagged, and no
+  operand is written or flagged. `xorInPlace` is one in-place combine
+  (the same walk as `orInPlace`, with `containerXor` per shared key, a container only the operand holds copied in): a
+  bitset nobody else can see is written in place, and a bitmap xor-ed with itself is empty.
 - **Operands are branded.** `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics and a bitmap passed to `addMany` or `removeMany`
   are recognised by the class's private field, so one from a second installed copy of the package is refused rather than
   read through members it does not share. `addMany(bitmap)` is `orInPlace` and `removeMany(bitmap)` is `andNotInPlace`.

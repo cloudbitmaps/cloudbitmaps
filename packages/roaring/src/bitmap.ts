@@ -48,20 +48,23 @@ const viewGetter = (name: 'buffer'): ((this: unknown) => unknown) =>
   Object.getOwnPropertyDescriptor(VIEW, name)?.get as (this: unknown) => unknown;
 const bufferOf = viewGetter('buffer');
 
-const sharedByteLength =
-  typeof SharedArrayBuffer === 'function'
-    ? (Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get as
-        ((this: unknown) => unknown) | undefined)
-    : undefined;
+const plainByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')
+  ?.get as (this: unknown) => unknown;
+const hasSharedMemory = typeof SharedArrayBuffer === 'function';
 
-/** Whether the typed array's memory is a `SharedArrayBuffer`'s, by brand: another thread may write it while it is read. */
+/**
+ * Whether the typed array's memory may be a `SharedArrayBuffer`'s, by brand: another thread may write it while it is
+ * read. `ArrayBuffer`'s own `byteLength` getter returns for a genuine `ArrayBuffer` (so ordinary memory costs no throw)
+ * and throws for anything else, which is then treated as shared and copied; a `Symbol.toStringTag` can be given any
+ * value, the brand cannot. False on a runtime without a `SharedArrayBuffer`.
+ */
 function inSharedMemory(ids: Uint32Array): boolean {
-  if (sharedByteLength === undefined) return false;
+  if (!hasSharedMemory) return false;
   try {
-    sharedByteLength.call(bufferOf.call(ids));
-    return true;
-  } catch {
+    plainByteLength.call(bufferOf.call(ids));
     return false;
+  } catch {
+    return true;
   }
 }
 
@@ -76,7 +79,7 @@ function oneIdOnly(method: string, bulk: string): ValidationError {
 }
 
 /**
- * The ids to act on, as something the codec reads once and never keeps: a typed array in shared memory is copied first
+ * The ids to act on, as something the codec reads once and never keeps: a typed array that is, or may be, in shared memory is copied first
  * (it is read twice, to see whether it ascends and then to build, and another thread could write between the reads).
  *
  * @throws {ValidationError} for anything that is not an iterable of ids, and for bytes, which would read as ids.
@@ -104,7 +107,8 @@ const detachedCodec: CodecInterface = {
 };
 
 function maxBytesOf(options: unknown): number {
-  if (options !== undefined && (typeof options !== 'object' || options === null)) {
+  if (options === undefined) return MAX_SERIALIZED_LOAD_BYTES;
+  if (typeof options !== 'object' || options === null) {
     throw new ValidationError(
       `deserialize takes no format argument, the format is always portable; its second argument is ` +
         `{ maxBytes } or nothing, not ${kindOf(options)}`,
@@ -325,10 +329,7 @@ export class RoaringBitmap implements Iterable<number> {
    * @throws {ValidationError} if `other` is not a `RoaringBitmap` of this copy of the package.
    */
   xorInPlace(other: RoaringBitmap): this {
-    const that = RoaringBitmap.#operand(other);
-    const both = TsBitmap.and(this.#bitmap, that);
-    this.#bitmap.orInPlace(that);
-    this.#bitmap.andNotInPlace(both);
+    this.#bitmap.xorInPlace(RoaringBitmap.#operand(other));
     return this;
   }
 
@@ -465,9 +466,7 @@ export class RoaringBitmap implements Iterable<number> {
       throw new ValidationError('orMany takes an iterable of RoaringBitmap');
     }
     const parts = Array.from(bitmaps, (b) => RoaringBitmap.#operand(b));
-    const out = TsBitmap.empty();
-    for (const part of parts) out.orInPlace(part);
-    return RoaringBitmap.#wrap(out);
+    return RoaringBitmap.#wrap(TsBitmap.orMany(parts));
   }
 
   /** The ids in ascending order, each once. A bitmap that changes during the walk gives unspecified ids, and no error. */

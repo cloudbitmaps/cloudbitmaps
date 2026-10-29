@@ -182,22 +182,22 @@ function plainView(bytes: Uint8Array, what: string): Uint8Array {
   return length === 0 ? new Uint8Array(0) : new Uint8Array(buffer, offset, length);
 }
 
+const plainByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')
+  ?.get as (this: unknown) => unknown;
+const hasSharedMemory = typeof SharedArrayBuffer === 'function';
+
 /**
- * Whether `buffer` is a `SharedArrayBuffer`, by its brand: the type's own `byteLength` getter throws on anything
- * else, where a `Symbol.toStringTag` can be given any value. False on a runtime without one.
+ * Whether `buffer` may be a `SharedArrayBuffer`, by its brand: `ArrayBuffer`'s own `byteLength` getter returns for a
+ * genuine `ArrayBuffer` (ordinary memory costs no throw) and throws for anything else, which is then treated as shared
+ * and copied, where a `Symbol.toStringTag` can be given any value. False on a runtime without a `SharedArrayBuffer`.
  */
-const sharedByteLength =
-  typeof SharedArrayBuffer === 'function'
-    ? (Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get as
-        ((this: unknown) => unknown) | undefined)
-    : undefined;
 function isShared(buffer: ArrayBufferLike): boolean {
-  if (sharedByteLength === undefined) return false;
+  if (!hasSharedMemory) return false;
   try {
-    sharedByteLength.call(buffer);
-    return true;
-  } catch {
+    plainByteLength.call(buffer);
     return false;
+  } catch {
+    return true;
   }
 }
 

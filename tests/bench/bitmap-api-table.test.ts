@@ -30,12 +30,15 @@ const table = require_('./lib/bitmap-api-table.cjs') as {
   START: string;
   END: string;
   NOT_MEASURED: string;
-  render: (file: File) => string;
+  render: (file: File, decisions?: Decisions) => string;
   regionText: (doc: string, text: string) => string;
-  withRegion: (doc: string, text: string, file: File) => string;
-  problemsOf: (doc: string, text: string, file: File) => string[];
+  withRegion: (doc: string, text: string, file: File, decisions?: Decisions) => string;
+  problemsOf: (doc: string, text: string, file: File, decisions?: Decisions) => string[];
+  readDecisions: (root: string) => Decisions;
+  decisionProblems: (decisions: unknown) => string[];
   phraseProblems: (doc: string, text: string) => string[];
 };
+type Decisions = { date: string | null; words: string; accepted: string[] };
 const count = require_('./lib/bitmap-api-count.cjs') as { readResult: (root: string) => string };
 const pages = require_('./lib/bitmap-api-pages.cjs') as {
   REGION_PAGES: string[];
@@ -102,6 +105,24 @@ describe('the table of a record', () => {
     expect(table.problemsOf('p.md', text, GOOD)).toEqual([]);
   });
 
+  it('says how many fresh processes each first-call figure took: one for a pass that does not record it, the median of five otherwise', () => {
+    expect(table.regionText('p.md', text)).toContain(
+      'each first-call figure is one call in one fresh process;',
+    );
+    const five = good();
+    five.environment.coldProcesses = 5;
+    const region = table.render(fileOf(five));
+    expect(region).toContain(
+      'each first-call figure is the median of 5 fresh processes, one call in each;',
+    );
+    expect(region).not.toContain('one call in one fresh process');
+    expect(table.problemsOf('p.md', page(region), fileOf(five))).toEqual([]);
+    // A page that says one while the record says five is refused.
+    expect(table.problemsOf('p.md', page(table.render(GOOD)), fileOf(five)).join('\n')).toContain(
+      'not what',
+    );
+  });
+
   it('prints each ratio from the rounds, the commit, Node, the machine, the load, the round count and every cell', () => {
     const region = table.regionText('p.md', text);
     expect(region).toContain('commit `abcdef01`');
@@ -162,6 +183,9 @@ describe('the table of a record', () => {
     expect(region).toContain('compare the class with its check against native without one');
     expect(region).toContain('that policy difference');
     expect(region).toContain('only the first operand');
+    expect(region).toContain(
+      '`intersects overlapping` answers `true` at the first id the two bitmaps share',
+    );
     expect(region).toContain('`intersects disjoint` answers `false` after walking every key');
     expect(region).toContain('held to identical bytes');
   });
@@ -540,6 +564,92 @@ describe('the checks that hold the committed record, fired at lying records', ()
   });
 });
 
+describe("the maintainer's decision the table reads", () => {
+  const decided = (...accepted: string[]): Decisions => ({
+    date: '2026-10-26',
+    words: 'yes to your recommendations',
+    accepted,
+  });
+  const over = /More than 10 times native[^\n]*/;
+
+  it('changes nothing in the region while the list is empty', () => {
+    expect(table.render(GOOD, decided())).toBe(table.render(GOOD));
+    expect(table.render(GOOD)).toMatch(over);
+    expect(table.render(GOOD)).toContain('not shipped unless the maintainer decides otherwise');
+  });
+
+  it('says a listed method above the bar ships by the decision of that date, its figure disclosed', () => {
+    const region = table.render(GOOD, decided('toArray'));
+    expect(region).toContain(
+      'Shipping by the maintainer\'s decision of 2026-10-26 ("yes to your recommendations"), more than 10 times native on some data set and its figure disclosed: `toArray` (13.00 times, dense toArray).',
+    );
+    expect(region).not.toMatch(over);
+    expect(table.problemsOf('p.md', page(region), GOOD, decided('toArray'))).toEqual([]);
+  });
+
+  it('keeps the present sentence for a method above the bar that is not listed', () => {
+    const slow = completePass({
+      'runs or returning': { native: 10, ours: 50 },
+      'dense toArray': { native: 10, ours: 130 },
+      'dense has': { native: 10, ours: 150 },
+    });
+    const file = fileOf(slow);
+    const text = page(table.render(file, decided('toArray')));
+    const region = table.regionText('p.md', text);
+    expect(region).toContain("Shipping by the maintainer's decision of 2026-10-26");
+    expect(region).toMatch(/More than 10 times native[^\n]*\(15\.00 times, dense has\)/);
+    expect(region).not.toMatch(/More than 10 times native[^\n]*`toArray`/);
+    expect(table.problemsOf('p.md', text, file, decided('toArray'))).toEqual([]);
+  });
+
+  it('refuses a page that gives a listed method the old sentence, and one that gives an unlisted method the decision', () => {
+    const old = page(table.render(GOOD));
+    expect(table.problemsOf('p.md', old, GOOD, decided('toArray')).join('\n')).toContain(
+      'not what bench/bitmap-api-results.json renders to',
+    );
+    const said = page(table.render(GOOD, decided('toArray')));
+    expect(table.problemsOf('p.md', said, GOOD).join('\n')).toContain('not what');
+  });
+
+  it('refuses an accepted method that is not above the bar on the last complete pass', () => {
+    const stale = decided('has');
+    const problems = table.problemsOf('p.md', page(table.render(GOOD, stale)), GOOD, stale);
+    expect(problems.join('\n')).toContain("has is accepted by the maintainer's decision");
+    expect(problems.join('\n')).toContain('not above 10 times native');
+  });
+
+  it('refuses an accepted method when the record holds no complete pass', () => {
+    const none = decided('toArray');
+    expect(table.problemsOf('p.md', page(table.NOT_MEASURED), fileOf(), none).join('\n')).toContain(
+      'toArray is accepted',
+    );
+    expect(table.problemsOf('p.md', page(table.NOT_MEASURED), fileOf(), decided())).toEqual([]);
+  });
+
+  it('refuses a decision file that is malformed', () => {
+    expect(table.decisionProblems(decided())).toEqual([]);
+    expect(table.decisionProblems(decided('toArray'))).toEqual([]);
+    expect(
+      table.decisionProblems({ date: '26/10/2026', words: 'x', accepted: ['a'] }).join(),
+    ).toContain('date');
+    expect(
+      table.decisionProblems({ date: '2026-10-26', words: '', accepted: ['a'] }).join(),
+    ).toContain('words');
+    expect(
+      table.decisionProblems({ date: '2026-10-26', words: 'x', accepted: 'a' }).join(),
+    ).toContain('accepted');
+    expect(
+      table.decisionProblems({ date: '2026-10-26', words: 'x', accepted: ['a', 'a'] }).join(),
+    ).toContain('twice');
+    expect(table.decisionProblems(null).length).toBeGreaterThan(0);
+  });
+
+  it('is committed, well formed and read by the script', () => {
+    const committed = table.readDecisions(ROOT);
+    expect(table.decisionProblems(committed)).toEqual([]);
+  });
+});
+
 describe('the committed pages and record', () => {
   const file = JSON.parse(
     readFileSync(join(ROOT, 'bench/bitmap-api-results.json'), 'utf8'),
@@ -558,7 +668,14 @@ describe('the committed pages and record', () => {
 
   for (const doc of PAGES) {
     it(`${doc} carries the table of the record, and the not-measured state only while it holds no complete pass`, () => {
-      expect(table.problemsOf(doc, readFileSync(join(ROOT, doc), 'utf8'), file)).toEqual([]);
+      expect(
+        table.problemsOf(
+          doc,
+          readFileSync(join(ROOT, doc), 'utf8'),
+          file,
+          table.readDecisions(ROOT),
+        ),
+      ).toEqual([]);
     });
   }
 });
@@ -575,6 +692,11 @@ describe('the script', () => {
     const copy = mkdtempSync(join(tmpdir(), 'bitmap-api-table-'));
     cpSync(join(ROOT, 'bench'), join(copy, 'bench'), { recursive: true });
     writeFileSync(join(copy, 'bench/bitmap-api-results.json'), JSON.stringify(file));
+    // The planted record is not the committed one, so the committed decisions (which name methods of that record) do not apply to it.
+    writeFileSync(
+      join(copy, 'bench/bitmap-api-decisions.json'),
+      `${JSON.stringify({ date: null, words: '', accepted: [] })}\n`,
+    );
     writeFileSync(
       join(copy, 'bench/count-kernels.cjs'),
       `console.log('RESULT ${result}: planted');\nprocess.exitCode = 0;\n`,
@@ -617,6 +739,42 @@ describe('the script', () => {
         readFileSync(stale, 'utf8').replace(table.END, `an unrecorded 1.00 figure\n${table.END}`),
       );
       expect(run(copy, '--check').status).toBe(1);
+    });
+  });
+
+  it('reads the committed decisions of its own tree, so a listed method ships and a stale listing fails', () => {
+    const decisions = (...accepted: string[]): Decisions => ({
+      date: '2026-10-26',
+      words: 'yes to your recommendations',
+      accepted,
+    });
+    const plant = (copy: string, d: Decisions) => {
+      writeFileSync(join(copy, 'bench/bitmap-api-decisions.json'), `${JSON.stringify(d)}\n`);
+      for (const doc of PAGES) {
+        const text = readFileSync(join(copy, doc), 'utf8');
+        writeFileSync(join(copy, doc), table.withRegion(doc, text, GOOD, d));
+      }
+    };
+    using(GOOD, 'kept', (copy) => {
+      plant(copy, decisions('toArray'));
+      const ok = run(copy, '--check');
+      expect(ok.stderr).toBe('');
+      expect(ok.status).toBe(0);
+      expect(readFileSync(join(copy, PAGES[0]!), 'utf8')).toContain(
+        "Shipping by the maintainer's decision of 2026-10-26",
+      );
+    });
+    using(GOOD, 'kept', (copy) => {
+      plant(copy, decisions('has'));
+      const out = run(copy, '--check');
+      expect(out.status).toBe(1);
+      expect(out.stderr).toContain('has is accepted');
+    });
+    using(GOOD, 'kept', (copy) => {
+      writeFileSync(join(copy, 'bench/bitmap-api-decisions.json'), '{"accepted": 3}\n');
+      const out = run(copy, '--check');
+      expect(out.status).toBe(1);
+      expect(out.stderr).toContain('bitmap-api-decisions.json');
     });
   });
 

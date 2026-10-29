@@ -30,6 +30,7 @@ vi.mock('@/ts-roaring/containers', async (importOriginal) => {
     containerAnd: pair(real.containerAnd),
     containerOr: pair(real.containerOr),
     containerAndNot: pair(real.containerAndNot),
+    containerXor: pair(real.containerXor),
   };
 });
 
@@ -141,17 +142,10 @@ describe('the combines that return a new bitmap: which containers they flag and 
       run.call(TsBitmap, a, b);
       expect(seen.pairs.length).toBeGreaterThan(0);
       for (const [x, y, inPlace, out] of seen.pairs) {
-        if (inPlace === true) continue; // xor's last step, on the union's own fresh container
+        expect(inPlace).toBe(false);
         expect(out).not.toBe(x);
         expect(out).not.toBe(y);
       }
-      // xor's trailing in-place step takes its first argument from the union it just built, never an operand's.
-      const operandsHeld = new Set<unknown>([
-        ...containersOf((id) => a.has(id), KEYS_A).values(),
-        ...containersOf((id) => b.has(id), KEYS_B).values(),
-      ]);
-      for (const [x, , inPlace] of seen.pairs)
-        if (inPlace === true) expect(operandsHeld.has(x)).toBe(false);
     }
   });
 

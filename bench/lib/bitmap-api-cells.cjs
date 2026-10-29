@@ -29,6 +29,7 @@
 const { Buffer } = require('node:buffer');
 const { idsOf } = require('./codec-data.cjs');
 const { measureSteadyCpu, measureColdCpu } = require('./codec-ops.cjs');
+const paired = require('./paired-verdict.cjs');
 
 /** The hard size cap a decode passes, as the store does. */
 const CAP = 1 << 26;
@@ -606,6 +607,65 @@ function timeCell(cell, api, { warmMs, sampleMs }) {
   return { ns: +timed.ns.toFixed(1), cpuNs: +timed.cpuNs.toFixed(1), answer };
 }
 
+/** The fresh processes a cold sample is the median of in a full-scale pass; a tiny-scale (smoke) pass takes one. */
+const COLD_PROCESSES = 5;
+
+/** The fresh processes a cold cell is timed in, for one sample of one subject: each is one first call. */
+function coldProcessesOf(small) {
+  return small ? 1 : COLD_PROCESSES;
+}
+
+/**
+ * Which of one sample's processes slept: the paired bench's sleep rule (more than 100 times the median, and less than
+ * half of the wall time on CPU), judged against the median of the sample's own processes, which are all one call in one
+ * fresh process and so alike. One or two processes have no median to judge by, so none is called slept.
+ */
+function sleptProcesses(outputs) {
+  if (outputs.length < 3) return outputs.map(() => false);
+  const mid = paired.median(outputs.map((o) => o.ns));
+  return outputs.map((o) => paired.sleptFigure(o.ns, mid, o.cpuNs));
+}
+
+/**
+ * One cold sample from `processes` fresh processes (`spawn()` runs one and returns its `{ ns, cpuNs, answer }`): a
+ * process that slept is set aside before the median and another is run in its place, as a round that slept is set aside
+ * and taken again. Returns `{ sample, slept }`, `slept` the processes set aside. Throws a `RangeError` when more than
+ * `processes` were set aside for one sample, so a machine that keeps sleeping stops the run.
+ */
+function takeColdSample(spawn, processes) {
+  let pool = Array.from({ length: processes }, () => spawn());
+  let slept = 0;
+  for (;;) {
+    const flags = sleptProcesses(pool);
+    const awake = pool.filter((_, i) => !flags[i]);
+    const set = pool.length - awake.length;
+    if (set === 0) return { sample: oneColdSample(pool), slept };
+    slept += set;
+    if (slept > processes) throw new RangeError(`${slept} cold processes slept: not measuring`);
+    pool = [...awake, ...Array.from({ length: set }, () => spawn())];
+  }
+}
+
+/**
+ * One sample from the outputs of several fresh processes timing the same cold cell on the same subject: the median wall
+ * and CPU figures, and the answer (the processes' common answer, or all of theirs joined when they differ, so the
+ * subjects' answers still disagree visibly).
+ */
+function oneColdSample(outputs) {
+  if (outputs.length === 0) throw new RangeError('a cold sample needs at least one process');
+  const median = (field) => {
+    const v = outputs.map((o) => o[field]).sort((x, y) => x - y);
+    const mid = v.length >> 1;
+    return v.length % 2 === 1 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+  };
+  const answers = outputs.map((o) => o.answer);
+  return {
+    ns: median('ns'),
+    cpuNs: median('cpuNs'),
+    answer: answers.every((a) => a === answers[0]) ? answers[0] : answers.join('|'),
+  };
+}
+
 /** Times one cold cell on one subject, once. */
 function timeCold(cell, api) {
   const fn = cell.make(api);
@@ -634,4 +694,9 @@ module.exports = {
   runsOn,
   timeCell,
   timeCold,
+  COLD_PROCESSES,
+  coldProcessesOf,
+  oneColdSample,
+  sleptProcesses,
+  takeColdSample,
 };

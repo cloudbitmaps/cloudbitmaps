@@ -40,8 +40,8 @@ so, and so do the module headers in the code.
   owns its storage; no operand's ids change, and a result and its operands change apart afterwards. `and` keeps no
   container of either operand. `or`, `xor` and `andNot` keep a container only the first operand holds by reference,
   flagged copy-on-write, so the next write to that container, on either side, copies it once. `orMany` builds the
-  union in containers of its own and flags nothing. `xorInPlace(other)` is the symmetric difference in place, derived from
-  the intersection, a union and a removal, with no kernel of its own. An operand that is not a `RoaringBitmap` of this
+  union in containers of its own and flags nothing. `xorInPlace(other)` is the symmetric difference in place, one pass over each pair of
+  containers that share a key. An operand that is not a `RoaringBitmap` of this
   copy of the package is a `ValidationError`, as for the in-place combines. `RoaringBitmap.orMany` replaces the
   `orMany` of the `roaring` package in the recipe for parts of one segment built separately.
 
@@ -51,8 +51,16 @@ so, and so do the module headers in the code.
   `clone` (copy-on-write), `andInPlace`, `orInPlace`, `andNotInPlace`, `xorInPlace`, the statics `RoaringBitmap.and`,
   `or`, `xor`, `andNot` and `orMany` that return a new bitmap, `RoaringBitmap.deserialize`, `has`, `size`, `isEmpty`,
   `minimum` and `maximum` (`undefined` when empty), iteration in ascending order, `toArray`, `toUint32Array`,
-  `serialize()` and `runOptimize()`. Every id argument is checked and throws `ValidationError` with a message that never
-  repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
+  `serialize()` and `runOptimize()`. A write into a run container keeps it a run container while the run form is the
+  smaller one, so `serialize()` without `runOptimize()` can write a run container where an earlier version wrote an array
+  or a bitset: a valid encoding of the same set, and only `runOptimize()` makes the bytes depend on the set alone. A group
+  of one to four ids of an `addMany` goes into the container it meets without a container built for the group, and the
+  union of a run container with an array is merged into the run list, or, from about a thousand runs and ids and when the
+  result cannot sensibly be a run container, written through words; the result is the same container either way. `isEqual`
+  compares eight values a step, and the values of an array or run container two at a time through a 32-bit view from 512
+  values (256 runs for a run container); `orMany` ORs four bitsets at a time into its accumulator (from four bitsets,
+  without copying the first); `deserialize` with no options skips the option checks. Every id argument is checked and
+  throws `ValidationError` with a message that never repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
   is no `toJSON`, so `JSON.stringify(bitmap)` gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   lists each method and where it differs from the `roaring` package.
 
@@ -63,6 +71,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A `Proxy`, or any buffer the check cannot prove ordinary, is copied before ids or bytes are read.** The test for
+  shared memory used to read a throw as "not shared", so a `Proxy` over a `Uint32Array` on a `SharedArrayBuffer` reached
+  `addMany`, the constructor and `removeMany` uncopied. The check now asks `ArrayBuffer`'s own `byteLength` getter, which
+  returns only for a genuine `ArrayBuffer` and throws for everything else, and copies when it throws (a `SharedArrayBuffer`
+  from any context, a forged tag, a `Proxy`); it answers "not shared" only on a runtime that has no `SharedArrayBuffer`.
+  The same holds for `{ serialized }` bytes on a load.
 - **The erasure's search of the other generations range-checks the stored chunk it reads.** A chunk read there holding
   a value outside the 16-bit remainder range (a container key above 0, which the lookup of the id cannot see) was
   taken for "does not hold the id", so an erasure could report the id as not held. It now fails with `IntegrityError`,
