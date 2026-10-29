@@ -116,90 +116,90 @@ the `roaring` package it is compared with, cell by cell, generated from
 
 <!-- BITMAP_API:TABLE:START -->
 
-**Measured** on Apple M3 Pro (11 cores), darwin arm64, Node v24.22.1, commit `3be54a7e` (dirty tree), `roaring` 2.7.0, 31 rounds a figure, pass 2, started 2026-10-27. Each figure is the median over the rounds of the class's time divided by the `roaring` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; each first-call figure is one call in one fresh process; the kept rounds ended at a load of at most 5.96 and 448 rounds were set aside at 6 or more and taken again (at most 7 of any one figure, on 96 figures). Recorded, never asserted.
+**Measured** on Apple M3 Pro (11 cores), darwin arm64, Node v24.22.1, commit `26fc4582` (dirty tree), `roaring` 2.7.0, 31 rounds a figure, pass 3, started 2026-10-28. Each figure is the median over the rounds of the class's time divided by the `roaring` package's in the same round, so 2.00 means twice as slow and 0.50 half the time. One subject per process, rotated orders, an A/A control per cell, wall-clock on one machine; each first-call figure is the median of 5 fresh processes, one call in each; the kept rounds ended at a load of at most 5.90 and 131 rounds were set aside at 6 or more and taken again (at most 2 of any one figure, on 99 figures). Recorded, never asserted.
 
 | Against `roaring` (class time / native time) | Group | dense | sparse | runs | mixed | spread8k |
 |---|---|---:|---:|---:|---:|---:|
-| `build array` | build | 2.15 | 1.23 | 2.39 | 2.40 | 0.59 * |
-| `build Uint32Array` | build | 1.66 | 0.93 | 1.64 | 1.64 | 0.37 |
-| `build addMany` | build | 1.66 | 0.95 | 1.64 | 1.64 | 0.38 |
-| `build add per id` | build | 1.08 | 2.41 | 1.12 | 1.10 | 1.73 |
-| `has` | has | 0.33 | 0.82 | 0.79 | 0.62 | 0.65 |
-| `and returning` | combine returning | 2.90 * | 0.46 | 2.51 * | 1.35 | 0.90 |
-| `or returning` | combine returning | 2.62 * | 1.94 | 2.22 | 1.85 * | 1.72 |
-| `xor returning` | combine returning | 2.40 | 1.59 | 1.84 | 1.50 | 2.21 |
-| `andNot returning` | combine returning | 2.68 * | 0.49 | 2.55 | 2.03 | 1.86 |
-| `and in place` | combine in place | 3.30 | 0.46 | 2.09 | 2.13 * | 0.87 |
-| `or in place` | combine in place | 3.14 | 1.97 | 1.78 | 2.02 * | 1.06 |
-| `xor in place` | combine in place | 2.47 * | 1.61 | 1.80 | 1.79 | 1.26 |
-| `andNot in place` | combine in place | 2.46 | 0.50 | 2.19 | 2.79 | 1.75 |
-| `serialize` | serialize | 0.25 * | 0.29 * | 0.47 * | 0.32 * | 2.68 |
-| `deserialize` | serialize | 2.83 | 5.50 | 5.29 | 4.26 | 4.55 |
-| `runOptimize` | serialize | 0.41 | 2.40 | 0.06 | 0.70 | 0.32 |
-| `iterate` | export | 1.12 | 1.40 | 1.06 | 1.10 | 1.04 |
-| `toUint32Array` | export | 1.72 * | 2.02 | 4.71 | 2.34 | 3.17 |
-| `toArray` | export | 0.52 * | 0.44 | 0.54 * | 0.50 | 0.48 |
-| `orMany 8` | orMany | 5.79 | 1.14 | 5.75 | 2.50 | 1.28 |
-| `orMany 64` | orMany | 22.82 | 0.92 | 6.96 | 2.40 | 0.89 |
+| `build array` | build | 2.13 | 1.21 | 2.40 | 2.37 | 0.44 |
+| `build Uint32Array` | build | 1.65 | 0.91 | 1.64 | 1.72 | 0.35 |
+| `build addMany` | build | 1.65 | 0.95 | 1.64 | 1.63 | 0.40 |
+| `build add per id` | build | 1.07 | 2.41 | 1.10 | 1.08 | 1.73 |
+| `has` | has | 0.33 | 0.81 | 0.96 | 0.62 | 0.69 |
+| `and returning` | combine returning | 3.13 | 0.47 | 0.92 | 2.73 | 0.90 |
+| `or returning` | combine returning | 2.47 | 1.97 | 2.20 | 2.32 * | 1.65 |
+| `xor returning` | combine returning | 2.91 | 1.63 * | 1.76 | 1.48 | 2.03 |
+| `andNot returning` | combine returning | 2.89 | 0.49 | 2.57 | 2.23 | 1.63 |
+| `and in place` | combine in place | 2.51 | 0.45 | 2.01 | 1.53 | 0.87 |
+| `or in place` | combine in place | 3.00 | 1.98 | 1.82 | 1.86 * | 1.04 |
+| `xor in place` | combine in place | 2.52 | 1.59 | 1.83 | 1.37 | 1.20 |
+| `andNot in place` | combine in place | 2.42 | 0.50 | 0.99 | 2.82 | 1.73 |
+| `serialize` | serialize | 0.21 * | 0.25 | 0.61 | 0.25 * | 2.72 |
+| `deserialize` | serialize | 2.74 * | 6.23 | 3.76 | 3.01 | 4.71 |
+| `runOptimize` | serialize | 0.42 | 2.38 | 0.06 | 0.69 | 0.32 |
+| `iterate` | export | 1.14 | 1.41 | 1.07 | 1.09 | 1.02 |
+| `toUint32Array` | export | 1.66 | 2.00 | 4.47 | 2.17 | 3.34 |
+| `toArray` | export | 0.52 | 0.42 | 0.49 | 0.49 | 0.45 |
+| `orMany 8` | orMany | 3.15 | 1.14 | 2.76 | 1.89 | 1.28 |
+| `orMany 64` | orMany | 10.91 | 0.92 | 3.48 | 1.46 | 0.78 |
 | `clone` | clone | 0.00 | 0.01 | 0.01 | 0.00 | 0.06 |
-| `clone then write` | clone | 1.66 | 2.86 | 4.46 | 1.62 * | 0.76 |
-| `andCardinality` | count | 8.66 | 0.41 | 1.76 * | 2.06 | 1.57 |
-| `orCardinality` | count | 7.88 | 0.41 | 1.73 * | 2.14 | 1.56 |
-| `isSubset` | compare | 3.11 | 0.39 | 3.67 | 0.07 | 1.61 |
-| `isEqual` | compare | 8.09 | 16.89 | 19.44 | 10.19 | 8.12 |
-| `intersects overlapping` | count | 0.67 | 7.62 | 0.57 | 0.66 | 2.25 |
-| `intersects disjoint` | count | 3.18 | 0.41 | 3.06 | 2.05 | 1.45 |
-| `write after or` | write after combine | 12.43 * | 4.98 | 8.32 | 6.55 * | 1.16 |
-| `write after xor` | write after combine | 12.62 * | 5.23 | 9.82 * | 6.57 | 1.13 |
-| `write after andNot` | write after combine | 14.32 * | 5.87 | 10.03 * | 6.84 | 1.14 |
+| `clone then write` | clone | 0.76 | 1.69 | 2.09 | 1.05 | 1.17 |
+| `andCardinality` | count | 8.62 | 0.41 | 1.83 | 2.04 | 1.62 |
+| `orCardinality` | count | 7.92 | 0.41 | 1.68 | 2.13 | 1.58 |
+| `isSubset` | compare | 3.14 | 0.36 | 3.69 | 0.07 | 1.61 |
+| `isEqual` | compare | 4.96 | 4.07 | 11.66 | 5.02 | 6.29 |
+| `intersects overlapping` | count | 0.66 | 7.97 | 0.57 | 0.66 | 2.34 |
+| `intersects disjoint` | count | 3.18 | 0.42 | 3.05 | 2.05 | 1.48 |
+| `write after or` | write after combine | 2.70 * | 2.36 | 7.03 | 3.09 | 1.29 |
+| `write after xor` | write after combine | 3.25 | 2.77 | 8.33 | 3.21 | 1.29 |
+| `write after andNot` | write after combine | 3.57 | 2.82 | 9.35 | 3.42 | 1.31 |
 
 | The shell against the codec's own call (class time / codec time) | Group | dense | sparse | runs | mixed | spread8k |
 |---|---|---:|---:|---:|---:|---:|
-| `build array` | build | 1.01 | 1.07 | 1.00 | 1.00 | 1.09 * |
-| `build Uint32Array` | build | 1.01 | 1.01 | 1.00 | 1.00 | 1.05 |
-| `build addMany` | build | 1.01 | 1.01 | 1.00 | 1.00 | 1.07 |
-| `build add per id` | build | 1.09 | 1.00 | 1.08 | 1.07 | 1.03 |
-| `has` | has | 1.13 | 1.02 | 1.02 | 1.06 | 0.89 |
-| `and returning` | combine returning | 1.63 * | 1.02 | 0.92 * | 1.04 | 1.05 |
-| `or returning` | combine returning | 1.57 * | 1.00 | 1.03 | 1.13 * | 1.13 |
-| `xor returning` | combine returning | 1.27 | 1.01 | 1.01 | 0.97 | 1.22 |
-| `andNot returning` | combine returning | 1.62 * | 1.02 | 0.98 | 0.85 | 1.20 |
-| `and in place` | combine in place | 1.29 | 1.03 | 0.94 | 1.12 * | 1.06 |
-| `or in place` | combine in place | 1.34 | 1.02 | 1.02 | 1.12 * | 1.12 |
-| `andNot in place` | combine in place | 1.07 | 1.01 | 1.01 | 0.82 | 1.07 |
-| `serialize` | serialize | 1.10 * | 1.06 * | 1.06 * | 1.05 * | 1.06 |
-| `deserialize` | serialize | 1.61 | 1.14 | 1.14 | 1.26 | 2.35 |
-| `runOptimize` | serialize | 1.25 | 0.84 | 1.25 | 1.06 | 1.14 |
-| `iterate` | export | 0.99 | 1.10 | 1.00 | 1.05 | 1.26 |
-| `toUint32Array` | export | 1.08 * | 0.99 | 0.99 | 0.96 | 0.96 |
-| `toArray` | export | 1.01 * | 0.99 | 1.01 * | 1.00 | 1.00 |
-| `clone` | clone | 1.08 | 1.01 | 1.05 | 1.05 | 1.43 |
-| `clone then write` | clone | 1.32 | 1.03 | 1.10 | 1.15 * | 1.01 |
-| `andCardinality` | count | 0.57 | 0.92 | 0.70 * | 0.65 | 0.97 |
-| `orCardinality` | count | 0.61 | 0.21 | 0.51 * | 0.34 | 0.65 |
-| `write after or` | write after combine | 2.67 * | 1.07 | 1.45 | 1.20 * | 1.09 |
-| `write after xor` | write after combine | 3.02 * | 1.07 | 1.43 * | 1.18 | 1.07 |
-| `write after andNot` | write after combine | 3.34 * | 1.05 | 1.38 * | 1.17 | 1.08 |
+| `build array` | build | 1.00 | 1.00 | 1.00 | 1.00 | 1.03 |
+| `build Uint32Array` | build | 1.00 | 1.01 | 1.00 | 1.00 | 1.02 |
+| `build addMany` | build | 1.00 | 1.00 | 1.00 | 1.00 | 1.03 |
+| `build add per id` | build | 1.10 | 1.02 | 1.09 | 1.08 | 1.03 |
+| `has` | has | 1.12 | 1.04 | 1.11 | 1.04 | 0.92 |
+| `and returning` | combine returning | 1.33 | 1.03 | 0.97 | 1.04 | 1.05 |
+| `or returning` | combine returning | 1.28 | 1.01 | 1.03 | 1.19 * | 1.10 |
+| `xor returning` | combine returning | 1.50 | 1.02 * | 1.01 | 1.05 | 1.15 |
+| `andNot returning` | combine returning | 1.37 | 1.01 | 0.98 | 0.84 | 1.05 |
+| `and in place` | combine in place | 1.25 | 1.03 | 0.96 | 1.05 | 1.04 |
+| `or in place` | combine in place | 1.49 | 1.02 | 1.03 | 1.07 * | 1.09 |
+| `andNot in place` | combine in place | 1.08 | 1.01 | 1.06 | 0.82 | 1.05 |
+| `serialize` | serialize | 0.95 * | 1.03 | 1.00 | 1.03 * | 1.06 |
+| `deserialize` | serialize | 1.61 * | 1.30 | 1.43 | 1.25 | 2.62 |
+| `runOptimize` | serialize | 1.26 | 0.81 | 1.23 | 1.07 | 1.14 |
+| `iterate` | export | 0.99 | 1.10 | 1.00 | 1.05 | 1.25 |
+| `toUint32Array` | export | 1.03 | 1.00 | 1.00 | 0.99 | 0.96 |
+| `toArray` | export | 0.99 | 1.01 | 1.00 | 0.99 | 1.00 |
+| `clone` | clone | 1.05 | 1.02 | 1.03 | 1.00 | 1.40 |
+| `clone then write` | clone | 1.00 | 0.98 | 0.88 | 0.96 | 1.12 |
+| `andCardinality` | count | 0.57 | 0.92 | 0.70 | 0.66 | 1.00 |
+| `orCardinality` | count | 0.61 | 0.20 | 0.54 | 0.40 | 0.65 |
+| `write after or` | write after combine | 1.31 * | 1.10 | 1.53 | 1.12 | 1.06 |
+| `write after xor` | write after combine | 1.22 | 1.17 | 1.56 | 1.11 | 1.07 |
+| `write after andNot` | write after combine | 1.18 | 1.08 | 1.51 | 1.12 | 1.06 |
 
 | The first call in a fresh process (`mixed`) | Class / native | Class / codec |
 |---|---:|---:|
-| `first deserialize` | 13.04 * | 1.19 * |
-| `first build` | 2.35 | 1.01 |
-| `first and` | 7.09 | 1.00 |
+| `first deserialize` | 13.51 * | 1.13 * |
+| `first build` | 2.41 | 1.01 |
+| `first and` | 7.25 | 1.02 |
 
 | `store.load(ref, { bitmap })` | Load (ms) | `serialize` (ms) | `deserialize` (ms) | Round trip, share of a load |
 |---|---:|---:|---:|---:|
-| dense | 1.02 | 0.028 | 0.141 | 16.1% |
-| sparse | 2.34 | 0.044 | 0.427 | 20.2% |
-| runs | 0.822 | 0.022 | 0.132 | 19.1% |
-| mixed | 1.75 | 0.046 | 0.275 | 18.4% |
-| spread8k | 13.5 | 0.418 | 2.00 | 18.3% |
+| dense | 0.973 | 0.022 | 0.118 | 14.5% |
+| sparse | 2.18 | 0.042 | 0.403 | 20.2% |
+| runs | 1.01 | 0.022 | 0.124 | 15.3% |
+| mixed | 1.77 | 0.057 | 0.270 | 17.9% |
+| spread8k | 13.9 | 0.415 | 2.02 | 17.9% |
 
 \* The A/A control of this cell differed from the class by more than 2%, so the figure is not resolved.
 
-Close to native (within 3 times native on every cell of the group, every control in band): has.
-Not called close to native: build (worst 2.41 times, sparse build add per id; 1 cell(s) with a control out of band); combine returning (worst 2.90 times, dense and returning; 5 cell(s) with a control out of band); combine in place (worst 3.30 times, dense and in place; 3 cell(s) with a control out of band); serialize (worst 5.50 times, sparse deserialize; 4 cell(s) with a control out of band); export (worst 4.71 times, runs toUint32Array; 3 cell(s) with a control out of band); orMany (worst 22.82 times, dense orMany 64); clone (worst 4.46 times, runs clone then write; 1 cell(s) with a control out of band); count (worst 8.66 times, dense andCardinality; 2 cell(s) with a control out of band); compare (worst 19.44 times, runs isEqual); write after combine (worst 14.32 times, dense write after andNot; 6 cell(s) with a control out of band); cold (worst 13.04 times, cold first deserialize; 1 cell(s) with a control out of band).
-More than 10 times native on some data set, so not shipped unless the maintainer decides otherwise having seen this table: `RoaringBitmap.orMany` (22.82 times, dense orMany 64); `isEqual` (19.44 times, runs isEqual); `RoaringBitmap.andNot` (14.32 times, dense write after andNot); `RoaringBitmap.deserialize` (13.04 times, cold first deserialize); `RoaringBitmap.xor` (12.62 times, dense write after xor); `RoaringBitmap.or` (12.43 times, dense write after or).
+Close to native (within 3 times native on every cell of the group, every control in band): build, has, clone.
+Not called close to native: combine returning (worst 3.13 times, dense and returning; 2 cell(s) with a control out of band); combine in place (worst 3.00 times, dense or in place; 1 cell(s) with a control out of band); serialize (worst 6.23 times, sparse deserialize; 3 cell(s) with a control out of band); export (worst 4.47 times, runs toUint32Array); orMany (worst 10.91 times, dense orMany 64); count (worst 8.62 times, dense andCardinality); compare (worst 11.66 times, runs isEqual); write after combine (worst 9.35 times, runs write after andNot; 1 cell(s) with a control out of band); cold (worst 13.51 times, cold first deserialize; 1 cell(s) with a control out of band).
+More than 10 times native on some data set, so not shipped unless the maintainer decides otherwise having seen this table: `RoaringBitmap.deserialize` (13.51 times, cold first deserialize); `isEqual` (11.66 times, runs isEqual); `RoaringBitmap.orMany` (10.91 times, dense orMany 64).
 
 The class answered `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality` and `intersects` by the count kernels in this pass; the count kernels' own bench (`bench/count-kernels.cjs`) kept them: `andCardinality` took less time than building and counting on every operand-pair group it judges. The codec column of `andCardinality` and `orCardinality` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.
 
