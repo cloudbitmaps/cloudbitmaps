@@ -33,6 +33,7 @@ import {
   transientFaultMessage,
 } from '@/s3/s3-errors';
 import { scrubCredentials } from '@/s3/scrub-error';
+import { refusedPort } from '../../helpers/refused-port';
 
 /**
  * The scrubbed copy of an SDK error classifies exactly as the raw error does, so the driver maps every S3 answer to the
@@ -262,10 +263,7 @@ describe('S3: a scrubbed SDK error classifies as the raw one', LIMIT, () => {
       });
 
       it('refused connection', async () => {
-        const closed = createServer();
-        await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-        const port = (closed.address() as AddressInfo).port;
-        await new Promise<void>((resolve) => closed.close(() => resolve()));
+        const port = await refusedPort();
         const c = client(session, `http://127.0.0.1:${port}`);
         try {
           const err = await rawError(c, command);

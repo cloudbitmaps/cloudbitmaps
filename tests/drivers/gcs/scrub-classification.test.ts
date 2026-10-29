@@ -21,7 +21,6 @@ import {
 import { downloadFile, readOnce } from '@/gcs/read-once';
 import { Deadline, ReadTimedOut, withDeadline } from '@/gcs/read-timeout';
 import { scrubCredentials } from '@/gcs/scrub-error';
-import { refusedPort } from '../../helpers/refused-port';
 import { saveOnce } from '@/gcs/send-once';
 import {
   ACCESS_TOKEN,
@@ -39,6 +38,7 @@ import {
   type Answer,
 } from '../../helpers/gcs-error-answers';
 import { ApiError } from '../../helpers/gcs-api-error';
+import { refusedPort } from '../../helpers/refused-port';
 
 /**
  * The scrubbed copy of a GCS SDK error classifies exactly as the raw error does, so the driver maps every GCS answer to

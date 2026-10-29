@@ -23,8 +23,10 @@ if (endpoint === undefined || call === undefined)
 // `net.connect` hands it one normalized array, `[options, callback]`, rather than the options themselves.
 const port = Number(new URL(endpoint).port);
 let connects = 0;
-// Each of those connects with the port and how it ended: an error code, or `connected`.
-const attempts: { port: number; code: string }[] = [];
+// How each of those connects ended: its error code, or `connected`. The `error` listener it adds is on sockets
+// to the stub's port only; it would keep a socket error nothing else handles from crashing the child, and the SDK
+// attaches its own.
+const attempts: { code: string }[] = [];
 const connect = Socket.prototype.connect;
 Socket.prototype.connect = function (this: Socket, ...args: unknown[]): Socket {
   const first: unknown = Array.isArray(args[0]) ? (args[0] as unknown[])[0] : args[0];
@@ -32,7 +34,7 @@ Socket.prototype.connect = function (this: Socket, ...args: unknown[]): Socket {
     typeof first === 'object' && first !== null ? (first as { port?: unknown }).port : first;
   if (Number(target) === port) {
     connects++;
-    const attempt = { port, code: 'pending' };
+    const attempt = { code: 'pending' };
     attempts.push(attempt);
     this.once('connect', () => (attempt.code = 'connected'));
     this.once('error', (err: NodeJS.ErrnoException) => (attempt.code = err.code ?? err.message));
