@@ -8,7 +8,7 @@ a playbook page is run by the repo's tests, in order, as one program against the
 change that breaks a page fails CI. The pages are also compiled under `strict` with the other documentation samples.
 
 To follow one, install `@cloudbitmaps/roaring`, copy a page's blocks in order into one TypeScript file and run it with
-your TypeScript runner as an ES module, which allows the top-level `await` the blocks use. The pages that import `RoaringBitmap` need 0.25.0 or later (unreleased). Each page says what it does not claim: a playbook on
+your TypeScript runner as an ES module, which allows the top-level `await` the blocks use. The pages that import `RoaringBitmap` need 0.25.0 or later. Each page says what it does not claim: a playbook on
 `MemoryStorage` shows what the calls do, not what a bucket costs or how long it takes. For that, see [the cost guide](../guide/cost.md) and [the benchmarks](../benchmarks.md).
 
 | Playbook | What it does | What it uses | Size |

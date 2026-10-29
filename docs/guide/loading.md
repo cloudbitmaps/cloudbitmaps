@@ -122,7 +122,7 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
   deleted under the `destroyed` row ([how a load stays correct](correctness.md#how-a-load-stays-correct)).
 
 **A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
-rather than its ids. A `RoaringBitmap` (0.25.0 and later; unreleased) loads as it is; `{ bitmap }` takes anything with
+rather than its ids. A `RoaringBitmap` (0.25.0 and later) loads as it is; `{ bitmap }` takes anything with
 `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`;
 `{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
 export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
