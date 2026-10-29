@@ -144,7 +144,7 @@ function ruleLines(pass, decisions) {
   }
   if (shipping.length > 0) {
     lines.push(
-      `${DECIDED_PREFIX} ${decisions.date} ("${decisions.words}"), more than ${verdict.SHIP_BAR} times native on some data set and its figure disclosed: ${named(shipping)}.`,
+      `${DECIDED_PREFIX} ${decisions.date} (${decisions.words}), more than ${verdict.SHIP_BAR} times native on some data set and its figure disclosed: ${named(shipping)}.`,
     );
   }
   if (unlisted.length > 0) {

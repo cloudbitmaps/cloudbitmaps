@@ -301,11 +301,34 @@ branch-free; else a merge. The 32 here is a floor on the second operand, where `
 
 ### Bitsets
 
-`B` against `B` is a 2,048-word loop. The result's cardinality is counted by `popcountWords`, a Harley-Seal
+`B` against `B` is a 2,048-word loop, four words a step for `and`, `or`, `xor` and `andNot` (the loads of a group are taken before its stores, so the result may be either operand, as an in-place combine and a combine of a bitset with itself need). A stand-alone probe of the four loops over 128 container pairs timed each 21 percent faster than one word a step (indicative, probe). The result's cardinality is counted by `popcountWords`, a Harley-Seal
 carry-save-adder tree over sixteen words at a time in plain 32-bit integer arithmetic (no `BigInt`), so one word in
 sixteen takes a bit count. A bitset that ends at 4,096 or fewer values is converted to an array (`fromWordsCard`).
 `orIntoBitset` counts as it sets when the other side is an array (a per-bit test of the old word), and recounts with
 `popcountWords` when it ORs words or runs.
+
+`popcountWords` (and the one-word `popcount32`) live in `portable/popcount.ts`, not in `containers.ts`, because the layout
+check counts a stored bitset with the same function before any container exists, and `portable/` imports nothing from
+`ts-roaring/`.
+
+### How the layout check reads a body
+
+`portable/layout.ts` reads every stored body once and proves its structure (see its header for the rules). The bytes
+are not trusted, so the reads are bounds-checked against the buffer's length before a typed array is made over them.
+
+```
+  body          where it sits                         how it is checked
+  bitset        4-byte aligned in the buffer          Uint32Array over the body, counted in place by popcountWords
+                any other offset                      the 8 KiB are copied into a module scratch Uint32Array, then counted
+  array         any                                   two values per u32 through the DataView
+  run container any                                   one u32 per run through the DataView
+```
+
+"Aligned" is the buffer's own `byteOffset` plus the body's offset in it, because a typed array needs a multiple of its
+element size. The bit count does not depend on byte order, so a bitset takes the view path on any machine. Arrays and
+runs go through the `DataView` because the typed paths' extra code costs more to compile on the first call of a process
+than they save on arrays and runs. The check refuses the same bytes, with the same message, in the same order, at every
+alignment, and never reads past the buffer it was given.
 
 ### The many-way union: `orManyContainers`
 
@@ -409,9 +432,10 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
   does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a
   merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count.
   The probe pays its set-and-clear even when the first value is shared, so a pair that reaches it first takes up to
-  `MERGE_FIRST` (64) merge steps, which find an early shared value (two random sets of a thousand values in a chunk share
-  one within a few dozen steps) without setting a bit; only a pair that shares nothing that soon goes on to the probe,
-  from where the merge stopped. Two bitsets test eight words at a time and stop at the first group with a shared bit; a
+  `MERGE_FIRST` (64) merge steps, which answer a pair that shares a value early without setting a bit; only a pair that
+  shares nothing that soon goes on to the probe, from where the merge stopped. Two random sets of a thousand values in a
+  chunk share about 15 values (derived), so most such pairs share none in 64 steps and do reach the probe: 64 is a chosen
+  value, not a measured optimum. Two bitsets test eight words at a time and stop at the first group with a shared bit; a
   bitset against runs asks `anyBitInRange` per run (stops at the first nonzero masked word, no popcount).
 
 ### Subset without counting: `containersSubset`
@@ -442,7 +466,7 @@ The bitmap-level operations in section 7 call these. A count is exact: `|A and B
 | `ARRAY_MAX_CARDINALITY` | 4,096 | everywhere a kind is chosen | the format's own array/bitset boundary: array body `2*card` reaches the bitset's 8,192 bytes at 4,096 |
 | `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays`, `andCountArrays`, `intersectsArrays`, `andCountArrayRuns` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
 | `PROBE_MIN` | 32 | `andArrays` and `andCountArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
-| `MERGE_FIRST` | 64 | `intersectsArrays` | the merge steps a pair takes before the scratch-bitset probe: a higher value finds an early shared value without setting a bit, and a lower one reaches the probe sooner on a pair that shares nothing |
+| `MERGE_FIRST` | 64 | `intersectsArrays` | the merge steps a pair takes before the scratch-bitset probe: a higher value answers a pair that shares a value early without setting a bit, and a lower one reaches the probe sooner on a pair that shares nothing. Chosen, not measured to be the best: probes of 320 steps made the overlapping pair about four times faster and the disjoint pair about 30 percent slower (indicative), and that trade is not kept |
 | `SMALL_IDS` | 32 | `appendIds` | an array shorter than this is counted out; from here `base === 0` is one widening copy |
 | `LONG_RUN` | 48 | `appendIds` (runs) | a run of fewer values (counted from its start) is counted out; from here it is one widening copy out of the `iota` table |
 | `SMALL_BODY` | 64 | `putU16s` in `wire.ts` | a body of fewer `u16`s is written by a byte loop (little-endian on any machine); from here it is one view and `set` |
@@ -479,8 +503,8 @@ All of these are in `bitmap.ts`.
   array has each id inserted). A larger group into a run container goes through `groupPath` (which `addMany` asks) to
   `orRunIdsWalk` when the size rule of `orRunArray` sends it to the merge walk (`walksRunIds`): the same merge as
   `orRunArrayWalk`, reading the ids where they are (low 16 bits, duplicates skipped) with no container built for the
-  group, and returning the run container itself when the ids add nothing. The rule refuses from 2,047 steps (the runs
-  plus the ids) up, because `2 + 4 * steps` then reaches the 8,192-byte plain body at most, so the band is about 5 to
+  group, and returning the run container itself when the ids add nothing. The rule refuses from 2,048 steps (the runs
+  plus the ids) up, because `2 + 4 * steps >= 8192` first holds there (2,047 steps still walk), so the band is about 5 to
   2,046 ids for a key of one run, fewer for more runs, and fewer again when the result is small enough for the plain body
   to be an array (then the rule refuses from 1,024 steps). Every other larger group (a run container the rule
   sends through words, any other kind of container) is built into a container with `fromSortedIds` and merged with
@@ -524,7 +548,11 @@ All of these are in `bitmap.ts`.
   first differing group (exact for runs because every run container is canonical: the decoder refuses runs that touch or overlap and
   every writer of a run keeps its runs maximal, so one set has one list of pairs), and only a pair of different kinds falls back to
   `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
-  decoded from run bytes equals the same ids built from an array. The public class exposes all seven (section 13).
+  decoded from run bytes equals the same ids built from an array. A list under 512 values in each of two containers that both
+  start at index 0 (every container of a detached decode) calls the same compare with start offsets of 0 and skips the view test. In an
+  alternating-process probe of the public class, `isEqual` on 128 run containers took 28.8 us against 36.9 us before the round
+  (indicative, probe). A separate function for such lists timed the same there and made `isEqual` on a mixed bitmap about 24 percent
+  slower, so it is not used. The public class exposes all seven (section 13).
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
   bitset a scan from the top word).
@@ -869,7 +897,7 @@ Everything here is a test, a workflow or a bench, not part of the module.
   calls the codec's counting members above, `false` builds the combination with the matching `TsBitmap` static and reads
   its `size` (or `isEmpty` for `intersects`). The switch is `true`: the count bench's record
   (`bench/count-kernels-results.json`) has the count's median below the build's on every data set and
-  its gate prints `RESULT kept`; the speed of each answer against native is in the generated table of the API reference. Both routes give the same answers and change neither operand, and the test
+  its gate prints `RESULT kept`; the speed of each answer against native is in the generated table of the API reference. Two calls measure more than 10 times native and ship with their figures shown: the first `deserialize` in a fresh process (about 14.6 times, a one-time cost of the first call; later decodes measure 2.2 to 5.9 times) and the union of 64 dense bitmaps with `orMany` (about 11 times). Both routes give the same answers and change neither operand, and the test
   suite runs once on each (`tests/roaring/roaring-bitmap-counts.kernels.test.ts` and `.derived.test.ts`, one shared
   suite). `isSubset` and `isEqual` always call their codec members. A non-bitmap operand is a `ValidationError` for all
   seven, `isSubset` included.
