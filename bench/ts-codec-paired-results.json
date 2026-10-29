@@ -1536,8 +1536,14 @@
           "verdict": "faster than the control band"
         },
         "bundle": {
-          "mainEntry": { "bytes": 44208, "gzipBytes": 15530 },
-          "bitmapEntry": { "bytes": 31468, "gzipBytes": 11108 }
+          "mainEntry": {
+            "bytes": 44208,
+            "gzipBytes": 15530
+          },
+          "bitmapEntry": {
+            "bytes": 31468,
+            "gzipBytes": 11108
+          }
         }
       },
       "finished": "2026-10-24T16:06:18.307Z",
@@ -7054,7 +7060,10 @@
         }
       ],
       "finished": "2026-10-25T02:49:19.970Z",
-      "load": { "maxLoadAtEnd": 4.78, "discardedRounds": 4 },
+      "load": {
+        "maxLoadAtEnd": 4.78,
+        "discardedRounds": 4
+      },
       "verdict": "slower than the bar",
       "pass": 2,
       "explained": "The per-value typeof check added to the shared id collector in the build loop; replaced in 28c40274 by one try/catch around the loop. Re-measured in pass 3 on that head (61 rounds): ops build dense -0.1% [-0.2, 0.1], ops addMany dense -1.3% [-3.5, 1.4], ops build sparse -0.0% [-0.4, 0.5], all within the bar; ops addMany sparse -0.5% [-1.6, 1.1], within the bar."
@@ -9142,7 +9151,10 @@
         }
       ],
       "finished": "2026-10-25T04:00:03.611Z",
-      "load": { "maxLoadAtEnd": 5.69, "discardedRounds": 1 },
+      "load": {
+        "maxLoadAtEnd": 5.69,
+        "discardedRounds": 1
+      },
       "verdict": "inconclusive",
       "pass": 3,
       "unresolved": {
@@ -9165,7 +9177,10 @@
       "schema": 2,
       "unit": "ms",
       "rule": "median-interval-v2",
-      "sleepRule": { "factor": 100, "maxOnCpu": 0.5 },
+      "sleepRule": {
+        "factor": 100,
+        "maxOnCpu": 0.5
+      },
       "tolerance": 0.02,
       "environment": {
         "node": "v24.22.1",
@@ -13914,7 +13929,11 @@
         }
       ],
       "finished": "2026-10-25T19:45:19.945Z",
-      "load": { "maxLoadAtEnd": 5.98, "discardedRounds": 5, "sleptRounds": 0 },
+      "load": {
+        "maxLoadAtEnd": 5.98,
+        "discardedRounds": 5,
+        "sleptRounds": 0
+      },
       "verdict": "inconclusive",
       "pass": 4,
       "unresolved": {
@@ -13966,7 +13985,10 @@
       "schema": 2,
       "unit": "ms",
       "rule": "median-interval-v2",
-      "sleepRule": { "factor": 100, "maxOnCpu": 0.5 },
+      "sleepRule": {
+        "factor": 100,
+        "maxOnCpu": 0.5
+      },
       "tolerance": 0.02,
       "environment": {
         "node": "v24.22.1",
@@ -19457,12 +19479,22 @@
           ]
         },
         "bundle": {
-          "mainEntry": { "bytes": 50057, "gzipBytes": 17214 },
-          "bitmapEntry": { "bytes": 37313, "gzipBytes": 12752 }
+          "mainEntry": {
+            "bytes": 50057,
+            "gzipBytes": 17214
+          },
+          "bitmapEntry": {
+            "bytes": 37313,
+            "gzipBytes": 12752
+          }
         }
       },
       "finished": "2026-10-25T21:38:46.209Z",
-      "load": { "maxLoadAtEnd": 5.29, "discardedRounds": 1, "sleptRounds": 0 },
+      "load": {
+        "maxLoadAtEnd": 5.29,
+        "discardedRounds": 1,
+        "sleptRounds": 0
+      },
       "verdict": "inconclusive",
       "pass": 5,
       "unresolved": {
@@ -19521,7 +19553,10 @@
       "schema": 2,
       "unit": "ms",
       "rule": "median-interval-v2",
-      "sleepRule": { "factor": 100, "maxOnCpu": 0.5 },
+      "sleepRule": {
+        "factor": 100,
+        "maxOnCpu": 0.5
+      },
       "tolerance": 0.02,
       "environment": {
         "node": "v24.22.1",
@@ -20463,7 +20498,14 @@
               0.737907,
               5.4,
               5.94,
-              [{ "cell": "mixed count", "subject": "control", "wall": 0.182063, "cpu": 0.061 }]
+              [
+                {
+                  "cell": "mixed count",
+                  "subject": "control",
+                  "wall": 0.182063,
+                  "cpu": 0.061
+                }
+              ]
             ]
           ]
         },
@@ -20526,7 +20568,14 @@
               0.182063,
               5.4,
               5.94,
-              [{ "cell": "mixed count", "subject": "control", "wall": 0.182063, "cpu": 0.061 }]
+              [
+                {
+                  "cell": "mixed count",
+                  "subject": "control",
+                  "wall": 0.182063,
+                  "cpu": 0.061
+                }
+              ]
             ]
           ]
         },
@@ -20589,7 +20638,14 @@
               429.440833,
               5.4,
               5.94,
-              [{ "cell": "mixed count", "subject": "control", "wall": 0.182063, "cpu": 0.061 }]
+              [
+                {
+                  "cell": "mixed count",
+                  "subject": "control",
+                  "wall": 0.182063,
+                  "cpu": 0.061
+                }
+              ]
             ]
           ]
         },
@@ -20652,7 +20708,14 @@
               115.478583,
               5.4,
               5.94,
-              [{ "cell": "mixed count", "subject": "control", "wall": 0.182063, "cpu": 0.061 }]
+              [
+                {
+                  "cell": "mixed count",
+                  "subject": "control",
+                  "wall": 0.182063,
+                  "cpu": 0.061
+                }
+              ]
             ]
           ]
         },
@@ -20715,7 +20778,14 @@
               3.209625,
               5.4,
               5.94,
-              [{ "cell": "mixed count", "subject": "control", "wall": 0.182063, "cpu": 0.061 }]
+              [
+                {
+                  "cell": "mixed count",
+                  "subject": "control",
+                  "wall": 0.182063,
+                  "cpu": 0.061
+                }
+              ]
             ]
           ]
         },
@@ -20778,7 +20848,14 @@
               376.773042,
               5.4,
               5.94,
-              [{ "cell": "mixed count", "subject": "control", "wall": 0.182063, "cpu": 0.061 }]
+              [
+                {
+                  "cell": "mixed count",
+                  "subject": "control",
+                  "wall": 0.182063,
+                  "cpu": 0.061
+                }
+              ]
             ]
           ]
         },
@@ -25944,7 +26021,11 @@
         }
       ],
       "finished": "2026-10-26T18:19:19.907Z",
-      "load": { "maxLoadAtEnd": 5.95, "discardedRounds": 9, "sleptRounds": 1 },
+      "load": {
+        "maxLoadAtEnd": 5.95,
+        "discardedRounds": 9,
+        "sleptRounds": 1
+      },
       "verdict": "slower than the bar",
       "pass": 6,
       "explained": "The write of a batch of ids into a run container searched for every id and copied the runs between ids, which costs more than the expansion it replaced for a batch of a thousand ids; replaced in 03920c84 by one merge of the ids with the run list. Not yet re-measured: the next pass on the fixed head decides.",
@@ -26011,7 +26092,10 @@
       "schema": 2,
       "unit": "ms",
       "rule": "median-interval-v2",
-      "sleepRule": { "factor": 100, "maxOnCpu": 0.5 },
+      "sleepRule": {
+        "factor": 100,
+        "maxOnCpu": 0.5
+      },
       "tolerance": 0.02,
       "environment": {
         "node": "v24.22.1",
@@ -32160,7 +32244,11 @@
         }
       ],
       "finished": "2026-10-27T05:25:26.536Z",
-      "load": { "maxLoadAtEnd": 5.93, "discardedRounds": 7, "sleptRounds": 0 },
+      "load": {
+        "maxLoadAtEnd": 5.93,
+        "discardedRounds": 7,
+        "sleptRounds": 0
+      },
       "verdict": "slower than the bar",
       "pass": 7,
       "explained": "ops addMany run (a batch of sparse ids written into a bitmap of run containers) is conclusively slower by +4.1% [+2.5%, +4.9%] against an A/A control of -0.4%. The base wrote an array into a run container by expanding the runs to an 8 KB word bitset, setting the ids there and counting the bits again; the result was an array when it held 4,096 values or fewer and a bitset above that, never a run. The head merges the ids into the run list in one walk (orRunArray), so the result is a run container when 2 + 4 * runs is under the plain body, and an array or a bitset otherwise. A batch of a thousand ids or more into some thousand runs, whose result is a bitset, pays the merge before it learns that, and is the corner where the head costs most. The same kernel serves the store's unions of decoded chunks, which no cell of this bench times. Stored bytes do not depend on this choice: the store optimizes a chunk before it writes it. No store cell of this pass is slower: of the 30 read cells 9 are within the bar and 21 inconclusive, each with its bound under unresolved (of the six run read cells, intersect2 is within the bar and the others are open, three of them with the A/A control above 2%), the load is faster and the erase within the bar. So the run result for a combine of two run containers stays.",
@@ -32226,7 +32314,10 @@
       "schema": 2,
       "unit": "ms",
       "rule": "median-interval-v2",
-      "sleepRule": { "factor": 100, "maxOnCpu": 0.5 },
+      "sleepRule": {
+        "factor": 100,
+        "maxOnCpu": 0.5
+      },
       "tolerance": 0.02,
       "environment": {
         "node": "v24.22.1",
@@ -38428,7 +38519,11 @@
         }
       ],
       "finished": "2026-10-28T08:20:06.920Z",
-      "load": { "maxLoadAtEnd": 5.96, "discardedRounds": 3, "sleptRounds": 0 },
+      "load": {
+        "maxLoadAtEnd": 5.96,
+        "discardedRounds": 3,
+        "sleptRounds": 0
+      },
       "verdict": "slower than the bar",
       "pass": 8,
       "explained": "ops addMany run (a batch of sparse ids written into a bitmap of run containers) is conclusively slower by +3.7% [+3.2%, +4.1%] against an A/A control of +0.1%, measured on the head before the batch add into run containers was changed. That head built an array container for each group of five or more ids (a group of four or fewer was written straight into its container) and merged it into the run container. The change that answers it landed after this pass: since it, the add reads a group of five or more ids that the size rule sends to the merge walk (at most 2,046 ids for a key of one run, fewer for more runs) straight from the caller list into the run list, with no array container built for it; a group the rule sends to the expansion through words takes that path as before, and a group of four ids or fewer is still written straight into its container. No committed pass measures that code yet: a pass on it was taken on a tree that held an uncommitted record, so it is set aside and not in this record. This note is not an acceptance: the next pass on a clean tree measures the cell on the current code. The store cells of this pass: the load is faster (-7.3% [-8.0%, -6.3%]) and the erase is within the bar (-1.8% [-2.4%, -1.1%]), and no read cell is slower, so the run result for a combine of two run containers stays.",
@@ -38485,7 +38580,10 @@
       "schema": 2,
       "unit": "ms",
       "rule": "median-interval-v2",
-      "sleepRule": { "factor": 100, "maxOnCpu": 0.5 },
+      "sleepRule": {
+        "factor": 100,
+        "maxOnCpu": 0.5
+      },
       "tolerance": 0.02,
       "environment": {
         "node": "v24.22.1",
@@ -44260,15 +44358,23 @@
         }
       ],
       "finished": "2026-10-29T08:03:30.742Z",
-      "load": { "maxLoadAtEnd": 5.12, "discardedRounds": 0, "sleptRounds": 0 },
+      "load": {
+        "maxLoadAtEnd": 5.12,
+        "discardedRounds": 0,
+        "sleptRounds": 0
+      },
       "verdict": "slower than the bar",
-      "pass": 9
+      "pass": 9,
+      "explained": "ops decode first sparse (the first decode of a bitmap of array containers in a fresh process) is conclusively slower by +7.0% [+6.1%, +7.8%] against an A/A control of -0.4%, and ops decode first run (the same for run containers) by +2.5% [+2.2%, +3.5%] against an A/A control of +0.4%, measured on the head that read array and run bodies through typed-array views in the layout check. A first call pays to compile the code of a path it has not run before, and the typed-array paths over an array body and a run body cost more to compile than the few reads they replace for the single container these cells decode; probes in fresh processes put it near 24 microseconds for an array of a thousand values and 15 for a list of 150 runs. The change that answers it landed after this pass: the layout check now counts a bitset body through typed arrays and reads array and run bodies through a DataView, as before the speed work. This note is not an acceptance: the next pass, on that code, measures both cells: ops decode first sparse +0.2% [-0.9%, +1.0%] against an A/A control of +0.3% (within the bar) and ops decode first run +0.2% [-0.2%, +1.1%] against an A/A control of +0.5% (within the bar). No store cell of this pass is slower."
     },
     {
       "schema": 2,
       "unit": "ms",
       "rule": "median-interval-v2",
-      "sleepRule": { "factor": 100, "maxOnCpu": 0.5 },
+      "sleepRule": {
+        "factor": 100,
+        "maxOnCpu": 0.5
+      },
       "tolerance": 0.02,
       "environment": {
         "node": "v24.22.1",
@@ -50050,9 +50156,58 @@
         }
       ],
       "finished": "2026-10-29T11:44:06.493Z",
-      "load": { "maxLoadAtEnd": 5.38, "discardedRounds": 1, "sleptRounds": 0 },
+      "load": {
+        "maxLoadAtEnd": 5.38,
+        "discardedRounds": 1,
+        "sleptRounds": 0
+      },
       "verdict": "inconclusive",
-      "pass": 10
+      "pass": 10,
+      "unresolved": {
+        "dense iterate": "cannot rule out a slowdown up to +2.2% (the interval's upper end); not called within the bar",
+        "dense intersect2": "cannot rule out a slowdown up to +3.4% (the interval's upper end); not called within the bar",
+        "dense intersect4": "cannot rule out a slowdown up to +2.4% (the interval's upper end); not called within the bar",
+        "sparse iterate": "the A/A control moved +3.0% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +3.4% (the interval's upper end); not called within the bar",
+        "sparse intersect4": "the A/A control moved -2.6% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +2.5% (the interval's upper end); not called within the bar",
+        "runs has": "cannot rule out a slowdown up to +3.1% (the interval's upper end); not called within the bar",
+        "mixed has": "cannot rule out a slowdown up to +2.2% (the interval's upper end); not called within the bar",
+        "mixed iterate": "cannot rule out a slowdown up to +4.4% (the interval's upper end); not called within the bar",
+        "mixed intersect4": "cannot rule out a slowdown up to +2.6% (the interval's upper end); not called within the bar",
+        "spread8k iterate": "cannot rule out a slowdown up to +3.5% (the interval's upper end); not called within the bar",
+        "spread8k intersect2": "cannot rule out a slowdown up to +5.3% (the interval's upper end); not called within the bar",
+        "spread8k intersect4": "cannot rule out a slowdown up to +4.0% (the interval's upper end); not called within the bar",
+        "spread8k andNot": "cannot rule out a slowdown up to +4.3% (the interval's upper end); not called within the bar",
+        "spread8k union2": "cannot rule out a slowdown up to +2.7% (the interval's upper end); not called within the bar",
+        "runsarray union2": "cannot rule out a slowdown up to +2.0% (the interval's upper end); not called within the bar",
+        "runs1k union2": "cannot rule out a slowdown up to +2.9% (the interval's upper end); not called within the bar",
+        "runsedge union2": "cannot rule out a slowdown up to +6.9% (the interval's upper end); not called within the bar",
+        "ops serialize dense": "the A/A control moved -6.0% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +18.4% (the interval's upper end); not called within the bar",
+        "ops toUint32 dense": "cannot rule out a slowdown up to +4.1% (the interval's upper end); not called within the bar",
+        "ops serialize sparse": "cannot rule out a slowdown up to +12.5% (the interval's upper end); not called within the bar",
+        "ops toUint32 sparse": "the A/A control moved -3.1% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to -0.7% (the interval's upper end); not called within the bar",
+        "ops decode run": "the A/A control moved -2.6% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +23.4% (the interval's upper end); not called within the bar",
+        "ops serialize run": "the A/A control moved -4.9% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +14.0% (the interval's upper end); not called within the bar",
+        "ops iterate run": "cannot rule out a slowdown up to +6.0% (the interval's upper end); not called within the bar",
+        "ops toUint32 run": "the A/A control moved +2.6% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +10.5% (the interval's upper end); not called within the bar",
+        "ops decode many": "the A/A control moved -2.4% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to -20.2% (the interval's upper end); not called within the bar",
+        "ops serialize many": "the A/A control moved +5.4% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +18.0% (the interval's upper end); not called within the bar",
+        "ops toUint32 many": "cannot rule out a slowdown up to +3.9% (the interval's upper end); not called within the bar",
+        "ops clone run": "cannot rule out a slowdown up to +2.0% (the interval's upper end); not called within the bar",
+        "ops removeMany run": "cannot rule out a slowdown up to +11.8% (the interval's upper end); not called within the bar",
+        "ops and dense/dense": "cannot rule out a slowdown up to +13.0% (the interval's upper end); not called within the bar",
+        "ops andNot dense/dense": "the A/A control moved +3.6% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +15.9% (the interval's upper end); not called within the bar",
+        "ops andNot sparse/sparse": "cannot rule out a slowdown up to +3.6% (the interval's upper end); not called within the bar",
+        "ops or sparse/dense": "cannot rule out a slowdown up to +25.8% (the interval's upper end); not called within the bar",
+        "ops and run/dense": "cannot rule out a slowdown up to +8.1% (the interval's upper end); not called within the bar",
+        "ops andNot skew 64/4000": "cannot rule out a slowdown up to +3.9% (the interval's upper end); not called within the bar",
+        "ops andNot new dense/dense": "cannot rule out a slowdown up to +22.8% (the interval's upper end); not called within the bar",
+        "ops andNot new sparse/sparse": "the A/A control moved +3.2% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to +1.1% (the interval's upper end); not called within the bar",
+        "ops and new sparse/dense": "cannot rule out a slowdown up to +2.4% (the interval's upper end); not called within the bar",
+        "ops or new sparse/dense": "cannot rule out a slowdown up to +5.1% (the interval's upper end); not called within the bar",
+        "ops and new run/dense": "cannot rule out a slowdown up to +30.3% (the interval's upper end); not called within the bar",
+        "ops xor new skew 64/4000": "the A/A control moved +5.1% from the base, past the 2% bar, so the cell is not judged; its interval reaches up to -53.7% (the interval's upper end); not called within the bar",
+        "ops andNot new skew 64/4000": "cannot rule out a slowdown up to +5.3% (the interval's upper end); not called within the bar"
+      }
     }
   ]
 }
