@@ -34,8 +34,9 @@ so, and so do the module headers in the code.
   container kinds or serialized bytes. The other bitmap may be this one. A value that is not a `RoaringBitmap` of this copy
   of the package is a `ValidationError`, for `isSubset` too, where the `roaring` package answers `false`. The four
   counts use the codec's counting kernels, which count from the containers without building the combination; the count
-  bench's record (`bench/count-kernels-results.json`) has the count's median below the build's on every data set, and its
-  gate prints `RESULT kept`. `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
+  bench's record (`bench/count-kernels-results.json`, taken on the build it names) has the count's median below the
+  build's on every data set, and its gate prints `RESULT kept`; in the table of the class against the `roaring` package,
+  `andCardinality` and `orCardinality` took 0.20 to 0.98 of build-then-count on every data set. `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
   soon as it finds an id the two bitmaps share, container by container. The speed of each, against the `roaring` package, is the table in
   [the API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 

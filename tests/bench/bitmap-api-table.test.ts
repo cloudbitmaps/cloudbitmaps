@@ -237,6 +237,34 @@ describe('the count cells of a record', () => {
     expect(region).not.toContain('they took less time');
   });
 
+  it('says intersects and isSubset answer without counting, and no count answers intersects', () => {
+    const region = table.regionText('p.md', rendered(countPass('kernels', 'kept')));
+    expect(region).toContain(
+      '`andCardinality`, `orCardinality`, `xorCardinality` and `andNotCardinality` by the count kernels in this pass, and `intersects` and `isSubset` without counting',
+    );
+    expect(region).not.toContain('`andNotCardinality` and `intersects` by');
+  });
+
+  it("states the codec column's range for the two timed counts only when every figure is below 1.00", () => {
+    const winners = completePass(
+      Object.fromEntries(
+        DATASETS.flatMap((d) => [
+          [`${d} andCardinality`, { ours: 5, internal: 10 }],
+          [`${d} orCardinality`, { ours: 2, internal: 10 }],
+        ]),
+      ),
+    );
+    const won = table.regionText('p.md', rendered(fileOf(winners)));
+    expect(won).toContain('figure of the codec column is below 1.00 (0.20 to 0.50)');
+    const losing = completePass(
+      Object.fromEntries(DATASETS.map((d) => [`${d} andCardinality`, { ours: 30, internal: 10 }])),
+    );
+    const lost = table.regionText('p.md', rendered(fileOf(losing)));
+    expect(lost).not.toContain('figure of the codec column is below 1.00');
+    const derived = table.regionText('p.md', rendered(countPass('build-then-count', 'derived')));
+    expect(derived).not.toContain('figure of the codec column is below 1.00');
+  });
+
   it('names the other route under the other decision', () => {
     const region = table.regionText('p.md', rendered(countPass('build-then-count', 'derived')));
     expect(region).toContain('by building the combination and counting it in this pass');

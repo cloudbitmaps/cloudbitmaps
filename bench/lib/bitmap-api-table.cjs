@@ -167,12 +167,21 @@ function countLines(pass) {
         : 'an unrecorded route';
   const decision =
     result === 'kept'
-      ? "the count kernels' own bench (`bench/count-kernels.cjs`) kept them: `andCardinality` took less time than building and counting on every operand-pair group it judges"
+      ? "the count kernels' own bench (`bench/count-kernels.cjs`) kept them on the build its record names: `andCardinality` took less time than building and counting on every operand-pair group it judges"
       : result === 'derived'
         ? "the count kernels' own bench (`bench/count-kernels.cjs`) did not keep them: the counts are derived by building the combination and counting it"
         : "no decision of the count kernels' own bench is recorded";
+  // The count bench's record is of the build it names; the class's own cells against build-then-count are this
+  // pass's evidence for the build the table was taken on, and are stated only when every one of them is below 1.00.
+  const ratios = pass.cells
+    .filter((c) => (c.op === 'andCardinality' || c.op === 'orCardinality') && c.vsInternal !== undefined)
+    .map((c) => c.vsInternal);
+  const onThisBuild =
+    result === 'kept' && ratios.length > 0 && ratios.every((r) => r < 1)
+      ? ` On the build this table was taken on, each \`andCardinality\` and \`orCardinality\` figure of the codec column is below 1.00 (${Math.min(...ratios).toFixed(2)} to ${Math.max(...ratios).toFixed(2)}).`
+      : '';
   return [
-    `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\`, \`andNotCardinality\` and \`intersects\` by ${routeText} in this pass; ${decision}. The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.`,
+    `The class answered \`andCardinality\`, \`orCardinality\`, \`xorCardinality\` and \`andNotCardinality\` by ${routeText} in this pass, and \`intersects\` and \`isSubset\` without counting; ${decision}.${onThisBuild} The codec column of \`andCardinality\` and \`orCardinality\` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.`,
   ];
 }
 
