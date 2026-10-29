@@ -196,7 +196,7 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   genuinely occupies it for a while. It hands the event loop back periodically, so a co-resident server keeps
   answering while a load runs; a test holds a load to yielding. On by default. The guide's
   [what blocks the event loop](guide/production.md#what-blocks-the-event-loop-and-where-to-run-it) has the
-  timings it reports for one machine, measured by `bench/event-loop.cjs` on the native codec (before 0.24.0) and checked against its committed results in CI; they are to be re-measured on the TypeScript codec.
+  timings it reports for one machine, measured by `bench/event-loop.cjs` on the native codec (before the TypeScript codec) and checked against its committed results in CI; they are to be re-measured on the TypeScript codec.
 
 ### Security & data protection
 

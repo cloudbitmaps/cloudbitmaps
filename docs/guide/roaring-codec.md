@@ -63,7 +63,7 @@ CRoaring versions, so the pin moves only by a deliberate edit and the rule does 
 **What is still open.** The oracle proves what CRoaring writes for the pinned version, not what every other Roaring
 library writes. "A codec no more than 5% slower" is a measured bar, not a bound. The week of nightly fuzz with no difference
 on this codec, which the comparison asked for before the switch, had not run when the comparison was taken; the switch
-shipped in 0.24.0 (2026-10-23) without it, so the nightly fuzz that has run since is the evidence, and its history is the
+shipped on 2026-10-23 without it, so the nightly fuzz that has run since is the evidence, and its history is the
 [fuzz workflow's](../../.github/workflows/fuzz-nightly.yml) run list. The comparison's report is a record of that day and
 says so.
 

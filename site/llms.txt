@@ -171,7 +171,7 @@ a minor bump until the .crbm format freezes at 1.0.
 - Reading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/reading.md
 - Errors and what to do: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#errors-typed--you-catch-these
 - API reference: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md
-- Our own Roaring (the codec: same bytes as CRoaring, cost, the public RoaringBitmap class, which 0.25.0 and later export; v0.24.0 does not): https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/roaring-codec.md
+- Our own Roaring (the codec: same bytes as CRoaring, cost, the public RoaringBitmap class, which 0.25.0 and later export; earlier releases do not): https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/roaring-codec.md
 - Privacy and erasure: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
 - Site: https://cloudbitmaps.pages.dev/

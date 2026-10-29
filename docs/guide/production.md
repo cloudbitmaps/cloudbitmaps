@@ -757,7 +757,7 @@ Node is single-threaded, so CPU-heavy work stalls **every** other request on tha
 is network-bound and irrelevant here — a `has()` spends a negligible fraction of its time on bit math — but a
 **load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation.
 Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process, **on the native codec, before
-0.24.0**:
+the TypeScript codec**:
 
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
