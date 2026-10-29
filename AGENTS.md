@@ -76,7 +76,9 @@ The essentials, in order:
    tested` · the checklist. The template auto-fills in the web UI but **not** for `gh pr create --body` or
    `--fill`, which is how most of these are opened, so it has to be applied deliberately there. **Squash-merge**, then delete
    the branch.
-7. **Never** `git commit --no-verify` / `git push --no-verify`.
+7. **Never** `git commit --no-verify` / `git push --no-verify`, and never `HUSKY=0`: each skips the hooks. The pre-commit
+   hook formats and lints the staged files; the pre-push hook runs the public-text check over the commits being pushed
+   (see [CONTRIBUTING](CONTRIBUTING.md)).
 8. **Agent history** is working history, not documentation — durable conclusions land in tracked docs. Keeping the transcripts themselves is machine setup, not project setup: set your agent's transcript retention explicitly and back the agent config directory up to a private remote.
 
 Releases are automated, tokenless and human-gated — see [`RELEASING.md`](RELEASING.md).
