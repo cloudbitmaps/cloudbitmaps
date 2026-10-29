@@ -40,9 +40,6 @@ so, and so do the module headers in the code.
   to 0.98 (two runs cells, 0.73 and 0.56, are marked as read outside the control band). `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
   soon as it finds an id the two bitmaps share, container by container. The speed of each, against the `roaring` package, is the table in
   [the API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
-  Two calls are slower than the native `roaring` package by a ratio above 10 in the bench, and ship with their figures
-  shown: the first `deserialize` in a fresh process (about 14.6) and the union of 64 dense bitmaps with `orMany` (about 11);
-  every figure is in [the table](docs/guide/roaring-codec.md#the-public-class-against-native-in-memory).
 
 - **`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`, the combines that return a new bitmap, and `xorInPlace`.**
   `RoaringBitmap.and(a, b)` and the others take two bitmaps (`orMany` takes an iterable of them) and return a new one that
@@ -73,6 +70,9 @@ so, and so do the module headers in the code.
   throws `ValidationError` with a message that never repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
   is no `toJSON`, so `JSON.stringify(bitmap)` gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   lists each method and where it differs from the `roaring` package.
+  Two calls are slower than the native `roaring` package by a ratio above 10 in the bench, and ship with their figures
+  shown: the first `deserialize` in a fresh process (about 14.6) and the union of 64 dense bitmaps with `orMany` (about 11);
+  every figure is in [the table](docs/guide/roaring-codec.md#the-public-class-against-native-in-memory).
 
 - **`RoaringBitmap.deserialize(bytes, { maxBytes? }?)`, the one door for portable bytes you did not write.** It makes the
   check a `{ serialized }` load makes (the 537,403,396-byte cap, which `maxBytes` can lower, the structural check, exactly
@@ -94,6 +94,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A `Proxy`, or any buffer the check cannot prove ordinary, is copied before ids or bytes are read.** The test for
+  shared memory used to read a throw as "not shared", so a `Proxy` over a `Uint32Array` on a `SharedArrayBuffer` reached
+  `addMany`, the constructor and `removeMany` uncopied. The check now asks `ArrayBuffer`'s own `byteLength` getter, which
+  returns only for a genuine `ArrayBuffer` and throws for everything else, and copies when it throws (a `SharedArrayBuffer`
+  from any context, a forged tag, a `Proxy`); it answers "not shared" only on a runtime that has no `SharedArrayBuffer`.
+  The same holds for `{ serialized }` bytes on a load.
 - **The erasure's search of the other generations range-checks the stored chunk it reads.** A chunk read there holding
   a value outside the 16-bit remainder range (a container key above 0, which the lookup of the id cannot see) was
   taken for "does not hold the id", so an erasure could report the id as not held. It now fails with `IntegrityError`,
@@ -103,12 +109,6 @@ so, and so do the module headers in the code.
   `.crbm` reader, the key checks, the chunk streams, the writer and the bulk load say which index entry or position, or
   just what is wrong. A test scans every package's source for a message that interpolates one. A corrupt old generation now blocks the erasure of ids in its chunk
   until its object is removed (the erasure guide says how). Reaching it needs write access to the bucket.
-- **A `Proxy`, or any buffer the check cannot prove ordinary, is copied before ids or bytes are read.** The test for
-  shared memory used to read a throw as "not shared", so a `Proxy` over a `Uint32Array` on a `SharedArrayBuffer` reached
-  `addMany`, the constructor and `removeMany` uncopied. The check now asks `ArrayBuffer`'s own `byteLength` getter, which
-  returns only for a genuine `ArrayBuffer` and throws for everything else, and copies when it throws (a `SharedArrayBuffer`
-  from any context, a forged tag, a `Proxy`); it answers "not shared" only on a runtime that has no `SharedArrayBuffer`.
-  The same holds for `{ serialized }` bytes on a load.
 
 ## [0.24.0] — 2026-10-23
 

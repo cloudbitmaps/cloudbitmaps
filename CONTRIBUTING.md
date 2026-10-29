@@ -360,9 +360,9 @@ order:
      whatever the local ref is called; an annotated tag's message and tagger are read too. A first push to a remote
      with no tracking refs in the clone is measured from `origin/main`; with no `origin/main` the push is refused
      until you `git fetch origin`. It runs once per push however many refs, on `git push` only, never on a commit,
-     and costs about a quarter of a second per push (the best of three runs, end to end on a laptop in a throwaway
-     clone: 0.20 s for one branch, 0.23 s for a 50-commit first push, 0.26 s for a five-ref push; the three runs
-     ranged from 0.20 to 0.28 s; node starts twice, for the script and for the leak scan it runs). It needs `node` on the `PATH` (a graphical git client may not have it:
+     and costs about a quarter of a second per push (measured end to end on a laptop in a throwaway clone, three
+     runs each: 0.20 to 0.28 s for one branch of five new commits, 0.22 to 0.24 s for a first push of 50 commits, and
+     0.25 to 0.26 s for a five-ref push, one run; node starts twice, for the script and for the leak scan it runs). It needs `node` on the `PATH` (a graphical git client may not have it:
      the push is then refused with a message, exit 2). It does not see the pull request's title or body, which
      exist only after the push, so the CI check keeps reading them. Husky installs it with the `prepare` script, so
      it runs only in a clone where `pnpm install` has run once; a clone whose `core.hooksPath` points elsewhere does
