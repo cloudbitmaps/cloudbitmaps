@@ -251,7 +251,7 @@ smuggles in a breaking change.
 
 | forced | reached us via | note |
 | --- | --- | --- |
-| `undici >=6.28.0 <7` | `roaring` (the test oracle, a dev dependency) -> `node-gyp` | |
+| `undici >=6.29.1 <7` | `roaring` (the test oracle, a dev dependency) -> `node-gyp` | |
 | `brace-expansion >=5.0.12 <6` | `eslint` / `typescript-eslint`, through `minimatch` | |
 | `nanoid >=3.3.18 <4` | the vitest toolchain | |
 | `uuid ^11.1.1` | `@google-cloud/storage` | |
