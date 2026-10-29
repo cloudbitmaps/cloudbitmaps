@@ -105,20 +105,20 @@ describe('the table of a record', () => {
     expect(table.problemsOf('p.md', text, GOOD)).toEqual([]);
   });
 
-  it('says how many fresh processes each first-call figure took: one for a pass that does not record it, the median of eleven otherwise', () => {
+  it('says how many fresh processes each first-call figure took: one for a pass that does not record it, the median of five otherwise', () => {
     expect(table.regionText('p.md', text)).toContain(
       'each first-call figure is one call in one fresh process;',
     );
-    const eleven = good();
-    eleven.environment.coldProcesses = 11;
-    const region = table.render(fileOf(eleven));
+    const five = good();
+    five.environment.coldProcesses = 5;
+    const region = table.render(fileOf(five));
     expect(region).toContain(
-      'each first-call figure is the median of 11 fresh processes, one call in each;',
+      'each first-call figure is the median of 5 fresh processes, one call in each;',
     );
     expect(region).not.toContain('one call in one fresh process');
-    expect(table.problemsOf('p.md', page(region), fileOf(eleven))).toEqual([]);
-    // A page that says one while the record says eleven is refused.
-    expect(table.problemsOf('p.md', page(table.render(GOOD)), fileOf(eleven)).join('\n')).toContain(
+    expect(table.problemsOf('p.md', page(region), fileOf(five))).toEqual([]);
+    // A page that says one while the record says five is refused.
+    expect(table.problemsOf('p.md', page(table.render(GOOD)), fileOf(five)).join('\n')).toContain(
       'not what',
     );
   });

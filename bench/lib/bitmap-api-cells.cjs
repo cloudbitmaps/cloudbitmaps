@@ -608,7 +608,7 @@ function timeCell(cell, api, { warmMs, sampleMs }) {
 }
 
 /** The fresh processes a cold sample is the median of in a full-scale pass; a tiny-scale (smoke) pass takes one. */
-const COLD_PROCESSES = 11;
+const COLD_PROCESSES = 5;
 
 /** The fresh processes a cold cell is timed in, for one sample of one subject: each is one first call. */
 function coldProcessesOf(small) {

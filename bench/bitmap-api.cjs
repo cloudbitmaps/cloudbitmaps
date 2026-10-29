@@ -17,7 +17,7 @@
  *   orMany     8 and 64 bitmaps
  *   clone      `clone`, and a clone then a write that lands in every container
  *   cold       the first call of a fresh process, nothing warmed: `deserialize`, a build, an `and`, on `mixed`; each
- *              round's figure is the median of eleven such processes per subject (one in a tiny-scale run). A pass
+ *              round's figure is the median of five such processes per subject (one in a tiny-scale run). A pass
  *              records how many (`environment.coldProcesses`; a pass without it was taken at one) and how many it set
  *              aside as slept (`environment.coldSlept`): a process that slept is judged by the sleep rule against the
  *              median of its own sample's processes before that median is taken, and another is run in its place
@@ -64,10 +64,7 @@
  *
  * The expected time of `--all` on the maintainer's machine: about 4 seconds per subject-process for each data set
  * (the warm-up and the sampling of about 26 cells), four subjects, 31 rounds, five data sets, so about 70 minutes,
- * plus the cold cells and the load part, plus the rounds the load and sleep rules set aside. The 70 minutes was an
- * estimate made with one fresh process a cold sample. At eleven, the cold part starts 31 x 4 x 3 x 11 = 4,092
- * processes (372 at one); a start that loads the built package and the native addon alone took about 0.3 to 0.5 s
- * (five timings), so the estimate is 20 to 30 minutes more per pass; it has not been timed end to end.
+ * plus the cold cells and the load part, plus the rounds the load and sleep rules set aside.
  *
  * Needs `pnpm build` first (the class is imported from the built package). Wall-clock and machine-dependent: recorded,
  * never asserted.

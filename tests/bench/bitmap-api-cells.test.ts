@@ -238,9 +238,9 @@ describe('the codec subject decodes detached', () => {
 });
 
 describe('the cold cells in several fresh processes', () => {
-  it('take one process in a tiny-scale run and eleven at full scale', () => {
+  it('take one process in a tiny-scale run and five at full scale', () => {
     expect(lib.coldProcessesOf(true)).toBe(1);
-    expect(lib.coldProcessesOf(false)).toBe(11);
+    expect(lib.coldProcessesOf(false)).toBe(5);
   });
 
   it('one sample is the median of the processes, with an even count averaged, and one process is itself', () => {
