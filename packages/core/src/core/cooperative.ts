@@ -22,7 +22,7 @@
  *    the microtask queue drains to empty before the event loop advances a single phase. A loop awaiting them
  *    yields to other *microtasks* and to nothing else; no pending I/O callback runs. Measured: 555 ms of
  *    starvation against a 568 ms unyielded baseline **on the synthetic yield-primitive benchmark below** —
- *    a different, smaller workload than the 442 ms end-to-end load above, which is why the two baselines
+ *    a different, smaller workload than the 518 ms end-to-end load above, which is why the two baselines
  *    differ. The yield must be a **macrotask** — hence
  *    `Clock.yieldNow`, backed by `setImmediate` in production wiring.
  * 2. **Yielding per unit of work costs more than the work.** The yield has to be periodic, and `everyN` has to be

@@ -16,6 +16,8 @@ Each day is a segment in the `seen` namespace, named by its date. A batch is loa
 ids are the batch minus the recent days. A day that has no bucket yet (the first run, or a day the job did not run) is not
 an error when the combine says so with `allowAbsentOperands`.
 
+This block imports `RoaringBitmap` (0.25.0 and later; unreleased).
+
 <!-- typecheck -->
 ```ts
 import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring';

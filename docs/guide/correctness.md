@@ -66,9 +66,9 @@ A key shift keeps the size: a join on the wrong key can replace a segment's memb
 sees. To refuse one, count how many of the current ids the new set keeps before you load it, reading the segment a chunk
 at a time:
 
-<!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap32` to the reader -->
+<!-- typecheck-skip: a fragment: the page leaves `RoaringBitmap` to the reader -->
 ```ts
-declare const next: InstanceType<typeof RoaringBitmap32>; // the set you are about to load
+declare const next: RoaringBitmap; // the set you are about to load
 const before = await store.segment('active-us').count();
 let kept = 0;
 for await (const batch of store.segment('active-us').iterate().batches()) {
