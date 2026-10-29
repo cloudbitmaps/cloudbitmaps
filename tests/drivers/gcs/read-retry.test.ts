@@ -10,6 +10,7 @@ import { CRC32C, Storage, type StorageOptions } from '@google-cloud/storage';
 import { ValidationError } from '@/core/errors';
 import { downloadClient } from '@/gcs/read-client';
 import { gcsSdkAtLeast } from '../../helpers/gcs-sdk-version';
+import { refusedPort } from '../../helpers/refused-port';
 
 /**
  * A GCS download is sent once by the SDK and retried by the driver, and a retried read cannot crash the process.
@@ -233,14 +234,16 @@ describe('a GCS download', () => {
     it.concurrent(
       'a connection refused every time is a TransientError after the bounded attempts, with no crash',
       async () => {
-        // A port that was just free and is now closed: every connection is refused before any response.
-        const probe = createServer();
-        await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
-        const port = (probe.address() as AddressInfo).port;
-        await new Promise<void>((resolve) => probe.close(() => resolve()));
+        // A fixed port that refuses, proved to refuse just before: no other test can be given it.
+        const port = await refusedPort();
         const run = await runChild(`http://127.0.0.1:${port}`, call, ['count-connects']);
         expect(run.code).toBe(0);
-        expect(run.outcome).toEqual({ error: 'TransientError', connects: 4 });
+        // `attempts` lists each connect's port and how it ended, so a failure shows which one was extra.
+        expect(run.outcome).toEqual({
+          error: 'TransientError',
+          connects: 4,
+          attempts: Array.from({ length: 4 }, () => ({ port, code: 'ECONNREFUSED' })),
+        });
       },
       20_000,
     );

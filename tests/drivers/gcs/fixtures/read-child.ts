@@ -23,12 +23,20 @@ if (endpoint === undefined || call === undefined)
 // `net.connect` hands it one normalized array, `[options, callback]`, rather than the options themselves.
 const port = Number(new URL(endpoint).port);
 let connects = 0;
+// Each of those connects with the port and how it ended: an error code, or `connected`.
+const attempts: { port: number; code: string }[] = [];
 const connect = Socket.prototype.connect;
 Socket.prototype.connect = function (this: Socket, ...args: unknown[]): Socket {
   const first: unknown = Array.isArray(args[0]) ? (args[0] as unknown[])[0] : args[0];
   const target =
     typeof first === 'object' && first !== null ? (first as { port?: unknown }).port : first;
-  if (Number(target) === port) connects++;
+  if (Number(target) === port) {
+    connects++;
+    const attempt = { port, code: 'pending' };
+    attempts.push(attempt);
+    this.once('connect', () => (attempt.code = 'connected'));
+    this.once('error', (err: NodeJS.ErrnoException) => (attempt.code = err.code ?? err.message));
+  }
   return (connect as (...a: unknown[]) => Socket).apply(this, args);
 } as typeof connect;
 
@@ -108,7 +116,10 @@ try {
   outcome = { error: (err as Error).constructor.name };
   if (count === 'creds-missing') outcome.code = (err as { code?: unknown }).code;
 }
-if (count === 'count-connects') outcome.connects = connects;
+if (count === 'count-connects') {
+  outcome.connects = connects;
+  outcome.attempts = attempts;
+}
 if (count === 'creds-missing') outcome.reads = reads;
 console.log(JSON.stringify(outcome));
 // Linger past the SDK's retry: its crash fires after a retried request succeeds, not when the call settles.

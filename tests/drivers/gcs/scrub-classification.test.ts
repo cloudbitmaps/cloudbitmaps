@@ -1,5 +1,3 @@
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { types } from 'node:util';
 import { createRequire } from 'node:module';
 import type { Storage } from '@google-cloud/storage';
@@ -23,6 +21,7 @@ import {
 import { downloadFile, readOnce } from '@/gcs/read-once';
 import { Deadline, ReadTimedOut, withDeadline } from '@/gcs/read-timeout';
 import { scrubCredentials } from '@/gcs/scrub-error';
+import { refusedPort } from '../../helpers/refused-port';
 import { saveOnce } from '@/gcs/send-once';
 import {
   ACCESS_TOKEN,
@@ -223,10 +222,7 @@ describe('GCS: a scrubbed SDK error classifies as the raw one', LIMIT, () => {
       }
 
       it('refused connection', async () => {
-        const closed = createServer();
-        await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-        const port = (closed.address() as AddressInfo).port;
-        await new Promise<void>((resolve) => closed.close(() => resolve()));
+        const port = await refusedPort();
         const err = await rawError(() =>
           REQUESTS[request]!(clientFor(kind, `http://127.0.0.1:${port}`)),
         );

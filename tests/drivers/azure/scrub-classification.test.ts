@@ -1,5 +1,3 @@
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { types } from 'node:util';
 import { RestError, type ContainerClient } from '@azure/storage-blob';
 import { isTransportFault, toTransient, errorKind } from '@cloudbitmaps/core/driver-kit';
@@ -23,6 +21,7 @@ import {
   type Answer,
 } from '../../helpers/azure-error-answers';
 import { guardLoopback } from '../../helpers/loopback-guard';
+import { refusedPort } from '../../helpers/refused-port';
 
 /**
  * The scrubbed copy of an Azure SDK error classifies exactly as the raw error does, so the driver maps every Azure
@@ -159,10 +158,7 @@ describe('Azure: a scrubbed SDK error classifies as the raw one', LIMIT, () => {
       });
 
       it('refused connection', async () => {
-        const closed = createServer();
-        await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-        const port = (closed.address() as AddressInfo).port;
-        await new Promise<void>((resolve) => closed.close(() => resolve()));
+        const port = await refusedPort();
         const err = await rawError(() =>
           REQUESTS[request]!(clientFor(kind, `http://127.0.0.1:${port}`)),
         );
