@@ -35,10 +35,7 @@
  * little-endian; every other body goes through the `DataView`. Each path refuses the same bytes with the same message.
  *
  * WHAT IT COSTS. One pass over the bytes the decode is about to copy anyway, once per decode: never per id, and
- * never on a cache hit. Measured on an M3 Pro under Node 24, with the check, CRoaring's deserialize and a CRC32C
- * of the same bytes timed in alternating rounds: about 70 ns for a payload of one small container, 0.7 us for a
- * 2 KB array container, and 2.5 to 3.2 us for an 8 KB one of any kind. That is a third to a half of the CRC32C the
- * `.crbm` reader already computes over the stored payload before it gets here.
+ * never on a cache hit.
  *
  * The codec's bitmap decoder in `ts-roaring/` runs it before it builds a container. The membership-only reader in
  * `decode.ts`, which the tests use as a second reader of the same bytes, builds on the layout it returns. One check in

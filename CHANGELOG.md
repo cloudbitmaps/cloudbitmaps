@@ -34,7 +34,7 @@ so, and so do the module headers in the code.
   counts use the codec's counting kernels, which count from the containers without building the combination; the count
   bench's record (`bench/count-kernels-results.json`) has the count's median below the build's on every data set, and its
   gate prints `RESULT kept`. `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
-  soon as it finds an id the two bitmaps share, container by container. Two arrays of similar size are merged for their first 320 steps before `intersects` sets up a scratch bit table, so a pair that shares an id early is answered without setting a bit. The speed of each, against the `roaring` package, is the table in
+  soon as it finds an id the two bitmaps share, container by container. The speed of each, against the `roaring` package, is the table in
   [the API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
 - **`RoaringBitmap.and`, `or`, `xor`, `andNot` and `orMany`, the combines that return a new bitmap, and `xorInPlace`.**
@@ -78,21 +78,12 @@ so, and so do the module headers in the code.
   the in-place forms the store uses to union and subtract a chunk it has read) loop over the 2,048 words four at a time; the
   results are unchanged. A stand-alone probe of the loops timed each 21 percent faster (indicative).
 
-- **`intersects` on two similar-sized arrays takes 320 merge steps before it sets up its scratch bit table.** A pair that shares
-  an id early is answered without setting a bit; a pair whose spans overlap but that shares nothing walks the extra steps first,
-  so it is slower than before (a stand-alone probe of the sparse bench pairs, indicative: about 30 percent for that case, against
-  about four times faster for the overlapping case). The answers are unchanged.
-
-- **`isEqual` compares short container lists without start offsets.** Two arrays or run lists of under 512 values that both
-  start at the front of their storage, as every container of a decoded bitmap does, are compared by a loop that skips the
-  offset arithmetic; the answers are unchanged.
-
-- **The structural check on stored bytes counts and compares through typed arrays.** `RoaringBitmap.deserialize`, and
-  every stored chunk the store decodes, runs the same check as before, so the same bytes are refused with the same error
-  and message in the same order, and nothing is read past the buffer. What changed is how it reads: a bitset body is counted
-  in place with the sixteen-words-a-step count the containers use (a body at an odd offset is copied into a scratch first),
-  and a long array or run list is read through a typed array when its offset allows, so the check spends fewer steps per
-  value, which matters most on the first call of a process, before the engine has optimized the loops.
+- **The structural check on stored bytes counts and compares through typed arrays.** The check a stored chunk goes through
+  before it is decoded (and that `RoaringBitmap.deserialize` makes) refuses the same bytes with the same error and message in
+  the same order, and reads nothing past the buffer. What changed is how it reads: a bitset body is counted in place with
+  the sixteen-words-a-step count the containers use (a body whose offset is not a multiple of 4 is copied into a scratch
+  first), and a long array or run list is read through a typed array when its offset allows, so the check spends fewer
+  steps per value, which matters most on the first call of a process, before the engine has optimized the loops.
 
 ### Fixed
 

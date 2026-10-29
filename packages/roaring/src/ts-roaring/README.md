@@ -436,17 +436,9 @@ building kernels are (`containerAndCard` is commutative and puts the lower kind 
   does (probe from `PROBE_MIN` values when the lengths are within `GALLOP_SKEW`, gallop when one is much longer, else a
   merge), because a pair of similar size that shares nothing is a full scan, so it uses the same exit-free probe as the count.
   The probe pays its set-and-clear even when the first value is shared, so a pair that reaches it first takes up to
-  `MERGE_FIRST` (320) merge steps, which find an early shared value (two random sets of a thousand values in a chunk
-  usually share one within a few hundred steps, and a merge step costs far less than setting and clearing a thousand
-  bits) without setting a bit; the cost is that a pair sharing nothing, with spans that overlap, takes up to 320 extra
-  steps before the probe; only a pair that shares nothing that soon goes on to the probe,
-  from where the merge stopped (the table is built from the stop, so no step is done twice). The trade, measured by a stand-alone
-  probe over the bench's sparse pairs (indicative, probe; median of three processes): a sparse pair that overlaps took 2,123 ns
-  with 64 steps and 545 ns with 320 (the first shared value comes a little after step 256), and a sparse pair with
-  overlapping spans that shares nothing took 817 microseconds for the whole set of containers with 64 and 1,059 with 320, about
-  30 percent more, because an extra merge step costs more per element than the table work it delays. A merge step written
-  without a branch (`(x - y) >>> 31` as the step) was no faster on the disjoint pair and twice as slow on the overlapping one
-  (1,079 ns at 320), so the branching step stays. The mixed and the many-container pairs moved by under 3 percent. Two bitsets test eight words at a time and stop at the first group with a shared bit; a
+  `MERGE_FIRST` (64) merge steps, which find an early shared value (two random sets of a thousand values in a chunk share
+  one within a few dozen steps) without setting a bit; only a pair that shares nothing that soon goes on to the probe,
+  from where the merge stopped. Two bitsets test eight words at a time and stop at the first group with a shared bit; a
   bitset against runs asks `anyBitInRange` per run (stops at the first nonzero masked word, no popcount).
 
 ### Subset without counting: `containersSubset`
@@ -477,7 +469,7 @@ The bitmap-level operations in section 7 call these. A count is exact: `|A and B
 | `ARRAY_MAX_CARDINALITY` | 4,096 | everywhere a kind is chosen | the format's own array/bitset boundary: array body `2*card` reaches the bitset's 8,192 bytes at 4,096 |
 | `GALLOP_SKEW` | 16 | `andArrays`, `andNotArrays`, `andCountArrays`, `intersectsArrays`, `andCountArrayRuns` | a larger value gallops less often: better for similar sizes, worse for skewed ones |
 | `PROBE_MIN` | 32 | `andArrays` and `andCountArrays` (shorter side), `andNotArrays` (second operand) | a lower value pays the bitset's set-and-clear on pairs a merge finishes sooner; a higher value leaves mid-sized pairs on the slower merge |
-| `MERGE_FIRST` | 320 | `intersectsArrays` | the merge steps a pair takes before the scratch-bitset probe: a higher value finds an early shared value without setting a bit, and a lower one reaches the probe sooner on a pair that shares nothing |
+| `MERGE_FIRST` | 64 | `intersectsArrays` | the merge steps a pair takes before the scratch-bitset probe: a higher value finds an early shared value without setting a bit, and a lower one reaches the probe sooner on a pair that shares nothing |
 | `SMALL_IDS` | 32 | `appendIds` | an array shorter than this is counted out; from here `base === 0` is one widening copy |
 | `LONG_RUN` | 48 | `appendIds` (runs) | a run of fewer values (counted from its start) is counted out; from here it is one widening copy out of the `iota` table |
 | `SMALL_BODY` | 64 | `putU16s` in `wire.ts` | a body of fewer `u16`s is written by a byte loop (little-endian on any machine); from here it is one view and `set` |
