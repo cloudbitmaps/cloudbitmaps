@@ -549,8 +549,10 @@ All of these are in `bitmap.ts`.
   every writer of a run keeps its runs maximal, so one set has one list of pairs), and only a pair of different kinds falls back to
   `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. A list under 512 values in each of two containers that both
-  start at index 0 (every container of a detached decode) is compared by a loop with no start offsets: a stand-alone probe of 128
-  runs containers of 300 values timed it 29 percent faster than the loop with offsets (indicative, probe). The public class exposes all seven (section 13).
+  start at index 0 (every container of a detached decode) calls the same compare with start offsets of 0 and skips the view test. In an
+  alternating-process probe of the public class, `isEqual` on 128 run containers took 28.8 us against 36.9 us before the round
+  (indicative, probe). A separate function for such lists timed the same there and made `isEqual` on a mixed bitmap about 24 percent
+  slower, so it is not used. The public class exposes all seven (section 13).
 - **`clone`.** Section 4.
 - **`maximum()`.** The last key times 65,536 plus the last container's largest value (O(1) from the key list, and for a
   bitset a scan from the top word).

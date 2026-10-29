@@ -2165,7 +2165,8 @@ export function containersEqual(a: Container, b: Container): boolean {
   const n = a.kind === ARRAY ? a.len : 2 * a.len;
   if (n < EQUAL_VIEW_MIN) {
     // Short lists that both start at the front of their storage (every container of a detached decode) pass constant
-    // start offsets, which the compiler folds; a separate function for them measured slower on a bitmap that mixes kinds.
+    // start offsets and skip the view test; a separate function for them measured slower on a bitmap that mixes kinds
+    // (indicative, probe).
     if (a.off === 0 && b.off === 0) return equalU16(x, 0, y, 0, n);
     return equalU16(x, a.off, y, b.off, n);
   }
