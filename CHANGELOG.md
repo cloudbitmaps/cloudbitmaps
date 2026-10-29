@@ -74,6 +74,10 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`isEqual` compares short container lists without start offsets.** Two arrays or run lists of under 512 values that both
+  start at the front of their storage, as every container of a decoded bitmap does, are compared by a loop that skips the
+  offset arithmetic; the answers are unchanged.
+
 - **The structural check on stored bytes counts and compares through typed arrays.** `RoaringBitmap.deserialize`, and
   every stored chunk the store decodes, runs the same check as before, so the same bytes are refused with the same error
   and message in the same order, and nothing is read past the buffer. What changed is how it reads: a bitset body is counted

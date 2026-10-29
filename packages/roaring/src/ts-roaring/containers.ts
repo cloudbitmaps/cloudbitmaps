@@ -1406,8 +1406,8 @@ export function expandsRunSteps(runs: Container, values: number): boolean {
 
 /**
  * Whether a group of `count` ids goes into the run container `runs` by {@link orRunIdsWalk}: the size rule sends it to
- * the merge walk. The rule refuses from 2,047 steps (the runs plus the ids) up, since `2 + 4 * steps` then reaches the
- * 8,192-byte plain body at most, so the walk takes at most 2,046 ids for one run, fewer for more runs, and fewer
+ * the merge walk. The rule refuses from 2,048 steps (the runs plus the ids) up, since `2 + 4 * steps >= 8192` first holds there (2,047
+ * steps still walk), so the walk takes at most 2,046 ids for one run, fewer for more runs, and fewer
  * again when the result is small enough for the plain body to be an array. Every other group takes the container merge.
  */
 export function walksRunIds(runs: Container, count: number): boolean {
@@ -2092,6 +2092,12 @@ export function containersEqual(a: Container, b: Container): boolean {
   const x = lows16(a);
   const y = lows16(b);
   const n = a.kind === ARRAY ? a.len : 2 * a.len;
+  if (n < EQUAL_VIEW_MIN) {
+    // Short lists that both start at the front of their storage (every container of a detached decode) compare without
+    // the start offsets.
+    if (a.off === 0 && b.off === 0) return equalU16From0(x, y, n);
+    return equalU16(x, a.off, y, b.off, n);
+  }
   const xb = x.byteOffset + 2 * a.off;
   const yb = y.byteOffset + 2 * b.off;
   if (usesEqualView(n, xb, yb)) {
@@ -2147,6 +2153,25 @@ function equalU16(x: Uint16Array, xo: number, y: Uint16Array, yo: number, n: num
     if (d !== 0) return false;
   }
   for (; i < n; i++) if (x[xo + i] !== y[yo + i]) return false;
+  return true;
+}
+
+/** {@link equalU16} for two lists that both start at index 0. */
+function equalU16From0(x: Uint16Array, y: Uint16Array, n: number): boolean {
+  let i = 0;
+  for (const end = n - 7; i < end; i += 8) {
+    const d =
+      ((x[i] as number) ^ (y[i] as number)) |
+      ((x[i + 1] as number) ^ (y[i + 1] as number)) |
+      ((x[i + 2] as number) ^ (y[i + 2] as number)) |
+      ((x[i + 3] as number) ^ (y[i + 3] as number)) |
+      ((x[i + 4] as number) ^ (y[i + 4] as number)) |
+      ((x[i + 5] as number) ^ (y[i + 5] as number)) |
+      ((x[i + 6] as number) ^ (y[i + 6] as number)) |
+      ((x[i + 7] as number) ^ (y[i + 7] as number));
+    if (d !== 0) return false;
+  }
+  for (; i < n; i++) if (x[i] !== y[i]) return false;
   return true;
 }
 
