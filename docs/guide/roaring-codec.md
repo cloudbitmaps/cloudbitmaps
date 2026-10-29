@@ -94,7 +94,7 @@ wall-clock, recorded and not asserted:
 - **Reads** (`has`, `count`, `iterate`, `intersect`, `andNot`, one codec per process): every cell inside the 5% bar. The
   worst is dense four-operand `intersect` at +3.4%. Sparse `intersect` is 37% to 40% faster, and the spread sets about 8% to 17%.
 - **Bulk load, warm:** 183.1 ms to 117.2 ms (-35.6%) for a million ids; an erasure's rewrite -33.8%; an export -14.1%.
-- **First `load` of two small segments (128 mixed chunks) in a fresh process:** 13.1% slower (135.02 ms to 153.0 ms), and the first `has` +6.6%. This is a loss. A Node user can turn on Node's compile cache (`module.enableCompileCache()`, or the `NODE_COMPILE_CACHE` environment variable), which removes compile time only and not the time the first calls spend running before the engine has optimized the code; the library never turns it on itself.
+- **First `load` of two small segments (128 mixed chunks) in a fresh process:** 13.1% slower (135.02 ms to 153.0 ms), and the first `has` +6.6%. This is a loss. Node has a compile cache (`module.enableCompileCache()`, or the `NODE_COMPILE_CACHE` environment variable) that keeps compiled code on disk across processes; the library never turns it on, and the effect of turning it on has not been measured here.
 - **Start-up:** the codec's module loads in 1.1 ms against 19.5 ms (-94.2%).
 - **Memory:** in V8's counters, a cached dense chunk holds about 8.9 KB more than the native codec's V8-visible figure (the
   native codec keeps part of its memory outside those counters, and how much is not measured); no multiple of native's
