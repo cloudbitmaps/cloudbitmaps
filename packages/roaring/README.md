@@ -55,6 +55,8 @@ bytes, in TypeScript with no native code. Import it from `@cloudbitmaps/roaring`
 `import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring'`. A store loads one as it is, and
 `RoaringBitmap.deserialize(bytes)` is the one door for bytes you did not write.
 
+Two calls are slower than the native `roaring` package by a ratio above 10 in the bench, and ship with their figures shown. The first `deserialize` in a fresh process has a measured ratio of about 14.6 (median 2.20 ms against 0.151 ms); it is a one-time cost of the first call (the expected reason is code not yet optimized plus compile time), and later decodes have measured ratios of 2.2 to 5.9 across the five data sets. The union of 64 dense bitmaps with `orMany` has a measured ratio of about 11. Every figure is in [the table](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/roaring-codec.md#the-public-class-against-native-in-memory).
+
 <!-- typecheck -->
 ```ts
 import { CloudRoaring, MemoryStorage, RoaringBitmap } from '@cloudbitmaps/roaring';

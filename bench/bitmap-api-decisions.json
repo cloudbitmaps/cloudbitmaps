@@ -1,1 +1,5 @@
-{ "date": null, "words": "", "accepted": [] }
+{
+  "date": "2026-10-29",
+  "words": "the union of 64 dense bitmaps and the first deserialize in a fresh process ship with their figures shown, and an optional WebAssembly module for the dense word kernels is on the roadmap, to be decided on its own",
+  "accepted": ["RoaringBitmap.orMany", "RoaringBitmap.deserialize"]
+}

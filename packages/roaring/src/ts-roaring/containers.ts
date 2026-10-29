@@ -55,7 +55,8 @@
  * by the kinds of the pair and each building nothing: the answers the bitmap's counting operations are made from. The
  * last two never count.
  */
-import { ARRAY_MAX_CARDINALITY } from '../portable/layout';
+import { ARRAY_MAX_CARDINALITY, LITTLE_ENDIAN } from '../portable/layout';
+import { BITSET_WORDS, popcount32, popcountWords } from '../portable/popcount';
 
 /** A container of sorted `u16` values. */
 export const ARRAY = 0;
@@ -66,15 +67,14 @@ export const RUN = 2;
 type Kind = typeof ARRAY | typeof BITSET | typeof RUN;
 
 /** 32-bit words in a bitset container. */
-export const WORDS = 2_048;
+export const WORDS = BITSET_WORDS;
 /** Bytes of a bitset container's body. */
 export const BITSET_BYTES = 8_192;
 
 /** How many times longer one array must be than the other for the shorter to gallop over it instead of a linear merge (a larger factor gallops less often, which suits similar sizes better and skewed ones worse). */
 const GALLOP_SKEW = 16;
 
-/** Whether this machine stores a typed array's elements little-endian, as the wire does (so a body is a plain copy). */
-export const LITTLE_ENDIAN = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
+export { LITTLE_ENDIAN };
 
 /**
  * One container. `data` is a `Uint16Array` for an array or a run container and a `Uint32Array` of {@link WORDS} words
@@ -140,101 +140,6 @@ function pairs16(n: number): Uint16Array {
 /** An array container of the first `n` values of `scratch` (copied out), or `null` when there are none. */
 function arrayOfScratch(scratch: Uint16Array, n: number): Container | null {
   return n === 0 ? null : arrayContainer(scratch.slice(0, n), n);
-}
-
-/** Set bits in one 32-bit word. */
-function popcount32(word: number): number {
-  let w = word - ((word >>> 1) & 0x5555_5555);
-  w = (w & 0x3333_3333) + ((w >>> 2) & 0x3333_3333);
-  return Math.imul((w + (w >>> 4)) & 0x0f0f_0f0f, 0x0101_0101) >>> 24;
-}
-
-/**
- * Set bits in the {@link WORDS} words of a bitset: Harley-Seal, which adds sixteen words through a tree of carry-save
- * adders and counts the bits of one word in sixteen instead of every word. Plain 32-bit integer arithmetic, no `BigInt`.
- */
-function popcountWords(d: Uint32Array): number {
-  let total = 0;
-  let ones = 0;
-  let twos = 0;
-  let fours = 0;
-  let eights = 0;
-  for (let i = 0; i < WORDS; i += 16) {
-    let u: number;
-    let twosA: number;
-    let twosB: number;
-    let foursA: number;
-    let foursB: number;
-    let x = d[i] as number;
-    let y = d[i + 1] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 2] as number;
-    y = d[i + 3] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursA = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    x = d[i + 4] as number;
-    y = d[i + 5] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 6] as number;
-    y = d[i + 7] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursB = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    u = fours ^ foursA;
-    const eightsA = (fours & foursA) | (u & foursB);
-    fours = u ^ foursB;
-    x = d[i + 8] as number;
-    y = d[i + 9] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 10] as number;
-    y = d[i + 11] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursA = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    x = d[i + 12] as number;
-    y = d[i + 13] as number;
-    u = ones ^ x;
-    twosA = (ones & x) | (u & y);
-    ones = u ^ y;
-    x = d[i + 14] as number;
-    y = d[i + 15] as number;
-    u = ones ^ x;
-    twosB = (ones & x) | (u & y);
-    ones = u ^ y;
-    u = twos ^ twosA;
-    foursB = (twos & twosA) | (u & twosB);
-    twos = u ^ twosB;
-    u = fours ^ foursA;
-    const eightsB = (fours & foursA) | (u & foursB);
-    fours = u ^ foursB;
-    u = eights ^ eightsA;
-    const sixteens = (eights & eightsA) | (u & eightsB);
-    eights = u ^ eightsB;
-    total += popcount32(sixteens);
-  }
-  return (
-    16 * total +
-    8 * popcount32(eights) +
-    4 * popcount32(fours) +
-    2 * popcount32(twos) +
-    popcount32(ones)
-  );
 }
 
 /**
@@ -931,9 +836,12 @@ function skewed(shorter: number, longer: number): boolean {
 // pairs the merge finishes sooner; a higher one leaves mid-sized pairs on the slower merge.
 const PROBE_MIN = 32;
 
-// How many merge steps `intersectsArrays` takes before it falls back to the scratch bitset: two random sets of a thousand values
-// in a chunk share a value within a few dozen steps, so the common overlapping pair never sets a bit.
-const MERGE_FIRST = 64;
+// How many merge steps `intersectsArrays` takes before it falls back to the scratch bitset. The value is chosen, not measured to
+// be the best: a pair that shares a value inside the first steps answers without setting a bit, and a pair that shares nothing
+// there pays the steps and then the scratch bitset. Two random sets of a thousand values in one chunk share about 15 values
+// (derived), so most such pairs share none in 64 steps and reach the bitset; probes of 320 steps made the overlapping pair
+// about four times faster and the disjoint pair about 30 percent slower (indicative), and neither is kept.
+export const MERGE_FIRST = 64;
 
 // Scratch bitset for the array probe: all zero between calls (each call clears what it set).
 const probeWords = new Uint32Array(WORDS);
@@ -1136,6 +1044,78 @@ function orArrays(a: Container, b: Container): Container {
   return arrayOfScratch(out, n) as Container;
 }
 
+/** `out` = `x` AND `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function andWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 & Y0;
+    out[i + 1] = X1 & Y1;
+    out[i + 2] = X2 & Y2;
+    out[i + 3] = X3 & Y3;
+  }
+}
+
+/** `out` = `x` OR `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function orWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 | Y0;
+    out[i + 1] = X1 | Y1;
+    out[i + 2] = X2 | Y2;
+    out[i + 3] = X3 | Y3;
+  }
+}
+
+/** `out` = `x` XOR `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function xorWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 ^ Y0;
+    out[i + 1] = X1 ^ Y1;
+    out[i + 2] = X2 ^ Y2;
+    out[i + 3] = X3 ^ Y3;
+  }
+}
+
+/** `out` = `x` AND NOT `y` over WORDS words, four a step; `out` may be `x` or `y`. */
+function andNotWords(out: Uint32Array, x: Uint32Array, y: Uint32Array): void {
+  for (let i = 0; i < WORDS; i += 4) {
+    const X0 = x[i] as number;
+    const Y0 = y[i] as number;
+    const X1 = x[i + 1] as number;
+    const Y1 = y[i + 1] as number;
+    const X2 = x[i + 2] as number;
+    const Y2 = y[i + 2] as number;
+    const X3 = x[i + 3] as number;
+    const Y3 = y[i + 3] as number;
+    out[i] = X0 & ~Y0;
+    out[i + 1] = X1 & ~Y1;
+    out[i + 2] = X2 & ~Y2;
+    out[i + 3] = X3 & ~Y3;
+  }
+}
+
 /** `dest` (a bitset) or `other`, into words: `dest`'s own words when `inPlace`, else a copy. */
 function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Container {
   const words = inPlace ? words32(dest) : words32(dest).slice();
@@ -1154,8 +1134,7 @@ function orIntoBitset(dest: Container, other: Container, inPlace: boolean): Cont
     return bitsetContainer(words, card);
   }
   if (other.kind === BITSET) {
-    const o = words32(other);
-    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) | (o[i] as number);
+    orWords(words, words, words32(other));
   } else {
     const pairs = lows16(other);
     for (let r = 0; r < other.len; r++) {
@@ -1445,7 +1424,7 @@ export function containerAnd(a: Container, b: Container, inPlace = false): Conta
     const x = words32(a);
     const y = words32(b);
     const out = inPlace ? x : new Uint32Array(WORDS);
-    for (let i = 0; i < WORDS; i++) out[i] = (x[i] as number) & (y[i] as number);
+    andWords(out, x, y);
     return fromWordsCard(out, popcountWords(out));
   }
   // Commutative: put the lower kind first (array, bitset, run).
@@ -1499,8 +1478,8 @@ export function expandsRunSteps(runs: Container, values: number): boolean {
 
 /**
  * Whether a group of `count` ids goes into the run container `runs` by {@link orRunIdsWalk}: the size rule sends it to
- * the merge walk. The rule refuses from 2,047 steps (the runs plus the ids) up, since `2 + 4 * steps` then reaches the
- * 8,192-byte plain body at most, so the walk takes at most 2,046 ids for one run, fewer for more runs, and fewer
+ * the merge walk. The rule refuses from 2,048 steps (the runs plus the ids) up, since `2 + 4 * steps >= 8192` first holds there (2,047
+ * steps still walk), so the walk takes at most 2,046 ids for one run, fewer for more runs, and fewer
  * again when the result is small enough for the plain body to be an array. Every other group takes the container merge.
  */
 export function walksRunIds(runs: Container, count: number): boolean {
@@ -1699,8 +1678,7 @@ export function containerAndNot(a: Container, b: Container, inPlace = false): Co
       words[v >>> 5] = (words[v >>> 5] as number) & ~(1 << (v & 31));
     }
   } else if (b.kind === BITSET) {
-    const y = words32(b);
-    for (let i = 0; i < WORDS; i++) words[i] = (words[i] as number) & ~(y[i] as number);
+    andNotWords(words, words, words32(b));
   } else {
     const pairs = lows16(b);
     for (let r = 0; r < b.len; r++) {
@@ -1814,7 +1792,7 @@ export function containerXor(a: Container, b: Container, inPlace = false): Conta
       const x = words32(a);
       const y = words32(b);
       const out = inPlace ? x : new Uint32Array(WORDS);
-      for (let i = 0; i < WORDS; i++) out[i] = (x[i] as number) ^ (y[i] as number);
+      xorWords(out, x, y);
       return fromWordsCard(out, popcountWords(out));
     }
     const words = inPlace && base === a ? words32(base) : words32(base).slice();
@@ -2185,6 +2163,13 @@ export function containersEqual(a: Container, b: Container): boolean {
   const x = lows16(a);
   const y = lows16(b);
   const n = a.kind === ARRAY ? a.len : 2 * a.len;
+  if (n < EQUAL_VIEW_MIN) {
+    // Short lists that both start at the front of their storage (every container of a detached decode) pass constant
+    // start offsets and skip the view test; a separate function for them measured slower on a bitmap that mixes kinds
+    // (indicative, probe).
+    if (a.off === 0 && b.off === 0) return equalU16(x, 0, y, 0, n);
+    return equalU16(x, a.off, y, b.off, n);
+  }
   const xb = x.byteOffset + 2 * a.off;
   const yb = y.byteOffset + 2 * b.off;
   if (usesEqualView(n, xb, yb)) {
@@ -2271,8 +2256,9 @@ function intersectsArrays(a: Container, b: Container): boolean {
   let i = small.off;
   let j = big.off;
   if (small.len >= PROBE_MIN) {
-    // Two sets of this size usually share a value early, and a merge finds it without setting any bits: take a bounded
-    // number of merge steps first and set up the scratch bits only for a pair that shares nothing that soon.
+    // A pair that shares a value early is answered by the merge without setting any bits: take a bounded number of merge
+    // steps first and set up the scratch bits only for a pair that shares nothing that soon (most random pairs of this
+    // size still reach them; see MERGE_FIRST).
     for (let step = 0; step < MERGE_FIRST && i < se && j < le; step++) {
       const x = s[i] as number;
       const y = l[j] as number;

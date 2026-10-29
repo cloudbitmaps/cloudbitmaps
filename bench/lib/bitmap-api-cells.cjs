@@ -137,7 +137,7 @@ function internalApi(codec) {
     hasInPlace: (op) => op !== 'xor',
     optimize: (b) => b.optimize(),
     serialize: (b) => b.serialize(),
-    deserialize: (bytes) => codec.safeDeserialize(bytes, CAP),
+    deserialize: (bytes) => codec.safeDeserialize(bytes, CAP, { detached: true }),
     iterate: (b) => {
       let s = 0;
       for (const v of b) s = (s + v) >>> 0;
