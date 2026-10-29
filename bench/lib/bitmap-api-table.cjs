@@ -174,7 +174,9 @@ function countLines(pass) {
   // The count bench's record is of the build it names; the class's own cells against build-then-count are this
   // pass's evidence for the build the table was taken on, and are stated only when every one of them is below 1.00.
   const ratios = pass.cells
-    .filter((c) => (c.op === 'andCardinality' || c.op === 'orCardinality') && c.vsInternal !== undefined)
+    .filter(
+      (c) => (c.op === 'andCardinality' || c.op === 'orCardinality') && c.vsInternal !== undefined,
+    )
     .map((c) => c.vsInternal);
   const onThisBuild =
     result === 'kept' && ratios.length > 0 && ratios.every((r) => r < 1)
