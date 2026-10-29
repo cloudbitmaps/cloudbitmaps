@@ -572,6 +572,7 @@ store and no network, so nothing hides a slow combine. The table is generated fr
 [Our own Roaring](guide/roaring-codec.md#the-public-class-against-native-in-memory) and in
 [the API reference](guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap), where its header says
 which commit it was taken at, on which machine; read a figure as that build on that machine, and not as a bound.
+Two methods are more than 10 times native and ship with their figures shown: the union of 64 dense bitmaps with `orMany` (about 11 times) and the first `deserialize` in a fresh process (about 14.6 times; later calls 2.2 to 5.9).
 `pnpm bench:bitmap-api:check` and `pnpm bench:bitmap-api:table:check` hold the pages to the record.
 
 ## Caveats
