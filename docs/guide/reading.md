@@ -62,6 +62,7 @@ the length of what `intersect`, `union` or `andNot` would stream, without stream
 stream takes (the range, `concurrency`, `budget`, `allowAbsentOperands`, and `exclude` on the first two) and returns a
 `Promise<number>`:
 
+<!-- typecheck-skip: a fragment: the page leaves `shoppers` and `subscribers` to the reader -->
 ```ts
 const both = await shoppers.intersectCount([subscribers]);
 const either = await shoppers.unionCount([subscribers], { after: 0, through: 1_000_000 });

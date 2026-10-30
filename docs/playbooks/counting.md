@@ -1,6 +1,6 @@
 # Counting an intersection, union or difference of stored segments
 
-Count what a combine of stored segments holds: `intersectCount`, `unionCount` and `andNotCount`, and the other ways for what they do not do, with what each reads and holds and which to pick.
+Count what a combine of stored segments holds with the direct count calls, and the other ways for what they do not do, with what each reads and holds and which to pick.
 
 "How many people are in both lists" is the question most reporting asks, and a combine answers a different one: it
 returns the ids. `count()` answers for one stored segment, from the registry row. For a combine, `intersectCount`,
