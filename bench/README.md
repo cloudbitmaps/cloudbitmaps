@@ -127,6 +127,12 @@ POSIX behaviour only, including a signal sent to the whole process group, as a t
 `tests/bench/work-folder.test.ts` proves each way out and fails on a direct `mkdtemp` call in `bench/`;
 `tests/bench/tree-state.test.ts` holds the dirt rule.
 
+The committed records are held to it. Every pass of `ts-codec-paired-results.json` must say `tree: "clean"`, with no
+exemption (`tests/bench/ts-codec-paired-verdict.test.ts`: a missing or empty record fails, and a failure names the
+passes, numbered from 1, that are not clean), and the same holds for every pass of the api record
+(`tests/bench/bitmap-api-table.test.ts`), except the two it lists by index because they were recorded dirty before a dirty
+pass named its paths. A pass taken on a dirty tree is taken again on a clean one rather than listed.
+
 ## Real-cloud calibration
 
 `calibrate-aws.cjs`'s default suite measures three things that need a real object store rather than local disk; its
