@@ -63,11 +63,11 @@ function build(ids: number[], asRuns: boolean): CodecBitmap {
 const SHAPES: Shape[] = ['sparse', 'dense', 'run', 'tiny'];
 
 describe('every pair of container kinds, through every in-place combine, equals the set algebra', () => {
-  // Budget 6 s (the default is 5 s): the slowest measured time was 2.0 s, on a Node 24 CI runner. Rule: that time times
+  // Budget 9 s (the default is 5 s): the slowest measured time was 2.7 s, on a Node 22 CI runner. Rule: that time times
   // three, rounded up to the next whole second.
   it(
     'and, or and andNot of one chunk against another, which is left alone',
-    { timeout: 6000 },
+    { timeout: 9000 },
     () => {
       fc.assert(
         fc.property(

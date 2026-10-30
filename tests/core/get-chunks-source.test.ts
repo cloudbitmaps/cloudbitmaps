@@ -4,7 +4,7 @@
  * bytes back, since a count says nothing about which generation answered.
  */
 import { randomBytes } from 'node:crypto';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { NotFoundError, TransientError, ValidationError } from '@/index';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';
@@ -774,15 +774,15 @@ describe('CrbmStorageChunkSource.getChunks: a consumer that waits holds at most 
     const keystore = encrypted
       ? new WatchingKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
       : undefined;
-    let shared!: Awaited<ReturnType<typeof world>>;
-    beforeAll(async () => {
-      shared = await world({ chunks: 560, keystore });
-    }, 60_000);
+    // Built by the first test that needs it, not in a `beforeAll`: the budget check judges a hook against the configured
+    // hook timeout and cannot see a hook's own. The tests carry 60 s; the build took 3.9 s on a CI runner (Node 22).
+    let built: ReturnType<typeof world> | undefined;
+    const worldOnce = (): ReturnType<typeof world> => (built ??= world({ chunks: 560, keystore }));
 
     it.each(modes.flatMap((mode) => [1, 4].map((width) => ({ mode, width }))))(
       '$mode at width $width',
       async ({ mode, width }) => {
-        const { source, storage, clock } = shared;
+        const { source, storage, clock } = await worldOnce();
         const ranges = new Watched();
         const gate = new Gate();
         const pin = (await source.pinGeneration(REF))!;

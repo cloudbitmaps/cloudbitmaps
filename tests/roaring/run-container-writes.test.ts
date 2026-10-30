@@ -121,34 +121,43 @@ const arrayShaped = fc
   .map((v) => sortedUnique([...v]));
 
 describe('a run container written with an array', () => {
-  it('holds the union, its exact cardinality, the kind the size rule gives and canonical runs, either operand order', () => {
-    fc.assert(
-      fc.property(
-        runShaped,
-        arrayShaped,
-        fc.integer({ min: 0, max: 4 }),
-        fc.boolean(),
-        (r, a, pad, inPlace) => {
-          const want = sortedUnique([...r, ...a]);
-          const run = runs(r, pad);
-          const arr = arrayOf(a, pad + 1);
-          const before = [Array.from(run.data as Uint16Array), Array.from(arr.data as Uint16Array)];
-          expectCanonical(containerOr(run, arr, false), want, 'run | array');
-          // A caller that lets the result be the run container itself gets it only when nothing was added.
-          const kept = containerOr(run, arr, inPlace);
-          expect(kept === run, 'kept').toBe(inPlace && want.length === r.length);
-          if (kept !== run) expectCanonical(kept, want, 'run | array, may keep');
-          expectCanonical(containerOr(arr, run, false), want, 'array | run');
-          // Neither operand's storage is written.
-          expect([
-            Array.from(run.data as Uint16Array),
-            Array.from(arr.data as Uint16Array),
-          ]).toEqual(before);
-        },
-      ),
-      { numRuns: 400 },
-    );
-  });
+  // Budget 6 s (the default is 5 s): the slowest measured time was 2.0 s, on a Node 24 CI runner. Rule: that time times
+  // three, rounded up to the next whole second.
+  it(
+    'holds the union, its exact cardinality, the kind the size rule gives and canonical runs, either operand order',
+    { timeout: 6000 },
+    () => {
+      fc.assert(
+        fc.property(
+          runShaped,
+          arrayShaped,
+          fc.integer({ min: 0, max: 4 }),
+          fc.boolean(),
+          (r, a, pad, inPlace) => {
+            const want = sortedUnique([...r, ...a]);
+            const run = runs(r, pad);
+            const arr = arrayOf(a, pad + 1);
+            const before = [
+              Array.from(run.data as Uint16Array),
+              Array.from(arr.data as Uint16Array),
+            ];
+            expectCanonical(containerOr(run, arr, false), want, 'run | array');
+            // A caller that lets the result be the run container itself gets it only when nothing was added.
+            const kept = containerOr(run, arr, inPlace);
+            expect(kept === run, 'kept').toBe(inPlace && want.length === r.length);
+            if (kept !== run) expectCanonical(kept, want, 'run | array, may keep');
+            expectCanonical(containerOr(arr, run, false), want, 'array | run');
+            // Neither operand's storage is written.
+            expect([
+              Array.from(run.data as Uint16Array),
+              Array.from(arr.data as Uint16Array),
+            ]).toEqual(before);
+          },
+        ),
+        { numRuns: 400 },
+      );
+    },
+  );
 
   it('a run against a bitset still gives the bitset union', () => {
     fc.assert(

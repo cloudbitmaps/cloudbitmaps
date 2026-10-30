@@ -288,33 +288,39 @@ describe.each(Object.keys(BACKENDS))('a sorted load on %s', (name) => {
 });
 
 describe('a sorted load on S3 that fails after its parts went up', () => {
-  it('throws the error its ids raised, aborts the upload and leaves no object', async () => {
-    const bucket = new StubS3Bucket();
-    const storage = new S3StorageDriver({
-      client: bucket.client(),
-      bucket: STUB_BUCKET,
-      clock: INSTANT,
-      partBytes: 5 * 1024 * 1024,
-    });
-    const raised = SHAPES['409 conflict']!();
-    // Array containers of 4,096 ids two apart (8 KiB each, no runs to compress): about 11 MiB before the error, so two
-    // parts are uploaded first.
-    async function* ids(): AsyncGenerator<number> {
-      for (let chunk = 0; chunk < 1_400; chunk++) {
-        for (let i = 0; i < 4_096; i++) yield chunk * 65_536 + 2 * i;
+  // Budget 6 s (the default is 5 s): the slowest measured time was 1.8 s, on a Node 22 CI runner. Rule: that time times
+  // three, rounded up to the next whole second.
+  it(
+    'throws the error its ids raised, aborts the upload and leaves no object',
+    { timeout: 6000 },
+    async () => {
+      const bucket = new StubS3Bucket();
+      const storage = new S3StorageDriver({
+        client: bucket.client(),
+        bucket: STUB_BUCKET,
+        clock: INSTANT,
+        partBytes: 5 * 1024 * 1024,
+      });
+      const raised = SHAPES['409 conflict']!();
+      // Array containers of 4,096 ids two apart (8 KiB each, no runs to compress): about 11 MiB before the error, so two
+      // parts are uploaded first.
+      async function* ids(): AsyncGenerator<number> {
+        for (let chunk = 0; chunk < 1_400; chunk++) {
+          for (let i = 0; i < 4_096; i++) yield chunk * 65_536 + 2 * i;
+        }
+        throw raised;
       }
-      throw raised;
-    }
-    const d = {
-      storage,
-      registry: new MemoryRegistryDriver(),
-      entropy: counterEntropy(),
-      codec: storeCodec,
-    };
-    expect(await thrown(loadSegment(SEG, ids(), d, { sorted: true }))).toBe(raised);
-    expect(bucket.count('UploadPart')).toBeGreaterThanOrEqual(2);
-    expect(bucket.count('AbortMultipartUpload')).toBe(1);
-    expect(bucket.count('CompleteMultipartUpload')).toBe(0);
-    expect([...bucket.objects.keys()].filter((k) => k.includes('/segments/'))).toEqual([]);
-  });
+      const d = {
+        storage,
+        registry: new MemoryRegistryDriver(),
+        entropy: counterEntropy(),
+        codec: storeCodec,
+      };
+      expect(await thrown(loadSegment(SEG, ids(), d, { sorted: true }))).toBe(raised);
+      expect(bucket.count('UploadPart')).toBeGreaterThanOrEqual(2);
+      expect(bucket.count('AbortMultipartUpload')).toBe(1);
+      expect(bucket.count('CompleteMultipartUpload')).toBe(0);
+      expect([...bucket.objects.keys()].filter((k) => k.includes('/segments/'))).toEqual([]);
+    },
+  );
 });

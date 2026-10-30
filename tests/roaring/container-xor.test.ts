@@ -28,34 +28,40 @@ const xorOf = (a: readonly number[], b: readonly number[]): number[] => {
 describe('containerXor, every pair of kinds', () => {
   for (const ka of KINDS) {
     for (const kb of KINDS) {
-      it(`${KIND_NAME[ka]} with ${KIND_NAME[kb]}: the values in one and not the other, kind by cardinality`, () => {
-        fc.assert(
-          fc.property(lowsSet, lowsSet, fc.integer({ min: 0, max: 5 }), (a, b, pad) => {
-            const want = xorOf(a, b);
-            const ca = containerOf(ka, a, pad);
-            const cb = containerOf(kb, b, pad + 1);
-            const got = containerXor(ca, cb, false);
-            if (want.length === 0) {
-              expect(got).toBeNull();
-            } else {
-              expect(got).not.toBeNull();
-              expect(valuesOf(got!)).toEqual(want);
-              expect(got!.card).toBe(want.length);
-              // An array up to 4,096 values and a bitset above; two run containers keep a run while that is smaller.
-              expect(got!.kind).toBe(
-                ka === RUN && kb === RUN ? ruleKind(want) : want.length <= 4_096 ? ARRAY : BITSET,
-              );
-              expect(got!.shared).toBe(false);
-            }
-            // Neither operand is written, and the swap gives the same set.
-            expect(valuesOf(ca)).toEqual(a);
-            expect(valuesOf(cb)).toEqual(b);
-            const swapped = containerXor(cb, ca, false);
-            expect(swapped === null ? [] : valuesOf(swapped)).toEqual(want);
-          }),
-          { numRuns: 120 },
-        );
-      });
+      // Budget 6 s on each pair (the default is 5 s): the slowest measured time was 1.9 s, on a Node 24 CI runner. Rule:
+      // that time times three, rounded up to the next whole second.
+      it(
+        `${KIND_NAME[ka]} with ${KIND_NAME[kb]}: the values in one and not the other, kind by cardinality`,
+        { timeout: 6000 },
+        () => {
+          fc.assert(
+            fc.property(lowsSet, lowsSet, fc.integer({ min: 0, max: 5 }), (a, b, pad) => {
+              const want = xorOf(a, b);
+              const ca = containerOf(ka, a, pad);
+              const cb = containerOf(kb, b, pad + 1);
+              const got = containerXor(ca, cb, false);
+              if (want.length === 0) {
+                expect(got).toBeNull();
+              } else {
+                expect(got).not.toBeNull();
+                expect(valuesOf(got!)).toEqual(want);
+                expect(got!.card).toBe(want.length);
+                // An array up to 4,096 values and a bitset above; two run containers keep a run while that is smaller.
+                expect(got!.kind).toBe(
+                  ka === RUN && kb === RUN ? ruleKind(want) : want.length <= 4_096 ? ARRAY : BITSET,
+                );
+                expect(got!.shared).toBe(false);
+              }
+              // Neither operand is written, and the swap gives the same set.
+              expect(valuesOf(ca)).toEqual(a);
+              expect(valuesOf(cb)).toEqual(b);
+              const swapped = containerXor(cb, ca, false);
+              expect(swapped === null ? [] : valuesOf(swapped)).toEqual(want);
+            }),
+            { numRuns: 120 },
+          );
+        },
+      );
     }
   }
 
