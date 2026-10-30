@@ -1,4 +1,5 @@
 import {
+  BudgetExceededError,
   CloudRoaring,
   LeaseExpiredError,
   MemoryStorage,
@@ -63,7 +64,9 @@ describe('each count is the length of its stream and the engine count', () => {
     expect(expected).toBeGreaterThan(0);
     expect(await w.a.intersectCount([w.b])).toBe(expected);
     expect(await drainLength(w.a.intersect([w.b]))).toBe(expected);
-    expect(await w.engine.combineCount([w.a.ref, w.b.ref], [], 'all', 'intersect')).toBe(expected);
+    expect(
+      await w.engine.combineCount([{ segment: 'a' }, { segment: 'b' }], [], 'all', 'intersect'),
+    ).toBe(expected);
     expect(await w.a.intersectCount([w.b, w.d])).toBe(inter(inter(A, B), D).length);
     expect(await w.a.intersectCount([w.c])).toBe(0);
     expect(await w.a.intersectCount([w.a])).toBe(A.length);
@@ -73,7 +76,9 @@ describe('each count is the length of its stream and the engine count', () => {
     const w = await world();
     expect(await w.a.unionCount([w.b])).toBe(union(A, B));
     expect(await drainLength(w.a.union([w.b]))).toBe(union(A, B));
-    expect(await w.engine.combineCount([w.a.ref, w.b.ref], [], 'any', 'union')).toBe(union(A, B));
+    expect(
+      await w.engine.combineCount([{ segment: 'a' }, { segment: 'b' }], [], 'any', 'union'),
+    ).toBe(union(A, B));
     expect(await w.a.unionCount([w.b, w.c])).toBe(union(A, B, C));
     expect(await w.a.unionCount([w.c])).toBe(A.length + C.length);
   });
@@ -83,7 +88,9 @@ describe('each count is the length of its stream and the engine count', () => {
     const expected = minus(A, B).length;
     expect(await w.a.andNotCount([w.b])).toBe(expected);
     expect(await drainLength(w.a.andNot([w.b]))).toBe(expected);
-    expect(await w.engine.combineCount([w.a.ref], [w.b.ref], 'all', 'andNot')).toBe(expected);
+    expect(
+      await w.engine.combineCount([{ segment: 'a' }], [{ segment: 'b' }], 'all', 'andNot'),
+    ).toBe(expected);
     expect(await w.a.andNotCount([w.b, w.d])).toBe(minus(minus(A, B), D).length);
     expect(await w.a.andNotCount([w.c])).toBe(A.length);
     expect(await w.a.andNotCount([w.a])).toBe(0);
@@ -139,7 +146,9 @@ describe('the options', () => {
 
   it('budget refuses a count that would exceed it, and false lifts it', async () => {
     const w = await world();
-    await expect(w.a.intersectCount([w.b], { budget: 1 })).rejects.toBeInstanceOf(Error);
+    await expect(w.a.intersectCount([w.b], { budget: { maxRequests: 1 } })).rejects.toBeInstanceOf(
+      BudgetExceededError,
+    );
     expect(await w.a.intersectCount([w.b], { budget: false })).toBe(inter(A, B).length);
   });
 
