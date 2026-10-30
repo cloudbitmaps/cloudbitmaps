@@ -1,6 +1,7 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { SegmentRef } from '@/index';
+import type { EngineCountOptions } from '@cloudbitmaps/core';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/index';
 import { SegmentEngine } from '@/core/engine';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
@@ -104,44 +105,59 @@ describe('against a plain-set oracle, over random layouts and ranges', () => {
     spread: [...chunk(0, 50), ...chunk(1, 5), ...chunk(2, 5), ...chunk(4, 5), ...chunk(9, 12)],
   };
   const NAMES = Object.keys(POOL);
-  const world = (async () => {
-    const r = rig();
-    for (const [name, ids] of Object.entries(POOL)) await r.load(name, ids);
-    return r;
-  })();
+  let r!: Awaited<ReturnType<typeof loaded>>;
+  async function loaded() {
+    const w = rig();
+    for (const [name, ids] of Object.entries(POOL)) await w.load(name, ids);
+    return w;
+  }
+  beforeAll(async () => {
+    r = await loaded();
+  });
 
-  const bound = fc.option(fc.integer({ min: 0, max: 10 * C }), { nil: undefined });
+  // Bounds anywhere in the first ten chunks, and inside the chunks of the pool's ends (the last key included).
+  const bound = fc.option(
+    fc.oneof(
+      fc.integer({ min: 0, max: 10 * C }),
+      fc.constantFrom(7 * C + 5, 7 * C + 12, 65_535 * C + 10, 65_535 * C + 29, 2 ** 32 - 1),
+    ),
+    { nil: undefined },
+  );
   it('equals the set oracle and the stream, for all three operations', async () => {
-    const r = await world;
     await fc.assert(
       fc.asyncProperty(
         fc.array(fc.constantFrom(...NAMES), { minLength: 1, maxLength: 4 }),
-        fc.option(fc.constantFrom(...NAMES), { nil: undefined }),
+        fc.uniqueArray(fc.constantFrom(...NAMES), { maxLength: 2 }),
         bound,
         bound,
-        async (names, exclude, after, through) => {
+        fc.integer({ min: 1, max: 5 }),
+        async (names, excludes, after, through, concurrency) => {
           const segs = names.map(ref);
           const lo = after === undefined ? 0 : after + 1;
           const hi = through ?? 2 ** 32 - 1;
           const cut = (ids: number[]): number[] => ids.filter((id) => id >= lo && id <= hi);
           for (const op of OPERS) {
-            const ex = op === 'andNot' || exclude === undefined ? [] : [ref(exclude)];
+            const ex = op === 'andNot' ? [] : excludes.map(ref);
             const lists = names.map((n) => POOL[n]!);
             let want = OPS[op](lists);
-            if (ex.length > 0) want = want.filter((id) => !POOL[exclude!]!.includes(id));
+            if (ex.length > 0) {
+              const held = new Set(excludes.flatMap((e) => POOL[e]!));
+              want = want.filter((id) => !held.has(id));
+            }
             want = cut(want);
-            const range = { after, through };
+            const range = { after, through, concurrency };
             const got = await countOf(r.engine(), op, segs, range, ex);
-            expect(got, `${op} ${names.join(',')} ${String(exclude)} ${after} ${through}`).toBe(
-              want.length,
-            );
+            expect(
+              got,
+              `${op} ${names.join(',')} excl ${excludes.join(',')} ${after} ${through} c${concurrency}`,
+            ).toBe(want.length);
             expect(got).toBe((await collect(streamOf(r.engine(), op, segs, range, ex))).length);
           }
         },
       ),
-      { numRuns: 25 },
+      { numRuns: 200 },
     );
-  }, 120_000);
+  }, 300_000);
 });
 
 describe('what a count requests, against its stream', () => {
@@ -169,9 +185,16 @@ describe('what a count requests, against its stream', () => {
     return requests(r.calls);
   }
 
-  it('an intersect makes exactly the requests its stream makes', async () => {
+  it('an intersect makes exactly the requests its stream makes: the same tail reads and the same ranges', async () => {
     const r = await pair(A, B);
-    expect(await cost(r, 'intersect', true)).toBe(await cost(r, 'intersect', false));
+    const counted = await cost(r, 'intersect', true);
+    const countedRanges = [...r.ranges].sort();
+    const countedTails = r.calls.getTail;
+    const streamed = await cost(r, 'intersect', false);
+    expect(counted).toBe(streamed);
+    expect(countedRanges.length).toBeGreaterThan(0);
+    expect(countedRanges).toEqual([...r.ranges].sort());
+    expect(countedTails).toBe(r.calls.getTail);
   });
 
   it.each(['union', 'andNot'] as const)(
@@ -390,12 +413,15 @@ describe('a count that meets a move or an erasure while it runs', () => {
       looks += 1;
       if (looks === 2) r.clock.advance(TTL + 1); // the first look finds the pointer read again
     });
-    // Keys 0..3 are counted from generation 0 before the look; the rest from generation 1.
-    const first4 = evens.slice(0, 2).flat().length + odds.slice(0, 2).flat().length;
-    const rest = OPS.union([A1.filter((id) => id >= 4 * C), B0.filter((id) => id >= 4 * C)]).length;
-    expect(got).toBe(first4 + rest);
-    // What it served of generation 0 after the load landed is four keys: within the combine's `concurrency` + 1.
-    expect(4).toBeLessThanOrEqual(LIMIT + 1);
+    // The count is generation 0's figure for the keys below `k` and generation 1's from `k` on, for exactly one `k`: the
+    // key the look landed on, within the combine's `concurrency` + 1 keys after the load.
+    const split = (k: number): number =>
+      OPS.union([A0.filter((id) => id < k * C), B0.filter((id) => id < k * C)]).length +
+      OPS.union([A1.filter((id) => id >= k * C), B0.filter((id) => id >= k * C)]).length;
+    const splits = Array.from({ length: 41 }, (_, k) => k).filter((k) => split(k) === got);
+    // (key 3 is b's alone and the same in both generations, so a split at 3 or at 4 gives the figure)
+    expect(Math.max(...splits)).toBe(4);
+    expect(Math.max(...splits)).toBeLessThanOrEqual(LIMIT + 1);
   });
 
   it('a pinned operand whose generation an erasure deleted stops the count', async () => {
@@ -436,5 +462,367 @@ describe('a count that meets a move or an erasure while it runs', () => {
       if (looks === 3) throw stop;
     });
     await expect(count()).rejects.toBe(stop);
+  });
+});
+
+describe('a count whose later chunks go away while it runs', () => {
+  const LIMIT = 4;
+  const evens = Array.from({ length: 20 }, (_, i) => chunk(2 * i, 3 + i));
+  const odds = Array.from({ length: 20 }, (_, i) => chunk(2 * i + 1, 2 + i));
+  const A0 = evens.flat();
+  const B0 = odds.flat();
+  // keys 0..3 of generation 0: two even and two odd keys
+  const FIRST4 = evens.slice(0, 2).flat().length + odds.slice(0, 2).flat().length;
+
+  type Way = 'shrinks' | 'erases' | 'drops';
+  it.each<Way>(['shrinks', 'erases', 'drops'])(
+    'the count ends with the figure so far when a segment %s and the re-plan has no keys',
+    async (way) => {
+      const r = rig();
+      await r.load('a', A0);
+      await r.load('b', B0);
+      const engine = r.engine();
+      const run = (guard?: () => void) =>
+        countOf(engine, 'union', [ref('a'), ref('b')], {
+          concurrency: LIMIT,
+          ...(guard ? { guard } : {}),
+        });
+      expect(await run()).toBe(A0.length + B0.length); // the engine holds generation 0 of both
+      for (const name of ['a', 'b']) {
+        if (way === 'drops') {
+          for await (const k of r.storage.list(ref(name)))
+            await r.storage.delete({ ...ref(name), ...k });
+          await r.registry.delete(ref(name));
+        } else {
+          // generation 1: nothing above key 1 (an erasure also removes generation 0's object)
+          const next = await r.load(name, chunk(name === 'a' ? 0 : 1, 1));
+          if (way === 'erases') await r.storage.delete({ ...ref(name), generation: next - 1 });
+        }
+      }
+      let looks = 0;
+      const got = await run(() => {
+        looks += 1;
+        if (looks === 2) r.clock.advance(TTL + 1);
+      });
+      expect(got).toBe(FIRST4);
+      expect(looks).toBe(2); // the look that found the move ended the count
+    },
+  );
+});
+
+describe('a count whose pinned operand is erased while it runs', () => {
+  const LIMIT = 4;
+  const evens = Array.from({ length: 20 }, (_, i) => chunk(2 * i, 3 + i));
+  const odds = Array.from({ length: 20 }, (_, i) => chunk(2 * i + 1, 2 + i));
+  const A0 = evens.flat();
+  const B0 = odds.flat();
+
+  /** An engine over a source that pins `a` at generation 0 (and, when `unpinned`, pins nothing). */
+  async function pinnedWorld(opts: { unpinned?: boolean; hideLookup?: boolean } = {}) {
+    const r = rig();
+    await r.load('a', A0);
+    await r.load('b', B0);
+    const crbm = new CrbmStorageChunkSource(r.backend.storage, {
+      registry: r.registry,
+      clock: r.clock,
+    });
+    const at = (await crbm.pinGeneration(ref('a')))!;
+    const pins = new Map(
+      opts.unpinned
+        ? []
+        : [
+            [
+              segmentKey(ref('a')),
+              { generation: at.generation, version: at.version, fingerprint: at.fingerprint },
+            ],
+          ],
+    );
+    const engine = r.engine({
+      source: (inner) => {
+        const pinned = new PinnedStorageChunkSource(inner, pins);
+        if (!opts.hideLookup) return pinned;
+        // The same source with no lookup of the pinned object: what a count did before it looked pins up.
+        return new Proxy(pinned, {
+          get(t, p) {
+            if (p === 'verifyPinned') return undefined;
+            const v: unknown = Reflect.get(t, p, t);
+            return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+          },
+        });
+      },
+    });
+    return { r, engine };
+  }
+
+  it.each([2, 3])(
+    'an erasure that lands at look %i of an all-index count is raised there, with no further look',
+    async (at) => {
+      const { r, engine } = await pinnedWorld();
+      let looks = 0;
+      const err = await countOf(engine, 'union', [ref('a'), ref('b')], {
+        concurrency: LIMIT,
+        guard: () => {
+          looks += 1;
+          // The count has started and read its index, and the pin's generation is replaced and its object deleted with no
+          // invalidation told to the engine. The delete takes effect as it is called.
+          if (looks === at) {
+            void r.load('a', chunk(0, 1));
+            void r.backend.storage.delete({ ...ref('a'), generation: 0 });
+          }
+        },
+      }).catch((e: unknown) => e);
+      expect(err, String(err)).toBeInstanceOf(NotFoundError);
+      // looks 1 is the start; the erasure is found at the look that follows it: at most `concurrency` keys after
+      expect(looks).toBe(at);
+    },
+  );
+
+  it('control: without the lookup the same erasure goes unseen and the count finishes from the index', async () => {
+    const { r, engine } = await pinnedWorld({ hideLookup: true });
+    let looks = 0;
+    const got = await countOf(engine, 'union', [ref('a'), ref('b')], {
+      concurrency: LIMIT,
+      guard: () => {
+        looks += 1;
+        if (looks === 2) void r.backend.storage.delete({ ...ref('a'), generation: 0 });
+      },
+    });
+    expect(got).toBe(A0.length + B0.length);
+  });
+
+  it('costs one footer read per pinned operand at each look, and nothing for an operand that is not pinned', async () => {
+    const run = async (opts: { unpinned?: boolean; hideLookup?: boolean }) => {
+      const { r, engine } = await pinnedWorld(opts);
+      r.reset();
+      expect(await countOf(engine, 'union', [ref('a'), ref('b')], { concurrency: LIMIT })).toBe(
+        A0.length + B0.length,
+      );
+      return { requests: requests(r.calls), tails: r.calls.getTail ?? 0 };
+    };
+    const without = await run({ hideLookup: true });
+    const withPin = await run({});
+    const none = await run({ unpinned: true });
+    // 40 keys at a look every 4: nine looks, one pinned operand
+    expect(withPin.requests - without.requests).toBe(9);
+    expect(withPin.tails - without.tails).toBe(9);
+    // nothing pinned: a source that can look pins up asks about nothing
+    expect(none).toEqual(await run({ unpinned: true, hideLookup: true }));
+  });
+});
+
+describe('a lone-operand union and an operand that names no segment', () => {
+  it('is refused as its stream refuses it, unless absent operands are allowed', async () => {
+    const r = rig();
+    await r.load('empty', []);
+    await r.load('a', chunk(0, 5));
+    const engine = r.engine();
+    await expect(countOf(engine, 'union', [ref('typo')])).rejects.toBeInstanceOf(ValidationError);
+    await expect(collect(streamOf(r.engine(), 'union', [ref('typo')]))).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await countOf(engine, 'union', [ref('typo')], { allowAbsentOperands: true })).toBe(0);
+    // a segment that exists and holds nothing, and one that holds ids, are counted
+    expect(await countOf(engine, 'union', [ref('empty')])).toBe(0);
+    expect(await countOf(engine, 'union', [ref('a')])).toBe(5);
+  });
+});
+
+describe('the guard of a count whose version looks are off', () => {
+  const LIMIT = 4;
+  const keys = Array.from({ length: 20 }, (_, i) => chunk(i, 3 + i));
+  const A = keys.flat();
+  const B = keys.flat();
+
+  it('an intersect of two operands runs it at the start and every concurrency keys', async () => {
+    const r = rig();
+    await r.load('a', A);
+    await r.load('b', B);
+    let calls = 0;
+    const got = await countOf(r.engine(), 'intersect', [ref('a'), ref('b')], {
+      concurrency: LIMIT,
+      guard: () => {
+        calls += 1;
+      },
+    });
+    expect(got).toBe(A.length);
+    expect(calls).toBe(1 + 4); // the start, then before keys 5, 9, 13 and 17 of 20
+  });
+
+  it('a lease that ends in the middle of an intersect fails it at the next guard', async () => {
+    const stop = new Error('lease ended');
+    const r = rig();
+    await r.load('a', A);
+    await r.load('b', B);
+    let calls = 0;
+    await expect(
+      countOf(r.engine(), 'intersect', [ref('a'), ref('b')], {
+        concurrency: LIMIT,
+        guard: () => {
+          calls += 1;
+          if (calls === 3) throw stop;
+        },
+      }),
+    ).rejects.toBe(stop);
+    expect(calls).toBe(3);
+  });
+
+  it('the options type is the one the core entry exports', () => {
+    const options: EngineCountOptions = { guard: () => undefined, concurrency: 2 };
+    expect(options.concurrency).toBe(2);
+  });
+});
+
+describe('a move while a count decodes keys', () => {
+  const LIMIT = 4;
+  // Keys 0..19 held by both a and b (every key decoded), key 3 and key 10 also held by an exclude.
+  const A0 = Array.from({ length: 20 }, (_, i) => chunk(i, 6 + i)).flat();
+  const B0 = Array.from({ length: 20 }, (_, i) => chunk(i, 4 + i, 3)).flat();
+  const X = [...chunk(3, 4, 4), ...chunk(10, 5, 2)];
+
+  it('a load landing at a look splits the count at the look, with shared and excluded keys decoded', async () => {
+    const r = rig();
+    await r.load('a', A0);
+    await r.load('b', B0);
+    await r.load('x', X);
+    // generation 1 of a: keys 4 and above hold different ids
+    const A1 = [
+      ...A0.filter((id) => id < 4 * C),
+      ...Array.from({ length: 16 }, (_, i) => chunk(4 + i, 9 + i, 1)).flat(),
+    ];
+    const engine = r.engine();
+    const run = (guard?: () => void) =>
+      countOf(
+        engine,
+        'union',
+        [ref('a'), ref('b')],
+        { concurrency: LIMIT, ...(guard ? { guard } : {}) },
+        [ref('x')],
+      );
+    await run();
+    await r.load('a', A1);
+    let looks = 0;
+    const got = await run(() => {
+      looks += 1;
+      if (looks === 2) r.clock.advance(TTL + 1);
+    });
+    const without = (ids: number[]) => ids.filter((id) => !X.includes(id));
+    const split = (k: number): number =>
+      without(OPS.union([A0.filter((id) => id < k * C), B0.filter((id) => id < k * C)])).length +
+      without(OPS.union([A1.filter((id) => id >= k * C), B0.filter((id) => id >= k * C)])).length;
+    // keys below 4 are the same ids in both generations, so every split up to the look's key gives the figure
+    const splits = Array.from({ length: 21 }, (_, k) => k).filter((k) => split(k) === got);
+    expect(Math.max(...splits)).toBe(4);
+  });
+
+  it('is charged for the keys already taken when the new plan is checked against the budget', async () => {
+    // Generation 0 shares keys 0..9 (twenty reads); generation 1 of b shares all twenty keys. After four keys the new
+    // plan needs 32 more reads: 4 * 2 spent + 32 is over 35 and 32 alone is not.
+    const r = rig();
+    await r.load('a', A0);
+    await r.load('b', Array.from({ length: 10 }, (_, i) => chunk(i, 4 + i, 3)).flat());
+    const engine = r.engine();
+    const run = (guard?: () => void) =>
+      countOf(engine, 'union', [ref('a'), ref('b')], {
+        concurrency: LIMIT,
+        budget: { maxRequests: 35 },
+        ...(guard ? { guard } : {}),
+      });
+    expect(await run()).toBeGreaterThan(0);
+    await r.load('b', B0);
+    let looks = 0;
+    await expect(
+      run(() => {
+        looks += 1;
+        if (looks === 2) r.clock.advance(TTL + 1);
+      }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+  });
+});
+
+describe('a range that cuts a key one operand holds', () => {
+  const lone = chunk(3, 100); // ids 3*C .. 3*C + 99, alone in a
+  const other = chunk(7, 20);
+  const setup = async () => {
+    const r = rig();
+    await r.load('a', lone);
+    await r.load('b', other);
+    await r.load('x', chunk(3, 5, 60));
+    return r;
+  };
+
+  it.each([
+    ['after inside it', { after: 3 * C + 49 }, 50 + 20, true],
+    ['through inside it', { through: 3 * C + 9 }, 10, true],
+    ['both inside it', { after: 3 * C + 19, through: 3 * C + 29 }, 10, true],
+    ['neither (a range holding it whole)', { after: 3 * C - 1, through: 3 * C + 99 }, 100, false],
+  ])('%s', async (_name, range, want, cut) => {
+    const r = await setup();
+    r.reset();
+    expect(await countOf(r.engine(), 'union', [ref('a'), ref('b')], range)).toBe(want);
+    // a cut key is decoded, so its figure is the ids the range holds, not the index's 100
+    void cut;
+  });
+
+  it('an exclude holding the cut key takes its ids out of the cut chunk', async () => {
+    const r = await setup();
+    expect(
+      await countOf(r.engine(), 'union', [ref('a'), ref('b')], { after: 3 * C + 49 }, [ref('x')]),
+    ).toBe(50 - 5 + 20);
+  });
+});
+
+describe('an index that disagrees with the chunk keys', () => {
+  const A = [...chunk(0, 5), ...chunk(2, 7)];
+  const B = chunk(5, 4);
+
+  /** A source whose `cardinalities` names a key the segment does not hold, for the first `times` calls (or always). */
+  function lying(times: number) {
+    const seen = { calls: 0 };
+    const source = (inner: CrbmStorageChunkSource) =>
+      new Proxy(inner, {
+        get(t, p) {
+          const v: unknown = Reflect.get(t, p, t);
+          if (p === 'cardinalities') {
+            return async (at: SegmentRef) => {
+              const n = (seen.calls += 1);
+              const real = await t.cardinalities(at);
+              if (real === null || n > times) return real;
+              return new Map([...real, [999, 1]]);
+            };
+          }
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+        },
+      });
+    return { seen, source };
+  }
+
+  it('lists the operand again, and counts exactly once the two agree', async () => {
+    const r = rig();
+    await r.load('a', A);
+    await r.load('b', B);
+    const { seen, source } = lying(1);
+    const engine = r.engine({ source });
+    expect(await countOf(engine, 'union', [ref('a'), ref('b')])).toBe(A.length + B.length);
+    expect(seen.calls).toBe(3); // a's counts twice, b's once
+  });
+
+  it('refuses with IntegrityError once a source has disagreed four times in a row', async () => {
+    const r = rig();
+    await r.load('a', A);
+    await r.load('b', B);
+    const { seen, source } = lying(Infinity);
+    await expect(
+      countOf(r.engine({ source }), 'union', [ref('a'), ref('b')]),
+    ).rejects.toBeInstanceOf(IntegrityError);
+    expect(seen.calls).toBeGreaterThanOrEqual(4);
+  });
+
+  it('is not asked for by an intersect of two operands, which decodes every key', async () => {
+    const r = rig();
+    await r.load('a', A);
+    await r.load('b', [...chunk(2, 3), ...B]);
+    const { seen, source } = lying(Infinity);
+    expect(await countOf(r.engine({ source }), 'intersect', [ref('a'), ref('b')])).toBe(3);
+    expect(seen.calls).toBe(0);
   });
 });

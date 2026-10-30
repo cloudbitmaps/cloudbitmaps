@@ -1472,6 +1472,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     if (replaced) throw notThePinned(ref, generation);
   }
 
+  /**
+   * Throws the pin's `NotFoundError` when the object under `generation`'s key is no longer the one `held` names: one
+   * footer read, shared with a check already under way for the same pin.
+   */
+  async verifyHeld(ref: SegmentRef, generation: number, held: PinnedObject): Promise<void> {
+    validateUserRef(ref, 'read', PORT_KEYS);
+    await this.throwIfReplaced(ref, generation, held.version, held.fingerprint);
+  }
+
   /** Chunk keys of a specific generation — the pinned shape read. `held` as for {@link getChunkAt}. */
   async listChunkKeysAt(
     ref: SegmentRef,

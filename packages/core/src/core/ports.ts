@@ -239,6 +239,19 @@ export interface StorageChunkSource {
   currentVersion?(ref: SegmentRef): Promise<string | null>;
 }
 
+/**
+ * What a source that reads pinned generations also offers the engine, apart from {@link StorageChunkSource}: a lookup of
+ * the object a pin holds. Not part of the port a source implements; the engine asks for it when it is there.
+ */
+export interface HeldObjectLookup {
+  /**
+   * Resolves when the segment is not pinned here, or when the object its pin holds is still under its key; rejects with
+   * the pin's `NotFoundError` when it is gone or is another object. One footer read for a pinned segment, none for any
+   * other.
+   */
+  verifyPinned(ref: SegmentRef): Promise<void>;
+}
+
 /** Capabilities a Storage driver advertises; validated at wiring time, fail-fast. */
 export interface StorageCaps {
   /** REQUIRED — the format relies on byte-range reads. */

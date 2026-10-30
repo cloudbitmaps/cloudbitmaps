@@ -327,9 +327,10 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
 
 /**
  * Routed files the `sorted` project does not run, each with the reason. None depends on the order the caller gave the
- * ids in. These are the seven heaviest routed files, whose loads only build what another behaviour is tested over:
- * measured locally at `--maxWorkers=2`, they took about three quarters of the project's summed file time, and leaving
- * them out cut its wall time from 61 s to 22 s, about 8% of the suite's. What a sorted load changes, its write and the
+ * ids in. These are routed files whose loads only build what another behaviour is tested over. The first seven were
+ * measured locally at `--maxWorkers=2`: they took about three quarters of the project's summed file time, and leaving
+ * them out cut its wall time from 61 s to 22 s, about 8% of the suite's; the combine count's file joined them as a
+ * property test over segments it only builds. What a sorted load changes, its write and the
  * order it reads the row in, is held by `tests/core/load-sorted.test.ts` and the property test of its bytes, and every
  * other routed file still runs.
  */
@@ -352,8 +353,9 @@ export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {
     "its time is the calibration harness's child processes, which no setup file reaches, and its own loads only seed the " +
     'figures those children are compared with, so a third run would exercise no part of the load path',
   'tests/core/combine-count.test.ts':
-    "counts what a combine's count equals and requests over segments its loads only build; a third run would repeat " +
-    'those counts and exercise no part of the load path',
+    "holds a combine's count to a set oracle, to its stream and to its request counts over segments its loads only " +
+    'build, and the count reads the stored generation whatever order its ids were loaded in; a third run would repeat ' +
+    'the property cases and exercise no part of the load path',
   'tests/core/exclude-batching.test.ts':
     "counts the storage requests of an intersect's exclude over segments of a thousand chunks its loads only build; a " +
     'third run would repeat those counts and exercise no part of the load path',

@@ -28,11 +28,15 @@ export const setOf = (...lists: ReadonlyArray<readonly number[]>): number[] => s
 
 /** What each combine means as sets: the oracle every count is held to. */
 export const OPS = {
-  intersect: (lists: ReadonlyArray<readonly number[]>): number[] =>
-    sorted(lists[0]!).filter((id) => lists.every((l) => l.includes(id))),
+  intersect: (lists: ReadonlyArray<readonly number[]>): number[] => {
+    const held = lists.map((l) => new Set(l));
+    return sorted(lists[0]!).filter((id) => held.every((l) => l.has(id)));
+  },
   union: (lists: ReadonlyArray<readonly number[]>): number[] => setOf(...lists),
-  andNot: (lists: ReadonlyArray<readonly number[]>): number[] =>
-    sorted(lists[0]!).filter((id) => !lists.slice(1).some((l) => l.includes(id))),
+  andNot: (lists: ReadonlyArray<readonly number[]>): number[] => {
+    const held = lists.slice(1).map((l) => new Set(l));
+    return sorted(lists[0]!).filter((id) => !held.some((l) => l.has(id)));
+  },
 } as const;
 export type Op = keyof typeof OPS;
 const MODE = { intersect: 'all', union: 'any', andNot: 'all' } as const;
@@ -47,6 +51,8 @@ export interface Rig {
   readonly registry: IRegistryDriver;
   /** Driver calls of the engines built since the last `reset`, by method name. */
   readonly calls: Counts;
+  /** The object ranges the engines read since the last `reset`, as `generation:offset:length`. */
+  readonly ranges: string[];
   readonly clock: { now(): number; advance(ms: number): void };
   /** Load `ids` as the next generation of `segment`, as another party's publish: the engines are not told. */
   load(segment: string, ids: readonly number[]): Promise<number>;
@@ -60,6 +66,7 @@ export interface Rig {
 export function rig(): Rig {
   const backend = new MemoryStorage();
   const calls: Counts = {};
+  const ranges: string[] = [];
   let now = 0;
   const clock = {
     now: () => now,
@@ -71,7 +78,8 @@ export function rig(): Rig {
     get(t, prop, receiver) {
       const value: unknown = Reflect.get(t, prop, receiver);
       if (prop !== 'getRange') return value;
-      return (key: unknown, offset: number, length: number) => {
+      return (key: { generation: number }, offset: number, length: number) => {
+        ranges.push(`${key.generation}:${offset}:${length}`);
         calls.rangeBytes = (calls.rangeBytes ?? 0) + length;
         return (value as (...a: unknown[]) => unknown).call(t, key, offset, length);
       };
@@ -84,6 +92,7 @@ export function rig(): Rig {
     storage: backend.storage,
     registry: backend.registry,
     calls,
+    ranges,
     clock,
     async load(segment, ids) {
       const r = ref(segment);
@@ -107,6 +116,7 @@ export function rig(): Rig {
     },
     reset() {
       for (const k of Object.keys(calls)) delete calls[k];
+      ranges.length = 0;
     },
   };
 }

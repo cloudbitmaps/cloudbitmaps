@@ -44,7 +44,13 @@ import { KeptSegmentKeys, chunkKeyUnder, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
-import type { ChunkRef, GenerationMetadata, StorageChunkSource, SegmentRef } from './ports';
+import type {
+  ChunkRef,
+  GenerationMetadata,
+  HeldObjectLookup,
+  StorageChunkSource,
+  SegmentRef,
+} from './ports';
 
 /**
  * Range requests a stream holds ahead of a combine or `iterate` by default (chunk keys, on a source that reads chunk by
@@ -608,6 +614,8 @@ interface CountRun extends CombineRun {
   /** The index in `steps` of the next step. */
   at: number;
   readonly guard: (() => void) | undefined;
+  /** Set when the guard runs on its own cadence (the looks are off): the keys taken since it last ran. */
+  guardEvery?: { since: number };
 }
 
 export class SegmentEngine {
@@ -1551,7 +1559,9 @@ export class SegmentEngine {
    * A running count looks at its operands' versions every `concurrency` keys, a key answered from the index being one
    * taken, and before the first key after an invalidation, and runs `options.guard` at each look. On a move it plans
    * again above the last key taken, as a combine does, so the bound on what it serves of an earlier generation is the
-   * combine's. A pinned operand is looked up at each look, so an erasure of what it pinned stops the count there.
+   * combine's. A pinned operand's object is looked up at each look (one footer read each), so an erasure of what it
+   * pinned stops the count there with the pin's `NotFoundError`. An intersection of two or more operands decodes every
+   * key and so shows a move without a version look; its guard still runs every `concurrency` keys.
    */
   async combineCount(
     segs: readonly SegmentRef[],
@@ -1570,10 +1580,22 @@ export class SegmentEngine {
     options?.guard?.();
     if (w === 'empty') return 0;
     if (op === 'union' && segs.length === 1 && excludeSegs.length === 0 && w === null) {
-      return this.count(segs[0]!);
+      const n = await this.count(segs[0]!);
+      // A segment that holds nothing is refused when it does not exist, as the stream refuses it.
+      if (n === 0) {
+        const none: Operand = {
+          seg: segs[0]!,
+          keys: new Set(),
+          chunkless: true,
+          gen: undefined,
+          epoch: 0,
+        };
+        await this.refuseAbsentOperands([none], options?.allowAbsentOperands, label);
+      }
+      return n;
     }
     const epoch = this.scope.epoch;
-    const [operands, excludes] = await this.countOperands(segs, excludeSegs, w, -1);
+    const [operands, excludes] = await this.countOperands(segs, excludeSegs, mode, w, -1);
     await this.refuseAbsentOperands(
       [...operands, ...excludes],
       options?.allowAbsentOperands,
@@ -1608,6 +1630,7 @@ export class SegmentEngine {
       steps,
       at: 0,
       guard: options?.guard,
+      ...(everyKey && options?.guard !== undefined ? { guardEvery: { since: 0 } } : {}),
     };
     try {
       return await this.runCount(run);
@@ -1622,7 +1645,12 @@ export class SegmentEngine {
     let last = -1;
     while (run.at < run.steps.length) {
       run.looks.left -= 1; // a key answered from the index is a key taken
-      if (run.plan.moves.moved || this.lookDue(run.looks)) await this.countLook(run, last);
+      if (run.guardEvery !== undefined) this.guardAtCadence(run);
+      if (run.plan.moves.moved || this.lookDue(run.looks)) {
+        await this.countLook(run, last);
+        // The plan above `last` can be empty (the later chunks are gone): the count ends with what it has taken.
+        if (run.at >= run.steps.length) break;
+      }
       const step = run.steps[run.at++]!;
       last = step.key;
       if (step.n >= 0) {
@@ -1640,6 +1668,26 @@ export class SegmentEngine {
     return total;
   }
 
+  /** Run the guard every `limit` keys when the version looks are off (an AND of two or more includes). */
+  private guardAtCadence(run: CountRun): void {
+    const cadence = run.guardEvery!;
+    if (cadence.since >= run.limit) {
+      cadence.since = 0;
+      run.guard!();
+    }
+    cadence.since += 1;
+  }
+
+  /**
+   * Look up each pinned operand's generation object, as a pinned read finds it: one footer read per pinned operand, and
+   * the pin's `NotFoundError` when the object is gone or is another. An operand that is not pinned costs nothing.
+   */
+  private async verifyPinned(operands: readonly Operand[]): Promise<void> {
+    const verify = (this.storage as Partial<HeldObjectLookup>).verifyPinned;
+    if (verify === undefined) return;
+    await boundedAll(operands, OPERANDS_AT_ONCE, (o) => verify.call(this.storage, o.seg));
+  }
+
   /** Look at every operand's version, as {@link nextSlotAfterLook} does, and plan the keys above `last` again on a move. */
   private async countLook(run: CountRun, last: number): Promise<void> {
     const plan = run.plan;
@@ -1647,11 +1695,18 @@ export class SegmentEngine {
     this.looked(run.looks);
     run.guard?.();
     const all = [...plan.operands, ...plan.excludes];
+    await this.verifyPinned(all);
     const now = await boundedAll(all, OPERANDS_AT_ONCE, (o) => this.cacheVersion(o.seg));
     if (now.every((version, i) => version === all[i]!.gen)) return;
     this.closeCombine(plan);
     const spent = run.spent + combineReads(plan.keys, plan.operands, plan.excludes, run.mode, last);
-    const [operands, excludes] = await this.countOperands(run.segs, run.excludeSegs, run.w, last);
+    const [operands, excludes] = await this.countOperands(
+      run.segs,
+      run.excludeSegs,
+      run.mode,
+      run.w,
+      last,
+    );
     const { steps, decode } = countSteps(operands, excludes, run.mode, run.w);
     checkBudget(
       run.budget,
@@ -1673,9 +1728,12 @@ export class SegmentEngine {
   private async countOperands(
     segs: readonly SegmentRef[],
     excludeSegs: readonly SegmentRef[],
+    mode: 'all' | 'any',
     w: IdWindow | null,
     after: number,
   ): Promise<[CountOperand[], Operand[]]> {
+    // An AND of two or more includes decodes every key and never reads the counts.
+    const wantCounts = !(mode === 'all' && segs.length > 1);
     const extract = async (seg: SegmentRef, withCounts: boolean): Promise<CountOperand> => {
       for (let attempt = 0; attempt < COUNT_RELIST_ATTEMPTS; attempt++) {
         const { listed, gen, epoch } = await this.listKeys(seg);
@@ -1687,7 +1745,10 @@ export class SegmentEngine {
       throw new IntegrityError("a segment's index and its chunk keys name different chunks");
     };
     const all = await boundedAll(
-      [...segs.map((s) => [s, true] as const), ...excludeSegs.map((s) => [s, false] as const)],
+      [
+        ...segs.map((s) => [s, wantCounts] as const),
+        ...excludeSegs.map((s) => [s, false] as const),
+      ],
       OPERANDS_AT_ONCE,
       ([seg, withCounts]) => extract(seg, withCounts),
     );
