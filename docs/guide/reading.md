@@ -69,12 +69,13 @@ const either = await shoppers.unionCount([subscribers], { after: 0, through: 1_0
 const shoppersOnly = await shoppers.andNotCount([subscribers]);
 ```
 
-A chunk key that only one operand holds, that no `exclude` holds and that the range does not cut is answered from that
-operand's index: its chunk is not read. Every other key is decoded and counted as the stream reads it, with the same
-plan, the same ranges and the same window. So the cost against the other ways to get the number:
+An intersection decodes every key all its operands hold, and a key only some of them hold is not read at all, so
+`intersectCount` never answers from an index and is exact. In a union or a difference, a chunk key that only one operand
+holds, that no `exclude` holds and that the range does not cut is answered from that operand's index: its chunk is not
+read. Every other key is decoded and counted as the stream reads it, with the same plan, the same ranges and the same
+window. So the cost against the other ways to get the number:
 
-- **`intersectCount` makes the requests `intersect` makes** and reads the same bytes: an intersection decodes every key
-  it reads, and no id array is built.
+- **`intersectCount` makes the requests `intersect` makes** and reads the same bytes, no id array being built.
 - **`unionCount` and `andNotCount` make no more requests than their streams, and read fewer bytes where the operands
   share few chunks.** The packed layout (the shared chunks first in each object) is where it shows. The bench's record
   ([`bench/combine-counts-results.json`](../../bench/combine-counts-results.json), counted over the in-memory backend,
@@ -83,20 +84,27 @@ plan, the same ranges and the same window. So the cost against the other ways to
   reading 2,165,888 bytes where the stream made 36 and read 33,339,872 for the union. A 31-operand union of 500,000-id
   operands reads 9,726,064 bytes against 40,102,468 and makes the same 93 requests. On the spread layout the saving runs
   from under 1% (500,000 ids) to 14% (10,000,000 ids) of the bytes, and the requests are the same or fewer.
-- **`unionCount([])` and `andNotCount([])` are `count()`** of the receiver, answered from the registry row when it can be.
-  `intersectCount([])` is refused with `ValidationError`, as `intersect([])` is: an intersection over nothing has no meaning.
+- **`unionCount([])` and `andNotCount([])`**, with no `exclude` and no range, are `count()` of the receiver, answered from
+  the registry row when it can be; a figure of 0 adds one registry read, which refuses a segment that does not exist as
+  the stream does. `intersectCount([])` is refused with `ValidationError`, as `intersect([])` is: an intersection over nothing has no meaning.
 
-**What it trusts:** the index, for each key it does not decode, as [`count()` does](#what-count-trusts). There is no
-option that decodes every key; to have that, stream the combine and add up its `batches()`. A decoded key is exact, a
-source that reports no per-chunk counts decodes every key, and a segment whose lone key the range cuts is decoded for
-that key.
+**What it trusts:** `intersectCount` trusts no index: every key it counts is decoded, so it is exact. `unionCount` and
+`andNotCount` trust the index for each key they answer without decoding, as [`count()` does](#what-count-trusts); where
+that is not enough, `intersectCount` is exact and, for a union or a difference, you can stream the combine and add up
+its `batches()`. A decoded key is exact, a source that reports no per-chunk counts decodes every key, and a segment whose
+lone key the range cuts is decoded for that key.
 
 **On a pinned or leased handle** the count answers for the pinned generation, and an operand's lease is checked when the
 count starts and at each look. **Concurrent loads and erasures** are met as a combine's are: a count looks at its operands'
 generations every `concurrency` keys (a key answered from the index counts as one taken), and plans again above the last
 key it took when one moved, so what it serves of an earlier generation has the bound
-[a stream's has](#how-soon-a-reader-sees-a-new-load). A pinned operand's object is looked up at each look, so an erasure
-of what it pinned fails the count with `NotFoundError` there. A count past its lease throws `LeaseExpiredError`.
+[a stream's has](#how-soon-a-reader-sees-a-new-load). A pinned operand's object is looked up before the first key and at each look, so an erasure
+of what it pinned fails the count with `NotFoundError` there, even when the count has fewer keys than `concurrency`; a
+look that meets any other fault than a transient one, which is retried, raises it. That lookup is one footer read per
+pinned operand at each of those points, which the streams do not make, so a pinned count makes more requests than its
+stream by that many; `budget` does not charge them, as it charges no row or tail read of a stream either. A lone-operand
+`unionCount` or `andNotCount` on a pinned handle is `count()` of the pin and makes no look. A count past its lease
+throws `LeaseExpiredError`.
 
 To keep the result rather than its size, use the [`*Into` verbs](loading.md#write-a-result-into-another-segment-the-into-verbs);
 for many counts over the same segments in one pass, a dry-run [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany);
@@ -158,7 +166,8 @@ decode the payloads, whose structure is checked. The same index supplies the chu
 fetches from, and `load`'s `cardinalityBefore` when the row carries no summary of the generation. Where an exact answer matters more than the request count, `iterate()` the
 segment and count what it yields.
 
-**`intersectCount`, `unionCount` and `andNotCount` trust the index in the same way, for the keys they do not decode.** A key
+**`unionCount` and `andNotCount` trust the index in the same way, for the keys they do not decode; `intersectCount` decodes
+every key it counts and trusts none.** A key
 only one operand holds, that no exclude holds and the range does not cut is counted from the index's figure for it, with
 the same internal-consistency check at open and no more, so a corrupt but consistent index gives a wrong figure for that
 key with no error; on an encrypted object the index is authenticated, so a wrong figure there needs the key. Every other

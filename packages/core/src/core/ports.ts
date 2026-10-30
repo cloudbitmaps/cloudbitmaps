@@ -158,7 +158,9 @@ export interface StorageChunkSource {
    * already-parsed `.crbm` index with **no payload reads**, or `null` if the segment has no Storage generation.
    * Powers the free `count()` of a source with no {@link StorageChunkSource.summary} — the engine sums the index
    * instead of fetching a single chunk. A source with no
-   * index (e.g. the in-memory source) omits this, and `count()` falls back to fetching every chunk.
+   * index (e.g. the in-memory source) omits this, and `count()` falls back to fetching every chunk. A count of a
+   * combine also asks for it, and takes its keys to be the ones `listChunkKeys` names for the same generation (an emptied
+   * chunk is named by both or by neither), listing again when they differ and refusing a source that keeps disagreeing.
    */
   cardinalities?(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null>;
   /**
@@ -246,8 +248,9 @@ export interface StorageChunkSource {
 export interface HeldObjectLookup {
   /**
    * Resolves when the segment is not pinned here, or when the object its pin holds is still under its key; rejects with
-   * the pin's `NotFoundError` when it is gone or is another object. One footer read for a pinned segment, none for any
-   * other.
+   * the pin's `NotFoundError` when it is gone or is another object, and with the fault itself when the footer cannot be
+   * read or is not a generation object's (a transient fault is for the caller's retries). One footer read for a pinned
+   * segment, none for any other.
    */
   verifyPinned(ref: SegmentRef): Promise<void>;
 }

@@ -158,6 +158,66 @@ describe('against a plain-set oracle, over random layouts and ranges', () => {
       { numRuns: 200 },
     );
   }, 300_000);
+
+  it('holds with pinned operands, and with a live operand reloaded under the same ids while it runs', async () => {
+    const w = await loaded();
+    let inner!: CrbmStorageChunkSource;
+    w.engine({
+      source: (crbm) => {
+        inner = crbm;
+        return crbm;
+      },
+    });
+    const held = new Map<string, { generation: number; version: string; fingerprint: string }>();
+    for (const name of NAMES) {
+      const at = await inner.pinGeneration(ref(name));
+      if (at !== null) held.set(name, at);
+    }
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.constantFrom(...NAMES), { minLength: 1, maxLength: 4 }),
+        fc.uniqueArray(fc.constantFrom(...NAMES), { maxLength: 2 }),
+        fc.uniqueArray(fc.constantFrom(...NAMES), { maxLength: 3 }),
+        fc.boolean(),
+        fc.integer({ min: 1, max: 5 }),
+        async (names, excludes, pinnedNames, moves, concurrency) => {
+          const pins = new Map(
+            pinnedNames.flatMap((n) => (held.has(n) ? [[segmentKey(ref(n)), held.get(n)!]] : [])),
+          );
+          for (const op of OPERS) {
+            const segs = names.map(ref);
+            const ex = op === 'andNot' ? [] : excludes.map(ref);
+            let want = OPS[op](names.map((n) => POOL[n]!));
+            if (ex.length > 0) {
+              const heldIds = new Set(excludes.flatMap((e) => POOL[e]!));
+              want = want.filter((id) => !heldIds.has(id));
+            }
+            const engine = w.engine({
+              source: (crbm) => new PinnedStorageChunkSource(crbm, pins),
+            });
+            let looks = 0;
+            const reload: Array<Promise<number>> = [];
+            const guard = (): void => {
+              looks += 1;
+              // The same ids as a new generation: the pointer moves, the figure does not.
+              if (moves && looks === 2) {
+                const live = names.find((n) => !pins.has(segmentKey(ref(n))));
+                if (live !== undefined) reload.push(w.load(live, POOL[live]!));
+              }
+              if (looks === 3) w.clock.advance(TTL + 1);
+            };
+            const got = await countOf(engine, op, segs, { concurrency, guard }, ex);
+            await Promise.all(reload);
+            expect(
+              got,
+              `${op} ${names.join(',')} excl ${excludes.join(',')} pinned ${pinnedNames.join(',')} move ${moves} c${concurrency}`,
+            ).toBe(want.length);
+          }
+        },
+      ),
+      { numRuns: 100 },
+    );
+  }, 300_000);
 });
 
 describe('what a count requests, against its stream', () => {
@@ -300,6 +360,17 @@ describe('what the index is trusted for', () => {
     // Held by two operands, the same chunk is decoded and counted exactly.
     await r.load('c', [1, 2, 3, 4]);
     expect(await countOf(r.engine(), 'union', [ref('a'), ref('c')])).toBe(4);
+  });
+
+  it('an intersect is exact under the same forged index: it decodes every key and answers none from the index', async () => {
+    const r = await planted(5);
+    await r.load('c', [1, 2, 3, 4]);
+    // The forged chunk 0 claims 5 ids and holds 3. A union and a difference report the claim for a key only a holds ...
+    expect(await countOf(r.engine(), 'union', [ref('a'), ref('b')])).toBe(5 + 4);
+    expect(await countOf(r.engine(), 'andNot', [ref('a'), ref('b')])).toBe(5);
+    // ... an intersect decodes the key every operand holds, and counts the ids there are
+    expect(await countOf(r.engine(), 'intersect', [ref('a'), ref('c')])).toBe(3);
+    expect(await countOf(r.engine(), 'intersect', [ref('a'), ref('b')])).toBe(0);
   });
 
   it('encrypted: an index changed under its seal is refused, not reported', async () => {
@@ -602,9 +673,9 @@ describe('a count whose pinned operand is erased while it runs', () => {
     const without = await run({ hideLookup: true });
     const withPin = await run({});
     const none = await run({ unpinned: true });
-    // 40 keys at a look every 4: nine looks, one pinned operand
-    expect(withPin.requests - without.requests).toBe(9);
-    expect(withPin.tails - without.tails).toBe(9);
+    // 40 keys at a look every 4: nine looks and the one before the first key, one pinned operand
+    expect(withPin.requests - without.requests).toBe(10);
+    expect(withPin.tails - without.tails).toBe(10);
     // nothing pinned: a source that can look pins up asks about nothing
     expect(none).toEqual(await run({ unpinned: true, hideLookup: true }));
   });
@@ -624,6 +695,40 @@ describe('a lone-operand union and an operand that names no segment', () => {
     // a segment that exists and holds nothing, and one that holds ids, are counted
     expect(await countOf(engine, 'union', [ref('empty')])).toBe(0);
     expect(await countOf(engine, 'union', [ref('a')])).toBe(5);
+  });
+});
+
+describe('a lone-operand andNot is count(), as its stream of the whole of the operand is', () => {
+  it('makes the requests count() makes, answers the same figure, and is refused for an absent operand', async () => {
+    const r = rig();
+    await r.load('a', chunk(0, 5).concat(chunk(3, 7)));
+    await r.load('empty', []);
+    r.reset();
+    const viaCount = await r.engine().count(ref('a'));
+    const countCalls = { ...r.calls };
+    r.reset();
+    expect(await countOf(r.engine(), 'andNot', [ref('a')])).toBe(viaCount);
+    expect(r.calls).toEqual(countCalls);
+    expect(await collect(streamOf(r.engine(), 'andNot', [ref('a')]))).toHaveLength(viaCount);
+    expect(await countOf(r.engine(), 'andNot', [ref('empty')])).toBe(0);
+    // a figure of 0 asks once whether the segment exists; a figure above 0 asks nothing more than count()
+    for (const op of ['union', 'andNot'] as const) {
+      r.reset();
+      await r.engine().count(ref('empty'));
+      const base = requests(r.calls);
+      r.reset();
+      await countOf(r.engine(), op, [ref('empty')]);
+      expect(requests(r.calls)).toBe(base + 1);
+    }
+    await expect(countOf(r.engine(), 'andNot', [ref('typo')])).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(collect(streamOf(r.engine(), 'andNot', [ref('typo')]))).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await countOf(r.engine(), 'andNot', [ref('typo')], { allowAbsentOperands: true })).toBe(
+      0,
+    );
   });
 });
 

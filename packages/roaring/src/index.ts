@@ -4373,22 +4373,21 @@ export class Segment {
 
   /**
    * How many ids `this ∩ others…` holds (minus `exclude`): the length of what {@link intersect} streams, without
-   * streaming it. A chunk key only one operand holds, with no `exclude` holding it and the range not cutting it, is
-   * answered from that operand's index; every other key is decoded and counted as the stream reads it, so the call
-   * makes the requests {@link intersect} makes and returns a number instead of the ids.
+   * streaming it. Every key all the operands hold is decoded and counted as the stream reads it, and a key only some
+   * operands hold is not read, so the call makes the requests {@link intersect} makes and returns a number instead of
+   * the ids. It is exact: it never answers a key from an index, so it trusts nothing {@link count} trusts.
    *
-   * What it trusts: the index, for each key it does not decode, as {@link count} does, so a party who can write an
-   * object's index can make that key's figure wrong; a decoded key is exact. A source with no per-chunk counts decodes
-   * every key. The range, `concurrency`, `budget`, `allowAbsentOperands` and `exclude` are {@link intersect}'s; a write
-   * option fails the call with {@link ValidationError} before any request, and so does an empty `others`
-   * (to count one segment, use {@link count}).
+   * The range, `concurrency`, `budget`, `allowAbsentOperands` and `exclude` are {@link intersect}'s; a write option fails
+   * the call with {@link ValidationError} before any request, and so does an empty `others` (to count one segment, use
+   * {@link count}).
    *
    * Like a stream, a count that runs while a segment is erased or reloaded can describe two instants, within the bound
-   * the streams state: it looks at its operands' generations every `concurrency` keys, a key answered from the index
-   * counting as one taken, and plans again above the last key it took when one moved. A pinned operand is looked up at
-   * each look, so an erasure of what it pinned fails the count with {@link NotFoundError}, and a pinned handle counts
-   * the generation it pinned. A call that involves a handle whose lease has ended, or has ended by the next look, throws
-   * {@link LeaseExpiredError}.
+   * the streams state: it looks at its operands' generations every `concurrency` keys, and plans again above the last
+   * key it took when one moved. A pinned handle counts the generation it pinned, and each pinned operand's object is
+   * looked up once before the first key and at each look (one footer read each, which `budget` does not charge, and
+   * which the stream does not make), so an erasure of what it pinned fails the count with {@link NotFoundError}; a
+   * fault the look meets other than a transient one, which is retried, is raised as it is. A call that involves a
+   * handle whose lease has ended, or has ended by the next look, throws {@link LeaseExpiredError}.
    */
   async intersectCount(others: Segment[], options?: CombineOptions): Promise<number> {
     checkOptions(
@@ -4403,14 +4402,18 @@ export class Segment {
 
   /**
    * How many ids `this ∪ others…` holds (minus `exclude`): the length of what {@link union} streams, without streaming
-   * it. A chunk key only one operand holds is answered from that operand's index, so a union of segments that mostly do
-   * not overlap reads little of them; a key two or more operands share is decoded and counted. It makes no more
-   * requests than {@link union} does, and reads fewer bytes when the shared keys are few. An empty `others` is
-   * {@link count} of `this`, answered from the registry row when it can be.
+   * it. A chunk key only one operand holds, that no `exclude` holds and the range does not cut, is answered from that
+   * operand's index, so a union of segments that mostly do not overlap reads little of them; every other key is
+   * decoded and counted. On handles that are not pinned it makes no more requests than {@link union} does, and reads
+   * fewer bytes when the shared keys are few. An empty `others`, with no `exclude` and no range, is {@link count} of
+   * `this`, answered from the registry row when it can be; when that figure is 0 it adds one registry read, to refuse
+   * a segment that does not exist as the stream does.
    *
-   * It takes the options {@link intersectCount} takes and trusts what it trusts: the index for the keys it does not
-   * decode, as {@link count} does. The erasure bound, the lease checks and the pinned handles are as for
-   * {@link intersectCount}.
+   * What it trusts: the index, for each key it answers without decoding, as {@link count} does, so a party who can write
+   * an object's index can make that key's figure wrong; a decoded key is exact. A source with no per-chunk counts
+   * decodes every key. It takes the options {@link intersectCount} takes; the erasure bound, the lease checks and the
+   * pinned handles are as for {@link intersectCount}, a pinned operand adding a footer read before the first key and at
+   * each look. An empty `others` on a pinned handle is {@link count} of the pin, with no look.
    */
   async unionCount(others: Segment[], options?: CombineOptions): Promise<number> {
     checkOptions(
@@ -4425,12 +4428,14 @@ export class Segment {
 
   /**
    * How many ids `this \ (excludes…)` holds: the length of what {@link andNot} streams, without streaming it. A chunk
-   * key of `this` that no exclude holds is answered from its index and not read; a key an exclude shares is decoded
-   * and counted. It makes no more requests than {@link andNot} does, and reads fewer bytes when the excludes overlap
-   * little of `this`. An empty `excludes` is {@link count} of `this`.
+   * key of `this` that no exclude holds and the range does not cut is answered from its index and not read; a key an
+   * exclude shares is decoded and counted. On handles that are not pinned it makes no more requests than {@link andNot}
+   * does, and reads fewer bytes when the excludes overlap little of `this`. An empty `excludes`, with no range, is
+   * {@link count} of `this` (the stream of it is the whole of `this`), answered from the registry row when it can be,
+   * with one registry read added when that figure is 0.
    *
    * It takes the options {@link andNot} takes (every one of {@link intersectCount}'s but `exclude`, which a count of a
-   * difference has no use for, since `excludes` is its subtraction) and trusts what {@link intersectCount} trusts. The
+   * difference has no use for, since `excludes` is its subtraction) and trusts what {@link unionCount} trusts. The
    * erasure bound, the lease checks and the pinned handles are as for {@link intersectCount}.
    */
   async andNotCount(excludes: Segment[], options?: CombineOptions): Promise<number> {

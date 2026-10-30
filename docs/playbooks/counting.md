@@ -55,19 +55,21 @@ shoppers only 7
 ```
 
 Each takes the options its stream takes (the range `after` and `through`, `concurrency`, `budget`, `allowAbsentOperands`,
-and `exclude` on `intersectCount` and `unionCount`) and answers a `Promise<number>`. A chunk key only one operand holds,
-that no exclude holds and that the range does not cut is answered from its index, as `count()` is, and its chunk is not
-read; every other key is decoded and counted as the stream reads it. So `intersectCount` makes the requests `intersect`
-makes, and `unionCount` and `andNotCount` make no more than their streams and read fewer bytes where the operands share few
-chunks: in the bench's record, a union of two 10,000,000-id segments on the packed layout made 6 requests and read
+and `exclude` on `intersectCount` and `unionCount`) and answers a `Promise<number>`. An intersection decodes every key
+all its operands hold, so `intersectCount` is exact and makes the requests `intersect` makes. In a union or a difference,
+a chunk key only one operand holds, that no exclude holds and that the range does not cut is answered from its index, as
+`count()` is, and its chunk is not read; every other key is decoded and counted as the stream reads it. So `unionCount`
+and `andNotCount` make no more requests than their streams and read fewer bytes where the operands share few chunks: in the bench's record, a union of two 10,000,000-id segments on the packed layout made 6 requests and read
 2,165,888 bytes where its stream made 36 and read 33,339,872 ([what it costs](../guide/reading.md#count-a-combine)).
 It writes nothing and holds no result: the memory is the stream's window of ranges.
 
-What it trusts is what `count()` trusts: the index, for each key it does not decode ([what `count()` trusts](../guide/reading.md#what-count-trusts)).
-A decoded key is exact. On a pinned handle it counts the pinned generation, and a leased handle is checked at the start and
-at each look. `intersectCount([])` is refused as `intersect([])` is, and `unionCount([])` is `count()`.
+`unionCount` and `andNotCount` trust what `count()` trusts: the index, for each key they answer without decoding
+([what `count()` trusts](../guide/reading.md#what-count-trusts)); `intersectCount` trusts no index. A decoded key is exact.
+On a pinned handle it counts the pinned generation, each pinned operand adding a footer read before the first key and at
+each look, and a leased handle is checked at the start and at each look. `intersectCount([])` is refused as `intersect([])`
+is, and `unionCount([])` and `andNotCount([])`, with no `exclude` and no range, are `count()`.
 
-Use the other ways below for what this does not do: an exact count of every key, a figure that describes one instant
+Use the other ways below for what this does not do: an exact count of a union or a difference, a figure that describes one instant
 across calls (pin the operands first; the direct count of pins answers for their generations), many counts over the same
 segments in one pass, and a result you keep.
 
@@ -101,13 +103,14 @@ either 14
 shoppers only 7
 ```
 
-This is exact for every key, since it decodes every payload it reads; `intersectCount` makes the same requests and trusts the index for keys only one operand holds, so use this way where an exact answer matters more than the request count. It writes nothing. The array you receive is at most 65,536 ids (256 KiB); the combine
+This is exact for every key, since it decodes every payload it reads; `intersectCount` is just as exact and makes the same requests, so use this way only for a union or a difference where exactness matters more than the request count, since `unionCount` and `andNotCount` trust the index for keys only one operand holds. It writes nothing. The array you receive is at most 65,536 ids (256 KiB); the combine
 also holds the ranges it reads ahead (up to `concurrency` per operand, each up to 1 MiB) and one reader per operand
 ([the memory ceilings](../guide/production.md#the-memory-ceilings)). Its requests are the combine's own: an `intersect` reads only the chunks every operand holds (a cold intersect of
 two segments that share 100 of their 1,999 chunks made 6 GETs in [the in-region run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d)),
 an `andNot` reads all of the first segment and the others only where they overlap it, and a `union` reads every chunk of
-every operand ([what each combine reads](../guide/reading.md#combine-segments-intersect-union-andnot)). So way 1 is the
-cheap way to count an intersection and the expensive way to count a union.
+every operand ([what each combine reads](../guide/reading.md#combine-segments-intersect-union-andnot)). So way 1 reads
+no more than `intersectCount` for an intersection, which does the same without building the ids, and is the expensive way to count
+a union.
 
 ## Way 2: two counts and one intersection, over pins
 
@@ -304,7 +307,7 @@ the next run replaces it, and set `keep` so the generations it leaves are collec
 | You need | Pick | It reads | It holds | It writes |
 |---|---|---|---|---|
 | The size of an intersection, a union or a difference, once | `intersectCount`, `unionCount`, `andNotCount` | the intersect's requests; a union's or difference's chunks only where operands share keys | the ranges read ahead | nothing |
-| The size with every key decoded | way 1 | the shared chunks only (an intersection), every chunk (a union) | the array you receive (256 KiB) and the ranges read ahead | nothing |
+| The size of a union or a difference with every key decoded | way 1 | every chunk (a union), all of the first operand's and the excludes' where they overlap it (a difference) | the array you receive (256 KiB) and the ranges read ahead | nothing |
 | The size of a union or a difference of two, from three numbers over pins | way 2 | the shared chunks, a row read and a tail read per pin, and two counts from the registry | the ranges read ahead | a lease on each segment (a registry write each, and one more on `release()`) |
 | Many counts over the same few segments | way 4 | each operand's chunks once | the outputs' results, up to 256 MiB by default | nothing |
 | One segment against many, or counts repeated | way 3 | every chunk of every operand, once | the operands | nothing |
@@ -343,8 +346,8 @@ ValidationError
 
 ## Limits
 
-- **The direct count trusts the index for keys only one operand holds**, as `count()` does, and has no option that decodes
-  them all; way 1 is the exact count. Each other way costs reads, memory or a write.
+- **`unionCount` and `andNotCount` trust the index for keys only one operand holds**, as `count()` does, and have no
+  option that decodes them all; `intersectCount` is exact, and for a union or a difference way 1 is the exact count. Each other way costs reads, memory or a write.
 - **Counts across several segments are as fresh as the handles they read.** Live handles can describe two instants; pins
   describe one. The bound on what a long call serves of an earlier generation is
   [how soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load).

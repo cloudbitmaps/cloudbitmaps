@@ -15,17 +15,21 @@ so, and so do the module headers in the code.
 
 - **`intersectCount`, `unionCount` and `andNotCount` on a segment: how many ids a combine of stored segments holds,
   without streaming them.** Each returns a `Promise<number>` and takes the options of the stream it counts (the range,
-  `concurrency`, `budget`, `allowAbsentOperands`, and `exclude` on the first two; a write option is refused). A chunk key
-  only one operand holds, that no exclude holds and that the range does not cut is answered from that operand's index and
-  its chunk is not read, as `count()` answers from the index; every other key is decoded and counted as the stream reads
-  it. So `intersectCount` makes the requests `intersect` makes, and `unionCount` and `andNotCount` make no more than their
-  streams and read fewer bytes where the operands share few chunks. Counted over the in-memory backend (no cloud was
+  `concurrency`, `budget`, `allowAbsentOperands`, and `exclude` on the first two; a write option is refused). An
+  intersection decodes every key all its operands hold and is exact, so `intersectCount` makes the requests `intersect`
+  makes. In a union or a difference, a chunk key only one operand holds, that no exclude holds and that the range does
+  not cut is answered from that operand's index and its chunk is not read, as `count()` answers from the index; every
+  other key is decoded and counted as the stream reads it. So `unionCount` and `andNotCount` make no more requests than
+  their streams on handles that are not pinned, and read fewer bytes where the operands share few chunks. A pinned operand
+  adds one footer read before the first key and at each look, which `budget` does not charge, and a lone-operand union or
+  difference whose figure is 0 adds one registry read. Counted over the in-memory backend (no cloud was
   measured), two segments of 10,000,000 ids sharing 100 of 1,999 chunks, laid out with the shared chunks first, took 6
   requests and 2,165,888 bytes to count their union where streaming it took 36 and 33,339,872, and a 31-operand union
   of 500,000-id segments read 9,726,064 bytes against 40,102,468 with the same 93 requests; on a layout that spreads the
   shared chunks the saving was between under 1% and 14% of the bytes. `intersectCount([])` is refused as `intersect([])`
-  is, and `unionCount([])` is `count()`. What it trusts is what `count()` trusts, the index for the keys it does not
-  decode; there is no option that decodes every key. A pinned handle counts its pinned generation, a leased handle is
+  is, and `unionCount([])` and `andNotCount([])`, with no `exclude` and no range, are `count()`. `unionCount` and
+  `andNotCount` trust what `count()` trusts, the index for the keys they answer without decoding; `intersectCount`
+  trusts no index. A pinned handle counts its pinned generation, a leased handle is
   checked at the start and at each look, and a running count meets a load or an erasure as a stream does. What a caller
   does: replace streaming a combine to add up its `batches()` with these, where the index's word for a key is enough.
   [Reading in depth](docs/guide/reading.md#count-a-combine).

@@ -40,6 +40,7 @@ export const ROUTED: readonly string[] = [
   'tests/tools/cost.test.ts',
   'tests/core/exclude-batching.test.ts',
   'tests/core/combine-count.test.ts',
+  'tests/core/combine-count-pinned-look.test.ts',
   'tests/roaring/combine-counts.test.ts',
   'tests/core/destroyed-wording.test.ts',
   'tests/core/drop-segment.test.ts',
@@ -357,6 +358,10 @@ export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {
     "holds a combine's count to a set oracle, to its stream and to its request counts over segments its loads only " +
     'build, and the count reads the stored generation whatever order its ids were loaded in; a third run would repeat ' +
     'the property cases and exercise no part of the load path',
+  'tests/core/combine-count-pinned-look.test.ts':
+    'looks up a pinned object under planted faults over segments its loads only build, and the look reads the stored ' +
+    'generation whatever order its ids were loaded in; a third run would repeat the cases and exercise no part of the ' +
+    'load path',
   'tests/core/exclude-batching.test.ts':
     "counts the storage requests of an intersect's exclude over segments of a thousand chunks its loads only build; a " +
     'third run would repeat those counts and exercise no part of the load path',

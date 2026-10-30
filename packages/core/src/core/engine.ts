@@ -1554,13 +1554,14 @@ export class SegmentEngine {
    *
    * The keys answered from the index are trusted as {@link count} trusts the index, and checked no further than the
    * reader checks it when it opens the object; a decoded key is exact. A source that reports no per-chunk counts has
-   * every key decoded. A union of one operand with no exclude and no range is {@link count}.
+   * every key decoded. A union or a difference of one operand with no exclude and no range is {@link count}.
    *
    * A running count looks at its operands' versions every `concurrency` keys, a key answered from the index being one
    * taken, and before the first key after an invalidation, and runs `options.guard` at each look. On a move it plans
    * again above the last key taken, as a combine does, so the bound on what it serves of an earlier generation is the
-   * combine's. A pinned operand's object is looked up at each look (one footer read each), so an erasure of what it
-   * pinned stops the count there with the pin's `NotFoundError`. An intersection of two or more operands decodes every
+   * combine's. A pinned operand's object is looked up before the first key and at each look (one footer read each, a fault
+   * other than a transient one raised as it is), so an erasure of what it pinned stops the count there with the pin's
+   * `NotFoundError`. An intersection of two or more operands decodes every
    * key and so shows a move without a version look; its guard still runs every `concurrency` keys.
    */
   async combineCount(
@@ -1579,7 +1580,7 @@ export class SegmentEngine {
     const w = windowOf(options, label);
     options?.guard?.();
     if (w === 'empty') return 0;
-    if (op === 'union' && segs.length === 1 && excludeSegs.length === 0 && w === null) {
+    if (op !== 'intersect' && segs.length === 1 && excludeSegs.length === 0 && w === null) {
       const n = await this.count(segs[0]!);
       // A segment that holds nothing is refused when it does not exist, as the stream refuses it.
       if (n === 0) {
@@ -1601,6 +1602,9 @@ export class SegmentEngine {
       options?.allowAbsentOperands,
       label,
     );
+    // Every pinned operand is looked up once before the first key, so a count of fewer keys than a look's cadence still
+    // sees an erasure that came before it.
+    await this.verifyPinned([...operands, ...excludes]);
     const { steps, decode } = countSteps(operands, excludes, mode, w);
     checkBudget(budget, combineReads(decode, operands, excludes, mode, Infinity), label);
     if (this.metricsOn) {

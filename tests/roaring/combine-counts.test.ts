@@ -189,6 +189,9 @@ describe('absent operands', () => {
     expect(await w.a.andNotCount([typo], { allowAbsentOperands: true })).toBe(A.length);
     await expect(typo.unionCount([])).rejects.toBeInstanceOf(ValidationError);
     expect(await typo.unionCount([], { allowAbsentOperands: true })).toBe(0);
+    await expect(typo.andNotCount([])).rejects.toBeInstanceOf(ValidationError);
+    await expect(drainLength(typo.andNot([]))).rejects.toBeInstanceOf(ValidationError);
+    expect(await typo.andNotCount([], { allowAbsentOperands: true })).toBe(0);
   });
 });
 

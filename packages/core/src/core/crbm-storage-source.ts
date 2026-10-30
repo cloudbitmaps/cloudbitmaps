@@ -1427,13 +1427,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * ({@link replacedPins}), and a check under way is shared by the reads that ask at once; neither "gone" nor "the
    * same" is kept, since either can change. A transient fault is rethrown, for the store's retries to see for what it
    * is. A footer that cannot be read otherwise says nothing about which object is there, so this returns, and the
-   * caller's own error stands.
+   * caller's own error stands; a caller with no error of its own passes `strict`, and that fault is raised.
    */
   private async throwIfReplaced(
     ref: SegmentRef,
     generation: number,
     version: string,
     fingerprint: string,
+    strict = false,
   ): Promise<void> {
     const held = this.heldKey(ref, version, fingerprint);
     if (this.replacedPins.get(held) !== undefined) throw notThePinned(ref, generation);
@@ -1466,7 +1467,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     try {
       replaced = await check;
     } catch (err) {
-      if (isTransientError(err)) throw err;
+      if (strict || isTransientError(err)) throw err;
       return;
     }
     if (replaced) throw notThePinned(ref, generation);
@@ -1474,11 +1475,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   /**
    * Throws the pin's `NotFoundError` when the object under `generation`'s key is no longer the one `held` names: one
-   * footer read, shared with a check already under way for the same pin.
+   * footer read, shared with a check already under way for the same pin. It fails closed: a footer that cannot be read,
+   * or an object that is not a generation object of this store, raises its own fault rather than passing.
    */
   async verifyHeld(ref: SegmentRef, generation: number, held: PinnedObject): Promise<void> {
     validateUserRef(ref, 'read', PORT_KEYS);
-    await this.throwIfReplaced(ref, generation, held.version, held.fingerprint);
+    await this.throwIfReplaced(ref, generation, held.version, held.fingerprint, true);
   }
 
   /** Chunk keys of a specific generation — the pinned shape read. `held` as for {@link getChunkAt}. */
