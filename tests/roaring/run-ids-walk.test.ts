@@ -187,35 +187,41 @@ describe('orRunIdsWalk: the walk over ids equals the container merge', () => {
     expect(groupPath(array, 4)).toBe('few');
   });
 
-  it('property: the two walks return the same container for the same values', () => {
-    fc.assert(
-      fc.property(
-        fc.integer({ min: 1, max: 2_000 }),
-        fc.integer({ min: 1, max: 40 }),
-        fc.integer({ min: 1, max: 25 }),
-        fc.oneof(
-          fc.integer({ min: 1, max: 4_096 }),
-          fc.constantFrom(1, 5, 1_023, 1_024, 2_045, 2_046, 2_047, 2_048, 4_096),
+  // Budget 6 s (the default is 5 s): the slowest measured time was 1.8 s, on a Node 22 CI runner. Rule: that time times
+  // three, rounded up to the next whole second.
+  it(
+    'property: the two walks return the same container for the same values',
+    { timeout: 6000 },
+    () => {
+      fc.assert(
+        fc.property(
+          fc.integer({ min: 1, max: 2_000 }),
+          fc.integer({ min: 1, max: 40 }),
+          fc.integer({ min: 1, max: 25 }),
+          fc.oneof(
+            fc.integer({ min: 1, max: 4_096 }),
+            fc.constantFrom(1, 5, 1_023, 1_024, 2_045, 2_046, 2_047, 2_048, 4_096),
+          ),
+          fc.integer({ min: 0, max: 1_000_000 }),
+          fc.integer({ min: 0, max: 3 }),
+          (n, gap, maxLen, g, seed, pad) => {
+            const held = runList(n, Math.max(gap, maxLen + 1), maxLen, seed);
+            const run = runs(held, pad);
+            const lows = sortedUnique(idsFor(held, g, seed + 1));
+            const ids = ids32(lows);
+            const array = fromSortedIds(ids, 0, ids.length);
+            const fromIds = orRunIdsWalk(run, ids, 0, ids.length);
+            const fromArray = orRunArrayWalk(run, array, true);
+            sameContainer(fromIds, fromArray, 'two walks');
+            expect(fromIds === run, 'two walks: same object when nothing is added').toBe(
+              fromArray === run,
+            );
+          },
         ),
-        fc.integer({ min: 0, max: 1_000_000 }),
-        fc.integer({ min: 0, max: 3 }),
-        (n, gap, maxLen, g, seed, pad) => {
-          const held = runList(n, Math.max(gap, maxLen + 1), maxLen, seed);
-          const run = runs(held, pad);
-          const lows = sortedUnique(idsFor(held, g, seed + 1));
-          const ids = ids32(lows);
-          const array = fromSortedIds(ids, 0, ids.length);
-          const fromIds = orRunIdsWalk(run, ids, 0, ids.length);
-          const fromArray = orRunArrayWalk(run, array, true);
-          sameContainer(fromIds, fromArray, 'two walks');
-          expect(fromIds === run, 'two walks: same object when nothing is added').toBe(
-            fromArray === run,
-          );
-        },
-      ),
-      { numRuns: 400 },
-    );
-  });
+        { numRuns: 400 },
+      );
+    },
+  );
 
   it('a non-run container never takes the walk', () => {
     const c = new Container(ARRAY, Uint16Array.of(1, 5, 9), 0, 3, 3, false);

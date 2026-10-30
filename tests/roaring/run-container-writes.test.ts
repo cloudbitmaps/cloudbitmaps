@@ -121,11 +121,11 @@ const arrayShaped = fc
   .map((v) => sortedUnique([...v]));
 
 describe('a run container written with an array', () => {
-  // Budget 6 s (the default is 5 s): the slowest measured time was 2.0 s, on a Node 24 CI runner. Rule: that time times
+  // Budget 7 s (the default is 5 s): the slowest measured time was 2.1 s, on a Node 24 CI runner. Rule: that time times
   // three, rounded up to the next whole second.
   it(
     'holds the union, its exact cardinality, the kind the size rule gives and canonical runs, either operand order',
-    { timeout: 6000 },
+    { timeout: 7000 },
     () => {
       fc.assert(
         fc.property(
