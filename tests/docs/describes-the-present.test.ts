@@ -165,6 +165,9 @@ function uncovered(
 }
 
 describe('the library is described as it is', () => {
+  // Budget 12 s: it reads and scans the whole tree. Measured: 1.8 s on a developer machine, 3.9 s on the release job's
+  // runner in a single full run. Rule: the slowest measured time (release runner or developer machine) times three,
+  // rounded up to the next whole second.
   it('in its code, docs, site, tests, scripts, benches and workflows', () => {
     const offenders: string[] = [];
     const used = new Set<number>();
@@ -176,7 +179,7 @@ describe('the library is described as it is', () => {
     expect(offenders).toEqual([]);
     const stale = EXCEPTIONS.filter((_, i) => !used.has(i)).map(([f, phrase]) => `${f}: ${phrase}`);
     expect(stale).toEqual([]);
-  });
+  }, 12_000);
 
   it('lets an exception cover its own phrase only, so a new one on the same line is reported', () => {
     const phrase = 'the delta tier this line names on purpose';

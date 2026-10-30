@@ -14,6 +14,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 
+// Budget 10 s for every test in the file (the default is 5 s): each test starts the real script in a throwaway git
+// repository, and about a dozen of them take 1 s to 3.3 s, so one file-wide figure is simpler than one per test.
+// Measured: the slowest test at this budget takes 3.3 s on a developer machine and 2.1 s on the release job's runner in
+// a single full run. Rule: the slowest measured time (release runner or developer machine) times three, rounded up to
+// the next whole second.
+vi.setConfig({ testTimeout: 10_000 });
+
 // Holds the pull-request text check in place and fires it at planted texts.
 //
 // A pull request's title, body and commit messages are public text, and a squash merge copies the commit subjects

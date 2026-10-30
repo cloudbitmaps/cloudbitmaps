@@ -830,6 +830,9 @@ describe('R3b: the threshold, the tie, and the claim a copied run comes from', (
 describe('what a page is read as: line endings, comments, emphasis, hyphens, link forms', () => {
   const page = 'docs/guide/fixture.md';
 
+  // Budget 9 s: it reads the whole tree twice. Measured: 1.3 s on a developer machine, 2.9 s on the release job's
+  // runner in a single full run. Rule: the slowest measured time (release runner or developer machine) times three,
+  // rounded up to the next whole second.
   it('a CRLF checkout reads as an LF one: the same problems and hits over the whole tree', () => {
     const files = ties.readTree(ROOT);
     const baseline = ties.readBaseline(ROOT);
@@ -845,7 +848,7 @@ describe('what a page is read as: line endings, comments, emphasis, hyphens, lin
     expect(on(run({ [page]: '- So a crash never\r\n  moves the pointer.\r\n' }), page)).toContain(
       'R3 crash-never-moves-the-pointer',
     );
-  });
+  }, 9_000);
 
   it('a comment opener in a code span or a fence is text, and the prose after it is still read', () => {
     const span =

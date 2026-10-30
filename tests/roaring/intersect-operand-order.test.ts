@@ -59,6 +59,9 @@ const and = (sets: number[][], order: number[]) => {
 };
 
 describe("the store's intersect of three or more operands", () => {
+  // Budget 10 s. Measured: 1.1 s on a developer machine; on the release job's runner, in a single full run, 3.1 s in
+  // its slowest project (2.6 s to 3.1 s over the three). Rule: the slowest measured time (release runner or developer
+  // machine) times three, rounded up to the next whole second.
   it('gives the plain set answer in every operand order, over mixed chunks, and leaves the operands as loaded', async () => {
     const sets = [0, 1, 2, 3].map((w) => idsOf(w));
     const { seg } = await setup(sets);
@@ -73,7 +76,7 @@ describe("the store's intersect of three or more operands", () => {
     }
     for (const [i, s] of seg.entries())
       expect(await collect(s!.iterate()), `operand ${i}`).toEqual(sets[i]);
-  });
+  }, 10_000);
 
   it('a key only some operands hold drops out, and a chunk that empties at the second or third step ends there', async () => {
     const sets = [

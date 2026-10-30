@@ -141,6 +141,9 @@ describe('the cells', () => {
   });
 
   for (const dataset of lib.DATASETS) {
+    // Budget 10 s per dataset. Measured: 1.5 s (dense) on a developer machine, 3.3 s (dense) on the release job's
+    // runner in a single full run. Rule: the slowest measured time (release runner or developer machine) times three,
+    // rounded up to the next whole second.
     it(`give one answer on every subject, on ${dataset}`, () => {
       const data = lib.dataOf(dataset, true, bytes);
       const answers = new Map<string, Map<string, string>>();
@@ -166,7 +169,7 @@ describe('the cells', () => {
           1,
         );
       }
-    });
+    }, 10_000);
   }
 
   it('compare a serialization as bytes: every subject writes the same bytes, and a different byte is a different answer', () => {
