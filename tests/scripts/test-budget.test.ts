@@ -23,6 +23,7 @@ const FIXTURE = join(ROOT, 'tests', 'fixtures', 'test-budget-report.json');
 const judge = createRequire(import.meta.url)(SCRIPT) as {
   parseReport: (text: string) => { entries: Entry[]; tests: number };
   offenders: (doc: { entries: Entry[] }) => (Entry & { share: number })[];
+  watched: (doc: { entries: Entry[] }) => (Entry & { share: number })[];
   describe: (e: Entry & { share: number }) => string;
 };
 
@@ -43,12 +44,20 @@ const entry = (over: Partial<Entry> = {}): Entry => ({
   budget: 5000,
   ...over,
 });
-const report = (entries: Entry[]) =>
-  JSON.stringify({
+const report = (entries: Entry[], over: Record<string, unknown> = {}) => {
+  const timed = entries.filter((e) => e.kind === 'test').length;
+  // A report of hooks alone stands for one more test, that has no limit.
+  const tests = timed || 1;
+  return JSON.stringify({
     schema: 1,
-    tests: entries.filter((e) => e.kind === 'test').length || 1,
+    tests,
+    skipped: 0,
+    untimed: tests - timed,
+    expected: { tests, skipped: 0 },
     entries,
+    ...over,
   });
+};
 const run = (file: string) =>
   spawnSync(process.execPath, [SCRIPT, file], { encoding: 'utf8', env: { ...process.env } });
 
@@ -95,6 +104,45 @@ describe('the judge, on reports written by hand', () => {
     expect(explicit.status).toBe(1);
   });
 
+  it('fails closed when the report does not match the counts of vitest it carries', () => {
+    const two = [entry(), entry({ name: 'b' })];
+    // The reporter lost an entry; vitest ran 3 tests.
+    const lost = judged(report(two, { tests: 3, expected: { tests: 3, skipped: 0 } }));
+    expect(lost.status).toBe(2);
+    expect(lost.stderr).toContain('does not match the run');
+    // The reporter counted 2 run; vitest counted 3.
+    const fewer = judged(report(two, { expected: { tests: 3, skipped: 0 } }));
+    expect(fewer.status).toBe(2);
+    // Skipped counts disagree.
+    expect(judged(report(two, { skipped: 1 })).status).toBe(2);
+    // An unjudged (no limit) test is counted, so it does not look like a lost entry.
+    const untimed = judged(
+      report(two, { tests: 3, untimed: 1, expected: { tests: 3, skipped: 0 } }),
+    );
+    expect(untimed.status, untimed.stderr).toBe(0);
+    expect(untimed.stdout).toContain('1 unjudged');
+    expect(judged(report(two)).status).toBe(0);
+  });
+
+  it('prints every entry at or above 35 % of its budget on a passing run too, largest first', () => {
+    const r = judged(
+      report([
+        entry({ name: 'at 34 pct', file: 'tests/q.test.ts', duration: 1700 }),
+        entry({ name: 'at 35 pct', file: 'tests/b.test.ts', duration: 1750 }),
+        entry({ name: 'at 49 pct', file: 'tests/a.test.ts', duration: 2470 }),
+        entry({ kind: 'hook', hook: 'afterAll', name: 'a hook', duration: 4000, budget: 10000 }),
+      ]),
+    );
+    expect(r.status, r.stderr).toBe(0);
+    const lines = r.stdout.split('\n').filter((l) => l.startsWith('  '));
+    expect(lines).toEqual([
+      '  tests/a.test.ts: at 49 pct: 2470 ms of a 5000 ms budget (49 %)',
+      '  tests/a.test.ts: afterAll hook of a hook: 4000 ms of a 10000 ms budget (40 %)',
+      '  tests/b.test.ts: at 35 pct: 1750 ms of a 5000 ms budget (35 %)',
+    ]);
+    expect(judge.watched(judge.parseReport(report([entry({ duration: 100 })]))).length).toBe(0);
+  });
+
   it('lists every offender, the largest share first', () => {
     const doc = judge.parseReport(
       report([
@@ -114,11 +162,12 @@ describe('the judge, on reports written by hand', () => {
       '',
       'not json',
       '{}',
-      JSON.stringify({ schema: 2, tests: 1, entries: [entry()] }),
-      JSON.stringify({ schema: 1, tests: 0, entries: [] }),
-      JSON.stringify({ schema: 1, tests: 1, entries: [{ ...entry(), budget: 0 }] }),
-      JSON.stringify({ schema: 1, tests: 1, entries: [{ ...entry(), duration: 'slow' }] }),
-      JSON.stringify({ schema: 1, tests: 1, entries: [{ ...entry(), kind: 'suite' }] }),
+      report([entry()], { schema: 2 }),
+      report([], { tests: 0 }),
+      report([{ ...entry(), budget: 0 }]),
+      report([{ ...entry(), duration: 'slow' as unknown as number }]),
+      report([{ ...entry(), kind: 'suite' as unknown as 'test' }]),
+      report([entry()], { expected: undefined }),
     ]) {
       expect(judged(text).status, text).toBe(2);
     }
@@ -154,6 +203,16 @@ describe('slow each-hook', () => {
   beforeEach(async () => { await sleep(700); });
   test('quick body', async () => { await sleep(20); });
 });
+describe('inherited budget', { timeout: 6000 }, () => {
+  test('describe-level, under half', async () => { await sleep(800); });
+});
+`;
+  // A file that sets its own test timeout, as many files of this repository do; the 800 ms test is under half of 3 s
+  // and over half of the 1 s configured default, so a reading of the default would fail it.
+  const PLANT_SETCONFIG = `
+import { test, vi } from 'vitest';
+vi.setConfig({ testTimeout: 3000 });
+test('file-level, under half', async () => { await new Promise((r) => setTimeout(r, 800)); });
 `;
   let dir: string;
   let real: { entries: Entry[]; tests: number };
@@ -165,6 +224,7 @@ describe('slow each-hook', () => {
     mkdirSync(join(ROOT, 'node_modules', '.cache'), { recursive: true });
     dir = mkdtempSync(join(ROOT, 'node_modules', '.cache', 'budget-real-'));
     writeFileSync(join(dir, 'planted.test.mjs'), PLANT);
+    writeFileSync(join(dir, 'setconfig.test.mjs'), PLANT_SETCONFIG);
     writeFileSync(
       join(dir, 'vitest.config.mjs'),
       'export default { test: { testTimeout: 1000, hookTimeout: 1000, include: ["*.test.mjs"] } };\n',
@@ -190,7 +250,9 @@ describe('slow each-hook', () => {
     expect(find('default budget, quick')?.budget).toBe(1000);
     expect(find('explicit budget, under half')?.budget).toBe(4000);
     expect(find('explicit budget, past half')?.budget).toBe(2000);
-    expect(real.tests).toBe(8);
+    expect(find('file-level, under half')?.budget).toBe(3000);
+    expect(find('inherited budget > describe-level, under half')?.budget).toBe(6000);
+    expect(real.tests).toBe(10);
     expect(real.entries.some((e) => e.name === 'no limit')).toBe(false);
     expect(real.entries.some((e) => e.name.includes('skipped'))).toBe(false);
   });
@@ -222,6 +284,8 @@ describe('slow each-hook', () => {
   it('passes a test with an explicit budget that it uses under half of, quick tests and quick hooks', async () => {
     await ready();
     expect(judged.stderr).not.toContain('explicit budget, under half');
+    expect(judged.stderr).not.toContain('file-level, under half');
+    expect(judged.stderr).not.toContain('describe-level, under half');
     expect(judged.stderr).not.toContain('default budget, quick');
     expect(judged.stderr).not.toContain('quick hooks');
     expect(judged.stderr).not.toContain('quick body too');

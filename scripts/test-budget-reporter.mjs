@@ -23,7 +23,11 @@
 //     is also stricter than a single hook's timeout. Tests of a suite that run concurrently overlap, which can hide hook
 //     time (the sum of their durations then exceeds the suite's); no suite here runs concurrently.
 //   - A hook given its own timeout is judged against the configured `hookTimeout`; vitest does not report a hook's own.
-//   - A test or hook whose timeout is 0 (no limit) is not recorded.
+//     A hook with a longer one is judged too strictly. A hook with a shorter one that runs close to it passes unseen
+//     unless it is over half of the configured one: move slow hook work into a test, which is read against its own.
+//   - A test or hook whose timeout is 0 (no limit) is not recorded (it is counted as untimed).
+//   - The report also carries vitest's own counts of tests run and skipped, read from the finished modules; the judge
+//     fails when its own counts do not match them.
 //   - A test that retries or repeats is judged by the duration vitest reports for it.
 //   - The file is deleted when the run starts, so a run that never finishes leaves none, and the judge refuses a run
 //     with no report.
@@ -43,6 +47,8 @@ export default class TestBudgetReporter {
   constructor() {
     this.entries = [];
     this.tests = 0;
+    this.skipped = 0;
+    this.untimed = 0;
   }
 
   onInit(vitest) {
@@ -56,13 +62,19 @@ export default class TestBudgetReporter {
 
   onTestCaseResult(test) {
     const state = test.result().state;
-    if (state === 'skipped' || state === 'pending') return;
+    if (state === 'skipped' || state === 'pending') {
+      this.skipped += 1;
+      return;
+    }
     const diagnostic = test.diagnostic();
     if (!diagnostic) return;
     const budget = test.options.timeout ?? test.project.config.testTimeout;
     this.tests += 1;
     // A timeout of 0 turns the limit off: there is no budget to use a share of.
-    if (!(budget > 0)) return;
+    if (!(budget > 0)) {
+      this.untimed += 1;
+      return;
+    }
     this.entries.push({
       kind: 'test',
       name: test.fullName,
@@ -95,11 +107,32 @@ export default class TestBudgetReporter {
     });
   }
 
-  onTestRunEnd() {
+  // `expected` is vitest's own count of the same run, read from the finished modules: the judge fails when what this
+  // reporter recorded does not match it, so a reporter that lost entries cannot pass.
+  onTestRunEnd(testModules) {
+    const expected = { tests: 0, skipped: 0 };
+    for (const module of testModules) {
+      for (const test of module.children.allTests()) {
+        const state = test.result().state;
+        if (state === 'skipped' || state === 'pending') expected.skipped += 1;
+        else expected.tests += 1;
+      }
+    }
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileSync(
       this.file,
-      JSON.stringify({ schema: SCHEMA, tests: this.tests, entries: this.entries }, null, 1) + '\n',
+      JSON.stringify(
+        {
+          schema: SCHEMA,
+          tests: this.tests,
+          skipped: this.skipped,
+          untimed: this.untimed,
+          expected,
+          entries: this.entries,
+        },
+        null,
+        1,
+      ) + '\n',
     );
   }
 

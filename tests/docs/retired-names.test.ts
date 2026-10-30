@@ -1031,6 +1031,7 @@ describe('a name the flavor stopped exporting stays off it', () => {
     ).toEqual([]);
   });
 
+  // Budget 8 s by the same rule and measurement as the test of this name above.
   it('no code names one that has no use left in code, comments included', { timeout: 8000 }, () => {
     expect(
       offenders(

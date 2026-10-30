@@ -916,114 +916,108 @@ describe('the gate', () => {
 
 describe('the committed paired results', () => {
   const file = join(ROOT, 'bench', 'ts-codec-paired-results.json');
-  const passes = existsSync(file)
-    ? (JSON.parse(readFileSync(file, 'utf8')) as { passes: Pass[] }).passes
+  const record = existsSync(file)
+    ? (JSON.parse(readFileSync(file, 'utf8')) as { passes?: Pass[] })
     : null;
+  // A missing record, or one with no list of passes, fails each test that reads it, with a message that says so: none of
+  // them skips.
+  const held = (): Pass[] => {
+    expect(record, 'the committed record is missing').not.toBeNull();
+    expect(Array.isArray(record!.passes), 'the committed record has no `passes` list').toBe(true);
+    return record!.passes!;
+  };
   const cellsOf = (p: Pass): Cell[] => [...p.reads, ...(p.write ?? []), ...(p.ops ?? [])];
 
-  it.skipIf(passes === null)(
-    'keeps every pass, numbered from 1 without a gap, each with its time and commits',
-    () => {
-      expect(passes!.length).toBeGreaterThan(0);
-      passes!.forEach((p, i) => {
-        expect(p.pass, `pass ${i + 1}`).toBe(i + 1);
-        expect(Number.isNaN(Date.parse(p.started))).toBe(false);
-        expect(p.environment.base).toMatch(/^[0-9a-f]{40}$/);
-        expect(p.environment.head).toMatch(/^[0-9a-f]{40}$/);
-      });
-    },
-  );
+  it('keeps every pass, numbered from 1 without a gap, each with its time and commits', () => {
+    expect(held().length).toBeGreaterThan(0);
+    held().forEach((p, i) => {
+      expect(p.pass, `pass ${i + 1}`).toBe(i + 1);
+      expect(Number.isNaN(Date.parse(p.started))).toBe(false);
+      expect(p.environment.base).toMatch(/^[0-9a-f]{40}$/);
+      expect(p.environment.head).toMatch(/^[0-9a-f]{40}$/);
+    });
+  });
 
-  it.skipIf(passes === null)(
-    'recomputes every median, interval and verdict of every pass from its rounds, by the rule the pass records',
-    () => {
-      for (const doc of passes!) {
-        const cells = [...cellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
-        expect(cells.length).toBeGreaterThan(10);
-        for (const c of cells) {
-          const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`;
-          expect(c.rounds.length, name).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
-          if (doc.rule === undefined) {
-            const s = codec.summarise(c.rounds, 0);
-            expect(c.typescriptVsNative, name).toBe(s.typescriptVsNative);
-            expect(c.controlVsNative, name).toBe(s.controlVsNative);
-            expect(c.verdict, name).toBe(
-              rule.legacyVerdictOf(
-                s.typescriptVsNative as number,
-                s.controlVsNative as number,
-                s.controlQuartiles as number[],
+  it('recomputes every median, interval and verdict of every pass from its rounds, by the rule the pass records', () => {
+    for (const doc of held()) {
+      const cells = [...cellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
+      expect(cells.length).toBeGreaterThan(10);
+      for (const c of cells) {
+        const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`;
+        expect(c.rounds.length, name).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
+        if (doc.rule === undefined) {
+          const s = codec.summarise(c.rounds, 0);
+          expect(c.typescriptVsNative, name).toBe(s.typescriptVsNative);
+          expect(c.controlVsNative, name).toBe(s.controlVsNative);
+          expect(c.verdict, name).toBe(
+            rule.legacyVerdictOf(
+              s.typescriptVsNative as number,
+              s.controlVsNative as number,
+              s.controlQuartiles as number[],
+            ),
+          );
+        } else {
+          expect(doc.rule, name).toBe(rule.RULE);
+          const kind =
+            c === doc.import?.moduleLoadMs ? 'import' : c.dataset === 'ops' ? 'tenth' : 'whole';
+          const places = rule.figurePlaces(kind, doc.unit);
+          const left = new Set(['rounds', 'discarded', 'slept', 'dataset', 'op', 'answersAgree']);
+          const figures = Object.fromEntries(Object.entries(c).filter(([k]) => !left.has(k)));
+          // Through JSON, as the file holds it: a recomputed -0 is stored as 0.
+          const fresh = JSON.parse(
+            JSON.stringify(
+              Object.fromEntries(
+                Object.entries(rule.cellOf(c.rounds, places)).filter(([k]) => k !== 'rounds'),
               ),
-            );
-          } else {
-            expect(doc.rule, name).toBe(rule.RULE);
-            const kind =
-              c === doc.import?.moduleLoadMs ? 'import' : c.dataset === 'ops' ? 'tenth' : 'whole';
-            const places = rule.figurePlaces(kind, doc.unit);
-            const left = new Set(['rounds', 'discarded', 'slept', 'dataset', 'op', 'answersAgree']);
-            const figures = Object.fromEntries(Object.entries(c).filter(([k]) => !left.has(k)));
-            // Through JSON, as the file holds it: a recomputed -0 is stored as 0.
-            const fresh = JSON.parse(
-              JSON.stringify(
-                Object.fromEntries(
-                  Object.entries(rule.cellOf(c.rounds, places)).filter(([k]) => k !== 'rounds'),
-                ),
-              ),
-            ) as Record<string, unknown>;
-            expect(figures, name).toEqual(fresh);
-            for (const r of c.rounds) expect(r, name).toHaveLength(6);
-          }
-        }
-        for (const c of cellsOf(doc)) expect(c.answersAgree).toBe(true);
-        expect(doc.verdict).toBe(worstPaired(cellsOf(doc).map((c) => c.verdict)));
-      }
-    },
-  );
-
-  it.skipIf(passes === null)(
-    'holds slept rounds only in a pass that records its sleep rule, each with the evidence the rule asks for (only the sixth pass holds one)',
-    () => {
-      const found: string[] = [];
-      for (const doc of passes!) {
-        const cells = [...cellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
-        for (const c of cells) {
-          const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`.trim();
-          if (c.slept === undefined) continue;
-          found.push(name);
-          expect(doc.sleepRule, name).toEqual({ factor: 100, maxOnCpu: 0.5 });
-          for (const row of c.slept) {
-            expect(row, name).toHaveLength(7);
-            const evidence = row[6] as unknown as { wall: number; cpu: number }[];
-            expect(evidence.length, name).toBeGreaterThan(0);
-            for (const e of evidence) expect(e.cpu, name).toBeLessThan(0.5 * e.wall);
-          }
+            ),
+          ) as Record<string, unknown>;
+          expect(figures, name).toEqual(fresh);
+          for (const r of c.rounds) expect(r, name).toHaveLength(6);
         }
       }
-      // The one slept round on file is in pass 6, in every cell of the mixed data set; no earlier pass holds one.
-      expect(found.length).toBeGreaterThan(0);
-      expect(found.filter((n) => !n.startsWith('pass 6 '))).toEqual([]);
-    },
-  );
+      for (const c of cellsOf(doc)) expect(c.answersAgree).toBe(true);
+      expect(doc.verdict).toBe(worstPaired(cellsOf(doc).map((c) => c.verdict)));
+    }
+  });
+
+  it('holds slept rounds only in a pass that records its sleep rule, each with the evidence the rule asks for (only the sixth pass holds one)', () => {
+    const found: string[] = [];
+    for (const doc of held()) {
+      const cells = [...cellsOf(doc), ...(doc.import ? [doc.import.moduleLoadMs] : [])];
+      for (const c of cells) {
+        const name = `pass ${doc.pass} ${c.dataset ?? 'import'} ${c.op ?? ''}`.trim();
+        if (c.slept === undefined) continue;
+        found.push(name);
+        expect(doc.sleepRule, name).toEqual({ factor: 100, maxOnCpu: 0.5 });
+        for (const row of c.slept) {
+          expect(row, name).toHaveLength(7);
+          const evidence = row[6] as unknown as { wall: number; cpu: number }[];
+          expect(evidence.length, name).toBeGreaterThan(0);
+          for (const e of evidence) expect(e.cpu, name).toBeLessThan(0.5 * e.wall);
+        }
+      }
+    }
+    // The one slept round on file is in pass 6, in every cell of the mixed data set; no earlier pass holds one.
+    expect(found.length).toBeGreaterThan(0);
+    expect(found.filter((n) => !n.startsWith('pass 6 '))).toEqual([]);
+  });
 
   // Held with no exemption, and not skippable: a missing or empty record fails, and every pass, the earliest too, names
   // a clean tree.
   it('holds every pass to a clean tree at full strength, with no exemption', () => {
-    expect(passes, 'the committed record is missing').not.toBeNull();
-    expect(passes!.length, 'the committed record holds no pass').toBeGreaterThan(0);
-    const notClean = passes!.flatMap((p, i) => (p.environment.tree === 'clean' ? [] : [i + 1]));
+    expect(held().length, 'the committed record holds no pass').toBeGreaterThan(0);
+    const notClean = held().flatMap((p, i) => (p.environment.tree === 'clean' ? [] : [i + 1]));
     expect(notClean, 'passes (numbered from 1) not recorded on a clean tree').toEqual([]);
-    for (const doc of passes!)
+    for (const doc of held())
       expect(doc.environment.rounds).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
   });
 
-  it.skipIf(passes === null)(
-    'passes the gate over every pass: no slower is erased, no load rule is broken, no open cell goes unquoted',
-    () => {
-      // The first pass was judged by the earlier rule; the gate asks for a last pass of the current rule, which the
-      // re-take on the final code supplies. Until it is appended that one message is the only one allowed.
-      const problems = rule
-        .gateProblems(passes!)
-        .filter((p) => !p.includes('judged by the earlier rule'));
-      expect(problems).toEqual([]);
-    },
-  );
+  it('passes the gate over every pass: no slower is erased, no load rule is broken, no open cell goes unquoted', () => {
+    // The first pass was judged by the earlier rule; the gate asks for a last pass of the current rule, which the
+    // re-take on the final code supplies. Until it is appended that one message is the only one allowed.
+    const problems = rule
+      .gateProblems(held())
+      .filter((p) => !p.includes('judged by the earlier rule'));
+    expect(problems).toEqual([]);
+  });
 });
