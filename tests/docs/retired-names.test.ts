@@ -871,7 +871,9 @@ describe('a removed export is named nowhere a reader looks', () => {
     expect(read).not.toContain(SELF);
   });
 
-  it('no code names one that has no use left in code, comments included', () => {
+  // Budget 8 s on both tests of this name (the default is 5 s): the one of them over half of its budget took 2.6 s on the CI
+  // runner in a full run. Rule: the slowest measured time times three, rounded up to the next whole second.
+  it('no code names one that has no use left in code, comments included', { timeout: 8000 }, () => {
     expect(
       offenders(
         codeFiles(),
@@ -1029,7 +1031,7 @@ describe('a name the flavor stopped exporting stays off it', () => {
     ).toEqual([]);
   });
 
-  it('no code names one that has no use left in code, comments included', () => {
+  it('no code names one that has no use left in code, comments included', { timeout: 8000 }, () => {
     expect(
       offenders(
         codeFiles(),

@@ -125,7 +125,11 @@ describe('the judge, on reports written by hand', () => {
   });
 });
 
-describe('the reporter, against the real vitest', () => {
+// Budget 17 s for each test of this block (the default is 5 s): the first one to run starts the real vitest over the planted
+// tests, which took 5.4 s on the CI runner and 3 s on a developer machine. Rule: the slowest measured time times three,
+// rounded up to the next whole second. The run is started by the first test that asks for it, not by a `beforeAll`,
+// because the check judges a hook against the configured hook timeout and cannot see a hook's own.
+describe('the reporter, against the real vitest', { timeout: 17_000 }, () => {
   // The planted tests and hooks, under a 1 s test timeout and a 1 s hook timeout (half is 500 ms).
   const PLANT = `
 import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest';
@@ -155,7 +159,9 @@ describe('slow each-hook', () => {
   let real: { entries: Entry[]; tests: number };
   let judged: ReturnType<typeof run>;
 
-  beforeAll(() => {
+  let started: Promise<void> | undefined;
+  const ready = (): Promise<void> => (started ??= start());
+  const start = async (): Promise<void> => {
     mkdirSync(join(ROOT, 'node_modules', '.cache'), { recursive: true });
     dir = mkdtempSync(join(ROOT, 'node_modules', '.cache', 'budget-real-'));
     writeFileSync(join(dir, 'planted.test.mjs'), PLANT);
@@ -171,13 +177,16 @@ describe('slow each-hook', () => {
     expect(out.status, out.stdout + out.stderr).toBe(0);
     real = judge.parseReport(readFileSync(join(dir, 'out.json'), 'utf8'));
     judged = run(join(dir, 'out.json'));
-  }, 60_000);
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  };
+  afterAll(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
 
   const find = (name: string, hook?: string) =>
     real.entries.find((e) => (e.name === name || e.name.endsWith(` ${name}`)) && e.hook === hook);
 
-  it('records each test with the budget in force: the configured default, or its own explicit one', () => {
+  it('records each test with the budget in force: the configured default, or its own explicit one', async () => {
+    await ready();
     expect(find('default budget, quick')?.budget).toBe(1000);
     expect(find('explicit budget, under half')?.budget).toBe(4000);
     expect(find('explicit budget, past half')?.budget).toBe(2000);
@@ -186,7 +195,8 @@ describe('slow each-hook', () => {
     expect(real.entries.some((e) => e.name.includes('skipped'))).toBe(false);
   });
 
-  it('records the hooks of a suite against the hook timeout, and only for a suite that has hooks', () => {
+  it('records the hooks of a suite against the hook timeout, and only for a suite that has hooks', async () => {
+    await ready();
     const slow = find('slow hooks', 'beforeAll and afterAll');
     expect(slow?.budget).toBe(1000);
     expect(slow?.duration).toBeGreaterThanOrEqual(690);
@@ -195,11 +205,13 @@ describe('slow each-hook', () => {
     expect(real.entries.filter((e) => e.kind === 'hook').length).toBe(2);
   });
 
-  it('counts the each-hook of a test in the test, which vitest does not report apart', () => {
+  it('counts the each-hook of a test in the test, which vitest does not report apart', async () => {
+    await ready();
     expect(find('slow each-hook > quick body')?.duration).toBeGreaterThanOrEqual(700);
   });
 
-  it('fails the planted tests that sleep past half of their budget, and the slow hooks', () => {
+  it('fails the planted tests that sleep past half of their budget, and the slow hooks', async () => {
+    await ready();
     expect(judged.status, judged.stdout).toBe(1);
     expect(judged.stderr).toContain('default budget, past half');
     expect(judged.stderr).toContain('explicit budget, past half');
@@ -207,14 +219,16 @@ describe('slow each-hook', () => {
     expect(judged.stderr).toContain('slow each-hook > quick body');
   });
 
-  it('passes a test with an explicit budget that it uses under half of, quick tests and quick hooks', () => {
+  it('passes a test with an explicit budget that it uses under half of, quick tests and quick hooks', async () => {
+    await ready();
     expect(judged.stderr).not.toContain('explicit budget, under half');
     expect(judged.stderr).not.toContain('default budget, quick');
     expect(judged.stderr).not.toContain('quick hooks');
     expect(judged.stderr).not.toContain('quick body too');
   });
 
-  it('writes the shape the committed real report has', () => {
+  it('writes the shape the committed real report has', async () => {
+    await ready();
     const committed = judge.parseReport(readFileSync(FIXTURE, 'utf8'));
     const shape = (doc: { entries: Entry[] }) =>
       doc.entries.map((e) => [e.kind, e.hook ?? '', e.name, e.file, e.budget]).sort();
