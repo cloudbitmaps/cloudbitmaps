@@ -111,6 +111,8 @@ const {
   exitWhenDone,
 } = require('./lib/paired-verdict.cjs');
 const ops = require('./lib/codec-ops.cjs');
+const { treeState } = require('./lib/tree-state.cjs');
+const workFolder = require('./lib/work-folder.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const CHECK = process.argv.includes('--check');
@@ -408,9 +410,7 @@ function git(...args) {
 function prepareSubjects(withOps = false) {
   const base = process.env.PAIRED_BASE ?? git('merge-base', 'origin/main', 'HEAD');
   const baseSha = git('rev-parse', `${base}^{commit}`);
-  const dir = fs.mkdtempSync(
-    path.join(process.env.PAIRED_WORKDIR ?? os.tmpdir(), 'ts-codec-paired-'),
-  );
+  const dir = workFolder.make(process.env.PAIRED_WORKDIR ?? os.tmpdir(), 'ts-codec-paired-');
   const baseRoot = path.join(dir, 'base');
   fs.mkdirSync(baseRoot);
   const archive = execFileSync(
@@ -629,12 +629,7 @@ function nativeCodec() {
 }
 
 function environment() {
-  let tree = 'unknown';
-  try {
-    tree = git('status', '--porcelain').length === 0 ? 'clean' : 'dirty';
-  } catch {
-    /* recorded as unknown */
-  }
+  const { tree, ...dirt } = treeState({ root: ROOT, record: RESULTS });
   return {
     node: process.version,
     platform: `${os.platform()} ${os.arch()}`,
@@ -642,6 +637,7 @@ function environment() {
     cores: os.cpus().length,
     head: git('rev-parse', 'HEAD'),
     tree,
+    ...dirt,
     anyLoad: ANY_LOAD,
     smoke: SMOKE,
     rounds: ROUNDS,

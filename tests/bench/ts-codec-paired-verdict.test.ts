@@ -879,6 +879,25 @@ describe('the gate', () => {
     expect(rule.gateProblems([off])).toEqual([]);
   });
 
+  it('reads the tree fields of each pass: a clean pass with paths and a dirty one with unsorted paths are refused, a named dirty pass and an old one are not', () => {
+    const withTree = (fields: Record<string, unknown>) =>
+      rule
+        .gateProblems([
+          passOf([WITHIN], {
+            environment: { rounds: 31, tree: 'clean', base: '', head: '', ...fields },
+          }),
+        ])
+        .join('\n');
+    expect(withTree({ tree: 'clean', dirtyPaths: ['a'], dirtyTotal: 1 })).toContain(
+      'a clean tree records dirty paths',
+    );
+    expect(withTree({ tree: 'dirty', dirtyPaths: ['b', 'a'], dirtyTotal: 2 })).toContain(
+      'not sorted and distinct',
+    );
+    expect(withTree({ tree: 'dirty', dirtyPaths: ['a', 'b'], dirtyTotal: 2 })).toBe('');
+    expect(withTree({ tree: 'dirty' })).toBe('');
+  });
+
   it('refuses a smoke pass, and a record with no pass', () => {
     const smoke = passOf([WITHIN], {
       environment: { rounds: 3, tree: 'clean', base: '', head: '', smoke: true },

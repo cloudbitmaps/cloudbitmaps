@@ -59,6 +59,8 @@
  */
 'use strict';
 
+const { treeProblems } = require('./tree-state.cjs');
+
 /** The A/A control's median difference from the base must lie within this, as a fraction, or the cell resolves nothing. */
 const CONTROL_BAND = 0.02;
 /** The bar the head is held to, as a fraction. */
@@ -500,6 +502,7 @@ function gateProblems(passes, { verdicts = true } = {}) {
   passes.forEach((pass, i) => {
     const label = `pass ${pass.pass ?? i + 1}`;
     if (pass.environment?.smoke) problems.push(`${label}: a smoke pass is no evidence`);
+    problems.push(...treeProblems(label, pass.environment));
     for (const c of gatedCellsOf(pass)) {
       if (verdicts && kindOf(c.verdict) === 'slower' && !pass.explained) {
         problems.push(

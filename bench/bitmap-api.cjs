@@ -83,6 +83,8 @@ const verdict = require('./lib/bitmap-api-verdict.cjs');
 const cellsLib = require('./lib/bitmap-api-cells.cjs');
 const countRecord = require('./lib/bitmap-api-count.cjs');
 const paired = require('./lib/paired-verdict.cjs');
+const { treeState } = require('./lib/tree-state.cjs');
+const workFolder = require('./lib/work-folder.cjs');
 
 const { MAX_LOAD, RULE, UNIT, nsToMs, figurePlaces, keepRound, collectRounds } = verdict;
 const { DATASETS, COLD_DATASET } = cellsLib;
@@ -153,9 +155,7 @@ async function apiOf(subject, work) {
 
 /** The folder the children read: the stored bytes of every data set, and the codec's own bitmap as one bundle. */
 function prepare() {
-  const dir = fs.mkdtempSync(
-    path.join(process.env.BITMAP_API_WORKDIR ?? os.tmpdir(), 'bitmap-api-'),
-  );
+  const dir = workFolder.make(process.env.BITMAP_API_WORKDIR ?? os.tmpdir(), 'bitmap-api-');
   const nativeModule = createRequire(path.join(ROOT, 'package.json'))('roaring');
   fs.writeFileSync(
     path.join(dir, 'inputs.json'),
@@ -507,12 +507,7 @@ function countRoute() {
 }
 
 function environment() {
-  let tree = 'unknown';
-  try {
-    tree = git('status', '--porcelain').length === 0 ? 'clean' : 'dirty';
-  } catch {
-    /* recorded as unknown */
-  }
+  const { tree, ...dirt } = treeState({ root: ROOT, record: RESULTS });
   let roaring = 'unknown';
   try {
     roaring = createRequire(path.join(ROOT, 'package.json'))('roaring/package.json').version;
@@ -526,6 +521,7 @@ function environment() {
     cores: os.cpus().length,
     head: git('rev-parse', 'HEAD'),
     tree,
+    ...dirt,
     roaring,
     countRoute: countRoute(),
     countResult: countRecord.readResult(ROOT),

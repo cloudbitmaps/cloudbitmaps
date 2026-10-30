@@ -18,6 +18,7 @@ For what each published number means, how it was measured, and what it does *not
 
 - [The harnesses](#the-harnesses)
 - [The results files, and what reads them](#the-results-files-and-what-reads-them)
+- [How a pass records its tree, and where a bench keeps its temp files](#how-a-pass-records-its-tree-and-where-a-bench-keeps-its-temp-files)
 - [Real-cloud calibration](#real-cloud-calibration)
 - [`lib/`](#lib)
 - [Adding a harness](#adding-a-harness)
@@ -82,6 +83,49 @@ A rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores —
 run's file, so under an evidence name it would be one `git add` from being committed as the evidence.
 Both write every fractional number to nine decimals: below a nanosecond for a time in milliseconds and a billionth of
 a dollar for a cost. A ratio's binary tail runs to 17 digits, and one of exactly 12 is a run the leak scan refuses.
+
+## How a pass records its tree, and where a bench keeps its temp files
+
+A pass records `environment.tree`, whether the measured code was the commit's own. `lib/tree-state.cjs` decides it for
+`ts-codec-paired.cjs`, `bitmap-api.cjs` and `count-kernels.cjs` from `git status` (tracked, staged and untracked files
+alike), each with its own results file as the one exemption (`ts-codec-engine.cjs` records the same rule as its boolean
+`treeClean`). Passes already committed keep what they recorded:
+
+```
+nothing differs from the commit                         -> clean
+only the bench's own results file differs               -> clean   (a pass just written is not an edit of the code)
+anything else differs: packages/, any other bench/ file,
+the lockfile, an untracked file, a rename or a deletion -> dirty
+git cannot say                                          -> unknown
+```
+
+A pass taken right after another, before the first is committed, is therefore still clean. A dirty pass also records
+`environment.dirtyPaths` (every path that differs, the results file included, sorted, at most 20) and
+`environment.dirtyTotal` (how many there are), so a stray file reads differently from a change to the code. A pass
+taken before these fields existed has neither and stays valid; a gate refuses a dirty pass whose fields disagree
+(unsorted or repeated paths, a total below the paths named, a list over the cap) and a clean pass that carries them.
+
+Files git ignores do not count, `dist/` included: a rebuilt or hand-edited `dist/` reads clean. `bitmap-api.cjs`
+imports the built `packages/roaring/dist`; its `pnpm` script builds first, but `node bench/bitmap-api.cjs` run by hand
+measures whatever `dist/` is there, under a clean tree. A fix, not built here: record a digest of `dist/index.js` in the
+pass beside `head`, or refuse a `dist/` older than the newest source file. `ts-codec-paired.cjs` and `count-kernels.cjs`
+bundle the sources themselves and are not affected.
+
+The benches that make a temp folder (`ts-codec-paired.cjs`, `bitmap-api.cjs`, `count-kernels.cjs`,
+`ts-codec-engine.cjs`, `soak.cjs`, `scale.cjs`) make it through `lib/work-folder.cjs`, which removes it however the
+process ends: on a return, a thrown error, `process.exit`, SIGINT or SIGTERM (a signal can arrive while the bench is in
+a synchronous call, where a JavaScript handler would not run) and a kill. A small detached sentinel holds a pipe from the
+bench and removes the folders when the pipe closes; it covers the folders `BITMAP_API_WORKDIR` and `PAIRED_WORKDIR`
+name, too: the `bitmap-api-XXXXXX` or `ts-codec-paired-XXXXXX` folder a bench makes inside them is removed, not the
+folder named. If the sentinel cannot start or be reached (a stage that copied `bench/` without it), one line on stderr
+names each folder that a kill would leave behind and the bench carries on. A missing script or a failed spawn is
+reported when the folder is made, before any synchronous work; a later failure (a sentinel killed while the bench
+runs) is reported when the bench next yields to the event loop. The sentinel is one idle node process beside the bench
+(measured once on macOS (arm64): 37,552 KiB resident, about 37 MiB), inside the 384 MiB limit of
+`scripts/rss-gate.sh`. Windows hides its console window; the signal tests prove
+POSIX behaviour only, including a signal sent to the whole process group, as a terminal's Ctrl-C does.
+`tests/bench/work-folder.test.ts` proves each way out and fails on a direct `mkdtemp` call in `bench/`;
+`tests/bench/tree-state.test.ts` holds the dirt rule.
 
 ## Real-cloud calibration
 
@@ -549,6 +593,9 @@ Compare the two evidence files: the request counts of every stage are identical 
 | `lib/elasticache-prices.cjs` | ElastiCache's reserved prices for every catalogue node type, and the one reader of AWS's price list they are held to: each node on its full key, `NodeUsage:<type>`, and a key that matches none or several refused |
 | `lib/calibration-figures.cjs` | Every figure a calibration run lets the project publish, derived from the run's evidence, the pricing profile and the library's own constants — and a refusal for evidence that does not reconcile with itself. `tests/docs/calibration-reports.test.ts` holds the latest run's report and the benchmarks page to it as it stands, each earlier report to the model recorded for it, and `scripts/site-figures.cjs` takes the site's single-bucket figures from it. |
 | `lib/remove-all.cjs` | Takes markup out of a page's text for the gates that read what a reader sees (`scripts/site-figures.cjs`, `scripts/site-replay.cjs`, `calibration-figures.cjs` and the docs tests): a replace repeated until nothing matches, since removing one comment or tag can join the text around it into another |
+| `lib/tree-state.cjs` | Whether a pass's tree was the commit's own (`treeState`: `clean` when only the bench's own results file differs, else `dirty` with the paths that differ, sorted and capped, and their total) and the gates' reading of those fields (`treeProblems`). |
+| `lib/work-folder.cjs` | A bench's temp folder, removed however the process ends (`make`). |
+| `lib/work-folder-sentinel.cjs` | The detached process `work-folder.cjs` starts: it removes the bench's folders when the pipe from the bench closes, which is when the bench is gone. |
 
 ## Adding a harness
 

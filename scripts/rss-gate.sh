@@ -95,7 +95,9 @@ docker run --rm -v "$ROOT:/w:ro" -v "$STAGE:/stage" "$STAGE_RUN" bash -lc '
   cp    /w/packages/core/package.json node_modules/@cloudbitmaps/core/package.json
   cp -r /w/packages/roaring/dist        node_modules/@cloudbitmaps/roaring/dist
   cp    /w/packages/roaring/package.json node_modules/@cloudbitmaps/roaring/package.json
+  mkdir -p bench/lib
   cp /w/bench/soak.cjs ./bench/soak.cjs
+  cp /w/bench/lib/work-folder.cjs /w/bench/lib/work-folder-sentinel.cjs ./bench/lib/
 '
 
 # Stage 2 — run ONLY the soak under the tight hard ceiling. `--memory-swap` == `--memory` disables swap, so the
