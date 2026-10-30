@@ -115,12 +115,17 @@ The benches that make a temp folder (`ts-codec-paired.cjs`, `bitmap-api.cjs`, `c
 `ts-codec-engine.cjs`, `soak.cjs`, `scale.cjs`) make it through `lib/work-folder.cjs`, which removes it however the
 process ends: on a return, a thrown error, `process.exit`, SIGINT or SIGTERM (a signal can arrive while the bench is in
 a synchronous call, where a JavaScript handler would not run) and a kill. A small detached sentinel holds a pipe from the
-bench and removes the folders when the pipe closes; it covers the folders named by `BITMAP_API_WORKDIR` and
-`PAIRED_WORKDIR` too. If the sentinel cannot start or be reached (a stage that copied `bench/` without it), one line on
-stderr names each folder that a kill would leave behind and the bench carries on. The sentinel is one idle node process
-beside the bench (measured once on this Mac: 37,552 KiB resident, about 37 MiB, beside the bench's 45,072 KiB), inside the 384 MiB limit of `scripts/rss-gate.sh`. Windows hides its console window;
-the signal tests prove POSIX behaviour only. `tests/bench/work-folder.test.ts` proves each way out and fails on a
-direct `mkdtemp` call in `bench/`; `tests/bench/tree-state.test.ts` holds the dirt rule.
+bench and removes the folders when the pipe closes; it covers the folders `BITMAP_API_WORKDIR` and `PAIRED_WORKDIR`
+name, too: the `bitmap-api-XXXXXX` or `ts-codec-paired-XXXXXX` folder a bench makes inside them is removed, not the
+folder named. If the sentinel cannot start or be reached (a stage that copied `bench/` without it), one line on stderr
+names each folder that a kill would leave behind and the bench carries on. A missing script or a failed spawn is
+reported when the folder is made, before any synchronous work; a later failure (a sentinel killed while the bench
+runs) is reported when the bench next yields to the event loop. The sentinel is one idle node process beside the bench
+(measured once on macOS (arm64): 37,552 KiB resident, about 37 MiB), inside the 384 MiB limit of
+`scripts/rss-gate.sh`. Windows hides its console window; the signal tests prove
+POSIX behaviour only, including a signal sent to the whole process group, as a terminal's Ctrl-C does.
+`tests/bench/work-folder.test.ts` proves each way out and fails on a direct `mkdtemp` call in `bench/`;
+`tests/bench/tree-state.test.ts` holds the dirt rule.
 
 ## Real-cloud calibration
 

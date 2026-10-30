@@ -9,7 +9,10 @@
  * does when this process is gone. The sentinel is not a child the process waits for and does not poll.
  *
  * If the sentinel cannot start, dies, or cannot be written to (a stage that copied `bench/` without it), cleanup after a
- * kill is not in force: one line on stderr names each folder that would be left behind, and the bench carries on.
+ * kill is not in force: one line on stderr names each folder that would be left behind, and the bench carries on. A
+ * missing script or a failed spawn is known at `make()` and reported there, before any synchronous work; a later
+ * failure (a sentinel killed while the bench runs, a write that fails) is reported when the process next yields to the
+ * event loop.
  *
  *     parent process ──pipe──▶ sentinel (detached)       parent gone ⇒ pipe closes ⇒ sentinel removes the folders
  */
@@ -40,13 +43,23 @@ function fail(reason) {
   for (const dir of made) report(dir);
 }
 
+const SENTINEL = path.join(__dirname, 'work-folder-sentinel.cjs');
+
 function sentinelFor() {
+  if (failure !== undefined) return undefined;
   if (sentinel === undefined) {
-    sentinel = spawn(process.execPath, [path.join(__dirname, 'work-folder-sentinel.cjs')], {
+    // Known without the event loop: a missing script (a stage that copied `bench/` without it) would only show as an
+    // exit event later, which a bench that never yields never sees.
+    if (!fs.existsSync(SENTINEL)) {
+      failure = 'sentinel script is missing';
+      return undefined;
+    }
+    sentinel = spawn(process.execPath, [SENTINEL], {
       detached: true,
       windowsHide: true,
       stdio: ['pipe', 'ignore', 'ignore'],
     });
+    if (sentinel.pid === undefined) failure = 'sentinel did not start';
     sentinel.unref();
     sentinel.stdin.unref();
     sentinel.on('error', (e) => fail(`sentinel did not start: ${e.code ?? e.message}`));
@@ -64,7 +77,8 @@ function make(parent, prefix) {
     throw new Error('a work folder path may not hold a newline');
   }
   made.push(dir);
-  sentinelFor().stdin.write(`${path.resolve(dir)}\n`);
+  const child = sentinelFor();
+  if (child !== undefined) child.stdin.write(`${path.resolve(dir)}\n`);
   if (failure !== undefined) report(dir);
   return dir;
 }

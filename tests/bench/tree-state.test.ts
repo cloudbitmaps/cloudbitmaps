@@ -275,7 +275,12 @@ describe('every bench decides its tree through the shared rule', () => {
   );
 
   it('does not let the other benches keep their own tree check', () => {
-    for (const file of ['bench/count-kernels.cjs', 'bench/ts-codec-engine.cjs']) {
+    for (const file of [
+      'bench/count-kernels.cjs',
+      'bench/ts-codec-engine.cjs',
+      'bench/ts-codec-paired.cjs',
+      'bench/bitmap-api.cjs',
+    ]) {
       expect(read(file)).not.toMatch(/'status', '--porcelain'/);
     }
   });

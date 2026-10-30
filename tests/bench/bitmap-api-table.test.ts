@@ -660,15 +660,16 @@ describe('the committed pages and record', () => {
     expect(text === `${JSON.stringify(JSON.parse(text))}\n`).toBe(true);
   });
 
-  // Passes 2 and 3 (indexes 1 and 2) were taken before this record's bench treated its own results file as clean: each
-  // read dirty only because the pass before it was not yet committed. The generated table reads the last pass, so they
-  // are listed exactly; a new dirty pass fails, and so does dropping or adding an index.
-  const TAKEN_BEFORE_THE_RULE = [1, 2];
+  // Passes 2 and 3 (indexes 1 and 2) were recorded dirty under the earlier rule, which named no paths. Each one's head
+  // commit already held the pass before it, so the cause cannot be read back from the record; it may have been a code
+  // change. The generated table reads the last pass, so they are listed exactly: a new dirty pass fails, and so does
+  // dropping or adding an index.
+  const RECORDED_DIRTY = [1, 2];
 
-  it('holds every pass to a clean tree except the two taken before the record’s own file counted as clean', () => {
+  it('holds every pass to a clean tree except the two recorded dirty before dirty passes named their paths', () => {
     const dirty = file.passes.flatMap((p, i) => (p.environment?.tree === 'clean' ? [] : [i]));
-    expect(dirty).toEqual(TAKEN_BEFORE_THE_RULE);
-    expect(TAKEN_BEFORE_THE_RULE.map((i) => file.passes[i]?.environment?.tree)).toEqual([
+    expect(dirty).toEqual(RECORDED_DIRTY);
+    expect(RECORDED_DIRTY.map((i) => file.passes[i]?.environment?.tree)).toEqual([
       'dirty',
       'dirty',
     ]);

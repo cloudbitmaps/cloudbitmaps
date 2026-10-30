@@ -25,9 +25,20 @@ const PREFIX = 'work-folder-test-';
 
 /** Every child a test starts, killed after the test whatever its outcome (a waiting child holds its sentinel too). */
 const children: ChildProcess[] = [];
+/** Children started as the leader of their own process group, as a terminal's foreground job is. */
+const groups = new Set<ChildProcess>();
 const scratch: string[] = [];
 afterEach(() => {
-  for (const c of children.splice(0)) c.kill('SIGKILL');
+  for (const c of children.splice(0)) {
+    if (c.pid !== undefined && groups.has(c)) {
+      try {
+        process.kill(-c.pid, 'SIGKILL');
+      } catch {
+        /* the group is already gone */
+      }
+    }
+    c.kill('SIGKILL');
+  }
   for (const d of scratch.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -42,10 +53,14 @@ function own(prefix = 'work-folder-own-') {
  * Runs `body` (it has `w`, the helper, and `dir`, the first made folder) in a fresh process that prints each folder it
  * makes on a line. `line(n)` resolves with the n-th printed line and rejects if the child ends first or 20 s pass.
  */
-function start(body: string, lib = LIB) {
+function start(body: string, lib = LIB, group = false) {
   const code = `const w = require(${JSON.stringify(lib)}); const dir = w.make(require('node:os').tmpdir(), ${JSON.stringify(PREFIX)}); console.log(dir); ${body}`;
-  const child = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['-e', code], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: group,
+  });
   children.push(child);
+  if (group) groups.add(child);
   let out = '';
   let err = '';
   const ended = new Promise<number | null>((ok) => child.on('close', (c) => ok(c)));
@@ -124,6 +139,19 @@ describe('a bench’s temp folder is removed on every way out', () => {
     },
   );
 
+  // A terminal delivers Ctrl-C to the whole foreground process group, the sentinel included.
+  (process.platform === 'win32' ? it.skip : it).each(['SIGINT', 'SIGTERM'] as const)(
+    'after %s sent to the whole process group while the run is inside a synchronous call',
+    async (signal) => {
+      const run = start(HOLD, LIB, true);
+      const dir = await run.ready;
+      expect(existsSync(dir)).toBe(true);
+      process.kill(-(run.child.pid as number), signal);
+      await run.ended;
+      expect(await gone(dir)).toBe(true);
+    },
+  );
+
   it('removes every folder a process made, and only those', async () => {
     const run = start(
       `const second = w.make(require('node:os').tmpdir(), ${JSON.stringify(PREFIX)}); console.log(second); ${HOLD}`,
@@ -154,6 +182,31 @@ describe('a bench’s temp folder is removed on every way out', () => {
       .stderr()
       .split('\n')
       .filter((l) => l.includes(dir));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(
+      /^work folder cleanup is not running \(.+\); left behind if this process stops: /,
+    );
+  });
+
+  it('says so at make(), before any synchronous work ends, when the sentinel is not there', async () => {
+    const lone = own('work-folder-lone-');
+    const copy = join(lone, 'work-folder.cjs');
+    copyFileSync(LIB, copy);
+    // The body never yields: the line must already be on stderr while the child is still blocked.
+    const run = start(HOLD, copy);
+    const dir = await run.ready;
+    const until = Date.now() + 3_000;
+    while (!run.stderr().includes(dir) && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(run.child.exitCode).toBeNull();
+    const lines = run
+      .stderr()
+      .split('\n')
+      .filter((l) => l.includes(dir));
+    run.child.kill('SIGKILL');
+    await run.ended;
+    rmSync(dir, { recursive: true, force: true });
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(
       /^work folder cleanup is not running \(.+\); left behind if this process stops: /,
@@ -204,7 +257,8 @@ describe('the sentinel removes only what it may', () => {
     });
     children.push(child);
     const closed = new Promise<void>((ok) => child.on('close', () => ok()));
-    child.stdin.end([...Object.values(names), 'rel-AbCdE1', '/x-AbCdE1', ''].join('\n'));
+    // The clause that refuses a folder directly under the root is not tested: that would need a folder at `/`.
+    child.stdin.end([...Object.values(names), 'rel-AbCdE1', ''].join('\n'));
     await Promise.race([
       closed,
       new Promise((_, no) => setTimeout(() => no(new Error('the sentinel did not end')), 15_000)),
