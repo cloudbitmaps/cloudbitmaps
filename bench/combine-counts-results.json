@@ -1,0 +1,1126 @@
+{
+  "note": "Counted by running the engine over the in-memory backend; not measured on a cloud, and no time is recorded. Rewritten by bench/combine-counts.cjs.",
+  "stopRule": "The count ships only if it makes no more requests than the stream-and-count recipe on every cell, and reads fewer bytes than the recipe on union and andNot on the packed layout, and no more bytes than the recipe on every other cell (the spread layout, and intersect on either layout). The Into run is reported, not judged.",
+  "shapes": [
+    {
+      "id": "500k",
+      "operands": 2,
+      "idsPerOperand": 500000,
+      "chunksPerOperand": 1999,
+      "sharedChunks": 100,
+      "idsPerChunk": 250,
+      "cells": [
+        {
+          "layout": "packed",
+          "op": "intersect",
+          "count": {
+            "result": 25000,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 627488,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 25000,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 627488,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 25000,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 627488,
+            "bytesWritten": 52712
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "union",
+          "count": {
+            "result": 974500,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 627488,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 974500,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2587256,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 974500,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 2587256,
+            "bytesWritten": 2050461
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "andNot",
+          "count": {
+            "result": 474750,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 627488,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 474750,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 1607372,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 474750,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 1607372,
+            "bytesWritten": 998987
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "intersect",
+          "count": {
+            "result": 25000,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2567648,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 25000,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2567648,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 25000,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 2567648,
+            "bytesWritten": 52811
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "union",
+          "count": {
+            "result": 974500,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2567648,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 974500,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2587256,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 974500,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 2587256,
+            "bytesWritten": 2050559
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "andNot",
+          "count": {
+            "result": 474750,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2567648,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 474750,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2577452,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 474750,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 2577452,
+            "bytesWritten": 999085
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "1M",
+      "operands": 2,
+      "idsPerOperand": 1000000,
+      "chunksPerOperand": 1999,
+      "sharedChunks": 100,
+      "idsPerChunk": 500,
+      "cells": [
+        {
+          "layout": "packed",
+          "op": "intersect",
+          "count": {
+            "result": 50000,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 727488,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 50000,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 727488,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 50000,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 727488,
+            "bytesWritten": 102712
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "union",
+          "count": {
+            "result": 1949000,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 727488,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 1949000,
+            "requests": 8,
+            "getRange": 4,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 4586256,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 1949000,
+            "requests": 14,
+            "getRange": 4,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 4586256,
+            "bytesWritten": 3999461
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "andNot",
+          "count": {
+            "result": 949500,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 727488,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 949500,
+            "requests": 7,
+            "getRange": 3,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2656872,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 949500,
+            "requests": 13,
+            "getRange": 3,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 2656872,
+            "bytesWritten": 1948487
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "intersect",
+          "count": {
+            "result": 50000,
+            "requests": 8,
+            "getRange": 4,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 4509040,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 50000,
+            "requests": 8,
+            "getRange": 4,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 4509040,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 50000,
+            "requests": 14,
+            "getRange": 4,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 4509040,
+            "bytesWritten": 102811
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "union",
+          "count": {
+            "result": 1949000,
+            "requests": 8,
+            "getRange": 4,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 4509040,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 1949000,
+            "requests": 8,
+            "getRange": 4,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 4586256,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 1949000,
+            "requests": 14,
+            "getRange": 4,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 4586256,
+            "bytesWritten": 3999559
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "andNot",
+          "count": {
+            "result": 949500,
+            "requests": 8,
+            "getRange": 4,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 4509040,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 949500,
+            "requests": 8,
+            "getRange": 4,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 4547648,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 949500,
+            "requests": 14,
+            "getRange": 4,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 4547648,
+            "bytesWritten": 1948585
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "5M",
+      "operands": 2,
+      "idsPerOperand": 5000000,
+      "chunksPerOperand": 1999,
+      "sharedChunks": 100,
+      "idsPerChunk": 2501,
+      "cells": [
+        {
+          "layout": "packed",
+          "op": "intersect",
+          "count": {
+            "result": 250100,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 1527888,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 250100,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 1527888,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 250100,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 1527888,
+            "bytesWritten": 502912
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "union",
+          "count": {
+            "result": 9748898,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 1527888,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 9748898,
+            "requests": 24,
+            "getRange": 20,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 20586252,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 9748898,
+            "requests": 30,
+            "getRange": 20,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 20586252,
+            "bytesWritten": 19599257
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "andNot",
+          "count": {
+            "result": 4749399,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 1527888,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 4749399,
+            "requests": 15,
+            "getRange": 11,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 11057070,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 4749399,
+            "requests": 21,
+            "getRange": 11,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 11057070,
+            "bytesWritten": 9548285
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "intersect",
+          "count": {
+            "result": 250100,
+            "requests": 24,
+            "getRange": 20,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 18679412,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 250100,
+            "requests": 24,
+            "getRange": 20,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 18679412,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 250100,
+            "requests": 30,
+            "getRange": 20,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 18679412,
+            "bytesWritten": 503011
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "union",
+          "count": {
+            "result": 9748898,
+            "requests": 24,
+            "getRange": 20,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 18679412,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 9748898,
+            "requests": 24,
+            "getRange": 20,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 20586252,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 9748898,
+            "requests": 30,
+            "getRange": 20,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 20586252,
+            "bytesWritten": 19599355
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "andNot",
+          "count": {
+            "result": 4749399,
+            "requests": 24,
+            "getRange": 20,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 18679412,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 4749399,
+            "requests": 24,
+            "getRange": 20,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 19632832,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 4749399,
+            "requests": 30,
+            "getRange": 20,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 19632832,
+            "bytesWritten": 9548383
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "10M",
+      "operands": 2,
+      "idsPerOperand": 10000000,
+      "chunksPerOperand": 1999,
+      "sharedChunks": 100,
+      "idsPerChunk": 5003,
+      "cells": [
+        {
+          "layout": "packed",
+          "op": "intersect",
+          "count": {
+            "result": 500300,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2165888,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 500300,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2165888,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 500300,
+            "requests": 12,
+            "getRange": 2,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 2165888,
+            "bytesWritten": 821912
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "union",
+          "count": {
+            "result": 19501694,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2165888,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 19501694,
+            "requests": 36,
+            "getRange": 32,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 33339872,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 19501694,
+            "requests": 42,
+            "getRange": 32,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 33339872,
+            "bytesWritten": 32033877
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "packed",
+          "op": "andNot",
+          "count": {
+            "result": 9500697,
+            "requests": 6,
+            "getRange": 2,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 2165888,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 9500697,
+            "requests": 21,
+            "getRange": 17,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 17752880,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 9500697,
+            "requests": 27,
+            "getRange": 17,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 17752880,
+            "bytesWritten": 15606095
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "intersect",
+          "count": {
+            "result": 500300,
+            "requests": 34,
+            "getRange": 30,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 28661312,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 500300,
+            "requests": 34,
+            "getRange": 30,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 28661312,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 500300,
+            "requests": 40,
+            "getRange": 30,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 28661312,
+            "bytesWritten": 822011
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "union",
+          "count": {
+            "result": 19501694,
+            "requests": 34,
+            "getRange": 30,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 28661312,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 19501694,
+            "requests": 36,
+            "getRange": 32,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 33339872,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 19501694,
+            "requests": 42,
+            "getRange": 32,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 33339872,
+            "bytesWritten": 32033975
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "andNot",
+          "count": {
+            "result": 9500697,
+            "requests": 34,
+            "getRange": 30,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 28661312,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 9500697,
+            "requests": 35,
+            "getRange": 31,
+            "getTail": 2,
+            "pointerReads": 2,
+            "requestsWritten": 0,
+            "bytesRead": 31000592,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 9500697,
+            "requests": 41,
+            "getRange": 31,
+            "getTail": 3,
+            "pointerReads": 5,
+            "requestsWritten": 2,
+            "bytesRead": 31000592,
+            "bytesWritten": 15606193
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "union31",
+      "operands": 31,
+      "idsPerOperand": 500000,
+      "chunksPerOperand": 1999,
+      "sharedChunks": 100,
+      "idsPerChunk": 250,
+      "cells": [
+        {
+          "layout": "packed",
+          "op": "union",
+          "count": {
+            "result": 14742250,
+            "requests": 93,
+            "getRange": 31,
+            "getTail": 31,
+            "pointerReads": 31,
+            "requestsWritten": 0,
+            "bytesRead": 9726064,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 14742250,
+            "requests": 93,
+            "getRange": 31,
+            "getTail": 31,
+            "pointerReads": 31,
+            "requestsWritten": 0,
+            "bytesRead": 40102468,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 14742250,
+            "requests": 99,
+            "getRange": 31,
+            "getTail": 32,
+            "pointerReads": 34,
+            "requestsWritten": 2,
+            "bytesRead": 40102468,
+            "bytesWritten": 31017807
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": true,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        },
+        {
+          "layout": "spread",
+          "op": "union",
+          "count": {
+            "result": 14742250,
+            "requests": 93,
+            "getRange": 31,
+            "getTail": 31,
+            "pointerReads": 31,
+            "requestsWritten": 0,
+            "bytesRead": 39798544,
+            "bytesWritten": 0
+          },
+          "recipe": {
+            "result": 14742250,
+            "requests": 93,
+            "getRange": 31,
+            "getTail": 31,
+            "pointerReads": 31,
+            "requestsWritten": 0,
+            "bytesRead": 40102468,
+            "bytesWritten": 0
+          },
+          "into": {
+            "result": 14742250,
+            "requests": 99,
+            "getRange": 31,
+            "getTail": 32,
+            "pointerReads": 34,
+            "requestsWritten": 2,
+            "bytesRead": 40102468,
+            "bytesWritten": 31017806
+          },
+          "agree": true,
+          "verdict": {
+            "fewerBytesRequired": false,
+            "requestsOk": true,
+            "bytesOk": true,
+            "pass": true
+          }
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "pass": true,
+    "failing": []
+  }
+}
