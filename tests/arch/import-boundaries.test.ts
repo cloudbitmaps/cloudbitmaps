@@ -14,14 +14,14 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const eslint = new ESLint({ cwd: ROOT });
 
 // The first lint pays the cold load of the config and the parsers, so it is paid here, in a hook with its own budget,
-// and each test times only its own work. Budget 4 s by the rule: the slowest measured time (release runner or
-// developer machine) times three, rounded up to the next whole second. Measured for the whole first test, load
-// included: 1.3 s on the release job's runner in a single full run (the slower of its two attempts), 0.49 s on a
-// developer machine (Apple M3 Pro, one worker, median of 3). By the same rule every test after it is under the 5 s
-// default and keeps it.
+// and each test times only its own work. Budget 15 s, derived: a cold module load is slow in proportion to machine
+// load, so the budget is about ten times the slowest idle measurement (1.3 s on the release job's runner in a single
+// full run, the slower of its two attempts; 0.49 s on a developer machine, Apple M3 Pro, one worker, median of 3), the
+// headroom for loads of 20 to 80 on a shared machine. It is never below vitest's hook default of 10 s. Every test
+// after it is far under the 5 s test default and keeps it.
 beforeAll(async () => {
   await eslint.lintText('', { filePath: path.join(ROOT, 'packages/core/src/core/some-module.ts') });
-}, 4_000);
+}, 15_000);
 
 async function ruleErrors(ruleId: string, relPath: string, code: string): Promise<string[]> {
   const [result] = await eslint.lintText(code, { filePath: path.join(ROOT, relPath) });
