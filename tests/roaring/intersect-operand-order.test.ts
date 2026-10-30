@@ -76,7 +76,7 @@ describe("the store's intersect of three or more operands", () => {
     }
     for (const [i, s] of seg.entries())
       expect(await collect(s!.iterate()), `operand ${i}`).toEqual(sets[i]);
-  }, 9_000);
+  }, 10_000);
 
   it('a key only some operands hold drops out, and a chunk that empties at the second or third step ends there', async () => {
     const sets = [

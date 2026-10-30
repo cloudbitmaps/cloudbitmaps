@@ -128,7 +128,7 @@ describe('the cells', () => {
         }
       }
     }
-  }, 15_000);
+  }, 14_000);
 
   it('hold the pairs to the kinds they are named for', () => {
     const pair = (name: string) =>
