@@ -100,7 +100,7 @@ The manifest of a command run also carries a `generatedAt` timestamp.
 ## Read an export back
 
 A `.roaring` file needs no CloudBitmaps: any Roaring library deserializes the portable format. With
-`@cloudbitmaps/roaring` installed, `RoaringBitmap.deserialize` (0.25.0 and later; unreleased) reads it: the bytes are capped and
+`@cloudbitmaps/roaring` installed, `RoaringBitmap.deserialize` (0.25.0 and later) reads it: the bytes are capped and
 checked, and an empty file is refused.
 
 <!-- typecheck -->

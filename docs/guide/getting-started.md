@@ -364,7 +364,7 @@ one row per item, each linking to the detail.
 
 - [Before production](production.md): the checklist.
 - [Loading in depth](loading.md) and [Reading in depth](reading.md).
-- [Playbooks](../playbooks/README.md): one runnable walkthrough per job (audience segments, feature flags, dedup, permissions, the standalone bitmap).
+- [Playbooks](../playbooks/README.md): one runnable walkthrough per job (audience segments, feature flags, dedup, permissions, counting a combine, a Redis migration, Lambda and ten more).
 - [The guide index](README.md): retention, encryption, erasure, observability, export and disaster recovery.
 - [API reference](api-reference.md): every export, kept in sync with the code by CI.
 - [Roadmap](../ROADMAP.md): what is shipped, the **validated envelope** (what is proven and what is not), and the

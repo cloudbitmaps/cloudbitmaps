@@ -73,7 +73,7 @@ for the length of one test. Nothing in `packages/` loads CRoaring.
 
 | File | What it holds |
 |---|---|
-| `containers.ts` | The `Container` class (array, bitset, run), the scratch buffers, `optimize`, every single-container operation (`containerHas`, `containerAdd`, `containerRemove`, `containerMax`, `appendIds`) and every pair kernel (`containerAnd`, `containerOr`, `containerAndNot`). |
+| `containers.ts` | The `Container` class (array, bitset, run), the scratch buffers, `optimize`, every single-container operation (`containerHas`, `containerAdd`, `containerRemove`, `containerMax`, `appendIds`) and every pair kernel (`containerAnd`, `containerOr`, `containerAndNot`, `containerXor`), the count and compare kernels (`containerAndCard`, `containersIntersect`, `containersSubset`, `containersEqual`) and `orManyContainers`; the word counts live in `portable/popcount.ts`. |
 | `bitmap.ts` | `TsBitmap` (the sorted key list and the container list), id checking, `addMany` / `removeMany` grouping, key-level combines, `clone`, `encodeChunks`, and the exported `tsRoaringCodec`. |
 | `wire.ts` | `serializeContainers` (containers to portable bytes) and `decodeContainers` (portable bytes to containers, after the layout check), and the trailing-bytes refusal. |
 | `iterator.ts` | `BitmapIterator`, the ascending iterator: a class with its own state, not a generator. |
@@ -550,7 +550,7 @@ All of these are in `bitmap.ts`.
   `containerAndCard`; it compares membership, not kinds or bytes, so a bitmap
   decoded from run bytes equals the same ids built from an array. A list under 512 values in each of two containers that both
   start at index 0 (every container of a detached decode) calls the same compare with start offsets of 0 and skips the view test. In an
-  alternating-process probe of the public class, `isEqual` on 128 run containers took 28.8 us against 36.9 us before the round
+  alternating-process probe of the public class, `isEqual` on 128 run containers took 28.8 us against 36.9 us before the change
   (indicative, probe). A separate function for such lists timed the same there and made `isEqual` on a mixed bitmap about 24 percent
   slower, so it is not used. The public class exposes all seven (section 13).
 - **`clone`.** Section 4.

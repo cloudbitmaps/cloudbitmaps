@@ -3,9 +3,9 @@
 `@cloudbitmaps/roaring` keeps its bitmaps with a Roaring implementation of its own, written in TypeScript on typed
 arrays, with no native code. This page says what that is, what it guarantees (the same portable bytes as CRoaring, byte
 for byte) and the evidence for it, what it costs and gains against the native codec, and the one public class,
-`RoaringBitmap` (0.25.0 and later; unreleased), that lets you use it by itself.
+`RoaringBitmap` (0.25.0 and later), that lets you use it by itself.
 
-Everything here is about 0.25.0 and later (unreleased); a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
+Everything here is about 0.25.0 and later; a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
 **derived** (computed from measured figures by the rule beside it) or **expected** (what the code is expected to do, not
 taken).
 
@@ -63,7 +63,7 @@ CRoaring versions, so the pin moves only by a deliberate edit and the rule does 
 **What is still open.** The oracle proves what CRoaring writes for the pinned version, not what every other Roaring
 library writes. "A codec no more than 5% slower" is a measured bar, not a bound. The week of nightly fuzz with no difference
 on this codec, which the comparison asked for before the switch, had not run when the comparison was taken; the switch
-shipped in 0.24.0 (2026-10-23) without it, so the nightly fuzz that has run since is the evidence, and its history is the
+shipped on 2026-10-23 without it, so the nightly fuzz that has run since is the evidence, and its history is the
 [fuzz workflow's](../../.github/workflows/fuzz-nightly.yml) run list. The comparison's report is a record of that day and
 says so.
 
@@ -206,7 +206,7 @@ Close to native (within 3 times native on every cell of the group, every control
 Not called close to native: combine returning (worst 2.54 times, runs andNot returning; 1 cell(s) with a control out of band); combine in place (worst 2.73 times, mixed andNot in place; 4 cell(s) with a control out of band); serialize (worst 5.94 times, sparse deserialize; 4 cell(s) with a control out of band); export (worst 4.30 times, runs toUint32Array; 2 cell(s) with a control out of band); orMany (worst 11.21 times, dense orMany 64); clone (worst 1.98 times, runs clone then write; 2 cell(s) with a control out of band); count (worst 8.54 times, dense andCardinality; 2 cell(s) with a control out of band); compare (worst 9.01 times, runs isEqual); write after combine (worst 8.42 times, runs write after andNot; 2 cell(s) with a control out of band); cold (worst 14.61 times, cold first deserialize).
 Shipping by the maintainer's decision of 2026-10-29 (the union of 64 dense bitmaps and the first deserialize in a fresh process ship with their figures shown, and an optional WebAssembly module for the dense word kernels is on the roadmap, to be decided on its own), more than 10 times native on some data set and its figure disclosed: `RoaringBitmap.deserialize` (14.61 times, cold first deserialize); `RoaringBitmap.orMany` (11.21 times, dense orMany 64).
 
-The class answered `andCardinality`, `orCardinality`, `xorCardinality`, `andNotCardinality` and `intersects` by the count kernels in this pass; the count kernels' own bench (`bench/count-kernels.cjs`) kept them: `andCardinality` took less time than building and counting on every operand-pair group it judges. The codec column of `andCardinality` and `orCardinality` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.
+The class answered `andCardinality`, `orCardinality`, `xorCardinality` and `andNotCardinality` by the count kernels in this pass, and `intersects` and `isSubset` without counting; the count kernels' own bench (`bench/count-kernels.cjs`) kept them on the build its record names: `andCardinality` took less time than building and counting on every operand-pair group it judges. On the build this table was taken on, each `andCardinality` and `orCardinality` figure of the codec column is below 1.00 (0.20 to 0.98). The codec column of `andCardinality` and `orCardinality` is build-then-count, so a class figure below 1.00 there is a count that cost less than building the result and counting it on that data set.
 
 Notes on rows that are not a like-for-like call:
 

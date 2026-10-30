@@ -5,7 +5,7 @@
  * readable **without CloudBitmaps**. A thin filesystem wrapper over `CloudRoaring.exportSegments`.
  *
  * Two formats:
- *   - `roaring` (default) — one portable RoaringBitmap32 per segment (`<segment>.roaring`), loadable by any
+ *   - `roaring` (default) — one portable Roaring bitmap per segment (`<segment>.roaring`), loadable by any
  *     roaring library (Java/Go/Python/Rust/C++/…).
  *   - `ndjson` — newline-delimited ids per segment (`<segment>.ndjson`), zero dependencies to read, streamed.
  *

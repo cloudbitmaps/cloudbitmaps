@@ -122,7 +122,7 @@ await store.load({ segment: 'audience:all' }, idsInOrder(), { sorted: true });
   deleted under the `destroyed` row ([how a load stays correct](correctness.md#how-a-load-stays-correct)).
 
 **A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
-rather than its ids. A `RoaringBitmap` (0.25.0 and later; unreleased) loads as it is; `{ bitmap }` takes anything with
+rather than its ids. A `RoaringBitmap` (0.25.0 and later) loads as it is; `{ bitmap }` takes anything with
 `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`;
 `{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
 export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
@@ -1169,10 +1169,10 @@ each naming an operand once. This walks the sets you hold, by chunk key, and yie
 
 <!-- typecheck-skip: a fragment: the page leaves `lapsed`, `vip` to the reader -->
 ```ts
-import type { RoaringBitmap32 } from 'roaring';
+import type { RoaringBitmap } from '@cloudbitmaps/roaring';
 
 /** The chunks of one set: each key with its ids, ascending. */
-function* chunksOf(bm: RoaringBitmap32): Generator<{ key: number; ids: Uint32Array }> {
+function* chunksOf(bm: RoaringBitmap): Generator<{ key: number; ids: Uint32Array }> {
   let key = -1;
   let ids: number[] = [];
   for (const id of bm) {
@@ -1187,7 +1187,7 @@ function* chunksOf(bm: RoaringBitmap32): Generator<{ key: number; ids: Uint32Arr
 }
 
 /** A feed of the sets you hold, by operand name: one record per set and key, in ascending key order. */
-async function* feedOf(sets: Record<string, RoaringBitmap32>) {
+async function* feedOf(sets: Record<string, RoaringBitmap>) {
   const heads = Object.entries(sets).map(([name, bm]) => {
     const it = chunksOf(bm);
     return { name, it, next: it.next() };
@@ -1205,7 +1205,7 @@ async function* feedOf(sets: Record<string, RoaringBitmap32>) {
   }
 }
 
-const held = { vip, lapsed }; // RoaringBitmap32s you hold
+const held = { vip, lapsed }; // bitmaps you hold
 await store.materializeMany({
   operands: { engaged: store.segment('cond-engaged') },
   feed: {

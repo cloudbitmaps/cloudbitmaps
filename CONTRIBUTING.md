@@ -171,7 +171,7 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 | Path | Package | Holds |
 |---|---|---|
 | `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers (exported from `@cloudbitmaps/core/node`, the internal subpath for what needs a Node builtin), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
-| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the public `RoaringBitmap` class (0.25.0 and later; unreleased), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
+| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the public `RoaringBitmap` class (0.25.0 and later), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit`, and from core's main entry the S3 and GCS drivers take only the types `Clock` and `Rng`, type-only imports the build erases — never a flavor, never a sibling |
 | `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec selection point, `@/native-codec` → the native reference codec in `tests/helpers`, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
@@ -356,13 +356,13 @@ order:
      and refuses the push on a finding, so a slip is caught before it is public. It reads every commit's message,
      author and committer that the remote does not already have (the commits no remote-tracking ref of that remote
      holds, minus each ref's old tip: a rebase onto a moved `main`, a merge of `main` or a stale `origin/main` does
-     not widen it, and it never fetches), and the name of each branch or tag pushed as the remote will show it,
+     not widen it, a commit that another branch of the same remote already holds is not read again, and it never fetches), and the name of each branch or tag pushed as the remote will show it,
      whatever the local ref is called; an annotated tag's message and tagger are read too. A first push to a remote
      with no tracking refs in the clone is measured from `origin/main`; with no `origin/main` the push is refused
      until you `git fetch origin`. It runs once per push however many refs, on `git push` only, never on a commit,
-     and costs about a quarter of a second per push (measured end to end on a laptop in a throwaway clone: 0.2 s
-     for one branch, 0.23 s for a 50-commit first push, 0.26 s for a five-ref push; node starts twice, for the
-     script and for the leak scan it runs). It needs `node` on the `PATH` (a graphical git client may not have it:
+     and costs about a quarter of a second per push (measured end to end on a laptop in a throwaway clone, three
+     runs each: 0.20 to 0.28 s for one branch of five new commits, 0.22 to 0.24 s for a first push of 50 commits, and
+     0.25 to 0.26 s for a five-ref push, one run; node starts twice, for the script and for the leak scan it runs). It needs `node` on the `PATH` (a graphical git client may not have it:
      the push is then refused with a message, exit 2). It does not see the pull request's title or body, which
      exist only after the push, so the CI check keeps reading them. Husky installs it with the `prepare` script, so
      it runs only in a clone where `pnpm install` has run once; a clone whose `core.hooksPath` points elsewhere does

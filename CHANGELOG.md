@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-10-29
+
 ### Breaking
 
 - **`deserializePortable(bytes)` and the `ReadonlyBitmap` type are removed.** What a caller does: call
@@ -32,8 +34,10 @@ so, and so do the module headers in the code.
   container kinds or serialized bytes. The other bitmap may be this one. A value that is not a `RoaringBitmap` of this copy
   of the package is a `ValidationError`, for `isSubset` too, where the `roaring` package answers `false`. The four
   counts use the codec's counting kernels, which count from the containers without building the combination; the count
-  bench's record (`bench/count-kernels-results.json`) has the count's median below the build's on every data set, and its
-  gate prints `RESULT kept`. `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
+  bench's record (`bench/count-kernels-results.json`, taken on the build it names) has the count's median below the
+  build's on every data set, and its gate prints `RESULT kept`; in the table of the class in the API reference, the codec column
+  of `andCardinality` and `orCardinality` (the count's time over build-then-count's) is below 1.00 on every data set, 0.20
+  to 0.98 (two runs cells, 0.73 and 0.56, are marked as read outside the control band). `intersects` and `isSubset` count nothing: they answer from the containers, `intersects` as
   soon as it finds an id the two bitmaps share, container by container. The speed of each, against the `roaring` package, is the table in
   [the API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap).
 
@@ -66,6 +70,9 @@ so, and so do the module headers in the code.
   throws `ValidationError` with a message that never repeats the value, `add` and `remove` take exactly one id (a second argument names `addMany` or `removeMany`), and there
   is no `toJSON`, so `JSON.stringify(bitmap)` gives `"{}"`. A load takes one as it is (`store.load(ref, bitmap)`), reads it and never changes it. [The API reference](docs/guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap)
   lists each method and where it differs from the `roaring` package.
+  Two calls are slower than the native `roaring` package by a ratio above 10 in the bench, and ship with their figures
+  shown: the first `deserialize` in a fresh process (about 14.6) and the union of 64 dense bitmaps with `orMany` (about 11);
+  every figure is in [the table](docs/guide/roaring-codec.md#the-public-class-against-native-in-memory).
 
 - **`RoaringBitmap.deserialize(bytes, { maxBytes? }?)`, the one door for portable bytes you did not write.** It makes the
   check a `{ serialized }` load makes (the 537,403,396-byte cap, which `maxBytes` can lower, the structural check, exactly
@@ -76,7 +83,7 @@ so, and so do the module headers in the code.
 
 - **The combines of two bitset containers take four words a step.** `and`, `or`, `xor` and `andNot` of two dense containers (and
   the in-place forms the store uses to union and subtract a chunk it has read) loop over the 2,048 words four at a time; the
-  results are unchanged. A stand-alone probe of the loops timed each 21 percent faster (indicative).
+  results are unchanged.
 
 - **The structural check on stored bytes counts a bitset through a typed array.** The check a stored chunk goes through
   before it is decoded (and that `RoaringBitmap.deserialize` makes) refuses the same bytes with the same error and message

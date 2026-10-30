@@ -141,8 +141,8 @@ export {
 
 // Encryption-at-rest: the `.crbm` reader's crypto pair (`core/`, crypto-free). The default in-process AES-256-GCM
 // implementation needs `node:crypto`, so `@cloudbitmaps/core/node` exports it. The keystore port (`IKeystore`,
-// `Aead`, `AeadSealed`, `WrappedDek`) is exported from `@cloudbitmaps/core/driver-kit`; KMS/Vault adapters are
-// future optional packages against it. See the encryption guide for key-management guidance.
+// `Aead`, `AeadSealed`, `WrappedDek`) is exported from `@cloudbitmaps/core/driver-kit`; a KMS or Vault adapter would
+// implement the same `IKeystore`; none ships. See the encryption guide for key-management guidance.
 export type { CrbmCrypto } from './core/crypto';
 // The AAD builder. NOT for an `Aead` implementor — they are handed the associated data. This is for the
 // other seam: `CrbmCrypto` requires an `aadFor` member, and `CrbmReader.open` takes one, so tooling that reads an
@@ -219,7 +219,7 @@ export type {
 } from './core/consistency';
 
 // Segment export / "eject" (data portability): `store.exportSegments(sink, { format })` dumps every registered
-// segment to a portable file (`roaring` = cross-language RoaringBitmap32 · `ndjson` = newline ids) via an
+// segment to a portable file (`roaring` = the portable 32-bit Roaring format · `ndjson` = newline ids) via an
 // injected sink, using only public read APIs — your data stays readable without CloudRoaring. The
 // `export-segments` CLI wraps it with a filesystem sink. These types let you write a custom sink (S3, stdout, …).
 export type {

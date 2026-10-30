@@ -564,7 +564,7 @@ sets up to 14.4M members, has no figure yet.
 
 ## The public bitmap class against native, in memory
 
-A third body of figures (the class is in 0.25.0 and later; unreleased), apart from the store comparison above and the native-codec figures elsewhere on this page: the
+A third body of figures (the class is in 0.25.0 and later), apart from the store comparison above and the native-codec figures elsewhere on this page: the
 public `RoaringBitmap` class, timed in a loop in memory against the pinned `roaring` package (CRoaring through its
 binding) and against the codec call the store runs, one cell per operation and data set, losses printed. It has no
 store and no network, so nothing hides a slow combine. The table is generated from
@@ -572,6 +572,7 @@ store and no network, so nothing hides a slow combine. The table is generated fr
 [Our own Roaring](guide/roaring-codec.md#the-public-class-against-native-in-memory) and in
 [the API reference](guide/api-reference.md#build-and-combine-bitmaps-by-themselves--roaringbitmap), where its header says
 which commit it was taken at, on which machine; read a figure as that build on that machine, and not as a bound.
+Two methods are more than 10 times native and ship with their figures shown: the union of 64 dense bitmaps with `orMany` (about 11 times) and the first `deserialize` in a fresh process (about 14.6 times; later calls 2.2 to 5.9, both ends marked as read outside the control band).
 `pnpm bench:bitmap-api:check` and `pnpm bench:bitmap-api:table:check` hold the pages to the record.
 
 ## Caveats

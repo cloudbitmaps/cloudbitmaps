@@ -3,8 +3,8 @@
  * {@link Aead}/{@link IKeystore} seams from `core/crypto`: a `NodeAead` over `aes-256-gcm`, and an in-process
  * **BYOK** keystore that envelope-wraps a per-segment DEK under one or more operator-held KEKs.
  *
- * Default, dependency-free key management: you bring 32-byte KEK(s); we never call a cloud service. KMS/Vault
- * are future optional adapters against the same {@link IKeystore} interface. **The KEK is the
+ * Default, dependency-free key management: you bring 32-byte KEK(s); we never call a cloud service. A KMS or Vault
+ * adapter would implement the same {@link IKeystore} interface; none ships. **The KEK is the
  * one secret to back up** — lose it and that segment's at-rest bytes are unrecoverable by design (re-seed the
  * segment from your source of truth); see the encryption guide.
  */

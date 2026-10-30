@@ -336,7 +336,7 @@ and `1.0`.
 - **[Getting started](docs/guide/getting-started.md)**: the 10-minute path.
 - **[The guide index](docs/guide/README.md)**: production, loading, reading, retention, encryption, erasure, observability, export and disaster recovery.
 - **[API reference](docs/guide/api-reference.md)**: every export, kept in sync with the code by CI.
-- **[Playbooks](docs/playbooks/README.md)**: one runnable walkthrough per job (audience segments, feature flags, dedup, permissions, the standalone bitmap), each run by the tests.
+- **[Playbooks](docs/playbooks/README.md)**: one runnable walkthrough per job (audience segments, feature flags, dedup, permissions, counting a combine, a Redis migration, Lambda and ten more), each run by the tests.
 - **[Usage walkthrough](https://cloudbitmaps.pages.dev/usage.html)**: the flows end to end.
 - **[Benchmarks](docs/benchmarks.md)**, **[Privacy and shared responsibility](PRIVACY.md)**, **[Roadmap](docs/ROADMAP.md)**, **[Changelog](CHANGELOG.md)**.
 

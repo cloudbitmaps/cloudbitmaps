@@ -4,7 +4,7 @@
  * see the README "Your data stays yours" section).
  *
  * Two formats:
- * - `'roaring'` (default) — one **portable RoaringBitmap32** per segment (the cross-language CRoaring format,
+ * - `'roaring'` (default) — one **portable Roaring bitmap** per segment (the 32-bit format every Roaring library reads,
  *   loadable by any roaring library in Java/Go/Python/Rust/C++/…). Compact; builds one bitmap in memory per
  *   segment.
  * - `'ndjson'` — newline-delimited ids, streamed (constant memory, any segment size); zero dependencies to read.
@@ -273,7 +273,7 @@ export async function runExport(
         const bm = requireCodec(options.codec, "runExport({ format: 'roaring' })").empty();
         count = await addAll(bm, ids);
         if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
-        const out = bm.serialize(); // portable RoaringBitmap32 — the cross-language CRoaring format
+        const out = bm.serialize(); // portable Roaring bitmap — the 32-bit format every Roaring library reads
         await writer.write(out);
         bytes = out.length;
       } else {
