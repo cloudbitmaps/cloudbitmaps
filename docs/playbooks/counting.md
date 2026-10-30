@@ -73,7 +73,7 @@ Use the other ways below for what this does not do: an exact count of a union or
 across calls (pin the operands first; the direct count of pins answers for their generations), many counts over the same
 segments in one pass, and a result you keep.
 
-## The other ways
+The other ways follow.
 
 ## Way 1: stream the combine and count the arrays
 

@@ -72,8 +72,8 @@ const shoppersOnly = await shoppers.andNotCount([subscribers]);
 An intersection decodes every key all its operands hold, and a key only some of them hold is not read at all, so
 `intersectCount` never answers from an index and is exact. In a union or a difference, a chunk key that only one operand
 holds, that no `exclude` holds and that the range does not cut is answered from that operand's index: its chunk is not
-read. Every other key is decoded and counted as the stream reads it, with the same plan, the same ranges and the same
-window. So the cost against the other ways to get the number:
+read. Every other key is decoded and counted as the stream reads it, with the same plan and the same window, over those keys
+alone. So the cost against the other ways to get the number:
 
 - **`intersectCount` makes the requests `intersect` makes** and reads the same bytes, no id array being built.
 - **`unionCount` and `andNotCount` make no more requests than their streams, and read fewer bytes where the operands
@@ -95,14 +95,16 @@ its `batches()`. A decoded key is exact, a source that reports no per-chunk coun
 lone key the range cuts is decoded for that key.
 
 **On a pinned or leased handle** the count answers for the pinned generation, and an operand's lease is checked when the
-count starts and at each look. **Concurrent loads and erasures** are met as a combine's are: a count looks at its operands'
-generations every `concurrency` keys (a key answered from the index counts as one taken), and plans again above the last
-key it took when one moved, so what it serves of an earlier generation has the bound
-[a stream's has](#how-soon-a-reader-sees-a-new-load). A pinned operand's object is looked up before the first key and at each look, so an erasure
-of what it pinned fails the count with `NotFoundError` there, even when the count has fewer keys than `concurrency`; a
-look that meets any other fault than a transient one, which is retried, raises it. That lookup is one footer read per
-pinned operand at each of those points, which the streams do not make, so a pinned count makes more requests than its
-stream by that many; `budget` does not charge them, as it charges no row or tail read of a stream either. A lone-operand
+count starts and at each look. **Concurrent loads and erasures** are met as a combine's are. A union or a difference, and
+an intersection with an `exclude`, looks at its operands' generations every `concurrency` keys (a key answered from the
+index counts as one taken). An intersection with no `exclude` makes no such look: it decodes every key, so a move shows in
+the chunks it decodes, as in its stream. Either way it plans again above the last key it took when one moved, so what it
+serves of an earlier generation has the bound [a stream's has](#how-soon-a-reader-sees-a-new-load). A pinned operand's
+object is looked up before the first key, and at each look where there is one, so an erasure of what it pinned fails the
+count with `NotFoundError` there, even when the count has fewer keys than `concurrency`; a look that meets any other fault
+than a transient one, which is retried, raises it. That lookup is one footer read per pinned operand at each of those
+points (an intersection with no `exclude`: once, before the first key), which the streams do not make, so a pinned count
+makes more requests than its stream by that many; `budget` does not charge them, as it charges no row or tail read of a stream either. A lone-operand
 `unionCount` or `andNotCount` on a pinned handle is `count()` of the pin and makes no look. A count past its lease
 throws `LeaseExpiredError`.
 

@@ -248,7 +248,7 @@ The erasure is immediate in storage, and immediate in the store that performed i
 returns: that store drops what it had cached about the segment before returning, so it cannot keep answering from
 memory. A read of that store already in progress moves to the rewritten generation, but what it had already taken is the old
 generation's, so it can still yield the id from it: up to 32 chunks for `iterate` and `count`, and up to `concurrency` + 1
-keys (33 by default) for a combine or a count of one. That is the bound: the chunk or key a read is handing out and what it had already
+keys (33 by default) for a combine or a count of a combine. That is the bound: the chunk or key a read is handing out and what it had already
 requested, which a `count` that reads chunks (on a source of your own with no index) reaches. A running `iterate` or
 combine stops sooner: the erasure invalidates the segment, so before the next key it takes the read looks at its
 segments, finds the rewritten generation, lists its chunk keys again from it and drops what it had requested, and so

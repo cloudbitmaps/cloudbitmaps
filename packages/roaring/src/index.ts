@@ -4382,10 +4382,13 @@ export class Segment {
    * {@link count}).
    *
    * Like a stream, a count that runs while a segment is erased or reloaded can describe two instants, within the bound
-   * the streams state: it looks at its operands' generations every `concurrency` keys, and plans again above the last
-   * key it took when one moved. A pinned handle counts the generation it pinned, and each pinned operand's object is
-   * looked up once before the first key and at each look (one footer read each, which `budget` does not charge, and
-   * which the stream does not make), so an erasure of what it pinned fails the count with {@link NotFoundError}; a
+   * the streams state. A union or a difference, and an intersection with an `exclude`, looks at its operands'
+   * generations every `concurrency` keys; an intersection with no `exclude` makes no such look, since it decodes every
+   * key and so shows a move in the chunks it decodes, as its stream does. Either way it plans again above the last key
+   * it took when one moved. A pinned handle counts the generation it pinned, and each pinned operand's object is
+   * looked up once before the first key (one footer read each, which `budget` does not charge, and which the stream
+   * does not make), and again at each look where there is one, so an erasure of what it pinned fails the count with
+   * {@link NotFoundError}; a
    * fault the look meets other than a transient one, which is retried, is raised as it is. A call that involves a
    * handle whose lease has ended, or has ended by the next look, throws {@link LeaseExpiredError}.
    */

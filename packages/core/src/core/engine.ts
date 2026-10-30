@@ -1556,13 +1556,14 @@ export class SegmentEngine {
    * reader checks it when it opens the object; a decoded key is exact. A source that reports no per-chunk counts has
    * every key decoded. A union or a difference of one operand with no exclude and no range is {@link count}.
    *
-   * A running count looks at its operands' versions every `concurrency` keys, a key answered from the index being one
-   * taken, and before the first key after an invalidation, and runs `options.guard` at each look. On a move it plans
-   * again above the last key taken, as a combine does, so the bound on what it serves of an earlier generation is the
-   * combine's. A pinned operand's object is looked up before the first key and at each look (one footer read each, a fault
-   * other than a transient one raised as it is), so an erasure of what it pinned stops the count there with the pin's
-   * `NotFoundError`. An intersection of two or more operands decodes every
-   * key and so shows a move without a version look; its guard still runs every `concurrency` keys.
+   * A running union or difference, or an intersection with an `exclude`, looks at its operands' versions every
+   * `concurrency` keys, a key answered from the index being one taken, and any count looks before the first key after
+   * an invalidation, and runs `options.guard` at each look. On a move it plans again above the last key taken, as a
+   * combine does, so the bound on what it serves of an earlier generation is the combine's. A pinned operand's object
+   * is looked up before the first key and at each look there is (one footer read each, a fault other than a transient
+   * one raised as it is), so an erasure of what it pinned stops the count there with the pin's `NotFoundError`. An
+   * intersection of two or more operands with no exclude decodes every key and so shows a move without a version
+   * look; its guard still runs every `concurrency` keys.
    */
   async combineCount(
     segs: readonly SegmentRef[],
@@ -1715,7 +1716,7 @@ export class SegmentEngine {
     checkBudget(
       run.budget,
       spent + combineReads(decode, operands, excludes, run.mode, Infinity),
-      run.op,
+      `${run.op}Count`,
     );
     run.plan = this.openCombine(operands, excludes, run.mode, decode, run.limit);
     run.spent = spent;
