@@ -830,9 +830,9 @@ describe('R3b: the threshold, the tie, and the claim a copied run comes from', (
 describe('what a page is read as: line endings, comments, emphasis, hyphens, link forms', () => {
   const page = 'docs/guide/fixture.md';
 
-  // Budget 9 s: it reads the whole tree twice. Measured: 1.3 s on a developer machine, 2.9 s on the release job's
-  // runner in a single full run. Rule: the slowest measured time (release runner or developer machine) times three,
-  // rounded up to the next whole second.
+  // Budget 10 s: it reads the whole tree twice. Measured: 1.3 s on a developer machine, 3.3 s on the release job's
+  // runner in a single full run (the slower of its two attempts). Rule: the slowest measured time (release runner or
+  // developer machine) times three, rounded up to the next whole second.
   it('a CRLF checkout reads as an LF one: the same problems and hits over the whole tree', () => {
     const files = ties.readTree(ROOT);
     const baseline = ties.readBaseline(ROOT);
@@ -848,7 +848,7 @@ describe('what a page is read as: line endings, comments, emphasis, hyphens, lin
     expect(on(run({ [page]: '- So a crash never\r\n  moves the pointer.\r\n' }), page)).toContain(
       'R3 crash-never-moves-the-pointer',
     );
-  }, 9_000);
+  }, 10_000);
 
   it('a comment opener in a code span or a fence is text, and the prose after it is still read', () => {
     const span =
@@ -1012,6 +1012,11 @@ describe('--changed hands the review every pair', () => {
 
 // ---------------------------------------------------------------------------------------------------------------------
 
+// Each test below makes temporary git repositories and spawns git many times. Budgets by the rule: the slowest measured
+// time (release runner or developer machine) times three, rounded up to the next whole second. Developer machine
+// (Apple M3 Pro, load about 5, one worker, slowest of 3 runs): 0.56 s, 0.55 s, 0.99 s, 0.78 s, 1.50 s, 0.84 s in file
+// order. Release job's runner in a single full run (the slower of two attempts): 0.33 s for the merge-base test, and
+// under the 0.3 s the reporter prints for the others, so the developer figures govern.
 describe('the command line on a repository: the merge base, --update, --changed, a shallow clone', () => {
   const dirs: string[] = [];
   afterAll(() => {
@@ -1123,7 +1128,7 @@ describe('the command line on a repository: the merge base, --update, --changed,
       [ties.BASELINE]: baselineText([]),
     });
     expect(cli(dir).code).toBe(0);
-  });
+  }, 2_000);
 
   it('refuses a row the baseline at the merge base does not have: the baseline only shrinks', () => {
     const dir = repository();
@@ -1138,7 +1143,7 @@ describe('the command line on a repository: the merge base, --update, --changed,
     const { code, err } = cli(dir);
     expect(code).toBe(1);
     expect(err).toContain('docs/more.md, widget-keeps-values');
-  });
+  }, 2_000);
 
   it('--update drops a row that excuses nothing, never adds one, and exits 1 while the gate still fails', () => {
     const tied = repository();
@@ -1156,7 +1161,7 @@ describe('the command line on a repository: the merge base, --update, --changed,
     expect(still.code).toBe(1);
     expect(still.err).toContain('the gate still fails');
     expect(rowsIn(untied)).toEqual([rowFor(COPY)]);
-  });
+  }, 3_000);
 
   it('--changed reads against the merge base, not the tip of origin/main', () => {
     const dir = repository();
@@ -1177,7 +1182,7 @@ describe('the command line on a repository: the merge base, --update, --changed,
       out: '',
       err: expect.stringContaining('--against needs the ref'),
     });
-  });
+  }, 3_000);
 
   it('a merge base with no baseline compares nothing and says so; one it cannot read fails the gate', () => {
     const adding = repository(null);
@@ -1197,7 +1202,7 @@ describe('the command line on a repository: the merge base, --update, --changed,
     expect(() => ties.check(listless, gate)).toThrow(/holds no "untied" list/);
 
     expect(() => ties.baselineAt(adding, '0'.repeat(40))).toThrow(/cannot read the tree/);
-  });
+  }, 5_000);
 
   it('a shallow clone, or no origin/main, fails with the command that fetches the history, in one line', () => {
     const dir = repository();
@@ -1226,5 +1231,5 @@ describe('the command line on a repository: the merge base, --update, --changed,
     ]);
     git(dir, 'update-ref', '-d', 'refs/remotes/origin/main');
     expect(() => ties.check(dir, gate)).toThrow(/no origin\/main to compare with/);
-  });
+  }, 3_000);
 });
