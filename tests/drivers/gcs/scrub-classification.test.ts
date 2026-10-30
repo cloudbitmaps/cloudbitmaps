@@ -1,5 +1,3 @@
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { types } from 'node:util';
 import { createRequire } from 'node:module';
 import type { Storage } from '@google-cloud/storage';
@@ -40,6 +38,7 @@ import {
   type Answer,
 } from '../../helpers/gcs-error-answers';
 import { ApiError } from '../../helpers/gcs-api-error';
+import { refusedPort } from '../../helpers/refused-port';
 
 /**
  * The scrubbed copy of a GCS SDK error classifies exactly as the raw error does, so the driver maps every GCS answer to
@@ -223,10 +222,7 @@ describe('GCS: a scrubbed SDK error classifies as the raw one', LIMIT, () => {
       }
 
       it('refused connection', async () => {
-        const closed = createServer();
-        await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-        const port = (closed.address() as AddressInfo).port;
-        await new Promise<void>((resolve) => closed.close(() => resolve()));
+        const port = await refusedPort();
         const err = await rawError(() =>
           REQUESTS[request]!(clientFor(kind, `http://127.0.0.1:${port}`)),
         );
