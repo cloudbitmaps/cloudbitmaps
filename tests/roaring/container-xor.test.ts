@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RoaringBitmap32 } from 'roaring';
 import { RoaringBitmap } from '@/index';
 import { TsBitmap } from '@/ts-roaring/bitmap';
@@ -14,6 +14,12 @@ import {
   sortedUnique,
   valuesOf,
 } from '../helpers/container-kinds';
+
+// Budget 15 s per test (the default is 5 s), so a property of 80 or 120 runs over every kind is cut at 12 s, 0.8 of it.
+// Measured: the in-place property takes about 1.3 s on a developer machine (median of three runs) and took 4.2 s on
+// the release job's runner in a single full run, where the whole suite shares one job; the budget is three times that
+// slower figure. The number of runs is unchanged.
+vi.setConfig({ testTimeout: 15_000 });
 
 /**
  * The symmetric difference of two containers in one pass, for every pair of kinds, held to a plain set; and the

@@ -108,6 +108,8 @@ describe('the cells', () => {
     expect(new Set(cells.cellNames()).size).toBe(cells.cellNames().length);
   });
 
+  // Budget 15 s: it builds and counts every cell at both scales. Measured: about 2.5 s on a developer machine, 4.7 s on the
+  // release job's runner in a single full run; the budget is three times the slower figure.
   it('give the count and the build one answer on every cell, and the answer the cell is named for, at both scales', () => {
     for (const small of [true, false]) {
       for (const g of cells.groups()) {
@@ -125,7 +127,7 @@ describe('the cells', () => {
         }
       }
     }
-  });
+  }, 15_000);
 
   it('hold the pairs to the kinds they are named for', () => {
     const pair = (name: string) =>

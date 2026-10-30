@@ -141,6 +141,8 @@ describe('the cells', () => {
   });
 
   for (const dataset of lib.DATASETS) {
+    // Budget 10 s per dataset. Measured: 1.1 to 1.6 s on a developer machine, up to 3.3 s on the release job's runner in a
+    // single full run; the budget is three times the slower figure.
     it(`give one answer on every subject, on ${dataset}`, () => {
       const data = lib.dataOf(dataset, true, bytes);
       const answers = new Map<string, Map<string, string>>();
@@ -166,7 +168,7 @@ describe('the cells', () => {
           1,
         );
       }
-    });
+    }, 10_000);
   }
 
   it('compare a serialization as bytes: every subject writes the same bytes, and a different byte is a different answer', () => {

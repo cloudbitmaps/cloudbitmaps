@@ -121,6 +121,8 @@ export function earlierReleases(text: string): Array<{ line: number; version: st
 const v = (minor: number, rest: string): string => `0.${minor}${rest}`;
 
 describe('no file names a CloudBitmaps release before 0.10.0', () => {
+  // Budget 9 s: it scans the whole tree. Measured: about 1.7 s on a developer machine, 2.9 s on the release job's runner in
+  // a single full run; the budget is three times the slower figure.
   it('the repo', () => {
     const offenders: string[] = [];
     for (const file of trackedFiles()) {
@@ -131,7 +133,7 @@ describe('no file names a CloudBitmaps release before 0.10.0', () => {
       }
     }
     expect(offenders).toEqual([]);
-  });
+  }, 9_000);
 
   it('reads the files every tarball carries, and the site', () => {
     const files = trackedFiles();
