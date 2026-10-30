@@ -3,8 +3,8 @@
  * The requests and bytes of counting a combine three ways, counted by running the real engine over the in-memory backend and
  * written to `bench/combine-counts-results.json`:
  *
- *   count    the engine's combine count (`SegmentEngine.combineCount`): the size of the combine, with a chunk only one operand
- *            holds answered from the index and every other chunk decoded as the combine reads it;
+ *   count    the public count (`intersectCount` / `unionCount` / `andNotCount`): the size of the combine, with a chunk only one
+ *            operand holds answered from the index and every other chunk decoded as the combine reads it;
  *   recipe   the stream-and-count recipe: stream the combine in batches and add up the lengths of the arrays;
  *   into     the `*Into` workaround: `intersectInto` / `unionInto` / `andNotInto` into a scratch segment, then `count()` on it.
  *
@@ -152,15 +152,7 @@ async function countThreeWays(world, op, n) {
     );
   };
   const others = (segs) => segs.slice(1);
-  const mode = op === 'union' ? 'any' : 'all';
-  const count = await measure((store, segs) =>
-    store.engine.combineCount(
-      op === 'andNot' ? [segs[0].ref] : segs.map((s) => s.ref),
-      op === 'andNot' ? others(segs).map((s) => s.ref) : [],
-      mode,
-      op,
-    ),
-  );
+  const count = await measure((store, segs) => segs[0][`${op}Count`](others(segs)));
   const recipe = await measure(async (store, segs) => {
     const stream = segs[0][op](others(segs));
     let total = 0;

@@ -61,6 +61,11 @@ describe.each([
       await expect(drain(a.intersect([a], { exclude: [h] }))).rejects.toThrow(
         /^intersect: an exclude comes from another installed copy/,
       );
+      await expect(a.intersectCount([h])).rejects.toThrow(COPY_MESSAGE);
+      await expect(a.unionCount([h])).rejects.toThrow(COPY_MESSAGE);
+      await expect(a.andNotCount([h])).rejects.toThrow(
+        /^andNotCount: an exclude comes from another/,
+      );
       await expect(a.intersectInto(d, [h])).rejects.toThrow(COPY_MESSAGE);
       await expect(a.unionInto(d, [h])).rejects.toThrow(COPY_MESSAGE);
       await expect(a.andNotInto(d, [h])).rejects.toThrow(

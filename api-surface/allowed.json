@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "entry": "@cloudbitmaps/roaring Segment.intersectCount",
+    "reason": "an agreed addition: the size of an intersection of stored segments without streaming it, taking the options of intersect"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.unionCount",
+    "reason": "an agreed addition: the size of a union of stored segments without streaming it, taking the options of union"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.andNotCount",
+    "reason": "an agreed addition: the size of a difference of stored segments without streaming it, taking the options of andNot"
+  }
+]

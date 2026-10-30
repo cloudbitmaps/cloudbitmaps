@@ -173,6 +173,12 @@ describe('an operand list holds segments only', () => {
       await expect(drain(a.union([a], { exclude: [x] }))).rejects.toThrow(
         refusal('union', 'an exclude'),
       );
+      await expect(a.intersectCount([x])).rejects.toThrow(refusal('intersectCount', 'an operand'));
+      await expect(a.unionCount([x])).rejects.toThrow(refusal('unionCount', 'an operand'));
+      await expect(a.andNotCount([x])).rejects.toThrow(refusal('andNotCount', 'an exclude'));
+      await expect(a.intersectCount([a], { exclude: [x] })).rejects.toThrow(
+        refusal('intersectCount', 'an exclude'),
+      );
       await expect(a.intersectInto(dest, [x])).rejects.toThrow(
         refusal('intersectInto', 'an operand'),
       );
@@ -223,6 +229,15 @@ describe('an operand list is an array', () => {
       );
       await expect(drain(a.andNot(list))).rejects.toThrow(
         'andNot: `excludes` must be an array of segments',
+      );
+      await expect(a.intersectCount(list)).rejects.toThrow(
+        'intersectCount: `others` must be an array of segments',
+      );
+      await expect(a.unionCount(list)).rejects.toThrow(
+        'unionCount: `others` must be an array of segments',
+      );
+      await expect(a.andNotCount(list)).rejects.toThrow(
+        'andNotCount: `excludes` must be an array of segments',
       );
       await expect(a.intersectInto(dest, list)).rejects.toThrow(
         'intersectInto: `others` must be an array of segments',

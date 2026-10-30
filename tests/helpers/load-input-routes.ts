@@ -40,6 +40,7 @@ export const ROUTED: readonly string[] = [
   'tests/tools/cost.test.ts',
   'tests/core/exclude-batching.test.ts',
   'tests/core/combine-count.test.ts',
+  'tests/roaring/combine-counts.test.ts',
   'tests/core/destroyed-wording.test.ts',
   'tests/core/drop-segment.test.ts',
   'tests/core/erase-fences-inflight-load.test.ts',
