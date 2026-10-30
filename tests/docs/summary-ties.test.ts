@@ -831,9 +831,10 @@ describe('what a page is read as: line endings, comments, emphasis, hyphens, lin
   const page = 'docs/guide/fixture.md';
 
   // Budget 15 s, derived: it reads the whole tree twice and spawns git to list it, so its time grows with machine load.
-  // About ten times its slowest idle measurement (1.5 s: 1.3 s on a developer machine, 3.3 s on the release job's runner
-  // in a single full run, the slower of its two attempts), the headroom for loads of 20 to 80 on a shared machine.
-  // Never below vitest's 5 s test default.
+  // It takes the budget of the git-spawning tests below (about ten times their slowest idle measurement, 1.5 s, the
+  // headroom for loads of 20 to 80 on a shared machine). Its own measured times are 1.3 s on a developer machine and 3.3 s
+  // on the release job's runner in a single full run (the slower of its two attempts), so 15 s is about four and a half
+  // times the runner's. Never below vitest's 5 s test default.
   it('a CRLF checkout reads as an LF one: the same problems and hits over the whole tree', () => {
     const files = ties.readTree(ROOT);
     const baseline = ties.readBaseline(ROOT);
@@ -1016,7 +1017,8 @@ describe('--changed hands the review every pair', () => {
 // Each test below makes temporary git repositories and spawns git many times, so its time grows with machine load.
 // Budget 15 s each, derived: about ten times the slowest idle measurement (1.5 s; developer machine, Apple M3 Pro, load
 // about 5, one worker, slowest of 3 runs: 0.56 s, 0.55 s, 0.99 s, 0.78 s, 1.50 s, 0.84 s in file order; on the release
-// job's runner each is under the 0.33 s its reporter prints), the headroom for loads of 20 to 80 on a shared machine.
+// job's runner, whose reporter prints only tests over 0.3 s, it printed 0.33 s for one and nothing for the other five), the
+// headroom for loads of 20 to 80 on a shared machine.
 // Never below vitest's 5 s test default.
 describe('the command line on a repository: the merge base, --update, --changed, a shallow clone', () => {
   const dirs: string[] = [];
