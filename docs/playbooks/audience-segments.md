@@ -264,10 +264,11 @@ ValidationError
   audience after the next load, and freshness is your refresh cadence. A read sees a new generation within `cache.genTtlMs`
   of the load (2 seconds by default, [how soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load)).
   Events that arrive one at a time belong in the system that receives them; load the set on a cadence.
-- **Counting a combine costs a write or a dry run today.** `count()` answers for one stored segment from its registry row,
-  and a combine returns ids. The ways to count one are the dry run above, an `*Into` followed by `count()`, or streaming the
-  ids into a `RoaringBitmap` (`batches()` yields `Uint32Array`s) and reading its `size`. A direct count of a combine is
-  planned; the [roadmap](../ROADMAP.md) lists the playbooks that wait for it.
+- **Counting a combine is its own call.** `count()` answers for one stored segment from its registry row, and a combine
+  returns ids; `intersectCount`, `unionCount` and `andNotCount` (0.26.0 and later; unreleased) return the size of one
+  without streaming it, and trust the index for keys they do not decode. The other ways are the dry run above, an `*Into`
+  followed by `count()`, or streaming the ids into a `RoaringBitmap` (`batches()` yields `Uint32Array`s) and reading its
+  `size` ([the counting page](counting.md) compares them).
 - **One id space.** Ids are unsigned 32-bit integers, the same space in every namespace. Mapping an email or a device id to
   a stable integer is the warehouse's job; the library never sees the identifier.
 - **Not a join.** A segment holds ids only: no attributes, no order, no time. "Bought in the last 90 days" is a query in the
