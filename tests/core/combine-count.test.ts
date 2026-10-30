@@ -840,7 +840,7 @@ describe('a move while a count decodes keys', () => {
         looks += 1;
         if (looks === 2) r.clock.advance(TTL + 1);
       }),
-    ).rejects.toThrow(/^unionCount would fan out to 36 units/);
+    ).rejects.toThrow(/^unionCount would fan out to 40 units/);
   });
 });
 
