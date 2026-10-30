@@ -1004,11 +1004,15 @@ describe('the committed paired results', () => {
     },
   );
 
-  it.skipIf(passes === null)('was taken on a clean tree at full strength', () => {
-    for (const doc of passes!) {
-      expect(doc.environment.tree).toBe('clean');
+  // Held with no exemption, and not skippable: a missing or empty record fails, and every pass, the earliest too, names
+  // a clean tree.
+  it('holds every pass to a clean tree at full strength, with no exemption', () => {
+    expect(passes, 'the committed record is missing').not.toBeNull();
+    expect(passes!.length, 'the committed record holds no pass').toBeGreaterThan(0);
+    const notClean = passes!.flatMap((p, i) => (p.environment.tree === 'clean' ? [] : [i + 1]));
+    expect(notClean, 'passes (numbered from 1) not recorded on a clean tree').toEqual([]);
+    for (const doc of passes!)
       expect(doc.environment.rounds).toBeGreaterThanOrEqual(codec.MIN_ROUNDS);
-    }
   });
 
   it.skipIf(passes === null)(
