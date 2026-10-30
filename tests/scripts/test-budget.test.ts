@@ -174,11 +174,11 @@ describe('the judge, on reports written by hand', () => {
   });
 });
 
-// Budget 17 s for each test of this block (the default is 5 s): the first one to run starts the real vitest over the planted
-// tests, which took 5.4 s on the CI runner and 3 s on a developer machine. Rule: the slowest measured time times three,
+// Budget 21 s for each test of this block (the default is 5 s): the first one to run starts the real vitest over the planted
+// tests, which took 7.0 s on the CI runner (10 planted tests and two files) and 3 s on a developer machine. Rule: the slowest measured time times three,
 // rounded up to the next whole second. The run is started by the first test that asks for it, not by a `beforeAll`,
 // because the check judges a hook against the configured hook timeout and cannot see a hook's own.
-describe('the reporter, against the real vitest', { timeout: 17_000 }, () => {
+describe('the reporter, against the real vitest', { timeout: 21_000 }, () => {
   // The planted tests and hooks, under a 1 s test timeout and a 1 s hook timeout (half is 500 ms).
   const PLANT = `
 import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest';
