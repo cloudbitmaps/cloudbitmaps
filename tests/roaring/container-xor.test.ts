@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { RoaringBitmap32 } from 'roaring';
 import { RoaringBitmap } from '@/index';
 import { TsBitmap } from '@/ts-roaring/bitmap';
@@ -14,12 +14,6 @@ import {
   sortedUnique,
   valuesOf,
 } from '../helpers/container-kinds';
-
-// Budget 15 s per test (the default is 5 s), so a property of 80 or 120 runs over every kind is cut at 12 s, 0.8 of it.
-// Measured: the in-place property takes about 1.3 s on a developer machine (median of three runs) and took 4.2 s on
-// the release job's runner in a single full run, where the whole suite shares one job; the budget is three times that
-// slower figure. The number of runs is unchanged.
-vi.setConfig({ testTimeout: 15_000 });
 
 /**
  * The symmetric difference of two containers in one pass, for every pair of kinds, held to a plain set; and the
@@ -65,6 +59,10 @@ describe('containerXor, every pair of kinds', () => {
     }
   }
 
+  // Budget 15 s (the default is 5 s) for the 80-run property over every kind of container; the file's other properties
+  // take under 1 s and keep the default. Measured: 0.9 s on a developer machine; the release job's runner cut it at 4.2
+  // s after 70 of its 80 runs, which is 4.8 s for a full run (derived: 4.2 s / 70 x 80). Rule: the slowest measured
+  // time (release runner or developer machine) times three, rounded up to the next whole second.
   it('in place on a bitset the caller owns writes its words; any other first operand is not written', () => {
     fc.assert(
       fc.property(lowsSet, lowsSet, (a, b) => {
@@ -90,7 +88,7 @@ describe('containerXor, every pair of kinds', () => {
       }),
       { numRuns: 80 },
     );
-  });
+  }, 15_000);
 
   it('a container with itself is empty, in place or not', () => {
     for (const kind of KINDS) {

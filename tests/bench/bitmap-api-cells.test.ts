@@ -141,8 +141,9 @@ describe('the cells', () => {
   });
 
   for (const dataset of lib.DATASETS) {
-    // Budget 10 s per dataset. Measured: 1.1 to 1.6 s on a developer machine, up to 3.3 s on the release job's runner in a
-    // single full run; the budget is three times the slower figure.
+    // Budget 10 s per dataset. Measured: 1.5 s (dense) on a developer machine, 3.3 s (dense) on the release job's
+    // runner in a single full run. Rule: the slowest measured time (release runner or developer machine) times three,
+    // rounded up to the next whole second.
     it(`give one answer on every subject, on ${dataset}`, () => {
       const data = lib.dataOf(dataset, true, bytes);
       const answers = new Map<string, Map<string, string>>();
