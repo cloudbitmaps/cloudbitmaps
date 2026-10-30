@@ -65,6 +65,8 @@ const COMBINE_RANGE_START = 4;
 const OPERANDS_AT_ONCE = 16;
 /** Turns of the microtask queue with no new key asking before a batch of an exclude whose keys are all started is read. */
 const BATCH_QUIET_HOPS = 16;
+/** The times a count lists an operand again when its keys and its per-chunk counts disagree, before it refuses. */
+const COUNT_RELIST_ATTEMPTS = 4;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
@@ -553,6 +555,59 @@ function combineReads(
     for (const e of excludes) if (e.keys.has(key)) units += 1;
   }
   return units;
+}
+
+/** Options of {@link SegmentEngine.combineCount}: a combine's, and a check the count runs at its start and at each look. */
+export interface CountOptions extends CombineOptions {
+  /**
+   * Runs before the first key and at each look, and may throw to stop the count (a lease that has ended). A count
+   * answered from the index fetches no chunk, so this is where such a handle is held to its terms.
+   */
+  readonly guard?: () => void;
+}
+
+/** An include operand of a count, with the per-chunk counts of the generation its keys were listed from, when known. */
+interface CountOperand extends Operand {
+  readonly cards: ReadonlyMap<number, number> | undefined;
+}
+
+/** One key of a count: its figure when the index decides it, or -1 when the key's chunks are decoded. */
+interface CountStep {
+  readonly key: number;
+  readonly n: number;
+}
+
+/**
+ * The keys a count takes, ascending, each answered from the index or decoded. A key is answered from the index when
+ * exactly one include holds it, no exclude does, the range does not cut it, and the operand's counts are known; every
+ * other key an include holds is decoded. `decode` lists the decoded keys alone: what the window reads.
+ */
+function countSteps(
+  operands: readonly CountOperand[],
+  excludes: readonly Operand[],
+  mode: 'all' | 'any',
+  w: IdWindow | null,
+): { steps: CountStep[]; decode: number[] } {
+  const steps: CountStep[] = [];
+  const decode: number[] = [];
+  for (const key of alignKeys(operands, mode)) {
+    const holders = mode === 'all' ? operands : operands.filter((o) => o.keys.has(key));
+    const only = holders.length === 1 ? holders[0]! : undefined;
+    const n = only?.cards?.get(key);
+    const viaIndex =
+      n !== undefined && !excludes.some((e) => e.keys.has(key)) && !(w !== null && isEdge(key, w));
+    steps.push({ key, n: viaIndex ? n : -1 });
+    if (!viaIndex) decode.push(key);
+  }
+  return { steps, decode };
+}
+
+/** A count in progress: the combine's run, and the steps its current plan takes. */
+interface CountRun extends CombineRun {
+  steps: CountStep[];
+  /** The index in `steps` of the next step. */
+  at: number;
+  readonly guard: (() => void) | undefined;
 }
 
 export class SegmentEngine {
@@ -1479,6 +1534,183 @@ export class SegmentEngine {
     } finally {
       this.closeCombine(run.plan);
     }
+  }
+
+  /**
+   * How many ids `segs[0] ∩ …` (`mode` 'all') or `segs[0] ∪ …` ('any') holds, minus `excludeSegs`, without streaming
+   * them: the size of what {@link combine} would stream. Each chunk key is taken one of two ways. A key exactly one
+   * include holds, that no exclude holds and the range does not cut, is answered from the index's count for it, with
+   * no chunk read. Every other key is decoded and counted as the combine reads it, with the same plan, the same ranges
+   * and the same window, over those keys alone. So an intersection reads what its stream reads, and a union or a
+   * difference reads no more than its stream.
+   *
+   * The keys answered from the index are trusted as {@link count} trusts the index, and checked no further than the
+   * reader checks it when it opens the object; a decoded key is exact. A source that reports no per-chunk counts has
+   * every key decoded. A union of one operand with no exclude and no range is {@link count}.
+   *
+   * A running count looks at its operands' versions every `concurrency` keys, a key answered from the index being one
+   * taken, and before the first key after an invalidation, and runs `options.guard` at each look. On a move it plans
+   * again above the last key taken, as a combine does, so the bound on what it serves of an earlier generation is the
+   * combine's. A pinned operand is looked up at each look, so an erasure of what it pinned stops the count there.
+   */
+  async combineCount(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    mode: 'all' | 'any',
+    op: 'intersect' | 'union' | 'andNot',
+    options?: Omit<CountOptions, 'exclude'>,
+  ): Promise<number> {
+    const label = `${op}Count`;
+    if (segs.length === 0) throw new ValidationError(`${label} requires at least one segment`);
+    const limit =
+      options?.concurrency === undefined ? DEFAULT_INTERSECT_CONCURRENCY : options.concurrency;
+    requirePositiveInteger(limit, `${label}: concurrency`);
+    const budget = resolvePerOpBudget(options?.budget, this.budget);
+    const w = windowOf(options, label);
+    options?.guard?.();
+    if (w === 'empty') return 0;
+    if (op === 'union' && segs.length === 1 && excludeSegs.length === 0 && w === null) {
+      return this.count(segs[0]!);
+    }
+    const epoch = this.scope.epoch;
+    const [operands, excludes] = await this.countOperands(segs, excludeSegs, w, -1);
+    await this.refuseAbsentOperands(
+      [...operands, ...excludes],
+      options?.allowAbsentOperands,
+      label,
+    );
+    const { steps, decode } = countSteps(operands, excludes, mode, w);
+    checkBudget(budget, combineReads(decode, operands, excludes, mode, Infinity), label);
+    if (this.metricsOn) {
+      const distinct = new Set<number>();
+      for (const o of [...operands, ...excludes]) for (const k of o.keys) distinct.add(k);
+      this.metrics.onEvent({
+        kind: 'intersect',
+        op,
+        operands: segs.length + excludes.length,
+        fetchedChunks: decode.length,
+        skippedChunks: distinct.size - decode.length,
+      });
+    }
+    // Every key is decoded, and so shows a move, in an AND of two or more includes with no exclude: no extra look.
+    const everyKey = mode === 'all' && segs.length > 1 && excludeSegs.length === 0;
+    const run: CountRun = {
+      segs,
+      excludeSegs,
+      mode,
+      op,
+      limit,
+      budget,
+      w,
+      plan: this.openCombine(operands, excludes, mode, decode, limit),
+      looks: this.looks(everyKey ? Infinity : limit, epoch),
+      spent: 0,
+      steps,
+      at: 0,
+      guard: options?.guard,
+    };
+    try {
+      return await this.runCount(run);
+    } finally {
+      this.closeCombine(run.plan);
+    }
+  }
+
+  /** Take every step of `run`: the index's figure for one, the size of the next decoded chunk for another. */
+  private async runCount(run: CountRun): Promise<number> {
+    let total = 0;
+    let last = -1;
+    while (run.at < run.steps.length) {
+      run.looks.left -= 1; // a key answered from the index is a key taken
+      if (run.plan.moves.moved || this.lookDue(run.looks)) await this.countLook(run, last);
+      const step = run.steps[run.at++]!;
+      last = step.key;
+      if (step.n >= 0) {
+        total += step.n;
+        continue;
+      }
+      const slot = await run.plan.window.next();
+      const chunk = slot?.result;
+      if (chunk === null || chunk === undefined || chunk.isEmpty) continue;
+      total +=
+        run.w !== null && isEdge(step.key, run.w)
+          ? cutToWindow(this.codec, chunk, step.key, run.w).size
+          : chunk.size;
+    }
+    return total;
+  }
+
+  /** Look at every operand's version, as {@link nextSlotAfterLook} does, and plan the keys above `last` again on a move. */
+  private async countLook(run: CountRun, last: number): Promise<void> {
+    const plan = run.plan;
+    plan.moves.moved = false;
+    this.looked(run.looks);
+    run.guard?.();
+    const all = [...plan.operands, ...plan.excludes];
+    const now = await boundedAll(all, OPERANDS_AT_ONCE, (o) => this.cacheVersion(o.seg));
+    if (now.every((version, i) => version === all[i]!.gen)) return;
+    this.closeCombine(plan);
+    const spent = run.spent + combineReads(plan.keys, plan.operands, plan.excludes, run.mode, last);
+    const [operands, excludes] = await this.countOperands(run.segs, run.excludeSegs, run.w, last);
+    const { steps, decode } = countSteps(operands, excludes, run.mode, run.w);
+    checkBudget(
+      run.budget,
+      spent + combineReads(decode, operands, excludes, run.mode, Infinity),
+      run.op,
+    );
+    run.plan = this.openCombine(operands, excludes, run.mode, decode, run.limit);
+    run.spent = spent;
+    run.steps = steps;
+    run.at = 0;
+  }
+
+  /**
+   * {@link combineOperands} for a count: each include also carries the per-chunk counts of the generation its keys were
+   * listed from. The counts are asked for after the keys, and the two must name the same keys, or the operand is listed
+   * again (a move between the two reads), and refused if a source keeps disagreeing with itself. A source with no
+   * per-chunk counts gives none, and every key of that operand is decoded.
+   */
+  private async countOperands(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    w: IdWindow | null,
+    after: number,
+  ): Promise<[CountOperand[], Operand[]]> {
+    const extract = async (seg: SegmentRef, withCounts: boolean): Promise<CountOperand> => {
+      for (let attempt = 0; attempt < COUNT_RELIST_ATTEMPTS; attempt++) {
+        const { listed, gen, epoch } = await this.listKeys(seg);
+        const cards = withCounts ? await this.chunkCounts(seg, listed) : undefined;
+        if (cards === 'moved') continue;
+        const keys = after < 0 && w === null ? listed : keysAbove(listed, w, after);
+        return { seg, keys: new Set(keys), chunkless: listed.length === 0, gen, epoch, cards };
+      }
+      throw new IntegrityError("a segment's index and its chunk keys name different chunks");
+    };
+    const all = await boundedAll(
+      [...segs.map((s) => [s, true] as const), ...excludeSegs.map((s) => [s, false] as const)],
+      OPERANDS_AT_ONCE,
+      ([seg, withCounts]) => extract(seg, withCounts),
+    );
+    return [all.slice(0, segs.length), all.slice(segs.length)];
+  }
+
+  /**
+   * The per-chunk counts of `seg`, checked as untrusted tier data; `undefined` when the source reports none, and `'moved'`
+   * when they name other keys than `listed`, which the segment's generation changing between the two reads explains.
+   */
+  private async chunkCounts(
+    seg: SegmentRef,
+    listed: readonly number[],
+  ): Promise<ReadonlyMap<number, number> | undefined | 'moved'> {
+    const counts = this.storage.cardinalities ? await this.storage.cardinalities(seg) : null;
+    if (counts === null) return undefined;
+    if (counts.size !== listed.length) return 'moved';
+    for (const key of listed) {
+      const n = counts.get(key);
+      if (n === undefined) return 'moved';
+      if (n !== 0) assertChunkCardinalityInRange(n);
+    }
+    return counts;
   }
 
   /**

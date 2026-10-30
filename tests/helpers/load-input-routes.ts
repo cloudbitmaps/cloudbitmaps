@@ -39,6 +39,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/admin-path-counts.test.ts',
   'tests/tools/cost.test.ts',
   'tests/core/exclude-batching.test.ts',
+  'tests/core/combine-count.test.ts',
   'tests/core/destroyed-wording.test.ts',
   'tests/core/drop-segment.test.ts',
   'tests/core/erase-fences-inflight-load.test.ts',
@@ -350,6 +351,9 @@ export const SORTED_EXCLUDED: Readonly<Record<string, string>> = {
   'tests/bench/calibrate-guards.test.ts':
     "its time is the calibration harness's child processes, which no setup file reaches, and its own loads only seed the " +
     'figures those children are compared with, so a third run would exercise no part of the load path',
+  'tests/core/combine-count.test.ts':
+    "counts what a combine's count equals and requests over segments its loads only build; a third run would repeat " +
+    'those counts and exercise no part of the load path',
   'tests/core/exclude-batching.test.ts':
     "counts the storage requests of an intersect's exclude over segments of a thousand chunks its loads only build; a " +
     'third run would repeat those counts and exercise no part of the load path',

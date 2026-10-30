@@ -523,6 +523,7 @@
     "@cloudbitmaps/core SegmentEngine.andNot": "andNot(seg: SegmentRef, excludes: readonly SegmentRef[], options?: Omit<CombineOptions, 'exclude'>): AsyncGenerator<number>;",
     "@cloudbitmaps/core SegmentEngine.andNotBatches": "andNotBatches(seg: SegmentRef, excludes: readonly SegmentRef[], options?: Omit<CombineOptions, 'exclude'>): AsyncGenerator<Uint32Array>;",
     "@cloudbitmaps/core SegmentEngine.andNotChunks": "andNotChunks(seg: SegmentRef, excludes: readonly SegmentRef[], options?: Omit<CombineOptions, 'exclude'>, label?: string): AsyncGenerator<CombinedChunk>;",
+    "@cloudbitmaps/core SegmentEngine.combineCount": "combineCount(segs: readonly SegmentRef[], excludeSegs: readonly SegmentRef[], mode: 'all' | 'any', op: 'intersect' | 'union' | 'andNot', options?: Omit<CountOptions, 'exclude'>): Promise<number>;",
     "@cloudbitmaps/core SegmentEngine.constructor": "constructor(deps: EngineDeps);",
     "@cloudbitmaps/core SegmentEngine.count": "count(seg: SegmentRef): Promise<number>;",
     "@cloudbitmaps/core SegmentEngine.everyNth": "everyNth(seg: SegmentRef, n: number, range?: IdRange): AsyncGenerator<number>;",
