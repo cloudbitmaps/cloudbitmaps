@@ -12,7 +12,8 @@
 //     configured default.
 //   - A suite's or file's `beforeAll` and `afterAll` hooks together: the suite's duration less its direct children's
 //     (tests and nested suites), against the configured `hookTimeout`. Recorded for a suite or file that has such a hook.
-// Skipped and todo tests are not recorded.
+// Skipped and todo tests are not recorded. The default file is `node_modules/.cache/test-budget.json` (`TEST_BUDGET_REPORT`
+// names another): outside the tracked tree, so a text gate that reads every file there never reads test names.
 //
 // KNOWN LIMITS.
 //   - A test's duration includes its `beforeEach` and `afterEach` hooks (vitest's timeout covers the test body alone, and
@@ -22,6 +23,7 @@
 //     is also stricter than a single hook's timeout. Tests of a suite that run concurrently overlap, which can hide hook
 //     time (the sum of their durations then exceeds the suite's); no suite here runs concurrently.
 //   - A hook given its own timeout is judged against the configured `hookTimeout`; vitest does not report a hook's own.
+//   - A test or hook whose timeout is 0 (no limit) is not recorded.
 //   - A test that retries or repeats is judged by the duration vitest reports for it.
 //   - The file is deleted when the run starts, so a run that never finishes leaves none, and the judge refuses a run
 //     with no report.
@@ -45,7 +47,10 @@ export default class TestBudgetReporter {
 
   onInit(vitest) {
     this.root = vitest.config.root;
-    this.file = resolve(this.root, process.env.TEST_BUDGET_REPORT || '.vitest/test-budget.json');
+    this.file = resolve(
+      this.root,
+      process.env.TEST_BUDGET_REPORT || 'node_modules/.cache/test-budget.json',
+    );
     rmSync(this.file, { force: true });
   }
 
@@ -54,13 +59,16 @@ export default class TestBudgetReporter {
     if (state === 'skipped' || state === 'pending') return;
     const diagnostic = test.diagnostic();
     if (!diagnostic) return;
+    const budget = test.options.timeout ?? test.project.config.testTimeout;
     this.tests += 1;
+    // A timeout of 0 turns the limit off: there is no budget to use a share of.
+    if (!(budget > 0)) return;
     this.entries.push({
       kind: 'test',
       name: test.fullName,
       file: this.relative(test.module.moduleId),
       duration: Math.round(diagnostic.duration),
-      budget: test.options.timeout ?? test.project.config.testTimeout,
+      budget,
     });
   }
 
@@ -76,6 +84,7 @@ export default class TestBudgetReporter {
     const result = entity.task.result;
     const hooks = result?.hooks;
     if (!hooks || !('beforeAll' in hooks || 'afterAll' in hooks)) return;
+    if (!(entity.project.config.hookTimeout > 0)) return;
     this.entries.push({
       kind: 'hook',
       hook: 'beforeAll and afterAll',

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "tests": 7,
+  "tests": 8,
   "entries": [
     {
       "kind": "test",
@@ -13,21 +13,21 @@
       "kind": "test",
       "name": "default budget, past half",
       "file": "planted.test.mjs",
-      "duration": 701,
+      "duration": 700,
       "budget": 1000
     },
     {
       "kind": "test",
       "name": "explicit budget, under half",
       "file": "planted.test.mjs",
-      "duration": 706,
+      "duration": 702,
       "budget": 4000
     },
     {
       "kind": "test",
       "name": "explicit budget, past half",
       "file": "planted.test.mjs",
-      "duration": 1224,
+      "duration": 1202,
       "budget": 2000
     },
     {
@@ -57,14 +57,14 @@
       "hook": "beforeAll and afterAll",
       "name": "quick hooks",
       "file": "planted.test.mjs",
-      "duration": 42,
+      "duration": 43,
       "budget": 1000
     },
     {
       "kind": "test",
       "name": "slow each-hook > quick body",
       "file": "planted.test.mjs",
-      "duration": 723,
+      "duration": 722,
       "budget": 1000
     }
   ]

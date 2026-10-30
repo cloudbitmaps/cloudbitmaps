@@ -55,8 +55,8 @@ const run = (file: string) =>
 describe('the judge, on reports written by hand', () => {
   let dir: string;
   beforeAll(() => {
-    mkdirSync(join(ROOT, '.vitest'), { recursive: true });
-    dir = mkdtempSync(join(ROOT, '.vitest', 'budget-judge-'));
+    mkdirSync(join(ROOT, 'node_modules', '.cache'), { recursive: true });
+    dir = mkdtempSync(join(ROOT, 'node_modules', '.cache', 'budget-judge-'));
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const judged = (text: string) => {
@@ -134,6 +134,7 @@ test('default budget, quick', async () => { await sleep(20); });
 test('default budget, past half', async () => { await sleep(700); });
 test('explicit budget, under half', { timeout: 4000 }, async () => { await sleep(700); });
 test('explicit budget, past half', { timeout: 2000 }, async () => { await sleep(1200); });
+test('no limit', { timeout: 0 }, async () => { await sleep(700); });
 test.skip('skipped', async () => { await sleep(5000); });
 describe('slow hooks', () => {
   beforeAll(async () => { await sleep(400); });
@@ -155,8 +156,8 @@ describe('slow each-hook', () => {
   let judged: ReturnType<typeof run>;
 
   beforeAll(() => {
-    mkdirSync(join(ROOT, '.vitest'), { recursive: true });
-    dir = mkdtempSync(join(ROOT, '.vitest', 'budget-real-'));
+    mkdirSync(join(ROOT, 'node_modules', '.cache'), { recursive: true });
+    dir = mkdtempSync(join(ROOT, 'node_modules', '.cache', 'budget-real-'));
     writeFileSync(join(dir, 'planted.test.mjs'), PLANT);
     writeFileSync(
       join(dir, 'vitest.config.mjs'),
@@ -180,7 +181,8 @@ describe('slow each-hook', () => {
     expect(find('default budget, quick')?.budget).toBe(1000);
     expect(find('explicit budget, under half')?.budget).toBe(4000);
     expect(find('explicit budget, past half')?.budget).toBe(2000);
-    expect(real.tests).toBe(7);
+    expect(real.tests).toBe(8);
+    expect(real.entries.some((e) => e.name === 'no limit')).toBe(false);
     expect(real.entries.some((e) => e.name.includes('skipped'))).toBe(false);
   });
 

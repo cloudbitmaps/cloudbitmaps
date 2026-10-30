@@ -8,7 +8,7 @@
 // test slow, with the test named, instead of an unrelated run that goes red later.
 //
 // The report comes from `scripts/test-budget-reporter.mjs`, which CI adds to the one `pnpm test` run it already makes
-// (the default report is `.vitest/test-budget.json`; `TEST_BUDGET_REPORT` or the argument names another). A test is
+// (the default report is `node_modules/.cache/test-budget.json`; `TEST_BUDGET_REPORT` or the argument names another). A test is
 // judged against the timeout in force for it, its explicit one or the configured default; a suite's or file's
 // beforeAll and afterAll hooks, together, against the configured hook timeout. It fails, naming each offender with its duration, budget and share, when duration > 0.5 x budget.
 //
@@ -83,7 +83,7 @@ function main(argv) {
   const file = path.resolve(
     argv[0] ||
       process.env.TEST_BUDGET_REPORT ||
-      path.join(__dirname, '..', '.vitest', 'test-budget.json'),
+      path.join(__dirname, '..', 'node_modules', '.cache', 'test-budget.json'),
   );
   let doc;
   try {

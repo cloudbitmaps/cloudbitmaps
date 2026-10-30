@@ -30,24 +30,29 @@ const slowProperty = () =>
   });
 
 describe('a property that overruns its limit', () => {
-  it('fails naming its seed before the test timeout', { timeout: 3000 }, async () => {
+  // The time limit is passed here, in place of the setup's 0.8 of the test's timeout: a test that runs until that
+  // limit uses 80 % of its budget whatever the budget is, so it would sit above the half a test may use. The setup's
+  // 0.8 is held by the tests of the limit below and by the runs in child processes.
+  const LIMIT = 1000;
+
+  it('fails naming its seed before the test timeout', async () => {
     const started = Date.now();
     const seed = fc.readConfigureGlobal().seed;
-    await expect(fc.assert(slowProperty(), { numRuns: 1000 })).rejects.toThrow(
-      new RegExp(`Property interrupted after \\d+ tests[\\s\\S]*seed: ${seed}`),
-    );
-    expect(Date.now() - started).toBeLessThan(3000);
+    await expect(
+      fc.assert(slowProperty(), { numRuns: 1000, interruptAfterTimeLimit: LIMIT }),
+    ).rejects.toThrow(new RegExp(`Property interrupted after \\d+ tests[\\s\\S]*seed: ${seed}`));
+    expect(Date.now() - started).toBeLessThan(5000);
   });
 
-  it(
-    'passes silently without markInterruptAsFailure, which is why the setup sets it',
-    { timeout: 3000 },
-    async () => {
-      await expect(
-        fc.assert(slowProperty(), { numRuns: 1000, markInterruptAsFailure: false }),
-      ).resolves.toBeUndefined();
-    },
-  );
+  it('passes silently without markInterruptAsFailure, which is why the setup sets it', async () => {
+    await expect(
+      fc.assert(slowProperty(), {
+        numRuns: 1000,
+        markInterruptAsFailure: false,
+        interruptAfterTimeLimit: LIMIT,
+      }),
+    ).resolves.toBeUndefined();
+  });
 });
 
 describe('the limit is 0.8 of the test timeout', () => {
