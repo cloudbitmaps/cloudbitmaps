@@ -3,8 +3,9 @@ import fc from 'fast-check';
 
 /**
  * Run only by `tests/ci/fast-check-bounds.test.ts`, in a child vitest (`vitest.cut.config.ts`): a property that never
- * finds a counterexample, under a 1 s test timeout, with no time limit of its own. Only the setup's global limit
- * (0.8 of that timeout) can end it before vitest's timeout does. It is kept outside the suite's include pattern
+ * finds a counterexample, under a 2 s test timeout, with no time limit of its own. Only the setup's global limit
+ * (0.8 of that timeout, 1.6 s) can end it before vitest's timeout does, with 0.4 s to spare for a run that ends late on
+ * a loaded runner. It is kept outside the suite's include pattern
  * (`tests/**` + `*.test.ts`), so the suite never runs it.
  *
  * Each run awaits a timer, so the event loop turns between runs. A run that only awaited microtasks would starve the
@@ -12,7 +13,7 @@ import fc from 'fast-check';
  */
 const out = process.env.CUT_FIXTURE_OUT;
 
-it('a property that never finds a counterexample', { timeout: 1_000 }, async () => {
+it('a property that never finds a counterexample', { timeout: 2_000 }, async () => {
   const started = Date.now();
   try {
     await fc.assert(

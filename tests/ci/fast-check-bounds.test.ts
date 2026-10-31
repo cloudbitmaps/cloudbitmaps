@@ -78,11 +78,11 @@ describe('the limit is 0.8 of the test timeout', () => {
 describe("the setup's own limit", () => {
   it.skipIf(process.platform === 'win32')(
     'cuts a property that never fails before the test timeout, naming its seed',
-    // Budget: the child run takes about 1.5 s (vitest start-up plus the fixture's 0.8 s), measured on a laptop; 30 s is
-    // about twenty times that, for a slow runner.
-    { timeout: 30_000 },
+    // Budget: 15 s, the rule's figure for a test whose time grows with the machine's load (it starts a vitest).
+    { timeout: 15_000 },
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'cbm-cut-'));
+      onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
       const note = join(dir, 'note.json');
       const env: Record<string, string> = {};
       for (const [k, v] of Object.entries(process.env)) {
@@ -105,7 +105,7 @@ describe("the setup's own limit", () => {
       let output = '';
       child.stdout.on('data', (d: Buffer) => (output += d.toString()));
       child.stderr.on('data', (d: Buffer) => (output += d.toString()));
-      // A hard kill timer, so a child that never ends cannot outlive this test.
+      // A hard kill timer, inside the test's budget, so a child that never ends cannot outlive this test.
       const killer = setTimeout(() => {
         if (child.pid !== undefined) {
           try {
@@ -114,19 +114,18 @@ describe("the setup's own limit", () => {
             /* already gone */
           }
         }
-      }, 25_000);
+      }, 12_000);
       const code = await new Promise<number | null>((done) => child.on('close', done));
       clearTimeout(killer);
-      onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
       expect(code, output).toBe(1);
       // fast-check's interrupt with the seed, not vitest's own timeout.
       expect(output).toMatch(/Property interrupted after \d+ tests[\s\S]*seed: -?\d+/);
       expect(output).not.toMatch(/timed out/i);
       // Read last: a child cut by vitest's timeout leaves no note, and the checks above name why.
       const { elapsed } = JSON.parse(readFileSync(note, 'utf8')) as { elapsed: number };
-      // Ended inside the fixture's 1 s test timeout, near the 0.8 s limit.
-      expect(elapsed).toBeLessThan(1_000);
-      expect(elapsed).toBeGreaterThanOrEqual(700);
+      // Ended inside the fixture's 2 s test timeout, near the 1.6 s limit.
+      expect(elapsed).toBeLessThan(2_000);
+      expect(elapsed).toBeGreaterThanOrEqual(1_400);
     },
   );
 });
