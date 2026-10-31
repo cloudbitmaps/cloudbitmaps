@@ -289,7 +289,7 @@ where the shared chunks come first in each object, and **spread**, where they ar
 operand's own chunks between them. All three ways returned the same answer on every cell.
 
 **The stop rule, written before the first run:** the count ships only if it makes no more requests than the recipe on
-every cell, and reads fewer bytes than the recipe on union and `andNot` on the packed layout, and no more bytes than the
+every cell, and reads fewer bytes than the recipe on union and andNot on the packed layout, and no more bytes than the
 recipe on every other cell (the spread layout, and intersect on either layout). The `*Into` run is reported, not judged.
 **Verdict: every cell passed.**
 
