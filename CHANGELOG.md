@@ -34,6 +34,18 @@ so, and so do the module headers in the code.
   does: replace streaming a combine to add up its `batches()` with these, where the index's word for a key is enough.
   [Reading in depth](docs/guide/reading.md#count-a-combine).
 
+### Changed
+
+- **The in-region calibration run and the large suite's run are repeated on `0.25.0`, which runs the TypeScript codec.**
+  Two runs from AWS CloudShell in `us-east-1` on 2026-10-30 (`2026-10-30-16fa6` and `2026-10-30-5a2f4`), against the
+  published `0.25.0` packages. Every stage of both made the requests of the runs before, `0.21.0`'s and the first large
+  run's, and the bills are the same: $0.0027568 for the default suite and $0.0031302 for the large one. A cold intersect
+  of the calibration shape took 107.87 ms at the median in 6 GETs, an `andNot` against ten excludes 364.53 ms in 33, and a
+  single-part load ran at 2.25 million ids a second and a multipart one at 6.11 million; on the large operands a cold
+  `intersect` took 113.1 ms, 141.8 ms and 164.4 ms at a million, five million and ten million ids. Latencies of runs
+  from different CloudShell sessions are not comparable, so none is set against another's. The benchmarks page, the
+  roadmap, the guides, the site and both calibration READMEs quote them. No library code changes.
+
 ## [0.25.0] — 2026-10-29
 
 ### Breaking
