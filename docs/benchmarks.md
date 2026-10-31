@@ -597,7 +597,7 @@ Two methods are more than 10 times native and ship with their figures shown: the
   the at-scale table is _measured memory + wall-clock_ (a real run, the fleet on local disk and the large
   intersect in memory, machine-dependent, never CI-gated — shared runners are too noisy); the sorted load's figure is
   _measured heap_ from a unit test, whose bounds CI holds; and the real-cloud section is _measured AWS cost_ (owner-run against
-  a real account, on 2026-10-13, from inside the region). Only the last is cloud-calibrated, and even then the dollars are
+  a real account, on 2026-10-30, from inside the region). Only the last is cloud-calibrated, and even then the dollars are
   published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
   default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
@@ -641,7 +641,7 @@ while the bill counts both; and a run's report states how many it discarded. A f
 fails the run. Every run records its own round-trip floor to the
 region and labels its latency in-region only below 30 ms — a line that keeps another continent out, not a
 neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. A page states a run's latency as in-region only when that region is the bucket's too. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
-`2026-10-13-b329d`, from AWS CloudShell in `us-east-1`, paid the in-region rows: intersect and point-read latency,
+`2026-10-30-16fa6`, from AWS CloudShell in `us-east-1`, paid the in-region rows: intersect and point-read latency,
 load throughput, `andNot` with a large `exclude`, the sweep, and what `store.load()` costs on S3. The `*Into` verbs are measured by the
 [large suite's run](#large-operands--run-2026-10-30-5a2f4), and the Lambda figure is not measured yet.
 How it guards against spending more than it says, and how to run it from inside the region:
