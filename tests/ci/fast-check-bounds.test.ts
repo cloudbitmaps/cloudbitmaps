@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import fc from 'fast-check';
-import { afterEach, beforeEach } from 'vitest';
+import { afterEach, beforeEach, onTestFinished } from 'vitest';
 import { seedLine, seedWriter } from '../helpers/fast-check-run';
 import { FULL_STRENGTH_ASSIGNMENT } from '../helpers/strength';
 
@@ -34,8 +34,8 @@ describe('a property that overruns a time limit', () => {
   // 80 % of its budget whatever the budget is, so it would sit above the half a test may use. So these two prove that
   // fast-check's own time limit cuts a runaway property and, with the setup's `markInterruptAsFailure` and seed, fails
   // it naming the seed (or, with that option off, passes it silently). That the setup sets the limit to 0.8 of the
-  // test's timeout is held only by the three config reads below: no test cuts a runaway property by the setup's own
-  // limit end to end, and the child-process run under 'a run that never returns' holds the seed line, not the cut.
+  // test's timeout is held by the three config reads below, and the run under 'the setup's own limit' proves that limit
+  // cuts a property inside a real test; the child-process run under 'a run that never returns' holds the seed line.
   const LIMIT = 1000;
 
   it('fails naming its seed when its time limit cuts it', async () => {
@@ -73,6 +73,62 @@ describe('the limit is 0.8 of the test timeout', () => {
     expect(fc.readConfigureGlobal().interruptAfterTimeLimit).toBeUndefined();
     expect(fc.readConfigureGlobal().markInterruptAsFailure).toBeUndefined();
   });
+});
+
+describe("the setup's own limit", () => {
+  it.skipIf(process.platform === 'win32')(
+    'cuts a property that never fails before the test timeout, naming its seed',
+    // Budget: the child run takes about 1.5 s (vitest start-up plus the fixture's 0.8 s), measured on a laptop; 30 s is
+    // about twenty times that, for a slow runner.
+    { timeout: 30_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cbm-cut-'));
+      const note = join(dir, 'note.json');
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && !k.startsWith('VITEST') && k !== 'FC_SEED') env[k] = v;
+      }
+      delete env.FORCE_COLOR;
+      env.NO_COLOR = '1';
+      env.CUT_FIXTURE_OUT = note;
+      const child = spawn(
+        process.execPath,
+        [
+          resolve(ROOT, 'node_modules/vitest/vitest.mjs'),
+          'run',
+          '--config',
+          'tests/fixtures/cut/vitest.cut.config.ts',
+          '--maxWorkers=1',
+        ],
+        { cwd: ROOT, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let output = '';
+      child.stdout.on('data', (d: Buffer) => (output += d.toString()));
+      child.stderr.on('data', (d: Buffer) => (output += d.toString()));
+      // A hard kill timer, so a child that never ends cannot outlive this test.
+      const killer = setTimeout(() => {
+        if (child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+        }
+      }, 25_000);
+      const code = await new Promise<number | null>((done) => child.on('close', done));
+      clearTimeout(killer);
+      onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+      expect(code, output).toBe(1);
+      // fast-check's interrupt with the seed, not vitest's own timeout.
+      expect(output).toMatch(/Property interrupted after \d+ tests[\s\S]*seed: -?\d+/);
+      expect(output).not.toMatch(/timed out/i);
+      // Read last: a child cut by vitest's timeout leaves no note, and the checks above name why.
+      const { elapsed } = JSON.parse(readFileSync(note, 'utf8')) as { elapsed: number };
+      // Ended inside the fixture's 1 s test timeout, near the 0.8 s limit.
+      expect(elapsed).toBeLessThan(1_000);
+      expect(elapsed).toBeGreaterThanOrEqual(700);
+    },
+  );
 });
 
 describe('the seed line', () => {
