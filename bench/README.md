@@ -419,15 +419,15 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 ```
 # in AWS CloudShell, in the region being measured
 git clone https://github.com/cloudbitmaps/cloudbitmaps && cd cloudbitmaps
-CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh 2>&1 | tee ~/calibrate-default.log
+CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-default-$(date -u +%Y%m%dT%H%M%SZ).log
 ```
 
 From CloudShell, in practice:
 
-- **Pipe the script through `tee` into the home directory**, as above, so a session that ends keeps the log. The script ignores a `tee` that goes away.
-- **A run's evidence lands in the home directory even when the session ends after the run**, because the script copies it out on every exit. Before running again, list `~/*.json` and `~/bench/calibration/large/` to see what an earlier run left.
-- **Copy a large-suite file to the home directory before downloading it.** CloudShell's "Download file" refused the nested path, and a copy worked: `cp ~/bench/calibration/large/<runId>.json ~/large-<runId>.json`.
-- **Keep the session alive.** CloudShell ends a session after a stretch with no keyboard or pointer input, and a run of the default or large suite takes a few minutes: the nine in-region runs committed here took 2.4 to 5.8 minutes (measured: the smallest `elapsedMs` is 141,115 and the largest 345,687, over the runs in `calibration/` and `calibration/large/` made from `us-east-1`).
+- **Pipe the script through `tee` into the home directory**, as above, so a session that ends keeps the log. Give each run its own log name (the stamp above does), or use `tee -a`, so a second run does not overwrite the first's log; name a large run's `~/calibrate-large-<stamp>.log`. Once the harness has stopped, the script ignores a `tee` that has gone away, so the copy-out of the evidence completes.
+- **A run's evidence lands in the home directory even when the session ends after the run**, because the script copies it out on every exit. Before running again, list `~/*.json` and `~/bench/calibration/large/` to see what an earlier run left. A finished run is `<runId>.json` and one that stopped early is `<runId>.partial.json`; a name that was already taken gets the new copy beside it, stamped (`<runId>.<UTC stamp>.json`, or `<runId>.<UTC stamp>.partial.json`); a rehearsal writes `calibrate-aws-rehearsal.json` (or `calibrate-aws-rehearsal-large.json`), never a run's name. The large suite's files are under `~/bench/calibration/large/`.
+- **Copy a large-suite file to the home directory before downloading it.** On the runs of 2026-10-30, CloudShell's "Download file" refused the nested path, and a copy worked: `cp ~/bench/calibration/large/<runId>.json ~/large-<runId>.json`, then download that, or `cat` it. The script prints this command for a large-suite file; this is what was seen on those runs, not a standing fact about CloudShell.
+- **Keep the session alive.** CloudShell ends a session after a period with no keyboard or pointer input; the length is AWS's documented figure, not one measured here, so treat keeping the session active as a precaution. The harness is quick: the nine in-region runs committed here took 2.4 to 5.8 minutes by the harness's own `elapsedMs` (measured: the smallest is 141,115 and the largest 345,687, over the runs in `calibration/` and `calibration/large/` made from `us-east-1`), which leaves out the install the script does first.
 
 The workload's client has 128 sockets, as the library's built client does; `CR_CALIBRATE_MAX_SOCKETS=<n>` sets another
 limit, and the script echoes the one asked for before it installs anything.

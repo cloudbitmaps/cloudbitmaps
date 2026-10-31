@@ -331,14 +331,15 @@ recipe on every other cell (the spread layout, and intersect on either layout). 
 
 Where the operands share few chunks and those chunks are together (packed), `unionCount` and `andNotCount` read only the
 shared chunks, because a chunk only one operand holds is answered from its index; the recipe reads every chunk. On the
-spread layout the count and the recipe read nearly the same bytes, since the shared chunks sit among the others, and an
-intersect reads the same bytes as its recipe on both. The `*Into` run reads what the recipe reads and also writes the
+spread layout a union's count reads from under 1 % (the 500,000-id shapes) to 14 % (the 10,000,000-id shape) fewer bytes than the
+recipe, since the shared chunks sit among the others, and an intersect reads the same bytes as its recipe on both. The `*Into` run reads what the recipe reads and also writes the
 scratch segment, so it makes more requests.
 
 **What this does not show.** It records no time: whether a smaller read is a faster one on S3 is not measured. It touched
 no cloud, so request prices, latency and the behaviour of a real object store are not in it. It ran on the in-memory
-backend, over the calibration's layouts of about 500-byte chunks; real ids are often denser, and operands with other
-overlaps, run-encoded containers or more than the shapes above are not counted. The count methods are not measured on S3
+backend, over chunks of 250 ids (the 500,000-id shapes, the calibration's own layout) to 5,003 ids (the 10,000,000-id shape)
+each; real ids can be denser or sparser, and operands with other overlaps, run-encoded containers or more than the shapes
+above are not counted. The count methods are not measured on S3
 yet ([what is still owed](#what-is-still-owed)).
 
 ## At scale — measured (1K → 10K → 100K segments)
