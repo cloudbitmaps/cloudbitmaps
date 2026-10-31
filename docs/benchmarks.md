@@ -8,8 +8,8 @@
 
 > **Which figures are on which codec.** The soak ([limitation 04](../site/benchmarks.html#limits)) and the hard RSS
 > ceiling were measured on the TypeScript codec, the one the store uses, on 2026-10-21; the file CI's gate wrote that day
-> is the ceiling's record. The in-region run and the large-operand run were measured on the TypeScript codec, in the
-> published `0.25.0`. The read, fleet-memory and at-scale figures were measured on the native codec, in the release each
+> is the ceiling's record. The in-region run and the large-operand run of 2026-10-30 were measured on the TypeScript codec,
+> through the published packages (each run's evidence names the release, as `packageVersion`). The read, fleet-memory and at-scale figures were measured on the native codec, in the release each
 > section names, and are to be re-measured. The cost model and the
 > crossover do not depend on the codec. [The TypeScript codec against native](#the-typescript-codec-against-native)
 > has the comparison, and [the public bitmap class against native, in memory](#the-public-bitmap-class-against-native-in-memory)
@@ -82,7 +82,7 @@ the data: what a cold intersect, an `andNot` and a load cost, and how long they 
 
 ### The in-region run — run `2026-10-30-16fa6`
 
-> **Codec:** the TypeScript codec, the one the store uses in the release the run installed (named by the evidence's `packageVersion`, `0.25.0`).
+> **Codec:** the TypeScript codec, the one the store uses in the release the run installed (named by the evidence's `packageVersion`).
 >
 > **Measured** against real S3 in `us-east-1` on 2026-10-30 (UTC), from AWS CloudShell in the same region, with the
 > packages then published (the evidence names the version, as `packageVersion`) and a client of 128 sockets, the number this release's own client allows: a round-trip
@@ -202,10 +202,10 @@ real ids are often denser, and the guide counts larger chunks.
 
 ## Large operands — run `2026-10-30-5a2f4`
 
-> **Codec:** the TypeScript codec, the one the store uses in the release the run installed (named by the evidence's `packageVersion`, `0.25.0`).
+> **Codec:** the TypeScript codec, the one the store uses in the release the run installed (named by the evidence's `packageVersion`).
 >
 > **Measured** against real S3 in `us-east-1` on 2026-10-30 (UTC), from AWS CloudShell in the same region (2 CPUs, a
-> round-trip floor of 8.9 ms to the region, so in-region), through the published `0.25.0` packages (the evidence names the version, as `packageVersion`). This is the second run of
+> round-trip floor of 8.9 ms to the region, so in-region), through the published packages (the evidence names their release, as `packageVersion`). This is the second run of
 > the harness's [large suite](../bench/README.md#the-large-suite), the first being [`2026-10-07-88cd3`](../bench/calibration/large/2026-10-07-88cd3.json): combines on operands of about a million, five million
 > and ten million ids, about 1,500 chunks each, 20 % of their ids shared. The evidence is
 > [`bench/calibration/large/2026-10-30-5a2f4.json`](../bench/calibration/large/2026-10-30-5a2f4.json). It has no report
@@ -261,7 +261,7 @@ sample (**measured**):
 The evidence records the run's bill, by request class, at the `aws-us-east-1-ondemand` list prices (`cost` in the file).
 
 **Against the first run** (**measured**): every stage made the same requests, by class, as that run's, and the
-bill recorded in the evidence is the same. Only the bytes moved differ, slightly: the bytes of the whole reads (the pointers) are 38,000 more in each combine stage, and the bytes uploaded for the loaded segments and the `*Into` outputs are a few hundred more.
+bill recorded in the evidence is the same. Only the bytes moved differ, slightly: the bytes of the whole reads (the pointers) are 38,000 more in each combine stage and 22,588 more in the `*Into` stage, each load uploads 156 to 160 bytes more, and the `*Into` stage uploads 11,313 more over its 45 calls.
 The medians and percentiles are this session's, and latencies of runs from different CloudShell sessions are not
 comparable, so no difference between the two runs is called a speed-up or a slowdown.
 
@@ -563,7 +563,7 @@ TypeScript to native): `optimize` on a run chunk 3.31 times (1,992 ns to 6,599 n
 and a dense `has` 0.32 times.
 
 **What was not measured.** The two codecs have not been compared in region against real S3 (the in-region comparison is
-prepared in [`bench/README.md`](../bench/README.md#the-codec-comparison-in-region) and not run). The in-region run of `0.25.0` ran the TypeScript codec alone, and latencies of runs from different CloudShell sessions are not comparable, so how far the codec moves a latency in region is not measured. The request counts the engine makes were measured to be
+prepared in [`bench/README.md`](../bench/README.md#the-codec-comparison-in-region) and not run). The in-region run of 2026-10-30 ran the TypeScript codec alone, and latencies of runs from different CloudShell sessions are not comparable, so how far the codec moves a latency in region is not measured. The request counts the engine makes were measured to be
 identical on both codecs (`bench/range-counts.json`, held to the engine in CI). Alpine and arm64 Lambda were not run. Only Node 22 and 24 run in CI;
 Bun and Deno ran a local self-check only, so no edge-runtime claim is made. A week of nightly fuzz on the TypeScript codec had
 not run when these figures were taken. The in-memory table of the public class also times a load of a bitmap, `store.load(ref, { bitmap })`, on memory storage
