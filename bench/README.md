@@ -424,10 +424,10 @@ CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibr
 
 From CloudShell, in practice:
 
-- **Pipe the script through `tee` into the home directory**, as above, so a session that ends keeps the log. Give each run its own log name (the stamp above does), or use `tee -a`, so a second run does not overwrite the first's log; name a large run's `~/calibrate-large-<stamp>.log`. Once the harness has stopped, the script ignores a `tee` that has gone away, so the copy-out of the evidence completes.
+- **Pipe the script through `tee` into the home directory**, as above, so a session that ends keeps the log. Give each run its own log name (the stamp above does), or use `tee -a`, so a second run does not overwrite the first's log; for a large run, the command is in [the large suite](#the-large-suite). Once the harness has stopped, the script ignores a `tee` that has gone away, so the copy-out of the evidence completes.
 - **A run's evidence lands in the home directory even when the session ends after the run**, because the script copies it out on every exit. Before running again, list `~/*.json` and `~/bench/calibration/large/` to see what an earlier run left. A finished run is `<runId>.json` and one that stopped early is `<runId>.partial.json`; a name that was already taken gets the new copy beside it, stamped (`<runId>.<UTC stamp>.json`, or `<runId>.<UTC stamp>.partial.json`); a rehearsal writes `calibrate-aws-rehearsal.json` (or `calibrate-aws-rehearsal-large.json`), never a run's name. The large suite's files are under `~/bench/calibration/large/`.
-- **Copy a large-suite file to the home directory before downloading it.** On the runs of 2026-10-30, CloudShell's "Download file" refused the nested path, and a copy worked: `cp ~/bench/calibration/large/<runId>.json ~/large-<runId>.json`, then download that, or `cat` it. The script prints this command for a large-suite file; this is what was seen on those runs, not a standing fact about CloudShell.
-- **Keep the session alive.** CloudShell ends a session after a period with no keyboard or pointer input; the length is AWS's documented figure, not one measured here, so treat keeping the session active as a precaution. The harness is quick: the nine in-region runs committed here took 2.4 to 5.8 minutes by the harness's own `elapsedMs` (measured: the smallest is 141,115 and the largest 345,687, over the runs in `calibration/` and `calibration/large/` made from `us-east-1`), which leaves out the install the script does first.
+- **Copy a large-suite file to the home directory before downloading it.** On the runs of 2026-10-30, CloudShell's "Download file" refused the nested path, and a copy worked: `cp ~/bench/calibration/large/<runId>.json ~/large-<runId>.json`, then download that, or `cat` it; it is committed as `calibration/large/<runId>.json`, without the `large-` prefix. The script prints this command for a large-suite file; this is what was seen on those runs, not a standing fact about CloudShell.
+- **Keep the session alive.** CloudShell ends a session after a period with no keyboard or pointer input; AWS documents the length, and it is not measured here, so treat keeping the session active as a precaution. The harness is quick: the nine in-region runs committed by 2026-10-30 took 2.4 to 5.8 minutes by the harness's own `elapsedMs` (measured: the smallest is 141,115 and the largest 345,687, over the runs in `calibration/` and `calibration/large/` made from `us-east-1`), which leaves out the install the script does first.
 
 The workload's client has 128 sockets, as the library's built client does; `CR_CALIBRATE_MAX_SOCKETS=<n>` sets another
 limit, and the script echoes the one asked for before it installs anything.
@@ -520,8 +520,13 @@ do for the default suite.
 **Rehearse it, then run it.** `node bench/calibrate-aws.cjs --suite large` prints the projection: the layouts, each
 stage's bound and exact expected requests, and the bound priced. `node bench/calibrate-aws.cjs --rehearse --suite large`
 runs the suite against MinIO (about a minute), writes `calibrate-aws-rehearsal-large.json`, and holds every stage to its
-counts. A real run is the same command with `--run` and the guards above, or `CR_CALIBRATE_SUITE=large bash
-bench/calibrate-cloudshell.sh` from CloudShell, which validates the suite name before it installs anything and copies
+counts. A real run is the same command with `--run` and the guards above, or, from CloudShell,
+
+```
+CR_CALIBRATE_SUITE=large CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=<cap> bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-large-$(date -u +%Y%m%dT%H%M%SZ).log
+```
+
+(with `<cap>` at or above the priced bound that the projection prints), which validates the suite name before it installs anything and copies
 the evidence out of `bench/calibration/large/` to the same path under `~`, so that it is committed beside the large
 suite's runs and never the default suite's. `CR_CALIBRATE_LARGE_READS` and `CR_CALIBRATE_LARGE_INTOS` size the plan.
 

@@ -330,10 +330,12 @@ recipe on every other cell (the spread layout, and intersect on either layout). 
 | 31 × 500,000 | `unionCount` | 93 | 31 / 31 / 31 | 39,798,544 | 93 | 40,102,468 | 99 | 40,102,468 | 31,017,806 |
 
 Where the operands share few chunks and those chunks are together (packed), `unionCount` and `andNotCount` read only the
-shared chunks, because a chunk only one operand holds is answered from its index; the recipe reads every chunk. On the
-spread layout a union's count reads from under 1 % (the 500,000-id shapes) to 14 % (the 10,000,000-id shape) fewer bytes than the
-recipe, since the shared chunks sit among the others, and an intersect reads the same bytes as its recipe on both. The `*Into` run reads what the recipe reads and also writes the
-scratch segment, so it makes more requests.
+shared chunks, because a chunk only one operand holds is answered from its index; the recipe reads every chunk of a
+union's operands, and for a difference every chunk of the first operand and the others' shared ones. On the spread layout,
+where the shared chunks sit among the others, a union's count reads from under 1% (the 500,000-id shapes) to 14% (the
+10,000,000-id shape) fewer bytes than its recipe, and a difference's count from under 1% (the 500,000-id shape) to 8%
+(the 10,000,000-id shape); an intersect reads the same bytes as its recipe on both layouts. The `*Into` run reads what the
+recipe reads and also writes the scratch segment, so it makes more requests.
 
 **What this does not show.** It records no time: whether a smaller read is a faster one on S3 is not measured. It touched
 no cloud, so request prices, latency and the behaviour of a real object store are not in it. It ran on the in-memory
