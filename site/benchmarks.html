@@ -100,9 +100,9 @@
             </p>
             <p class="hero-lede">
               The soak and the hard RSS ceiling were measured on the TypeScript codec, the one the store uses, on 2026-10-21 (the
-              ceiling's record is the file CI's gate wrote that day). The in-region run, the large-operand run, the read,
-              fleet-memory and at-scale figures were measured on the native codec, in the release each section names, and
-              are to be re-measured. The cost model and the crossover do not depend on the codec. The comparison is
+              ceiling's record is the file CI's gate wrote that day). The in-region run and the large-operand run were measured
+              on the TypeScript codec, in the published <span class="m">0.25.0</span>. The read, fleet-memory and at-scale figures
+              were measured on the native codec, in the release each section names, and are to be re-measured. The cost model and the crossover do not depend on the codec. The comparison is
               <a href="#codec">the TypeScript codec against native</a>.</p>
             <p class="actions">
               <a class="btn btn-primary" href="#anchors">The cost anchors →</a>
@@ -192,9 +192,9 @@
                   <td class="from">
                     <strong>Measured</strong> requests at list prices: two 500,000-id segments of about 2,000 chunks sharing
                     100 that lie together made 6 GETs, a pointer read and a tail read per operand and one range each, in
-                    104.88 ms at the median. A combine reads each operand's chunks as ranges, so the requests follow the bytes the shared chunks span, not how many
+                    107.87 ms at the median. A combine reads each operand's chunks as ranges, so the requests follow the bytes the shared chunks span, not how many
                     there are; spread over each segment they are 6 GETs too, and most of each object is read. An <span class="m">andNot</span>
-                    of a segment of about 2,000 chunks against ten excludes made 33 GETs, $13.20 per million, in 297.13 ms. An
+                    of a segment of about 2,000 chunks against ten excludes made 33 GETs, $13.20 per million, in 364.53 ms. An
                     <span class="m">iterate</span> of it is <strong>expected</strong> to make 3 GETs, $1.20: the run did not time it.
                   </td>
                   <td><span class="status is-shipped">Win</span></td>
@@ -205,7 +205,7 @@
                   <td class="from">
                     A generation written once, then the pointer moved to it: a segment's first single-part
                     <span class="m">store.load()</span> made 2 PUT + 3 GET on real S3, with the pointer in the same bucket (the requests measured, the price the list price);
-                    a single-part load ran at 2.72 million ids a second. Each kind of steady load at <span class="m">keep: 12</span> was measured on the same run. The meter counts objects, not ids — so batch a refresh.
+                    a single-part load ran at 2.25 million ids a second. Each kind of steady load at <span class="m">keep: 12</span> was measured on the same run. The meter counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -757,7 +757,7 @@
         <div class="tpanel" id="single-bucket">
           <div class="tpanel-head">
             <span class="label" id="single-bucket-title">The in-region run's bill · measured, and expected where marked</span>
-            <span class="label">2026-10-13 · us-east-1 · run 2026-10-13-b329d</span>
+            <span class="label">2026-10-30 · us-east-1 · run 2026-10-30-16fa6</span>
           </div>
           <div class="tscroll">
             <table aria-labelledby="single-bucket-title">
@@ -794,14 +794,14 @@
           </div>
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where marked:
-            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a steady load at <span class="m">keep: 12</span> is measured too, on the same run, with each kind in <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#the-in-region-run--run-2026-10-13-b329d" target="_blank" rel="noopener" aria-label="The benchmarks doc's steady-load figures (opens in a new tab)">the benchmarks doc</a>. All 40
+            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a steady load at <span class="m">keep: 12</span> is measured too, on the same run, with each kind in <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#the-in-region-run--run-2026-10-30-16fa6" target="_blank" rel="noopener" aria-label="The benchmarks doc's steady-load figures (opens in a new tab)">the benchmarks doc</a>. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each fetched 100 of 1,999 chunks per segment, the chunks the two share, and
             no other, as one range. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
-            index. The median took 104.88 ms from AWS CloudShell inside the region with a client of 128 sockets, a cold <span class="m">count()</span>
-            26.98 ms, and a warm intersect 4.85 ms. PUT-class requests are the ones S3 bills at the PUT rate, listings included. The run's requests, teardown
+            index. The median took 107.87 ms from AWS CloudShell inside the region with a client of 128 sockets, a cold <span class="m">count()</span>
+            27.12 ms, and a warm intersect 7.72 ms. PUT-class requests are the ones S3 bills at the PUT rate, listings included. The run's requests, teardown
             included, cost <strong>$0.0027568</strong>; there is no data-transfer charge inside the region.
-            <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/bench/calibration/2026-10-13-b329d.md" target="_blank" rel="noopener" aria-label="The run's report (opens in a new tab)">The run's report</a>
+            <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/bench/calibration/2026-10-30-16fa6.md" target="_blank" rel="noopener" aria-label="The run's report (opens in a new tab)">The run's report</a>
             explains every figure.
           </p>
         </div>

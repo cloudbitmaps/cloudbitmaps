@@ -142,12 +142,12 @@ pass named its paths. A pass taken on a dirty tree is taken again on a clean one
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-13-b329d`](calibration/2026-10-13-b329d.md), from AWS CloudShell in `us-east-1`, on the published `0.21.0`.
+   [`2026-10-30-16fa6`](calibration/2026-10-30-16fa6.md), from AWS CloudShell in `us-east-1`, on the published `0.25.0`.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   **Paid** by the same in-region run, [`2026-10-13-b329d`](calibration/2026-10-13-b329d.md).
+   **Paid** by the same in-region run, [`2026-10-30-16fa6`](calibration/2026-10-30-16fa6.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by the same in-region run,
-   [`2026-10-13-b329d`](calibration/2026-10-13-b329d.md). Every run, with its report, is listed in
+   [`2026-10-30-16fa6`](calibration/2026-10-30-16fa6.md). Every run, with its report, is listed in
    [`calibration/`](calibration/README.md). A request count, and so the bill for
    requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
@@ -183,7 +183,7 @@ in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two 
 the window. A peak of 64 is the full window, 32 range requests held ahead of each operand; rounds above the model with a
 mean in flight well under that is a slow request holding the window. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
 client's sockets (`maxSockets`, which the record carries: what the run's client held, read back from its agents, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
-The run of 2026-10-13 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
+The run of 2026-10-30 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
 
 `andNot` reads every chunk of the segment it filters, as ranges, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
@@ -493,7 +493,7 @@ in-memory backend before anything is created (`lib/large-counts.cjs`), as the de
 is held to its exact count in both classes, PUT-class and GET-class, and a stage that differs is recorded under
 `expectedMissed`. A rehearsal against MinIO runs the same loads and reads through the S3 driver, so a wrong table fails
 it. At the default plan the stages are expected to make 169 PUT-class and 5,652 GET-class requests: $0.0031 at
-`us-east-1` on-demand prices, with the bucket's own requests left out (**derived** from the counts; the suite's first run on S3, [`2026-10-07-88cd3`](calibration/large/2026-10-07-88cd3.json), made them exactly).
+`us-east-1` on-demand prices, with the bucket's own requests left out (**derived** from the counts; the suite's two runs on S3, [`2026-10-07-88cd3`](calibration/large/2026-10-07-88cd3.json) and [`2026-10-30-5a2f4`](calibration/large/2026-10-30-5a2f4.json), each made them exactly).
 
 **The bound.** The ceiling is checked against the most the suite can request, which for a cold read is the pointer, the
 tail and one more request an operand, and the range requests of the chunks it needs. A range is bounded by bytes, not
@@ -527,7 +527,7 @@ platform with no figure for the memory available (macOS), the machine's total st
 **Evidence** goes under `calibration/large/`, one file a finished run, partials and rehearsals ignored by git as the
 default suite's are. `evidenceFiles` and the report gates list `calibration/` without descending into it, so a large run
 is never the default suite's latest evidence, and `tests/bench/calibrate-large.test.ts` holds that, and the large
-evidence's own gate, which is proven on a rehearsal's file and holds each committed run, the first of which is [`2026-10-07-88cd3`](calibration/large/2026-10-07-88cd3.json).
+evidence's own gate, which is proven on a rehearsal's file and holds each committed run, [`2026-10-07-88cd3`](calibration/large/2026-10-07-88cd3.json) and [`2026-10-30-5a2f4`](calibration/large/2026-10-30-5a2f4.json).
 
 **What it will not show.** One storage class in one region (`us-east-1`), one client, cold reads on fresh stores, and the
 harness's own socket limit; array-only and bitset-only containers; one task at a time, and `keep` left at its default for
