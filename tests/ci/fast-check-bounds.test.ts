@@ -121,7 +121,7 @@ describe("the setup's own limit", () => {
       // fast-check's interrupt with the seed, not vitest's own timeout.
       expect(output).toMatch(/Property interrupted after \d+ tests[\s\S]*seed: -?\d+/);
       expect(output).not.toMatch(/timed out/i);
-      // Read last: a child cut by vitest's timeout leaves no note, and the checks above name why.
+      // Read last: a child cut by vitest's timeout may leave no note, and the checks above name why.
       const { elapsed } = JSON.parse(readFileSync(note, 'utf8')) as { elapsed: number };
       // Ended inside the fixture's 2 s test timeout, near the 1.6 s limit.
       expect(elapsed).toBeLessThan(2_000);
