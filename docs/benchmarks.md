@@ -271,6 +271,79 @@ different CloudShell sessions are not comparable either, and this is one session
 2 CPUs, one storage class in one region, cold reads on fresh stores, and operands of array and bitset containers, none of
 them run-encoded.
 
+## Counting a combine — counted in memory, not measured
+
+> **Counted**, not measured. These are the requests and bytes the engine makes, taken by running it over the in-memory
+> backend ([`bench/combine-counts-results.json`](../bench/combine-counts-results.json), written by
+> [`bench/combine-counts.cjs`](../bench/combine-counts.cjs) and held to the engine in CI by `pnpm
+> bench:combine-counts:check`). No time was recorded and no cloud was touched; a count of requests and bytes is the same on
+> every machine, and a latency is not.
+
+**What was counted.** For each shape, the size of a combine three ways: the count method (`intersectCount`, `unionCount`
+or `andNotCount`); the stream-and-count recipe, which streams the combine in batches and adds up the lengths of the
+arrays; and the `*Into` workaround, which writes the combine to a scratch segment and calls `count()` on it. For each, the
+requests by class (range reads, tail reads and pointer reads, and the writes the `*Into` run makes) and the bytes the
+reads returned. The shapes are two operands of 500,000, 1,000,000, 5,000,000 and 10,000,000 ids over about 2,000 chunks
+each, sharing 100 of them, and a union of 31 operands of 500,000 ids on the same chunks. Each runs on two layouts: **packed**,
+where the shared chunks come first in each object, and **spread**, where they are spread over each object with each
+operand's own chunks between them. All three ways returned the same answer on every cell.
+
+**The stop rule, written before the first run:** the count ships only if it makes no more requests than the stream-and-count recipe on
+every cell, and reads fewer bytes than the recipe on union and andNot on the packed layout, and no more bytes than the
+recipe on every other cell (the spread layout, and intersect on either layout). The `*Into` run is reported, not judged.
+**Verdict: every cell passed.**
+
+**Packed layout** (counted).
+
+| Operands (ids) | Count method | Count: requests | Count: range / tail / pointer | Count: bytes read | Recipe: requests | Recipe: bytes read | `*Into`: requests | `*Into`: bytes read | `*Into`: bytes written |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 × 500,000 | `intersectCount` | 6 | 2 / 2 / 2 | 627,488 | 6 | 627,488 | 12 | 627,488 | 52,712 |
+| 2 × 500,000 | `unionCount` | 6 | 2 / 2 / 2 | 627,488 | 6 | 2,587,256 | 12 | 2,587,256 | 2,050,461 |
+| 2 × 500,000 | `andNotCount` | 6 | 2 / 2 / 2 | 627,488 | 6 | 1,607,372 | 12 | 1,607,372 | 998,987 |
+| 2 × 1,000,000 | `intersectCount` | 6 | 2 / 2 / 2 | 727,488 | 6 | 727,488 | 12 | 727,488 | 102,712 |
+| 2 × 1,000,000 | `unionCount` | 6 | 2 / 2 / 2 | 727,488 | 8 | 4,586,256 | 14 | 4,586,256 | 3,999,461 |
+| 2 × 1,000,000 | `andNotCount` | 6 | 2 / 2 / 2 | 727,488 | 7 | 2,656,872 | 13 | 2,656,872 | 1,948,487 |
+| 2 × 5,000,000 | `intersectCount` | 6 | 2 / 2 / 2 | 1,527,888 | 6 | 1,527,888 | 12 | 1,527,888 | 502,912 |
+| 2 × 5,000,000 | `unionCount` | 6 | 2 / 2 / 2 | 1,527,888 | 24 | 20,586,252 | 30 | 20,586,252 | 19,599,257 |
+| 2 × 5,000,000 | `andNotCount` | 6 | 2 / 2 / 2 | 1,527,888 | 15 | 11,057,070 | 21 | 11,057,070 | 9,548,285 |
+| 2 × 10,000,000 | `intersectCount` | 6 | 2 / 2 / 2 | 2,165,888 | 6 | 2,165,888 | 12 | 2,165,888 | 821,912 |
+| 2 × 10,000,000 | `unionCount` | 6 | 2 / 2 / 2 | 2,165,888 | 36 | 33,339,872 | 42 | 33,339,872 | 32,033,877 |
+| 2 × 10,000,000 | `andNotCount` | 6 | 2 / 2 / 2 | 2,165,888 | 21 | 17,752,880 | 27 | 17,752,880 | 15,606,095 |
+| 31 × 500,000 | `unionCount` | 93 | 31 / 31 / 31 | 9,726,064 | 93 | 40,102,468 | 99 | 40,102,468 | 31,017,807 |
+
+**Spread layout** (counted).
+
+| Operands (ids) | Count method | Count: requests | Count: range / tail / pointer | Count: bytes read | Recipe: requests | Recipe: bytes read | `*Into`: requests | `*Into`: bytes read | `*Into`: bytes written |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 × 500,000 | `intersectCount` | 6 | 2 / 2 / 2 | 2,567,648 | 6 | 2,567,648 | 12 | 2,567,648 | 52,811 |
+| 2 × 500,000 | `unionCount` | 6 | 2 / 2 / 2 | 2,567,648 | 6 | 2,587,256 | 12 | 2,587,256 | 2,050,559 |
+| 2 × 500,000 | `andNotCount` | 6 | 2 / 2 / 2 | 2,567,648 | 6 | 2,577,452 | 12 | 2,577,452 | 999,085 |
+| 2 × 1,000,000 | `intersectCount` | 8 | 4 / 2 / 2 | 4,509,040 | 8 | 4,509,040 | 14 | 4,509,040 | 102,811 |
+| 2 × 1,000,000 | `unionCount` | 8 | 4 / 2 / 2 | 4,509,040 | 8 | 4,586,256 | 14 | 4,586,256 | 3,999,559 |
+| 2 × 1,000,000 | `andNotCount` | 8 | 4 / 2 / 2 | 4,509,040 | 8 | 4,547,648 | 14 | 4,547,648 | 1,948,585 |
+| 2 × 5,000,000 | `intersectCount` | 24 | 20 / 2 / 2 | 18,679,412 | 24 | 18,679,412 | 30 | 18,679,412 | 503,011 |
+| 2 × 5,000,000 | `unionCount` | 24 | 20 / 2 / 2 | 18,679,412 | 24 | 20,586,252 | 30 | 20,586,252 | 19,599,355 |
+| 2 × 5,000,000 | `andNotCount` | 24 | 20 / 2 / 2 | 18,679,412 | 24 | 19,632,832 | 30 | 19,632,832 | 9,548,383 |
+| 2 × 10,000,000 | `intersectCount` | 34 | 30 / 2 / 2 | 28,661,312 | 34 | 28,661,312 | 40 | 28,661,312 | 822,011 |
+| 2 × 10,000,000 | `unionCount` | 34 | 30 / 2 / 2 | 28,661,312 | 36 | 33,339,872 | 42 | 33,339,872 | 32,033,975 |
+| 2 × 10,000,000 | `andNotCount` | 34 | 30 / 2 / 2 | 28,661,312 | 35 | 31,000,592 | 41 | 31,000,592 | 15,606,193 |
+| 31 × 500,000 | `unionCount` | 93 | 31 / 31 / 31 | 39,798,544 | 93 | 40,102,468 | 99 | 40,102,468 | 31,017,806 |
+
+Where the operands share few chunks and those chunks are together (packed), `unionCount` and `andNotCount` read only the
+shared chunks, because a chunk only one operand holds is answered from its index; the recipe reads every chunk of a
+union's operands, and for a difference every chunk of the first operand and the others' shared ones. On the spread layout,
+where the shared chunks sit among the others, a union's count reads from under 1% (the 500,000-id shapes) to 14% (the
+10,000,000-id shape) fewer bytes than its recipe, and a difference's count from under 1% (the 500,000-id shape) to 8%
+(the 10,000,000-id shape); an intersect reads the same bytes as its recipe on both layouts. The `*Into` run reads what the
+recipe reads and also writes the scratch segment, so it makes more requests.
+
+**What this does not show.** It records no time: whether a smaller read is a faster one on S3 is not measured. It touched
+no cloud, so request prices, latency and the behaviour of a real object store are not in it. It ran on the in-memory
+backend, over chunks of 250 ids (the 500,000-id shapes, the calibration's own layout) to 5,003 ids (the 10,000,000-id shape)
+each; real ids can be denser or sparser, and operands with other overlaps, run-encoded containers or more than the shapes
+above are not counted. The count methods are not measured on S3
+yet ([what is still owed](#what-is-still-owed)).
+
 ## At scale — measured (1K → 10K → 100K segments)
 
 > **Codec:** the native codec (the results file was last committed before the switch to the TypeScript codec). Not re-run on the TypeScript codec: the retained-heap column is the reader cache's heap, which the codec does not change, but the chunk-skipping intersect row does run the codec. To be re-measured.
@@ -616,6 +689,7 @@ throughput on S3. These are not published yet:
   1 MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
+- **The count methods on S3.** `intersectCount`, `unionCount` and `andNotCount` are [counted in memory](#counting-a-combine--counted-in-memory-not-measured), not measured on S3, and the calibration harness has no count stage.
 - **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-10-30-5a2f4), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.

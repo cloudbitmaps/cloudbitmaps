@@ -1434,6 +1434,9 @@ describe('the files the harness runs from', () => {
       );
       expect(stamped).toHaveLength(1);
       expect(out.stdout).toContain('results at ~/bench/calibration/large/2026-10-07-a.json');
+      expect(out.stdout).toContain(
+        'cp ~/bench/calibration/large/2026-10-07-a.json ~/large-2026-10-07-a.json',
+      );
       expect(out.stderr).toMatch(/~\/bench\/calibration\/large\/2026-10-07-b\.json already exists/);
     } finally {
       rmSync(root, { recursive: true, force: true });
