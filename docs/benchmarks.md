@@ -283,8 +283,8 @@ them run-encoded.
 or `andNotCount`); the stream-and-count recipe, which streams the combine in batches and adds up the lengths of the
 arrays; and the `*Into` workaround, which writes the combine to a scratch segment and calls `count()` on it. For each, the
 requests by class (range reads, tail reads and pointer reads, and the writes the `*Into` run makes) and the bytes the
-reads returned. The shapes are two operands of 500,000, 1,000,000, 5,000,000 and 10,000,000 ids over 1,999 chunks each,
-sharing 100 of them, and a union of 31 operands of 500,000 ids on the same chunks. Each runs on two layouts: **packed**,
+reads returned. The shapes are two operands of 500,000, 1,000,000, 5,000,000 and 10,000,000 ids over about 2,000 chunks
+each, sharing 100 of them, and a union of 31 operands of 500,000 ids on the same chunks. Each runs on two layouts: **packed**,
 where the shared chunks come first in each object, and **spread**, where they are spread over each object with each
 operand's own chunks between them. All three ways returned the same answer on every cell.
 

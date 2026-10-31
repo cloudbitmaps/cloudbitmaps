@@ -76,15 +76,26 @@ describe('the count methods on the benchmarks page', () => {
 
   it('quotes the stop rule as the record states it, and its verdict', () => {
     const flat = (s: string): string => s.replace(/[\s>]+/g, ' ');
-    const rule = record.stopRule.replace(/^The count ships only if it/, 'the count ships only if it');
-    expect(flat(section)).toContain(flat(rule.replace(/ The Into run is reported, not judged\.$/, '')));
+    const rule = record.stopRule.replace(
+      /^The count ships only if it/,
+      'the count ships only if it',
+    );
+    expect(flat(section)).toContain(
+      flat(rule.replace(/ The Into run is reported, not judged\.$/, '')),
+    );
     expect(record.verdict.pass).toBe(true);
     expect(section).toContain('**Verdict: every cell passed.**');
   });
 
   it('catches a figure that is not the record’s', () => {
     const c = record.shapes[0]!.cells[0]!;
-    const wrong = rowOf('500k', 'intersect', { ...c.count, bytesRead: c.count.bytesRead + 1 }, c.recipe, c.into);
+    const wrong = rowOf(
+      '500k',
+      'intersect',
+      { ...c.count, bytesRead: c.count.bytesRead + 1 },
+      c.recipe,
+      c.into,
+    );
     expect(section).not.toContain(wrong);
     expect(section).toContain(rowOf('500k', 'intersect', c.count, c.recipe, c.into));
   });
