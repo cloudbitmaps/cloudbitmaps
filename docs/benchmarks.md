@@ -261,7 +261,7 @@ sample (**measured**):
 The evidence records the run's bill, by request class, at the `aws-us-east-1-ondemand` list prices (`cost` in the file).
 
 **Against the first run** (**measured**): every stage made the same requests, by class, as that run's, and the
-bill recorded in the evidence is the same. Only the bytes of the whole reads, which are the pointers, differ.
+bill recorded in the evidence is the same. Only the bytes moved differ, slightly: the bytes of the whole reads (the pointers) are 38,000 more in each combine stage, and the bytes uploaded for the loaded segments and the `*Into` outputs are a few hundred more.
 The medians and percentiles are this session's, and latencies of runs from different CloudShell sessions are not
 comparable, so no difference between the two runs is called a speed-up or a slowdown.
 

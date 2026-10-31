@@ -105,11 +105,12 @@ wall-clock, recorded and not asserted:
   does not show in the combines that were timed through the store. The `or` of the public class in memory is timed against
   native in [the table below](#the-public-class-against-native-in-memory); what a store `union` costs on this codec is expected to
   be inside the same bar, and is not measured.
-- **Not measured:** in region against real S3, Alpine, arm64 Lambda; Bun and Deno ran a local self-check only. CI runs Node
+- **Not measured:** the two codecs compared in region against real S3 (the TypeScript codec alone was measured in region, in the default and large suites, on 0.25.0), Alpine, arm64 Lambda; Bun and Deno ran a local self-check only. CI runs Node
   22 and 24.
 
-The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) and the
-in-region and at-scale figures on the benchmarks page are the native codec's, and say so.
+The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) are the native
+codec's, and say so. On the benchmarks page the in-region and large-operand figures are the TypeScript codec's
+(the published 0.25.0), and the read, fleet-memory and at-scale figures are the native codec's, and say so.
 
 ### The public class against native, in memory
 

@@ -181,7 +181,7 @@ bucket as the data.
 | A steady single-part `store.load()` at `keep: 12`, deleting a generation by name: 2 PUT + 5 GET and a free delete | **$12.00 / million** | measured requests at list prices |
 
 Run from inside the region with a client of 128 sockets, a cold `count()` is one request at
-27.12 ms, a single-part load ran at 5,729,675 bytes a second, and an `andNot` against ten excludes made 33 GETs in 297.13 ms. The
+27.12 ms, a single-part load ran at 4,744,638 bytes a second, and an `andNot` against ten excludes made 33 GETs in 364.53 ms. The
 [benchmarks page](docs/benchmarks.md#real-cloud-calibration--aws) says exactly what it did and did not measure.
 
 ## Your data stays yours
