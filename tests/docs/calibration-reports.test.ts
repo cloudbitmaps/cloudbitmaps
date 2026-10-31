@@ -175,6 +175,16 @@ const COLLECT_WITHOUT_ROW_REREAD_MODEL: Model = {
   ...REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   listCadence: 16,
 };
+/** The model of the `0.21.0` run: a load that collects reads the pointer once more after its last delete. */
+const COLLECT_WITH_ROW_REREAD_MODEL: Model = {
+  ...COLLECT_WITHOUT_ROW_REREAD_MODEL,
+  storeLoadRequests: {
+    first: { put: 2, get: 3 },
+    reload: { put: 2, get: 2 },
+    collecting: { put: 2, get: 5 },
+    listing: { put: 3, get: 6 },
+  },
+};
 const RECORDED_MODELS: Readonly<Record<string, Model>> = {
   '2026-09-23-94416': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-03-e13c7': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
@@ -182,6 +192,7 @@ const RECORDED_MODELS: Readonly<Record<string, Model>> = {
   '2026-10-04-f3599': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-05-50b5d': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-06-9d36b': COLLECT_WITHOUT_ROW_REREAD_MODEL,
+  '2026-10-13-b329d': COLLECT_WITH_ROW_REREAD_MODEL,
 };
 const LATEST = EVIDENCE.at(-1);
 /** The model a run is read against: the live one for the latest, the recorded one for every run before it. */

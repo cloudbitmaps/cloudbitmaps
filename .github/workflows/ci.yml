@@ -70,10 +70,10 @@ jobs:
       - run: pnpm typecheck
       # The reporter records every test's duration and budget in this one run (no second run).
       - run: pnpm test --reporter=default --reporter=./scripts/test-budget-reporter.mjs
-        # A stalled test run ends the job in 15 minutes, not at the job limit. A normal one takes 8 to 11 (measured: the
-        # test step took 500 to 670 s on this workflow's runs, on either Node version, which leg is slower varying from run
-        # to run), so the limit is 1.35 times the slowest run seen: tight enough to end a stall early, with room for a
-        # slow runner.
+        # A stalled test run ends the job in 15 minutes, not at the job limit. A normal one takes 6 to 11 (measured: the
+        # test step took 373 to 681 s across the last ten successful runs on main and the last ten on pull requests,
+        # both Node versions, which leg is slower varying from run to run), so the limit is 1.35 times the slowest run
+        # seen, rounded to the minute: tight enough to end a stall early, with room for a slow runner.
         timeout-minutes: 15
       # Fails a test, or a suite's hooks, that used more than half of its time budget, and fails when the run left no
       # report: a test near its budget is the next flake.

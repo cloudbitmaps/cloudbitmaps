@@ -105,8 +105,8 @@ name.
 
 ## What it costs
 
-A cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs and took 104.88 ms at the median, **$2.40 per
-million** at list prices: measured on S3 in-region, in the run of 2026-10-13, whose client had 128 sockets. On a spread layout it reads more
+A cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs and took 107.87 ms at the median, **$2.40 per
+million** at list prices: measured on S3 in-region, in the run of 2026-10-30, whose client had 128 sockets. On a spread layout it reads more
 bytes than it needs, which cross-region can cost more than the requests it saves. A segment's first single-part `store.load()` made
 2 PUT + 3 GET, **$11.20 per million** at the default prices, pointer included: the requests are measured on S3 in-region, in the same run. A steady single-part `store.load()` at `keep: 12` that deletes a generation by name costs **$12.00 per million**, for 2 PUT + 5 GET and a free delete, the requests measured on S3 in-region, in the same run. A cold `count()` is one
 pointer read: it reads no payload and no object.
