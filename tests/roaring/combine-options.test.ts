@@ -45,6 +45,9 @@ const TAKES = {
   intersectInto: ALL,
   unionInto: ALL,
   andNotInto: [...READ, ...WRITE],
+  intersectCount: [...READ, 'exclude'],
+  unionCount: [...READ, 'exclude'],
+  andNotCount: READ,
   // Its own `concurrency`, `budget`, `allowAbsentOperands` and `keep`, and the range; the write options go on an output.
   materializeMany: [...RANGE, 'concurrency', 'budget', 'allowAbsentOperands', 'keep'],
 } as const satisfies Record<string, readonly Key[]>;
@@ -109,6 +112,9 @@ const CALLS: Record<Verb, (w: World, options: CombineOptions) => Promise<unknown
   intersectInto: (w, o) => w.a.intersectInto(w.dest, [w.b], o),
   unionInto: (w, o) => w.a.unionInto(w.dest, [w.b], o),
   andNotInto: (w, o) => w.a.andNotInto(w.dest, [w.b], o),
+  intersectCount: (w, o) => w.a.intersectCount([w.b], o),
+  unionCount: (w, o) => w.a.unionCount([w.b], o),
+  andNotCount: (w, o) => w.a.andNotCount([w.b], o),
   // Assigned onto the options rather than spread from them, so a field they inherit stays where it was.
   materializeMany: (w, o) =>
     w.store.materializeMany(
@@ -259,6 +265,9 @@ describe('no field was lost in the merge (checked by the compiler)', () => {
     expectTypeOf<Opt<Segment['intersect'], 1>>().toEqualTypeOf<CombineOptions | undefined>();
     expectTypeOf<Opt<Segment['union'], 1>>().toEqualTypeOf<CombineOptions | undefined>();
     expectTypeOf<Opt<Segment['andNot'], 1>>().toEqualTypeOf<CombineOptions | undefined>();
+    expectTypeOf<Opt<Segment['intersectCount'], 1>>().toEqualTypeOf<CombineOptions | undefined>();
+    expectTypeOf<Opt<Segment['unionCount'], 1>>().toEqualTypeOf<CombineOptions | undefined>();
+    expectTypeOf<Opt<Segment['andNotCount'], 1>>().toEqualTypeOf<CombineOptions | undefined>();
     expectTypeOf<Opt<Segment['intersectInto'], 2>>().toEqualTypeOf<CombineOptions | undefined>();
     expectTypeOf<Opt<Segment['unionInto'], 2>>().toEqualTypeOf<CombineOptions | undefined>();
     expectTypeOf<Opt<Segment['andNotInto'], 2>>().toEqualTypeOf<CombineOptions | undefined>();

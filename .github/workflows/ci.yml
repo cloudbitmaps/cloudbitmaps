@@ -105,6 +105,10 @@ jobs:
       # bench/materialize-many-counts.cjs over the in-memory backend. This recounts its small shape and fails if the committed
       # file is not what the library makes; regenerate with `pnpm bench:materialize-many-counts`. It measures nothing on a cloud.
       - run: pnpm bench:materialize-many-counts:check
+      # The requests and bytes of a combine count against the stream-and-count recipe and the `*Into` workaround are counted by
+      # bench/combine-counts.cjs over the in-memory backend, with its stop rule in the file. This recounts every shape and fails
+      # if the committed record is not what the engine makes; regenerate with `pnpm bench:combine-counts`. It measures nothing on a cloud.
+      - run: pnpm bench:combine-counts:check
       # The site's figures gate holds the pages to the figures the engine is expected to cost, which it reads from
       # bench/expected-figures.json so it needs no build. This fails if that file is not what the built estimator gives
       # from bench/range-counts.json and bench/results.json; regenerate with `pnpm bench:expected-figures`.

@@ -29,6 +29,7 @@ import type {
   ChunkRead,
   ReadChunksOptions,
   GenerationSummary,
+  HeldObjectLookup,
   StorageChunkSource,
   SegmentRef,
   SegmentSize,
@@ -88,6 +89,7 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
   readonly invalidate?: (ref: SegmentRef) => void;
   readonly exists?: (ref: SegmentRef) => Promise<boolean>;
   readonly currentVersion?: (ref: SegmentRef) => Promise<string | null>;
+  readonly verifyPinned?: (ref: SegmentRef) => Promise<void>;
 
   constructor(inner: StorageChunkSource, opts: RetryingOptions) {
     this.inner = inner;
@@ -143,6 +145,12 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
     const innerExists = inner.exists;
     if (innerExists) {
       this.exists = (ref) => withRetry(() => innerExists.call(inner, ref), this.policy, this.deps);
+    }
+    // Retried: it reads the pinned object's footer, which has a transient mode.
+    const innerVerify = (inner as Partial<HeldObjectLookup>).verifyPinned;
+    if (innerVerify) {
+      this.verifyPinned = (ref) =>
+        withRetry(() => innerVerify.call(inner, ref), this.policy, this.deps);
     }
     const innerCurrentVersion = inner.currentVersion;
     if (innerCurrentVersion) {

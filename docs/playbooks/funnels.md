@@ -13,7 +13,7 @@ Use it before you design a funnel on sets. It is a "no" page with one "yes" in i
 ## What a set can answer: did both
 
 Load one segment per step for a window (here, one week). "Did both" is an intersection, "bought without viewing" is a
-difference, and a count of either is a stream counted an array at a time ([the counting page](counting.md) has the other ways).
+difference, and a count of either is `intersectCount` or `andNotCount` (0.26.0 and later; unreleased), or a stream counted an array at a time ([the counting page](counting.md) has the other ways).
 
 <!-- typecheck -->
 ```ts
@@ -133,8 +133,8 @@ are questions about events.
 ## Limits
 
 - **No order, no time.** A set holds ids and nothing else, by design: "A then B within an hour" cannot be expressed.
-- **A count of a combine costs a read or a write today.** A direct count is planned ([the roadmap](../ROADMAP.md#planned--exploring));
-  [the counting page](counting.md) says what each way costs, and a many-step funnel repeats reads of the shared steps.
+- **A count of a combine reads the shared chunks.** `intersectCount` (0.26.0 and later; unreleased) counts a step without
+  streaming its ids; [the counting page](counting.md) says what each way costs, and a many-step funnel repeats reads of the shared steps.
 - **One segment per step per window.** Weekly windows over a year of five steps are 260 segments, and the validated envelope is
   about 100,000 in all ([what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt)).
 - **Ids are unsigned 32-bit integers.** Anonymous visitors need an id first ([id mapping](id-mapping.md)).

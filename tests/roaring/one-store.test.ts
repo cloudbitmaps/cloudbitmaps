@@ -75,12 +75,17 @@ const OPERAND_CALLS: readonly Call[] = [
   ['intersectInto', (r, f, d) => r.intersectInto(d, [f])],
   ['unionInto', (r, f, d) => r.unionInto(d, [f])],
   ['andNotInto', (r, f, d) => r.andNotInto(d, [f])],
+  ['intersectCount', (r, f) => r.intersectCount([f])],
+  ['unionCount', (r, f) => r.unionCount([f])],
+  ['andNotCount', (r, f) => r.andNotCount([f])],
 ];
 const EXCLUDE_CALLS: readonly Call[] = [
   ['intersect', (r, f) => drain(r.intersect([r], { exclude: [f] }))],
   ['union', (r, f) => drain(r.union([r], { exclude: [f] }))],
   ['intersectInto', (r, f, d) => r.intersectInto(d, [r], { exclude: [f] })],
   ['unionInto', (r, f, d) => r.unionInto(d, [r], { exclude: [f] })],
+  ['intersectCount', (r, f) => r.intersectCount([r], { exclude: [f] })],
+  ['unionCount', (r, f) => r.unionCount([r], { exclude: [f] })],
 ];
 const DEST_CALLS: readonly Call[] = [
   ['intersectInto', (r, f) => r.intersectInto(f, [r])],
