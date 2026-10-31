@@ -60,7 +60,7 @@ all its operands hold, so `intersectCount` is exact and makes the requests `inte
 a chunk key only one operand holds, that no exclude holds and that the range does not cut is answered from its index, as
 `count()` is, and its chunk is not read; every other key is decoded and counted as the stream reads it. So `unionCount`
 and `andNotCount` make no more requests than their streams and read fewer bytes where the operands share few chunks: in the bench's record, a union of two 10,000,000-id segments on the packed layout made 6 requests and read
-2,165,888 bytes where its stream made 36 and read 33,339,872 ([what it costs](../guide/reading.md#count-a-combine)).
+2,165,888 bytes where its stream made 36 and read 33,339,872 ([what it costs](../guide/reading.md#count-a-combine); [the whole record](../benchmarks.md#counting-a-combine--counted-in-memory-not-measured)).
 It writes nothing and holds no result: the memory is the stream's window of ranges.
 
 `unionCount` and `andNotCount` trust what `count()` trusts: the index, for each key they answer without decoding

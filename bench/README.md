@@ -419,8 +419,15 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 ```
 # in AWS CloudShell, in the region being measured
 git clone https://github.com/cloudbitmaps/cloudbitmaps && cd cloudbitmaps
-CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
+CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh 2>&1 | tee ~/calibrate-default.log
 ```
+
+From CloudShell, in practice:
+
+- **Pipe the script through `tee` into the home directory**, as above, so a session that ends keeps the log. The script ignores a `tee` that goes away.
+- **A run's evidence lands in the home directory even when the session ends after the run**, because the script copies it out on every exit. Before running again, list `~/*.json` and `~/bench/calibration/large/` to see what an earlier run left.
+- **Copy a large-suite file to the home directory before downloading it.** CloudShell's "Download file" refused the nested path, and a copy worked: `cp ~/bench/calibration/large/<runId>.json ~/large-<runId>.json`.
+- **Keep the session alive.** CloudShell ends a session after a stretch with no keyboard or pointer input, and a run of the default or large suite takes a few minutes: the nine in-region runs committed here took 2.4 to 5.8 minutes (measured: the smallest `elapsedMs` is 141,115 and the largest 345,687, over the runs in `calibration/` and `calibration/large/` made from `us-east-1`).
 
 The workload's client has 128 sockets, as the library's built client does; `CR_CALIBRATE_MAX_SOCKETS=<n>` sets another
 limit, and the script echoes the one asked for before it installs anything.

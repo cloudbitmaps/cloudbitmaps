@@ -79,7 +79,7 @@ alone. So the cost against the other ways to get the number:
 - **`unionCount` and `andNotCount` make no more requests than their streams, and read fewer bytes where the operands
   share few chunks.** The packed layout (the shared chunks first in each object) is where it shows. The bench's record
   ([`bench/combine-counts-results.json`](../../bench/combine-counts-results.json), counted over the in-memory backend,
-  nothing measured on a cloud) has two operands of 500,000 ids sharing 100 of 1,999 chunks reading 627,488 bytes for a
+  nothing measured on a cloud; the [benchmarks page](../benchmarks.md#counting-a-combine--counted-in-memory-not-measured) has the table) has two operands of 500,000 ids sharing 100 of 1,999 chunks reading 627,488 bytes for a
   union or a difference where the stream read 2,587,256 and 1,607,372, and two of 10,000,000 ids making 6 requests and
   reading 2,165,888 bytes where the stream made 36 and read 33,339,872 for the union. A 31-operand union of 500,000-id
   operands reads 9,726,064 bytes against 40,102,468 and makes the same 93 requests. On the spread layout the saving runs
