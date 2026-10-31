@@ -125,8 +125,9 @@ only where the result survives. Every segment a combine names has to exist, whic
 
 ## Count an audience before you send it
 
-A combine returns ids, not a number. To know how many people an audience holds, before sending, run the same expressions
-through `materializeMany` as a dry run: it computes every output and writes nothing.
+`intersectCount`, `unionCount` and `andNotCount` count one combine, as the block above counts the union. To know how many
+people each of several audiences holds before sending, and whether each would publish, run the same expressions through
+`materializeMany` as a dry run: it computes every output and writes nothing.
 
 <!-- typecheck -->
 ```ts
