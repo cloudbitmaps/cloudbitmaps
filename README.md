@@ -227,10 +227,10 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │  segment(name, opts)               intersect()  union()   andNot()    │
   │  materializeMany() ← many *Into    intersectInto() unionInto()        │
   │  exists()  segments()              andNotInto()                       │
-  │  generations() rollback()                                             │
+  │  generations() rollback()          intersectCount() unionCount()      │
   │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
   │  setRetention() getRetention()     stat()       ← number, count, size │
-  │  clearRetention()                                                     │
+  │  clearRetention()                  andNotCount()  ← sizes, no ids     │
   │  eraseSubject() subjectReport()    ← GDPR Art. 17 / Art. 15           │
   │  checkConsistency() exportSegments()                                  │
   │  invalidate()        ← forget what this store cached for a segment    │

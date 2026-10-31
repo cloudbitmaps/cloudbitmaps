@@ -230,6 +230,15 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     return this.inner.exists(ref);
   }
 
+  /** Whether the object this segment's pin holds is still there: see {@link HeldObjectLookup.verifyPinned}. */
+  verifyPinned(ref: SegmentRef): Promise<void> {
+    const pin = this.pinFor(ref);
+    const held = pin === undefined ? undefined : heldBy(pin);
+    if (pin === undefined || held === undefined || pin.generation === null)
+      return Promise.resolve();
+    return this.inner.verifyHeld(ref, pin.generation, held);
+  }
+
   invalidate(ref: SegmentRef): void {
     this.inner.invalidate(ref);
   }

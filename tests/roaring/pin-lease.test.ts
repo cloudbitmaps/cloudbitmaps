@@ -278,6 +278,17 @@ const SITES: Array<[string, (leased: Segment, h: H) => Promise<unknown>]> = [
   ['intersectInto (dest)', (l, h) => plain(h).intersectInto(l, [plain(h, THIRD)])],
   ['unionInto (operand)', (l, h) => plain(h).unionInto(dest(h), [l])],
   ['andNotInto (exclude)', (l, h) => plain(h).andNotInto(dest(h), [l])],
+  ['intersectCount (receiver)', (l, h) => l.intersectCount([plain(h)])],
+  ['intersectCount (operand)', (l, h) => plain(h).intersectCount([l])],
+  [
+    'intersectCount (exclude)',
+    (l, h) => plain(h).intersectCount([plain(h, THIRD)], { exclude: [l] }),
+  ],
+  ['unionCount (receiver)', (l, h) => l.unionCount([plain(h)])],
+  ['unionCount (operand)', (l, h) => plain(h).unionCount([l])],
+  ['unionCount (lone)', (l) => l.unionCount([])],
+  ['andNotCount (receiver)', (l, h) => l.andNotCount([plain(h)])],
+  ['andNotCount (exclude)', (l, h) => plain(h).andNotCount([l])],
 ];
 
 const dest = (h: H): Segment => h.reader.segment('dest', { namespace: 'ns' });

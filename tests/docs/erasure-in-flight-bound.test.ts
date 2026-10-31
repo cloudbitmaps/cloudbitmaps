@@ -18,7 +18,8 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  * ranges), the guide was brought to it and the note was not, which left a written promise that the code no longer
  * matched. Each states the bound in one sentence of one shape:
  *
- *   up to N chunks for `iterate` and `count`, and up to `concurrency` + 1 keys (M by default) for a combine
+ *   up to N chunks for `iterate` and `count`, and up to `concurrency` + 1 keys (M by default) for a combine or a count
+ *   of one
  *
  * and the gate reads that sentence out of each document, with its line breaks undone, and holds every copy to the
  * same N and M, and both to the library's own default windows (the engine's, and the chunk stream's, which must agree):
@@ -32,7 +33,7 @@ const ROOT = join(__dirname, '..', '..');
 const DOCS = ['PRIVACY.md', 'packages/roaring/PRIVACY.md', 'docs/guide/erasure.md'] as const;
 
 const BOUND =
-  /up to (\d+) chunks for `iterate` and `count`, and up to `concurrency` \+ 1 keys \((\d+) by default\) for a combine/g;
+  /up to (\d+) chunks for `iterate` and `count`, and up to `concurrency` \+ 1 keys \((\d+) by default\) for a combine or a count of a combine/g;
 
 /** Every bound a text states, as `[iterate and count, combine default]`, with its line breaks undone. */
 export function boundsIn(text: string): Array<[number, number]> {
@@ -56,13 +57,15 @@ describe('the in-flight bound after an erasure', () => {
 
   it('notices a copy that changed its numbers or its words, and ignores look-alikes', () => {
     const sentence =
-      'up to 32 chunks for `iterate` and `count`, and up to `concurrency` + 1\nkeys (33 by default) for a combine';
+      'up to 32 chunks for `iterate` and `count`, and up to `concurrency` + 1\nkeys (33 by default) for a combine or a count of a combine';
     expect(boundsIn(`A read ${sentence}.`)).toEqual([[32, 33]]);
     // a changed number is read as the changed number
     expect(boundsIn(sentence.replace('up to 32 chunks', 'up to 8 chunks'))).toEqual([[8, 33]]);
     expect(boundsIn(sentence.replace('(33 by default)', '(8 by default)'))).toEqual([[32, 8]]);
     // a reworded sentence is not the bound, so it is found missing rather than read as something else
-    expect(boundsIn(sentence.replace('for a combine', 'for combines'))).toEqual([]);
+    expect(
+      boundsIn(sentence.replace('for a combine or a count of a combine', 'for combines')),
+    ).toEqual([]);
     expect(boundsIn(sentence.replace('`iterate` and `count`', '`iterate`'))).toEqual([]);
     // the earlier wording, without the key in hand, is not the bound either
     expect(
@@ -70,6 +73,8 @@ describe('the in-flight bound after an erasure', () => {
         'up to 32 chunks for `iterate` and `count`, and up to `concurrency` keys (32 by default) for a combine',
       ),
     ).toEqual([]);
+    // the wording from before counts were named is not the bound either
+    expect(boundsIn(sentence.replace(' or a count of a combine', ''))).toEqual([]);
     // look-alikes elsewhere: a window of 32 chunk reads, a pointer refresh, a different bound
     expect(boundsIn('up to 32 chunks ahead of the writer, and up to 32 reads in flight')).toEqual(
       [],

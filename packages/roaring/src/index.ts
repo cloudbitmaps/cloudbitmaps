@@ -299,6 +299,29 @@ const CALL_KEYS = {
     'allowAbsentOperands',
     'exclude',
   ]),
+  intersectCount: keysOf<StreamOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'exclude',
+  ]),
+  unionCount: keysOf<StreamOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'exclude',
+  ]),
+  andNotCount: keysOf<ReadOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+  ]),
   into: keysOf<CombineOptions>()([
     'after',
     'through',
@@ -386,6 +409,9 @@ const MISPLACED = {
   range: outside(CALL_KEYS.into, CALL_KEYS.range),
   andNot: outside(CALL_KEYS.into, CALL_KEYS.andNot),
   combine: outside(CALL_KEYS.into, CALL_KEYS.combine),
+  intersectCount: outside(CALL_KEYS.into, CALL_KEYS.intersectCount),
+  unionCount: outside(CALL_KEYS.into, CALL_KEYS.unionCount),
+  andNotCount: outside(CALL_KEYS.into, CALL_KEYS.andNotCount),
   andNotInto: outside(CALL_KEYS.into, CALL_KEYS.andNotInto),
   exportSegments: ['codec'],
 } as const;
@@ -3376,11 +3402,13 @@ function operandsLabel(verb: CombineVerb): string {
  * their `*Into` forms read an empty list as the receiver itself. `verb` begins the message; the `*Into` form points a
  * caller who wanted a copy at the batch call, which reads a segment once at one instant.
  */
-function refuseNoOperands(verb: 'intersect' | 'intersectInto'): never {
+function refuseNoOperands(verb: 'intersect' | 'intersectInto' | 'intersectCount'): never {
   throw new ValidationError(
     verb === 'intersect'
       ? 'intersect requires at least one segment to intersect with; to read every id of one segment, use iterate()'
-      : 'intersectInto requires at least one segment to intersect with; to copy this segment into dest, call ' +
+      : verb === 'intersectCount'
+        ? 'intersectCount requires at least one segment to intersect with; to count one segment, use count()'
+        : 'intersectInto requires at least one segment to intersect with; to copy this segment into dest, call ' +
           "materializeMany({ operands: { src: thisSegment }, outputs: [{ dest, expr: { or: ['src'] } }], keep })",
   );
 }
@@ -4341,6 +4369,121 @@ export class Segment {
       MISPLACED.andNotInto,
     );
     return this.combineInto('andNotInto', dest, excludes, options);
+  }
+
+  /**
+   * How many ids `this ∩ others…` holds (minus `exclude`): the length of what {@link intersect} streams, without
+   * streaming it. Every key all the operands hold is decoded and counted as the stream reads it, and a key only some
+   * operands hold is not read, so the call makes the requests {@link intersect} makes and returns a number instead of
+   * the ids. It is exact: it never answers a key from an index, so it trusts nothing {@link count} trusts.
+   *
+   * The range, `concurrency`, `budget`, `allowAbsentOperands` and `exclude` are {@link intersect}'s; a write option fails
+   * the call with {@link ValidationError} before any request, and so does an empty `others` (to count one segment, use
+   * {@link count}).
+   *
+   * Like a stream, a count that runs while a segment is erased or reloaded can describe two instants, within the bound
+   * the streams state. A union or a difference, and an intersection with an `exclude`, looks at its operands'
+   * generations every `concurrency` keys; an intersection with no `exclude` makes no such look, since it decodes every
+   * key and so shows a move in the chunks it decodes, as its stream does. Either way it plans again above the last key
+   * it took when one moved. A pinned handle counts the generation it pinned, and each pinned operand's object is
+   * looked up once before the first key (one footer read each, which `budget` does not charge, and which the stream
+   * does not make), and again at each look where there is one, so an erasure of what it pinned fails the count with
+   * {@link NotFoundError}; a
+   * fault the look meets other than a transient one, which is retried, is raised as it is. A call that involves a
+   * handle whose lease has ended, or has ended by the next look, throws {@link LeaseExpiredError}.
+   */
+  async intersectCount(others: Segment[], options?: CombineOptions): Promise<number> {
+    checkOptions(
+      options,
+      'intersectCount',
+      CALL_KEYS.intersectCount,
+      ['allowAbsentOperands'],
+      MISPLACED.intersectCount,
+    );
+    return this.countCombine('intersect', others, options ?? undefined);
+  }
+
+  /**
+   * How many ids `this ∪ others…` holds (minus `exclude`): the length of what {@link union} streams, without streaming
+   * it. A chunk key only one operand holds, that no `exclude` holds and the range does not cut, is answered from that
+   * operand's index, so a union of segments that mostly do not overlap reads little of them; every other key is
+   * decoded and counted. On handles that are not pinned it makes no more requests than {@link union} does, and reads
+   * fewer bytes when the shared keys are few. An empty `others`, with no `exclude` and no range, is {@link count} of
+   * `this`, answered from the registry row when it can be; when that figure is 0 it adds one registry read, to refuse
+   * a segment that does not exist as the stream does.
+   *
+   * What it trusts: the index, for each key it answers without decoding, as {@link count} does, so a party who can write
+   * an object's index can make that key's figure wrong; a decoded key is exact. A source with no per-chunk counts
+   * decodes every key. It takes the options {@link intersectCount} takes; the erasure bound, the lease checks and the
+   * pinned handles are as for {@link intersectCount}, a pinned operand adding a footer read before the first key and at
+   * each look. An empty `others` on a pinned handle is {@link count} of the pin, with no look.
+   */
+  async unionCount(others: Segment[], options?: CombineOptions): Promise<number> {
+    checkOptions(
+      options,
+      'unionCount',
+      CALL_KEYS.unionCount,
+      ['allowAbsentOperands'],
+      MISPLACED.unionCount,
+    );
+    return this.countCombine('union', others, options ?? undefined);
+  }
+
+  /**
+   * How many ids `this \ (excludes…)` holds: the length of what {@link andNot} streams, without streaming it. A chunk
+   * key of `this` that no exclude holds and the range does not cut is answered from its index and not read; a key an
+   * exclude shares is decoded and counted. On handles that are not pinned it makes no more requests than {@link andNot}
+   * does, and reads fewer bytes when the excludes overlap little of `this`. An empty `excludes`, with no range, is
+   * {@link count} of `this` (the stream of it is the whole of `this`), answered from the registry row when it can be,
+   * with one registry read added when that figure is 0.
+   *
+   * It takes the options {@link andNot} takes (every one of {@link intersectCount}'s but `exclude`, which a count of a
+   * difference has no use for, since `excludes` is its subtraction) and trusts what {@link unionCount} trusts. The
+   * erasure bound, the lease checks and the pinned handles are as for {@link intersectCount}.
+   */
+  async andNotCount(excludes: Segment[], options?: CombineOptions): Promise<number> {
+    checkOptions(
+      options,
+      'andNotCount',
+      CALL_KEYS.andNotCount,
+      ['allowAbsentOperands'],
+      MISPLACED.andNotCount,
+    );
+    return this.countCombine('andNot', excludes, options ?? undefined);
+  }
+
+  /** The one body of the three count methods, after each has checked its own options. */
+  private async countCombine(
+    verb: CombineVerb,
+    operands: Segment[],
+    options?: CombineOptions,
+  ): Promise<number> {
+    const name = `${verb}Count`;
+    const exclude = verb === 'andNot' ? NO_SEGMENTS : this.excludesOf(options);
+    const others = segmentList(
+      operands,
+      verb === 'andNot' ? `${name}: \`excludes\`` : `${name}: \`others\``,
+    );
+    if (verb === 'intersect' && others.length === 0) refuseNoOperands('intersectCount');
+    const handles = [this, ...others, ...exclude];
+    this.assertSegments(name, verb === 'andNot' ? 'an exclude' : 'an operand', others);
+    this.assertSegments(name, 'an exclude', exclude);
+    this.assertLeases(handles);
+    const engine = this.combineEngine(handles) ?? this.engine;
+    const read = options == null ? undefined : readOptions(options);
+    const guard = handles.some((h) => h.leaseHold !== undefined)
+      ? () => this.assertLeases(handles)
+      : undefined;
+    const opts = guard === undefined ? read : { ...read, guard };
+    const refs = others.map((o) => o.ref);
+    if (verb === 'andNot') return engine.combineCount([this.ref], refs, 'all', verb, opts);
+    return engine.combineCount(
+      [this.ref, ...refs],
+      exclude.map((o) => o.ref),
+      verb === 'union' ? 'any' : 'all',
+      verb,
+      opts,
+    );
   }
   /**
    * The one body of the three combines, read as ids or as chunks. `operands` is `others` for `intersect` and

@@ -1,13 +1,13 @@
 # Counting an intersection, union or difference of stored segments
 
-Count what a combine of stored segments holds with the public calls as they are: five ways, what each reads and holds, and which to pick.
+Count what a combine of stored segments holds with the direct count calls, and the other ways for what they do not do, with what each reads and holds and which to pick.
 
 "How many people are in both lists" is the question most reporting asks, and a combine answers a different one: it
-returns the ids. `count()` answers for one stored segment, from the registry row, and there is no call that counts a
-combine of two. A direct count is planned ([the roadmap](../ROADMAP.md#planned--exploring)). Until it exists, the size of
-an intersection, a union or a difference is one of the five ways below, each correct and each with a price. This page runs
-all five on `MemoryStorage` with invented ids, and every `Output` is what the repo's tests print when they run the blocks
-as written.
+returns the ids. `count()` answers for one stored segment, from the registry row. For a combine, `intersectCount`,
+`unionCount` and `andNotCount` (0.26.0 and later; unreleased) return the size without streaming the ids. This page runs
+them first, then the other ways to the same number, each correct and each with a price, for the jobs the direct count does
+not do. Every block runs on `MemoryStorage` with invented ids, and every `Output` is what the repo's tests print when they
+run the blocks as written.
 
 Use it when you need a number, not the ids: an audience size, an overlap between two lists, a facet count, a monthly
 total over day segments. The pages that need a count link here.
@@ -35,6 +35,45 @@ Output:
 
 The two share ids 4, 5 and 6, so the answers to expect are 3 in both, 14 in either, 7 in the shoppers only and 4 in the
 subscribers only.
+
+## The direct count: `intersectCount`, `unionCount`, `andNotCount`
+
+<!-- typecheck -->
+```ts
+console.log('both', await shoppers.intersectCount([subscribers]));
+console.log('either', await shoppers.unionCount([subscribers]));
+console.log('shoppers only', await shoppers.andNotCount([subscribers]));
+```
+
+Output:
+
+<!-- output -->
+```text
+both 3
+either 14
+shoppers only 7
+```
+
+Each takes the options its stream takes (the range `after` and `through`, `concurrency`, `budget`, `allowAbsentOperands`,
+and `exclude` on `intersectCount` and `unionCount`) and answers a `Promise<number>`. An intersection decodes every key
+all its operands hold, so `intersectCount` is exact and makes the requests `intersect` makes. In a union or a difference,
+a chunk key only one operand holds, that no exclude holds and that the range does not cut is answered from its index, as
+`count()` is, and its chunk is not read; every other key is decoded and counted as the stream reads it. So `unionCount`
+and `andNotCount` make no more requests than their streams and read fewer bytes where the operands share few chunks: in the bench's record, a union of two 10,000,000-id segments on the packed layout made 6 requests and read
+2,165,888 bytes where its stream made 36 and read 33,339,872 ([what it costs](../guide/reading.md#count-a-combine)).
+It writes nothing and holds no result: the memory is the stream's window of ranges.
+
+`unionCount` and `andNotCount` trust what `count()` trusts: the index, for each key they answer without decoding
+([what `count()` trusts](../guide/reading.md#what-count-trusts)); `intersectCount` trusts no index. A decoded key is exact.
+On a pinned handle it counts the pinned generation, each pinned operand adding a footer read before the first key and at
+each look, and a leased handle is checked at the start and at each look. `intersectCount([])` is refused as `intersect([])`
+is, and `unionCount([])` and `andNotCount([])`, with no `exclude` and no range, are `count()`.
+
+Use the other ways below for what this does not do: an exact count of a union or a difference, a figure that describes one instant
+across calls (pin the operands first; the direct count of pins answers for their generations), many counts over the same
+segments in one pass, and a result you keep.
+
+The other ways follow.
 
 ## Way 1: stream the combine and count the arrays
 
@@ -64,13 +103,14 @@ either 14
 shoppers only 7
 ```
 
-This is exact: every payload it reads is decoded. It writes nothing. The array you receive is at most 65,536 ids (256 KiB); the combine
+This is exact for every key, since it decodes every payload it reads; `intersectCount` is just as exact and makes the same requests, so use this way only for a union or a difference where exactness matters more than the request count, since `unionCount` and `andNotCount` trust the index for keys only one operand holds. It writes nothing. The array you receive is at most 65,536 ids (256 KiB); the combine
 also holds the ranges it reads ahead (up to `concurrency` per operand, each up to 1 MiB) and one reader per operand
 ([the memory ceilings](../guide/production.md#the-memory-ceilings)). Its requests are the combine's own: an `intersect` reads only the chunks every operand holds (a cold intersect of
 two segments that share 100 of their 1,999 chunks made 6 GETs in [the in-region run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d)),
 an `andNot` reads all of the first segment and the others only where they overlap it, and a `union` reads every chunk of
-every operand ([what each combine reads](../guide/reading.md#combine-segments-intersect-union-andnot)). So way 1 is the
-cheap way to count an intersection and the expensive way to count a union.
+every operand ([what each combine reads](../guide/reading.md#combine-segments-intersect-union-andnot)). So way 1 reads
+no more than `intersectCount` for an intersection, which does the same without building the ids, and is the expensive way to count
+a union.
 
 ## Way 2: two counts and one intersection, over pins
 
@@ -266,8 +306,9 @@ the next run replaces it, and set `keep` so the generations it leaves are collec
 
 | You need | Pick | It reads | It holds | It writes |
 |---|---|---|---|---|
-| The size of one intersection | way 1 | the shared chunks only | the array you receive (256 KiB) and the ranges read ahead | nothing |
-| The size of a union or a difference of two, once | way 2 (way 1 where exact matters more) | the shared chunks, a row read and a tail read per pin, and two counts from the registry | the ranges read ahead | a lease on each segment (a registry write each, and one more on `release()`) |
+| The size of an intersection, a union or a difference, once | `intersectCount`, `unionCount`, `andNotCount` | the intersect's requests; a union's or difference's chunks only where operands share keys | the ranges read ahead | nothing |
+| The size of a union or a difference with every key decoded | way 1 | every chunk (a union), all of the first operand's and the excludes' where they overlap it (a difference) | the array you receive (256 KiB) and the ranges read ahead | nothing |
+| The size of a union or a difference of two, from three numbers over pins | way 2 | the shared chunks, a row read and a tail read per pin, and two counts from the registry | the ranges read ahead | a lease on each segment (a registry write each, and one more on `release()`) |
 | Many counts over the same few segments | way 4 | each operand's chunks once | the outputs' results, up to 256 MiB by default | nothing |
 | One segment against many, or counts repeated | way 3 | every chunk of every operand, once | the operands | nothing |
 | A union of many segments | way 4 (an `or` over any number of operands, one pass), way 5, or way 3 over every operand | every chunk | the results, the result, or every operand | nothing, a segment, or nothing |
@@ -305,13 +346,13 @@ ValidationError
 
 ## Limits
 
-- **There is no direct count yet.** Each way above is a workaround that costs reads, memory or a write. A direct count is
-  planned and its design is not settled ([planned work](../ROADMAP.md#planned--exploring)).
+- **`unionCount` and `andNotCount` trust the index for keys only one operand holds**, as `count()` does, and have no
+  option that decodes them all; `intersectCount` is exact, and for a union or a difference way 1 is the exact count. Each other way costs reads, memory or a write.
 - **Counts across several segments are as fresh as the handles they read.** Live handles can describe two instants; pins
   describe one. The bound on what a long call serves of an earlier generation is
   [how soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load).
-- **An `andNot` and a `union` read more than an `intersect`.** Only an intersection skips chunks, so counting the others
-  is the expensive part of a report.
+- **An `andNot` and a `union` read more than an `intersect`.** Only an intersection skips chunks; `unionCount` and
+  `andNotCount` read fewer bytes than their streams where the operands share few chunks, but still read the shared ones.
 - **Overlap matrices.** N audiences against each other is N(N-1)/2 combines. Read each audience once (way 3 or way 4);
   never stream one combine per pair.
 - **Some shapes are unmeasured on S3.** An intersect, a union, an `andNot` and the `*Into` verbs are measured on real S3
