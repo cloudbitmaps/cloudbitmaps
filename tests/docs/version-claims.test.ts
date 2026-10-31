@@ -197,12 +197,6 @@ const FOREIGN_VERSIONS = new Map<string, string>([
     'the Node version the TypeScript-codec comparison ran on, in the benchmarks page, the site benchmarks page and the codec ' +
       'page — a fact about the measurement, not a release',
   ],
-  [
-    '0.25.0',
-    'the release that added the public `RoaringBitmap` class, named as the first version that has it ("0.25.0 and ' +
-      'later") in the guides, the playbooks, the site and the contributing guide. A historical version, not a ' +
-      'claim about the current release',
-  ],
 ]);
 
 /**

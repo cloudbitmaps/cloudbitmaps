@@ -3,9 +3,9 @@
 `@cloudbitmaps/roaring` keeps its bitmaps with a Roaring implementation of its own, written in TypeScript on typed
 arrays, with no native code. This page says what that is, what it guarantees (the same portable bytes as CRoaring, byte
 for byte) and the evidence for it, what it costs and gains against the native codec, and the one public class,
-`RoaringBitmap` (0.25.0 and later), that lets you use it by itself.
+`RoaringBitmap`, that lets you use it by itself.
 
-Everything here is about 0.25.0 and later; a figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
+A figure that was taken on an earlier build says so. Each figure says whether it was **measured** (a run named here took it),
 **derived** (computed from measured figures by the rule beside it) or **expected** (what the code is expected to do, not
 taken).
 

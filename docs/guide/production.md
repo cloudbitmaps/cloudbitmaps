@@ -764,7 +764,7 @@ the TypeScript codec**:
 | a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~526 ms | **~24 ms** (47 ms at worst) | a batch job or worker; survivable off the request path |
 | `eraseSubject` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
 | `store.materializeMany` | decodes each operand chunk once per group and encodes every output, as an `*Into` does | not measured | a batch job or worker, as for a load |
-| a `RoaringBitmap` (0.25.0 and later): a large `deserialize`, `toArray` or combine | synchronous, on the calling thread, for the whole call; its time is the in-memory table in [the codec page](roaring-codec.md#the-public-class-against-native-in-memory), and no event-loop figure exists for it | not measured | a worker or a batch job for large inputs; anywhere for small ones |
+| a `RoaringBitmap`: a large `deserialize`, `toArray` or combine | synchronous, on the calling thread, for the whole call; its time is the in-memory table in [the codec page](roaring-codec.md#the-public-class-against-native-in-memory), and no event-loop figure exists for it | not measured | a worker or a batch job for large inputs; anywhere for small ones |
 | `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as

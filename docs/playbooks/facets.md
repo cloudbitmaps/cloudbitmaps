@@ -265,7 +265,7 @@ ValidationError
 - **One segment per value.** A field with many values costs a segment each, and the validated envelope is about 100,000
   segments in all ([what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt)). A
   field of tens of thousands of values is a different design.
-- **A facet count is a combine's size.** `intersectCount` answers it without streaming the ids (0.26.0 and later),
+- **A facet count is a combine's size.** `intersectCount` answers it without streaming the ids,
   and a dry run answers many in one pass ([the counting page](counting.md) says what each costs).
 - **Freshness is your load cadence.** A catalogue change is seen after the next load, and a reader in another process within
   `cache.genTtlMs` after that ([how soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load)).

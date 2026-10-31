@@ -156,7 +156,7 @@ An `*Into` keeps every generation it writes unless told otherwise, and each reta
 the step passes `keep` (`keep: 2` leaves two older generations). A roll back is a step to a smaller number, and the check is the same `has` as before. Prove the property the recipe relies
 on, that nobody leaves while the percentage grows, with the set comparisons of the standalone class:
 
-This block imports `RoaringBitmap` (0.25.0 and later).
+This block imports `RoaringBitmap`.
 
 <!-- typecheck -->
 ```ts

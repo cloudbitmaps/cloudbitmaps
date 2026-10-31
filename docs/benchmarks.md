@@ -564,7 +564,7 @@ sets up to 14.4M members, has no figure yet.
 
 ## The public bitmap class against native, in memory
 
-A third body of figures (the class is in 0.25.0 and later), apart from the store comparison above and the native-codec figures elsewhere on this page: the
+A third body of figures (the public `RoaringBitmap` class), apart from the store comparison above and the native-codec figures elsewhere on this page: the
 public `RoaringBitmap` class, timed in a loop in memory against the pinned `roaring` package (CRoaring through its
 binding) and against the codec call the store runs, one cell per operation and data set, losses printed. It has no
 store and no network, so nothing hides a slow combine. The table is generated from
