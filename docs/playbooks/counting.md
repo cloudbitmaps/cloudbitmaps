@@ -4,7 +4,7 @@ Count what a combine of stored segments holds with the direct count calls, and t
 
 "How many people are in both lists" is the question most reporting asks, and a combine answers a different one: it
 returns the ids. `count()` answers for one stored segment, from the registry row. For a combine, `intersectCount`,
-`unionCount` and `andNotCount` (0.26.0 and later; unreleased) return the size without streaming the ids. This page runs
+`unionCount` and `andNotCount` (0.26.0 and later) return the size without streaming the ids. This page runs
 them first, then the other ways to the same number, each correct and each with a price, for the jobs the direct count does
 not do. Every block runs on `MemoryStorage` with invented ids, and every `Output` is what the repo's tests print when they
 run the blocks as written.

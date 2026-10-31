@@ -105,7 +105,7 @@ console.log('buyers and newsletter, not opted out', await collect(buyers.interse
 // Newsletter readers who have not bought: a win-back audience.
 console.log('newsletter, not buyers', await collect(newsletter.andNot([buyers, optOut])));
 // Everyone in either list.
-console.log('buyers or newsletter', (await collect(buyers.union([newsletter]))).length);
+console.log('buyers or newsletter', await buyers.unionCount([newsletter]));
 // Buyers in the EU, and on the newsletter.
 console.log('eu buyers on the newsletter', await collect(buyers.intersect([newsletter, eu], { exclude: [optOut] })));
 ```
@@ -265,7 +265,7 @@ ValidationError
   of the load (2 seconds by default, [how soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load)).
   Events that arrive one at a time belong in the system that receives them; load the set on a cadence.
 - **Counting a combine is its own call.** `count()` answers for one stored segment from its registry row, and a combine
-  returns ids; `intersectCount`, `unionCount` and `andNotCount` (0.26.0 and later; unreleased) return the size of one
+  returns ids; `intersectCount`, `unionCount` and `andNotCount` (0.26.0 and later) return the size of one
   without streaming it, and trust the index for keys they do not decode. The other ways are the dry run above, an `*Into`
   followed by `count()`, or streaming the ids into a `RoaringBitmap` (`batches()` yields `Uint32Array`s) and reading its
   `size` ([the counting page](counting.md) compares them).
