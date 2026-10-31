@@ -82,8 +82,8 @@ alone. So the cost against the other ways to get the number:
   nothing measured on a cloud; the [benchmarks page](../benchmarks.md#counting-a-combine--counted-in-memory-not-measured) has the table) has two operands of 500,000 ids sharing 100 of 1,999 chunks reading 627,488 bytes for a
   union or a difference where the stream read 2,587,256 and 1,607,372, and two of 10,000,000 ids making 6 requests and
   reading 2,165,888 bytes where the stream made 36 and read 33,339,872 for the union. A 31-operand union of 500,000-id
-  operands reads 9,726,064 bytes against 40,102,468 and makes the same 93 requests. On the spread layout the saving runs
-  from under 1% (500,000 ids) to 14% (10,000,000 ids) of the bytes, and the requests are the same or fewer.
+  operands reads 9,726,064 bytes against 40,102,468 and makes the same 93 requests. On the spread layout a union's saving runs
+  from under 1% (500,000 ids) to 14% (10,000,000 ids) of the bytes and a difference's to 8%, and the requests are the same or fewer.
 - **`unionCount([])` and `andNotCount([])`**, with no `exclude` and no range, are `count()` of the receiver, answered from
   the registry row when it can be; a figure of 0 adds one registry read, which refuses a segment that does not exist as
   the stream does. `intersectCount([])` is refused with `ValidationError`, as `intersect([])` is: an intersection over nothing has no meaning.

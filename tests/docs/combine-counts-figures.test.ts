@@ -204,7 +204,7 @@ describe('the count methods on the benchmarks page', () => {
       `a union's count reads from ${union.low}% (the 500,000-id shapes) to ${union.top}% (the 10,000,000-id shape) fewer bytes than its recipe, and a difference's count from ${andNot.low}% (the 500,000-id shape) to ${andNot.top}% (the 10,000,000-id shape)`,
     );
     expect(flat(read('docs', 'guide', 'reading.md'))).toContain(
-      `from ${union.low}% (500,000 ids) to ${union.top}% (10,000,000 ids) of the bytes`,
+      `a union's saving runs from ${union.low}% (500,000 ids) to ${union.top}% (10,000,000 ids) of the bytes and a difference's to ${andNot.top}%`,
     );
     for (const s of twoOperand) {
       for (const layout of ['packed', 'spread']) {

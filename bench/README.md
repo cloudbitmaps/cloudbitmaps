@@ -526,7 +526,7 @@ counts. A real run is the same command with `--run` and the guards above, or, fr
 CR_CALIBRATE_SUITE=large CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=<cap> bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-large-$(date -u +%Y%m%dT%H%M%SZ).log
 ```
 
-(with `<cap>` at or above the priced bound that the projection prints), which validates the suite name before it installs anything and copies
+(with `<cap>` above the priced bound that the projection prints: a cap equal to the bound is refused), which validates the suite name before it installs anything and copies
 the evidence out of `bench/calibration/large/` to the same path under `~`, so that it is committed beside the large
 suite's runs and never the default suite's. `CR_CALIBRATE_LARGE_READS` and `CR_CALIBRATE_LARGE_INTOS` size the plan.
 
