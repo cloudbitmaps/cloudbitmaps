@@ -177,24 +177,44 @@ describe('the count methods on the benchmarks page', () => {
   });
 
   it('gives the spread layout’s saving as the record has it', () => {
-    const savings = record.shapes.map((s) => {
-      const c = s.cells.find((x) => x.layout === 'spread' && x.op === 'union')!;
-      return {
-        id: s.id,
-        ops: s.idsPerOperand,
-        pct: (100 * (c.recipe.bytesRead - c.count.bytesRead)) / c.recipe.bytesRead,
-      };
-    });
-    const top = Math.round(Math.max(...savings.map((s) => s.pct)));
-    expect(savings.filter((s) => s.ops === 500_000).every((s) => s.pct < 1)).toBe(true);
-    expect(flat(section)).toContain(`to ${top} % (the 10,000,000-id shape) fewer bytes`);
+    const range = (op: string): { low: string; top: number } => {
+      const savings = record.shapes
+        .filter((s) => s.cells.some((x) => x.layout === 'spread' && x.op === op))
+        .map((s) => {
+          const c = cell(s.id, 'spread', op);
+          return {
+            id: s.id,
+            ops: s.idsPerOperand,
+            pct: (100 * (c.recipe.bytesRead - c.count.bytesRead)) / c.recipe.bytesRead,
+          };
+        });
+      const most = savings.reduce((a, b) => (b.pct > a.pct ? b : a));
+      const least = savings.reduce((a, b) => (b.pct < a.pct ? b : a));
+      expect(most.id, op).toBe('10M');
+      expect(least.ops, op).toBe(500_000);
+      expect(
+        savings.filter((s) => s.ops === 500_000).every((s) => s.pct < 1),
+        op,
+      ).toBe(true);
+      return { low: 'under 1', top: Math.round(most.pct) };
+    };
+    const union = range('union');
+    const andNot = range('andNot');
+    expect(flat(section)).toContain(
+      `a union's count reads from ${union.low}% (the 500,000-id shapes) to ${union.top}% (the 10,000,000-id shape) fewer bytes than its recipe, and a difference's count from ${andNot.low}% (the 500,000-id shape) to ${andNot.top}% (the 10,000,000-id shape)`,
+    );
     expect(flat(read('docs', 'guide', 'reading.md'))).toContain(
-      `to ${top}% (10,000,000 ids) of the bytes`,
+      `from ${union.low}% (500,000 ids) to ${union.top}% (10,000,000 ids) of the bytes`,
     );
     for (const s of twoOperand) {
-      const c = s.cells.find((x) => x.layout === 'spread' && x.op === 'intersect')!;
-      expect(c.count.bytesRead, s.id).toBe(c.recipe.bytesRead);
+      for (const layout of ['packed', 'spread']) {
+        const c = cell(s.id, layout, 'intersect');
+        expect(c.count.bytesRead, `${s.id} ${layout}`).toBe(c.recipe.bytesRead);
+      }
     }
+    expect(flat(section)).toContain(
+      'an intersect reads the same bytes as its recipe on both layouts',
+    );
   });
 
   it('quotes the stop rule as the record states it, and its verdict', () => {
@@ -243,9 +263,14 @@ describe('the counted figures in the guides', () => {
     );
   });
 
-  it('counting.md quotes the shared chunks of the in-region run, not of the record', () => {
-    expect(counting).toContain('share 100 of their 1,999 chunks');
-    expect(big.sharedChunks).toBe(100);
-    expect(big.chunksPerOperand).toBe(1_999);
+  it('counting.md quotes the shared chunks of the in-region run it links, from that run’s evidence', () => {
+    const runId = /the-in-region-run--run-(\d{4}-\d{2}-\d{2}-[0-9a-f]{5})/.exec(counting)?.[1];
+    expect(runId).toBeDefined();
+    const run = JSON.parse(read('bench', 'calibration', `${runId}.json`)) as {
+      workload: { chunksPerSegment: number; sharedChunks: number };
+    };
+    expect(counting).toContain(
+      `share ${run.workload.sharedChunks} of their ${fmt(run.workload.chunksPerSegment)} chunks`,
+    );
   });
 });
