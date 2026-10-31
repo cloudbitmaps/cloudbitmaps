@@ -13,7 +13,7 @@ Use it before you design a funnel on sets. It is a "no" page with one "yes" in i
 ## What a set can answer: did both
 
 Load one segment per step for a window (here, one week). "Did both" is an intersection, "bought without viewing" is a
-difference, and a count of either is `intersectCount` or `andNotCount` (0.26.0 and later; unreleased), or a stream counted an array at a time ([the counting page](counting.md) has the other ways).
+difference, and a count of either is `intersectCount` or `andNotCount`, or a stream counted an array at a time ([the counting page](counting.md) has the other ways).
 
 <!-- typecheck -->
 ```ts
@@ -27,16 +27,10 @@ const viewed = store.segment('viewed', { namespace: 'week-1' });
 const carted = store.segment('carted', { namespace: 'week-1' });
 const purchased = store.segment('purchased', { namespace: 'week-1' });
 
-async function countOf(batches: AsyncIterable<Uint32Array>): Promise<number> {
-  let n = 0;
-  for await (const ids of batches) n += ids.length;
-  return n;
-}
-
 console.log('viewed', await viewed.count());
-console.log('viewed and carted', await countOf(viewed.intersect([carted]).batches()));
-console.log('all three', await countOf(viewed.intersect([carted, purchased]).batches()));
-console.log('bought without a view', await countOf(purchased.andNot([viewed]).batches()));
+console.log('viewed and carted', await viewed.intersectCount([carted]));
+console.log('all three', await viewed.intersectCount([carted, purchased]));
+console.log('bought without a view', await purchased.andNotCount([viewed]));
 ```
 
 Output:
@@ -59,7 +53,7 @@ first.
 in the first, each person viewed and then carted, one within the hour and one not; in the second, each carted and then viewed.
 Their step sets are the same.
 
-This block imports `RoaringBitmap` (0.25.0 and later).
+This block imports `RoaringBitmap`.
 
 <!-- typecheck -->
 ```ts
@@ -133,7 +127,7 @@ are questions about events.
 ## Limits
 
 - **No order, no time.** A set holds ids and nothing else, by design: "A then B within an hour" cannot be expressed.
-- **A count of a combine reads the shared chunks.** `intersectCount` (0.26.0 and later; unreleased) counts a step without
+- **A count of a combine reads the shared chunks.** `intersectCount` counts a step without
   streaming its ids; [the counting page](counting.md) says what each way costs, and a many-step funnel repeats reads of the shared steps.
 - **One segment per step per window.** Weekly windows over a year of five steps are 260 segments, and the validated envelope is
   about 100,000 in all ([what is proven and what is not](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt)).

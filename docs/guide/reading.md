@@ -57,7 +57,7 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
 
 ## Count a combine
 
-`intersectCount`, `unionCount` and `andNotCount` (0.26.0 and later; unreleased) return how many ids a combine holds,
+`intersectCount`, `unionCount` and `andNotCount` return how many ids a combine holds,
 the length of what `intersect`, `union` or `andNot` would stream, without streaming it. Each takes the options its
 stream takes (the range, `concurrency`, `budget`, `allowAbsentOperands`, and `exclude` on the first two) and returns a
 `Promise<number>`:
