@@ -106,8 +106,11 @@ const shapes: ReadonlyArray<[string, (key: number, out: number[]) => void, boole
 ];
 
 describe('a decoded bitmap of many small containers does not pin its input either', () => {
+  // Budget 8 s (the default is 5 s): the slowest measured time was 2.5 s, on a Node 24 CI runner. Rule: that time times
+  // three, rounded up to the next whole second.
   it.each(shapes)(
     'the public door, %s containers: reduced by removing the others, it holds its own container',
+    { timeout: 8000 },
     (_name, fill, optimize) => {
       const ids: number[] = [];
       const others: number[] = [];

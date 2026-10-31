@@ -153,7 +153,11 @@ describe('the marker scan', () => {
   });
 });
 
-describe('the compile step', () => {
+// Budget 14 s for each test of this block (the default is 5 s): the first one to read the problems compiles the probes,
+// which took 4.4 s on a CI runner (Node 22). Rule: the slowest measured time times three, rounded up to the next whole
+// second. The compile runs in that first test, not in a `beforeAll`, because the budget check judges a hook against the
+// configured hook timeout and cannot see a hook's own.
+describe('the compile step', { timeout: 14_000 }, () => {
   // Compiling takes seconds, so every probe is compiled once, together, each under its own file name, and the
   // problems are read back by file.
   const probe = (name: string, code: string, preludes: string[] = []): DocSample => ({
@@ -198,12 +202,11 @@ describe('the compile step', () => {
       "import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';\nconst store = new CloudRoaring({ storage: new MemoryStorage() });\nvoid store;",
     ),
   ];
-  let problems: ReturnType<typeof compileSamples> = [];
-  beforeAll(() => {
-    problems = compileSamples(probes);
-  }, 300_000);
+  let compiled: ReturnType<typeof compileSamples> | undefined;
   const of = (file: string): string[] =>
-    problems.filter((p) => p.where.startsWith(`${file}:`)).map((p) => `${p.where} ${p.message}`);
+    (compiled ??= compileSamples(probes))
+      .filter((p) => p.where.startsWith(`${file}:`))
+      .map((p) => `${p.where} ${p.message}`);
 
   it('accepts a sample that compiles, and names the line of one that does not', () => {
     expect(of('good.md')).toEqual([]);

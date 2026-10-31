@@ -131,41 +131,47 @@ describe('pnpm test:no-dist', () => {
     expect(existsSync(join(root, 'packages', 'bare', 'dist'))).toBe(false);
   });
 
-  it('puts back a dist a killed run left hidden before the next run starts', () => {
-    // A build ran after the kill, so the leftover and the new dist both want the same place under the aside folder:
-    // a run that hid first and restored afterwards would fail while hiding (status 2); one that restores first runs.
-    leaveHidden();
-    mkdirSync(join(root, 'packages', 'p', 'dist'));
-    writeFileSync(dist(), 'export const answer = 0;\n');
-    const run = noDist('plant.test.ts');
-    expect(run.status).toBe(1);
-    expect(text(run)).toMatch(/Cannot find module|Failed to load/);
-    // The build that could not go back is named, not moved aside in silence.
-    expect(text(run)).toMatch(/kept a hidden dist for p /);
-    expect(readFileSync(dist(), 'utf8')).toBe('export const answer = 0;\n');
-    expect(readdirSync(join(aside(), 'kept'))).toHaveLength(1);
+  // Budget 7 s (the default is 5 s): the slowest measured time was 2.3 s, on a developer machine (2.1 s on a CI runner).
+  // Rule: that time times three, rounded up to the next whole second.
+  it(
+    'puts back a dist a killed run left hidden before the next run starts',
+    { timeout: 7000 },
+    () => {
+      // A build ran after the kill, so the leftover and the new dist both want the same place under the aside folder:
+      // a run that hid first and restored afterwards would fail while hiding (status 2); one that restores first runs.
+      leaveHidden();
+      mkdirSync(join(root, 'packages', 'p', 'dist'));
+      writeFileSync(dist(), 'export const answer = 0;\n');
+      const run = noDist('plant.test.ts');
+      expect(run.status).toBe(1);
+      expect(text(run)).toMatch(/Cannot find module|Failed to load/);
+      // The build that could not go back is named, not moved aside in silence.
+      expect(text(run)).toMatch(/kept a hidden dist for p /);
+      expect(readFileSync(dist(), 'utf8')).toBe('export const answer = 0;\n');
+      expect(readdirSync(join(aside(), 'kept'))).toHaveLength(1);
 
-    // A package folder that is gone is named too, by a run and not only by --restore.
-    rmSync(aside(), { recursive: true });
-    mkdirSync(join(aside(), 'hidden', 'gone', 'dist'), { recursive: true });
-    writeFileSync(join(aside(), 'hidden', 'gone', 'dist', 'index.js'), BUILT);
-    writeFileSync(join(aside(), 'lock'), '2147483646');
-    plant("test('runs', () => {});");
-    const gone = noDist('plant.test.ts');
-    expect(gone.status).toBe(0);
-    expect(text(gone)).toMatch(/kept a hidden dist for gone /);
-    plant(PLANT);
+      // A package folder that is gone is named too, by a run and not only by --restore.
+      rmSync(aside(), { recursive: true });
+      mkdirSync(join(aside(), 'hidden', 'gone', 'dist'), { recursive: true });
+      writeFileSync(join(aside(), 'hidden', 'gone', 'dist', 'index.js'), BUILT);
+      writeFileSync(join(aside(), 'lock'), '2147483646');
+      plant("test('runs', () => {});");
+      const gone = noDist('plant.test.ts');
+      expect(gone.status).toBe(0);
+      expect(text(gone)).toMatch(/kept a hidden dist for gone /);
+      plant(PLANT);
 
-    // With no build in between the leftover itself goes back, and the plant that needs it passes on a plain run.
-    rmSync(aside(), { recursive: true });
-    rmSync(join(root, 'packages', 'p', 'dist'), { recursive: true });
-    mkdirSync(join(root, 'packages', 'p', 'dist'));
-    writeFileSync(dist(), BUILT);
-    leaveHidden();
-    expect(restoreOnly().status).toBe(0);
-    expect(plain('plant.test.ts').status).toBe(0);
-    expect(existsSync(aside())).toBe(false);
-  });
+      // With no build in between the leftover itself goes back, and the plant that needs it passes on a plain run.
+      rmSync(aside(), { recursive: true });
+      rmSync(join(root, 'packages', 'p', 'dist'), { recursive: true });
+      mkdirSync(join(root, 'packages', 'p', 'dist'));
+      writeFileSync(dist(), BUILT);
+      leaveHidden();
+      expect(restoreOnly().status).toBe(0);
+      expect(plain('plant.test.ts').status).toBe(0);
+      expect(existsSync(aside())).toBe(false);
+    },
+  );
 
   it('never deletes a hidden build: it keeps it when its package has a dist again or is gone', () => {
     // A build ran after the kill.

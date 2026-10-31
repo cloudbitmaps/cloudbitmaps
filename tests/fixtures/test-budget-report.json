@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "tests": 10,
+  "skipped": 1,
+  "untimed": 1,
+  "expected": {
+    "tests": 10,
+    "skipped": 1
+  },
+  "entries": [
+    {
+      "kind": "test",
+      "name": "default budget, quick",
+      "file": "planted.test.mjs",
+      "duration": 23,
+      "budget": 1000
+    },
+    {
+      "kind": "test",
+      "name": "default budget, past half",
+      "file": "planted.test.mjs",
+      "duration": 704,
+      "budget": 1000
+    },
+    {
+      "kind": "test",
+      "name": "explicit budget, under half",
+      "file": "planted.test.mjs",
+      "duration": 705,
+      "budget": 4000
+    },
+    {
+      "kind": "test",
+      "name": "explicit budget, past half",
+      "file": "planted.test.mjs",
+      "duration": 1202,
+      "budget": 2000
+    },
+    {
+      "kind": "test",
+      "name": "slow hooks > quick body",
+      "file": "planted.test.mjs",
+      "duration": 20,
+      "budget": 1000
+    },
+    {
+      "kind": "hook",
+      "hook": "beforeAll and afterAll",
+      "name": "slow hooks",
+      "file": "planted.test.mjs",
+      "duration": 703,
+      "budget": 1000
+    },
+    {
+      "kind": "test",
+      "name": "quick hooks > quick body too",
+      "file": "planted.test.mjs",
+      "duration": 21,
+      "budget": 1000
+    },
+    {
+      "kind": "hook",
+      "hook": "beforeAll and afterAll",
+      "name": "quick hooks",
+      "file": "planted.test.mjs",
+      "duration": 43,
+      "budget": 1000
+    },
+    {
+      "kind": "test",
+      "name": "slow each-hook > quick body",
+      "file": "planted.test.mjs",
+      "duration": 723,
+      "budget": 1000
+    },
+    {
+      "kind": "test",
+      "name": "inherited budget > describe-level, under half",
+      "file": "planted.test.mjs",
+      "duration": 802,
+      "budget": 6000
+    },
+    {
+      "kind": "test",
+      "name": "file-level, under half",
+      "file": "setconfig.test.mjs",
+      "duration": 812,
+      "budget": 3000
+    }
+  ]
+}

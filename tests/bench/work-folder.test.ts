@@ -213,7 +213,9 @@ describe('a bench’s temp folder is removed on every way out', () => {
     );
   });
 
-  it('names a folder made after the failure is known, too', async () => {
+  // Budget 6 s (the default is 5 s): it waits out a 1.5 s timer, and the slowest measured time was 1.85 s, on a CI runner
+  // and a developer machine alike. Rule: that time times three, rounded up to the next whole second.
+  it('names a folder made after the failure is known, too', { timeout: 6000 }, async () => {
     const lone = own('work-folder-lone-');
     const copy = join(lone, 'work-folder.cjs');
     copyFileSync(LIB, copy);

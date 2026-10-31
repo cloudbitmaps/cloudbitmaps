@@ -29,25 +29,34 @@ const slowProperty = () =>
     await Promise.resolve();
   });
 
-describe('a property that overruns its limit', () => {
-  it('fails naming its seed before the test timeout', { timeout: 3000 }, async () => {
+describe('a property that overruns a time limit', () => {
+  // The limit is passed here, in place of the setup's 0.8 of the test's timeout: a test that runs until that limit uses
+  // 80 % of its budget whatever the budget is, so it would sit above the half a test may use. So these two prove that
+  // fast-check's own time limit cuts a runaway property and, with the setup's `markInterruptAsFailure` and seed, fails
+  // it naming the seed (or, with that option off, passes it silently). That the setup sets the limit to 0.8 of the
+  // test's timeout is held only by the three config reads below: no test cuts a runaway property by the setup's own
+  // limit end to end, and the child-process run under 'a run that never returns' holds the seed line, not the cut.
+  const LIMIT = 1000;
+
+  it('fails naming its seed when its time limit cuts it', async () => {
     const started = Date.now();
     const seed = fc.readConfigureGlobal().seed;
-    await expect(fc.assert(slowProperty(), { numRuns: 1000 })).rejects.toThrow(
-      new RegExp(`Property interrupted after \\d+ tests[\\s\\S]*seed: ${seed}`),
-    );
-    expect(Date.now() - started).toBeLessThan(3000);
+    await expect(
+      fc.assert(slowProperty(), { numRuns: 1000, interruptAfterTimeLimit: LIMIT }),
+    ).rejects.toThrow(new RegExp(`Property interrupted after \\d+ tests[\\s\\S]*seed: ${seed}`));
+    // Cut near the limit, not run to its 1000 runs (50 s) or to the test timeout.
+    expect(Date.now() - started).toBeLessThan(3 * LIMIT);
   });
 
-  it(
-    'passes silently without markInterruptAsFailure, which is why the setup sets it',
-    { timeout: 3000 },
-    async () => {
-      await expect(
-        fc.assert(slowProperty(), { numRuns: 1000, markInterruptAsFailure: false }),
-      ).resolves.toBeUndefined();
-    },
-  );
+  it('passes silently without markInterruptAsFailure, which is why the setup sets it', async () => {
+    await expect(
+      fc.assert(slowProperty(), {
+        numRuns: 1000,
+        markInterruptAsFailure: false,
+        interruptAfterTimeLimit: LIMIT,
+      }),
+    ).resolves.toBeUndefined();
+  });
 });
 
 describe('the limit is 0.8 of the test timeout', () => {

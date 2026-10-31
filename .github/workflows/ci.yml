@@ -68,11 +68,16 @@ jobs:
       - run: python3 scripts/site-classes.py
       - run: python3 scripts/site-links.py
       - run: pnpm typecheck
-      - run: pnpm test
-        # A stalled test run ends the job in 15 minutes, not at the job limit. A normal one takes 5 to 9 (measured on
-        # a run of this workflow: the slowest leg seen took 8.6 minutes; which leg is slower varies from run to run), so the limit is 1.7 times the
-        # slowest run seen: tight enough to end a stall early, with room for a slow runner.
+      # The reporter records every test's duration and budget in this one run (no second run).
+      - run: pnpm test --reporter=default --reporter=./scripts/test-budget-reporter.mjs
+        # A stalled test run ends the job in 15 minutes, not at the job limit. A normal one takes 8 to 11 (measured: the
+        # test step took 500 to 670 s on this workflow's runs, on either Node version, which leg is slower varying from run
+        # to run), so the limit is 1.35 times the slowest run seen: tight enough to end a stall early, with room for a
+        # slow runner.
         timeout-minutes: 15
+      # Fails a test, or a suite's hooks, that used more than half of its time budget, and fails when the run left no
+      # report: a test near its budget is the next flake.
+      - run: node scripts/test-budget.cjs
       - run: pnpm build
       # `pnpm test` runs before the build, so the spawned-bin tests skip there; here they run against the built bin
       # and fail if it is missing.

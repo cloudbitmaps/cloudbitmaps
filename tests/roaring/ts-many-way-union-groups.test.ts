@@ -108,25 +108,31 @@ describe('orManyContainers with 1, 3, 4, 5, 8 and 9 bitsets in a key', () => {
 });
 
 describe('TsBitmap.orMany with that many bitsets per key', () => {
-  it('equals CRoaring for 1, 3, 4, 5, 8 and 9 bitmaps whose keys hold bitsets', () => {
-    for (const n of [1, 3, 4, 5, 8, 9]) {
-      const lists: number[][] = [];
-      for (let i = 0; i < n; i++) {
-        const rnd = seeded(77 + i + 100 * n);
-        const ids: number[] = [];
-        // Key 0 and key 3 are dense in every input; key 5 is dense in every other input.
-        for (let k = 0; k < 9_000; k++) ids.push(rnd() % 65_536, 3 * 65_536 + (rnd() % 65_536));
-        if (i % 2 === 0) for (let k = 0; k < 9_000; k++) ids.push(5 * 65_536 + (rnd() % 65_536));
-        ids.push(9 * 65_536 + i);
-        lists.push(ids);
+  // Budget 10 s (the default is 5 s): the test took 3.2 s on the CI runner in a full run, 2.8 s on the other Node version.
+  // Rule: the slowest measured time times three, rounded up to the next whole second.
+  it(
+    'equals CRoaring for 1, 3, 4, 5, 8 and 9 bitmaps whose keys hold bitsets',
+    { timeout: 10_000 },
+    () => {
+      for (const n of [1, 3, 4, 5, 8, 9]) {
+        const lists: number[][] = [];
+        for (let i = 0; i < n; i++) {
+          const rnd = seeded(77 + i + 100 * n);
+          const ids: number[] = [];
+          // Key 0 and key 3 are dense in every input; key 5 is dense in every other input.
+          for (let k = 0; k < 9_000; k++) ids.push(rnd() % 65_536, 3 * 65_536 + (rnd() % 65_536));
+          if (i % 2 === 0) for (let k = 0; k < 9_000; k++) ids.push(5 * 65_536 + (rnd() % 65_536));
+          ids.push(9 * 65_536 + i);
+          lists.push(ids);
+        }
+        const parts = lists.map((l) => TsBitmap.fromValues(l));
+        const snapshots = parts.map((p) => p.toUint32Array());
+        const out = TsBitmap.orMany(parts);
+        const want = RoaringBitmap32.orMany(lists.map((l) => RoaringBitmap32.from(l)));
+        expect(out.size).toBe(want.size);
+        expect([...out.toUint32Array()]).toEqual([...want.toUint32Array()]);
+        parts.forEach((p, i) => expect(p.toUint32Array()).toEqual(snapshots[i]));
       }
-      const parts = lists.map((l) => TsBitmap.fromValues(l));
-      const snapshots = parts.map((p) => p.toUint32Array());
-      const out = TsBitmap.orMany(parts);
-      const want = RoaringBitmap32.orMany(lists.map((l) => RoaringBitmap32.from(l)));
-      expect(out.size).toBe(want.size);
-      expect([...out.toUint32Array()]).toEqual([...want.toUint32Array()]);
-      parts.forEach((p, i) => expect(p.toUint32Array()).toEqual(snapshots[i]));
-    }
-  });
+    },
+  );
 });

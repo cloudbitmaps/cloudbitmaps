@@ -63,36 +63,42 @@ function build(ids: number[], asRuns: boolean): CodecBitmap {
 const SHAPES: Shape[] = ['sparse', 'dense', 'run', 'tiny'];
 
 describe('every pair of container kinds, through every in-place combine, equals the set algebra', () => {
-  it('and, or and andNot of one chunk against another, which is left alone', () => {
-    fc.assert(
-      fc.property(
-        fc.constantFrom(...SHAPES),
-        fc.constantFrom(...SHAPES),
-        fc.integer({ min: 1, max: 2 ** 30 }),
-        (sa, sb, seed) => {
-          const a = lows(sa, seed);
-          const b = lows(sb, seed + 7);
-          const inB = new Set(b);
-          const inA = new Set(a);
-          const want = {
-            andInPlace: a.filter((v) => inB.has(v)),
-            orInPlace: [...new Set([...a, ...b])].sort((x, y) => x - y),
-            andNotInPlace: a.filter((v) => !inB.has(v)),
-          } as const;
-          for (const op of ['andInPlace', 'orInPlace', 'andNotInPlace'] as const) {
-            const x = build(a, sa === 'run');
-            const y = build(b, sb === 'run');
-            x[op](y);
-            expect([...x], `${op} ${sa}/${sb}`).toEqual(want[op]);
-            expect(x.size).toBe(want[op].length);
-            expect([...y], `${op} ${sa}/${sb}: operand`).toEqual(b);
-            expect(inA.size).toBe(a.length);
-          }
-        },
-      ),
-      { numRuns: 60 },
-    );
-  });
+  // Budget 9 s (the default is 5 s): the slowest measured time was 2.7 s, on a Node 22 CI runner. Rule: that time times
+  // three, rounded up to the next whole second.
+  it(
+    'and, or and andNot of one chunk against another, which is left alone',
+    { timeout: 9000 },
+    () => {
+      fc.assert(
+        fc.property(
+          fc.constantFrom(...SHAPES),
+          fc.constantFrom(...SHAPES),
+          fc.integer({ min: 1, max: 2 ** 30 }),
+          (sa, sb, seed) => {
+            const a = lows(sa, seed);
+            const b = lows(sb, seed + 7);
+            const inB = new Set(b);
+            const inA = new Set(a);
+            const want = {
+              andInPlace: a.filter((v) => inB.has(v)),
+              orInPlace: [...new Set([...a, ...b])].sort((x, y) => x - y),
+              andNotInPlace: a.filter((v) => !inB.has(v)),
+            } as const;
+            for (const op of ['andInPlace', 'orInPlace', 'andNotInPlace'] as const) {
+              const x = build(a, sa === 'run');
+              const y = build(b, sb === 'run');
+              x[op](y);
+              expect([...x], `${op} ${sa}/${sb}`).toEqual(want[op]);
+              expect(x.size).toBe(want[op].length);
+              expect([...y], `${op} ${sa}/${sb}: operand`).toEqual(b);
+              expect(inA.size).toBe(a.length);
+            }
+          },
+        ),
+        { numRuns: 60 },
+      );
+    },
+  );
 
   it('a skewed pair (a few values against thousands) gallops to the same answer', () => {
     const big = lows('sparse', 5).concat(Array.from({ length: 900 }, (_, i) => 60_000 + i));
