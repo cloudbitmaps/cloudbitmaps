@@ -206,7 +206,7 @@ real ids are often denser, and the guide counts larger chunks.
 >
 > **Measured** against real S3 in `us-east-1` on 2026-10-30 (UTC), from AWS CloudShell in the same region (2 CPUs, a
 > round-trip floor of 8.9 ms to the region, so in-region), through the published `0.25.0` packages (the evidence names the version, as `packageVersion`). This is the second run of
-> the harness's [large suite](../bench/README.md#the-large-suite), the first being [`2026-10-07-88cd3`](../bench/calibration/large/2026-10-07-88cd3.json) on `0.18.3`: combines on operands of about a million, five million
+> the harness's [large suite](../bench/README.md#the-large-suite), the first being [`2026-10-07-88cd3`](../bench/calibration/large/2026-10-07-88cd3.json): combines on operands of about a million, five million
 > and ten million ids, about 1,500 chunks each, 20 % of their ids shared. The evidence is
 > [`bench/calibration/large/2026-10-30-5a2f4.json`](../bench/calibration/large/2026-10-30-5a2f4.json). It has no report
 > file; this section and the evidence's own gate (`tests/bench/calibrate-large.test.ts`) are its record.
@@ -260,7 +260,7 @@ sample (**measured**):
 
 The evidence records the run's bill, by request class, at the `aws-us-east-1-ondemand` list prices (`cost` in the file).
 
-**Against the first run, on `0.18.3`** (**measured**): every stage made the same requests, by class, as that run's, and the
+**Against the first run** (**measured**): every stage made the same requests, by class, as that run's, and the
 bill recorded in the evidence is the same. Only the bytes of the whole reads, which are the pointers, differ.
 The medians and percentiles are this session's, and latencies of runs from different CloudShell sessions are not
 comparable, so no difference between the two runs is called a speed-up or a slowdown.
