@@ -122,7 +122,7 @@ chunks lie in the object, not how many there are.
   2 PUT + 2 GET. A load that deleted by name made 2 PUT + 5 GET and a delete. Each load that collects, by name or by listing, reads the registry once more after its last delete, a GET a load that
   collects makes to see a rollback that landed during the collection
   ([the loading guide](guide/loading.md#a-rollback-that-races-a-collection)). The table has what each made.
-- **Every stage made the requests of the previous in-region run, on `0.21.0`, and the bill is the same.** The
+- **Every stage made the requests of the previous in-region run, and the bill is the same.** The
   requests by class and the counts per stage did not move, so the figures above that count requests (6 GETs a cold
   intersect, 33 an `andNot`, the cost of each kind of load) are unchanged. The medians, the load rates and the rounds are
   this session's, and latencies of runs from different CloudShell sessions are not comparable, so no difference between the two is
@@ -261,7 +261,7 @@ sample (**measured**):
 The evidence records the run's bill, by request class, at the `aws-us-east-1-ondemand` list prices (`cost` in the file).
 
 **Against the first run, on `0.18.3`** (**measured**): every stage made the same requests, by class, as that run's, and the
-bill recorded in the evidence is the same, $0.0031302. Only the bytes of the whole reads, which are the pointers, differ.
+bill recorded in the evidence is the same. Only the bytes of the whole reads, which are the pointers, differ.
 The medians and percentiles are this session's, and latencies of runs from different CloudShell sessions are not
 comparable, so no difference between the two runs is called a speed-up or a slowdown.
 
@@ -608,7 +608,7 @@ Two methods are more than 10 times native and ship with their figures shown: the
 
 ## What is still owed
 
-The [in-region run](#the-in-region-run--run-2026-10-13-b329d) measured the loaded store's latency and load
+The [in-region run](#the-in-region-run--run-2026-10-30-16fa6) measured the loaded store's latency and load
 throughput on S3. These are not published yet:
 
 - **`iterate` on S3.** Its request count is [expected, not measured](#expected-not-measured), and the run did not time it.
