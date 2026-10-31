@@ -574,7 +574,7 @@ move it up.
   and is a cost of the first call in a fresh process. The union and the first `deserialize` are the two methods above 10 times native, and both ship with their
   figures shown. An optional module, loaded only by a caller that asks for
   it, would leave the default install with nothing to compile. Whether it is worth its size and its second code path is
-  decided after 0.25.0, from the published table.
+  decided from the published table.
 - **Incremental writes, if there is demand** — immutable delta generations on the same bucket, read as base ∪ deltas at
   chunk granularity; never a mutable row store. Nothing is queued; an issue describing a workload that genuinely
   cannot micro-batch into a load is what would move it.
