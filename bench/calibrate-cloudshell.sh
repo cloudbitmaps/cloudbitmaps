@@ -237,7 +237,12 @@ finish() {
       echo "cloudshell: ${out/#$HOME/$tilde}/$name already exists and was left alone" >&2
     fi
     if [ ! -e "$dest" ] && mkdir -p "$out" && cp "$f" "$dest"; then
-      echo "cloudshell: results at ${dest/#$HOME/$tilde} (Actions → Download file, or cat it)"
+      if [ "$out" = "$HOME" ]; then
+        echo "cloudshell: results at ${dest/#$HOME/$tilde} (Actions → Download file, or cat it)"
+      else
+        # Download file refused a file under a nested directory: copy it to the home directory first.
+        echo "cloudshell: results at ${dest/#$HOME/$tilde} (copy it to the home directory first: cp ${dest/#$HOME/$tilde} ${tilde}/large-${dest##*/}, then Actions → Download file on that, or cat it)"
+      fi
     else
       echo "cloudshell: could not copy the results — they are at $f" >&2
       kept=1
