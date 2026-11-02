@@ -265,8 +265,8 @@ describe('release workflow shape', () => {
   it('probes the registry before publishing, for both partial-release shapes', () => {
     // Both failures produce a PARTIAL release of a lockstep family, and neither shows up in the log: a name
     // with no Trusted Publisher cannot be published by this tokenless workflow at all (it would publish the
-    // packages that DO exist, then fail), and a version already on the registry is SKIPPED by pnpm with
-    // exit 0, so the run goes green having published nothing for that package. Both are read-only probes,
+    // packages that DO exist, then fail), and a version already on the registry is rejected by npm part-way
+    // through the family, after the packages before it have gone out. Both are read-only probes,
     // so they belong ahead of the irreversible step rather than in a runbook.
     const step = job('publish').steps.find(
       (s) =>
@@ -324,9 +324,13 @@ describe('release workflow shape', () => {
     expect(iScan).toBeLessThan(iSums);
     expect(iSums).toBeLessThan(iUpload);
     expect(stepOf('Record the tarball checksums').run).toContain('SHA256SUMS');
+    // The approver reads the names and sums on the run's summary page.
+    expect(stepOf('Record the tarball checksums').run).toContain('GITHUB_STEP_SUMMARY');
     const upload = job('verify').steps[iUpload];
     expect(upload?.with?.name).toBe('release-tarballs');
     expect(upload?.with?.['if-no-files-found']).toBe('error');
+    // A re-run of every job replaces the artifact instead of failing on its name.
+    expect(upload?.with?.overwrite).toBe(true);
     expect(Number(upload?.with?.['retention-days'])).toBeGreaterThan(0);
     expect(Number(upload?.with?.['retention-days'])).toBeLessThanOrEqual(14);
     const download = job('publish').steps.find((s) =>
@@ -390,10 +394,8 @@ describe('release workflow shape', () => {
     const m = /^npm install -g npm@(\d+)\.(\d+)\.(\d+)$/.exec((step.run ?? '').trim());
     expect(m, `not an exact npm version: ${step.run}`).not.toBeNull();
     const [major, minor, patch] = [Number(m?.[1]), Number(m?.[2]), Number(m?.[3])];
-    expect(major).toBe(11);
-    expect(minor * 1000 + patch >= 5001, 'below npm 11.5.1, which Trusted Publishing needs').toBe(
-      true,
-    );
+    const atLeast = major !== 11 ? major > 11 : minor * 1000 + patch >= 5001;
+    expect(atLeast, 'below npm 11.5.1, which Trusted Publishing needs').toBe(true);
     expect(step.run).not.toMatch(/[\^~<>*]|latest|\bnext\b|\bx\b/);
     // And no other step in either job installs an npm by a range.
     for (const s of [...job('verify').steps, ...job('publish').steps]) {
