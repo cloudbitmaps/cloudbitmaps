@@ -218,7 +218,11 @@ the read-back shows it did not land; the others throw `TransientError`, and a re
 
 <a id="numbering-is-the-loads"></a>**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: the one
 after the pointer it read, `currentGen + 1`, when one existence check finds no object holding it, and otherwise one
-above the pointer and above every object in the bucket, from a listing. A brand-new segment starts at `0`. The check is
+above the pointer and above every object the listing shows within 1,024 of the highest number the row names (its
+pointer, its ledger and its leases), and past any contiguous run of objects above that. A number listed further above
+than that is a stray: the load does not number above it, never deletes, overwrites or takes it, and reports it in
+`LoadResult.strays` (the lowest 64 and the count), so one object put at a huge number blocks no load. A brand-new
+segment starts at `0`. The check is
 there on purpose. A load that wrote its object and crashed before publishing leaves an object above `currentGen`, and a
 writer consulting only the pointer would pick that same number and conflict on every retry. A load can therefore
 number below an object above the pointer, such as one a rollback left there, but never onto one: write-once refuses a
@@ -290,7 +294,7 @@ first load's, one `setRetention` made, or a drop's tombstone. A guarded load (th
 needs the size of the current generation) also fences on the pointer it judged. An unguarded load carries no fence on
 the pointer, which is right for it: there was nothing to judge, and its ids come from upstream. An
 [`*Into`](loading.md#write-a-result-into-another-segment-the-into-verbs) is a load and publishes the same way. Forward-only would be wrong for the erasure rewrite, whose object is one generation minus a
-bit and which is numbered above everything in the bucket: a forward-only publish would out-rank a concurrent publish
+bit and which is numbered above every object near the row's own numbers: a forward-only publish would out-rank a concurrent publish
 and then delete it, so the rewrite fences on its source generation and the row's token instead.
 
 <a id="write-goes-out-on-the-row-read"></a>**The registry write goes out on the row the load read, and the store's own condition still decides.** A publish hands
@@ -322,7 +326,7 @@ and a generation another load published can sit in a window the row does not rec
 
 <a id="orphan-collected-later"></a>**An orphan is collected later, and a rollback refuses it until then.** A publish never adds an orphan to the row's
 list: what it adds is the generation it superseded, which was current. A load whose check meets it numbers above it by a
-listing and, once its own generation is current, that listing deletes the orphan, which is below the pointer, where the
+listing (within the margin of what the row names) and, once its own generation is current, that listing deletes the orphan, which is below the pointer, where the
 row's window does not name it. Where the row has no usable ledger, that listing keeps a window from what it finds, the
 generation the load superseded first and then the newest by number, and, at a `keep` up to 64, its publish wrote it as
 the ledger: the orphan can take a place in that window, and the publishes after it carry it in the row's window until the
@@ -796,7 +800,7 @@ holder below the pointer goes with the `keep: 0` collection, and each holder abo
 call finds a holder anywhere, above the pointer or below, its `keep: 0` collection takes every generation below the
 pointer, clean ones included. A generation above the pointer that never held the id stays as a rollback target when
 the current generation does not hold the id, unless no read of the segment can open it, and then it goes whatever the id ([the effect across a
-fleet](erasure.md#three-rules-while-you-erase)). A rewrite is numbered above everything, so its `keep: 0` collection takes every
+fleet](erasure.md#three-rules-while-you-erase)). A rewrite is numbered above every object near the row's numbers, so its `keep: 0` collection takes every
 older generation, above the pointer or below.
 
 <a id="ledger-loses-what-it-deletes"></a>**The row's ledger loses what the call will delete, before anything is deleted.** The row's ledger of known generations
