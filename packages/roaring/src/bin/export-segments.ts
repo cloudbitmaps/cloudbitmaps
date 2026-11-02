@@ -17,8 +17,10 @@
  * re-run). A segment that couldn't be read is isolated into the manifest's `failed[]` and the CLI exits non-zero
  * — always check it, because "manifest present" is *the run finished*, not "every segment succeeded". Re-running
  * overwrites the segments it re-exports but does **not** prune files for segments that have since disappeared —
- * **export to a fresh directory** for a clean dump. It writes only into directories it made (or an earlier run's,
- * owner-only): a symlink, a directory of another user, or one open to group or others in its place is refused. Artifacts are owner-only (decrypted **cleartext** — protect it).
+ * **export to a fresh directory** for a clean dump. It writes segment files only into namespace directories it made (or
+ * an earlier run's, owner-only): a symlink, a directory of another user, or one open to group or others in its place is
+ * refused. The output directory itself is refused when it is a symlink or not a directory; its mode and owner are not
+ * checked. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
  * It wires no keystore, so an encrypted segment lands in `failed[]`: export an encrypted store with
  * `store.exportSegments` from a store built with its keystore.
@@ -39,9 +41,9 @@
  *   CR_EXPORT_NAMESPACE  scope the export to one namespace
  */
 import { randomUUID } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { realpathSync, type Stats } from 'node:fs';
 import { lstat, mkdir, open, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { encodeNameForPath, namespacePathPart } from '@cloudbitmaps/core/driver-kit';
 import { CloudRoaring, LocalFsStorage, ValidationError } from '../index';
@@ -61,7 +63,7 @@ Exports every registered segment's current generation from a local-filesystem st
 Settings come from the environment:
 
   CR_EXPORT_ROOT       (required) the LocalFsStorage root, holding storage/ and registry/
-  CR_EXPORT_OUT        (required) the output directory for the dump
+  CR_EXPORT_OUT        (required) the output directory for the dump: new or existing (never a symlink)
   CR_EXPORT_FORMAT     roaring | ndjson (default: roaring)
   CR_EXPORT_NAMESPACE  (optional) scope the export to one namespace
 
@@ -140,6 +142,7 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
  * planted in a shared output location would receive the dump, or a symlink in it would send the dump elsewhere.
  */
 async function ensureOwnDirectory(out: string, dir: string): Promise<void> {
+  await checkOutDirectory(out);
   await mkdir(out, { recursive: true, mode: 0o700 });
   try {
     await mkdir(dir, { mode: 0o700 });
@@ -157,6 +160,27 @@ async function ensureOwnDirectory(out: string, dir: string): Promise<void> {
     if (found.uid !== process.getuid()) refuse('a namespace directory belongs to another user');
     if ((found.mode & 0o077) !== 0) refuse('a namespace directory is open to group or others');
   }
+}
+
+/**
+ * The output directory itself, when it already exists: refused when it is a symlink (it would send the dump, which holds
+ * every id in the clear, wherever it points) or not a directory. `lstat` of the resolved path, so `link/` and `link/.`
+ * are caught too. Its mode and owner are not checked: the files in it are `0o600` and the namespace directories `0o700`.
+ * A path that does not exist yet is made by the export, and passes.
+ */
+async function checkOutDirectory(out: string): Promise<void> {
+  let found: Stats;
+  try {
+    found = await lstat(resolve(out));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  const refuse = (why: string): never => {
+    throw new ValidationError(`the output directory is refused: ${why}`);
+  };
+  if (found.isSymbolicLink()) refuse('it is a symbolic link');
+  if (!found.isDirectory()) refuse('it is not a directory');
 }
 
 /** The manifest's file name, at the top of the output directory. */
@@ -263,6 +287,8 @@ export async function main(
   await requireStoreRoot(config.root);
   const storage = new LocalFsStorage(config.root);
   const store = new CloudRoaring({ storage });
+  // Before anything is removed or written: the manifest removal below would otherwise follow a symlinked output path.
+  await checkOutDirectory(config.out);
 
   // An earlier run's manifest goes before anything of this run is written: its presence marks a finished run, and one
   // left in place would mark this run finished, with the earlier run's counts, if this one stopped part way.
