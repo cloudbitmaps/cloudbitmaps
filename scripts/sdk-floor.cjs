@@ -192,7 +192,7 @@ function floorOf(root, driver) {
 /** Refuse a working directory that is the checkout or inside it: the install and the tests must never touch it. */
 function assertOutside(root, dir) {
   const rel = path.relative(fs.realpathSync(root), fs.realpathSync(dir));
-  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+  if (rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))) {
     fail(`refusing to run inside the checkout: ${dir} is within ${root}`);
   }
 }
