@@ -13,6 +13,9 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A connection string the Azure SDK refuses no longer puts a part of itself in the error.** The `ValidationError`
+  says only that the string is not a valid Azure Storage connection string; the SDK's reason is not included.
+
 - **LocalFs: a namespace whose name begins with two dots (`..acme`), and every segment in it, is held to the case check
   like any other name.** On a case-insensitive filesystem (the macOS and Windows defaults) the check treated a path
   under such a namespace as outside the root and skipped it, so `..acme` and `..Acme` shared one directory. A write under
