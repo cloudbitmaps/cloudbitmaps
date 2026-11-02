@@ -146,8 +146,8 @@ searches every generation in the bucket. It usually reports `erased: true` again
 all if a racing collector took that generation first, or if this call's own delete of it landed after a fault the call could not settle (its read failed too, or the delete landed after the read): gone, but unreceipted. A storage delete that gets no answer and whose object is gone when the call reads it back is not this case: it counts as deleted, and the call answers `erased: true`.
 
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. But "not listed" is not by
-itself proof the id is gone. A segment whose registry row was purged is not scanned either, and its objects outlive it
-as orphans. `store.generations(ref)` lists those, since it reads the bucket whether or not a row exists, and
+itself proof the id is gone. A segment whose registry row was purged (including one deleted by hand outside the library, so drop the segment first)
+is not scanned either, and its objects outlive it as orphans. `store.generations(ref)` lists those, since it reads the bucket whether or not a row exists, and
 `store.dropSegment(ref, { confirmSegment })` deletes them, writing a `destroyed` row first, which
 then fences the name. `store.checkConsistency()` and the collection a load runs start from the rows, so neither
 reaches them.
@@ -347,11 +347,6 @@ marker, so the token counter survives a re-create. The marker holds only the nam
 the status, the creation and update times and the token, whatever the row held: its keys, sealed summary, generation
 ledger, leases and retention and residency policies are not kept, whether the row was live, or came from `dropSegment`
 or `destroySegment`.
-
-A **row deleted by hand.** A registry listing skips a deleted row, and `eraseSubject` finds segments through that
-listing, so objects left under a segment whose row was removed outside the library are outside its scan. Drop the
-segment before deleting its row (`store.dropSegment(ref, { confirmSegment })`); if the row is already gone,
-`store.generations(ref)` lists what the bucket still holds under the name.
 
 Backups, replicas and noncurrent object versions hold the old object until their own lifecycle removes it. For an
 at-rest guarantee that reaches those, encrypt and crypto-shred (`destroySegment` and `eraseNamespace`, see
