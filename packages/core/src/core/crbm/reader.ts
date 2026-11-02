@@ -175,6 +175,16 @@ function checkedFooter(
   return { footer, fview, storedFooterCrc };
 }
 
+/** The preamble at the front of `tail`: its magic and version are the footer's, and its two reserved bytes are zero. */
+function checkPreamble(tail: Uint8Array, versionMajor: number, versionMinor: number): void {
+  if (!magicMatches(tail, 0) || tail[4] !== versionMajor || tail[5] !== versionMinor) {
+    throw crbmIntegrity('.crbm preamble magic/version mismatch with footer');
+  }
+  if (tail[6] !== 0 || tail[7] !== 0) {
+    throw crbmIntegrity('.crbm preamble reserved bytes are not zero');
+  }
+}
+
 /** Whether every byte of `bytes[from, to)` is zero. */
 function allZero(bytes: Uint8Array, from: number, to: number): boolean {
   for (let i = from; i < to; i++) if (bytes[i] !== 0) return false;
@@ -472,12 +482,7 @@ export class CrbmReader {
     // Validate the front preamble too, but only when this GET already covers it (no extra request).
     const tailCoversFrom = size - tail.length;
     if (tailCoversFrom === 0) {
-      if (!magicMatches(tail, 0) || tail[4] !== versionMajor || tail[5] !== versionMinor) {
-        throw crbmIntegrity('.crbm preamble magic/version mismatch with footer');
-      }
-      if (tail[6] !== 0 || tail[7] !== 0) {
-        throw crbmIntegrity('.crbm preamble reserved bytes are not zero');
-      }
+      checkPreamble(tail, versionMajor, versionMinor);
     }
 
     // --- Index: already in the tail, or one more GET ---

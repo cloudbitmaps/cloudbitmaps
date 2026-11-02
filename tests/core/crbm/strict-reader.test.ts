@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { BufferReader } from '@/core/blob';
+import type { BlobReader } from '@/core/blob';
 import { crc32c } from '@/core/crbm/crc32c';
 import { fingerprintFor } from '@/core/crbm/fingerprint';
 import {
@@ -174,17 +175,17 @@ describe('the reader refuses bytes no writer writes', () => {
       });
       bytes[6] = 1;
       const reads: Array<[number, number]> = [];
-      const reader = await CrbmReader.open(
-        {
+      const blob: BlobReader = {
+        getTail: async (n: number) => ({
+          bytes: bytes.subarray(bytes.length - n),
           size: bytes.length,
-          getTail: async (n) => ({ bytes: bytes.subarray(bytes.length - n), size: bytes.length }),
-          getRange: async (offset, length) => {
-            reads.push([offset, length]);
-            return bytes.subarray(offset, offset + length);
-          },
-        } as never,
-        { tailBytes: FOOTER_BYTES },
-      );
+        }),
+        getRange: async (offset: number, length: number) => {
+          reads.push([offset, length]);
+          return bytes.subarray(offset, offset + length);
+        },
+      };
+      const reader = await CrbmReader.open(blob, { tailBytes: FOOTER_BYTES });
       expect(reader.chunkKeys()).toEqual([0]);
       expect(reads.every(([offset]) => offset > 0)).toBe(true);
     });
