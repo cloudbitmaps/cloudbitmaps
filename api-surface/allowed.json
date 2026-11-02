@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "entry": "@cloudbitmaps/roaring LoadResult.strays",
+    "reason": "agreed by the maintainer: a load reports generation numbers listed far above anything its row names, which it ignored when numbering"
+  }
+]
