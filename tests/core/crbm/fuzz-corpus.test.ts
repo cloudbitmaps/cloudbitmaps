@@ -180,15 +180,26 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
   }
 
   for (const { name, bytes } of index) {
-    it(`crbm-index reproducer ${name} raises only a typed error`, () => {
-      expect(() => {
-        try {
-          parseRawIndex(bytes);
-        } catch (err) {
-          if (!(err instanceof CloudRoaringError)) throw err;
-        }
-      }).not.toThrow();
-    });
+    // A hand-written reproducer names its outcome: `valid-` is accepted, `refused-` is an IntegrityError.
+    if (name.startsWith('valid-')) {
+      it(`crbm-index reproducer ${name} is accepted`, () => {
+        expect(() => parseRawIndex(bytes)).not.toThrow();
+      });
+    } else if (name.startsWith('refused-')) {
+      it(`crbm-index reproducer ${name} is refused with an IntegrityError`, () => {
+        expect(() => parseRawIndex(bytes)).toThrow(IntegrityError);
+      });
+    } else {
+      it(`crbm-index reproducer ${name} raises only a typed error`, () => {
+        expect(() => {
+          try {
+            parseRawIndex(bytes);
+          } catch (err) {
+            if (!(err instanceof CloudRoaringError)) throw err;
+          }
+        }).not.toThrow();
+      });
+    }
   }
 
   for (const { name, bytes } of ext) {

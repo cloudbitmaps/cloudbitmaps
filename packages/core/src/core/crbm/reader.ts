@@ -471,8 +471,9 @@ export class CrbmReader {
     const versionMinor = footer[FOOTER.versionMinor]!;
     const hasExtension = (flags & FLAG_EXTENSION) !== 0;
 
-    // Bounds + size cap on the index region before trusting/fetching it.
-    if (indexOffset < PAYLOAD_START || indexOffset + indexLength !== size - FOOTER_BYTES) {
+    // Bounds + size cap on the index region before trusting/fetching it (that it ends where the footer begins was
+    // already held by the footer's own checks).
+    if (indexOffset < PAYLOAD_START) {
       throw crbmIntegrity(`.crbm index region [${indexOffset}, +${indexLength}) out of bounds`);
     }
     if (indexLength > maxIndexBytes) {

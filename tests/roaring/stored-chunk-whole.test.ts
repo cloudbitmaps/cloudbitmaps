@@ -8,7 +8,10 @@ import type { CrbmCrypto } from '@/core/crypto';
 import { IntegrityError } from '@/core/errors';
 import { NodeAead } from '@/drivers/crypto';
 import { tsRoaringCodec } from '@/ts-roaring/bitmap';
+import { CloudRoaring } from '@/index';
+import { joinId } from '@/core/bit-route';
 import { writeCrbm } from '../helpers/crbm-extension';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 
 /**
  * A stored chunk is exactly one serialized bitmap. Bytes after it are refused when the chunk is decoded, so an object
@@ -57,5 +60,18 @@ describe('a sealed chunk', () => {
     expect(() => decodeChunkBytes(tsRoaringCodec, bad, MAX)).toThrow(IntegrityError);
     const good = await opened(clean);
     expect(decodeChunkBytes(tsRoaringCodec, good, MAX).has(5)).toBe(true);
+  });
+});
+
+describe('a store reading a stored chunk with bytes after its bitmap', () => {
+  it('refuses it with an IntegrityError on has and on count, and reads the clean chunk beside it', async () => {
+    const storage = new MemoryStorageChunkSource();
+    storage.seed({ segment: 'tailed', chunkKey: 3 }, withTail([0]));
+    storage.seed({ segment: 'clean', chunkKey: 3 }, clean);
+    const store = new CloudRoaring({ storage });
+    await expect(store.segment('tailed').has(joinId(3, 5))).rejects.toBeInstanceOf(IntegrityError);
+    await expect(store.segment('tailed').count()).rejects.toBeInstanceOf(IntegrityError);
+    expect(await store.segment('clean').has(joinId(3, 5))).toBe(true);
+    expect(await store.segment('clean').count()).toBe(4);
   });
 });

@@ -20,11 +20,17 @@ so, and so do the module headers in the code.
   non-zero footer `indexTag` on a cleartext object (the cleartext `indexNonce` stays free: it is the write's identity);
   a non-zero preamble byte 6 or 7 (checked when the first read covers the front of the object); bytes between the index
   and the footer; a gap before a payload, between payloads or after the last one; and bytes after a stored chunk's
-  bitmap. No release writes any of these, and every object in the golden corpus still reads, so an object any release
-  wrote opens as before. What a caller does: nothing for an object a release wrote; an object produced by another
-  writer that pads or leaves these bytes non-zero must be rewritten to the layout in
-  [`docs/format.md`](docs/format.md). Overlong varints, a cardinality that disagrees with its payload, `versionMinor`
-  and unknown extension section types are still accepted.
+  bitmap (that refusal surfaces when the chunk is read, not at open). No release writes any of these: the writer's
+  code in every release lays an object out without them, and the golden corpus, which holds objects of the earliest
+  layout, still reads (its real bitmaps are decoded whole by the codec test; the older golden files hold opaque
+  payloads and prove the layout checks only). A large object's preamble bytes 6 and 7 stay unread, as before: documented,
+  not checked. What a caller does: nothing for an object a release wrote; an object produced by another writer that pads
+  or leaves these bytes non-zero must be rewritten to the layout in [`docs/format.md`](docs/format.md). An erasure that
+  meets an object the reader now refuses stops, as it does for a bad footer checksum, until the operator removes that
+  object (`store.generations(ref)` or the error finds it); see [`docs/guide/erasure.md`](docs/guide/erasure.md). A
+  custom codec must honour the `whole` option of `safeDeserialize` for the stored-chunk refusal to hold. Overlong
+  varints, a cardinality that disagrees with its payload, `versionMinor` and unknown extension section types are still
+  accepted.
 
 ## [0.26.0] — 2026-10-30
 

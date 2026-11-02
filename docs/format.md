@@ -126,7 +126,9 @@ The first 8 bytes of the object.
 - **Reader today.** Compares the first six bytes with the footer, and refuses a disagreement with an `IntegrityError`;
   refuses a non-zero byte 6 or 7 with an `IntegrityError`. Both checks run only when its first read happens to cover
   offset 0 (an object that fits in the tail read); a larger object is opened without looking at the preamble, and the
-  reader makes no request to check it. A port that reads the front of an object must refuse the same bytes.
+  reader makes no request to check it, so its bytes 6 and 7 stay unread (documented, not checked). The preamble is
+  covered by no checksum and no AEAD: it constrains nothing, and no fingerprint depends on it. A port that reads the
+  front of an object must refuse the same bytes.
 
 ## 3. The chunk payload region
 
@@ -407,17 +409,25 @@ that cannot be ignored. (A change that can be ignored is a new extension section
 **What the footer CRC leaves free.** The CRC is linear, so a field a reader ignored would let four chosen bytes make it
 equal any value, and the CRC, with the object's size, is the object's fingerprint ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)).
 The reader therefore refuses every byte no writer writes: `reserved2`, `keyId`, a cleartext `indexTag`, an index that
-does not end at the footer, and, in the object, the preamble's bytes 6 and 7, a payload gap and bytes after a bitmap.
-On an encrypted object, what stays free after those checks is `versionMinor` (8 bits, which the preamble repeats, and
-which is compared only when the first read covers the preamble), the 7 low bytes of `generation` (which the reader
-returns and a caller holds to the key's number: every open through the library does, and a comparison that reads only
-the footer for a fingerprint does not), and the extension flag, which an object with no block to pad to the size does not
-have to set (a block of an unknown section type can pad it by 13 bytes or more, up to the block's 4 KiB cap). The
-nonce and tag are the index's AEAD inputs, `chunkCount` and `totalCardinality` must be zero, the CRC of the index is
-the index's, and `indexOffset` and `indexLength` are fixed by the object's size. So an object that is opened as
-generation N has `versionMinor` and the flag as its free bits, a chance of 2^-23 of matching a chosen CRC, where
-before a chosen CRC could be matched by calculation. A cleartext object also leaves its 12-byte `indexNonce` free, by
-design, since it is the write's identity.
+does not end at the footer, and, in the object, the preamble's bytes 6 and 7 (when the first read covers them), a payload
+gap and bytes after a bitmap. Two different readings follow, by what the reader does with the footer.
+
+- **At an open.** On an encrypted object, what stays free after those checks is `versionMinor` (8 bits; the preamble
+  repeats it but is unauthenticated, so it constrains nothing) and the extension flag, which an object with no block
+  does not have to set: a flagged block pads the object by exactly 12 bytes (a block with no section: the trailer
+  alone) or by 17 to 4,108 bytes (any section adds at least 5, and the block is capped at 4,096 + 12). The nonce and
+  tag are the index's AEAD inputs, `chunkCount` and `totalCardinality` must be zero, the CRC of the index is the
+  ciphertext's, `indexOffset` and `indexLength` are fixed by the object's size, and `generation` must equal the key's.
+  So a chosen CRC is matched by chance, about 2^-23, where before it could be matched by calculation. A cleartext
+  object also leaves its 12-byte `indexNonce` free, by design, since it is the write's identity.
+- **Footer only.** A comparison that reads only the footer (a fingerprint compare) runs the same footer checks as the
+  open's first steps, and no more: `reserved2`, `keyId`, a cleartext `indexTag` and the index geometry (the index
+  region ends where the footer begins), for a footer of major version 1, after the end magic and the CRC. It reads no
+  index and no body, so on an encrypted object `flags`, `elementWidth`, `payloadCodecId`, `containerCodec`,
+  `versionMinor`, `chunkCount`, `totalCardinality`, `indexNonce`, `indexTag` and `generation` are free CRC input: it
+  identifies the footer and proves nothing about the body, and a chosen match is a calculation. A port that does a
+  footer-only comparison must refuse the same fields and geometry, and must use the result only to keep or skip an
+  object, never to serve a member from it.
 
 **Check order today.** The object's size and at least 112 bytes, then `endMagic`, then `footerCrc32c`, then, for a footer
 of major version 1, `reserved2`, `keyId`, a cleartext `indexTag` and that the index ends where the footer begins, then
@@ -538,7 +548,9 @@ checksum's 32 bits; the size adds nothing when the two objects are the same size
 are one write as far as a CRC can tell. That holds when the writers drew their identities from a random source: two
 objects whose identity is all zero, or a repeated one, match when their other bytes match.
 Because the footer is stored in the clear, a reader computes the fingerprint of an encrypted object with no key, from
-one read of a footer's worth of bytes. Compare fingerprints for equality; do not interpret them.
+one read of a footer's worth of bytes. Compare fingerprints for equality; do not interpret them. A fingerprint read from a footer alone identifies the footer
+and proves nothing about the body ([section 6](#6-the-footer)): decide from it only whether to keep or skip an object,
+and open the object (the index's authentication, the generation against the key's) before serving anything from it.
 
 **Why a generation is never identified by its number alone.** A generation number is a counter a segment's loads
 advance, and it is not unique over time:
@@ -571,7 +583,8 @@ object* carries the fingerprint, or the footer CRC that is half of it, beside th
   checks every object it opens for the row's generation against it and refuses one that is another object under the
   number.
 - **The `knownGens` entry** records `{ generation, footerCrc }`: the footer checksum half, because the size is not
-  needed to tell two objects under one number apart once the ledger knows the number. A rollback onto a
+  needed to tell two objects under one number apart once the ledger knows the number. A seeded entry's checksum comes
+  from a footer read; a rollback onto it still opens and authenticates the object. A rollback onto a
   generation the row knows moves only when the object's footer checksum is the recorded one; an object with another
   checksum is another object under that number. A rollback moves onto a generation the row does not know only with
   `allowUnknown`, or when the target is below the pointer and either the row has no usable ledger or the target is

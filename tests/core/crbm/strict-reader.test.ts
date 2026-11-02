@@ -17,7 +17,7 @@ import {
   ELEMENT_WIDTH_32,
   CONTAINER_CODEC_NONE,
 } from '@/core/crbm/format';
-import { CrbmReader } from '@/core/crbm/reader';
+import { CrbmReader, footerSaysEncrypted, readFooter } from '@/core/crbm/reader';
 import { aadFor } from '@/core/crypto';
 import type { CrbmCrypto } from '@/core/crypto';
 import { IntegrityError } from '@/core/errors';
@@ -153,7 +153,7 @@ describe('the reader refuses bytes no writer writes', () => {
 
     it.each([
       ['all zero', new Uint8Array(12)],
-      ['random', randomBytes(12)],
+      ['a fixed non-zero pattern', Uint8Array.from({ length: 12 }, (_, i) => 0xa5 ^ (i * 17))],
     ])('still reads a cleartext object whose index_nonce is %s', async (_what, nonce) => {
       const bytes = await writeCrbm(CHUNKS, { generation: 4, entropy: fixedEntropy(nonce) });
       expect((await open(bytes)).chunkKeys()).toEqual([0, 9]);
@@ -187,6 +187,7 @@ describe('the reader refuses bytes no writer writes', () => {
       };
       const reader = await CrbmReader.open(blob, { tailBytes: FOOTER_BYTES });
       expect(reader.chunkKeys()).toEqual([0]);
+      expect(reads.length).toBeGreaterThan(0);
       expect(reads.every(([offset]) => offset > 0)).toBe(true);
     });
   });
@@ -246,6 +247,40 @@ describe('the reader refuses bytes no writer writes', () => {
     });
   });
 
+  describe('a gap between the last payload and an extension block', () => {
+    it('is refused, and the same object with the block adjacent is read', async () => {
+      const block = extensionBlock(section(2, new Uint8Array(4)));
+      const gapped = spliceBlock(laidOut({ tailGap: 1 }), block);
+      await expect(open(gapped)).rejects.toThrow(/not at the end of the payload region/);
+      await expect(open(gapped)).rejects.toBeInstanceOf(IntegrityError);
+      expect((await open(spliceBlock(laidOut({}), block))).chunkKeys()).toEqual([0, 9]);
+    });
+  });
+
+  describe('a footer-only read', () => {
+    it('refuses a key_id-forged footer and a padded object, and reads a genuine one', async () => {
+      const clear = await cleartext();
+      const forged = refooted(clear, (f) => (f[FOOTER.keyId] = 1));
+      await expect(readFooter(new BufferReader(forged))).rejects.toBeInstanceOf(IntegrityError);
+      await expect(footerSaysEncrypted(new BufferReader(forged))).rejects.toBeInstanceOf(
+        IntegrityError,
+      );
+      const padded = laidOut({ slack: 3 });
+      await expect(readFooter(new BufferReader(padded))).rejects.toThrow(
+        /does not end where the footer begins/,
+      );
+      await expect(footerSaysEncrypted(new BufferReader(padded))).rejects.toBeInstanceOf(
+        IntegrityError,
+      );
+      const sealed = await encrypted();
+      expect(await footerSaysEncrypted(new BufferReader(sealed))).toBe(true);
+      expect(await footerSaysEncrypted(new BufferReader(clear))).toBe(false);
+      expect((await readFooter(new BufferReader(clear))).footerCrc).toBe(
+        layoutOf(clear).footer.getUint32(FOOTER.footerCrc32c, true),
+      );
+    });
+  });
+
   describe('a pinned fingerprint', () => {
     it('is refused, not matched, for an object with a free field', async () => {
       const clear = await cleartext();
@@ -260,33 +295,56 @@ describe('the reader refuses bytes no writer writes', () => {
 });
 
 describe('the attack: an old encrypted object at a retaken generation number', () => {
-  it('is accepted as the new object on a reader that ignores the free bytes, and refused by this one', async () => {
-    const crypto = cryptoFor(dek, 'orders', 5);
+  const crypto = cryptoFor(dek, 'orders', 5);
+  const oldChunks: RawChunk[] = [
+    { chunkKey: 0, payload: Uint8Array.of(1, 2, 3, 4), cardinality: 3 },
+  ];
+  const newChunks: RawChunk[] = [
+    { chunkKey: 0, payload: Uint8Array.of(7, 7, 7, 7, 7, 7, 7), cardinality: 2 },
+    { chunkKey: 1, payload: Uint8Array.of(8, 8, 8, 8, 8), cardinality: 2 },
+    { chunkKey: 2, payload: Uint8Array.of(6, 6, 6), cardinality: 1 },
+  ];
+  const footerCrcOf = (bytes: Uint8Array): number =>
+    crc32c(
+      bytes.subarray(
+        bytes.length - FOOTER_BYTES,
+        bytes.length - FOOTER_BYTES + FOOTER_CRC_COVERAGE,
+      ),
+    );
+
+  it('is refused for each rule it breaks on its own, and as a whole', async () => {
     // The old object, which held an id an erasure then removed, and the object now stored at the number.
-    const old = await writeCrbm(
-      [{ chunkKey: 0, payload: Uint8Array.of(1, 2, 3, 4), cardinality: 3 }],
-      {
-        generation: 5,
-        crypto,
-      },
-    );
-    const current = await writeCrbm(
-      [
-        { chunkKey: 0, payload: Uint8Array.of(7, 7, 7, 7, 7, 7, 7), cardinality: 2 },
-        { chunkKey: 1, payload: Uint8Array.of(8, 8, 8, 8, 8), cardinality: 2 },
-        { chunkKey: 2, payload: Uint8Array.of(6, 6, 6), cardinality: 1 },
-      ],
-      { generation: 5, crypto },
-    );
+    const old = await writeCrbm(oldChunks, { generation: 5, crypto });
+    const current = await writeCrbm(newChunks, { generation: 5, crypto });
     expect(current.length).toBeGreaterThan(old.length);
     const target = current.length;
-    // Pad the old object to the size of the new one (bytes between its index and its footer), then solve four
-    // key_id bytes so its footer CRC32C is the new object's.
-    const { indexOffset, indexLength } = layoutOf(old);
     const wantCrc = layoutOf(current).footer.getUint32(FOOTER.footerCrc32c, true);
-    const padded = new Uint8Array(target);
-    padded.set(old.subarray(0, indexOffset + indexLength), 0);
-    padded.set(old.subarray(old.length - FOOTER_BYTES), target - FOOTER_BYTES);
+
+    // Slack alone: the old object padded to the new size, key_id zero, its footer CRC honest. It is refused for the
+    // padding, and its fingerprint is not the new object's (a different CRC).
+    const { indexOffset, indexLength } = layoutOf(old);
+    const slackOnly = new Uint8Array(target);
+    slackOnly.set(old.subarray(0, indexOffset + indexLength), 0);
+    slackOnly.set(old.subarray(old.length - FOOTER_BYTES), target - FOOTER_BYTES);
+    await expect(
+      CrbmReader.sameObject(
+        new BufferReader(slackOnly),
+        fingerprintFor(target, footerCrcOf(slackOnly)),
+      ),
+    ).rejects.toThrow(/does not end where the footer begins/);
+
+    // A non-zero key_id alone: the old object at its own size with key_id set and the CRC re-stamped.
+    const keyIdOnly = refooted(old, (f) => (f[FOOTER.keyId] = 1));
+    await expect(
+      CrbmReader.sameObject(
+        new BufferReader(keyIdOnly),
+        fingerprintFor(old.length, footerCrcOf(keyIdOnly)),
+      ),
+    ).rejects.toThrow(/key_id/);
+    await expect(open(keyIdOnly, crypto)).rejects.toThrow(/key_id/);
+
+    // Both together, with four key_id bytes solved so the footer's CRC32C is the new object's.
+    const padded = Uint8Array.from(slackOnly);
     const footerStart = target - FOOTER_BYTES;
     padded.set(
       forgeCrc(
@@ -297,13 +355,13 @@ describe('the attack: an old encrypted object at a retaken generation number', (
       footerStart,
     );
     new DataView(padded.buffer).setUint32(footerStart + FOOTER.footerCrc32c, wantCrc, true);
-    const sameSizeTarget = wantCrc;
-    const fingerprint = fingerprintFor(padded.length, sameSizeTarget);
-    // The attack's premise: the forged object's fingerprint is the one a pin or a receipt holds.
-    expect(fingerprint).toBe(fingerprintFor(current.length, wantCrc));
-    await expect(
-      CrbmReader.sameObject(new BufferReader(padded), fingerprint),
-    ).rejects.toBeInstanceOf(IntegrityError);
+    // The forge landed: the forged object's own fingerprint, from its own bytes, is the genuine new object's.
+    const forged = fingerprintFor(padded.length, footerCrcOf(padded));
+    expect(footerCrcOf(padded)).toBe(wantCrc);
+    expect(forged).toBe(fingerprintFor(current.length, footerCrcOf(current)));
+    await expect(CrbmReader.sameObject(new BufferReader(padded), forged)).rejects.toBeInstanceOf(
+      IntegrityError,
+    );
     await expect(open(padded, crypto)).rejects.toBeInstanceOf(IntegrityError);
     // The genuine object is still the same object as itself.
     expect(
@@ -319,11 +377,11 @@ describe('what an encrypted footer leaves free', () => {
   it('is versionMinor, the generation (which an open through the engine holds to the key) and the extension flag as the padding of an unknown section', async () => {
     const bytes = await encrypted();
     const crypto = cryptoFor(dek);
-    // Each footer field the CRC covers, flipped at its first and its last bit with the CRC computed again. The tail
+    // Each bit of each footer byte the CRC covers, flipped with the CRC computed again. The tail
     // read is a footer's worth, so the preamble (which repeats versionMinor) is not read, as for a large object.
     const accepted = new Set<number>();
     for (let at = 0; at < FOOTER_CRC_COVERAGE; at++) {
-      for (const bit of [0, 7]) {
+      for (let bit = 0; bit < 8; bit++) {
         const forged = refooted(bytes, (f) => (f[at]! ^= 1 << bit));
         const opened = await CrbmReader.open(new BufferReader(forged), {
           crypto,

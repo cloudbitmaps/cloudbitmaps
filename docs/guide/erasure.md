@@ -221,7 +221,10 @@ whose footer and checksums pass and whose index then fails authentication under 
 generation. So an index someone altered and gave new checksums counts as one too, and goes the same way. One whose
 index the segment's key opens is the segment's own, and when a chunk of it then does not open, that is corruption,
 which the erasure reports with `IntegrityError`, deleting nothing on account of that error; so is a footer or a
-checksum that does not match, and an object cut short.
+checksum that does not match, and an object cut short. So is an object the reader refuses for carrying bytes no release
+writes (a non-zero reserved or key field, padding, a gap between payloads, bytes after a bitmap): the erasure stops, as
+it does for a bad footer checksum, until the operator removes that object. The error names the problem, and
+`store.generations(ref)` lists the generations of the segment to find the object (`segment.<gen>.crbm`).
 
 **While encrypted first loads run, such a segment can keep an erasure asking for a re-run.** Once an erasure has found
 an
