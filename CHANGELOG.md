@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A registry delete on a store that does not apply a conditional delete no longer leaves the deleted row's keys in the
+  bucket.** The tombstone it writes in place of the row (any S3-compatible host that is not AWS, or a GCS registry, by
+  default) held the whole record, so the row's wrapped data keys, sealed summary, generation ledger and leases stayed
+  for good. It now keeps only what a re-create and the row parser read: the name, the pointer's number, the status, the
+  timestamps and the advanced token.
+
 ## [0.26.0] — 2026-10-30
 
 ### Added
