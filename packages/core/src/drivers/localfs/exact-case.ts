@@ -38,6 +38,7 @@ export function firstCaseDifference(
  */
 export function isOutside(
   rel: string,
+  // Injectable so the tests can pass `path.win32` and cover the Windows separator on any platform.
   path: Pick<PlatformPath, 'isAbsolute' | 'sep'> = { isAbsolute, sep },
 ): boolean {
   return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
