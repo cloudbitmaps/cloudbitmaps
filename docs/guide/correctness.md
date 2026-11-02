@@ -153,7 +153,7 @@ the registry's own read of the row, was never a write with no answer: on a regis
 it at once as that read's fault, with no read of the row and no fresh write. A registry of your own that does not report tokens is settled by
 the object instead: the load reads the footer of the object under the pointer and takes a match as its own. The footer
 carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index
-nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum: another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
+nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum (on an encrypted object a writer cannot choose those bits: the reader refuses every footer byte no writer writes, and about 9 bits stay free, so matching a chosen checksum is a chance of about 2^-23, where on a cleartext object the 12-byte write identity is free and a match is a calculation; [what the footer leaves free](../format.md#6-the-footer)): another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
 Azure Blob the client's retry policy runs under each of those writes too, so a registry that
 never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's
 default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the

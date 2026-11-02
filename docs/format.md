@@ -123,9 +123,10 @@ The first 8 bytes of the object.
 - **Layout.** The footer repeats `magic`, `versionMajor` and `versionMinor`, and the footer is the authority: a reader
   needs the preamble only to recognise a file from its first bytes. Chunk payloads start at offset 8.
 - **Writer today.** Writes `CRBM`, 1, 0 and two zero bytes.
-- **Reader today.** Never reads bytes 6 and 7. Compares the first six bytes with the footer, and refuses a
-  disagreement with an `IntegrityError`, only when its first read happens to cover offset 0 (an object that fits in the
-  tail read). A larger object is opened without looking at the preamble.
+- **Reader today.** Compares the first six bytes with the footer, and refuses a disagreement with an `IntegrityError`;
+  refuses a non-zero byte 6 or 7 with an `IntegrityError`. Both checks run only when its first read happens to cover
+  offset 0 (an object that fits in the tail read); a larger object is opened without looking at the preamble, and the
+  reader makes no request to check it. A port that reads the front of an object must refuse the same bytes.
 
 ## 3. The chunk payload region
 
@@ -135,9 +136,14 @@ one payload ends.
 
 - **Writer today.** Payloads follow one another with no gap, in ascending chunk-key order, starting at offset 8. The
   region ends at `indexOffset` or, with an extension block, at the block's first byte.
-- **Reader today.** Takes each payload's position from the index alone. The index can encode a gap between payloads
-  ([section 5](#5-the-index)), so a reader written for the layout does not assume payloads are adjacent. It requires
-  each payload to lie wholly inside the region, which ends where the extension block begins.
+- **Reader today.** Takes each payload's position from the index, and requires the payloads to be adjacent: the first
+  starts at offset 8, each starts where the previous ended (every index `gap` is 0, [section 5](#5-the-index)), and the
+  last ends exactly where the region does, at the extension block's first byte or, with no block, at `indexOffset`. An
+  object with no chunks has an empty region, so its index starts at offset 8 or, with a block, the block does. An object
+  with a gap, or with bytes between the last payload and the region's end, is refused with an `IntegrityError`: bytes the
+  index does not name are bytes nothing authenticates, and a footer that covers them is free input to an object's
+  fingerprint ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)). A port must refuse the
+  same layouts.
 
 **What a payload is.** The footer's `payloadCodecId` ([section 6](#6-the-footer)) says which codec wrote the payloads.
 The only id defined is **1, Roaring portable**. A payload under codec 1, cleartext, is the standard **portable
@@ -200,9 +206,10 @@ ties and are stored as arrays (22 and 26 bytes).
   not ascending, that overlap or touch, or that leave their container; a run container with no runs; a bitset whose
   popcount is not its stated cardinality; a run container whose stated cardinality is not what its runs cover; an entry
   in an offset header that is not where its container starts; and any value above 65,535, which means any container key
-  other than 0. **Reader today, accepted:** bytes after the end of the bitmap inside a stored payload (the read path does
-  not require the payload to be consumed whole), and a payload whose count disagrees with its index entry (above). A
-  port that refuses those two refuses objects this library opens.
+  other than 0. **Reader today, refused:** bytes after the end of the bitmap inside a stored payload (a stored chunk is
+  decoded under "the bytes are exactly one bitmap", one length comparison per decode; an encrypted payload is checked
+  after it opens). **Reader today, accepted:** a payload whose count disagrees with its index entry (above). A port
+  that accepts bytes after a bitmap reads objects this library refuses.
 - **Encrypted.** An encrypted payload is `nonce ‖ ciphertext ‖ tag` in place of the bytes above
   ([section 8](#8-encryption-at-rest)): 28 bytes longer than the cleartext payload.
 
@@ -308,14 +315,15 @@ not shrink as a varint; the cardinality is a varint because 65,536 does not fit 
 - **Ordering.** Keys strictly ascend: after the first entry a `keyDelta` of 0 is a duplicate and is refused; a key past
   65,535 is refused. A generation has at most 65,536 entries.
 - **Writer today.** `gap` is always 0, so each payload starts where the previous one ended.
-- **Reader today.** Accepts any `gap`, and a varint written longer than it needs to be. Refuses an entry whose `length` is 0 (cleartext) or under 28 (encrypted, the
+- **Reader today.** Refuses an entry whose `gap` is not 0, and an index whose last payload does not end where the
+  payload region does ([section 3](#3-the-chunk-payload-region)). Accepts a varint written longer than it needs to be.
+  Refuses an entry whose `length` is 0 (cleartext) or under 28 (encrypted, the
   nonce and tag), or over the payload cap (1 MiB, plus 28 on an encrypted object); whose `cardinality` is outside 1 to
-  65,536; or whose payload would end past the payload region. Because gaps are unsigned, payloads ascend and cannot
-  overlap. A reader refuses an index region over 8 MiB, and sizes its tables from the region's length, never from a
+  65,536; or whose payload would end past the payload region. Payloads are adjacent, so they ascend and cannot overlap. A reader refuses an index region over 8 MiB, and sizes its tables from the region's length, never from a
   count the bytes claim.
 - **Where the reader finds it.** From the footer: the index is `[indexOffset, indexOffset + indexLength)`. It must start
-  at or after offset 8 and end at or before `size − 104`; the reader accepts bytes between the index's end and the
-  footer, which the writer does not write.
+  at or after offset 8 and end exactly at `size − 104`, where the footer begins: bytes between the index's end and the
+  footer, which the writer does not write, are refused with an `IntegrityError`.
 - **Encrypted.** The stored index is the AES-256-GCM ciphertext of the entries above, the same length as the
   plaintext, with the nonce and tag in the footer ([section 8](#8-encryption-at-rest)). The index CRC is over the stored
   (encrypted) bytes. Each entry's `crc32c` covers the stored payload, the nonce and tag included.
@@ -335,11 +343,11 @@ The last 104 bytes of the object. Its position is fixed, so a reader finds it fr
 | 27 | 1 | `containerCodec` | `u8` | a transform over each payload; 0 is none |
 | 28 | 1 | `versionMajor` | `u8` | the format's major version; 1 |
 | 29 | 1 | `versionMinor` | `u8` | the format's minor version; 0 |
-| 30 | 2 | `reserved2` | `u16` | reserved; written as zero |
+| 30 | 2 | `reserved2` | `u16` | reserved; written as zero, and refused when not |
 | 32 | 8 | `generation` | `u64` | the generation number the object was written as |
 | 40 | 12 | `indexNonce` | bytes | the index's AEAD nonce when encrypted; on a cleartext object, the write's identity: 12 bytes its writer drew once for the object |
-| 52 | 16 | `indexTag` | bytes | the index's AEAD tag when encrypted; on a cleartext object, written zero and not read |
-| 68 | 16 | `keyId` | bytes | reserved; written as zero |
+| 52 | 16 | `indexTag` | bytes | the index's AEAD tag when encrypted; on a cleartext object, written zero, and refused when not |
+| 68 | 16 | `keyId` | bytes | reserved; written as zero, and refused when not |
 | 84 | 4 | `chunkCount` | `u32` | the number of index entries; zero when encrypted |
 | 88 | 8 | `totalCardinality` | `u64` | the sum of every entry's cardinality; zero when encrypted |
 | 96 | 4 | `footerCrc32c` | `u32` | CRC32C of footer bytes `[0, 96)` |
@@ -372,19 +380,19 @@ that cannot be ignored. (A change that can be ignored is a new extension section
 - **`versionMajor`.** A reader refuses any value but its own major version, 1, with an `UnsupportedError` ([section
   11](#11-versioning-and-compatibility)).
 - **`versionMinor`.** Written as 0. A reader does not branch on it today.
-- **`reserved2`.** Written as zero; a reader ignores it, so a port must not refuse a non-zero value.
+- **`reserved2`.** Written as zero; a reader refuses a non-zero value with an `IntegrityError`, and so must a port.
 - **`generation`.** The number in the object's key; a generation is self-describing. A reader opening an object under a
   key refuses it with an `IntegrityError` when the footer names another generation. A value past 2^53 − 1 is refused.
 - **`indexNonce`, `indexTag`.** Encrypted: the index's nonce and tag ([section 8](#8-encryption-at-rest)). Cleartext:
   `indexNonce` is the write's identity, 12 bytes the writer draws once for the object from its entropy source (random
   by default, injectable) and does not
   derive from the object's content, so two writes of the same ids at the same number carry different ones; `indexTag`
-  is written zero. A reader does not interpret either field on a cleartext object: it accepts any `indexNonce`, an
+  is written zero. A reader does not interpret `indexNonce` on a cleartext object: it accepts any value, an
   all-zero one included (every object written before the identity existed has one, and so does one written with zero
-  entropy), and any `indexTag`, so a port must not refuse a value there. A writer that cannot draw the 12 bytes
-  writes nothing.
-- **`keyId`.** All zero bytes in every object written today; a reader ignores it, so a port must not refuse a non-zero
-  value. The wrapped keys live in the registry row, not in
+  entropy), so a port must not refuse a value there. It refuses a non-zero `indexTag` on a cleartext object with an
+  `IntegrityError`. A writer that cannot draw the 12 bytes writes nothing.
+- **`keyId`.** All zero bytes in every object written today; a reader refuses any non-zero byte with an
+  `IntegrityError`, and so must a port. The wrapped keys live in the registry row, not in
   the object.
 - **`chunkCount`, `totalCardinality`.** Cleartext: the number of index entries and the sum of their cardinalities, and a
   reader checks both against the index (a mismatch is an `IntegrityError`); the library's `count()` answers from the row's
@@ -396,12 +404,28 @@ that cannot be ignored. (A change that can be ignored is a new extension section
   `endMagic`, the preamble, or the extension block. A reader checks `endMagic` and then this CRC before it trusts any
   other footer field.
 
-**Check order today.** The object's size and at least 112 bytes, then `endMagic`, then `footerCrc32c`, then
+**What the footer CRC leaves free.** The CRC is linear, so a field a reader ignored would let four chosen bytes make it
+equal any value, and the CRC, with the object's size, is the object's fingerprint ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)).
+The reader therefore refuses every byte no writer writes: `reserved2`, `keyId`, a cleartext `indexTag`, an index that
+does not end at the footer, and, in the object, the preamble's bytes 6 and 7, a payload gap and bytes after a bitmap.
+On an encrypted object, what stays free after those checks is `versionMinor` (8 bits, which the preamble repeats, and
+which is compared only when the first read covers the preamble), the 7 low bytes of `generation` (which the reader
+returns and a caller holds to the key's number: every open through the library does, and a comparison that reads only
+the footer for a fingerprint does not), and the extension flag, which an object with no block to pad to the size does not
+have to set (a block of an unknown section type can pad it by 13 bytes or more, up to the block's 4 KiB cap). The
+nonce and tag are the index's AEAD inputs, `chunkCount` and `totalCardinality` must be zero, the CRC of the index is
+the index's, and `indexOffset` and `indexLength` are fixed by the object's size. So an object that is opened as
+generation N has `versionMinor` and the flag as its free bits, a chance of 2^-23 of matching a chosen CRC, where
+before a chosen CRC could be matched by calculation. A cleartext object also leaves its 12-byte `indexNonce` free, by
+design, since it is the write's identity.
+
+**Check order today.** The object's size and at least 112 bytes, then `endMagic`, then `footerCrc32c`, then, for a footer
+of major version 1, `reserved2`, `keyId`, a cleartext `indexTag` and that the index ends where the footer begins, then
 `versionMajor`, then (a missing key on an encrypted object is a `ValidationError`), then the little-endian flag, then
 unknown flag bits, then `elementWidth`, `payloadCodecId` and `containerCodec`, then the four `u64` fields
 (`indexOffset`, `indexLength`, `totalCardinality`, `generation`) each as a safe integer, then (a key given for an object
-that is not encrypted is an `IntegrityError`), then the index bounds, then the index cap, then the preamble against the
-footer (when the first read covers offset 0), then the index CRC.
+that is not encrypted is an `IntegrityError`), then the index start and the index cap, then the preamble against the
+footer and its bytes 6 and 7 (when the first read covers offset 0), then the index CRC.
 
 ## 7. Checksums
 
@@ -770,16 +794,18 @@ beyond it: a change that breaks a reader may land in any minor release. These ar
 8. **Extension points after the freeze.** Do flag bits and extension section types stay open, assigned one at a time by
    later releases? Is flag bit 1 retired or available? A section must be safe to ignore and a flag bit is the mechanism
    for what is not; is that the whole of the mechanism?
-9. **Reserved bytes.** Preamble bytes 6 and 7, the footer's `reserved2` and `keyId`, and the cleartext `indexTag` are
-   ignored by a reader today, and so is the cleartext `indexNonce`, which now holds a write identity. Must any meaning a
-   1.x gives them be safe to ignore, or do readers start refusing non-zero values first? Is the cleartext `indexNonce`
-   a field a reader may interpret or refuse in 1.x, or one it never reads?
+9. **Reserved bytes.** Answered for the bytes a reader now refuses when non-zero: preamble bytes 6 and 7, the footer's
+   `reserved2` and `keyId`, and the cleartext `indexTag`. A meaning given to any of them is therefore a change an older
+   reader refuses, so it needs a new `versionMajor` or a flag bit. Still open: the cleartext `indexNonce`, which holds a
+   write identity and is accepted with any value. Is it a field a reader may interpret or refuse in 1.x, or one it never
+   reads?
 10. **`versionMinor`.** No reader branches on it. Is it informational only, and does the comparison of the preamble with
     the footer stay?
-11. **Reader leniencies.** Each is accepted today and may be refused, kept, or required: an index `gap` above 0; bytes
-    between the index and the footer; overlong varints; bytes after a payload's bitmap; a cardinality that is not
-    compared with the payload; the bytes of a cleartext object's `indexNonce` (an all-zero value included) and
-    `indexTag`.
+11. **Reader leniencies.** Answered, refused today: an index `gap` above 0; bytes between the last payload and the
+    payload region's end; bytes between the index and the footer; bytes after a payload's bitmap. Still accepted, and
+    open to be refused, kept, or required: overlong varints; a cardinality that is not compared with the payload; the
+    bytes of a cleartext object's `indexNonce` (an all-zero value included); a `versionMinor`; an unknown extension
+    section type.
 12. **Caps a writer promises to stay within.** Only the extension block's 4 KiB is written as a rule today. The
     others are what a reader of this library accepts: an index of 8 MiB, a payload of 1 MiB, a row of 1 MiB, a ledger of
     192 entries written and 384 read, leases 64 and 256, 8 wrapped keys, governance objects of 64 KiB, metadata of 1 KiB
@@ -797,11 +823,11 @@ What each reserved or open field holds, and how a reader treats it today. The nu
 | Where | What it holds today | What a reader does today | Question |
 |---|---|---|---|
 | footer `flags` bit 1 and bits 4 to 31 | written clear | refuses an object that sets one, with an `UnsupportedError` | 8 |
-| footer `reserved2` (offset 30) | written zero | ignores it | 8, 9 |
-| preamble bytes 6 and 7 | written zero | never reads them | 9 |
-| footer `keyId` (offset 68, 16 bytes) | written zero; the wrapped keys are in the row | ignores it | 9 |
+| footer `reserved2` (offset 30) | written zero | refuses a non-zero value | 9 |
+| preamble bytes 6 and 7 | written zero | refuses a non-zero byte, when its first read covers the front of the object | 9 |
+| footer `keyId` (offset 68, 16 bytes) | written zero; the wrapped keys are in the row | refuses a non-zero byte | 9 |
 | footer `indexNonce` on a cleartext object | the write's identity, 12 bytes drawn once per object; all zero in an object written by an earlier release, and when the writer was given zero entropy | does not interpret it: accepts any value, all-zero included | 9, 11 |
-| footer `indexTag` on a cleartext object | written zero | does not read it | 9 |
+| footer `indexTag` on a cleartext object | written zero | refuses a non-zero byte | 9 |
 | footer `versionMinor` | written 0 | does not branch on it | 10 |
 | `elementWidth` other than 32 | not written | refuses it | 6 |
 | `payloadCodecId` other than 1 | not written | refuses it, naming the id | 4 |
@@ -809,14 +835,15 @@ What each reserved or open field holds, and how a reader treats it today. The nu
 | extension section types 2 to 255 | not written; type 0 is never a section | skips the body after checking its header, order and length | 8 |
 | row `keyId` | optional string, unused | stored and returned | none yet: an external key reference for a future key-management adapter |
 | row `residency` | optional object | stored and returned, with no meaning | none yet |
-| index `gap` above 0 | written 0 | accepts it | 11 |
-| bytes between the index and the footer | none written | accepts them | 11 |
+| index `gap` above 0 | written 0 | refuses it | 11 |
+| bytes between the last payload and the payload region's end | none written | refuses them | 11 |
+| bytes between the index and the footer | none written | refuses them | 11 |
 | a varint longer than the shortest | not written | accepts it, up to 5 bytes and 32 bits | 11 |
-| bytes after a payload's bitmap | none written | accepts them | 11 |
+| bytes after a payload's bitmap | none written | refuses them | 11 |
 | an entry's cardinality against its payload | written equal | does not compare them | 11 |
 
-A reader must not refuse non-zero bytes in the fields it ignores today, the cleartext `indexNonce` included; question 9
-asks whether that stays so.
+A reader must not refuse a value in the fields it still ignores today: the cleartext `indexNonce`, `versionMinor` and an
+unknown extension section type. Question 9 asks whether the cleartext `indexNonce` stays so.
 
 ## 13. The golden corpus
 

@@ -22,7 +22,13 @@ import type { CrbmCrypto } from '@/core/crypto';
 import { IntegrityError } from '@/core/errors';
 import { NodeAead } from '@/drivers/crypto';
 import { forgeCrc } from '../../helpers/crc-forge';
-import { layoutOf, writeCrbm } from '../../helpers/crbm-extension';
+import {
+  extensionBlock,
+  layoutOf,
+  section,
+  spliceBlock,
+  writeCrbm,
+} from '../../helpers/crbm-extension';
 import type { RawChunk } from '../../helpers/crbm-extension';
 import { fixedEntropy } from '../../helpers/entropy';
 import { writeVarint } from '../../helpers/varint';
@@ -307,3 +313,36 @@ describe('the attack: an old encrypted object at a retaken generation number', (
     ).toBe(true);
   });
 });
+
+describe('what an encrypted footer leaves free', () => {
+  it('is versionMinor, the generation (which an open through the engine holds to the key) and the extension flag as the padding of an unknown section', async () => {
+    const bytes = await encrypted();
+    const crypto = cryptoFor(dek);
+    // Each footer field the CRC covers, flipped at its first and its last bit with the CRC computed again. The tail
+    // read is a footer's worth, so the preamble (which repeats versionMinor) is not read, as for a large object.
+    const accepted = new Set<number>();
+    for (let at = 0; at < FOOTER_CRC_COVERAGE; at++) {
+      for (const bit of [0, 7]) {
+        const forged = refooted(bytes, (f) => (f[at]! ^= 1 << bit));
+        const opened = await CrbmReader.open(new BufferReader(forged), {
+          crypto,
+          tailBytes: FOOTER_BYTES,
+        }).then(
+          () => true,
+          () => false,
+        );
+        if (opened) accepted.add(at);
+      }
+    }
+    // Byte 39, the top of the generation, is refused: 2^56 is not a safe integer.
+    expect([...accepted]).toEqual([FOOTER.versionMinor, ...range(FOOTER.generation, 7)]);
+
+    // The one remaining way to reach a size: a block of an unknown section type, which also sets the flag.
+    const padded = spliceBlock(bytes, extensionBlock(section(2, new Uint8Array(40))));
+    expect((await open(padded, crypto)).chunkKeys()).toEqual([0, 9]);
+    expect(padded.length - bytes.length).toBe(5 + 40 + 12);
+  });
+});
+
+const range = (from: number, count: number): number[] =>
+  Array.from({ length: count }, (_, i) => from + i);

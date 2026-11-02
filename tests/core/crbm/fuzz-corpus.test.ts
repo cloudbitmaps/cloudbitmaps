@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { CrbmReader, parseExtension, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { DEFAULT_MAX_BITMAP_BYTES, DEFAULT_MAX_PAYLOAD_BYTES } from '@/core/crbm/format';
+import {
+  DEFAULT_MAX_BITMAP_BYTES,
+  DEFAULT_MAX_PAYLOAD_BYTES,
+  PREAMBLE_BYTES,
+} from '@/core/crbm/format';
 import {
   assertConsistentDecode,
   checkPublicDoor,
@@ -53,7 +57,13 @@ function deserialize(bytes: Uint8Array): void {
 
 /** The index-parser target's contract: raw index bytes → self-consistent entries or a typed error. */
 function parseRawIndex(bytes: Uint8Array): void {
-  parseIndex(bytes, 1 << 24, DEFAULT_MAX_PAYLOAD_BYTES); // fixed generous payload-region end, matching fuzz/targets/crbm-index.mjs
+  // The payload region's length is the first four bytes (little-endian), as in fuzz/targets/crbm-index.mjs.
+  if (bytes.length < 4) return;
+  const regionLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+    0,
+    true,
+  );
+  parseIndex(bytes.subarray(4), PREAMBLE_BYTES + regionLength, DEFAULT_MAX_PAYLOAD_BYTES);
 }
 
 /** A key whose every open fails, as the extension-block target uses for its encrypted pass. */

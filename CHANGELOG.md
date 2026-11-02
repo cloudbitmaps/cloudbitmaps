@@ -11,6 +11,21 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The `.crbm` reader refuses an object that carries bytes no release writes.** An object's identity is its size and
+  its footer's CRC32C, and the reader used to leave an attacker free bytes (a CRC is linear, so four free bytes match
+  any value by calculation) with which to present an old object, an encrypted one included, as the one now stored at a
+  generation number taken again. It now refuses, with an `IntegrityError`: a non-zero footer `reserved2` or `keyId`; a
+  non-zero footer `indexTag` on a cleartext object (the cleartext `indexNonce` stays free: it is the write's identity);
+  a non-zero preamble byte 6 or 7 (checked when the first read covers the front of the object); bytes between the index
+  and the footer; a gap before a payload, between payloads or after the last one; and bytes after a stored chunk's
+  bitmap. No release writes any of these, and every object in the golden corpus still reads, so an object any release
+  wrote opens as before. What a caller does: nothing for an object a release wrote; an object produced by another
+  writer that pads or leaves these bytes non-zero must be rewritten to the layout in
+  [`docs/format.md`](docs/format.md). Overlong varints, a cardinality that disagrees with its payload, `versionMinor`
+  and unknown extension section types are still accepted.
+
 ## [0.26.0] — 2026-10-30
 
 ### Added
