@@ -259,9 +259,6 @@ interface PinCheck {
   ended?: 'gone' | 'replaced';
 }
 
-/** What a pin holds, and when the row read that verified it was sent. */
-export type PinTaken = { generation: number; checkedAtMs: number } & Required<PinnedObject>;
-
 /** A pinned read of a generation whose registry row has gone or been destroyed, which it cannot read. */
 const pinGone = (ref: SegmentRef, generation: number): NotFoundError =>
   new NotFoundError(
@@ -1099,7 +1096,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * and a `keep: 0` sweep can land in that gap, and nothing has been handed out yet, so the generation current
    * once the swept one is gone is exactly what a pin taken now should hold. One retry, then propagate.
    */
-  async pinGeneration(ref: SegmentRef, lease?: PinLease): Promise<PinTaken | null> {
+  async pinGeneration(
+    ref: SegmentRef,
+    lease?: PinLease,
+  ): Promise<({ generation: number; checkedAtMs: number } & Required<PinnedObject>) | null> {
     validateUserRef(ref, 'read', PORT_KEYS);
     for (let moved = 0; ; moved++) {
       try {
@@ -1137,7 +1137,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     at: { readonly generation: number; readonly fingerprint: string },
     lease?: PinLease,
-  ): Promise<PinTaken> {
+  ): Promise<{ generation: number; checkedAtMs: number } & Required<PinnedObject>> {
     validateUserRef(ref, 'read', PORT_KEYS);
     if (typeof (at as Partial<typeof at> | undefined)?.fingerprint !== 'string')
       throw new ValidationError(
@@ -1218,7 +1218,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return { generation, version, fingerprint, checkedAtMs };
   }
 
-  private async pinOnce(ref: SegmentRef, lease?: PinLease): Promise<PinTaken | null> {
+  private async pinOnce(
+    ref: SegmentRef,
+    lease?: PinLease,
+  ): Promise<({ generation: number; checkedAtMs: number } & Required<PinnedObject>) | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
     // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no timed refresh,
     // arbitrarily far behind. Pinning through it made a pin on such a store

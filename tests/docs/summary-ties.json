@@ -483,12 +483,6 @@
     },
     {
       "file": "docs/guide/disaster-recovery.md",
-      "claim": "pin-safe-across-re-creation",
-      "sentence": "5ecb649e698c",
-      "starts": "Once a restore puts the object back, it"
-    },
-    {
-      "file": "docs/guide/disaster-recovery.md",
       "claim": "transient-error-leaves-its-object",
       "sentence": "753a10817f89",
       "starts": "A TransientError from a load whose registry writes"

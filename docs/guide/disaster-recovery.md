@@ -372,7 +372,7 @@ at its next check, within `cache.genTtlMs`, and one with none lets it answer onl
 fail with `NotFoundError` for the rest, rather than re-resolve. Once a restore puts its object back into the same row,
 it reads that object again once its store is invalidated (`store.invalidate(ref)`); a pin whose row was purged and
 re-created is another incarnation and stays over on a store with a timed refresh. A restart ends the pin with its
-process. Take new pins after that invalidation.
+process. Take new pins after that invalidation. ([A pin across a re-creation](correctness.md#pin-safe-across-re-creation).)
 
 ## Repair: an unstamped tombstone after a hard kill
 
@@ -817,7 +817,7 @@ resolution:
   a timed refresh at its next check, within `cache.genTtlMs`; with none it answers from what it has read and refuses
   the rest. Once a restore puts the object back into the same row, it still refuses it until its store is
   invalidated, or a later `pin()` of the same version opens the object again, and then it reads the whole object
-  again. A pin of a purged and re-created row stays over: take a new pin.
+  again. A pin of a purged and re-created row stays over: take a new pin ([why](correctness.md#pin-safe-across-re-creation)).
 
 ## Encryption & DR
 

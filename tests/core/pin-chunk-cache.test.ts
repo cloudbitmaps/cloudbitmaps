@@ -922,7 +922,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
-    const store = new CloudRoaring({ storage: backend });
+    const store = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
     const first = await store.segment('s').pin();
     store.invalidate(REF); // so the first pin's next read opens its version again
     let release!: () => void;
@@ -1105,6 +1105,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
+      cache: { genTtlMs: 0 },
       storage: brandAsBackend({
         storage: counted(storage, 'storage', calls),
         registry: counted(registry, 'registry', calls),
@@ -1135,7 +1136,11 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry, keystore });
-    const store = new CloudRoaring({ storage: backend, encryption: { keystore, required: true } });
+    const store = new CloudRoaring({
+      storage: backend,
+      cache: { genTtlMs: 0 },
+      encryption: { keystore, required: true },
+    });
     const snap = await store.segment('s').pin();
     for await (const key of storage.list(REF)) await storage.delete(key);
     await registry.delete(REF);
@@ -1148,6 +1153,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
+      cache: { genTtlMs: 0 },
       storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
@@ -1201,7 +1207,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
-      cache: { readerMax: 2 },
+      cache: { genTtlMs: 0, readerMax: 2 },
       seams: { clock: manualClock() },
     });
     const snap = await store.segment('s').pin();
