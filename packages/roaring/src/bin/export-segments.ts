@@ -17,10 +17,10 @@
  * re-run). A segment that couldn't be read is isolated into the manifest's `failed[]` and the CLI exits non-zero
  * — always check it, because "manifest present" is *the run finished*, not "every segment succeeded". Re-running
  * overwrites the segments it re-exports but does **not** prune files for segments that have since disappeared —
- * **export to a fresh directory** for a clean dump. It writes only into directories it made (or an earlier run's,
- * owner-only): a symlink, a directory of another user, or one open to group or others in its place is refused. The
- * output directory itself is refused when it is a symlink or not a directory; its mode and owner are not checked.
- * Artifacts are owner-only (decrypted **cleartext** — protect it).
+ * **export to a fresh directory** for a clean dump. It writes segment files only into namespace directories it made (or
+ * an earlier run's, owner-only): a symlink, a directory of another user, or one open to group or others in its place is
+ * refused. The output directory itself is refused when it is a symlink or not a directory; its mode and owner are not
+ * checked. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
  * It wires no keystore, so an encrypted segment lands in `failed[]`: export an encrypted store with
  * `store.exportSegments` from a store built with its keystore.
