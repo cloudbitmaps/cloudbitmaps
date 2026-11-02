@@ -4,6 +4,7 @@ import { isValidationError } from '@/core/errors';
 
 const KEY = 'S3cretAccountKeyValue0123456789abcdefg==';
 const SAS = 'sv=2022-11-02&sig=TopSecretSignature123%3D';
+const PLAIN = 'is not a valid Azure Storage connection string';
 
 /** What `new AzureBlobStorage` throws when the SDK's parser throws `sdkMessage` for `connectionString`. */
 function refused(connectionString: string, sdkMessage: string): string {
@@ -22,14 +23,14 @@ function refused(connectionString: string, sdkMessage: string): string {
 }
 
 describe('a refused connection string never quotes a part of itself', () => {
-  it('drops an SDK reason that quotes only the account key', () => {
+  it('leaves out an SDK reason that quotes the account key', () => {
     const msg = refused(`AccountName=acct;AccountKey=${KEY}`, `bad key ${KEY}`);
     expect(msg).not.toContain(KEY);
     expect(msg).not.toContain('S3cretAccountKey');
-    expect(msg).toContain('is not a valid Azure Storage connection string');
+    expect(msg).toContain(PLAIN);
   });
 
-  it('drops an SDK reason that quotes only a shared access signature', () => {
+  it('leaves out an SDK reason that quotes a shared access signature', () => {
     const msg = refused(
       `BlobEndpoint=https://acct.blob.core.windows.net;SharedAccessSignature=${SAS}`,
       `bad sas ${SAS}`,
@@ -38,19 +39,14 @@ describe('a refused connection string never quotes a part of itself', () => {
     expect(msg).not.toContain(SAS);
   });
 
-  it('drops a reason that quotes the whole string', () => {
-    const cs = `AccountName=acct;AccountKey=${KEY}`;
-    expect(refused(cs, `cannot parse ${cs}`)).not.toContain(KEY);
+  it('never contains any value of the string', () => {
+    const msg = refused(`AccountName=acct;AccountKey=${KEY}`, 'cannot use acct');
+    expect(msg).not.toContain('acct');
+    expect(msg).not.toContain('cannot use');
   });
 
-  it('names the parts a string lacks, without a value', () => {
-    const msg = refused('AccountName=acct', 'cannot use acct');
-    expect(msg).toContain('AccountKey');
-    expect(msg).toContain('SharedAccessSignature');
-  });
-
-  it('still shows a reason that quotes nothing', () => {
+  it('gives the plain message for a valid-shaped string the SDK rejects', () => {
     const msg = refused(`AccountName=acct;AccountKey=${KEY}`, 'Invalid Account Key');
-    expect(msg).toContain('(Invalid Account Key)');
+    expect(msg).toMatch(new RegExp(`${PLAIN}$`));
   });
 });

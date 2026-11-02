@@ -97,45 +97,12 @@ function serviceClientFor(connectionString: unknown): BlobServiceClient {
   }
   try {
     return BlobServiceClient.fromConnectionString(connectionString);
-  } catch (err) {
+  } catch {
+    // The SDK's reason is left out: it can quote part of the string, and the message reaches the caller's logs.
     throw new ValidationError(
-      `AzureBlobStorage: \`connectionString\` is not a valid Azure Storage connection string${reasonDetail(err, connectionString)}`,
+      'AzureBlobStorage: `connectionString` is not a valid Azure Storage connection string',
     );
   }
-}
-
-/** The `name=value` pairs of a connection string, split on `;` and, within a pair, on the first `=` (a key ends in `=`). */
-function connectionStringPairs(connectionString: string): Array<[string, string]> {
-  const pairs: Array<[string, string]> = [];
-  for (const part of connectionString.split(';')) {
-    const at = part.indexOf('=');
-    if (at > 0) pairs.push([part.slice(0, at).trim(), part.slice(at + 1).trim()]);
-  }
-  return pairs;
-}
-
-/**
- * What to append to the "not valid" message. The SDK's own reason is shown only when it quotes no value of the string
- * (a value of 4 characters or more, the account key and a shared access signature included), because the message
- * reaches the caller's logs. Otherwise only the names of the parts the string lacks are given, never a value.
- */
-function reasonDetail(err: unknown, connectionString: string): string {
-  const reason = err instanceof Error ? err.message : '';
-  const pairs = connectionStringPairs(connectionString);
-  const quotesAValue =
-    reason.includes(connectionString) ||
-    pairs.some(([, value]) => value.length >= 4 && reason.includes(value));
-  if (reason.length > 0 && !quotesAValue) return ` (${reason})`;
-  const names = new Set(pairs.map(([name]) => name.toLowerCase()));
-  const missing: string[] = [];
-  if (!names.has('usedevelopmentstorage')) {
-    if (!names.has('accountname') && !names.has('blobendpoint'))
-      missing.push('`AccountName` or `BlobEndpoint`');
-    if (!names.has('accountkey') && !names.has('sharedaccesssignature')) {
-      missing.push('`AccountKey` or `SharedAccessSignature`');
-    }
-  }
-  return missing.length > 0 ? ` (it has no ${missing.join(' and no ')})` : '';
 }
 
 /**

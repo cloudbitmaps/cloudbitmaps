@@ -13,9 +13,8 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **A connection string the Azure SDK refuses no longer puts a part of itself in the error.** The SDK's reason is shown
-  only when it quotes none of the string's values (the account key and a shared access signature included); otherwise
-  the `ValidationError` names the parts the string lacks, never a value.
+- **A connection string the Azure SDK refuses no longer puts a part of itself in the error.** The `ValidationError`
+  says only that the string is not a valid Azure Storage connection string; the SDK's reason is not included.
 
 ## [0.26.0] — 2026-10-30
 
