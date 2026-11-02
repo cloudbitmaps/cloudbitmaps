@@ -640,3 +640,119 @@ describe('a row is read only under the name it was written for', () => {
     ).rejects.toThrow(/names another segment than the one it is stored for/);
   });
 });
+
+describe('an envelope tombstone keeps only what a re-create needs', () => {
+  const tref: SegmentRef = { namespace: 'ns', segment: 'enc' };
+  const tkey = registryObjectKey('conf', tref);
+  const FIELDS_DROPPED = [
+    'wrappedDeks',
+    'keyId',
+    'retention',
+    'residency',
+    'summary',
+    'knownGens',
+    'leases',
+  ] as const;
+
+  const KEPT = [
+    'createdAt',
+    'currentGen',
+    'namespace',
+    'pointerId',
+    'segment',
+    'status',
+    'token',
+    'updatedAt',
+  ];
+
+  const tombstoneOf = async (store: FakeObjectStore, key: string) =>
+    JSON.parse(new TextDecoder().decode((await store.read(key))!.bytes));
+
+  const encryptedRow = async (reg: ObjectStoreRegistry) =>
+    reg.create(tref, {
+      currentGen: 3,
+      wrappedDeks: [{ keyId: 'k1', wrapped: 'd3JhcHBlZA==' }],
+      keyId: 'kms-key',
+      retention: { expiresAt: 9_999_999 },
+      residency: { region: 'eu' },
+      summary: { generation: 3, sealed: Buffer.alloc(52).toString('base64') },
+      knownGens: [{ generation: 3, footerCrc: 30 }],
+    });
+
+  it('writes a tombstone with none of the deleted row optional fields', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    const created = await encryptedRow(reg);
+    const { token } = await reg.compareAndSwap(tref, created.token, {
+      leases: [{ holder: '00112233aabbccdd', generation: 3, until: 5_000_000 }],
+    });
+    expect(await reg.get(tref)).toMatchObject({
+      wrappedDeks: expect.any(Array),
+      leases: expect.any(Array),
+    });
+    await reg.delete(tref, token);
+    const env = JSON.parse(new TextDecoder().decode((await store.read(tkey))!.bytes));
+    expect(env.deleted).toBe(true);
+    for (const field of FIELDS_DROPPED) expect(env.record).not.toHaveProperty(field);
+    expect(Object.keys(env.record).sort()).toEqual(KEPT);
+    expect(env.record.pointerId).toBe(env.record.token);
+    expect(env.record).toMatchObject({
+      segment: 'enc',
+      namespace: 'ns',
+      currentGen: 3,
+      status: 'active',
+    });
+    expect(tokenParts(env.record.token).counter).toBe(tokenParts(token).counter + 1);
+    expect(await reg.get(tref)).toBeNull();
+    await reg.delete(tref); // still idempotent over a tombstone
+  });
+
+  it('writes the same key set over a destroyed row', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    // What a drop or a destroy leaves: a destroyed row that still names its policies.
+    const { token } = await reg.create(tref, {
+      currentGen: 2,
+      status: 'destroyed',
+      retention: { expiresAt: 9_999_999 },
+      residency: { region: 'eu' },
+    });
+    await reg.delete(tref, token);
+    const env = await tombstoneOf(store, tkey);
+    expect(env.deleted).toBe(true);
+    expect(Object.keys(env.record).sort()).toEqual(KEPT);
+    expect(env.record.pointerId).toBe(env.record.token);
+    expect(env.record.status).toBe('destroyed');
+    expect(await reg.get(tref)).toBeNull();
+  });
+
+  it('writes a tombstone for a row with no namespace', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    const bare: SegmentRef = { segment: 'bare' };
+    const { token } = await reg.create(bare, { currentGen: 1 });
+    await reg.delete(bare, token);
+    const env = await tombstoneOf(store, registryObjectKey('conf', bare));
+    expect(Object.keys(env.record).sort()).toEqual(KEPT.filter((k) => k !== 'namespace'));
+    expect(env.record.pointerId).toBe(env.record.token);
+    expect(await reg.get(bare)).toBeNull();
+  });
+
+  it('a re-create over it continues the counter and works as before', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    const { token } = await encryptedRow(reg);
+    await reg.delete(tref, token);
+    const { token: again } = await reg.create(tref, { currentGen: 0 });
+    expect(tokenParts(again).counter).toBe(tokenParts(token).counter + 2);
+    expect(tokenParts(again).incarnation).not.toBe(tokenParts(token).incarnation);
+    const row = await reg.get(tref);
+    expect(row).toMatchObject({ currentGen: 0, token: again });
+    expect(row).not.toHaveProperty('wrappedDeks');
+    const { token: next } = await reg.compareAndSwap(tref, again, { currentGen: 1 });
+    expect(next).not.toBe(again);
+    await expect(reg.compareAndSwap(tref, token, { currentGen: 2 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+  });
+});

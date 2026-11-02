@@ -11,6 +11,27 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The `.crbm` reader refuses an object that carries bytes no release writes.** An object's identity is its size and
+  its footer's CRC32C, and the reader used to leave an attacker free bytes (a CRC is linear, so four free bytes match
+  any value by calculation) with which to present an old object, an encrypted one included, as the one now stored at a
+  generation number taken again. It now refuses, with an `IntegrityError`: a non-zero footer `reserved2` or `keyId`; a
+  non-zero footer `indexTag` on a cleartext object (the cleartext `indexNonce` stays free: it is the write's identity);
+  a non-zero preamble byte 6 or 7 (checked when the first read covers the front of the object); bytes between the index
+  and the footer; a gap before a payload, between payloads or after the last one; and bytes after a stored chunk's
+  bitmap (that refusal surfaces when the chunk is read, not at open). No release writes any of these: the writer's
+  code in every release lays an object out without them, and the golden corpus, which holds objects of the earliest
+  layout, still reads (its real bitmaps are decoded whole by the codec test; the older golden files hold opaque
+  payloads and prove the layout checks only). A large object's preamble bytes 6 and 7 stay unread, as before: documented,
+  not checked. What a caller does: nothing for an object a release wrote; an object produced by another writer that pads
+  or leaves these bytes non-zero must be rewritten to the layout in [`docs/format.md`](docs/format.md). An erasure that
+  meets an object the reader now refuses stops, as it does for a bad footer checksum, until the operator removes that
+  object (`store.generations(ref)` lists the generation numbers, and the error names the problem); see [`docs/guide/erasure.md`](docs/guide/erasure.md). A
+  custom codec must honour the `whole` option of `safeDeserialize` for the stored-chunk refusal to hold. Overlong
+  varints, a cardinality that disagrees with its payload, `versionMinor` and unknown extension section types are still
+  accepted.
+
 ### Added
 
 - **`LoadResult.strays`: the generation numbers a load ignored.** `{ count, generations }`, the lowest 64 ascending, for
@@ -31,6 +52,28 @@ so, and so do the module headers in the code.
   still reads every object left in the bucket for its receipt, wherever it is numbered, and stops on one it cannot read
   (it cannot prove that object does not hold the id) until you remove it: `store.generations(ref)` lists the bucket, and
   you delete the object with your bucket tools.
+
+- **`export-segments` refuses an output directory that is a symlink.** `CR_EXPORT_OUT` was followed, so a link there sent
+  the dump, which holds every id in the clear, wherever it pointed, and an earlier `manifest.json` at the target was
+  removed. An existing `CR_EXPORT_OUT` that is a symlink (also written `link/` or `link/.`) or not a directory is now
+  refused with a `ValidationError`. Its mode and owner are not checked; the namespace directories the tool writes into
+  are checked as before. A path that does not exist is still made.
+
+- **A registry delete on a store that does not apply a conditional delete no longer leaves the deleted row's keys in the
+  bucket.** The tombstone it writes in place of the row (any S3-compatible host that is not AWS, or a GCS registry, by
+  default) held the whole record, so the row's wrapped data keys, sealed summary, generation ledger and leases stayed
+  for good. It now keeps only what a re-create and the row parser read: the name, the pointer's number, the status, the
+  timestamps and the advanced token. A tombstone written before this release keeps its old contents until a re-create
+  over it replaces it, or the bucket's own tools remove it.
+
+- **A connection string the Azure SDK refuses no longer puts a part of itself in the error.** The `ValidationError`
+  says only that the string is not a valid Azure Storage connection string; the SDK's reason is not included.
+
+- **LocalFs: a namespace whose name begins with two dots (`..acme`), and every segment in it, is held to the case check
+  like any other name.** On a case-insensitive filesystem (the macOS and Windows defaults) the check treated a path
+  under such a namespace as outside the root and skipped it, so `..acme` and `..Acme` shared one directory. A write under
+  the other spelling is now refused as a case variant, and a read, list or delete of it answers as absent, the same way
+  `acme` and `Acme` are. A segment name that begins with two dots was already checked. The layout on disk is unchanged.
 
 ## [0.26.0] — 2026-10-30
 

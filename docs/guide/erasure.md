@@ -221,7 +221,10 @@ whose footer and checksums pass and whose index then fails authentication under 
 generation. So an index someone altered and gave new checksums counts as one too, and goes the same way. One whose
 index the segment's key opens is the segment's own, and when a chunk of it then does not open, that is corruption,
 which the erasure reports with `IntegrityError`, deleting nothing on account of that error; so is a footer or a
-checksum that does not match, and an object cut short.
+checksum that does not match, and an object cut short. So is an object the reader refuses for carrying bytes no release
+writes (a non-zero reserved or key field, padding, a gap between payloads, bytes after a bitmap): the erasure stops, as
+it does for a bad footer checksum, until the operator removes that object. The error names the problem, and
+`store.generations(ref)` lists the generations of the segment to find the object (`segment.<gen>.crbm`).
 
 **While encrypted first loads run, such a segment can keep an erasure asking for a re-run.** Once an erasure has found
 an
@@ -339,11 +342,11 @@ and the summary is.
 A **deleted row**, where the registry cannot remove one. A registry that reports `conditionalDelete` (S3 when its
 client sends to an AWS S3 host, Azure Blob, the local filesystem and memory, by default) removes a row it deletes,
 whether by `registry.delete` or the retention sweep's purge of a tombstone. One that does not (an S3 client that sends to
-an S3-compatible store or an emulator, or a GCS client, by default, or `conditionalDelete: false`) keeps the row's record
-in a deleted marker, so the token counter survives a re-create. A tombstone from `dropSegment` or `destroySegment` holds
-no key and no summary, since both clear them, so what such a purge keeps is the name, the pointer, the retention policy
-and the timestamps. A live row deleted directly with `registry.delete` keeps its summary too, in a marker where one is
-written.
+an S3-compatible store or an emulator, or a GCS client, by default, or `conditionalDelete: false`) leaves a deleted
+marker, so the token counter survives a re-create. The marker holds only the name, the pointer's number,
+the status, the creation and update times and the token, whatever the row held: its keys, sealed summary, generation
+ledger, leases and retention and residency policies are not kept, whether the row was live, or came from `dropSegment`
+or `destroySegment`.
 
 Backups, replicas and noncurrent object versions hold the old object until their own lifecycle removes it. For an
 at-rest guarantee that reaches those, encrypt and crypto-shred (`destroySegment` and `eraseNamespace`, see

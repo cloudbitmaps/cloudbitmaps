@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep, win32 } from 'node:path';
 import { CloudRoaring, LocalFsStorage, ValidationError } from '@/index';
-import { firstCaseDifference } from '@/drivers/localfs/exact-case';
+import { ExactCase, firstCaseDifference, isOutside } from '@/drivers/localfs/exact-case';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
@@ -162,11 +162,92 @@ describe.skipIf(!INSENSITIVE)(TITLE, () => {
     }
   });
 
+  it('namespaces that begin with two dots and differ only by case cannot share files', async () => {
+    await store.load({ namespace: '..Acme', segment: 'audience' }, [1, 2, 3]);
+    expect(await counted('..Acme', 'audience')).toBe(3);
+    expect(await counted('..acme', 'audience')).toBe(0);
+    const err = await store
+      .load({ namespace: '..acme', segment: 'audience' }, [9])
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toMatch(/differ only by case on a case-insensitive filesystem/);
+    const registry = new LocalFsRegistryDriver(join(root, 'reg'));
+    await registry.create({ namespace: '..Ns', segment: 'a' }, { currentGen: 0 });
+    await expect(
+      registry.create({ namespace: '..ns', segment: 'a' }, { currentGen: 0 }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(await counted('..Acme', 'audience')).toBe(3);
+  });
+
   it('an existing root whose own path is in another case is not mistaken for a mismatch', async () => {
     await mkdir(join(root, 'Sub'), { recursive: true });
     const viaOtherCase = new CloudRoaring({ storage: new LocalFsStorage(join(root, 'sUB')) });
     await viaOtherCase.load({ segment: 's' }, [1, 2]);
     expect(await viaOtherCase.segment('s').count()).toBe(2);
     expect(await viaOtherCase.segment('s').count()).toBe(2);
+  });
+});
+
+describe('isOutside: containment by path component, not by string prefix', () => {
+  it('a relative path that leaves the root is outside', () => {
+    expect(isOutside('..')).toBe(true);
+    expect(isOutside(`..${sep}x`)).toBe(true);
+    expect(isOutside(`..${sep}..${sep}x`)).toBe(true);
+    expect(isOutside(resolve('/elsewhere'))).toBe(true);
+    expect(isOutside('..\\x', win32)).toBe(true);
+    expect(isOutside('C:\\other', win32)).toBe(true);
+  });
+
+  it('a name that merely begins with two dots is inside, and so is the root itself', () => {
+    expect(isOutside('')).toBe(false);
+    expect(isOutside('..acme')).toBe(false);
+    expect(isOutside('...')).toBe(false);
+    expect(isOutside(['..acme', 'segments', 's.0.crbm'].join(sep))).toBe(false);
+    expect(isOutside(['a', '..b'].join(sep))).toBe(false);
+    expect(isOutside('..acme\\segments', win32)).toBe(false);
+  });
+});
+
+/**
+ * A case-folding root emulated with symlinks, so a case-sensitive disk (Linux CI) holds both call sites that decide
+ * whether a path is inside the root. The probe in `folds()` stats an entry and its case-swapped name and compares
+ * inode and device, and `stat` and `realpath` follow symlinks: every cased entry has its case-swapped twin as a
+ * symlink to it, so the root reads as folding, and `..acme` resolves to the directory `..Acme`.
+ */
+describe('a case-folding root emulated with symlinks: names that begin with two dots', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'crbm-case-emul-'));
+    // On a disk that really folds case the twin already exists as the same entry, so a taken name is fine.
+    const link = (target: string, name: string): Promise<void> =>
+      symlink(target, join(root, name)).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== 'EEXIST') throw err;
+      });
+    await mkdir(join(root, 'Ab'));
+    await link('Ab', 'aB');
+    await mkdir(join(root, '..Acme'));
+    for (const name of ['..aCME', '..acme', '..ACME']) await link('..Acme', name);
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('the root reads as folding, and a path in another case of a ..-leading directory differs', async () => {
+    const exact = new ExactCase(root);
+    expect(await exact.folds()).toBe(true);
+    expect(await exact.differs(join(root, '..acme', 'segments', 's.1.crbm'))).toBe(true);
+    expect(await exact.differs(join(root, '..Acme', 'segments', 's.1.crbm'))).toBe(false);
+  });
+
+  it('the storage driver refuses a write under the other spelling as a case variant', async () => {
+    const storage = new LocalFsStorageDriver(root);
+    const put = storage.putImmutable(
+      { namespace: '..acme', segment: 's', generation: 1 },
+      async (sink) => {
+        await sink.write(new Uint8Array([1]));
+      },
+    );
+    await expect(put).rejects.toBeInstanceOf(ValidationError);
+    await expect(put).rejects.toThrow(/differ only by case on a case-insensitive filesystem/);
   });
 });
