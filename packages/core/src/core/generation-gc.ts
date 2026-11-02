@@ -249,7 +249,12 @@ async function aboveEverything(
   const held = new Set(all);
   let generation = numberAbove(highest);
   while (held.has(generation)) generation = numberAbove(generation);
-  return { generation, listed, strays: reportStrays(all.filter((g) => g > limit)) };
+  // A run the walk climbed through is below the new number, so the pointer ends above it: nothing left to report.
+  return {
+    generation,
+    listed,
+    strays: reportStrays(all.filter((g) => g > limit && g > generation)),
+  };
 }
 
 /** `highest + 1`, refused when it is not a safe integer: a generation past that cannot be written or read back. */
