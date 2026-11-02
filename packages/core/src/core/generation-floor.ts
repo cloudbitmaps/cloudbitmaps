@@ -16,7 +16,7 @@ import type { RegistryRecord } from './ports';
 export const STRAY_MARGIN = 1024;
 
 /** The most strays a load reports by number; the count carries the rest. */
-export const MAX_REPORTED_STRAYS = 64;
+const MAX_REPORTED_STRAYS = 64;
 
 /** What a load reports about the generations it ignored: the count, and the lowest {@link MAX_REPORTED_STRAYS}. */
 export interface Strays {

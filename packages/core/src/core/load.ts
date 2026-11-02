@@ -476,6 +476,15 @@ export interface LoadResult {
   readonly strays: { readonly count: number; readonly generations: readonly number[] };
 }
 
+/** The fields of a result for a load that wrote nothing: another load took its number. */
+const WROTE_NOTHING = Object.freeze({
+  size: 0,
+  sha256: '',
+  chunkCount: 0,
+  cardinality: 0,
+  collected: Object.freeze([]) as readonly number[],
+});
+
 /**
  * Whether a write that threw `err` lost its number to another load: a write-once conflict the write raised. One the
  * load's input raised (a source reading another segment through a pin, say) is the source's, and is handed on as it is.
@@ -751,12 +760,8 @@ async function runLoad(
       generation,
       published: false,
       reason: 'superseded',
-      size: 0,
-      sha256: '',
-      chunkCount: 0,
-      cardinality: 0,
+      ...WROTE_NOTHING,
       cardinalityBefore: before,
-      collected: [],
       strays,
     };
   }
