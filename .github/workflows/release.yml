@@ -485,8 +485,7 @@ jobs:
       - name: Publish (dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.dryRun
         run: |
-          # npm refuses a dry run of a version already on the registry ("You cannot publish over the previously
-          # published versions"), as it refuses the real publish, so such a tarball is skipped, as earlier dry runs did.
+          # npm refuses a dry run of a version already on the registry ("You cannot publish over ..."), as it refuses the real publish, so such a tarball is skipped, as earlier dry runs did.
           # A failed `npm view` (a 404 or a transient error) still attempts the dry run.
           while IFS=$'\t' read -r NAME VER FILE <&3; do
             if npm view "$NAME@$VER" version >/dev/null 2>&1; then
