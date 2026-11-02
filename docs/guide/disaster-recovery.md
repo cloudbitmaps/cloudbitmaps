@@ -370,7 +370,7 @@ return) re-resolves on its next read; that is the documented cost of physical de
 generation while that object is there, and a store with a timed refresh ends it at its next check, within `cache.genTtlMs`, when its row records the end (the row
 is gone, destroyed or re-created, or its ledger drops the generation or names another checksum); an object lost or
 replaced out of band under a row that still names it is found only when the pin must fetch, on any store: the pin
-answers from what it has already read and fails with `NotFoundError` for the rest, rather than re-resolve. Once a restore puts its object back into the same row,
+answers from what it has already read and fails with `NotFoundError` for the rest, rather than re-resolve ([what a pin answers from](correctness.md#pin-answers-from-what-it-holds)). Once a restore puts its object back into the same row,
 it reads that object again once its store is invalidated (`store.invalidate(ref)`); a pin whose row was purged and
 re-created is another incarnation and stays over on a store with a timed refresh. A restart ends the pin with its
 process. Take new pins after that invalidation. ([A pin across a re-creation](correctness.md#pin-safe-across-re-creation).)
