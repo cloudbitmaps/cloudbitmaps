@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep, win32 } from 'node:path';
 import { CloudRoaring, LocalFsStorage, ValidationError } from '@/index';
-import { firstCaseDifference } from '@/drivers/localfs/exact-case';
+import { firstCaseDifference, isOutside } from '@/drivers/localfs/exact-case';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
@@ -162,11 +162,48 @@ describe.skipIf(!INSENSITIVE)(TITLE, () => {
     }
   });
 
+  it('namespaces that begin with two dots and differ only by case cannot share files', async () => {
+    await store.load({ namespace: '..Acme', segment: 'audience' }, [1, 2, 3]);
+    expect(await counted('..Acme', 'audience')).toBe(3);
+    expect(await counted('..acme', 'audience')).toBe(0);
+    const err = await store
+      .load({ namespace: '..acme', segment: 'audience' }, [9])
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toMatch(/differ only by case on a case-insensitive filesystem/);
+    const registry = new LocalFsRegistryDriver(join(root, 'reg'));
+    await registry.create({ namespace: '..Ns', segment: 'a' }, { currentGen: 0 });
+    await expect(
+      registry.create({ namespace: '..ns', segment: 'a' }, { currentGen: 0 }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(await counted('..Acme', 'audience')).toBe(3);
+  });
+
   it('an existing root whose own path is in another case is not mistaken for a mismatch', async () => {
     await mkdir(join(root, 'Sub'), { recursive: true });
     const viaOtherCase = new CloudRoaring({ storage: new LocalFsStorage(join(root, 'sUB')) });
     await viaOtherCase.load({ segment: 's' }, [1, 2]);
     expect(await viaOtherCase.segment('s').count()).toBe(2);
     expect(await viaOtherCase.segment('s').count()).toBe(2);
+  });
+});
+
+describe('isOutside: containment by path component, not by string prefix', () => {
+  it('a relative path that leaves the root is outside', () => {
+    expect(isOutside('..')).toBe(true);
+    expect(isOutside(`..${sep}x`)).toBe(true);
+    expect(isOutside(`..${sep}..${sep}x`)).toBe(true);
+    expect(isOutside(resolve('/elsewhere'))).toBe(true);
+    expect(isOutside('..\\x', win32)).toBe(true);
+    expect(isOutside('C:\\other', win32)).toBe(true);
+  });
+
+  it('a name that merely begins with two dots is inside, and so is the root itself', () => {
+    expect(isOutside('')).toBe(false);
+    expect(isOutside('..acme')).toBe(false);
+    expect(isOutside('...')).toBe(false);
+    expect(isOutside(['..acme', 'segments', 's.0.crbm'].join(sep))).toBe(false);
+    expect(isOutside(['a', '..b'].join(sep))).toBe(false);
+    expect(isOutside('..acme\\segments', win32)).toBe(false);
   });
 });

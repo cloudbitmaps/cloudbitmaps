@@ -8,7 +8,8 @@
  * detected once, and the check is skipped from then on.
  */
 import { readdir, realpath, stat } from 'node:fs/promises';
-import { dirname, join, parse, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import type { PlatformPath } from 'node:path';
 import { ValidationError } from '@/core/errors';
 import { isAbsent } from './fs-util';
 
@@ -28,6 +29,18 @@ export function firstCaseDifference(
     if (want !== have) return want.toLowerCase() === have.toLowerCase() ? i : -1;
   }
   return -1;
+}
+
+/**
+ * Whether a path relative to the root (what `relative` returns) leaves the root: it is exactly `..`, starts with `..`
+ * and a separator, or is absolute (another drive on Windows). A component that merely begins with `..` (`..acme`) is
+ * a name inside the root, so a string prefix test is not enough. The empty path is the root itself and is inside.
+ */
+export function isOutside(
+  rel: string,
+  path: Pick<PlatformPath, 'isAbsolute' | 'sep'> = { isAbsolute, sep },
+): boolean {
+  return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
 }
 
 const swapCase = (s: string): string =>
@@ -121,11 +134,7 @@ export class ExactCase {
     let probe = resolve(path);
     let real: string;
     for (;;) {
-      if (
-        probe === rootAbs ||
-        !relative(rootAbs, probe) ||
-        relative(rootAbs, probe).startsWith('..')
-      ) {
+      if (probe === rootAbs || !relative(rootAbs, probe) || isOutside(relative(rootAbs, probe))) {
         return false;
       }
       try {
@@ -140,7 +149,7 @@ export class ExactCase {
     if (realRoot === undefined) return false;
     const actual = relative(realRoot, real);
     // Outside the root once symlinks are resolved: a symlinked directory is outside this model, as the root is.
-    if (actual.startsWith('..')) return false;
+    if (isOutside(actual)) return false;
     return firstCaseDifference(components(relative(rootAbs, probe)), components(actual)) !== -1;
   }
 
