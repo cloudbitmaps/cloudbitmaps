@@ -2114,7 +2114,7 @@ export class CloudRoaring {
    * duration, or fix the source first and load after. A writer that lands *during* the rewrite is caught: the
    * rewrite's publish is refused **by the fence** — the publish lands its compare-and-swap only
    * while the pointer is still on the generation the rewrite streamed — and the entry says `note: 'superseded'`,
-   * so re-run. Forward-only alone would NOT refuse it: the rewrite's number goes above everything in the bucket,
+   * so re-run. Forward-only alone would NOT refuse it: the rewrite's number goes above everything listed near the row's own numbers,
    * so the rewrite would out-rank the newer generation and then collect it.
    *
    * A racing **erasure** is caught before that, and reported the same way. It collects with `keep: 0`, taking
@@ -2395,7 +2395,7 @@ export class CloudRoaring {
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks, and still known to the row, so rolling forward onto
    * one needs no flag. They remain until loads pass them (the first load whose
-   * number one of them holds numbers above them all, and collection then keeps `keep` of what is below its pointer, the
+   * number one of them holds numbers above that object and the run of listed numbers touching it, and collection then keeps `keep` of what is below its pointer, the
    * generation that load superseded first), {@link CloudRoaring.dropSegment}
    * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and, when the
    * current generation does not hold the id, only those holding it and any no read of the segment can open, whatever

@@ -277,7 +277,7 @@ passed, since the row never recorded it, and with the override a rollback onto i
 orphan is collected later](correctness.md#how-a-load-stays-correct)).
 `strays` is `{ count, generations }` ([how a load numbers](correctness.md#numbering-is-the-loads)): the generation numbers a
 listing showed more than 1,024 past anything the row names (its pointer, its ledger and its leases), which the load ignored when it
-numbered and never deleted, so you can look at them and delete them with your bucket tools (`generations` holds the lowest 64,
+numbered and never deleted (one a walked run put below the number it took is not listed: the pointer ends above it), so you can look at them and delete them with your bucket tools (`generations` holds the lowest 64,
 ascending). It is `{ count: 0, generations: [] }` when there are none, and when the load did not list the bucket, which a load
 that finds `currentGen + 1` free does not. A segment on a bare storage driver has no row to bound anything by, and its reads take the highest listed
 number as the current one.

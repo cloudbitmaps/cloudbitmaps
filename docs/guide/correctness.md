@@ -219,7 +219,7 @@ the read-back shows it did not land; the others throw `TransientError`, and a re
 <a id="numbering-is-the-loads"></a>**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: the one
 after the pointer it read, `currentGen + 1`, when one existence check finds no object holding it, and otherwise one
 above the pointer and above every object the listing shows within 1,024 of the highest number the row names (its
-pointer, its ledger and its leases), and past any contiguous run of objects above that. A number listed further above
+pointer, its ledger and its leases), and past any contiguous run of listed objects that touches those. A number listed further above
 than that is a stray: the load does not number above it, never deletes, overwrites or takes it, and reports it in
 `LoadResult.strays` (the lowest 64 and the count), so one object put at a huge number blocks no load. A brand-new
 segment starts at `0`. The check is

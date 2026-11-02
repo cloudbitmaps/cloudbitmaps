@@ -1,6 +1,6 @@
 [
   {
     "entry": "@cloudbitmaps/roaring LoadResult.strays",
-    "reason": "agreed by the maintainer: a load reports generation numbers listed far above anything its row names, which it ignored when numbering"
+    "reason": "adds a required member `strays` to the result of a load: the generation numbers it ignored when numbering; no existing signature changes"
   }
 ]

@@ -898,10 +898,10 @@ current versions.
   safe recovery is to **re-run the load from your source**. A load takes the number after the pointer while no
   object holds it, and collection usually freed the numbers just above the restored pointer, so the first re-runs can
   number *below* the strays and leave them above the pointer; the first load whose number a stray holds numbers
-  above the whole contiguous run it meets, which puts that run below the pointer. Strays that are not contiguous with
-  the numbers the row names, more than 1,024 above its highest, stay above the pointer and are reported in
-  `LoadResult.strays` (the lowest 64 and the count). List `store.generations(ref)`, then delete the ones reported or
-  load until the pointer is above the highest stray.
+  above the whole contiguous run it meets, which puts that run below the pointer. A run that begins within 1,024 of
+  what the row names, or touches a listed number that does, is climbed this way. Objects beyond that, not touching it,
+  stay above the pointer and are reported in `LoadResult.strays` (the lowest 64 and the count); loads do not climb to
+  them, so delete them. List `store.generations(ref)`, then delete the ones reported.
 
   Below the pointer, collection treats the strays as any generation no load published there. A row restored from a
   backup carries the window its ledger (`knownGens`) names as of the restore, and a row repaired by hand names none: the

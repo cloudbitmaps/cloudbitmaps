@@ -17,7 +17,6 @@
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
 import { ascending } from './order';
-import { STRAY_MARGIN, floorOf } from './generation-floor';
 import { footerCrcUnder } from './crbm-open';
 import { fingerprintParts } from './crbm/fingerprint';
 import { isIntegrityError, isNotFoundError } from './errors';
@@ -47,9 +46,8 @@ const SEED_READS = 8;
 /**
  * The entries a seed names: the listed generations below the new one that a live lease holds and the window does not
  * keep, then the window oldest first by number with the generation the row named as current last. `listed` is the
- * listing the load's numbering made, when it made one; otherwise the bucket is listed once. Either way a generation
- * far above anything the row names (a stray, see `generation-floor.ts`) is never a candidate for the window, even one the
- * numbering walked past and so put below the new generation. Every entry's checksum is
+ * listing the load's numbering made, when it made one (without its strays, see `generation-floor.ts`); otherwise the
+ * bucket is listed once, and a number above the new generation is no candidate for the window. Every entry's checksum is
  * read from its object's footer (a 104-byte read, under the store's read retry, {@link SEED_READS} at a time), the
  * superseded generation's too: when a clear summary describes it with another checksum, the row and the bucket
  * disagree about that number and it is left out. A generation gone from the bucket, or whose footer fails its own
@@ -65,12 +63,7 @@ export async function readSeed(
   leased: ReadonlySet<number>,
   readRetry?: ReadRetry,
 ): Promise<KnownGeneration[]> {
-  // The numbering's listing is already without strays; a listing made here drops them by the same rule, keeping a leased one.
-  const present =
-    listed ??
-    (await retryRead(() => generationsOf(storage, ref), readRetry)).filter(
-      (g) => leased.has(g) || g <= floorOf(row) + STRAY_MARGIN,
-    );
+  const present = listed ?? (await retryRead(() => generationsOf(storage, ref), readRetry));
   const superseded = row?.currentGen ?? undefined;
   const below = present.filter((g) => g < generation);
   const { kept } = keptWindow(below, superseded, Math.min(keep, KNOWN_SPAN));

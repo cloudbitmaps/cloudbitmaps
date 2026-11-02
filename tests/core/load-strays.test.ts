@@ -138,6 +138,23 @@ describe.each(backends)('a planted high generation number blocks nothing ($name)
     expect(left).toEqual(expect.arrayContaining([2, 3, 4, 1027, 1028, 1029, 5002]));
   });
 
+  it('a run that begins at the margin is walked: the load numbers past it, reports nothing, and the seed never names it', async () => {
+    for (const ids of [[1], [1, 2], [1, 2, 3]]) await loadSegment(SEG, ids, deps(), { keep: 5 });
+    // A row with a pointer and no ledger: the registry was repaired by hand to name 1, with 2 left above it.
+    const row = (await registry.get(SEG))!;
+    await registry.compareAndSwap(SEG, row.token, { currentGen: 1 });
+    expect((await registry.get(SEG))?.knownGens).toBeUndefined();
+    const run = [1 + STRAY_MARGIN, 2 + STRAY_MARGIN, 3 + STRAY_MARGIN];
+    for (const g of run) await plant(storage, g);
+    const r = await loadSegment(SEG, [9], deps(), { keep: 5 });
+    expect(r).toMatchObject({ generation: 4 + STRAY_MARGIN, published: true });
+    expect(r.strays).toEqual(EMPTY);
+    const known = (await registry.get(SEG))?.knownGens?.map((e) => e.generation) ?? [];
+    expect(known).not.toContain(2 + STRAY_MARGIN);
+    expect(known).not.toContain(3 + STRAY_MARGIN);
+    expect(known).toContain(4 + STRAY_MARGIN);
+  });
+
   it('nothing deletes a stray, and a rollback onto it is refused without allowUnknown', async () => {
     for (const ids of [[1], [1, 2]]) await loadSegment(SEG, ids, deps());
     await plant(storage, 5000);
@@ -227,7 +244,16 @@ describe('which listed numbers a load numbers past', () => {
       const n = await number([1024, 5000], r);
       expect(n).toMatchObject({ generation: 0, strays: { count: 2, generations: [1024, 5000] } });
     }
-    expect((await number([], null)).strays).toBe((await number([], null)).strays);
+    expect(Object.isFrozen((await number([], null)).strays)).toBe(true);
+  });
+
+  it('the listing handed to the seed holds the near numbers only, not a run the walk climbed', async () => {
+    const n = await number(
+      [10 + STRAY_MARGIN, 11 + STRAY_MARGIN, 12 + STRAY_MARGIN],
+      row({ currentGen: 10 }),
+    );
+    expect(n).toMatchObject({ generation: 13 + STRAY_MARGIN, strays: EMPTY });
+    expect(n.listed).toEqual([10 + STRAY_MARGIN]);
   });
 
   it('a contiguous run past the margin is walked in one load, as a restored registry needs', async () => {
@@ -250,6 +276,7 @@ describe('which listed numbers a load numbers past', () => {
     expect([...r.generations].sort((a, b) => a - b)).toEqual(r.generations);
   });
 
+  // The generators seldom put a number exactly at the margin, so the walk itself is held by the run tests above.
   it('the number is never one a listed object holds, over random rows and listings', async () => {
     const gen = fc.oneof(
       fc.nat(30),

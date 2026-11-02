@@ -211,7 +211,7 @@ function tookEffectOverMissing(ref: SegmentRef, published: number, missing: numb
 /**
  * The generation number a writer should use for the segment's **next** object: one above the highest generation
  * the registry points at *or* that is present in Storage within {@link STRAY_MARGIN} of the highest number the row
- * names (its pointer, ledger and leases), and past any contiguous run of listed numbers above that. The erasure
+ * names (its pointer, ledger and leases), and past any contiguous run of listed numbers that touches those. The erasure
  * rewrite numbers this way; a load numbers with {@link nextLoadGeneration}, which lists as this does when its
  * existence check finds the number taken or cannot answer.
  *
@@ -283,9 +283,10 @@ interface LoadNumber {
 /**
  * The generation number a load takes, from the row it has already read: `currentGen + 1` (0 with no row or no
  * pointer yet) when no object holds that number, which one existence check proves (a zero-byte `getTail`, one
- * metadata request on every shipped driver); otherwise one above the pointer and above everything listed within {@link STRAY_MARGIN} of what the row names, as
- * {@link nextGeneration} numbers (a number far above that is a stray: ignored, reported in `strays`, never deleted). The check finding the number taken (a crashed load's orphan, the object of a
- * load still in flight, or the generations a rollback left above the pointer) and the check failing in any way
+ * metadata request on every shipped driver); otherwise one above the pointer and above everything listed within
+ * {@link STRAY_MARGIN} of what the row names, as {@link nextGeneration} numbers (a number far above that is a stray:
+ * ignored, reported in `strays`, never deleted). The check finding the number taken (a crashed load's orphan, the
+ * object of a load still in flight, or the generations a rollback left above the pointer) and the check failing in any way
  * other than "not found" both take the listing, so the listing stays the authority whenever the check cannot
  * prove the number free. A failed check falls back silently: nothing records it, and what it costs is the listing,
  * one more PUT-class request on S3, so a fault that makes every check fail shows only in the bill.
