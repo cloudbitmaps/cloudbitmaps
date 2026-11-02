@@ -583,8 +583,8 @@ object* carries the fingerprint, or the footer CRC that is half of it, beside th
   checks every object it opens for the row's generation against it and refuses one that is another object under the
   number.
 - **The `knownGens` entry** records `{ generation, footerCrc }`: the footer checksum half, because the size is not
-  needed to tell two objects under one number apart once the ledger knows the number. A seeded entry's checksum comes
-  from a footer read; a rollback onto it still opens and authenticates the object. A rollback onto a
+  needed to tell two objects under one number apart once the ledger knows the number. A seeded entry's checksum is read
+  from a footer alone; the open that a rollback makes onto it still runs the index's authentication. A rollback onto a
   generation the row knows moves only when the object's footer checksum is the recorded one; an object with another
   checksum is another object under that number. A rollback moves onto a generation the row does not know only with
   `allowUnknown`, or when the target is below the pointer and either the row has no usable ledger or the target is
