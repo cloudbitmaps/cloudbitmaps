@@ -20,6 +20,15 @@ so, and so do the module headers in the code.
   timestamps and the advanced token. A tombstone written before this release keeps its old contents until a re-create
   over it replaces it, or the bucket's own tools remove it.
 
+- **A connection string the Azure SDK refuses no longer puts a part of itself in the error.** The `ValidationError`
+  says only that the string is not a valid Azure Storage connection string; the SDK's reason is not included.
+
+- **LocalFs: a namespace whose name begins with two dots (`..acme`), and every segment in it, is held to the case check
+  like any other name.** On a case-insensitive filesystem (the macOS and Windows defaults) the check treated a path
+  under such a namespace as outside the root and skipped it, so `..acme` and `..Acme` shared one directory. A write under
+  the other spelling is now refused as a case variant, and a read, list or delete of it answers as absent, the same way
+  `acme` and `Acme` are. A segment name that begins with two dots was already checked. The layout on disk is unchanged.
+
 ## [0.26.0] — 2026-10-30
 
 ### Added
