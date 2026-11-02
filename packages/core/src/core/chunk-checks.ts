@@ -84,14 +84,16 @@ export function assertChunkPayloadInRange(bitmap: CodecBitmap): void {
 
 /**
  * A chunk's stored bytes decoded under the size cap (invariant 5) and range-checked: the one place a chunk becomes a
- * bitmap, whether its bytes came from a request of its own or from a stream of coalesced ranges.
+ * bitmap, whether its bytes came from a request of its own or from a stream of coalesced ranges. The bytes must be
+ * exactly one bitmap: every writer stores a payload as the serialized bitmap and nothing after it, so a chunk with
+ * bytes after its bitmap is refused (one length comparison per decode).
  */
 export function decodeChunkBytes(
   codec: CodecInterface,
   bytes: Uint8Array,
   maxBitmapBytes: number,
 ): CodecBitmap {
-  const bitmap = codec.safeDeserialize(bytes, maxBitmapBytes);
+  const bitmap = codec.safeDeserialize(bytes, maxBitmapBytes, { whole: true });
   assertChunkPayloadInRange(bitmap);
   return bitmap;
 }
