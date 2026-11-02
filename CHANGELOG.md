@@ -16,8 +16,8 @@ so, and so do the module headers in the code.
 - **An object planted at a huge generation number no longer blocks a load or an erasure.** Someone who can write objects to
   the bucket but not registry rows could put `<segment>.9007199254740991.crbm` next to a segment, and every later load
   that had to list the bucket to number its generation (and the erasure rewrite) failed with "no generation number left";
-  a smaller plant dragged every later number up to it. A load now ignores a listed number more than 1,024 above the highest
-  number its row names (its pointer, any `knownGens` entry and any lease), steps past any contiguous run it meets, so
+  a smaller plant dragged every later number up to it. A load now ignores a listed number more than 1,024 past anything its
+  row names (its pointer, any `knownGens` entry and any lease), steps past any contiguous run it meets, so
   re-running loads after a registry restore works as before, and never deletes, overwrites or takes such a number. The
   ledger's first window no longer takes one either. A number planted within 1,024 of what the row names is still numbered
   past, and a store on a bare storage driver, which has no row, still reads the highest listed number as current.
