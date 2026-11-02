@@ -466,6 +466,14 @@ export interface LoadResult {
    * first.
    */
   readonly collected: readonly number[];
+  /**
+   * Generations listed in the bucket far above anything the row names (more than 1,024 above the highest of its
+   * pointer, its ledger and its leases) that this load ignored when it numbered, and never deleted. `count` is how many;
+   * `generations` the lowest 64, ascending. `{ count: 0, generations: [] }` when there are none, and when the load did
+   * not list the bucket (a load that finds the next number free does not). An object here is not one this library wrote
+   * under this row: look at it, then delete it with your bucket tools.
+   */
+  readonly strays: { readonly count: number; readonly generations: readonly number[] };
 }
 
 /**
@@ -729,7 +737,7 @@ async function runLoad(
     // told to expect. Nothing was written, so there is nothing to clean up; the refusal is still audited, as every
     // other one is, since a downstream reconciliation needs to know the replacement it asked for did not happen.
     if (!lostNumberRace(err)) throw err;
-    const { generation } = await numbering;
+    const { generation, strays } = await numbering;
     audit.onEvent({
       kind: 'segment.load-refused',
       segment: ref.segment,
@@ -749,11 +757,12 @@ async function runLoad(
       cardinality: 0,
       cardinalityBefore: before,
       collected: [],
+      strays,
     };
   }
 
   // The write joined the number, so it has settled.
-  const { generation, checked, listed } = await numbering;
+  const { generation, checked, listed, strays } = await numbering;
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
 
   /**
@@ -857,6 +866,7 @@ async function runLoad(
       cardinality: written.cardinality,
       cardinalityBefore: before,
       collected: [],
+      strays,
     };
   };
 
@@ -1005,5 +1015,6 @@ async function runLoad(
     cardinality: written.cardinality,
     cardinalityBefore: before,
     collected,
+    strays,
   };
 }
