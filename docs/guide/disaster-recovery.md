@@ -235,8 +235,9 @@ makes the coordinated restore point easy to hit rather than something you have t
    typed `{ segment, namespace }` built from the row's body (the registry and storage ports refuse any other key, so a
    misspelt `namespace` throws rather than deleting the default namespace's row). On a registry
    that reports `conditionalDelete` it removes the row outright, by a delete fenced on the version it read; on any
-   other it replaces the row with a tombstone that keeps the row's token counter, and the rest of the row with it,
-   wrapped keys included — the reason for dropping first. Prefer it to an object-store delete, which
+   other it replaces the row with a tombstone that keeps the row's token counter and its name, number, status and
+   times, and nothing else: no wrapped key, summary, ledger or lease. Dropping first is still what deletes the
+   segment's objects. Prefer it to an object-store delete, which
    removes whatever version is current when it lands, a row written since you looked included. A segment you delete
    the row of without dropping keeps its objects in the bucket with no row; `store.generations(ref)` lists them.
    Step 6 is what tells you the result is coherent.

@@ -575,7 +575,7 @@ copies and caches of it.
 | Envelope field | Type | Meaning |
 |---|---|---|
 | `schemaVersion` | integer | the row's schema; 5. A write always stamps it |
-| `deleted` | boolean | `true` marks an envelope tombstone (not to be confused with a record's `status: "destroyed"`, the mark a crypto-shred, a cleartext destroy or a drop leaves): the row is kept, with its counter advanced, so a re-create continues the counter; a reader treats a tombstone as absent. On a store whose conditional delete the backend honours, a delete removes the object instead and nothing is left |
+| `deleted` | boolean | `true` marks an envelope tombstone (not to be confused with a record's `status: "destroyed"`, the mark a crypto-shred, a cleartext destroy or a drop leaves): the object is kept with its counter advanced, so a re-create continues the counter; a reader treats a tombstone as absent. Its record holds only `segment`, `namespace`, `currentGen`, `status`, `createdAt`, `updatedAt`, the new `token` and a `pointerId` equal to it: no `wrappedDeks`, `keyId`, `retention`, `residency`, `summary`, `knownGens` or `leases` of the deleted row. On a store whose conditional delete the backend honours, a delete removes the object instead and nothing is left |
 | `record` | object | the row, below |
 
 An envelope with another field is refused with an `IntegrityError`.
