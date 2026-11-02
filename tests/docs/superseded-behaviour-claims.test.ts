@@ -1534,7 +1534,7 @@ describe('no document claims behaviour this library does not have', () => {
     'A `keep` of `Number.MAX_SAFE_INTEGER` holds every generation forever.',
     "The registry row holds the wrapped DEK for the segment's lifetime.",
     '### Stores with no registry\n\nA pinned handle never sees a publish, by design.',
-    '| a store with **no clock**, or `cache: { genTtlMs: 0 }` | no bound |\n| a pinned handle (`seg.pin()`) in another store | no bound |',
+    '| a store with **no clock**, or `cache: { genTtlMs: 0 }` | no bound |\n| a pinned handle (`seg.pin()`) in a store with no timed refresh | no bound |',
     "The fingerprint keeps two incarnations' pins apart where the version cannot: on a store with no registry.",
     'On a store with no registry, the pinned object is found by its fingerprint.',
     // A claim's words never pair across a heading's blank line or a table cell's edge.

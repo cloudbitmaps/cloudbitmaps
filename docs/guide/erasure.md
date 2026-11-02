@@ -275,7 +275,7 @@ no bus, and no connection between two stores that happen to point at the same bu
 | `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the rows for the store that performed the erasure and for a pinned handle in another store |
 | a `materializeMany` call with a feed, and an erasure by any path but this store's `eraseSubject` | **no bound**: the call is refused only by this store's `eraseSubject` |
 | a pinned handle (`seg.pin()`) in another store, leased or not | within `cache.genTtlMs` (default 2 s), while the registry can be read, whether or not its reader still holds the chunks; an outage of the registry stretches it. A lease does not lengthen it: once a lease has lapsed, reads throw `LeaseExpiredError` first. A pin of a generation the erasure could not remove (its ledger entry has `erased: false`) reads it, the id included, until a re-run of the erasure removes it |
-| another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a `StorageChunkSource` of your own, which the store times no refresh on, a pinned handle included | **no bound**: only when its caches happen to let the segment go, or something tells it |
+| another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a `StorageChunkSource` of your own, which the store times no refresh on | **no bound**: only when its caches happen to let the segment go, or something tells it |
 
 A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not keep
 serving: the read that meets it throws, and the reader is dropped with the key it unwrapped.
@@ -291,7 +291,8 @@ fails once the object is gone or another. A pin of an old generation a load move
 row read and nothing else. A read that starts between checks answers from the pin's reader and the chunk cache, which
 is the bound the table states. A transient fault of the registry keeps the pin serving and asks again after 500 ms, as a
 live read does; any other fault fails the read that meets it and is not remembered. A pin that has failed keeps failing
-until `store.invalidate(ref)` is called (the hook after a restore). A pin whose generation a load collected (an
+until `store.invalidate(ref)` is called (the hook after a restore); [how a pin stays
+correct](correctness.md#pin-answers-from-what-it-holds) has the same in the correctness terms. A pin whose generation a load collected (an
 unleased pin past `keep`) now fails within `cache.genTtlMs` even when its reader and chunks are still cached.
 
 A store with a timed refresh keeps each segment's resolution, the row's wrapped keys among it (never an unwrapped

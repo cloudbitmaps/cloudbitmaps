@@ -406,8 +406,8 @@ an id in a chunk it did not hold when the combine began is subtracted from there
 
 `seg.pin()` returns a handle held at the generation that is current right now, for the life of the handle. A long
 export, reconciliation or send then describes one instant instead of whichever generations happened to be current as
-it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not, though it checks on the same interval
-that its segment is still there, and fails once the segment is destroyed or its generation erased.
+it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not move, but every `cache.genTtlMs` it
+checks its segment's row, and fails once the segment is destroyed or its generation erased.
 
 <!-- typecheck: store -->
 ```ts
