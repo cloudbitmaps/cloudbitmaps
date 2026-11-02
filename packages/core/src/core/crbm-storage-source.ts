@@ -28,6 +28,9 @@ import {
 } from './errors';
 import type { Clock } from './determinism';
 import { pointerIdOf } from './pointer-id';
+import { incarnationOf } from './token';
+import { usableKnownGens } from './known-generations';
+import type { KnownGeneration } from './ports';
 import { BoundedLru } from './lru';
 import { KeptSegmentKeys, segmentKey } from './keys';
 import { aadFor, sameKeys } from './crypto';
@@ -57,7 +60,7 @@ import type {
   Token,
 } from './ports';
 import { CrbmReader } from './crbm/reader';
-import { compactFingerprint } from './crbm/fingerprint';
+import { compactFingerprint, fingerprintParts } from './crbm/fingerprint';
 import type { ChunkStream, CrbmReaderOptions } from './crbm/reader';
 import { InvalidationRecord } from './invalidation-scope';
 import { ItemPull } from './item-pull';
@@ -224,6 +227,37 @@ const goneUnder = (ref: SegmentRef, generation: number): NotFoundError =>
   new NotFoundError(
     `segment "${ref.segment}" generation ${generation} can no longer be read: its registry row is gone or destroyed`,
   );
+
+/**
+ * What a pin's recheck keeps of a registry row read: only what it decides on, so a pinned segment's row, wrapped keys
+ * included, is not held beyond the read.
+ */
+interface PinRowFacts {
+  /** The row is gone, or its status is `destroyed`. */
+  readonly ended: boolean;
+  /** The incarnation id in the row's token; `undefined` for a token that carries none. */
+  readonly incarnation: string | undefined;
+  /** The row's ledger when it is usable. */
+  readonly ledger: readonly KnownGeneration[] | undefined;
+}
+
+/** One row read shared by every pin of a segment: when it was sent, and what it found. */
+interface PinRowRead {
+  readonly sentAtMs: number;
+  readonly facts: Promise<PinRowFacts>;
+}
+
+/** When a pin was last found to be this segment's object, and what, if anything, ended it. */
+interface PinCheck {
+  /** When the check that produced this record was sent; a recheck is due once `cache.genTtlMs` has passed. */
+  at: number;
+  /** The segment's invalidation count when it was sent, so an invalidation since makes the pin due at once. */
+  readonly since: number;
+  /** The check under way, which the reads that come meanwhile wait for. */
+  check?: Promise<void>;
+  /** Why the pin can no longer be read: its row has ended or its object is another. */
+  ended?: 'gone' | 'replaced';
+}
 
 /** The storage key of the generation a resolution found. */
 function genKeyOf(ref: SegmentRef, target: { readonly generation: number }): GenKey {
@@ -610,6 +644,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * lapse, so it is decided once.
    */
   private readonly timedRefresh: boolean;
+  /**
+   * The row reads a pinned segment's rechecks share, by segment: one `registry.get` per `cache.genTtlMs` serves every pin,
+   * handle and combine of the segment in this store. Only a source with a timed refresh keeps any.
+   */
+  private readonly pinRows: BoundedLru<string, PinRowRead> | undefined;
+  /** Each pin's last check, by the record the handle holds, so a handle that is let go takes its record with it. */
+  private readonly pinChecks = new WeakMap<object, PinCheck>();
 
   constructor(
     private readonly driver: IStorageDriver,
@@ -690,6 +731,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       ? new BoundedLru<string, Resolution>({
           maxEntries: RESOLUTIONS_PER_OPEN_SEGMENT * (maxOpenSegments ?? DEFAULT_MAX_OPEN_SEGMENTS),
           maxBytes: (maxOpenIndexBytes ?? DEFAULT_MAX_OPEN_INDEX_BYTES) / RESOLUTION_BYTES_DIVISOR,
+          clock: { now: () => 0 },
+        })
+      : undefined;
+    this.pinRows = this.timedRefresh
+      ? new BoundedLru<string, PinRowRead>({
+          maxEntries: maxOpenSegments ?? DEFAULT_MAX_OPEN_SEGMENTS,
           clock: { now: () => 0 },
         })
       : undefined;
@@ -968,6 +1015,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     this.snapshots.delete(key);
     // …and the resolution the snapshot was built on, which the next read would otherwise build a snapshot on again.
     this.resolutions?.delete(key);
+    this.pinRows?.delete(key);
     // …and every PINNED reader of the same segment, which is memoized under `<key>@<generation>`. Dropping
     // only the live entry left a pinned handle reading a crypto-shredded segment: the pin is exactly the
     // reader that does not re-resolve on its own, so it is the one that most needs to be told.
@@ -1418,6 +1466,127 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       await this.throwIfReplaced(ref, generation, held.version, held.fingerprint);
       throw err;
     }
+  }
+
+  /**
+   * Whether a pin's segment is due a look at its row: the pin was not checked within `cache.genTtlMs` (counted by
+   * `Clock.now()` on access, no timer), the segment has been invalidated since, a check is under way, or the pin has
+   * ended. A pin first seen counts as checked now: `pinGeneration` and `pinGenerationAt` have just read its row and
+   * verified its object. Always `false` without a timed refresh (no registry, no clock, or `cache.genTtlMs: 0`), where
+   * nothing bounds a pin. A compare and no await otherwise, which is all a pinned read pays between checks.
+   */
+  pinDue(ref: SegmentRef, pin: object): boolean {
+    if (!this.timedRefresh) return false;
+    const check = this.pinChecks.get(pin);
+    if (check === undefined) {
+      this.pinChecks.set(pin, { at: this.now(), since: this.invalidated.epoch });
+      return false;
+    }
+    return (
+      check.check !== undefined ||
+      check.ended !== undefined ||
+      this.now() - check.at >= this.currentGenTtlMs ||
+      this.invalidated.invalidatedSince(this.keyOf(ref), check.since)
+    );
+  }
+
+  /**
+   * Settle a pin whose check is due: throw its `NotFoundError` when its segment has been destroyed or is gone, is
+   * another incarnation, or holds another object under the pin's generation; return when it is still the pin's. One row
+   * read per interval serves every pin of the segment ({@link pinRows}), and it decides alone for a row that is gone or
+   * destroyed, a new incarnation, and a ledger that names the generation (its checksum is the pin's or not). A
+   * generation the ledger does not name, or a row with no usable ledger, is not a verdict: the object's footer is read
+   * once ({@link throwIfReplaced}). A transient fault keeps serving and asks again after {@link REFRESH_RETRY_MS}; any
+   * other fault fails this read and is not remembered. A pin that has ended drops its reader, and so the key it
+   * unwrapped, and fails every later read at once until the segment is invalidated.
+   */
+  recheckPin(ref: SegmentRef, generation: number, pin: PinnedObject): Promise<void> {
+    const prior = this.pinChecks.get(pin);
+    if (prior?.check !== undefined) return prior.check;
+    const segment = this.keyOf(ref);
+    if (prior?.ended !== undefined && !this.invalidated.invalidatedSince(segment, prior.since))
+      return Promise.reject(
+        prior.ended === 'gone' ? goneUnder(ref, generation) : notThePinned(ref, generation),
+      );
+    const next: PinCheck = { at: this.now(), since: this.invalidated.epoch };
+    this.pinChecks.set(pin, next);
+    next.check = this.settlePin(ref, generation, pin, next, segment).finally(() => {
+      next.check = undefined;
+    });
+    return next.check;
+  }
+
+  private async settlePin(
+    ref: SegmentRef,
+    generation: number,
+    pin: PinnedObject,
+    next: PinCheck,
+    segment: string,
+  ): Promise<void> {
+    let ended: 'gone' | 'replaced' | undefined;
+    try {
+      const facts = await this.pinRow(ref, segment);
+      const incarnation = incarnationOf(pin.version.slice(pin.version.indexOf(':') + 1));
+      const named = facts.ledger?.find((e) => e.generation === generation);
+      if (
+        facts.ended ||
+        (pin.version.includes(':') &&
+          incarnation !== undefined &&
+          facts.incarnation !== undefined &&
+          incarnation !== facts.incarnation)
+      ) {
+        ended = 'gone';
+      } else if (named === undefined) {
+        // Not in the ledger is not a verdict: the footer says whether the object is still the pin's.
+        try {
+          await this.throwIfReplaced(ref, generation, pin.version, pin.fingerprint);
+        } catch (err) {
+          if (!isNotFoundError(err)) throw err;
+          ended = 'replaced';
+        }
+      } else if (named.footerCrc !== fingerprintParts(pin.fingerprint)?.footerCrc) {
+        ended = 'replaced';
+      }
+    } catch (err) {
+      if (isTransientError(err)) {
+        // Serve what the pin holds and ask again soon, as a live refresh does.
+        next.at =
+          this.now() - (this.currentGenTtlMs - Math.min(this.currentGenTtlMs, REFRESH_RETRY_MS));
+        this.pinRows?.delete(segment);
+        return;
+      }
+      next.at = Number.NEGATIVE_INFINITY; // nothing is remembered: the next read asks again
+      throw err;
+    }
+    if (ended === undefined) return;
+    // The reader is dropped, and the key it unwrapped with it. The verdict is kept, so every later read fails at once,
+    // unless the segment was invalidated since the check began, which forgets what it found.
+    if (!this.invalidated.invalidatedSince(segment, next.since)) next.ended = ended;
+    if (ended === 'replaced')
+      this.replacedPins.set(this.heldKey(ref, pin.version, pin.fingerprint), true);
+    this.snapshots.delete(this.pinnedKey(ref, pin.version, pin.fingerprint));
+    throw ended === 'gone' ? goneUnder(ref, generation) : notThePinned(ref, generation);
+  }
+
+  /** The segment's row read of the last `cache.genTtlMs`, shared; sent now when there is none. */
+  private pinRow(ref: SegmentRef, segment: string): Promise<PinRowFacts> {
+    const now = this.now();
+    const held = this.pinRows!.peek(segment);
+    if (held !== undefined && now - held.sentAtMs < this.currentGenTtlMs) return held.facts;
+    const sent: PinRowRead = {
+      sentAtMs: now,
+      facts: this.registry!.get(ref).then((record) => ({
+        ended: record === null || record.status === 'destroyed',
+        incarnation: record === null ? undefined : incarnationOf(record.token),
+        ledger: usableKnownGens(record),
+      })),
+    };
+    this.pinRows!.set(segment, sent);
+    // A read that fails is not kept for the next pin to share.
+    sent.facts.catch(() => {
+      if (this.pinRows!.peek(segment) === sent) this.pinRows!.delete(segment);
+    });
+    return sent.facts;
   }
 
   /**
