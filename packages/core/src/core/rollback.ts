@@ -241,7 +241,8 @@ export interface RollbackResult {
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*
  * `currentGen`, where generation collection never looks. They stay until loads pass them (the first load whose
- * number one of them holds numbers above them all, and collection then keeps `keep` of what is below its pointer, the
+ * number one of them holds numbers above them all, those within 1,024 of what the row names and any contiguous run
+ * touching them, and collection then keeps `keep` of what is below its pointer, the
  * generation that load superseded first), `dropSegment` deletes them, or a subject erasure
  * deletes them: all of those present when it rewrites, and, when the current generation does not hold the id, only those
  * holding it and any no read of the segment can open, whatever the id.

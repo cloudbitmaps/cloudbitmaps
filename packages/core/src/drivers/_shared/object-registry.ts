@@ -220,6 +220,27 @@ interface ObservedRow extends ObjectRow {
 }
 
 /**
+ * What an envelope tombstone keeps of the row it replaces: the identity and the required fields the row parser checks
+ * (`segment`, `namespace`, `currentGen`, `status`, `createdAt`), the new `token` (a re-create continues its counter,
+ * and nothing else of the row is read), a `pointerId` equal to that token (the parser requires one of the token's
+ * incarnation), and `updatedAt`. Every optional field (`wrappedDeks`, `keyId`, `retention`, `residency`, `summary`,
+ * `knownGens`, `leases`) is dropped: a reader treats a tombstone as absent, so none is read, and none of the deleted
+ * row's keys or sealed contents should stay in the bucket.
+ */
+function tombstoneRecord(row: RegistryRecord, token: Token, updatedAt: number): RegistryRecord {
+  return {
+    ...(row.namespace === undefined ? {} : { namespace: row.namespace }),
+    segment: row.segment,
+    currentGen: row.currentGen,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt,
+    token,
+    pointerId: token,
+  };
+}
+
+/**
  * A registry driver over any object store with conditional writes: one small JSON object per segment, fenced by the
  * store's own preconditions, so a deployment can run on one bucket.
  */
@@ -409,8 +430,9 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     // Where the store vouches for a conditional delete, the row is removed from it, by a delete the store applies only
     // while the object is still the version read here: a later create draws a new incarnation, so nothing of this row
     // is needed to keep its tokens apart. Otherwise it is tombstoned (the counter advanced, the object kept), so a
-    // re-create carries the counter on. Retry the read and the write on a cross-process race; it converges, then fails
-    // typed rather than silently leaving the row live.
+    // re-create carries the counter on; the tombstone keeps only what that and the row parser need, so the deleted
+    // row's keys, summary, ledger, leases and governance blobs do not stay in the bucket. Retry the read and the write
+    // on a cross-process race; it converges, then fails typed rather than silently leaving the row live.
     for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
       const current = await this.readRow(key);
       if (expected !== undefined) {
@@ -432,7 +454,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
         const token = nextRegistryToken(current.env.record, this.entropy);
         const env: RegistryEnvelope = {
           deleted: true,
-          record: { ...current.env.record, token, updatedAt: this.now() },
+          record: tombstoneRecord(current.env.record, token, this.now()),
         };
         await this.putRow(key, env, { version: current.version });
         return;

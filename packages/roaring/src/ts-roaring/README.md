@@ -728,7 +728,8 @@ In this module `has` of a bad id answers false, and `remove` and `removeMany` of
 ### What a caller sees
 
 - **A stored chunk the codec refuses.** The engine decodes through core's `decodeChunkBytes`, which calls
-  `safeDeserialize(bytes, maxBitmapBytes)` and then checks `maximum()` is at most 65,535. The `IntegrityError` is not caught
+  `safeDeserialize(bytes, maxBitmapBytes, { whole: true })` and then checks `maximum()` is at most 65,535. A stored chunk with
+  bytes after its bitmap is refused as an `IntegrityError`. The `IntegrityError` is not caught
   there; it propagates up the read as an `IntegrityError` naming the problem (the reader of the `.crbm` object treats it
   as a corrupt object; some core paths, such as erasure and the consistency check, inspect `IntegrityError` to decide what
   to do with a bad object).

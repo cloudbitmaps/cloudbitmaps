@@ -24,7 +24,7 @@ const r = await store.load({ segment: 'audience:active' }, idsFromWarehouse(), {
 if (!r.published) console.warn(`load refused: ${r.reason} (${r.cardinalityBefore} → ${r.cardinality})`);
 ```
 
-`r` is the result: `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore, collected }`.
+`r` is the result: `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore, collected, strays }`.
 
 `sha256` is the SHA-256 of the object as stored, and an empty string when another load took the generation number
 first. The library does not keep it or check it on read: reads are checked with CRC32C. Record it if you want an
@@ -709,7 +709,7 @@ re-running a rollback to the generation you want never reports a missing object 
 **What happens to the generations above the new pointer.** They stay, which is what makes a rollback reversible. They
 are then above `currentGen`, where collection never looks. They remain until one of three things happens, and until then `seg.pinAt` can reopen one of them, with its fingerprint, once a load has moved the pointer past it. Loads pass
 them: each takes the next number up while no object holds it, the first whose number one of them holds numbers above
-them all, and collection then keeps `keep` of what is below its pointer, the generation that load superseded first
+them all (those within 1,024 of what the row names, and any contiguous run touching them; a number listed further above is a stray, ignored and reported in `LoadResult.strays`), and collection then keeps `keep` of what is below its pointer, the generation that load superseded first
 ([what a load keeps after a rollback](#what-a-load-keeps-after-a-rollback)). Or `dropSegment` deletes
 them. Or an erasure deletes them: all of them when it rewrites, and, when the current generation does not hold the id,
 only those that hold it and any no read of the segment can open, whatever the id. Rollback is audited as
