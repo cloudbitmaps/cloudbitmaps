@@ -80,7 +80,7 @@ those, call `store.exportSegments(sink)` in code, as above.
 CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump pnpm exec export-segments
 # → dump/manifest.json + dump/<namespace|_default>/<segment>.roaring   (CR_EXPORT_FORMAT=ndjson for .ndjson)
 # CR_EXPORT_ROOT (required) holds the local-filesystem store: <root>/storage and <root>/registry
-# CR_EXPORT_OUT  (required) is the directory the dump goes to
+# CR_EXPORT_OUT  (required) is the directory the dump goes to: new, or yours and owner-only (never a symlink)
 # CR_EXPORT_NAMESPACE=eu    (optional) scope the dump to one namespace
 ```
 
@@ -172,9 +172,11 @@ And a store loads one straight back, with no per-id work:
   since disappeared.** Export to a fresh directory for a clean dump; the sample sink above needs one every time.
 - **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds
   already there passes when an earlier run left it (yours and owner-only). A symlink, a path that is not a directory, a
-  directory of another user, or one open to group or others in its place is refused with a `ValidationError`. The check
-  reads the directory and then creates the file by path, so it is not proof against a process that changes the directory
-  between the two, and `CR_EXPORT_OUT` itself is used as given. Point it at a directory only you can write to.
+  directory of another user, or one open to group or others in its place is refused with a `ValidationError`. The same
+  checks apply to `CR_EXPORT_OUT` itself when it already exists (one that does not is made, `0o700`): a symlink there is
+  refused, not followed, so the dump cannot be sent elsewhere by one. The check reads the directory and then creates
+  the file by path, so it is not proof against a process that changes the directory between the two, and the directories
+  above `CR_EXPORT_OUT` are used as given. Point it at a directory only you can write to.
 - **Each segment is exported as one instant.** The export pins a segment when it begins it: the generation is read from
   the registry then, on a warm store as on a cold one, and only that generation's object is read for the whole segment,
   so a load that publishes meanwhile cannot put chunks of two generations in one file. A cold store makes one registry

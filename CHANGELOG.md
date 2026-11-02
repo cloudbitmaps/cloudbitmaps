@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`export-segments` refuses an output directory that is a symlink.** `CR_EXPORT_OUT` was followed, so a link there sent
+  the dump, which holds every id in the clear, wherever it pointed, and an earlier `manifest.json` at the target was
+  removed. An output directory that already exists now gets the checks a directory inside it always had: a symlink, a
+  path that is not a directory, one owned by another user or open to group or others is refused with a
+  `ValidationError`. A path that does not exist is still made, and a private directory of yours still works.
+
 ## [0.26.0] — 2026-10-30
 
 ### Added

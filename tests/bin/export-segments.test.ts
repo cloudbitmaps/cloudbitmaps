@@ -1,5 +1,5 @@
 import { SafeBitmap } from '@/native-codec';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
@@ -360,6 +360,60 @@ describe('export-segments CLI: output directory edge cases', () => {
     await expect(run).rejects.toThrow(/remove or rename it/);
     expect(await readFile(join(out, 'manifest.json', 'keep'), 'utf8')).toBe('mine');
     expect(await readdir(out)).toEqual(['manifest.json']); // nothing was exported
+  });
+
+  describe('the output directory itself', () => {
+    const seed = async () => {
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
+      const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+      await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2], { registry });
+    };
+
+    it('refuses a symlink to a directory, writes nothing through it and removes nothing there', async () => {
+      await seed();
+      const target = await mkdtemp(join(tmpdir(), 'crbm-export-target-'));
+      try {
+        await writeFile(join(target, 'manifest.json'), 'someone else');
+        const link = join(out, 'link');
+        await symlink(target, link);
+        const run = main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: link }, () => 0);
+        await expect(run).rejects.toThrow(ValidationError);
+        await expect(run).rejects.toThrow(/output directory is a symbolic link/);
+        expect(await readdir(target)).toEqual(['manifest.json']);
+        expect(await readFile(join(target, 'manifest.json'), 'utf8')).toBe('someone else');
+      } finally {
+        await rm(target, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a path that is a file, and a directory open to group or others', async () => {
+      await seed();
+      const file = join(out, 'file');
+      await writeFile(file, '');
+      await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: file }, () => 0)).rejects.toThrow(
+        /output path is not a directory/,
+      );
+      if (process.getuid === undefined) return;
+      const open = join(out, 'open');
+      await mkdir(open);
+      await chmod(open, 0o755);
+      await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: open }, () => 0)).rejects.toThrow(
+        /output directory is open to group or others/,
+      );
+    });
+
+    it('still exports to a path that does not exist and to an existing private directory', async () => {
+      await seed();
+      const fresh = join(out, 'fresh', 'dump');
+      const a = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: fresh }, () => 0);
+      expect(a.totalSegments).toBe(1);
+      expect(await readdir(fresh)).toEqual(['_default', 'manifest.json']);
+      // `out` is a private directory (mkdtemp, 0o700), and a second run into it passes too.
+      const b = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+      expect(b.totalSegments).toBe(1);
+      const c = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+      expect(c.totalSegments).toBe(1);
+    });
   });
 
   it('leaves no namespace directory behind when its only segment is destroyed after the listing', async () => {
