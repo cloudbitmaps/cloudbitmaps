@@ -259,6 +259,12 @@ interface PinCheck {
   ended?: 'gone' | 'replaced';
 }
 
+/** A pinned read of a generation whose registry row has gone or been destroyed, which it cannot read. */
+const pinGone = (ref: SegmentRef, generation: number): NotFoundError =>
+  new NotFoundError(
+    `segment "${ref.segment}" generation ${generation}, which this handle pinned, can no longer be read: its registry row is gone or destroyed`,
+  );
+
 /** The storage key of the generation a resolution found. */
 function genKeyOf(ref: SegmentRef, target: { readonly generation: number }): GenKey {
   return { namespace: ref.namespace, segment: ref.segment, generation: target.generation };
@@ -1402,10 +1408,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // goes empty partway through a call, because its row was dropped or destroyed, has torn it.
     if (reader === null) {
       if (version === undefined) return null;
-      throw new NotFoundError(
-        `segment "${ref.segment}" generation ${generation}, which this handle pinned, can no longer be read: its ` +
-          'registry row is gone or destroyed',
-      );
+      throw pinGone(ref, generation);
     }
     if (fingerprint !== undefined && reader.fingerprint !== fingerprint) {
       // The verdict is kept only if nothing was invalidated while this read waited: an invalidation forgets the
@@ -1506,7 +1509,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const segment = this.keyOf(ref);
     if (prior?.ended !== undefined && !this.invalidated.invalidatedSince(segment, prior.since))
       return Promise.reject(
-        prior.ended === 'gone' ? goneUnder(ref, generation) : notThePinned(ref, generation),
+        prior.ended === 'gone' ? pinGone(ref, generation) : notThePinned(ref, generation),
       );
     const next: PinCheck = { at: this.now(), since: this.invalidated.epoch };
     this.pinChecks.set(pin, next);
@@ -1565,7 +1568,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     if (ended === 'replaced')
       this.replacedPins.set(this.heldKey(ref, pin.version, pin.fingerprint), true);
     this.snapshots.delete(this.pinnedKey(ref, pin.version, pin.fingerprint));
-    throw ended === 'gone' ? goneUnder(ref, generation) : notThePinned(ref, generation);
+    throw ended === 'gone' ? pinGone(ref, generation) : notThePinned(ref, generation);
   }
 
   /** The segment's row read of the last `cache.genTtlMs`, shared; sent now when there is none. */

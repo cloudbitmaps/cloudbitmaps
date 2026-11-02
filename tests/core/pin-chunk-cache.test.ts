@@ -1664,7 +1664,9 @@ describe('what a pin found out about its object, and how it forgets', () => {
       const w = await purgeable(OLD);
       const { storage } = w.backend;
       const mine = await wholeOf(storage);
-      const store = new CloudRoaring({ storage: w.backend });
+      // No timed refresh: this is about what a footer read or a reopen keeps, and a recheck of the purged and created
+      // row would end the pin as another incarnation before the restore it models.
+      const store = new CloudRoaring({ storage: w.backend, cache: { genTtlMs: 0 } });
       const snap = await store.segment('s').pin();
       await w.reload(NEW);
       if (reopening) store.invalidate(REF); // so the read opens its generation again, rather than check its footer
