@@ -431,8 +431,8 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     // while the object is still the version read here: a later create draws a new incarnation, so nothing of this row
     // is needed to keep its tokens apart. Otherwise it is tombstoned (the counter advanced, the object kept), so a
     // re-create carries the counter on; the tombstone keeps only what that and the row parser need, so the deleted
-    // row's keys, summary, ledger, leases and governance blobs do not stay in the bucket. Retry the read and the write on a cross-process race; it converges, then fails
-    // typed rather than silently leaving the row live.
+    // row's keys, summary, ledger, leases and governance blobs do not stay in the bucket. Retry the read and the write
+    // on a cross-process race; it converges, then fails typed rather than silently leaving the row live.
     for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
       const current = await this.readRow(key);
       if (expected !== undefined) {

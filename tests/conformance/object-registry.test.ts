@@ -654,6 +654,20 @@ describe('an envelope tombstone keeps only what a re-create needs', () => {
     'leases',
   ] as const;
 
+  const KEPT = [
+    'createdAt',
+    'currentGen',
+    'namespace',
+    'pointerId',
+    'segment',
+    'status',
+    'token',
+    'updatedAt',
+  ];
+
+  const tombstoneOf = async (store: FakeObjectStore, key: string) =>
+    JSON.parse(new TextDecoder().decode((await store.read(key))!.bytes));
+
   const encryptedRow = async (reg: ObjectStoreRegistry) =>
     reg.create(tref, {
       currentGen: 3,
@@ -680,6 +694,8 @@ describe('an envelope tombstone keeps only what a re-create needs', () => {
     const env = JSON.parse(new TextDecoder().decode((await store.read(tkey))!.bytes));
     expect(env.deleted).toBe(true);
     for (const field of FIELDS_DROPPED) expect(env.record).not.toHaveProperty(field);
+    expect(Object.keys(env.record).sort()).toEqual(KEPT);
+    expect(env.record.pointerId).toBe(env.record.token);
     expect(env.record).toMatchObject({
       segment: 'enc',
       namespace: 'ns',
@@ -689,6 +705,31 @@ describe('an envelope tombstone keeps only what a re-create needs', () => {
     expect(tokenParts(env.record.token).counter).toBe(tokenParts(token).counter + 1);
     expect(await reg.get(tref)).toBeNull();
     await reg.delete(tref); // still idempotent over a tombstone
+  });
+
+  it('writes the same key set over a destroyed row', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    const { token } = await reg.create(tref, { currentGen: 2, status: 'destroyed' });
+    await reg.delete(tref, token);
+    const env = await tombstoneOf(store, tkey);
+    expect(env.deleted).toBe(true);
+    expect(Object.keys(env.record).sort()).toEqual(KEPT);
+    expect(env.record.pointerId).toBe(env.record.token);
+    expect(env.record.status).toBe('destroyed');
+    expect(await reg.get(tref)).toBeNull();
+  });
+
+  it('writes a tombstone for a row with no namespace', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    const bare: SegmentRef = { segment: 'bare' };
+    const { token } = await reg.create(bare, { currentGen: 1 });
+    await reg.delete(bare, token);
+    const env = await tombstoneOf(store, registryObjectKey('conf', bare));
+    expect(Object.keys(env.record).sort()).toEqual(KEPT.filter((k) => k !== 'namespace'));
+    expect(env.record.pointerId).toBe(env.record.token);
+    expect(await reg.get(bare)).toBeNull();
   });
 
   it('a re-create over it continues the counter and works as before', async () => {
