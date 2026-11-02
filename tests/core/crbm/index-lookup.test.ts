@@ -74,7 +74,7 @@ describe('parseIndex — a hostile index allocates no more than it holds', () =>
 
   it('trims the arrays to the entries it parsed', () => {
     const bytes = Uint8Array.from([...record(0, 0, 3, 1), ...record(7, 0, 300, 65_536)]);
-    const parsed = parseIndex(bytes, 1 << 20, 1 << 20);
+    const parsed = parseIndex(bytes, PAYLOAD_START + 303, 1 << 20);
     expect(parsed.keys).toEqual(Uint16Array.of(0, 7));
     expect(parsed.cardinalityMinusOne).toEqual(Uint16Array.of(0, 65_535));
     expect(parsed.lengths).toEqual(Uint32Array.of(3, 300));
@@ -92,10 +92,10 @@ describe('parseIndex — a hostile index allocates no more than it holds', () =>
 
   it('keeps an offset past 4 GiB exactly', () => {
     const big = 0xffff_ffff;
-    const bytes = Uint8Array.from([...record(0, big, 3, 1), ...record(1, big, 3, 1)]);
-    const parsed = parseIndex(bytes, 2 ** 40, 1 << 20);
-    const first = PAYLOAD_START + big;
-    expect(parsed.offsets[1]).toBe(first + 3 + big);
+    const bytes = Uint8Array.from([...record(0, 0, big, 1), ...record(1, 0, 3, 1)]);
+    const parsed = parseIndex(bytes, PAYLOAD_START + big + 3, 2 ** 32);
+    expect(parsed.offsets[1]).toBe(PAYLOAD_START + big);
     expect(parsed.offsets[1]!).toBeGreaterThan(2 ** 32);
+    expect(parsed.lengths[0]).toBe(big);
   });
 });

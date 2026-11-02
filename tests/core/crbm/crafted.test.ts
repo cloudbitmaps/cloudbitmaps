@@ -499,7 +499,7 @@ describe('index consistency — refused at open, before any payload is read', ()
     [
       'a payload that starts past the payload region',
       () => valid({ rawEntries: [first, { ...second, offDelta: 1 }] }),
-      /payload out of bounds/,
+      /gap before its payload/,
     ],
     [
       'a footer chunk_count above the entries',
@@ -536,8 +536,12 @@ describe('index consistency — refused at open, before any payload is read', ()
   );
 
   it('refuses an index whose last record is cut short, with its own CRC and the footer CRC re-forged to match', async () => {
-    const [offset, length] = indexRead(valid());
-    const cut = Uint8Array.from(valid());
+    const whole = valid();
+    const [offset, length] = indexRead(whole);
+    // The index, two bytes shorter, still ends where the footer begins.
+    const cut = new Uint8Array(offset + length - 2 + FOOTER_BYTES);
+    cut.set(whole.subarray(0, offset + length - 2));
+    cut.set(whole.subarray(whole.length - FOOTER_BYTES), offset + length - 2);
     const view = new DataView(cut.buffer, cut.length - FOOTER_BYTES);
     view.setBigUint64(FOOTER.indexLength, BigInt(length - 2), true);
     view.setUint32(FOOTER.indexCrc32c, crc32c(cut.subarray(offset, offset + length - 2)), true);

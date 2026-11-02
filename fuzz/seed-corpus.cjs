@@ -253,8 +253,8 @@ function stridedVals(lo, count, step) {
 // ── crbm-index target: raw index-region byte blobs fed straight to parseIndex (no CRC wall) ──
 // Index entry wire form: varint(keyDelta) varint(offDelta)
 // varint(len) varint(cardinality) + 4-byte payload CRC (LE). parseIndex stores the CRC without validating it
-// here, so seed CRCs are arbitrary. offDelta=0 lays each chunk immediately after the previous (offsets stay in
-// bounds); keyDelta>0 after the first avoids the duplicate-key rejection.
+// here, so seed CRCs are arbitrary. offDelta=0 lays each chunk immediately after the previous (the only layout
+// parseIndex accepts); keyDelta>0 after the first avoids the duplicate-key rejection.
 function pushVarint(arr, v) {
   let x = v >>> 0;
   while (x > 0x7f) {
@@ -289,9 +289,18 @@ function seedCrbmIndex() {
     ],
   };
   for (const [name, entries] of Object.entries(layouts)) {
-    const region = indexRegion(entries);
+    const index = indexRegion(entries);
+    // The target reads the payload region's length from the first four bytes (little-endian), then the index.
+    const regionLength = entries.reduce((sum, e) => sum + e.len, 0);
+    const region = Uint8Array.from([
+      regionLength & 0xff,
+      (regionLength >>> 8) & 0xff,
+      (regionLength >>> 16) & 0xff,
+      (regionLength >>> 24) & 0xff,
+      ...index,
+    ]);
     writeSeed('crbm-index', `valid-${name}.bin`, region);
-    if (region.length > 6) {
+    if (region.length > 10) {
       writeSeed('crbm-index', `trunc-${name}.bin`, region.subarray(0, region.length - 3)); // sever a trailing CRC
     }
   }

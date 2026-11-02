@@ -4,7 +4,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-open';
 import { aadFor } from '@/core/crypto';
 import type { Aead } from '@/core/crypto';
-import { NotFoundError } from '@/core/errors';
+import { IntegrityError, NotFoundError } from '@/core/errors';
 import { KNOWN_FILL, MAX_KNOWN_GENERATIONS, usableKnownGens } from '@/core/known-generations';
 import { loadSegment } from '@/core/load';
 import type {
@@ -16,7 +16,7 @@ import type {
 } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
-import { MAX_TAIL_BYTES, usableSummary } from '@/core/summary';
+import { usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/core/retention';
@@ -219,36 +219,28 @@ describe.each([
 });
 
 describe('a rollback onto an object padded before its footer', () => {
-  // The reader accepts bytes between an object's index and its footer, so an object this library did not write can
-  // report a `tailBytes` that no summary records. The row is legal without a summary, and the rollback lands.
-  it('lands, and the row carries the ledger of the footer it read and no summary', async () => {
+  // The reader refuses bytes between an object's index and its footer, so an object this library did not write cannot
+  // be one a rollback lands on: the rollback is refused and the row is left as it was.
+  it('is refused, and the row is unchanged', async () => {
     const w = world(false);
     for (let g = 0; g < 3; g++) await loadSegment(SEG, idsOf(5 + g), w.deps, { keep: 9 });
     const key: GenKey = { ...SEG, generation: 1 };
     const { bytes, size } = await w.memory.getTail(key, 1 << 20);
     expect(bytes.length).toBe(size);
     const footerAt = size - 104;
-    const padding = 9 * 1024 * 1024;
+    const padding = 1024;
     const padded = new Uint8Array(size + padding);
     padded.set(bytes.subarray(0, footerAt), 0);
     padded.set(bytes.subarray(footerAt), footerAt + padding);
-    const unpaddedCrc = await crcOfObject(w, 1);
+    const before = await rowOf(w);
     await w.memory.delete(key);
     await w.memory.putImmutable(key, async (sink) => sink.write(padded));
 
-    const reader = await openGenerationReader(w.memory, key, undefined);
-    expect(reader.tailBytes).toBeGreaterThan(MAX_TAIL_BYTES);
-    expect(reader.tailBytes).toBe(
-      size - (size - 104 - (reader.tailBytes - padding - 104)) + padding,
+    await expect(openGenerationReader(w.memory, key, undefined)).rejects.toThrow(
+      /does not end where the footer begins/,
     );
-
-    await expect(rollbackSegment(SEG, 1, w.deps)).resolves.toMatchObject({ generation: 1 });
-    const row = await rowOf(w);
-    expect(row.currentGen).toBe(1);
-    expect(row.summary).toBeUndefined();
-    // The ledger names the target with the footer checksum of the padded object, which is the unpadded object's.
-    expect(row.knownGens?.at(-1)).toEqual({ generation: 1, footerCrc: unpaddedCrc });
-    expect(numbers(row.knownGens)).toEqual([0, 2, 1]);
+    await expect(rollbackSegment(SEG, 1, w.deps)).rejects.toThrow(IntegrityError);
+    expect(await rowOf(w)).toEqual(before);
   });
 });
 
