@@ -170,7 +170,55 @@ function checkedFooter(
   if (crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)) !== storedFooterCrc) {
     throw crbmIntegrity('.crbm footer CRC mismatch');
   }
+  // Only a footer of the layout this build reads: another major version's open is refused for its version, not here.
+  if (footer[FOOTER.versionMajor] === VERSION_MAJOR) checkFooterFields(footer, fview, size);
   return { footer, fview, storedFooterCrc };
+}
+
+/** The preamble at the front of `tail`: its magic and version are the footer's, and its two reserved bytes are zero. */
+function checkPreamble(tail: Uint8Array, versionMajor: number, versionMinor: number): void {
+  if (!magicMatches(tail, 0) || tail[4] !== versionMajor || tail[5] !== versionMinor) {
+    throw crbmIntegrity('.crbm preamble magic/version mismatch with footer');
+  }
+  if (tail[6] !== 0 || tail[7] !== 0) {
+    throw crbmIntegrity('.crbm preamble reserved bytes are not zero');
+  }
+}
+
+/** Whether every byte of `bytes[from, to)` is zero. */
+function allZero(bytes: Uint8Array, from: number, to: number): boolean {
+  for (let i = from; i < to; i++) if (bytes[i] !== 0) return false;
+  return true;
+}
+
+/**
+ * The footer's bytes that carry no meaning, and its geometry, held to what every writer writes. The footer CRC covers
+ * them, so a field a reader ignored was free input to the CRC (which is linear: four free bytes reach any value), and
+ * so to an object's fingerprint, `<size>:<footerCrc>`. Refused: a non-zero `reserved2` or `keyId`; a non-zero
+ * `indexTag` on a cleartext object (an encrypted one's is the index's AEAD tag); and an index region that does not end
+ * where the footer begins, which would let the size be padded. The cleartext `indexNonce` stays free: it is the
+ * write's identity.
+ */
+function checkFooterFields(footer: Uint8Array, fview: DataView, size: number): void {
+  if (fview.getUint16(FOOTER.reserved2, true) !== 0) {
+    throw crbmIntegrity('.crbm footer reserved2 is not zero');
+  }
+  if (!allZero(footer, FOOTER.keyId, FOOTER.chunkCount)) {
+    throw crbmIntegrity('.crbm footer key_id is not zero');
+  }
+  if (
+    (fview.getUint32(FOOTER.flags, true) & FLAG_ENCRYPTED) === 0 &&
+    !allZero(footer, FOOTER.indexTag, FOOTER.indexTag + AEAD_TAG_BYTES)
+  ) {
+    throw crbmIntegrity('.crbm cleartext footer index_tag is not zero');
+  }
+  const indexOffset = readU64(fview, FOOTER.indexOffset, 'index_offset');
+  const indexLength = readU64(fview, FOOTER.indexLength, 'index_length');
+  if (indexOffset + indexLength !== size - FOOTER_BYTES) {
+    throw crbmIntegrity(
+      `.crbm index region [${indexOffset}, +${indexLength}) does not end where the footer begins (${size - FOOTER_BYTES})`,
+    );
+  }
 }
 
 /**
@@ -423,8 +471,9 @@ export class CrbmReader {
     const versionMinor = footer[FOOTER.versionMinor]!;
     const hasExtension = (flags & FLAG_EXTENSION) !== 0;
 
-    // Bounds + size cap on the index region before trusting/fetching it.
-    if (indexOffset < PAYLOAD_START || indexOffset + indexLength > size - FOOTER_BYTES) {
+    // Bounds + size cap on the index region before trusting/fetching it (that it ends where the footer begins was
+    // already held by the footer's own checks).
+    if (indexOffset < PAYLOAD_START) {
       throw crbmIntegrity(`.crbm index region [${indexOffset}, +${indexLength}) out of bounds`);
     }
     if (indexLength > maxIndexBytes) {
@@ -434,9 +483,7 @@ export class CrbmReader {
     // Validate the front preamble too, but only when this GET already covers it (no extra request).
     const tailCoversFrom = size - tail.length;
     if (tailCoversFrom === 0) {
-      if (!magicMatches(tail, 0) || tail[4] !== versionMajor || tail[5] !== versionMinor) {
-        throw crbmIntegrity('.crbm preamble magic/version mismatch with footer');
-      }
+      checkPreamble(tail, versionMajor, versionMinor);
     }
 
     // --- Index: already in the tail, or one more GET ---
@@ -1020,8 +1067,8 @@ function metadataSection(
 // answers from the index alone trust what it records without decoding a payload. Every entry's key is in range
 // and strictly above the last; its cardinality is in `[1, 65536]`; its payload is non-empty (at least
 // `minPayloadBytes`), within `maxPayloadBytes`, and lies inside the payload region `[PAYLOAD_START, payloadEnd)`.
-// Offsets are stored as unsigned gaps after the previous payload, so payloads ascend and never overlap by
-// construction. `open` then holds the sum and the count to the footer's, where the footer records them.
+// Offsets are stored as unsigned gaps after the previous payload, and each gap must be zero: payloads are adjacent,
+// the first starts at PAYLOAD_START, and the last ends at `payloadEnd`. `open` then holds the sum and the count to the footer's, where the footer records them.
 //
 // Not checked here, because the format does not record enough: an encrypted footer hides the count and the total
 // (the index's AEAD tag stands in for them), and a cardinality is not compared with its payload, since only the
@@ -1087,6 +1134,10 @@ export function parseIndex(
     if (card < 1 || card > MAX_CHUNK_CARDINALITY) {
       throw crbmIntegrity(`.crbm index entry ${i} has a cardinality ${card} invalid`);
     }
+    // Every writer lays payloads back to back, so a gap is bytes nothing signs; a reader that allowed one would let an
+    // object carry free bytes at its own size.
+    if (offDelta !== 0)
+      throw crbmIntegrity(`.crbm index entry ${i} leaves a gap before its payload`);
     // `offset` cannot start below the preamble: it is the previous payload's end plus an unsigned gap.
     if (offset + len > payloadEnd) {
       throw crbmIntegrity(`.crbm index entry ${i} has a payload out of bounds`);
@@ -1101,6 +1152,13 @@ export function parseIndex(
     cardinalitySum += card;
     prevKey = chunkKey;
     prevEnd = offset + len;
+  }
+  // The last payload ends where the region does (the extension block's start, or the index's); an object with no
+  // chunks has an empty region.
+  if (prevEnd !== payloadEnd) {
+    throw crbmIntegrity(
+      `.crbm payloads end at ${prevEnd}, not at the end of the payload region ${payloadEnd}`,
+    );
   }
   // The loop ends only when pos === indexBytes.length exactly (each entry consumes a whole record; a partial
   // trailing record makes readVarint or the CRC bound throw), so there are never unconsumed trailing bytes.

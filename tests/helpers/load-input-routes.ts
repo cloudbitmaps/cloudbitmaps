@@ -30,6 +30,7 @@ export const ROUTED: readonly string[] = [
   'tests/bench/calibrate-stages.test.ts',
   'tests/core/audit-incarnation.test.ts',
   'tests/core/cold-count-one-request.test.ts',
+  'tests/core/load-strays.test.ts',
   'tests/core/row-summary-trust.test.ts',
   'tests/core/read-path-review.test.ts',
   'tests/core/read-path-sequences.property.test.ts',

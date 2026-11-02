@@ -375,6 +375,7 @@
     "@cloudbitmaps/core LoadResult.reason": "readonly reason?: LoadRefusal;",
     "@cloudbitmaps/core LoadResult.sha256": "readonly sha256: string;",
     "@cloudbitmaps/core LoadResult.size": "readonly size: number;",
+    "@cloudbitmaps/core LoadResult.strays": "readonly strays: { readonly count: number; readonly generations: readonly number[]; };",
     "@cloudbitmaps/core MAX_LEASES_PER_SEGMENT": "const MAX_LEASES_PER_SEGMENT: 64",
     "@cloudbitmaps/core MAX_LEASE_MS": "const MAX_LEASE_MS: number",
     "@cloudbitmaps/core MAX_SERIALIZED_LOAD_BYTES": "const MAX_SERIALIZED_LOAD_BYTES: number",

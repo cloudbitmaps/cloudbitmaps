@@ -3,9 +3,10 @@
  * ledger once written cannot say "not known": a publish that wrote the new generation alone would be read by the next
  * one as a complete, empty window, and its collection would delete what a count by `keep` keeps. So a publish that
  * makes a generation current over such a row seeds the ledger from the bucket with the window that count keeps: the
- * generation the row named as current first, when it is there, then the newest by number ({@link keptWindow}), each
+ * generation the row named as current first, when it is there, then the newest by number within 1,024 of what the row
+ * names ({@link keptWindow}), each
  * with the footer checksum its object stores, and the new generation last. The publish then collects by that count,
- * which keeps exactly the seed.
+ * which keeps the seed, and a walked object past the margin the seed left out when it is short of `keep`.
  *
  * It seeds at a ledger's birth only: the first publish over a pointed row with no usable ledger, whatever `keep` (a
  * written ledger cannot be "not known"); and a publish with a
@@ -46,7 +47,8 @@ const SEED_READS = 8;
 /**
  * The entries a seed names: the listed generations below the new one that a live lease holds and the window does not
  * keep, then the window oldest first by number with the generation the row named as current last. `listed` is the
- * listing the load's numbering made, when it made one; otherwise the bucket is listed once. Every entry's checksum is
+ * listing the load's numbering made, when it made one (without its strays, see `generation-floor.ts`); otherwise the
+ * bucket is listed once, and a number above the new generation is no candidate for the window. Every entry's checksum is
  * read from its object's footer (a 104-byte read, under the store's read retry, {@link SEED_READS} at a time), the
  * superseded generation's too: when a clear summary describes it with another checksum, the row and the bucket
  * disagree about that number and it is left out. A generation gone from the bucket, or whose footer fails its own
