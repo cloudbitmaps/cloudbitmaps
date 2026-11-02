@@ -80,8 +80,8 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
 
 /**
  * The service client a connection string names, or a `ValidationError` for a string that is empty, not text, or not one
- * the Azure SDK can parse. The string holds the account key, so neither it nor an error `cause` that could carry part of
- * it is put in the message; the SDK's own message is, unless it quotes the string.
+ * the Azure SDK can parse. The string holds the account key, so neither it, the SDK's own message nor an error `cause`,
+ * any of which could carry part of it, is put in the message.
  */
 function serviceClientFor(connectionString: unknown): BlobServiceClient {
   if (typeof connectionString !== 'string' || connectionString.trim().length === 0) {
