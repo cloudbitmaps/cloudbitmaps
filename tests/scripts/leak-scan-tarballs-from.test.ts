@@ -107,7 +107,7 @@ describe('leak-scan-tarballs --from', () => {
   });
 
   it('still finds a leak inside a tarball it was given', () => {
-    const planted = `-----BEGIN RSA PRIVATE KEY-----\nMIIEow==\n`;
+    const planted = `${'-----BEGIN RSA '}${'PRIVATE KEY-----'}\nMIIEow==\n`;
     const r = scan(setOf([], { name: names[1] as string, content: planted }));
     expect(r.status).not.toBe(0);
     expect(r.out).toContain('FAILED');

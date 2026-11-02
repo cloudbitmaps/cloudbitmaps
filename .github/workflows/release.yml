@@ -187,9 +187,8 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
 
-      # `npm publish` refuses a `private: true` package, and `pnpm publish` used to SKIP one silently (no
-      # error, exit 0), which is the worst shape a failure can take here: the tag is public, the run is green,
-      # and the registry is unchanged. Refuse it before anything is packed or approved.
+      # `npm publish` refuses a `private: true` package, but the run should fail here, before the approval
+      # and before the first packages have gone out, rather than part-way through the family.
       #
       # No package carries `private` today (only the workspace root, which is never published). This step is
       # here for the day one does — a new package scaffolded from a template, or a deliberate
@@ -331,7 +330,7 @@ jobs:
       # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older.
       #
       # An EXACT version, because this is the one job that holds the publish identity and the npm that runs in it
-      # is code with that identity. A range (`^11.5.1`, which this step used to carry) resolves at run time to
+      # is code with that identity. A range such as `^11.5.1` resolves at run time to
       # whatever npm 11 shipped that morning: nothing in our diff would say which npm published, and a bad or
       # hostile release would run with the token on the next tag. So a new npm is a deliberate, reviewed edit of
       # this one line. Dependabot does not bump it (the version sits in a shell string, not a manifest): to bump it,
