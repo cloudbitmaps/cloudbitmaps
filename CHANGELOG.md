@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`export-segments` refuses an output directory that is a symlink.** `CR_EXPORT_OUT` was followed, so a link there sent
+  the dump, which holds every id in the clear, wherever it pointed, and an earlier `manifest.json` at the target was
+  removed. An existing `CR_EXPORT_OUT` that is a symlink (also written `link/` or `link/.`) or not a directory is now
+  refused with a `ValidationError`. Its mode and owner are not checked; the namespace directories the tool writes into
+  are checked as before. A path that does not exist is still made.
+
 - **A registry delete on a store that does not apply a conditional delete no longer leaves the deleted row's keys in the
   bucket.** The tombstone it writes in place of the row (any S3-compatible host that is not AWS, or a GCS registry, by
   default) held the whole record, so the row's wrapped data keys, sealed summary, generation ledger and leases stayed

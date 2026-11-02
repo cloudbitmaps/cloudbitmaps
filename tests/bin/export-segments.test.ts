@@ -1,5 +1,5 @@
 import { SafeBitmap } from '@/native-codec';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
@@ -360,6 +360,93 @@ describe('export-segments CLI: output directory edge cases', () => {
     await expect(run).rejects.toThrow(/remove or rename it/);
     expect(await readFile(join(out, 'manifest.json', 'keep'), 'utf8')).toBe('mine');
     expect(await readdir(out)).toEqual(['manifest.json']); // nothing was exported
+  });
+
+  describe('the output directory itself', () => {
+    const seed = async () => {
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
+      const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+      await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2], { registry });
+    };
+    const run = (path: string) => main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: path }, () => 0);
+
+    /** A symlink to a directory holding someone else's manifest; `via` spells the path the export is given. */
+    const throughLink = async (via: (link: string) => string) => {
+      await seed();
+      const target = await mkdtemp(join(tmpdir(), 'crbm-export-target-'));
+      try {
+        await writeFile(join(target, 'manifest.json'), 'someone else');
+        const link = join(out, 'link');
+        await symlink(target, link);
+        await expect(run(via(link))).rejects.toThrow(
+          /output directory is refused: it is a symbolic link/,
+        );
+        expect(await readdir(target)).toEqual(['manifest.json']);
+        expect(await readFile(join(target, 'manifest.json'), 'utf8')).toBe('someone else');
+      } finally {
+        await rm(target, { recursive: true, force: true });
+      }
+    };
+
+    it('refuses a symlink to a directory, writes nothing through it and removes nothing there', async () => {
+      await throughLink((link) => link);
+    });
+
+    it('refuses a symlink written with a trailing slash', async () => {
+      await throughLink((link) => `${link}/`);
+    });
+
+    it('refuses a symlink written with a trailing dot', async () => {
+      await throughLink((link) => `${link}/.`);
+    });
+
+    it('refuses a dangling symlink', async () => {
+      await seed();
+      const link = join(out, 'dangling');
+      await symlink(join(out, 'nowhere'), link);
+      await expect(run(link)).rejects.toThrow(ValidationError);
+      await expect(run(link)).rejects.toThrow(/symbolic link/);
+    });
+
+    it('refuses a path that is a file', async () => {
+      await seed();
+      const file = join(out, 'file');
+      await writeFile(file, '');
+      await expect(run(file)).rejects.toThrow(/output directory is refused: it is not a directory/);
+    });
+
+    it('accepts an existing directory open to group and others', async () => {
+      await seed();
+      const open = join(out, 'open');
+      await mkdir(open);
+      await chmod(open, 0o755);
+      const manifest = await run(open);
+      expect(manifest.totalSegments).toBe(1);
+      expect(await readdir(open)).toEqual(['_default', 'manifest.json']);
+    });
+
+    it('accepts a path that does not exist, and an existing private directory twice', async () => {
+      await seed();
+      const fresh = join(out, 'fresh', 'dump');
+      expect((await run(fresh)).totalSegments).toBe(1);
+      expect(await readdir(fresh)).toEqual(['_default', 'manifest.json']);
+      expect((await run(out)).totalSegments).toBe(1);
+      expect((await run(out)).totalSegments).toBe(1);
+    });
+
+    it('fsSink on its own refuses a symlinked output directory and writes nothing through it', async () => {
+      const target = await mkdtemp(join(tmpdir(), 'crbm-export-target-'));
+      try {
+        const link = join(out, 'link');
+        await symlink(target, link);
+        await expect(fsSink(link).open({ segment: 'a' }, '.roaring')).rejects.toThrow(
+          /symbolic link/,
+        );
+        expect(await readdir(target)).toEqual([]);
+      } finally {
+        await rm(target, { recursive: true, force: true });
+      }
+    });
   });
 
   it('leaves no namespace directory behind when its only segment is destroyed after the listing', async () => {
