@@ -415,6 +415,16 @@ describe('the SDK-floor script: where it works and what it installed', () => {
     expect(() => sdkFloor.assertOutside(checkout, link)).toThrow('inside the checkout');
   });
 
+  it('refuses a directory whose name begins with two dots inside the checkout, and accepts one beside it', () => {
+    const checkout = join(dir, 'checkout');
+    mkdirSync(join(checkout, '..x'), { recursive: true });
+    mkdirSync(join(dir, '..x'));
+    expect(() => sdkFloor.assertOutside(checkout, join(checkout, '..x'))).toThrow(
+      'inside the checkout',
+    );
+    expect(() => sdkFloor.assertOutside(checkout, join(dir, '..x'))).not.toThrow();
+  });
+
   it('accepts a directory beside the checkout, one that merely starts with its name, and the real temp dir', () => {
     const checkout = join(dir, 'checkout');
     mkdirSync(checkout);
