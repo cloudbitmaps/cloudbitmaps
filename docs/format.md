@@ -408,7 +408,7 @@ that cannot be ignored. (A change that can be ignored is a new extension section
 
 **What the footer CRC leaves free.** The CRC is linear, so a field a reader ignored would let four chosen bytes make it
 equal any value, and the CRC, with the object's size, is the object's fingerprint ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)).
-The reader therefore refuses the bytes no writer writes that a reader used to ignore: `reserved2`, `keyId`, a cleartext `indexTag`, an index that
+The reader therefore refuses the ignorable bytes no writer writes: `reserved2`, `keyId`, a cleartext `indexTag`, an index that
 does not end at the footer, and, in the object, the preamble's bytes 6 and 7 (when the first read covers them), a payload
 gap and bytes after a bitmap. Two different readings follow, by what the reader does with the footer.
 
@@ -584,9 +584,7 @@ object* carries the fingerprint, or the footer CRC that is half of it, beside th
   number.
 - **The `knownGens` entry** records `{ generation, footerCrc }`: the footer checksum half, because the size is not
   needed to tell two objects under one number apart once the ledger knows the number. A seeded entry's checksum is read
-  from a footer alone; it vouches for the footer only. A rollback that holds the
-  segment's key opens the target; one without it moves the pointer and opens nothing. Either way, every read opens the
-  object, on an encrypted segment with the index's authentication and the generation compare, before it serves a member. A rollback onto a
+  from a footer alone; it vouches for the footer only. Every read opens the object before it serves a member, and a rollback opens the target only when it holds the segment's key. A rollback onto a
   generation the row knows moves only when the object's footer checksum is the recorded one; an object with another
   checksum is another object under that number. A rollback moves onto a generation the row does not know only with
   `allowUnknown`, or when the target is below the pointer and either the row has no usable ledger or the target is
