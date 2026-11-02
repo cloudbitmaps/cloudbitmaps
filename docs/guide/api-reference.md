@@ -275,11 +275,11 @@ bucket, an orphan: a load's listing deletes it once a generation above it is cur
 and can keep it in its window where the row has none. Until it goes, `rollback` refuses it unless `allowUnknown` is
 passed, since the row never recorded it, and with the override a rollback onto it publishes what no load published ([an
 orphan is collected later](correctness.md#how-a-load-stays-correct)).
-`strays` is `{ count, generations }` ([how a load numbers](correctness.md#numbering-is-the-loads)): generation numbers a listing showed more than 1,024 above the highest number the row
-names (its pointer, its ledger and its leases), which the load ignored when it numbered, never deleted, and reports so you
-can look and delete them with your bucket tools (`generations` holds the lowest 64, ascending). It is `{ count: 0,
-generations: [] }` when there are none, and when the load did not list the bucket, which a load that finds `currentGen + 1`
-free does not. A segment on a bare storage driver has no row to bound anything by, and its reads take the highest listed
+`strays` is `{ count, generations }` ([how a load numbers](correctness.md#numbering-is-the-loads)): the generation numbers a
+listing showed more than 1,024 past anything the row names (its pointer, its ledger and its leases), which the load ignored when it
+numbered and never deleted, so you can look at them and delete them with your bucket tools (`generations` holds the lowest 64,
+ascending). It is `{ count: 0, generations: [] }` when there are none, and when the load did not list the bucket, which a load
+that finds `currentGen + 1` free does not. A segment on a bare storage driver has no row to bound anything by, and its reads take the highest listed
 number as the current one.
 The `store.load` row lists the guards and what throws instead.
 
