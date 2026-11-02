@@ -30,7 +30,8 @@
 #   - **The identity never sits beside dependency code**: the only job with `id-token: write` is `publish`, and
 #     it runs nothing from the repo's dependency tree (the workflow's top level grants no `id-token`). A
 #     dependency that runs in `verify` can change the tarballs it uploads, which is why the reviewer approves
-#     after a verified build and the leak scan covers those very files; it cannot ask for a publish token.
+#     after a verified build and the leak scan covers those very files (neither would notice code a dependency
+#     injects into a tarball there); it cannot ask for a publish token.
 #   - **Provenance**: `NPM_CONFIG_PROVENANCE=true` records a signed, verifiable link from the published tarball
 #     back to THIS workflow + commit (SLSA build provenance via GitHub OIDC; the statement names the tarball's
 #     sha512 and the workflow run, so it is the same for a tarball as for a directory). Requires
@@ -124,7 +125,7 @@ jobs:
         run: |
           echo "::error::a real publish runs only from a version tag (refs/tags/v...); this run is on ${GITHUB_REF}, which is not one. Tag the release and dispatch on the tag, or push the tag."
           exit 1
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The whole history, as `ci.yml` checks out: `tests/docs/calibration-reports.test.ts` proves each
           # committed calibration evidence file was written once and never edited, which means reading the file's
@@ -232,6 +233,8 @@ jobs:
       - name: Pack every package to a tarball
         run: |
           shopt -s nullglob # see the tag-match step above: an unmatched glob would otherwise loop once on a literal
+          # The `:?` guard matters: with the variable unset, `[ 5 -lt "" ]` is a bash error that an `if` swallows,
+          # so the count check would silently pass.
           : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}"
           pkgs=(packages/*/package.json)
           if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
@@ -482,7 +485,14 @@ jobs:
       - name: Publish (dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.dryRun
         run: |
+          # npm refuses a dry run of a version already on the registry ("You cannot publish over the previously
+          # published versions"), as it refuses the real publish, so such a tarball is skipped, as earlier dry runs did.
+          # A failed `npm view` (a 404 or a transient error) still attempts the dry run.
           while IFS=$'\t' read -r NAME VER FILE <&3; do
+            if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+              echo "::notice::$NAME@$VER is already on the registry; npm's dry run would refuse it, so it is skipped"
+              continue
+            fi
             npm publish "$RUNNER_TEMP/release-tarballs/$FILE" --provenance --access public --dry-run
           done 3< "$RUNNER_TEMP/publish-order.tsv"
         env:
@@ -523,7 +533,7 @@ jobs:
     permissions:
       contents: write # create the release object; NOT granted to the publish job above
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22

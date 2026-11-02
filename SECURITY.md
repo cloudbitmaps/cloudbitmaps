@@ -416,7 +416,7 @@ write scope, so it cannot ask for the publish token or publish, but it can chang
 Three things stand against that: the frozen lockfile and the allowlist, the leak scan of the very files that are
 published, and the reviewer's approval, which comes after `verify` and before anything is published. The `publish`
 job checks the tarballs against their `SHA256SUMS`, which catches damage or a swap between the two jobs and nothing
-more, since the sums travel with the files. Any publish through the workflow needs the `release`
+more, since the sums travel with the files. None of the three would notice code a dependency injects into a tarball in `verify`. Any publish through the workflow needs the `release`
 environment's reviewer, and the Trusted Publisher is bound to the workflow and environment. The two hand-run paths above
 (a new name's bootstrap and the break-glass release) need no reviewer: only the maintainer can perform them, on the
 npm account's own protections (its login and two-factor authentication).

@@ -372,6 +372,11 @@ describe('release workflow shape', () => {
       expect(step.env?.NPM_CONFIG_PROVENANCE, name).toBe(true);
     }
     expect(stepOf('Publish (dry-run)').run).toContain('--dry-run');
+    // npm refuses a dry run of a version already on the registry, so the dry run skips such a tarball.
+    const dry = stepOf('Publish (dry-run)').run ?? '';
+    expect(dry).toMatch(/if npm view "\$NAME@\$VER" version >\/dev\/null 2>&1; then/);
+    expect(dry).toContain('already on the registry');
+    expect(dry).toMatch(/continue\s+fi\s+npm publish/);
     expect(stepOf('Publish (real)').run).not.toContain('--dry-run');
     // The set check counts against EXPECTED_PACKAGES and writes the order; it must see missing and extra files.
     const set = stepOf('Check the tarball set and work out the publish order').run ?? '';
