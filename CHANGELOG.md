@@ -27,7 +27,7 @@ so, and so do the module headers in the code.
   not checked. What a caller does: nothing for an object a release wrote; an object produced by another writer that pads
   or leaves these bytes non-zero must be rewritten to the layout in [`docs/format.md`](docs/format.md). An erasure that
   meets an object the reader now refuses stops, as it does for a bad footer checksum, until the operator removes that
-  object (`store.generations(ref)` or the error finds it); see [`docs/guide/erasure.md`](docs/guide/erasure.md). A
+  object (`store.generations(ref)` lists the generation numbers, and the error names the problem); see [`docs/guide/erasure.md`](docs/guide/erasure.md). A
   custom codec must honour the `whole` option of `safeDeserialize` for the stored-chunk refusal to hold. Overlong
   varints, a cardinality that disagrees with its payload, `versionMinor` and unknown extension section types are still
   accepted.

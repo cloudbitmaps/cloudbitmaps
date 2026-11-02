@@ -408,7 +408,7 @@ that cannot be ignored. (A change that can be ignored is a new extension section
 
 **What the footer CRC leaves free.** The CRC is linear, so a field a reader ignored would let four chosen bytes make it
 equal any value, and the CRC, with the object's size, is the object's fingerprint ([section 9](#9-identity-fingerprint-pins-and-the-known-generations-ledger)).
-The reader therefore refuses every byte no writer writes: `reserved2`, `keyId`, a cleartext `indexTag`, an index that
+The reader therefore refuses the bytes no writer writes that a reader used to ignore: `reserved2`, `keyId`, a cleartext `indexTag`, an index that
 does not end at the footer, and, in the object, the preamble's bytes 6 and 7 (when the first read covers them), a payload
 gap and bytes after a bitmap. Two different readings follow, by what the reader does with the footer.
 
@@ -417,17 +417,17 @@ gap and bytes after a bitmap. Two different readings follow, by what the reader 
   does not have to set: a flagged block pads the object by exactly 12 bytes (a block with no section: the trailer
   alone) or by 17 to 4,108 bytes (any section adds at least 5, and the block is capped at 4,096 + 12). The nonce and
   tag are the index's AEAD inputs, `chunkCount` and `totalCardinality` must be zero, the CRC of the index is the
-  ciphertext's, `indexOffset` and `indexLength` are fixed by the object's size, and `generation` must equal the key's.
+  ciphertext's, `indexOffset` and `indexLength` are fixed by the object's size (only their sum is checked), and `generation` must equal the key's.
   So a chosen CRC is matched by chance, about 2^-23, where before it could be matched by calculation. A cleartext
   object also leaves its 12-byte `indexNonce` free, by design, since it is the write's identity.
 - **Footer only.** A comparison that reads only the footer (a fingerprint compare) runs the same footer checks as the
   open's first steps, and no more: `reserved2`, `keyId`, a cleartext `indexTag` and the index geometry (the index
   region ends where the footer begins), for a footer of major version 1, after the end magic and the CRC. It reads no
   index and no body, so on an encrypted object `flags`, `elementWidth`, `payloadCodecId`, `containerCodec`,
-  `versionMinor`, `chunkCount`, `totalCardinality`, `indexNonce`, `indexTag` and `generation` are free CRC input: it
+  `versionMinor`, `chunkCount`, `totalCardinality`, `indexNonce`, `indexTag`, `indexCrc32c` and `generation` are free CRC input: it
   identifies the footer and proves nothing about the body, and a chosen match is a calculation. A port that does a
-  footer-only comparison must refuse the same fields and geometry, and must use the result only to keep or skip an
-  object, never to serve a member from it.
+  footer-only comparison must refuse the same fields and geometry, and must use the result only to decide whether to keep, skip,
+  delete or move onto an object, never to serve a member from it.
 
 **Check order today.** The object's size and at least 112 bytes, then `endMagic`, then `footerCrc32c`, then, for a footer
 of major version 1, `reserved2`, `keyId`, a cleartext `indexTag` and that the index ends where the footer begins, then
@@ -584,7 +584,9 @@ object* carries the fingerprint, or the footer CRC that is half of it, beside th
   number.
 - **The `knownGens` entry** records `{ generation, footerCrc }`: the footer checksum half, because the size is not
   needed to tell two objects under one number apart once the ledger knows the number. A seeded entry's checksum is read
-  from a footer alone; the open that a rollback makes onto it still runs the index's authentication. A rollback onto a
+  from a footer alone; it vouches for the footer only. A rollback that holds the
+  segment's key opens the target; one without it moves the pointer and opens nothing. Either way, every read opens the
+  object, on an encrypted segment with the index's authentication and the generation compare, before it serves a member. A rollback onto a
   generation the row knows moves only when the object's footer checksum is the recorded one; an object with another
   checksum is another object under that number. A rollback moves onto a generation the row does not know only with
   `allowUnknown`, or when the target is below the pointer and either the row has no usable ledger or the target is

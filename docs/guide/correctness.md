@@ -153,7 +153,7 @@ the registry's own read of the row, was never a write with no answer: on a regis
 it at once as that read's fault, with no read of the row and no fresh write. A registry of your own that does not report tokens is settled by
 the object instead: the load reads the footer of the object under the pointer and takes a match as its own. The footer
 carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index
-nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum, against honest writers only: this settle reads only the footer, so against a writer of the bucket who chooses the bytes it proves nothing about the object (on an encrypted object the nonce, the tag and more are free there, and on a cleartext object the 12-byte write identity is; [what the footer leaves free](../format.md#6-the-footer)). Nothing is served from the match: the load only decides whether the object is its own, and every read opens the object first: another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
+nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum, against honest writers only: this settle reads only the footer, so against a writer of the bucket who chooses the bytes it proves nothing about the object (on an encrypted object the nonce, the tag and more are free there, and on a cleartext object the 12-byte write identity is; [what the footer leaves free](../format.md#6-the-footer)). Nothing is served from the match: the load only decides whether the object is its own, and every read opens the object first. Against honest writers, another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
 Azure Blob the client's retry policy runs under each of those writes too, so a registry that
 never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's
 default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the
@@ -333,7 +333,7 @@ refuses it as a target unless the caller passes `allowUnknown`: the row never re
 `ValidationError` before any request to storage, and with the override it publishes what no load published, an empty
 generation a guard refused among them. Two cases do not refuse it: the orphan is below the pointer and the row has no
 usable ledger or the orphan is numbered below a full ledger's bound, where the pointer alone decides, and the orphan is
-one a ledger seeded over a row with none recorded, which the row then knows. A seeded entry's checksum comes from a footer read, so a rollback onto it still opens and authenticates the object.
+one a ledger seeded over a row with none recorded, which the row then knows. A seeded entry's checksum comes from a footer read, so it vouches for the footer only. A rollback that holds the segment's key opens the target; one without it moves the pointer and opens nothing ([roll back a segment](loading.md#roll-back-a-segment)). Either way, every read opens the object, on an encrypted segment with the index's authentication and the generation compare, before it serves a member.
 Nothing yet
 tells an orphan from a published generation under the same number: a number is taken again once its object is deleted
 (after a rollback below it, or an erasure's delete above the pointer), so a `segment.publish` audit event naming the
