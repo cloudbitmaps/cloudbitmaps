@@ -368,51 +368,84 @@ describe('export-segments CLI: output directory edge cases', () => {
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
       await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2], { registry });
     };
+    const run = (path: string) => main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: path }, () => 0);
 
-    it('refuses a symlink to a directory, writes nothing through it and removes nothing there', async () => {
+    /** A symlink to a directory holding someone else's manifest; `via` spells the path the export is given. */
+    const throughLink = async (via: (link: string) => string) => {
       await seed();
       const target = await mkdtemp(join(tmpdir(), 'crbm-export-target-'));
       try {
         await writeFile(join(target, 'manifest.json'), 'someone else');
         const link = join(out, 'link');
         await symlink(target, link);
-        const run = main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: link }, () => 0);
-        await expect(run).rejects.toThrow(ValidationError);
-        await expect(run).rejects.toThrow(/output directory is a symbolic link/);
+        await expect(run(via(link))).rejects.toThrow(
+          /output directory is refused: it is a symbolic link/,
+        );
         expect(await readdir(target)).toEqual(['manifest.json']);
         expect(await readFile(join(target, 'manifest.json'), 'utf8')).toBe('someone else');
       } finally {
         await rm(target, { recursive: true, force: true });
       }
+    };
+
+    it('refuses a symlink to a directory, writes nothing through it and removes nothing there', async () => {
+      await throughLink((link) => link);
     });
 
-    it('refuses a path that is a file, and a directory open to group or others', async () => {
+    it('refuses a symlink written with a trailing slash', async () => {
+      await throughLink((link) => `${link}/`);
+    });
+
+    it('refuses a symlink written with a trailing dot', async () => {
+      await throughLink((link) => `${link}/.`);
+    });
+
+    it('refuses a dangling symlink', async () => {
+      await seed();
+      const link = join(out, 'dangling');
+      await symlink(join(out, 'nowhere'), link);
+      await expect(run(link)).rejects.toThrow(ValidationError);
+      await expect(run(link)).rejects.toThrow(/symbolic link/);
+    });
+
+    it('refuses a path that is a file', async () => {
       await seed();
       const file = join(out, 'file');
       await writeFile(file, '');
-      await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: file }, () => 0)).rejects.toThrow(
-        /output path is not a directory/,
-      );
-      if (process.getuid === undefined) return;
+      await expect(run(file)).rejects.toThrow(/output directory is refused: it is not a directory/);
+    });
+
+    it('accepts an existing directory open to group and others', async () => {
+      await seed();
       const open = join(out, 'open');
       await mkdir(open);
       await chmod(open, 0o755);
-      await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: open }, () => 0)).rejects.toThrow(
-        /output directory is open to group or others/,
-      );
+      const manifest = await run(open);
+      expect(manifest.totalSegments).toBe(1);
+      expect(await readdir(open)).toEqual(['_default', 'manifest.json']);
     });
 
-    it('still exports to a path that does not exist and to an existing private directory', async () => {
+    it('accepts a path that does not exist, and an existing private directory twice', async () => {
       await seed();
       const fresh = join(out, 'fresh', 'dump');
-      const a = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: fresh }, () => 0);
-      expect(a.totalSegments).toBe(1);
+      expect((await run(fresh)).totalSegments).toBe(1);
       expect(await readdir(fresh)).toEqual(['_default', 'manifest.json']);
-      // `out` is a private directory (mkdtemp, 0o700), and a second run into it passes too.
-      const b = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
-      expect(b.totalSegments).toBe(1);
-      const c = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
-      expect(c.totalSegments).toBe(1);
+      expect((await run(out)).totalSegments).toBe(1);
+      expect((await run(out)).totalSegments).toBe(1);
+    });
+
+    it('fsSink on its own refuses a symlinked output directory and writes nothing through it', async () => {
+      const target = await mkdtemp(join(tmpdir(), 'crbm-export-target-'));
+      try {
+        const link = join(out, 'link');
+        await symlink(target, link);
+        await expect(fsSink(link).open({ segment: 'a' }, '.roaring')).rejects.toThrow(
+          /symbolic link/,
+        );
+        expect(await readdir(target)).toEqual([]);
+      } finally {
+        await rm(target, { recursive: true, force: true });
+      }
     });
   });
 
