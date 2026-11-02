@@ -74,7 +74,8 @@
  * past it their collection takes it as it takes any orphan — see `discardRefused`.
  *
  * Without that fence the failure was silent and severe, and both halves were reproduced: `nextGeneration` picks a
- * number above everything within the margin of the row's own numbers, so a forward-only publish here always won — discarding a concurrent
+ * number above everything within the margin of the row's own numbers, so a forward-only publish here always won —
+ * discarding a concurrent
  * load's whole set, and letting two concurrent erasures each return `erased: true` while the second one's
  * generation put the first one's id back and collected the generation that had evidenced its removal. A false
  * Art. 17 receipt is the worst output this module can produce.
@@ -964,7 +965,8 @@ function doomedGenerations(
  * license the skip. So every load that read the row before the call began is refused, by this call's write or by a write
  * that changed the `pointerId` or the ledger since the call read the row. The pointer is
  * named at the value it has ({@link renewPointer}), which changes nothing a read resolves and renews the row's
- * `pointerId`, the value the load's fence compares. A load numbers its object above the pointer (above everything listed within the margin of the row's own numbers,
+ * `pointerId`, the value the load's fence compares. A load numbers its object above the pointer (above everything
+ * listed within the margin of the row's own numbers,
  * on a row with no pointer) and publishes it with a compare-and-swap fenced on the row it read, which a
  * write of the row's leases alone does not refuse. Re-proving the row before each delete does not fence it: the load can
  * publish at any time after the delete, and its row would then name an object that is not there. If the load published
@@ -1277,7 +1279,8 @@ function sealedOnly(
  * row's `pointerId` ({@link fence}) before it deletes any, so the load that wrote it, fenced on the row it read
  * (or on there being no row, once a row appeared), is refused at its publish and never names an object that is gone;
  * then it deletes each holder while the row is still the one it renewed. A load that read the row after the renewal
- * writes an object of its own, numbered above every holder within the margin of the row's own numbers, which this call never deletes.
+ * writes an object of its own, numbered above every holder within the margin of the row's own numbers, which this
+ * call never deletes.
  *
  * `erased: true` only when a searched object held the id, as anywhere else. With only sealed holders the answer is
  * `'no-generation'`, with the generations it deleted in `collected`: the id was never found, and those objects can no
@@ -1745,7 +1748,8 @@ async function provenOwn(
  *
  * Only one position needs it: the pointer moved forward past `from` and stopped **below** `written`. Two winners
  * leave it there: one whose object was already in the bucket when this call took its number (`nextGeneration`
- * numbers above everything present within the margin of the row's own numbers), and a load that numbered after it from its own row, which takes
+ * numbers above everything present within the margin of the row's own numbers), and a load that numbered after it
+ * from its own row, which takes
  * `currentGen + 1` whenever no object holds that number, below this call's object. Either way the object is
  * above the winner's pointer, where no collection ever looks. The
  * object was derived from `from`, so when the winner was another erasure it still holds the id that erasure

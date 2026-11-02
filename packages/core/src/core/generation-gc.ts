@@ -274,7 +274,7 @@ interface LoadNumber {
    * the listing would have kept is a name the pass takes. `false` when the listing numbered the load.
    */
   readonly checked: boolean;
-  /** The generations that listing found, when the load listed: a seed of the ledger reads them instead of listing again. */
+  /** The generations that listing found within 1,024 of what the row names, when the load listed: a seed of the ledger reads them instead of listing again. */
   readonly listed?: readonly number[];
   /** The listed generations far above anything the row names that this load ignored; empty when it did not list. */
   readonly strays: Strays;

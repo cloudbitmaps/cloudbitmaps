@@ -1207,7 +1207,7 @@ rollback left. A load draws its window from the entries numbered below its new g
 current of them (up to 127; it collects the ones that fall out of it by name when `keep` is at most 64), the entries a live
 lease holds, whatever `keep` says, and, carried and never collected, the entries numbered above the new generation. A row
 whose ledger is absent makes the next load list the bucket, keep what a count by `keep` keeps (the generation it
-superseded first, then the newest by number), and write that window, with the leased generations it lists, as the ledger's
+superseded first, then the newest by number within 1,024 of what the row names), and write that window, with the leased generations it lists, as the ledger's
 entries before the new generation. A usable ledger is never written again from the bucket: over one that names more than 64
 below the pointer that no live lease holds (a run of publishes with a `keep` above 64 carries up to 127), a load with a
 `keep` of 64 or less writes the window it draws from the ledger's order, the leased entries and the entries a rollback

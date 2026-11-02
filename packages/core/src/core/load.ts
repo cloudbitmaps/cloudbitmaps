@@ -470,8 +470,8 @@ export interface LoadResult {
    * Generations listed in the bucket far above anything the row names (more than 1,024 above the highest of its
    * pointer, its ledger and its leases) that this load ignored when it numbered, and never deleted; one the numbering walked past, which ends below the new pointer, is not listed. `count` is how many;
    * `generations` the lowest 64, ascending. `{ count: 0, generations: [] }` when there are none, and when the load did
-   * not list the bucket (a load that finds the next number free does not). An object here is not one this library wrote
-   * under this row: look at it, then delete it with your bucket tools.
+   * not list the bucket (a load that finds the next number free does not). The row does not name it: a planted object, or one a
+   * registry restore left. Look at it, then delete it with your bucket tools.
    */
   readonly strays: { readonly count: number; readonly generations: readonly number[] };
 }

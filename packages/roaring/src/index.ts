@@ -2395,7 +2395,8 @@ export class CloudRoaring {
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks, and still known to the row, so rolling forward onto
    * one needs no flag. They remain until loads pass them (the first load whose
-   * number one of them holds numbers above that object and the run of listed numbers touching it, and collection then keeps `keep` of what is below its pointer, the
+   * number one of them holds numbers above them all, those within 1,024 of what the row names and any contiguous run
+   * touching them, and collection then keeps `keep` of what is below its pointer, the
    * generation that load superseded first), {@link CloudRoaring.dropSegment}
    * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and, when the
    * current generation does not hold the id, only those holding it and any no read of the segment can open, whatever

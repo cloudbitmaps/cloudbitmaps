@@ -7,7 +7,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { nextLoadGeneration } from '@/core/generation-gc';
 import { STRAY_MARGIN, floorOf, reportStrays, straysOf } from '@/core/generation-floor';
 import { rollbackSegment } from '@/core/rollback';
-import { NotFoundError, TransientError } from '@/core/errors';
+import { NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import type {
   GenKey,
   IRegistryDriver,
@@ -163,7 +163,7 @@ describe.each(backends)('a planted high generation number blocks nothing ($name)
     await loadSegment(SEG, [1, 2, 3, 4], deps());
     expect(await generations(storage)).toContain(5000);
     await expect(rollbackSegment(SEG, 5000, { storage, registry }, {})).rejects.toBeInstanceOf(
-      Error,
+      ValidationError,
     );
     expect((await registry.get(SEG))?.currentGen).toBeLessThan(5000);
   });
@@ -300,6 +300,9 @@ describe('which listed numbers a load numbers past', () => {
           } catch (err) {
             // Only the row's own numbers (or a run up to the largest) can leave none.
             expect((err as Error).message).toMatch(/no generation number left/);
+            expect(Math.max(pointer ?? 0, ...named) + STRAY_MARGIN).toBeGreaterThanOrEqual(
+              Number.MAX_SAFE_INTEGER,
+            );
             return;
           }
           expect(held).not.toContain(n.generation);
