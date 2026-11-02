@@ -1017,8 +1017,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     this.resolutions?.delete(key);
     this.pinRows?.delete(key);
     // …and every PINNED reader of the same segment, which is memoized under `<key>@<generation>`. Dropping
-    // only the live entry left a pinned handle reading a crypto-shredded segment: the pin is exactly the
-    // reader that does not re-resolve on its own, so it is the one that most needs to be told.
+    // only the live entry left a pinned handle reading a crypto-shredded segment: the pin never re-resolves its
+    // generation, and checks its segment's row only every `cache.genTtlMs`, so it is told at once here.
     const pinnedPrefix = `${key}@`;
     this.distrusted.deleteWhere((k) => k.startsWith(pinnedPrefix));
     this.snapshots.deleteWhere((k) => k.startsWith(pinnedPrefix));
@@ -1347,7 +1347,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * crypto-shred must not keep unwrapping a DEK whose wrapping the shred removed; a destroyed segment resolves no
    * generation
    * for anyone, and a pin's read of one fails. That holds from the pin's next open: a reader already open keeps
-   * the key it unwrapped until it is evicted or invalidated.
+   * the key it unwrapped until it is evicted, invalidated, or its next check ({@link recheckPin}) finds the pin over.
    *
    * **And the object is checked**, when the caller says which one it pinned. A generation number is not an
    * identity (invariant 1): once a name is purged and loaded again, its new segment starts again at generation 0,

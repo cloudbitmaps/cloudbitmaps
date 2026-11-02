@@ -229,8 +229,8 @@ false false
 - **A revoke is not instant.** A reader that is not the writer sees a load within `cache.genTtlMs` (2000 ms by default;
   `0` turns the refresh off, which leaves no bound at all for another process's loads). A running read can serve what it
   had already taken, within the bound in [who stops seeing an id, and
-  when](../guide/erasure.md#who-stops-seeing-the-id-and-when), and a pin or a lease in another store has none until it
-  ends. [How soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load) is where the refresh is
+  when](../guide/erasure.md#who-stops-seeing-the-id-and-when), and a pin in another store, a leased one included, is
+  checked on the same interval; a store without a timed refresh has none. [How soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load) is where the refresh is
   stated.
 - **Not a policy engine.** A set says who is in it. Roles, inheritance, deny rules and conditions are computed upstream
   and loaded as sets, as the group union above was; the library evaluates none of them.

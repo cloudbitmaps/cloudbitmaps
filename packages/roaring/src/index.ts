@@ -532,7 +532,12 @@ export interface CacheOptions {
    * lapses, a read of it fails with the fault, as a cold read does. A refresh that fails with anything else, an access denial or a row that will not parse, is not
    * ridden out: the read that meets it throws that error, and the reader is dropped.
    *
-   * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
+   * **A pinned handle is checked on the same interval.** It never moves to another generation, but at most every
+   * `genTtlMs` (counted on access) its segment's row is read, one read shared by every pin of the segment, and the
+   * pin fails with `NotFoundError` once the segment is destroyed, gone or re-created, or its generation erased or
+   * replaced, even when its reader and chunks are still cached. A transient fault of the registry keeps it serving.
+   *
+   * `0` turns this timed refresh off, and the pinned handles' check with it, and so does wiring a bare `IStorageDriver`, which has no registry. That is
    * all it does. The store still moves a segment on to whatever generation is current when its reader cache
    * evicts the segment, when a read has to fetch from a generation a sweep deleted, and when it is invalidated,
    * as its own `load`, `rollback`, `eraseSubject` and `*Into` writes do and {@link CloudRoaring.invalidate} does.

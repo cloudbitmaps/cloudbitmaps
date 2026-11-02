@@ -128,9 +128,9 @@ that segment when the call finished. It does not prove, and the page must not be
 - **A reader that already had the id.** After the call, the store that ran it answers from the rewritten generation. Another
   store sees the rewrite within `cache.genTtlMs` (2 seconds by default), and a read in progress can still serve a bounded
   number of chunks it had already taken: [who stops seeing the id, and when](../guide/erasure.md#who-stops-seeing-the-id-and-when).
-  Some readers have no bound: a pinned handle held by another store keeps answering until its lease ends (at most 14 days) or
-  that store invalidates or evicts it, and a store with `cache.genTtlMs: 0` or no registry sees another process's rewrite only
-  when its reader cache evicts the segment or you invalidate.
+  A pinned handle held by another store is checked on the same interval and fails once its segment is destroyed or its
+  generation erased, a leased one included. Some readers have no bound: a store with `cache.genTtlMs: 0` or no registry, a
+  pinned handle in it included, sees another process's rewrite only when its reader cache evicts the segment or you invalidate.
 
 ## Crypto-shred a whole segment
 
@@ -234,7 +234,7 @@ KeyUnavailableError
   row that held the key is gone, or once every key-encryption key that wrapped it is destroyed ([what an erasure does not reach](../guide/erasure.md#what-an-erasure-does-not-reach)).
 - **A per-person shred does not exist.** One key covers a whole segment, so crypto-shredding removes a segment, not one id from
   it; per-id removal is `eraseSubject`.
-- **The in-flight bound is stated, not zero, and a pin or a store without a timed refresh has none.** See [who stops seeing the id, and when](../guide/erasure.md#who-stops-seeing-the-id-and-when).
+- **The in-flight bound is stated, not zero, and a store without a timed refresh, a pin in it included, has none.** See [who stops seeing the id, and when](../guide/erasure.md#who-stops-seeing-the-id-and-when).
 - **Cost grows with the segments scanned and the generations each holds.** An erasure scans the registry and rewrites each segment
   that holds the id, so a store with many segments pays for every one, whatever few the id is in ([what an erasure
   costs](../guide/erasure.md#find-an-id-and-erase-it)). Run it on a schedule that batches requests where the deadline allows.

@@ -156,7 +156,7 @@ describe('a pinned handle in another store fails once its segment is destroyed',
     }
   }
 
-  it('a crypto-shred: a warm pin in another store fails once the interval lapses, and its key is dropped', async () => {
+  it('a crypto-shred: a warm pin in another store fails once the interval lapses', async () => {
     const ks = keystore();
     const w = await world({ keystore: ks });
     const snap = await w.store.segment('s').pin();

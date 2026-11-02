@@ -4,7 +4,9 @@
  *
  * A pin exists so a long job describes a single instant. An ordinary handle re-resolves on `cache.genTtlMs`, so a
  * publish part-way through an export, a send or a reconciliation means the second half of the job describes a
- * different instant than the first — and nothing in the result says so.
+ * different instant than the first — and nothing in the result says so. A pin does not move to another generation, but
+ * on a store with a timed refresh it checks every `cache.genTtlMs` that its segment is still there, and a read fails
+ * with `NotFoundError` once it is destroyed or the pinned generation erased.
  *
  * **A pin is a generation number and the object it named, not a captured reader.** The reader behind it can live
  * in the shared bounded LRU and be evicted freely: re-opening at the same number reopens the same object, or, if

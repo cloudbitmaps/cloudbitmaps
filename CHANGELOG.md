@@ -11,6 +11,23 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pinned handle now stops answering once its segment is destroyed or its generation erased, within `cache.genTtlMs`.**
+  A `seg.pin()` handle in a store that did not perform the erasure or the crypto-shred kept answering from its open
+  reader and the chunk cache with no bound at all (a leased one until its lease ended, up to 14 days). On a store with a
+  registry, a clock and `cache.genTtlMs` above 0, it now has its segment's row read at most every `cache.genTtlMs`
+  (2 s by default, counted on access: no timer, and an idle pin makes no request), one read shared by every pin,
+  handle and combine of the segment in the store, and fails with `NotFoundError`, dropping its reader and the key it
+  unwrapped, when the row is gone or destroyed, is another incarnation of the name, or names the pinned generation
+  with another checksum. A generation the row's ledger does not name (or a row with no usable ledger) is not a failure
+  by itself: the object's footer is read once per interval, and the pin fails once the object is gone or another. A
+  transient fault of the registry keeps the pin serving and asks again after 500 ms, as a live read does. A lease no
+  longer lengthens the bound. The live read path is unchanged. **An unleased pin whose generation a load collected
+  (past `keep`) now fails within `cache.genTtlMs` even with a warm cache**, where it used to answer from it. A store
+  with `cache.genTtlMs: 0`, no registry or no clock still has no bound for its pins, as for its other readers. A pin of
+  a generation an erasure could not remove (`erased: false`) still reads it until a re-run removes it.
+
 ## [0.26.0] — 2026-10-30
 
 ### Added

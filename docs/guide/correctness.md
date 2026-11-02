@@ -353,7 +353,8 @@ outcome.
 <a id="exposure-window-is-the-ttl"></a>**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so at
 most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses: one, at the
 2 s default, against any realistic publish cadence. A sixty-second `intersect` does not need a sixty-second window. A
-pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves. So is a
+pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves, though it
+checks on the same interval that its segment is still there. So is a
 store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a `StorageChunkSource` of your own, which the store times no refresh on), whose
 snapshot lasts until an eviction, a read that finds its generation swept, or an invalidation moves it on, however long
 that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct. A store
@@ -583,8 +584,8 @@ it can finish only after the rollback's move, so the call's next read of the row
   read, and a key unwrap for an encrypted segment, even if it is never read. Without a registry, every `pin()` lists the
   segment's objects and makes the tail read. `pin()` and every pinned read are retried as the store's reads are.
 - <a id="pin-of-no-generation"></a>**A segment with no current generation pins nothing and reads empty.** A pinned segment whose row is later dropped or
-  destroyed fails with `NotFoundError` once it must open its object again, rather than going empty part-way through a
-  call.
+  destroyed fails with `NotFoundError` once it must open its object again, or once its next check of the row finds it
+  so (below), rather than going empty part-way through a call.
 - <a id="pin-answers-from-what-it-holds"></a>**A pin answers from what it holds.** It keeps the key its reader unwrapped while that reader stays open, and
   answers from the chunks it decoded while they stay cached, and, for a small generation, from the chunk bytes its
   reader kept while the reader stays open. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
@@ -598,12 +599,18 @@ it can finish only after the rollback's move, so the call's next read of the row
   in progress has](erasure.md#who-stops-seeing-the-id-and-when). It caches nothing more of what it began reading before
   the invalidation, so the pin's next read opens the object again too.
 
-  Anything else leaves it as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement
-  through another store, in the same process or another, it answers from what it holds. That lasts until its store's
-  reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
-  `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
-  fails at once, unless its reader kept the generation's chunks, which it serves until the reader is evicted. A
-  combine on another store refuses the pin.
+  Anything else leaves it as it is, until its next check. After a `destroySegment` beside its store, or an erasure, a drop
+  or a retirement through another store, in the same process or another, it answers from what it holds for at most
+  `cache.genTtlMs`: at most every `cache.genTtlMs`, by the clock on access, the pin has its segment's row read (one read
+  serves every pin of the segment in the store), and fails with `NotFoundError`, dropping its reader and the key it
+  unwrapped, when the row is gone or destroyed, is another incarnation of the name, or names the pinned generation with
+  another checksum. A generation the row's ledger does not name is not a failure by itself: the object's footer is read,
+  once per interval, and the pin fails once the object is gone or another. A transient fault of the registry keeps it
+  serving, asking again after 500 ms. Without a timed refresh (no registry, no clock, `cache.genTtlMs: 0`) nothing
+  checks it, and it answers until its store's reader cache evicts the pin's reader and the chunk cache evicts the chunks
+  the pin decoded, or until `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted,
+  a chunk it has not cached fails at once, unless its reader kept the generation's chunks, which it serves until the
+  reader is evicted or its next check. A combine on another store refuses the pin.
 - <a id="pin-needs-a-crbm-reader"></a>**It needs a `.crbm` reader**: the store builds one over a backend, and over a bare `IStorageDriver`. A
   `StorageChunkSource` of your own throws `UnsupportedError`.
 
