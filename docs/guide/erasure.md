@@ -348,6 +348,11 @@ the status, the creation and update times and the token, whatever the row held: 
 ledger, leases and retention and residency policies are not kept, whether the row was live, or came from `dropSegment`
 or `destroySegment`.
 
+A **row deleted by hand.** A registry listing skips a deleted row, and `eraseSubject` finds segments through that
+listing, so objects left under a segment whose row was removed outside the library are outside its scan. Drop the
+segment before deleting its row (`store.dropSegment(ref, { confirmSegment })`); if the row is already gone,
+`store.generations(ref)` lists what the bucket still holds under the name.
+
 Backups, replicas and noncurrent object versions hold the old object until their own lifecycle removes it. For an
 at-rest guarantee that reaches those, encrypt and crypto-shred (`destroySegment` and `eraseNamespace`, see
 [encryption](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)), which is complete once no retained copy of

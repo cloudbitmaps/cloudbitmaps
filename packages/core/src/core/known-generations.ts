@@ -9,7 +9,9 @@
  * and gone from the bucket (a lifecycle rule took it, or a load with a smaller `keep` collected it), and the bucket
  * can hold one the row does not name. A row with no ledger is correct, and its load lists. A patch that moves the
  * pointer without naming the ledger drops it (see `applyRegistryPatch`), so a writer that forgets the ledger leaves a
- * row that lists, never one that vouches for a generation it should not. Pure: no I/O, time or randomness.
+ * row that lists, never one that vouches for a generation it should not. That guards against accidents, not against
+ * someone who can write the registry: the ledger and the pointer are both fields of the row, so a writer who forges
+ * them together can make the row vouch for what it likes. Pure: no I/O, time or randomness.
  */
 import { ascending } from './order';
 import { fingerprintParts } from './crbm/fingerprint';

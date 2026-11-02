@@ -623,6 +623,9 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   another generation, or an index or metadata that does not open is still refused, so no read of the result can fail.
 - **Two cases are decided by the pointer alone**: a target below the pointer needs no flag and no checksum check, key-less
   included, and the event carries `unknown: true`. A target above the pointer needs `allowUnknown` in both.
+  Where no checksum is checked, a cleartext segment has nothing to tell the genuine object from another: someone who can
+  write the bucket and planted an object at that number is what the rollback lands on (it still has to pass the layout
+  checks). Encrypt the segment, or restrict who can write the bucket.
   - **A row with no usable `knownGens`**: a registry of your own that drops the field, a row whose pointer you moved with
     `backend.registry.compareAndSwap` as a repair (a patch that moves the pointer without naming the record drops it), or a
     record that disagrees with its row. A rollback onto such a row writes no record, so it stays in this case until the next
