@@ -17,7 +17,8 @@ so, and so do the module headers in the code.
   bucket.** The tombstone it writes in place of the row (any S3-compatible host that is not AWS, or a GCS registry, by
   default) held the whole record, so the row's wrapped data keys, sealed summary, generation ledger and leases stayed
   for good. It now keeps only what a re-create and the row parser read: the name, the pointer's number, the status, the
-  timestamps and the advanced token.
+  timestamps and the advanced token. A tombstone written before this release keeps its old contents until a re-create
+  over it replaces it, or the bucket's own tools remove it.
 
 ## [0.26.0] — 2026-10-30
 

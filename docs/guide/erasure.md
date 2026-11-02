@@ -339,8 +339,8 @@ and the summary is.
 A **deleted row**, where the registry cannot remove one. A registry that reports `conditionalDelete` (S3 when its
 client sends to an AWS S3 host, Azure Blob, the local filesystem and memory, by default) removes a row it deletes,
 whether by `registry.delete` or the retention sweep's purge of a tombstone. One that does not (an S3 client that sends to
-an S3-compatible store or an emulator, or a GCS client, by default, or `conditionalDelete: false`) keeps the row's record
-in a deleted marker, so the token counter survives a re-create. The marker holds only the name, the pointer's number,
+an S3-compatible store or an emulator, or a GCS client, by default, or `conditionalDelete: false`) leaves a deleted
+marker, so the token counter survives a re-create. The marker holds only the name, the pointer's number,
 the status, the creation and update times and the token, whatever the row held: its keys, sealed summary, generation
 ledger, leases and retention and residency policies are not kept, whether the row was live, or came from `dropSegment`
 or `destroySegment`.

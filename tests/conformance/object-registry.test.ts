@@ -710,7 +710,13 @@ describe('an envelope tombstone keeps only what a re-create needs', () => {
   it('writes the same key set over a destroyed row', async () => {
     const store = new FakeObjectStore();
     const reg = new ObjectStoreRegistry(store, 'conf', ticking());
-    const { token } = await reg.create(tref, { currentGen: 2, status: 'destroyed' });
+    // What a drop or a destroy leaves: a destroyed row that still names its policies.
+    const { token } = await reg.create(tref, {
+      currentGen: 2,
+      status: 'destroyed',
+      retention: { expiresAt: 9_999_999 },
+      residency: { region: 'eu' },
+    });
     await reg.delete(tref, token);
     const env = await tombstoneOf(store, tkey);
     expect(env.deleted).toBe(true);
