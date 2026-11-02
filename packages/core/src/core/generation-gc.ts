@@ -26,6 +26,7 @@ import {
 import { generationsOf } from './generation-list';
 import { KNOWN_SPAN, keptWindow, windowOf, usableKnownGens } from './known-generations';
 import { heldGenerations } from './leases';
+import { NO_STRAYS, STRAY_MARGIN, type Strays, floorOf, reportStrays } from './generation-floor';
 import type {
   GenKey,
   IStorageDriver,
@@ -209,35 +210,51 @@ function tookEffectOverMissing(ref: SegmentRef, published: number, missing: numb
 
 /**
  * The generation number a writer should use for the segment's **next** object: one above the highest generation
- * the registry points at *or* that is present in Storage — whichever is higher. The erasure rewrite numbers this
- * way; a load numbers with {@link nextLoadGeneration}, which lists as this does when its existence check finds the
- * number taken or cannot answer.
+ * the registry points at *or* that is present in Storage within {@link STRAY_MARGIN} of the highest number the row
+ * names (its pointer, ledger and leases), and past any contiguous run of listed numbers that touches those. The erasure
+ * rewrite numbers this way; a load numbers with {@link nextLoadGeneration}, which lists as this does when its
+ * existence check finds the number taken or cannot answer.
  *
  * Both are consulted because they can disagree. A load that wrote its object and crashed before publishing leaves
  * an object *above* `currentGen`; a writer that consulted only the pointer would pick that same number and hit the
- * write-once conflict on every retry. Skipping past it costs one `list` and keeps the retry trivial — the crashed
+ * write-once conflict on every retry. Skipping past it costs one `list` and keeps the retry trivial: the crashed
  * object is an orphan {@link gcOrphanGenerations} collects once the pointer moves on. Reusing such an object
  * instead of skipping it (verify-and-publish) is `load()`'s job, not a numbering helper's.
+ *
+ * A listed number further above the row's own than the margin is a stray (see `generation-floor.ts`): it does not
+ * raise the number, which steps over a number any listed object holds, so a planted object blocks nothing and is
+ * never taken or deleted.
  *
  * A segment with no row and no objects starts at 0. An admin/write-path helper, never on the read path.
  */
 export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Promise<number> {
-  return aboveEverything(ref, deps, await deps.registry.get(ref));
+  return (await aboveEverything(ref, deps, await deps.registry.get(ref))).generation;
 }
 
-/** One above `record`'s pointer and above every generation listed in Storage, whichever is higher. */
+/**
+ * The number above the row's pointer and every listed generation within the margin of what the row names, walked past
+ * any listed number it lands on, with the listing's near numbers (as a seed reads them) and the strays it ignored.
+ */
 async function aboveEverything(
   ref: SegmentRef,
   deps: GenerationDeps,
   record: RegistryRecord | null,
-  seen?: number[],
-): Promise<number> {
+): Promise<{ generation: number; listed: number[]; strays: Strays }> {
+  const all: number[] = [];
+  for await (const key of deps.storage.list(ref)) all.push(key.generation);
+  const limit = floorOf(record) + STRAY_MARGIN;
+  const listed = all.filter((g) => g <= limit);
   let highest = record?.currentGen ?? -1;
-  for await (const key of deps.storage.list(ref)) {
-    seen?.push(key.generation);
-    if (key.generation > highest) highest = key.generation;
-  }
-  return numberAbove(highest);
+  for (const g of listed) if (g > highest) highest = g;
+  const held = new Set(all);
+  let generation = numberAbove(highest);
+  while (held.has(generation)) generation = numberAbove(generation);
+  // A run the walk climbed through is below the new number, so the pointer ends above it: nothing left to report.
+  return {
+    generation,
+    listed,
+    strays: reportStrays(all.filter((g) => g > limit && g > generation)),
+  };
 }
 
 /** `highest + 1`, refused when it is not a safe integer: a generation past that cannot be written or read back. */
@@ -257,16 +274,19 @@ interface LoadNumber {
    * the listing would have kept is a name the pass takes. `false` when the listing numbered the load.
    */
   readonly checked: boolean;
-  /** The generations that listing found, when the load listed: a seed of the ledger reads them instead of listing again. */
+  /** The generations that listing found within 1,024 of what the row names, when the load listed: a seed of the ledger reads them instead of listing again. */
   readonly listed?: readonly number[];
+  /** The listed generations far above anything the row names that this load ignored; empty when it did not list. */
+  readonly strays: Strays;
 }
 
 /**
  * The generation number a load takes, from the row it has already read: `currentGen + 1` (0 with no row or no
  * pointer yet) when no object holds that number, which one existence check proves (a zero-byte `getTail`, one
- * metadata request on every shipped driver); otherwise one above the pointer and above everything listed, as
- * {@link nextGeneration} numbers. The check finding the number taken (a crashed load's orphan, the object of a
- * load still in flight, or the generations a rollback left above the pointer) and the check failing in any way
+ * metadata request on every shipped driver); otherwise one above the pointer and above everything listed within
+ * {@link STRAY_MARGIN} of what the row names, as {@link nextGeneration} numbers (a number far above that is a stray:
+ * ignored, reported in `strays`, never deleted). The check finding the number taken (a crashed load's orphan, the
+ * object of a load still in flight, or the generations a rollback left above the pointer) and the check failing in any way
  * other than "not found" both take the listing, so the listing stays the authority whenever the check cannot
  * prove the number free. A failed check falls back silently: nothing records it, and what it costs is the listing,
  * one more PUT-class request on S3, so a fault that makes every check fail shows only in the bill.
@@ -290,10 +310,9 @@ export async function nextLoadGeneration(
   try {
     await deps.storage.getTail({ namespace: ref.namespace, segment: ref.segment, generation }, 0);
   } catch (err) {
-    if (isNotFoundError(err)) return { generation, checked: true };
+    if (isNotFoundError(err)) return { generation, checked: true, strays: NO_STRAYS };
   }
-  const listed: number[] = [];
-  return { generation: await aboveEverything(ref, deps, row, listed), checked: false, listed };
+  return { ...(await aboveEverything(ref, deps, row)), checked: false };
 }
 
 /**

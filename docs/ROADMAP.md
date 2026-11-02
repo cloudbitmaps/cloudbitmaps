@@ -190,8 +190,8 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`, which `eraseSubject` also charges for each superseded generation it opens, and both for each object they open under a destroyed segment. `budget: false`, on the
   call or on the store, lifts that ceiling, and a subject scan then holds every row it lists.
 - **Immutable, generation-keyed objects.** `segment.<gen>.crbm` + one registry pointer, never overwritten in
-  place. A load takes the next number past both the pointer and whatever is in the bucket, so a crashed
-  load's orphan cannot block a retry, and collects superseded generations behind a grace window (`keep`)
+  place. A load takes the next number past both the pointer and whatever is in the bucket near the numbers its row names, so a crashed
+  load's orphan cannot block a retry and an object planted at a huge number does not block numbering (a load reports it in `LoadResult.strays` and never deletes it; an erasure still stops on an object it cannot read, wherever it is numbered, until you delete it), and collects superseded generations behind a grace window (`keep`)
   for in-flight readers.
 - **A co-operative bulk-load.** Node has one thread, and building a generation is the one operation here that
   genuinely occupies it for a while. It hands the event loop back periodically, so a co-resident server keeps

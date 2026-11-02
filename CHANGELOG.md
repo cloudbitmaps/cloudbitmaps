@@ -32,7 +32,26 @@ so, and so do the module headers in the code.
   varints, a cardinality that disagrees with its payload, `versionMinor` and unknown extension section types are still
   accepted.
 
+### Added
+
+- **`LoadResult.strays`: the generation numbers a load ignored.** `{ count, generations }`, the lowest 64 ascending, for
+  listed numbers far above anything the row names that are still above the number the load took. It is `{ count: 0,
+  generations: [] }` when there are none and when the load did not list the bucket. Look at what it names, then delete it
+  with your bucket tools; a load never deletes it.
+
 ### Fixed
+
+- **An object planted at a huge generation number no longer blocks the numbering of a load or an erasure's rewrite.** Someone who can write objects to
+  the bucket but not registry rows could put `<segment>.9007199254740991.crbm` next to a segment, and every later load
+  that had to list the bucket to number its generation (and the erasure rewrite) failed with "no generation number left";
+  a smaller plant dragged every later number up to it. A load now ignores a listed number more than 1,024 past anything its
+  row names (its pointer, any `knownGens` entry and any lease), steps past any contiguous run that touches those, so
+  re-running loads after a registry restore works as before, and never deletes, overwrites or takes such a number. The
+  ledger's first window no longer takes one either. A number planted within 1,024 of what the row names is still numbered
+  past, and a store on a bare storage driver, which has no row, still reads the highest listed number as current. An erasure
+  still reads every object left in the bucket for its receipt, wherever it is numbered, and stops on one it cannot read
+  (it cannot prove that object does not hold the id) until you remove it: `store.generations(ref)` lists the bucket, and
+  you delete the object with your bucket tools.
 
 - **`export-segments` refuses an output directory that is a symlink.** `CR_EXPORT_OUT` was followed, so a link there sent
   the dump, which holds every id in the clear, wherever it pointed, and an earlier `manifest.json` at the target was

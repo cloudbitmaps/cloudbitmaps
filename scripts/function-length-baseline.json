@@ -5,7 +5,7 @@
     "packages/core/src/core/combine-many.ts::class Run > publishWave": 119,
     "packages/core/src/core/crbm/reader.ts::class CrbmReader > open": 194,
     "packages/core/src/core/generation-gc.ts::listingPass": 112,
-    "packages/core/src/core/load.ts::runLoad": 215,
+    "packages/core/src/core/load.ts::runLoad": 214,
     "packages/core/src/core/publish.ts::publishGenerationKept": 215,
     "packages/core/src/core/rollback.ts::rollbackSegment": 152,
     "packages/core/src/export/index.ts::runExport": 126,

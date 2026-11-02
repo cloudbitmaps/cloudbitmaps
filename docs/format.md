@@ -560,7 +560,9 @@ advance, and it is not unique over time:
 - a number is taken again once its object is deleted, for example after a purge, and within one row's life after a refused load's
   reclaim of its own object, an erasure's delete above the pointer, or the delete of an object a rollback left above the
   pointer. A load takes `currentGen + 1` when no object holds that number, and otherwise numbers above every object it
-  lists, so the objects a rollback leaves above the pointer are not reused while they exist.
+  lists within 1,024 of the highest number its row names (pointer, ledger, leases), past any contiguous run that touches those,
+  so the objects a rollback leaves above the pointer are not reused while they exist. An object listed further above
+  is a stray: a load never takes, deletes or overwrites it, and reports it when it lists.
 
 So `(segment, generation)` can name two different objects at different times. Everything that has to know *which
 object* carries the fingerprint, or the footer CRC that is half of it, beside the number:
