@@ -215,7 +215,7 @@ ValidationError
 
 - **Freshness is the reader's pointer refresh.** A list reaches a reader that did not load it within `cache.genTtlMs`,
   and a running read can serve a little of the earlier generation within the bound in [who stops seeing an id, and
-  when](../guide/erasure.md#who-stops-seeing-the-id-and-when). A pin has no refresh at all, by design: a pinned send honours the list it pinned.
+  when](../guide/erasure.md#who-stops-seeing-the-id-and-when). A pin has no refresh of its generation, by design (it only checks that its segment and object are still there): a pinned send honours the list it pinned.
 - **Not a consent management platform.** A segment holds ids. It does not record who consented to what, when, or on which
   channel; it has no per-person history and no policy. Those live in the system you collect consent in, and this page is
   where the result of that system is applied at send time.

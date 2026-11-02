@@ -206,8 +206,8 @@ legitimate setting for a read-only replica of immutable data — but a store set
 observes a shred: until its reader cache lets the segment go, it keeps decrypting with the key it already unwrapped.
 A pinned handle in such a store is that case too: its reader keeps the key until the reader cache evicts it, and after
 that the pin still answers `has()` for the ids in chunks it decoded, until the chunk cache drops them. A pinned handle
-in a store with a timed refresh is bounded like any other reader: it re-reads its segment's row every `cache.genTtlMs`
-and fails with `NotFoundError` once the segment is destroyed or its generation erased. If a
+in a store with a timed refresh is bounded like any other reader: it re-reads its segment's row every `cache.genTtlMs`,
+counted from the moment it was taken, and fails with `NotFoundError` once the segment is destroyed or its generation erased. If a
 compliance deadline depends on every reader converging, fan the reference out to your fleet and have each
 process call `store.invalidate(ref)`; that is the hook, and delivering it is yours because the transport is
 yours.

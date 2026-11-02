@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -7,11 +7,14 @@ import { join } from 'node:path';
  * one table row, and the three must give it in the same words: an auditor reads the note, an operator follows the
  * guide, and the two once disagreed about the number a pin was held to.
  *
- * The gate reads the one row that starts with the pinned handle, undoes its line breaks, and holds every copy to the
- * same text, to the interval in it, and to saying no more that the pin has "no bound". The row for a store with no timed
+ * The gate reads the one row that starts with the pinned handle (a row is one line) and holds every copy to the
+ * same text, to the interval in it, and to saying no more than that the pin has "no bound". The row for a store with no timed
  * refresh keeps that wording legitimately, and is not this row.
  *
- * KNOWN LIMIT. It reads one row. A paragraph that contradicts the row in words is what a review of the change is for.
+ * A second check sweeps the source comments and the guides for the sentences that said a pin has no timed bound.
+ *
+ * KNOWN LIMIT. It reads one row, and the stale sentences it knows. A paragraph that contradicts the row in other words
+ * is what a review of the change is for. The leased row is caught only when it opens with "a leased pinned handle".
  */
 const ROOT = join(__dirname, '..', '..');
 const DOCS = ['PRIVACY.md', 'packages/roaring/PRIVACY.md', 'docs/guide/erasure.md'] as const;
@@ -100,5 +103,52 @@ describe('the pinned handle row of the erasure table', () => {
       expect(pinnedRows(others)).toEqual([]);
       expect(problemsIn(`${wrapped}\n${others}`)).toEqual([]);
     });
+  });
+});
+
+const STALE: readonly RegExp[] = [
+  /a pin answers with no timed bound/i,
+  /no timed refresh bounds any of that/i,
+  /a pin has no refresh at all/i,
+  /the pin never reads the new segment: what it has already read still answers/i,
+];
+
+/** The stale pin sentences in `text`. */
+export function stalePinSentences(text: string): string[] {
+  const flat = text.replace(/\n\s*\*?/g, ' ').replace(/\s+/g, ' ');
+  return STALE.filter((re) => re.test(flat)).map(String);
+}
+
+function filesUnder(rel: string, ext: RegExp): string[] {
+  return readdirSync(join(ROOT, rel), { withFileTypes: true }).flatMap((e) => {
+    const child = `${rel}/${e.name}`;
+    if (e.isDirectory())
+      return e.name === 'node_modules' || e.name === 'dist' ? [] : filesUnder(child, ext);
+    return ext.test(e.name) ? [child] : [];
+  });
+}
+
+describe('no document or doc-comment says a pin has no timed bound', () => {
+  const files = [
+    'PRIVACY.md',
+    ...filesUnder('docs', /\.md$/),
+    ...filesUnder('packages', /\.(ts|md)$/).filter((f) => !f.includes('/test')),
+  ];
+
+  it('holds every shipped file', () => {
+    expect(files.length).toBeGreaterThan(20);
+    const bad = files.filter((f) => stalePinSentences(read(f)).length > 0);
+    expect(bad).toEqual([]);
+  });
+
+  it('fires on each stale sentence, wrapped as a doc-comment, and not on its look-alikes', () => {
+    expect(
+      stalePinSentences('   *   A pin answers with no\n   *   timed bound, until it is told'),
+    ).not.toEqual([]);
+    expect(stalePinSentences('A pin has no refresh at all, by design')).not.toEqual([]);
+    expect(stalePinSentences('A pin answers with a timed bound on a store with a refresh')).toEqual(
+      [],
+    );
+    expect(stalePinSentences('A pin has no refresh of its generation, by design')).toEqual([]);
   });
 });

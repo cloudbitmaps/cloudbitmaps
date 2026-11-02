@@ -419,7 +419,8 @@ write's own collection does the cleanup. `keep` says how many old generations to
 object storage, not 40. That is the cost of a wide window, and the reason the default is `1`.
 
 **A pin is a hold, and a lease makes it a bounded one.** A pin is never re-resolved. Once its generation is collected, a
-chunk it has not already fetched fails with `NotFoundError`. So does every chunk once the pin's own store writes the
+chunk it has not already fetched fails with `NotFoundError`, and on a store with a timed refresh so does every chunk
+once the pin's next check, within `cache.genTtlMs`, finds the object gone. So does every chunk once the pin's own store writes the
 segment (a load, a `rollback` or an `*Into` write), since that drops what the store has cached. No value of `keep`
 survives an erasure that finds the id, and neither does a lease: one that rewrites the segment collects every generation below its new pointer, and one that finds the id only in a generation other than the current one deletes every generation below the pointer and each one above it that holds the id.
 [Reading in depth](reading.md#read-one-fixed-point-in-time) covers pins and

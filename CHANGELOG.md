@@ -22,7 +22,11 @@ so, and so do the module headers in the code.
   unwrapped, when the row is gone or destroyed, is another incarnation of the name, or names the pinned generation
   with another checksum. A generation the row's ledger does not name (or a row with no usable ledger) is not a failure
   by itself: the object's footer is read once per interval, and the pin fails once the object is gone or another. A
-  transient fault of the registry keeps the pin serving and asks again after 500 ms, as a live read does. A lease no
+  transient fault of the registry or of that footer read keeps the pin serving and asks again after 500 ms, as a live
+  read does; any other fault of the footer read fails the read that meets it and is not remembered. A pin counts as
+  checked from when the row read it relies on was sent, so one taken and never read is checked at its first read after
+  `cache.genTtlMs`, and a row read shared from earlier never makes a pin look fresher than it is. An invalidation of
+  the segment in the store makes the next check read the row afresh, beside the one per interval. A lease no
   longer lengthens the bound. The live read path is unchanged. **An unleased pin whose generation a load collected
   (past `keep`) now fails within `cache.genTtlMs` even with a warm cache**, where it used to answer from it. A store
   with `cache.genTtlMs: 0`, no registry or no clock still has no bound for its pins, as for its other readers. A pin of

@@ -259,6 +259,9 @@ interface PinCheck {
   ended?: 'gone' | 'replaced';
 }
 
+/** What a pin holds, and when the row read that verified it was sent. */
+export type PinTaken = { generation: number; checkedAtMs: number } & Required<PinnedObject>;
+
 /** A pinned read of a generation whose registry row has gone or been destroyed, which it cannot read. */
 const pinGone = (ref: SegmentRef, generation: number): NotFoundError =>
   new NotFoundError(
@@ -608,6 +611,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * read. One forgotten before it ends, by {@link invalidate} or a pin, keeps nothing it finds.
    */
   private readonly checking = new Map<string, Promise<boolean>>();
+  /** When each footer read in {@link checking} was sent. */
+  private readonly footerSentAt = new WeakMap<Promise<boolean>, number>();
   /**
    * How many times {@link invalidate} has run, so a read that waited can tell whether the store was told something
    * meanwhile. An eviction from the reader cache is not an invalidation, and what a read found stands through one. It
@@ -1094,10 +1099,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * and a `keep: 0` sweep can land in that gap, and nothing has been handed out yet, so the generation current
    * once the swept one is gone is exactly what a pin taken now should hold. One retry, then propagate.
    */
-  async pinGeneration(
-    ref: SegmentRef,
-    lease?: PinLease,
-  ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
+  async pinGeneration(ref: SegmentRef, lease?: PinLease): Promise<PinTaken | null> {
     validateUserRef(ref, 'read', PORT_KEYS);
     for (let moved = 0; ; moved++) {
       try {
@@ -1135,7 +1137,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     at: { readonly generation: number; readonly fingerprint: string },
     lease?: PinLease,
-  ): Promise<{ generation: number } & Required<PinnedObject>> {
+  ): Promise<PinTaken> {
     validateUserRef(ref, 'read', PORT_KEYS);
     if (typeof (at as Partial<typeof at> | undefined)?.fingerprint !== 'string')
       throw new ValidationError(
@@ -1151,6 +1153,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     let pinKey: string | undefined;
     // Whether the pinned reader was already memoised: only an open this call makes has read what is under the key.
     let memoised = false;
+    const checkedAtMs = this.now();
     if (this.registry !== undefined) {
       const record = await this.registry.get(ref);
       if (record === null || record.status === 'destroyed')
@@ -1212,17 +1215,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       this.replacedPins.delete(held);
       this.checking.delete(held);
     }
-    return { generation, version, fingerprint };
+    return { generation, version, fingerprint, checkedAtMs };
   }
 
-  private async pinOnce(
-    ref: SegmentRef,
-    lease?: PinLease,
-  ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
+  private async pinOnce(ref: SegmentRef, lease?: PinLease): Promise<PinTaken | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
     // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no timed refresh,
     // arbitrarily far behind. Pinning through it made a pin on such a store
     // return whatever generation the store happened to hold, however old.
+    const checkedAtMs = this.now();
     const live = await this.resolveLive(ref);
     if (live === null) return null;
     if (lease !== undefined && live.row !== undefined) {
@@ -1312,7 +1313,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       this.replacedPins.delete(held);
       this.checking.delete(held);
     }
-    return { generation: target.generation, version, fingerprint: reader.fingerprint };
+    return { generation: target.generation, version, fingerprint: reader.fingerprint, checkedAtMs };
   }
 
   /**
@@ -1474,23 +1475,27 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * Whether a pin's segment is due a look at its row: the pin was not checked within `cache.genTtlMs` (counted by
    * `Clock.now()` on access, no timer), the segment has been invalidated since, a check is under way, or the pin has
-   * ended. A pin first seen counts as checked now: `pinGeneration` and `pinGenerationAt` have just read its row and
-   * verified its object. Always `false` without a timed refresh (no registry, no clock, or `cache.genTtlMs: 0`), where
-   * nothing bounds a pin. A compare and no await otherwise, which is all a pinned read pays between checks.
+   * ended. A pin counts as checked from the instant its own row read was sent ({@link startPinChecks}), so one left
+   * idle past `cache.genTtlMs` is checked at its first read; one with no record is due. Always `false` without a timed
+   * refresh (no registry, no clock, or `cache.genTtlMs: 0`), where nothing bounds a pin. A compare and no await
+   * otherwise, which is all a pinned read pays between checks.
    */
   pinDue(ref: SegmentRef, pin: object): boolean {
     if (!this.timedRefresh) return false;
     const check = this.pinChecks.get(pin);
-    if (check === undefined) {
-      this.pinChecks.set(pin, { at: this.now(), since: this.invalidated.epoch });
-      return false;
-    }
     return (
+      check === undefined ||
       check.check !== undefined ||
       check.ended !== undefined ||
       this.now() - check.at >= this.currentGenTtlMs ||
       this.invalidated.invalidatedSince(this.keyOf(ref), check.since)
     );
+  }
+
+  /** Start a new pin's checks from `checkedAtMs`, when the row read that verified it was sent. */
+  startPinChecks(pin: object, checkedAtMs: number): void {
+    if (this.timedRefresh)
+      this.pinChecks.set(pin, { at: checkedAtMs, since: this.invalidated.epoch });
   }
 
   /**
@@ -1499,7 +1504,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * read per interval serves every pin of the segment ({@link pinRows}), and it decides alone for a row that is gone or
    * destroyed, a new incarnation, and a ledger that names the generation (its checksum is the pin's or not). A
    * generation the ledger does not name, or a row with no usable ledger, is not a verdict: the object's footer is read
-   * once ({@link throwIfReplaced}). A transient fault keeps serving and asks again after {@link REFRESH_RETRY_MS}; any
+   * once ({@link throwIfReplaced}, strict: a footer it cannot read fails the read). The pin counts as checked from
+   * when the row read its verdict came from was sent, never from when the check began, so a row read shared from
+   * earlier does not make a pin look fresher than it is. Every invalidation of the segment in this store makes the
+   * next check read the row afresh, beside the one per interval. A transient fault keeps serving and asks again after {@link REFRESH_RETRY_MS}; any
    * other fault fails this read and is not remembered. A pin that has ended drops its reader, and so the key it
    * unwrapped, and fails every later read at once until the segment is invalidated.
    */
@@ -1528,7 +1536,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   ): Promise<void> {
     let ended: 'gone' | 'replaced' | undefined;
     try {
-      const facts = await this.pinRow(ref, segment);
+      const read = this.pinRow(ref, segment);
+      const facts = await read.facts;
+      next.at = read.sentAtMs;
       const incarnation = incarnationOf(pin.version.slice(pin.version.indexOf(':') + 1));
       const named = facts.ledger?.find((e) => e.generation === generation);
       if (
@@ -1542,7 +1552,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       } else if (named === undefined) {
         // Not in the ledger is not a verdict: the footer says whether the object is still the pin's.
         try {
-          await this.throwIfReplaced(ref, generation, pin.version, pin.fingerprint);
+          const footerAt = await this.throwIfReplaced(
+            ref,
+            generation,
+            pin.version,
+            pin.fingerprint,
+            true,
+          );
+          next.at = Math.min(next.at, footerAt);
         } catch (err) {
           if (!isNotFoundError(err)) throw err;
           ended = 'replaced';
@@ -1555,7 +1572,6 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // Serve what the pin holds and ask again soon, as a live refresh does.
         next.at =
           this.now() - (this.currentGenTtlMs - Math.min(this.currentGenTtlMs, REFRESH_RETRY_MS));
-        this.pinRows?.delete(segment);
         return;
       }
       next.at = Number.NEGATIVE_INFINITY; // nothing is remembered: the next read asks again
@@ -1572,10 +1588,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /** The segment's row read of the last `cache.genTtlMs`, shared; sent now when there is none. */
-  private pinRow(ref: SegmentRef, segment: string): Promise<PinRowFacts> {
+  private pinRow(ref: SegmentRef, segment: string): PinRowRead {
     const now = this.now();
     const held = this.pinRows!.peek(segment);
-    if (held !== undefined && now - held.sentAtMs < this.currentGenTtlMs) return held.facts;
+    if (held !== undefined && now - held.sentAtMs < this.currentGenTtlMs) return held;
     const sent: PinRowRead = {
       sentAtMs: now,
       facts: this.registry!.get(ref).then((record) => ({
@@ -1589,7 +1605,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     sent.facts.catch(() => {
       if (this.pinRows!.peek(segment) === sent) this.pinRows!.delete(segment);
     });
-    return sent.facts;
+    return sent;
   }
 
   /**
@@ -1599,7 +1615,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * ({@link replacedPins}), and a check under way is shared by the reads that ask at once; neither "gone" nor "the
    * same" is kept, since either can change. A transient fault is rethrown, for the store's retries to see for what it
    * is. A footer that cannot be read otherwise says nothing about which object is there, so this returns, and the
-   * caller's own error stands; a caller with no error of its own passes `strict`, and that fault is raised.
+   * caller's own error stands; a caller with no error of its own passes `strict`, and that fault is raised. Returns
+   * when the footer read that answered was sent (`Infinity` when none did).
    */
   private async throwIfReplaced(
     ref: SegmentRef,
@@ -1607,7 +1624,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     version: string,
     fingerprint: string,
     strict = false,
-  ): Promise<void> {
+  ): Promise<number> {
     const held = this.heldKey(ref, version, fingerprint);
     if (this.replacedPins.get(held) !== undefined) throw notThePinned(ref, generation);
     let check = this.checking.get(held);
@@ -1633,6 +1650,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         },
       );
       this.checking.set(held, started);
+      this.footerSentAt.set(started, this.now());
       check = started;
     }
     let replaced: boolean;
@@ -1640,9 +1658,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       replaced = await check;
     } catch (err) {
       if (strict || isTransientError(err)) throw err;
-      return;
+      return Number.POSITIVE_INFINITY;
     }
     if (replaced) throw notThePinned(ref, generation);
+    return this.footerSentAt.get(check) ?? Number.NEGATIVE_INFINITY;
   }
 
   /**
@@ -2119,8 +2138,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // loaded again, and its index then points into bytes that are not its own.
       if (held === undefined) throw err;
       if (!(isIntegrityError(err) || isValidationError(err))) throw err;
-      const check = (): Promise<void> =>
-        this.throwIfReplaced(ref, generation, held.version, held.fingerprint);
+      const check = async (): Promise<void> => {
+        await this.throwIfReplaced(ref, generation, held.version, held.fingerprint);
+      };
       await viaRetry(retry, check);
       throw err;
     }

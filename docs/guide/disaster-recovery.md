@@ -367,10 +367,12 @@ reaches a generation at or above the pointer), and then restart those readers or
 each. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its predecessor on
 return) re-resolves on its next read; that is the documented cost of physical deletion on return, not a fault. A
 `seg.pin()` handle is the exception on both counts: a restore does not move it, so it keeps reading its own
-generation while that object is there, and once the object is gone or replaced it answers only from what it has
-already read, and fails with `NotFoundError` for the rest rather than re-resolve. Once a restore puts its object
-back, it reads that object again once its store is invalidated (`store.invalidate(ref)`); a restart ends the pin
-with its process. Take new pins after that invalidation.
+generation while that object is there, and once the object is gone or replaced, a store with a timed refresh ends it
+at its next check, within `cache.genTtlMs`, and one with none lets it answer only from what it has already read and
+fail with `NotFoundError` for the rest, rather than re-resolve. Once a restore puts its object back into the same row,
+it reads that object again once its store is invalidated (`store.invalidate(ref)`); a pin whose row was purged and
+re-created is another incarnation and stays over on a store with a timed refresh. A restart ends the pin with its
+process. Take new pins after that invalidation.
 
 ## Repair: an unstamped tombstone after a hard kill
 
@@ -811,10 +813,11 @@ resolution:
   wrong answer. Spot-checking a read after restore (step 9) is what catches this class.
 - **Readers still on an old generation.** After a `rollback`, a store on a bare `IStorageDriver` answers from the
   newest generation in the bucket through an invalidation and a restart, and from the restored pointer's once the
-  generation above it is deleted. A `seg.pin()` handle whose object is replaced out of band answers from what it has
-  read and refuses the rest. Once a restore puts the object back, it still refuses it until its store is
+  generation above it is deleted. A `seg.pin()` handle whose object is replaced out of band is ended by a store with
+  a timed refresh at its next check, within `cache.genTtlMs`; with none it answers from what it has read and refuses
+  the rest. Once a restore puts the object back into the same row, it still refuses it until its store is
   invalidated, or a later `pin()` of the same version opens the object again, and then it reads the whole object
-  again.
+  again. A pin of a purged and re-created row stays over: take a new pin.
 
 ## Encryption & DR
 

@@ -190,7 +190,8 @@ the key is unwrapped to open it, as for a count. A row with no summary it can us
 encrypted and whose key was not at hand writes none) is answered from the object's footer and index instead, with no
 payload read: a tail read more when cold, and a range read for an index longer than the tail read, on a segment of
 tens of thousands of chunks; that `stat()` keeps the generation open in the reader cache, as a read does. A pinned
-handle answers for the generation it pinned, and reads nothing while that generation is open. A segment with no
+handle answers for the generation it pinned, and reads nothing while that generation is open, apart from its check
+(a row read per interval on a store with a timed refresh). A segment with no
 generation answers `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a
 size answers `sizeBytes: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second
 resolution that a publish between the two can make another generation's. Answered from the row, a `stat()` reports
@@ -423,8 +424,10 @@ for await (const id of audience.iterate()) {
   `keep`, an erasure, the retention sweep) from deleting the generation underneath you. A pinned read deliberately does
   not heal forward, because silently serving a different generation is what a pin exists to prevent. It fails with
   `NotFoundError` instead, for any chunk it must fetch from a generation that has since been collected. Chunks it
-  already cached still answer, and so does every chunk of a small generation whose reader kept its chunks, for as long
-  as the pin's reader stays in the reader cache; the reader's reopen after an eviction then fails the same way.
+  already cached still answer, and so does every chunk of a small generation whose reader kept its chunks, until the
+  pin's next check on a store with a timed refresh, which fails the pin within `cache.genTtlMs` of the collection, and
+  on a store with none for as long as the pin's reader stays in the reader cache; the reader's reopen after an
+  eviction then fails the same way.
   [`pin({ leaseUntil })`](#hold-a-generation-for-a-job-a-lease) keeps the generation out of a load's collection until
   a time you choose.
 - **Size `keep` for your longest pinned job:** keep more generations than the loads that can land on the segment while

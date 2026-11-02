@@ -354,7 +354,7 @@ outcome.
 most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses: one, at the
 2 s default, against any realistic publish cadence. A sixty-second `intersect` does not need a sixty-second window. A
 pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves, though it
-checks on the same interval that its segment is still there. So is a
+checks on the same interval, from the moment it was taken, that its segment is still there. So is a
 store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a `StorageChunkSource` of your own, which the store times no refresh on), whose
 snapshot lasts until an eviction, a read that finds its generation swept, or an invalidation moves it on, however long
 that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct. A store
@@ -573,12 +573,16 @@ it can finish only after the rollback's move, so the call's next read of the row
   combine that is refused throws before it reads anything.
 - <a id="pin-safe-across-re-creation"></a>**A pin is safe across a re-creation.** `pin()` records the pinned object's size and footer checksum. If the segment
   is purged and loaded again, which starts the new segment at generation 0 again, the pin never reads the new
-  segment: what it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, with
-  or without a registry. An object of another size counts as another object, damaged or not. A replacement it has
+  segment. On a store with a timed refresh the pin fails with `NotFoundError` at its next check, within
+  `cache.genTtlMs`, what it had already read included, since its row is another incarnation. On a store with none, what
+  it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, with or without a
+  registry. An object of another size counts as another object, damaged or not. A replacement it has
   found is remembered, so later reads fail with no request, until the store forgets it. `store.invalidate(ref)` does
   that, and so does a later `pin()` of the same version that opens the pinned object again. The store remembers at most
-  `cache.readerMax` of them. So once a restore puts the object back, invalidate its store: the pin then reads it
-  again, and a pin taken after that reads the object then stored as its generation.
+  `cache.readerMax` of them. So once a restore puts the object back into the same row, invalidate its store: the pin
+  then reads it again, and a pin taken after that reads the object then stored as its generation. A restore into a
+  purged and re-created row does not revive a pin on a store with a timed refresh, whose next check ends it again:
+  take a new pin.
 - <a id="pin-opens-its-reader"></a>**`pin()` opens its reader as it pins.** With a registry, pins of one generation taken while its row is unchanged
   share that reader while the store keeps it open, pins taken at the same moment included. Only the first costs a tail
   read, and a key unwrap for an encrypted segment, even if it is never read. Without a registry, every `pin()` lists the
@@ -588,7 +592,7 @@ it can finish only after the rollback's move, so the call's next read of the row
   so (below), rather than going empty part-way through a call.
 - <a id="pin-answers-from-what-it-holds"></a>**A pin answers from what it holds.** It keeps the key its reader unwrapped while that reader stays open, and
   answers from the chunks it decoded while they stay cached, and, for a small generation, from the chunk bytes its
-  reader kept while the reader stays open. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
+  reader kept while the reader stays open, until its next check. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
   `dropSegment` of its segment. It also invalidates it on a `retireExpired` whose ledger lists its segment, retired or
   not, and on an `eraseSubject` that scans its segment while it is not destroyed. A dry run of `dropSegment` or
   `retireExpired` invalidates nothing. An invalidated pin opens its

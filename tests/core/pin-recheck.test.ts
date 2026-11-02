@@ -47,6 +47,7 @@ async function world(options: Options = {}) {
   const sent = { rows: 0, tails: 0 };
   const state = {
     fail: undefined as Error | undefined,
+    failTail: undefined as Error | undefined,
     tamper: (row: RegistryRecord): RegistryRecord => row,
   };
   const counted = new Proxy(registry, {
@@ -67,6 +68,7 @@ async function world(options: Options = {}) {
       storage.getRange(key, offset, length),
     getTail: (key: GenKey, maxBytes: number) => {
       sent.tails += 1;
+      if (state.failTail !== undefined) return Promise.reject(state.failTail);
       return storage.getTail(key, maxBytes);
     },
     putImmutable: (key, write) => storage.putImmutable(key, write),
@@ -220,6 +222,9 @@ describe('a pinned handle in another store fails once its segment is destroyed',
     await w.put(S, [9], 5); // a new incarnation of the name; the old generation 0 object is still in the bucket
     w.clock.advance(TTL);
     await expect(snap.has(2)).rejects.toBeInstanceOf(NotFoundError);
+    // The old object is back in the bucket, but the row is another incarnation: invalidating does not revive the pin.
+    w.store.invalidate(S);
+    await expect(snap.has(2)).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('a ledger that names the pinned generation with another checksum fails the pin as replaced', async () => {
@@ -294,6 +299,43 @@ describe('what a pinned handle costs', () => {
     expect(w.sent.rows).toBe(1);
   });
 
+  it('a pin never read is checked at its first read after the interval, from the moment it was taken', async () => {
+    const w = await world();
+    const snap = await w.store.segment('s').pin();
+    await destroySegment(S, w.deps, { confirmSegment: 's', allowCleartext: true });
+    w.clock.advance(100 * TTL);
+    await expect(snap.has(2)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('a pinAt never read is checked at its first read after the interval', async () => {
+    const w = await world();
+    const first = await w.store.segment('s').pin();
+    const at = {
+      generation: first.pinnedAt!.generation!,
+      fingerprint: first.pinnedAt!.fingerprint!,
+    };
+    const snap = await w.open().segment('s').pinAt(at);
+    await destroySegment(S, w.deps, { confirmSegment: 's', allowCleartext: true });
+    w.clock.advance(100 * TTL);
+    await expect(snap.has(2)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('a check that shares an older row read counts from when that read was sent, never from when it began', async () => {
+    const w = await world();
+    const b = await w.store.segment('s').pin(); // taken at 0, due at 2000
+    w.clock.advance(TTL - 1);
+    const a = await w.store.segment('s').pin(); // taken at 1999, due at 3999
+    w.clock.advance(1);
+    expect(await b.has(2)).toBe(true); // its check sends the row read at 2000
+    await destroySegment(S, w.deps, { confirmSegment: 's', allowCleartext: true });
+    w.clock.advance(TTL - 1);
+    w.reset();
+    expect(await a.has(2)).toBe(true); // due at 3999: shares the read sent at 2000, which found the row live
+    expect(w.sent.rows).toBe(0);
+    w.clock.advance(1); // 2000 + genTtlMs: that verdict is spent, though a's own check began a millisecond ago
+    await expect(a.has(2)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   it('a pin that a load has moved past, still in the ledger, answers with a row read and no footer read', async () => {
     const w = await world();
     const snap = await w.store.segment('s').pin();
@@ -318,16 +360,50 @@ describe('what a pinned handle costs', () => {
     }
   });
 
-  it('leases, a load and a rollback leave the pin answering, the row read being the only request', async () => {
+  it('leases, a load and a rollback by another store leave the pin answering, the row read being the only request', async () => {
     const w = await world();
     const snap = await w.store.segment('s').pin();
     await snap.count();
     await w.put(S, [9], 1);
     await w.store.segment('s').pin({ leaseUntil: 3_000_000 });
+    // A rollback by another store moves the pointer back below the load; the pin's generation is still the ledger's.
+    await w.open().rollback(S, 0, { allowUnknown: true });
     w.clock.advance(TTL);
     w.reset();
     expect(await snap.count()).toBe(4);
     expect(w.sent).toEqual({ rows: 1, tails: 0 });
+  });
+
+  it('a pinAt of a generation off the ledger answers, with one footer read per interval', async () => {
+    const w = await world();
+    const first = await w.store.segment('s').pin();
+    const at = {
+      generation: first.pinnedAt!.generation!,
+      fingerprint: first.pinnedAt!.fingerprint!,
+    };
+    const snap = await w.open().segment('s').pinAt(at);
+    expect(await snap.count()).toBe(4);
+    w.state.tamper = (row) => ({ ...row, knownGens: undefined });
+    for (let round = 0; round < 2; round++) {
+      w.clock.advance(TTL);
+      w.reset();
+      expect(await snap.has(2)).toBe(true);
+      expect(w.sent).toEqual({ rows: 1, tails: 1 });
+    }
+  });
+
+  it('a token with no incarnation id skips the incarnation test, and the rest of the check holds', async () => {
+    const w = await world();
+    w.state.tamper = (row) => ({ ...row, token: 'opaque-1' });
+    const snap = await w.store.segment('s').pin();
+    expect(await snap.count()).toBe(4);
+    w.clock.advance(TTL);
+    w.reset();
+    expect(await snap.has(2)).toBe(true);
+    expect(w.sent).toEqual({ rows: 1, tails: 0 });
+    await destroySegment(S, w.deps, { confirmSegment: 's', allowCleartext: true });
+    w.clock.advance(TTL);
+    await expect(snap.has(2)).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('with genTtlMs 0, or no clock, no row is read for a pin, and nothing bounds it', async () => {
@@ -377,6 +453,41 @@ describe('a registry fault during a recheck', () => {
   });
 });
 
+describe('a fault on the footer read of a pin off the ledger', () => {
+  const offLedger = async () => {
+    const w = await world();
+    const snap = await w.store.segment('s').pin();
+    await snap.count();
+    w.state.tamper = (row) => ({ ...row, knownGens: undefined });
+    w.clock.advance(TTL);
+    return { w, snap };
+  };
+
+  it('a transient fault keeps serving and asks again after the retry interval', async () => {
+    const { w, snap } = await offLedger();
+    w.state.failTail = new TransientError('throttled');
+    w.reset();
+    expect(await snap.has(2)).toBe(true);
+    expect(w.sent.tails).toBe(1);
+    w.clock.advance(REFRESH_RETRY_MS - 1);
+    expect(await snap.has(2)).toBe(true);
+    expect(w.sent.tails).toBe(1);
+    w.state.failTail = undefined;
+    w.clock.advance(1);
+    expect(await snap.has(2)).toBe(true);
+    expect(w.sent.tails).toBe(2);
+  });
+
+  it('any other fault fails the read with it, is not remembered, and the next read asks again', async () => {
+    const { w, snap } = await offLedger();
+    const denied = new Error('access denied');
+    w.state.failTail = denied;
+    await expect(snap.has(2)).rejects.toBe(denied);
+    w.state.failTail = undefined;
+    expect(await snap.has(2)).toBe(true);
+  });
+});
+
 describe('a pin that has ended', () => {
   it('drops its reader, and the key the reader unwrapped', async () => {
     const w = await world({ keystore: keystore() });
@@ -387,6 +498,7 @@ describe('a pin that has ended', () => {
       currentGenTtlMs: TTL,
     });
     const at = await source.pinGeneration(S);
+    source.startPinChecks(at!, at!.checkedAtMs);
     const pinned = new PinnedStorageChunkSource(source, new Map([[segmentKey(S), at!]]));
     const snapshots = (source as unknown as { snapshots: { size: number } }).snapshots;
     expect(await pinned.getChunk({ ...S, chunkKey: 0 })).not.toBeNull();
