@@ -1,8 +1,20 @@
 # Release — publish to npm with build provenance (supply-chain hardening).
 #
-# A tag push publishes for real; a manual run defaults to **dry-run** (pack + `publish --dry-run`, no
+# A tag push publishes for real; a manual run defaults to **dry-run** (pack + `npm publish --dry-run`, no
 # upload), so the pipeline can be exercised without pushing a version. A manual run publishes for real
 # (`dryRun=false`) only when it is dispatched on a version tag; on a branch it fails before any work.
+#
+# Two jobs, so that no dependency code runs beside the publish identity:
+#
+#   verify   Runs everything that executes code from the repo's dependencies, with `contents: read` and NO
+#            `id-token` (so nothing in it can mint an OIDC token, and it has no environment). It installs, runs
+#            the whole gate, packs each package to a tarball the way a publish would, scans those tarballs and
+#            uploads them, with a SHA256SUMS, as one artifact.
+#   publish  Needs `verify`, so the reviewer on the `release` environment approves a build that has already
+#            passed. It holds `id-token: write` and runs no code from the repo: no checkout, no `pnpm install`,
+#            no repo script. It downloads the artifact, checks the sums, installs one exact npm, probes the
+#            registry and publishes the tarballs with `npm publish <file> --provenance`.
+#   github-release  Needs `publish`; the one job with `contents: write`. See below.
 #
 # Supply-chain guarantees this pipeline enforces:
 #   - **Tokenless auth (npm Trusted Publishing)**: there is **NO long-lived `NPM_TOKEN`**. npm authenticates
@@ -10,18 +22,31 @@
 #     be exfiltrated by a malicious dependency, or need rotating. It is also what lets each package be set to
 #     *"require 2FA and disallow tokens"* on npm — that setting REJECTS an automation-token publish outright, so
 #     token auth and that hardening are mutually exclusive. Trusted Publishing is not a token, so it passes.
+#     The Trusted Publisher is bound to this file's name (`release.yml`) and the `release` environment, both of
+#     which the publish job keeps.
 #   - **Human gate**: the publish job runs in the protected `release` environment, whose required reviewer is
-#     the approval prompt. Nothing reaches npm without a person clicking approve.
+#     the approval prompt. Nothing reaches npm without a person clicking approve, and the prompt comes after
+#     `verify` has passed.
+#   - **The identity never sits beside dependency code**: the only job with `id-token: write` is `publish`, and
+#     it runs nothing from the repo's dependency tree (the workflow's top level grants no `id-token`). A
+#     dependency that runs in `verify` can change the tarballs it uploads, which is why the reviewer approves
+#     after a verified build and the leak scan covers those very files; it cannot ask for a publish token.
 #   - **Provenance**: `NPM_CONFIG_PROVENANCE=true` records a signed, verifiable link from the published tarball
-#     back to THIS workflow + commit (SLSA build provenance via GitHub OIDC). Requires `id-token: write` and a
-#     GitHub-hosted runner, so `runs-on` is pinned to `ubuntu-latest`. A self-hosted runner has no OIDC
-#     identity to attest to and would silently cost the attestation.
+#     back to THIS workflow + commit (SLSA build provenance via GitHub OIDC; the statement names the tarball's
+#     sha512 and the workflow run, so it is the same for a tarball as for a directory). Requires
+#     `id-token: write` and a GitHub-hosted runner, so `runs-on` is pinned to `ubuntu-latest`. A self-hosted
+#     runner has no OIDC identity to attest to and would silently cost the attestation.
+#   - **Exact tooling in the publishing job**: npm is installed at one exact version there. A new npm is a
+#     reviewed edit (see the step).
 #   - **Frozen, reproducible install**: `pnpm install --frozen-lockfile` (fails if the lockfile is stale).
 #   - **Publish only a fully-verified tree**: the gate that governs the artifact (lint · lint:arch ·
-#     format:check · typecheck · test · audit · build · smoke) runs here again before the tarball is created — a
-#     green `main` is necessary but not sufficient; the exact commit being published is re-verified. It is not
-#     every check CI runs: CI's site, benchmark-page and tracked-tree checks and its other jobs stay there, and
-#     RELEASING.md "What the automation does" says why.
+#     format:check · typecheck · test · audit · build · smoke) runs in `verify` again before the tarballs are
+#     created — a green `main` is necessary but not sufficient; the exact commit being published is
+#     re-verified. It is not every check CI runs: CI's site, benchmark-page and tracked-tree checks and its
+#     other jobs stay there, and RELEASING.md "What the automation does" says why.
+#   - **What was verified is what is published**: the tarballs are packed once, scanned once, and published
+#     from the artifact after `publish` checks their SHA256SUMS, their count against `EXPECTED_PACKAGES`, and
+#     that every one carries the same version (the tag's, on a tag ref).
 #   - **SHA-pinned Actions**: every `uses:` is pinned to a full commit SHA (a moved tag can't inject code).
 #   - **Version/tag agreement**: every package manifest's `version` must equal the `vX.Y.Z` tag, or the run
 #     fails. Every run on a tag ref makes the check, and a real publish runs only on a tag ref: a manual run
@@ -48,11 +73,11 @@ on:
         type: boolean
         default: true
 
-# Least privilege at the top level: read the repo, mint an OIDC token for provenance. No write scopes.
-# `contents: write` is granted to the github-release job ONLY, never to the job that publishes.
+# Least privilege at the top level: read the repo, nothing else. `id-token: write` (the OIDC token that npm
+# Trusted Publishing and provenance need) is granted to the `publish` job ONLY, which runs no dependency code,
+# and `contents: write` to the github-release job ONLY. The job that runs the dependencies holds neither.
 permissions:
   contents: read
-  id-token: write
 
 # NEVER cancel a release in flight. `cancel-in-progress: false` is the opposite of the CI workflow's setting,
 # deliberately: cancelling a build is free, but cancelling a release is not — kill a run mid-run and npm holds
@@ -79,23 +104,17 @@ env:
   EXPECTED_PACKAGES: 6
 
 jobs:
-  publish:
-    name: publish (tokenless, provenance)
-    runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — never a self-hosted one
-    # 360 — GitHub's default, but set EXPLICITLY so it reads as a decision rather than an omission.
-    #
-    # This job's actual execution is 2-3 minutes. The bound is long because the job waits on the `release`
-    # environment's required reviewer first, and an approval can take well over an hour. Whether
-    # `timeout-minutes` consumes that waiting window is not something the docs state plainly and not something
-    # we have tested, so the safe reading is that it might.
-    #
-    # The asymmetry settles it. Too long costs idle runner minutes on a job that hangs. Too short kills a
-    # release mid `pnpm -r publish`, leaving some of the family on npm and the rest not — immutable, not
-    # unpublishable back out, and the exact catastrophe the rest of this file is built to avoid. No finite
-    # bound is provably safe if the wait counts (a reviewer can take a day), so this one is deliberately not
-    # a tight fit. If the waiting window turns out NOT to count, this is simply generous, which is fine.
-    timeout-minutes: 360
-    environment: release # manual-approval gate (required reviewer on the environment)
+  verify:
+    name: verify (gate, pack, scan)
+    runs-on: ubuntu-latest
+    # 60 — the job's work is the whole gate, a build and a pack, about 10-15 minutes. It has no environment, so
+    # no reviewer wait: a bound a few times the real duration is the right one, and a hung step fails in an hour
+    # rather than six. (`publish` is the job with the long bound.)
+    timeout-minutes: 60
+    # No `id-token`, no write scope, no environment: this job runs every dependency's install scripts and test
+    # code, so it holds nothing that could publish or write.
+    permissions:
+      contents: read
     steps:
       # A real publish by hand is allowed only from a version tag. A dispatch with dryRun=false on a branch
       # (or on any ref that is not a version tag) fails here, first, before the checkout, the install or the build:
@@ -117,20 +136,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
 
       - run: pnpm install --frozen-lockfile
 
-      # `pnpm test` loads the oracle's prebuilt `roaring` binary here, in the job that can publish: refuse one whose checksum is not recorded.
+      # `pnpm test` loads the oracle's prebuilt `roaring` binary here: refuse one whose checksum is not recorded.
       - run: node scripts/verify-roaring-prebuilt.cjs --strict
-
-      # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older. A FLOOR, not
-      # `@latest`: `@latest` silently makes every release depend on whatever npm shipped that morning, so a
-      # regression in a brand-new npm becomes a broken release with no change on our side and nothing in the
-      # diff to point at. `^11.5.1` still takes the fixes inside npm 11 while making a major bump a deliberate,
-      # reviewable edit to this line.
-      - name: Upgrade npm for Trusted Publishing
-        run: npm install -g 'npm@^11.5.1'
 
       # Re-run the FULL gate against the exact commit being published (defense in depth vs a green-main assumption).
       - run: pnpm lint
@@ -160,7 +170,7 @@ jobs:
           # run exactly once on a path that does not exist. Guard the count explicitly instead of relying on
           # what a `require()` of a nonexistent file happens to do.
           shopt -s nullglob
-          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the probe step
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the pack step
           pkgs=(packages/*/package.json)
           if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
             echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
@@ -177,9 +187,9 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
 
-      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. So a package that carries
-      # it produces a fully GREEN release run that published nothing at all, which is the worst shape a
-      # failure can take here: the tag is public, the run is green, and the registry is unchanged.
+      # `npm publish` refuses a `private: true` package, and `pnpm publish` used to SKIP one silently (no
+      # error, exit 0), which is the worst shape a failure can take here: the tag is public, the run is green,
+      # and the registry is unchanged. Refuse it before anything is packed or approved.
       #
       # No package carries `private` today (only the workspace root, which is never published). This step is
       # here for the day one does — a new package scaffolded from a template, or a deliberate
@@ -188,7 +198,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dryRun)
         run: |
           shopt -s nullglob # see the tag-match step above: an unmatched glob would otherwise loop once on a literal
-          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the probe step
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the pack step
           pkgs=(packages/*/package.json)
           if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
             echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
@@ -197,28 +207,221 @@ jobs:
           fail=0
           for pkg in "${pkgs[@]}"; do
             if [ "$(node -p "require('./$pkg').private === true")" = "true" ]; then
-              echo "::error::$pkg still has \"private\": true — pnpm would skip it and report success"
+              echo "::error::$pkg still has \"private\": true — it would not publish, and a run must not report success without it"
               fail=1
             fi
           done
           [ "$fail" -eq 0 ] || exit 1
+
+      # Everything that can still be FIXED must be checked before the one step that cannot be undone.
+      #
+      # The notes are extracted in the `github-release` job, which by construction runs AFTER the publish, so
+      # that a Release never describes a version that did not reach npm. Without this step, a missing or empty
+      # CHANGELOG section would surface there, at the one moment nothing can be done about it. npm tarballs are
+      # immutable outside a 72-hour window; a changelog is a two-line edit. Check the cheap thing first.
+      #
+      # `> /dev/null` because this is purely a precondition — github-release does the real extraction against
+      # the same script, so the two cannot disagree.
+      - name: Require release notes to exist before publishing
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/changelog-section.cjs "${GITHUB_REF_NAME}" > /dev/null
+
+      # Pack every package to a tarball the way a publish does: `pnpm pack` runs the package's `prepack` (a
+      # build) and rewrites each `workspace:*` dependency to the exact version, so the tarball's `package.json`
+      # is the one npm will publish. These files are what the next steps scan, checksum and upload, and what
+      # the `publish` job publishes.
+      - name: Pack every package to a tarball
+        run: |
+          shopt -s nullglob # see the tag-match step above: an unmatched glob would otherwise loop once on a literal
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}"
+          pkgs=(packages/*/package.json)
+          if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
+            echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+            exit 1
+          fi
+          dest="$RUNNER_TEMP/release-tarballs"
+          mkdir -p "$dest"
+          for pkg in "${pkgs[@]}"; do
+            (cd "$(dirname "$pkg")" && pnpm pack --pack-destination "$dest")
+          done
+          packed=("$dest"/*.tgz)
+          if [ "${#packed[@]}" -ne "${#pkgs[@]}" ]; then
+            echo "::error::packed ${#packed[@]} tarballs from ${#pkgs[@]} packages"
+            exit 1
+          fi
+
+      # Scan what actually ships. The tracked-file and history modes cannot see `dist/` (gitignored), which is
+      # most of the published bytes and carries every `src` comment through the sourcemaps' `sourcesContent`.
+      # See scripts/leak-scan-tarballs.cjs. `--from` scans the tarballs packed above, the very files that are
+      # uploaded and published, and fails if one is missing or extra. Runs on dry-runs too — a dry run whose
+      # whole job is to prove the pipeline should exercise the gates, not skip them.
+      - name: Leak-scan the packed tarballs
+        env:
+          # Optional. Set the repo secret to check the employer-name class of needle too; with it the scan runs
+          # in the strict SNAPSHOT mode, without it the HARD class (credentials, keys, real addresses, absolute
+          # local paths) still fails the build. The script prints which mode it chose, so the weaker mode can
+          # never be mistaken for the stronger one.
+          LEAK_SCAN_EXTRA: ${{ secrets.LEAK_SCAN_EXTRA }}
+        run: node scripts/leak-scan-tarballs.cjs --from "$RUNNER_TEMP/release-tarballs"
+
+      # The sums are written after the scan, over the scanned files. `publish` checks them before it does
+      # anything else: they catch a file that changed or went missing between the two jobs (a damaged or
+      # replaced artifact), which is all a checksum stored beside the files can prove.
+      - name: Record the tarball checksums
+        run: cd "$RUNNER_TEMP/release-tarballs" && sha256sum -- *.tgz > SHA256SUMS
+
+      # Short retention: the artifact only has to outlive the reviewer's approval. If it has expired by then, the
+      # download fails and the release is re-run, which re-verifies; nothing publishes from a stale build.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-tarballs
+          path: ${{ runner.temp }}/release-tarballs
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: publish (tokenless, provenance)
+    needs: verify
+    runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — never a self-hosted one
+    # 360 — GitHub's default, but set EXPLICITLY so it reads as a decision rather than an omission.
+    #
+    # This job's actual execution is a minute or two. The bound is long because the job waits on the `release`
+    # environment's required reviewer first, and an approval can take well over an hour. Whether
+    # `timeout-minutes` consumes that waiting window is not something the docs state plainly and not something
+    # we have tested, so the safe reading is that it might.
+    #
+    # The asymmetry settles it. Too long costs idle runner minutes on a job that hangs. Too short kills a
+    # release mid-publish, leaving some of the family on npm and the rest not — immutable, not
+    # unpublishable back out, and the exact catastrophe the rest of this file is built to avoid. No finite
+    # bound is provably safe if the wait counts (a reviewer can take a day), so this one is deliberately not
+    # a tight fit. If the waiting window turns out NOT to count, this is simply generous, which is fine.
+    timeout-minutes: 360
+    environment: release # manual-approval gate (required reviewer on the environment)
+    # The only job that can mint the OIDC token. It runs no code from the repo's dependency tree: no checkout,
+    # no install, no repo script. Everything it executes is the runner's own tools, the pinned actions below, one
+    # exact npm, and the inline shell in this file.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # The tarballs `verify` packed and scanned, and their checksums. Pinned to the commit of the upstream v8.0.2 tag.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-tarballs
+          path: ${{ runner.temp }}/release-tarballs
+
+      # Before anything else touches the files: every tarball matches its recorded sum, and the directory holds
+      # nothing but those tarballs and the sums file (an extra .tgz would be published unchecked).
+      - name: Check the tarball checksums
+        run: |
+          cd "$RUNNER_TEMP/release-tarballs"
+          sha256sum --check --strict SHA256SUMS
+          listed="$(sed 's/^[0-9a-f]*  //' SHA256SUMS | sort)"
+          present="$(ls -A | grep -vx 'SHA256SUMS' | sort)"
+          if [ -z "$listed" ] || [ "$listed" != "$present" ]; then
+            echo "::error::the artifact is not exactly the tarballs listed in SHA256SUMS. Listed: $listed. Present: $present"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older.
+      #
+      # An EXACT version, because this is the one job that holds the publish identity and the npm that runs in it
+      # is code with that identity. A range (`^11.5.1`, which this step used to carry) resolves at run time to
+      # whatever npm 11 shipped that morning: nothing in our diff would say which npm published, and a bad or
+      # hostile release would run with the token on the next tag. So a new npm is a deliberate, reviewed edit of
+      # this one line. Dependabot does not bump it (the version sits in a shell string, not a manifest): to bump it,
+      # read the version the last release published with from the registry (`npm view @cloudbitmaps/core@<version>
+      # _npmVersion`), pick the new one from `npm view npm versions`, check its changelog, and edit this line in
+      # a pull request (RELEASING.md, "Bumping npm"). 11.21.1 is the npm that published 0.26.0.
+      - name: Install the exact npm for Trusted Publishing
+        run: npm install -g npm@11.21.1
+
+      # Read the tarballs themselves, since they are what will be published: the set is exactly
+      # EXPECTED_PACKAGES, one per name, every package at one version (the tag's, on a tag ref), none private.
+      # Writes `name<TAB>version<TAB>file` lines in dependency order (a package after every family package it
+      # depends on, so `core` lands before the packages that need it) for the steps below to read. Node's own
+      # modules and `tar` only: no repo code runs here.
+      - name: Check the tarball set and work out the publish order
+        run: |
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}"
+          node - <<'EOF'
+          const { execFileSync } = require('node:child_process');
+          const { readdirSync, writeFileSync } = require('node:fs');
+          const { join } = require('node:path');
+          const dir = join(process.env.RUNNER_TEMP, 'release-tarballs');
+          const expected = Number(process.env.EXPECTED_PACKAGES);
+          const fail = (message) => {
+            console.error(`::error::${message}`);
+            process.exit(1);
+          };
+          if (!Number.isInteger(expected) || expected < 1) fail('EXPECTED_PACKAGES is not a count');
+          const files = readdirSync(dir).filter((f) => f.endsWith('.tgz')).sort();
+          if (files.length !== expected) {
+            fail(`expected ${expected} tarballs, the artifact has ${files.length}: ${files.join(', ')}`);
+          }
+          const pkgs = files.map((file) => {
+            const manifest = JSON.parse(
+              execFileSync('tar', ['-xzOf', join(dir, file), 'package/package.json'], {
+                encoding: 'utf8',
+              }),
+            );
+            return { file, name: manifest.name, version: manifest.version, manifest };
+          });
+          const names = new Set(pkgs.map((p) => p.name));
+          if (names.size !== pkgs.length) fail('two tarballs carry the same package name');
+          for (const p of pkgs) {
+            if (!p.name || !p.version) fail(`${p.file} has no name or version`);
+            if (p.manifest.private === true) fail(`${p.name} is private: it cannot be published`);
+          }
+          const versions = new Set(pkgs.map((p) => p.version));
+          if (versions.size !== 1) fail(`the tarballs are at more than one version: ${[...versions].join(', ')}`);
+          const ref = process.env.GITHUB_REF ?? '';
+          if (ref.startsWith('refs/tags/v')) {
+            const tag = (process.env.GITHUB_REF_NAME ?? '').replace(/^v/, '');
+            if (!versions.has(tag)) fail(`tag v${tag} does not match the tarballs' version ${[...versions][0]}`);
+          }
+          const familyDeps = (p) =>
+            ['dependencies', 'peerDependencies', 'optionalDependencies']
+              .flatMap((field) => Object.keys(p.manifest[field] ?? {}))
+              .filter((dep) => names.has(dep));
+          const ordered = [];
+          const done = new Set();
+          let rest = pkgs;
+          while (rest.length > 0) {
+            const ready = rest.filter((p) => familyDeps(p).every((dep) => done.has(dep)));
+            if (ready.length === 0) fail('the packages depend on each other in a cycle');
+            for (const p of ready) {
+              ordered.push(p);
+              done.add(p.name);
+            }
+            rest = rest.filter((p) => !done.has(p.name));
+          }
+          writeFileSync(
+            join(process.env.RUNNER_TEMP, 'publish-order.tsv'),
+            ordered.map((p) => `${p.name}\t${p.version}\t${p.file}\n`).join(''),
+          );
+          console.log(ordered.map((p) => `${p.name}@${p.version}`).join('\n'));
+          EOF
 
       # Two things npm will not tell you until it is too late, both of which produce a PARTIAL release of a
       # family that ships in lockstep — the one npm state that cannot be undone.
       #
       #   1. A NAME THAT DOES NOT EXIST YET. This pipeline is tokenless: it authenticates by OIDC against a
       #      Trusted Publisher, which is a per-package npm setting that cannot be bound to a package that has
-      #      never been published. `pnpm -r publish` walks the workspace topologically and stops at the first
+      #      never been published. Publishing walks the packages in dependency order and stops at the first
       #      failure, so a family where `core` is published and a new driver package is not would put
-      #      `core@X.Y.Z`, and any package pnpm reaches before the new one, on the registry, immutably, and
-      #      then fail — leaving part of the family published. Whether the flagship is among them depends on
-      #      the order pnpm walks the packages that depend on `core`. Create the name first
+      #      `core@X.Y.Z`, and any package reached before the new one, on the registry, immutably, and
+      #      then fail — leaving part of the family published. Create the name first
       #      (`pnpm release:bootstrap`), bind its Trusted Publisher, then tag.
       #
-      #   2. A VERSION THAT IS ALREADY THERE. `pnpm publish` SILENTLY SKIPS a version already on the
-      #      registry and exits 0. A re-run, or a tag cut against a version some package was hand-published
-      #      at, therefore produces a fully GREEN release that published some packages and quietly skipped
-      #      others — which is indistinguishable from success in the log.
+      #   2. A VERSION THAT IS ALREADY THERE. A re-run, or a tag cut against a version some package was
+      #      hand-published at, would publish some packages and be rejected on the others.
+      #      Refusing it here, before the first publish, leaves nothing half done.
       #
       # Both are read-only probes of the registry, so they cost seconds and can only fail BEFORE anything
       # irreversible happens. `npm view` reads a replica that lags for minutes after a first publish, but by
@@ -226,25 +429,13 @@ jobs:
       - name: Refuse to publish an unbootstrapped name or a version already on the registry
         if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dryRun)
         run: |
-          shopt -s nullglob # see the tag-match step: an unmatched glob would otherwise loop once on a literal
-          # `[ 5 -lt "" ]` is a bash ERROR (status 2), and as an `if` CONDITION that does not trip `set -e` —
-          # so an unset variable would silently skip the guard below rather than fail it.
-          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}"
-          pkgs=(packages/*/package.json)
-          # And with nullglob an unmatched glob loops ZERO times, so this guard would pass having probed
-          # nothing at all — the exact vacuous-check shape the other two steps already defend against.
-          if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
-            echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
-            exit 1
-          fi
           fail=0
-          for pkg in "${pkgs[@]}"; do
-            NAME="$(node -p "require('./$pkg').name")"
-            VER="$(node -p "require('./$pkg').version")"
+          # File descriptor 3, so `npm view` cannot read the loop's input.
+          while IFS=$'\t' read -r NAME VER FILE <&3; do
             # Both probes must fail CLOSED. `npm view` exits non-zero for a missing name AND for a 5xx, a
             # rate limit or a timeout, so a VERSION probe that reads any failure as "this version is not
-            # published" lets a transient one through — straight into the silent-skip it exists to prevent.
-            # Classify on the error text and refuse anything that is not a clean 404.
+            # published" lets a transient one through. Classify on the error text and refuse anything that is
+            # not a clean 404.
             # `x="$(cmd)"; rc=$?` does NOT work under `set -e` (the Actions default shell): the failing
             # substitution aborts the step before `$?` is ever read, so the guard fails closed but SILENTLY,
             # with no ::error:: line to tell the operator which package or why. `|| rc=$?` keeps the command
@@ -261,61 +452,40 @@ jobs:
               ver_rc=0
               ver_err="$(npm view "$NAME@$VER" version 2>&1 >/dev/null)" || ver_rc=$?
               if [ "$ver_rc" -eq 0 ]; then
-                echo "::error::$NAME@$VER is already on the registry. pnpm would SKIP it and exit 0, so this run would report success while publishing nothing for it. Bump the version."
+                echo "::error::$NAME@$VER is already on the registry. Publishing would be rejected for it, after the packages before it had gone out. Bump the version."
                 fail=1
               elif ! printf '%s' "$ver_err" | grep -qiE 'code E404|404 Not Found|is not in th'; then
                 echo "::error::could not reach the registry to check $NAME@$VER — refusing to release rather than guess. $ver_err"
                 fail=1
               fi
             fi
-          done
+          done 3< "$RUNNER_TEMP/publish-order.tsv"
           [ "$fail" -eq 0 ] || exit 1
 
-      # Everything that can still be FIXED must be checked before the one step that cannot be undone.
-      #
-      # The notes are extracted in the `github-release` job, which by construction runs AFTER `pnpm publish`, so
-      # that a Release never describes a version that did not reach npm. Without this step, a missing or empty
-      # CHANGELOG section would surface there, at the one moment nothing can be done about it. npm tarballs are
-      # immutable outside a 72-hour window; a changelog is a two-line edit. Check the cheap thing first.
-      #
-      # `> /dev/null` because this is purely a precondition — github-release does the real extraction against
-      # the same script, so the two cannot disagree.
-      - name: Require release notes to exist before publishing
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: node scripts/changelog-section.cjs "${GITHUB_REF_NAME}" > /dev/null
-
-      # Scan what actually ships. The tracked-file and history modes cannot see `dist/` (gitignored), which is
-      # most of the published bytes and carries every `src` comment through the sourcemaps' `sourcesContent`.
-      # See scripts/leak-scan-tarballs.cjs. Runs on dry-runs too — a dry run whose whole job is to prove the
-      # pipeline should exercise the gates, not skip them.
-      - name: Leak-scan the packed tarballs
-        env:
-          # Optional. Set the repo secret to check the employer-name class of needle too; with it the scan runs
-          # in the strict SNAPSHOT mode, without it the HARD class (credentials, keys, real addresses, absolute
-          # local paths) still fails the build. The script prints which mode it chose, so the weaker mode can
-          # never be mistaken for the stronger one.
-          LEAK_SCAN_EXTRA: ${{ secrets.LEAK_SCAN_EXTRA }}
-        run: node scripts/leak-scan-tarballs.cjs
-
-      # Dry-run on manual dispatch (default): packs + validates only — mints no attestation, needs no auth token.
+      # Dry-run on manual dispatch (default): validates only — mints no attestation, needs no auth token.
       # `publishConfig.access=public` lives in package.json. Provenance is opted into here, by `--provenance` and
       # NPM_CONFIG_PROVENANCE, and not in the manifests, where it would block the hand-run bootstrap publish
       # (see scripts/bootstrap-publish.cjs).
-      # `pnpm -r publish` walks the workspace in topological order (core before the flavor that depends on it)
-      # and rewrites each `workspace:*` dependency to the exact version. `--no-git-checks` because the tag/branch state
-      # is already verified above. The root manifest is `private: true`, so it is skipped automatically.
+      # Each tarball is published by file, in the order worked out above (a package after the family packages it
+      # depends on). The dependency versions in each tarball were fixed when it was packed.
       - name: Publish (dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.dryRun
-        run: pnpm -r --filter './packages/**' publish --provenance --access public --dry-run --no-git-checks
+        run: |
+          while IFS=$'\t' read -r NAME VER FILE <&3; do
+            npm publish "$RUNNER_TEMP/release-tarballs/$FILE" --provenance --access public --dry-run
+          done 3< "$RUNNER_TEMP/publish-order.tsv"
         env:
           NPM_CONFIG_PROVENANCE: true
       # Real, provenance-signed publish — ONLY from a vX.Y.Z tag ref: a pushed tag, or a dispatch on a tag
       # with dryRun=false. A dispatch on a tag with dryRun still true can NOT publish for real (that would
       # break the dry-run-default safety contract), and a dispatch on a branch with dryRun=false never gets
-      # here: the first step fails it. Every real publish has passed the tag↔version guard above.
+      # here: the first step of `verify` fails it. Every real publish has passed the tag↔version guards above.
       - name: Publish (real)
         if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dryRun)
-        run: pnpm -r --filter './packages/**' publish --provenance --access public --no-git-checks
+        run: |
+          while IFS=$'\t' read -r NAME VER FILE <&3; do
+            npm publish "$RUNNER_TEMP/release-tarballs/$FILE" --provenance --access public
+          done 3< "$RUNNER_TEMP/publish-order.tsv"
         env:
           # No NODE_AUTH_TOKEN. npm authenticates from this workflow's OIDC identity (Trusted Publishing);
           # adding a token here would introduce a long-lived secret AND be rejected outright by the packages'

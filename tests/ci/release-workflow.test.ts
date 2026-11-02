@@ -16,6 +16,10 @@ import { parse } from 'yaml';
 // defeated by the step living in the wrong job.
 //
 // So the assertions below are about job MEMBERSHIP and PERMISSIONS, not the presence of strings.
+//
+// The workflow is two jobs on purpose: `verify` runs every dependency's code and holds no publish identity, and
+// `publish` holds `id-token: write` and runs nothing from the repo. Most of what is asserted below is one of
+// the two halves of that split.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 interface Step {
@@ -24,12 +28,14 @@ interface Step {
   uses?: string;
   run?: string;
   env?: Record<string, unknown>;
+  with?: Record<string, unknown>;
 }
 interface Job {
   needs?: string | string[];
   permissions?: Record<string, string>;
   environment?: string;
   'runs-on'?: string;
+  'timeout-minutes'?: number;
   steps: Step[];
 }
 
@@ -52,11 +58,26 @@ function effectivePermissions(name: string): Record<string, string> {
 }
 const stepNames = (j: Job) => j.steps.map((s) => s.name ?? s.uses ?? s.run ?? '');
 const hasStep = (j: Job, name: string) => stepNames(j).some((n) => n === name);
+/** The index of the step with this name in a job, failing loudly when it is missing. */
+function at(jobName: string, stepName: string): number {
+  const i = stepNames(job(jobName)).indexOf(stepName);
+  expect(i, `"${stepName}" is missing from the ${jobName} job`).toBeGreaterThan(-1);
+  return i;
+}
+/** A step of either job that does the work, by name. */
+function stepOf(stepName: string): Step {
+  const found = [...job('verify').steps, ...job('publish').steps].find((s) => s.name === stepName);
+  if (!found) throw new Error(`neither job has a step "${stepName}"`);
+  return found;
+}
+const NPM_EXACT = 'Install the exact npm for Trusted Publishing';
 
 describe('release workflow shape', () => {
-  it('has exactly the two jobs, and github-release depends on publish', () => {
-    expect(Object.keys(wf.jobs).sort()).toEqual(['github-release', 'publish']);
+  it('has exactly the three jobs: verify, then publish, then github-release', () => {
+    expect(Object.keys(wf.jobs).sort()).toEqual(['github-release', 'publish', 'verify']);
+    expect(job('publish').needs).toBe('verify');
     expect(job('github-release').needs).toBe('publish');
+    expect(job('verify').needs).toBeUndefined();
   });
 
   it('publishes ONLY from the publish job', () => {
@@ -68,7 +89,7 @@ describe('release workflow shape', () => {
     const publishesElsewhere = Object.entries(wf.jobs)
       .filter(([name]) => name !== 'publish')
       .flatMap(([name, job]) => job.steps.map((s) => [name, s.run ?? ''] as const))
-      .filter(([, run]) => /\bpublish\b/.test(run) && !/gh release/.test(run));
+      .filter(([, run]) => /\b(pnpm|npm|yarn|npx)\b[\s\S]*\bpublish\b/.test(run));
     expect(publishesElsewhere).toEqual([]);
   });
 
@@ -79,9 +100,69 @@ describe('release workflow shape', () => {
     // exact opposite of its purpose. Permissions resolve job-level first, falling back to workflow-level, so
     // the assertion must too.
     expect(effectivePermissions('publish').contents).not.toBe('write');
+    expect(effectivePermissions('verify').contents).not.toBe('write');
     expect(effectivePermissions('github-release').contents).toBe('write');
     // The publish job's whole justification is that it holds the OIDC token and nothing else.
     expect(effectivePermissions('publish')['id-token']).toBe('write');
+  });
+
+  it('grants id-token: write to the publish job alone, and not at the top level', () => {
+    // The point of the split. A top-level `id-token: write` is inherited by every job without a block of its
+    // own, so the job that installs and runs every dependency would be able to mint the token again; and a
+    // job-level block on `verify` or `github-release` would do the same. Read EFFECTIVE permissions, as above.
+    expect(wf.permissions?.['id-token']).toBeUndefined();
+    expect(wf.permissions).toEqual({ contents: 'read' });
+    for (const name of Object.keys(wf.jobs)) {
+      const grants = effectivePermissions(name)['id-token'];
+      if (name === 'publish') expect(grants).toBe('write');
+      else expect(grants, `${name} must not hold id-token`).toBeUndefined();
+    }
+    expect(job('verify').permissions).toEqual({ contents: 'read' });
+    expect(job('publish').permissions).toEqual({ 'id-token': 'write', contents: 'read' });
+  });
+
+  it('keeps the job that holds the publish identity free of dependency code', () => {
+    // `publish` holds `id-token: write`, so anything it runs can publish as this repo. Nothing from the repo's
+    // dependency tree may run there: no checkout (so no repo scripts or lockfile), no package manager, no
+    // script from the repo, no cache restore. It may run the runner's tools, pinned actions, the one exact npm
+    // and inline shell, and `node` only on a script given on its own standard input. Known limit: an action it
+    // `uses` is trusted code by SHA, and the allow-list below is what a new one has to be added to.
+    const steps = job('publish').steps;
+    const allowedUses = ['actions/download-artifact', 'actions/setup-node'];
+    for (const s of steps) {
+      if (s.uses !== undefined) {
+        expect(
+          allowedUses.some((a) => s.uses?.startsWith(`${a}@`)),
+          `publish uses ${s.uses}`,
+        ).toBe(true);
+        expect(s.with?.cache, `${s.uses} restores a cache in the publish job`).toBeUndefined();
+        expect(s.with?.['package-manager-cache']).not.toBe(true);
+      }
+      const run = s.run ?? '';
+      expect(run, `"${s.name}" runs a package manager`).not.toMatch(
+        /(^|[\s;&|(])(pnpm|yarn|npx|corepack|bun)(\s|$)/,
+      );
+      expect(run, `"${s.name}" runs a repo script`).not.toMatch(/(^|[\s;&|(])\.{0,2}\/?scripts\//);
+      expect(run, `"${s.name}" runs a repo file`).not.toMatch(/(^|\s)(\.\/|\.\.\/)\S/);
+      // `node` only reading its program from stdin (`node - <<'EOF'`), never a file.
+      for (const m of run.matchAll(/(^|[\s;&|(])node(\s+\S+)?/g)) {
+        expect(m[2]?.trim(), `"${s.name}" runs node on something other than stdin`).toBe('-');
+      }
+      // The only `npm` that installs anything is the exact-version step.
+      for (const line of run
+        .split('\n')
+        .filter((l) => /\bnpm\s+(i|install|ci|add|exec|run)\b/.test(l))) {
+        expect(s.name, `"${line.trim()}"`).toBe(NPM_EXACT);
+      }
+    }
+  });
+
+  it('pins every action to a full commit SHA', () => {
+    const uses = Object.values(wf.jobs).flatMap((j) => j.steps.map((s) => s.uses ?? ''));
+    expect(uses.filter((u) => u !== '').length).toBeGreaterThan(4);
+    for (const u of uses.filter((x) => x !== '')) {
+      expect(u, `${u} is not pinned to a 40-hex commit`).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/);
+    }
   });
 
   it('keeps the human approval gate wired to the publish job', () => {
@@ -117,18 +198,20 @@ describe('release workflow shape', () => {
   });
 
   it('keeps the tag/version and still-private guards ahead of publishing', () => {
-    const names = stepNames(job('publish'));
-    const iTag = names.indexOf('Verify tag matches every package version');
-    const iPriv = names.indexOf('Refuse to "publish" a still-private package');
-    const iReal = names.indexOf('Publish (real)');
-    expect(iTag).toBeGreaterThan(-1);
-    expect(iPriv).toBeGreaterThan(-1);
-    expect(iTag).toBeLessThan(iReal);
-    expect(iPriv).toBeLessThan(iReal);
+    // Both guards are in `verify`, which `publish` needs: a failed guard stops the run before the reviewer is
+    // asked, and before the publish job exists.
+    expect(job('publish').needs).toBe('verify');
+    at('verify', 'Verify tag matches every package version');
+    at('verify', 'Refuse to "publish" a still-private package');
+    at('publish', 'Publish (real)');
+    const names = stepNames(job('verify'));
+    const iUpload = names.findIndex((n) => n.startsWith('actions/upload-artifact'));
+    expect(names.indexOf('Verify tag matches every package version')).toBeLessThan(iUpload);
+    expect(names.indexOf('Refuse to "publish" a still-private package')).toBeLessThan(iUpload);
   });
 
   it('verifies the native oracle binary it installs before any test loads it', () => {
-    const runs = job('publish').steps.map((s) => s.run ?? '');
+    const runs = job('verify').steps.map((s) => s.run ?? '');
     const iInstall = runs.findIndex((r) => /^pnpm install\b/.test(r));
     const iVerify = runs.findIndex((r) =>
       /^node scripts\/verify-roaring-prebuilt\.cjs --strict$/.test(r),
@@ -146,20 +229,36 @@ describe('release workflow shape', () => {
     // construction runs after the publish, so without a precondition here a missing CHANGELOG section is only
     // ever discovered once nothing can be done about it. That is the shape described at the top, a GitHub
     // Release for a version that never published, pointing the other way.
-    const names = stepNames(job('publish'));
-    const iReal = names.indexOf('Publish (real)');
-    expect(iReal).toBeGreaterThan(-1);
+    // In `verify`, ahead of the step that uploads what `publish` will publish: so a failure of any of them
+    // happens before the approval prompt and before the publish job exists.
+    const verifyNames = stepNames(job('verify'));
+    const iUpload = verifyNames.findIndex((n) => n.startsWith('actions/upload-artifact'));
+    expect(iUpload, 'verify does not upload the tarballs').toBeGreaterThan(-1);
     for (const precondition of [
       'Require release notes to exist before publishing',
       'Leak-scan the packed tarballs',
       'node scripts/audit.cjs',
       'Verify tag matches every package version',
       'Refuse to "publish" a still-private package',
+    ]) {
+      const i = verifyNames.indexOf(precondition);
+      expect(i, `"${precondition}" is missing from the verify job`).toBeGreaterThan(-1);
+      expect(i, `"${precondition}" must run before the upload`).toBeLessThan(iUpload);
+    }
+    // In `publish`, ahead of the first publish: the registry probes and the checks of what was downloaded.
+    const names = stepNames(job('publish'));
+    const firstPublish = Math.min(
+      names.indexOf('Publish (dry-run)'),
+      names.indexOf('Publish (real)'),
+    );
+    for (const precondition of [
+      'Check the tarball checksums',
+      'Check the tarball set and work out the publish order',
       'Refuse to publish an unbootstrapped name or a version already on the registry',
     ]) {
       const i = names.indexOf(precondition);
       expect(i, `"${precondition}" is missing from the publish job`).toBeGreaterThan(-1);
-      expect(i, `"${precondition}" must run before Publish (real)`).toBeLessThan(iReal);
+      expect(i, `"${precondition}" must run before the first publish`).toBeLessThan(firstPublish);
     }
   });
 
@@ -187,40 +286,119 @@ describe('release workflow shape', () => {
     // The audit is the ONE gate whose verdict changes with no commit: an advisory published after main went
     // green makes this exact tree newly-vulnerable. Re-running lint/test/build on the release commit while
     // trusting a days-old audit would leave precisely that hole open.
-    expect(job('publish').steps.some((s) => (s.run ?? '').includes('scripts/audit.cjs'))).toBe(
-      true,
-    );
+    expect(job('verify').steps.some((s) => (s.run ?? '').includes('scripts/audit.cjs'))).toBe(true);
   });
 
   it('checks out the whole history, because the suite it runs reads the history of a file', () => {
     // `calibration-reports` proves each committed calibration evidence file was written once and never edited,
     // which reads the file's history out of git, and a shallow checkout carries none. It fails loudly rather
     // than passing vacuously, so this job, which re-runs the complete gate, checks out as `ci.yml` does.
-    const checkout = job('publish').steps.find((s) => (s.uses ?? '').includes('actions/checkout'));
-    expect(checkout, 'the publish job no longer checks out').toBeDefined();
+    const checkout = job('verify').steps.find((s) => (s.uses ?? '').includes('actions/checkout'));
+    expect(checkout, 'the verify job no longer checks out').toBeDefined();
     expect(
       (checkout as unknown as { with?: { 'fetch-depth'?: number } }).with?.['fetch-depth'],
-      'release.yml must check out with fetch-depth: 0 — a shallow clone has no history, and the suite this ' +
-        'job runs includes a gate that reads it',
+      'release.yml must check out with fetch-depth: 0 — a shallow clone has no history, and the suite the ' +
+        'verify job runs includes a gate that reads it',
     ).toBe(0);
   });
 
   it('scans the packed tarballs, which is the only artifact the other leak-scan modes cannot see', () => {
     // dist/ is gitignored, so neither the tracked-file nor the history enumeration covers the bytes a consumer
     // actually downloads — and sourcemaps carry every src comment verbatim via sourcesContent.
-    const step = job('publish').steps.find((s) => s.name === 'Leak-scan the packed tarballs');
-    expect(step?.run).toContain('leak-scan-tarballs');
+    const step = stepOf('Leak-scan the packed tarballs');
+    expect(step.run).toContain('leak-scan-tarballs');
     // No `if:` — a dry run exists to prove the pipeline, so it must exercise the gates rather than skip them.
     expect((step as unknown as { if?: string }).if).toBeUndefined();
+    // It scans the files that are uploaded, not a second pack of the same sources.
+    expect(step.run).toMatch(/--from "\$RUNNER_TEMP\/release-tarballs"/);
   });
 
-  it('pins the npm upgrade to a floor instead of tracking @latest', () => {
-    // `npm@latest` makes every release depend on whatever npm shipped that morning: a regression upstream
-    // becomes a broken release with nothing in our diff to point at.
-    const step = job('publish').steps.find((s) => s.name === 'Upgrade npm for Trusted Publishing');
-    expect(step?.run).not.toMatch(/npm@latest/);
-    // Still at or above the version Trusted Publishing (OIDC) requires.
-    expect(step?.run).toMatch(/npm@\^11\.(?:[6-9]|5\.[1-9])/);
+  it('packs once, scans those files, checksums them, and only then uploads them', () => {
+    const iPack = at('verify', 'Pack every package to a tarball');
+    const iScan = at('verify', 'Leak-scan the packed tarballs');
+    const iSums = at('verify', 'Record the tarball checksums');
+    const iUpload = stepNames(job('verify')).findIndex((n) =>
+      n.startsWith('actions/upload-artifact'),
+    );
+    expect(iPack).toBeLessThan(iScan);
+    expect(iScan).toBeLessThan(iSums);
+    expect(iSums).toBeLessThan(iUpload);
+    expect(stepOf('Record the tarball checksums').run).toContain('SHA256SUMS');
+    const upload = job('verify').steps[iUpload];
+    expect(upload?.with?.name).toBe('release-tarballs');
+    expect(upload?.with?.['if-no-files-found']).toBe('error');
+    expect(Number(upload?.with?.['retention-days'])).toBeGreaterThan(0);
+    expect(Number(upload?.with?.['retention-days'])).toBeLessThanOrEqual(14);
+    const download = job('publish').steps.find((s) =>
+      (s.uses ?? '').startsWith('actions/download-artifact'),
+    );
+    expect(download?.with?.name).toBe('release-tarballs');
+  });
+
+  it('checks the artifact against its sums before anything else uses it', () => {
+    // The checksums are the first thing `publish` does with the files: before the registry probes, the
+    // tarball-set check (which opens them), and either publish.
+    const names = stepNames(job('publish'));
+    const iDownload = names.findIndex((n) => n.startsWith('actions/download-artifact'));
+    const iSums = at('publish', 'Check the tarball checksums');
+    expect(iSums).toBe(iDownload + 1);
+    const run = stepOf('Check the tarball checksums').run ?? '';
+    expect(run).toMatch(/sha256sum --check --strict SHA256SUMS/);
+    // No tarball may sit in the directory without a sum, or it would be published unchecked.
+    expect(run).toMatch(/!= "\$present"/);
+    for (const later of [
+      'Check the tarball set and work out the publish order',
+      'Refuse to publish an unbootstrapped name or a version already on the registry',
+      'Publish (dry-run)',
+      'Publish (real)',
+    ]) {
+      expect(iSums, `the sums must be checked before "${later}"`).toBeLessThan(
+        at('publish', later),
+      );
+    }
+  });
+
+  it('publishes each tarball by file, with provenance, in the order worked out from the tarballs', () => {
+    for (const name of ['Publish (dry-run)', 'Publish (real)']) {
+      const step = stepOf(name);
+      expect(step.run, name).toMatch(
+        /npm publish "\$RUNNER_TEMP\/release-tarballs\/\$FILE" --provenance --access public/,
+      );
+      expect(step.run, name).toContain('publish-order.tsv');
+      expect(step.env?.NPM_CONFIG_PROVENANCE, name).toBe(true);
+    }
+    expect(stepOf('Publish (dry-run)').run).toContain('--dry-run');
+    expect(stepOf('Publish (real)').run).not.toContain('--dry-run');
+    // The set check counts against EXPECTED_PACKAGES and writes the order; it must see missing and extra files.
+    const set = stepOf('Check the tarball set and work out the publish order').run ?? '';
+    expect(set).toContain('EXPECTED_PACKAGES');
+    expect(set).toMatch(/files\.length !== expected/);
+    expect(set).toContain('writeFileSync');
+  });
+
+  it('bounds each job on purpose: a short verify, and the long wait only on publish', () => {
+    expect(job('verify')['timeout-minutes']).toBe(60);
+    expect(job('publish')['timeout-minutes']).toBe(360);
+    expect(job('verify').environment).toBeUndefined();
+  });
+
+  it('installs npm at one exact version, at or above what Trusted Publishing needs', () => {
+    // A range or a tag makes the npm that runs beside the publish identity whatever shipped that morning.
+    // It is a deliberate, reviewed edit of this one line (RELEASING.md says how).
+    const step = stepOf(NPM_EXACT);
+    expect(job('publish').steps).toContain(step);
+    const m = /^npm install -g npm@(\d+)\.(\d+)\.(\d+)$/.exec((step.run ?? '').trim());
+    expect(m, `not an exact npm version: ${step.run}`).not.toBeNull();
+    const [major, minor, patch] = [Number(m?.[1]), Number(m?.[2]), Number(m?.[3])];
+    expect(major).toBe(11);
+    expect(minor * 1000 + patch >= 5001, 'below npm 11.5.1, which Trusted Publishing needs').toBe(
+      true,
+    );
+    expect(step.run).not.toMatch(/[\^~<>*]|latest|\bnext\b|\bx\b/);
+    // And no other step in either job installs an npm by a range.
+    for (const s of [...job('verify').steps, ...job('publish').steps]) {
+      if (s !== step) expect(s.run ?? '').not.toMatch(/npm@/);
+    }
   });
 
   it('never cancels a release in flight', () => {
@@ -236,9 +414,9 @@ describe('release workflow shape', () => {
     for (const name of [
       'Verify tag matches every package version',
       'Refuse to "publish" a still-private package',
-      'Refuse to publish an unbootstrapped name or a version already on the registry',
+      'Pack every package to a tarball',
     ]) {
-      const run = job('publish').steps.find((s) => s.name === name)?.run ?? '';
+      const run = job('verify').steps.find((s) => s.name === name)?.run ?? '';
       expect(run, `${name} must set nullglob`).toContain('shopt -s nullglob');
       expect(run, `${name} must assert the match count`).toMatch(/\$\{#pkgs\[@\]\}/);
       // The COMPARISON specifically, not just a mention: the error message also interpolates the variable,
@@ -306,11 +484,8 @@ describe('release workflow shape', () => {
       ) as (ref: string, github: object, inputs: object) => boolean;
       return fn(ctx.ref, { event_name: ctx.event }, { dryRun: ctx.dryRun });
     }
-    const named = (n: string): Step => {
-      const s = job('publish').steps.find((x) => x.name === n);
-      if (!s) throw new Error(`the publish job has no step "${n}"`);
-      return s;
-    };
+    const named = (n: string): Step => stepOf(n);
+    const allSteps = () => [...job('verify').steps, ...job('publish').steps];
 
     it('runs every publish-capable step only on a tag ref', () => {
       // A step is publish-capable when it publishes for real (a `publish` command of pnpm, npm, yarn or npx,
@@ -318,7 +493,7 @@ describe('release workflow shape', () => {
       // that exist only for a real publish. The job holds `id-token: write`, so these are the steps that can
       // use it to publish. Known limit: a publish done through a script or an action not named for it is not
       // found by this detector.
-      const capable = job('publish').steps.filter(
+      const capable = allSteps().filter(
         (s) =>
           ((/\b(pnpm|npm|yarn|npx)\b[\s\S]*\bpublish\b/.test(s.run ?? '') ||
             /publish/i.test(s.uses ?? '')) &&
@@ -367,7 +542,7 @@ describe('release workflow shape', () => {
     });
 
     it('fails a dispatch with dryRun=false off a version tag before checkout, install and build', () => {
-      const steps = job('publish').steps;
+      const steps = job('verify').steps;
       const failing = steps.findIndex(
         (s) =>
           /\bexit 1\b/.test(s.run ?? '') &&
@@ -390,7 +565,7 @@ describe('release workflow shape', () => {
       expect(runs(dry, branchDispatchReal)).toBe(false);
       expect(runs(dry, tagPush)).toBe(false);
       // Nothing that is gated and fails a run starts on a dry run from a branch.
-      for (const s of job('publish').steps.filter(
+      for (const s of allSteps().filter(
         (x) => /\bexit 1\b/.test(x.run ?? '') && x.if !== undefined,
       )) {
         expect(

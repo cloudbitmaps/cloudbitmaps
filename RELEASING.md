@@ -8,9 +8,10 @@ human-gated** pipeline — you never run `npm publish` by hand. This is the map 
 All six packages release **in lockstep**: one version number, one tag, everything published together (a
 `fixed` group in `.changeset/config.json`, so no release bumps one alone) —
 `core`, the `roaring` flavor, the `s3` / `gcs` / `azure-blob` driver packages and the `tools` package. Each of the
-five depends on `core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. None of the
-workflow's steps names a package: they glob `packages/*/package.json` and filter `./packages/**`, and the one
-count the workflow carries (`EXPECTED_PACKAGES`) is asserted against the real number of manifests by
+five depends on `core`, and the publish job publishes the tarballs in dependency order (worked out from the packed
+manifests) so `core` lands first. None of the workflow's steps names a package: they glob `packages/*/package.json`
+or read the packed tarballs, and the one count the workflow carries (`EXPECTED_PACKAGES`) is asserted against the real
+number of manifests by
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts).
 
 **Adding a package is not free**, and most of the cost is not in this file. Its **name must be
@@ -64,15 +65,16 @@ change, and the tag goes on the commit that pull request makes on `main`.
    request that lands after it cannot take the tag instead: `gh pr view <number> --json mergeCommit -q
    .mergeCommit.oid` prints it, then `git fetch origin && git tag v<version> <sha> && git push origin
    v<version>`.
-6. **Approve the deployment** — the run waits on the `release` environment before its job starts. Open the
-   run → _Review deployments_ → approve `release`.
-7. The job re-runs the gate and the audit, checks the tag and that no package is private, probes the registry,
-   checks the notes and leak-scans the tarballs, and only then publishes all six packages, tokenlessly, with a
-   signed provenance attestation. `pnpm -r publish` walks the workspace in topological order, so `core` lands
-   before the packages that depend on it. A second job then creates the GitHub Release, with that changelog section
-   as its notes.
+6. **Wait for `verify`, then approve the deployment.** The first job re-runs the gate and the audit, checks the tag
+   and that no package is private, checks the notes, packs the six tarballs and leak-scans them. It needs no
+   approval. The `publish` job then waits on the `release` environment: open the run → _Review deployments_ →
+   approve `release`. What you approve is a build that has already passed.
+7. `publish` checks the tarballs against their checksums, probes the registry, and publishes all six packages from
+   those tarballs, tokenlessly, with a signed provenance attestation, `core` first and then the packages that
+   depend on it. A third job then creates the GitHub Release, with that changelog section as its notes.
 
-The approval comes first: nothing in the job runs until it is given, and nothing reaches npm before it.
+Nothing reaches npm before the approval, and the approval comes after every check that does not need the publish
+identity.
 After it, every check in [What the automation does](#what-the-automation-does) can still refuse the run; the
 publish step is the one that cannot be taken back.
 
@@ -115,7 +117,7 @@ off. The reasoning lives in [`.changeset/README.md`](.changeset/README.md); the 
   prose.
 - **`changeset publish` is not used.** Publishing stays in `release.yml`, which is tokenless, provenance-
   signed, human-gated, and carries pre-flight probes that `changeset publish` does not have — including the
-  one that refuses a version already on the registry, because `pnpm publish` silently skips it and exits 0.
+  one that refuses a version already on the registry, which would otherwise fail the publish part-way through the family.
 
 All six packages are a **`fixed` group**, matched by the glob `@cloudbitmaps/*` rather than named
 individually, so a seventh package is covered on the day it is created rather than the day someone remembers
@@ -142,8 +144,23 @@ packed one does.
 
 ## What the automation does
 
-A pushed `v*.*.*` tag starts one job in the `release` environment. It waits for the approval before any step
-runs, and then, in order (a run started by hand skips some of these; see [A manual run](#a-manual-run)):
+A pushed `v*.*.*` tag starts a workflow of three jobs, in this order:
+
+```
+  verify ───────────────────▶ publish ───────────────────▶ github-release
+  contents: read              environment: release         contents: write
+  no id-token, no approval    id-token: write              (tag pushes only)
+  runs every dependency's     waits for the reviewer;      creates the Release
+  code: install, gate,        runs NO repo or dependency   from the changelog
+  pack, leak scan             code: downloads, checks,
+  uploads the tarballs +      publishes the tarballs
+  SHA256SUMS
+```
+
+`verify` does the following, in order (a run started by hand skips some of these; see [A manual run](#a-manual-run)).
+It holds no publish identity, so a dependency that runs in it cannot publish; it can change the tarballs it
+uploads, which is why the leak scan reads those very files and why the reviewer approves after `verify`, on a build
+that has already passed:
 
 - **Re-runs the gate that governs the artifact** against the exact commit being published — `lint · lint:arch ·
   format:check · typecheck · test · audit · build · api:surface:check · smoke`. A green `main` is necessary but not
@@ -170,17 +187,9 @@ runs, and then, in order (a run started by hand skips some of these; see [A manu
   from source (re-run the job), or whether the upstream artifact changed (stop and investigate). The cross-OS job runs
   the same check on every pull request, so the failure shows there before a tag exists.
 - **Refuses a mistagged release** — every publishable package's `version` must equal the tag, or the run fails.
-- **Refuses a still-private package.** `pnpm publish` *silently skips* a package with `"private": true` and
-  exits 0, so a real publish attempt would otherwise produce a fully green run that published nothing. No
-  package carries `private` — only the workspace ROOT manifest does, and that is never published — so this
-  guards against one being added.
-- **Refuses a name the registry does not have, and a version it already does.** Both produce a *partial*
-  release of a family that ships in lockstep, and neither is visible in the log. A brand-new package name has
-  no Trusted Publisher and this pipeline is tokenless, so `pnpm -r publish` would publish the packages that
-  do exist — immutably — and then fail on the new one. And a version already on the registry is *skipped*
-  by pnpm with exit 0, so a re-run reports success having published nothing for that package. Two read-only
-  registry probes catch both before anything irreversible happens. **Adding a package to the family means
-  bootstrapping its name first** — see [Bootstrapping a name](#bootstrapping-a-name).
+- **Refuses a still-private package.** npm will not publish a package with `"private": true`, and the run
+  should fail before the approval, not after the first packages have gone out. No package carries `private` — only
+  the workspace ROOT manifest does, and that is never published — so this guards against one being added.
 - **Refuses to publish without release notes** — `scripts/changelog-section.cjs` must find a non-empty section
   for the tag. The notes are *used* later, by the `github-release` job; they are *checked* here, before the
   publish, because that is the last moment a missing section is still a two-line edit rather than a permanent
@@ -189,23 +198,54 @@ runs, and then, in order (a run started by hand skips some of these; see [A manu
   every pull request and on every push to `main`, and the tag goes on a `main` commit whose push run is green (the TL;DR
   waits for it), so the tagged commit has been through it. It is not in this workflow because it runs third-party install
   scripts, which do not belong beside the job that can publish.
-- **Leak-scans the packed tarballs** (`pnpm leak-scan:tarballs`) — the built `.tgz` for each package is packed,
-  unpacked and scanned. This is a different surface from the everyday `pnpm leak-scan`: `dist/` is gitignored,
+- **Packs the six tarballs** with `pnpm pack` (which builds each package and writes the exact versions of the
+  family into the packed `package.json`), **leak-scans those files** (`pnpm leak-scan:tarballs`, here as
+  `--from <dir>`, which fails on a missing or extra tarball), writes a `SHA256SUMS` over them and uploads them
+  as one artifact with a short retention (7 days: it only has to outlive the approval; if it has expired, re-run the
+  workflow, which re-verifies). The scan is a different surface from the everyday `pnpm leak-scan`: `dist/` is gitignored,
   so the tracked-file and history modes structurally cannot see the bytes a consumer downloads, and the
   sourcemaps carry every `src` comment verbatim via `sourcesContent`. Set the optional `LEAK_SCAN_EXTRA` repo
   secret to include the private needle list and run in strict snapshot mode; without it the scan still fails on
   credentials, private keys, real email addresses and absolute local paths. The run prints which mode it chose.
-- **Publishes tokenlessly with provenance**, then the attestation is verifiable on npm.
 
-**The ordering is the design, not an accident.** Everything above the publish is recoverable; the publish is
+`publish` then runs, after the approval. It checks out nothing and installs no dependency, so no code from the
+repo's dependency tree runs in the one job that can mint the publish token:
+
+- **Checks the tarballs against `SHA256SUMS`**, first, and refuses a directory that holds anything the sums do
+  not list. The sums are stored beside the files, so they catch a file that was damaged, replaced or lost between
+  the two jobs; they do not prove the files are the ones `verify` built, which is what the approval after `verify` and
+  the leak scan of the same files are for.
+- **Checks the tarball set**: exactly `EXPECTED_PACKAGES` tarballs, one per name, none private, all at one version
+  (the tag's, on a tag ref). It reads each tarball's own `package.json` and works out the publish order from them, a
+  package after every family package it depends on, so `core` lands first. A missing or extra tarball fails the run
+  here.
+- **Installs one exact npm** (`npm@11.21.1`, the npm that published 0.26.0; Trusted Publishing needs 11.5.1 or newer).
+  It is exact, not a floor, because this is the job that holds the publish identity and the npm that runs in it is
+  code with that identity: a new npm is a reviewed edit (see [Bumping npm](#bumping-npm)).
+- **Refuses a name the registry does not have, and a version it already does.** Both produce a *partial*
+  release of a family that ships in lockstep, and neither is visible in the log. A brand-new package name has
+  no Trusted Publisher and this pipeline is tokenless, so publishing would put the packages that do exist on the
+  registry — immutably — and then fail on the new one. And a version already on the registry is rejected on
+  the publish, after the packages before it have gone out. Two read-only registry probes (`npm view`) catch both
+  before anything irreversible happens. **Adding a package to the family means
+  bootstrapping its name first** — see [Bootstrapping a name](#bootstrapping-a-name).
+- **Publishes tokenlessly with provenance**: `npm publish <tarball> --provenance --access public` for each tarball,
+  in that order, so the attestation is verifiable on npm. Provenance is attached the same way as for a package
+  published from a directory: npm signs a statement whose subject is the package URL and the sha512 of the tarball
+  it uploads, with the source and build information (repository, commit, workflow file and run) taken from the
+  job's OIDC identity, not from a working tree. The Trusted Publisher is bound to the workflow file name
+  (`release.yml`) and the `release` environment, and both are unchanged, so the same binding authorises this job.
+
+**The ordering is the design, not an accident.** Everything before the publish is recoverable; the publish is
 not — an npm tarball is immutable outside a 72-hour unpublish window. So every check that can still be *fixed*
 runs before the one step that cannot be undone. (Creating the GitHub Release before its publish succeeds would
 announce a version that never reached npm;
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) asserts this ordering.)
 
-A second job, `github-release`, runs only after a tag push whose publish job succeeded, and creates the GitHub
-Release with the same changelog section as its notes. It holds the file's one `contents: write`, which the
-publish job does not have.
+A third job, `github-release`, runs only after a tag push whose publish job succeeded, and creates the GitHub
+Release with the same changelog section as its notes. It holds the file's one `contents: write`, which neither
+`verify` nor `publish` has. The file's top level grants only `contents: read`, and `id-token: write` is on `publish`
+alone; [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if either moves.
 
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
 free; cancelling a release part-way through leaves npm holding a half-published family — some of the six
@@ -213,31 +253,35 @@ packages up, the rest not — that cannot be taken back.
 
 Every `uses:` is pinned to a full commit SHA, so a moved tag can't inject code. Dependabot bumps the SHA and
 the human-readable version comment together, monthly. The npm upgrade the OIDC publish needs is pinned to a
-**floor** (`npm@^11.5.1`), not `@latest`, so a regression in a same-morning npm release can't break a release
-with nothing in our diff to point at.
+**exact version**, so the npm that runs beside the publish identity is never whatever shipped that morning.
+
+### Bumping npm
+
+Dependabot does not see the npm version (it is in a shell command, not a manifest), so a bump is a deliberate pull
+request: read the npm the last release published with (`npm view @cloudbitmaps/core@<version> _npmVersion`), pick the
+newer one from `npm view npm versions`, read its changelog, and edit the one line `npm install -g npm@<version>` in the
+`publish` job of `release.yml`. Keep it at or above 11.5.1, which Trusted Publishing needs; the release workflow test
+fails on a range, a tag or a version below that.
 
 ## A manual run
 
-_Actions → Release → Run workflow_ starts the same job by hand, on the ref you pick, with one input, `dryRun`,
-which defaults to `true`. It waits for the same approval as a tag push.
+_Actions → Release → Run workflow_ starts the same jobs by hand, on the ref you pick, with one input, `dryRun`,
+which defaults to `true`. `verify` runs without approval; `publish` waits for the same approval as a tag push.
 
-- **A dry run** (the default) re-runs the gate and the tarball leak scan, then ends with
-  `pnpm -r publish --dry-run`, which uploads nothing. Like a real publish, it leaves out every package whose
-  version is already on the registry, so on a ref whose manifests carry the released version it packs nothing and
-  still exits 0: it exercises the publish step only on a version not yet released, such as `main` after the
-  version-bump pull request merges and before the tag (the `release` environment's policy refuses a branch ref unless
-  `main` is added to it, so otherwise dispatch it on a tag). It skips the still-private check and the registry probes.
+- **A dry run** (the default) runs `verify` (the gate, the pack and the tarball leak scan), then `publish` checks
+  the tarballs and ends with `npm publish <tarball> --dry-run` for each, which uploads nothing and mints no
+  attestation. It does not consult the registry, so it runs the same on a version that is already released (the
+  `release` environment's policy refuses a branch ref unless `main` is added to it, so otherwise dispatch it on a
+  tag). It skips the still-private check and the registry probes.
 - **`dryRun: false` publishes for real, and only from a version tag.** Dispatched on a tag ref (`refs/tags/v…`) it
-  runs the tag/version check, the release-notes check, the gate, the still-private check, the registry probes and the
-  tarball leak scan, then publishes the version the manifests carry (which the tag check has proved equals the tag).
-  Dispatched on a branch, or on any ref that is not a version tag, it fails in its first step, before the checkout,
-  the install or the build, so nothing is installed, packed or published. The job sits in the `release` environment,
-  so the approval prompt still comes first and the run then fails.
+  runs the tag/version check, the release-notes check, the gate, the still-private check and the tarball leak scan in
+  `verify`, then the checksum check, the registry probes and the publish in `publish`, and publishes the version the
+  manifests carry (which the tag check has proved equals the tag). Dispatched on a branch, or on any ref that is not a
+  version tag, it fails in the first step of `verify`, before the checkout, the install or the build, so nothing is
+  installed, packed or published, and `publish` never starts, so no approval is asked for.
 - **A dry run works on a branch or a tag.** On a branch it skips the tag check and the release-notes check, which key
-  on a tag ref; on a tag ref both run. The job holds the `id-token: write` permission on a branch dry run too. What holds: no publish step runs
-  there (the real publish needs a version tag ref) and a dry run mints no attestation. What does not: code from an
-  installed dependency running in that job could still request the token. Isolating the publish job from dependency
-  installs is planned before 1.0.
+  on a tag ref; on a tag ref both run. Only `publish` holds the `id-token: write` permission, and it runs no code from
+  the repo's dependencies, on a branch dry run too; `verify`, which runs them, has no `id-token`.
 - **No run started by hand creates a GitHub Release**: that job runs only on a tag push. After a real manual
   publish, create it yourself, as the [break-glass](#manual--break-glass-release) steps do.
 
@@ -302,9 +346,9 @@ Any package added to the family after `@cloudbitmaps/tools` is such a name until
 
 > [!WARNING]
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
-> a per-package Trusted Publisher, which a brand-new name does not have. `pnpm -r publish` walks the
-> workspace topologically and stops at the first failure, so tagging with an unbootstrapped name in the tree
-> publishes `@cloudbitmaps/core` at the new version, and any package pnpm reaches before the new one — immutably,
+> a per-package Trusted Publisher, which a brand-new name does not have. The publish job walks the
+> packages in dependency order and stops at the first failure, so tagging with an unbootstrapped name in the tree
+> publishes `@cloudbitmaps/core` at the new version, and any package reached before the new one — immutably,
 > outside a 72-hour window — and then dies there. The family ships in lockstep; that leaves part of it on the
 > registry with no way back. `release.yml`'s registry probe refuses such a run before its publish step, once the run is approved
 > and the gate has passed, but the refusal is a backstop for this procedure, not a replacement for it.
@@ -409,9 +453,10 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | Publish rejected: token not permitted | Something re-introduced token auth. The packages disallow tokens; the workflow must authenticate via OIDC. |
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing, its repo/workflow/environment don't match exactly, or its "Allow npm publish" box is unticked: check with `npm trust list <name>`, which must show `permissions: publish, stage publish`. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
-| Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
+| Provenance missing on the published package | `id-token: write` was dropped from the `publish` job, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
 | A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all six together. Recovery is a **patch release of the whole family**: fix what failed first (the log names the package), then a patch changeset and the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
-| `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green publish job. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
+| `publish` fails at the download, or at the checksum or tarball-set check | The artifact expired before the approval (it is kept 7 days), or it does not hold exactly the six tarballs and their `SHA256SUMS`. Nothing was published: re-run the whole workflow, which re-verifies and packs again. |
+| `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green `verify` and `publish` jobs. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
 | `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@X.Y.Z` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:*` dependency to `X.Y.Z` — a version the registry does not have until the real release, when the bootstrap runs after the version bump. (When core's version is already on the registry, the rc tarballs resolve.) The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
 | `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
 | `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and would make every manual publish impossible. |
