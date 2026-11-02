@@ -535,7 +535,8 @@ export interface CacheOptions {
    * **A pinned handle is checked on the same interval.** It never moves to another generation, but at most every
    * `genTtlMs` (counted on access) its segment's row is read, one read shared by every pin of the segment, and the
    * pin fails with `NotFoundError` once the segment is destroyed, gone or re-created, or its generation erased or
-   * replaced, even when its reader and chunks are still cached. A transient fault of the registry keeps it serving.
+   * collected, or recorded by its row as another object, even when its reader and chunks are still cached. A transient
+   * fault of the registry, or of the footer read an erasure's check makes, keeps it serving.
    *
    * `0` turns this timed refresh off, and the pinned handles' check with it, and so does wiring a bare `IStorageDriver`, which has no registry. That is
    * all it does. The store still moves a segment on to whatever generation is current when its reader cache
@@ -3726,7 +3727,8 @@ export class Segment {
    * keeps the key its reader unwrapped for as long as that reader stays open, and answers from the chunks it
    * decoded for as long as they stay cached, until its next check.** On a store with a timed refresh a pin checks its
    * segment's row every `cache.genTtlMs` (from the moment it was taken, whether or not it was read) and fails with
-   * `NotFoundError` once the segment is destroyed, is another incarnation, or no longer holds the pinned object. This
+   * `NotFoundError` once the segment is destroyed, is another incarnation, or its generation is collected or recorded by its row as another object (an object lost or replaced out of band
+   * under a row that still names it is found only when the pin must fetch). This
    * store invalidates a pin:
    *
    * - a `load`, a `rollback` or an `*Into` invalidates a pin of the segment it writes;
@@ -3747,9 +3749,9 @@ export class Segment {
    * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
    * once. With no timed refresh nothing bounds any of that, as nothing bounds anything else a pin holds.
    *
-   * A replacement a pin has found is remembered, so its later chunk reads fail with no request, until the store
+   * A replacement a read of the pin found is remembered, so its later chunk reads fail with no request, until the store
    * forgets it: an invalidation of the segment does, as does a later `pin()` of the same version that opens the object
-   * again, and the store remembers at most `cache.readerMax` of them. So once a restore puts the pinned object back
+   * again; a replacement the pin's own check found is forgotten only by an invalidation. The store remembers at most `cache.readerMax` of them. So once a restore puts the pinned object back
    * into the same row, call {@link CloudRoaring.invalidate} on this store: the pin then reads the object again. A
    * restore into a purged and re-created row does not revive a pin on a store with a timed refresh: take a new pin.
    *

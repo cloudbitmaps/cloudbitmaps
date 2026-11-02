@@ -126,8 +126,8 @@ for many counts over the same segments in one pass, a dry-run [`materializeMany`
   pointer read per segment each `cache.genTtlMs` (2 s by default), and, on an encrypted segment whose reader the reader
   cache let go, a key unwrapped again through the keystore.
 - **A pinned handle makes one row read per `cache.genTtlMs` per pinned segment.** Every pin, handle and combine of the
-  segment in the store shares it, an idle pin makes none, and a pin whose generation is not in the row's ledger adds one
-  footer read per interval. Between checks a pinned read makes no request of its own. A store with no timed refresh makes none.
+  segment in the store shares it, an idle pin makes none, and each invalidation of the segment in the store adds one more row read, and a pin whose generation is not in the row's
+  ledger adds one footer read per interval. Between checks a pinned read makes no request of its own. A store with no timed refresh makes none.
 - **`intersect` skips.** Two 2,000,000-id segments that share 100 of their 2,000 chunks intersect by fetching only the
   shared chunks. The [at-scale benchmark](../benchmarks.md#at-scale--measured-1k--10k--100k-segments) measured it at
   24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
@@ -563,7 +563,7 @@ it never reads a re-created segment's object, and where its object is gone or re
 with `NotFoundError` rather than going empty part-way through a call](correctness.md#pin-answers-from-what-it-holds).
 What invalidates a pin, what it answers from meanwhile, and what it needs are in [How a pin stays
 correct](correctness.md#how-a-pin-stays-correct). Every `cache.genTtlMs` a pin also has its segment's row read, and
-fails with `NotFoundError` once the segment is destroyed, gone or re-created, or its generation erased or replaced: the
+fails with `NotFoundError` once the segment is destroyed, gone or re-created, or its generation erased or collected, or recorded by its row as another object: the
 [erasure guide](erasure.md#who-stops-seeing-the-id-and-when) states the bound.
 
 ## Read a chunk at a time: `batches()`

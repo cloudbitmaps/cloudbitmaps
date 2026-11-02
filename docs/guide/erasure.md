@@ -274,7 +274,7 @@ no bus, and no connection between two stores that happen to point at the same bu
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read, for a small generation's chunks too, which its reader holds and serves until the refresh moves it on; an outage of the registry stretches it ([how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)) |
 | `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the rows for the store that performed the erasure and for a pinned handle in another store |
 | a `materializeMany` call with a feed, and an erasure by any path but this store's `eraseSubject` | **no bound**: the call is refused only by this store's `eraseSubject` |
-| a pinned handle (`seg.pin()`) in another store, leased or not | within `cache.genTtlMs` (default 2 s), while the registry can be read, whether or not its reader still holds the chunks; an outage of the registry stretches it. A lease does not lengthen it: once a lease has lapsed, reads throw `LeaseExpiredError` first. A pin of a generation the erasure could not remove (its ledger entry has `erased: false`) reads it, the id included, until a re-run of the erasure removes it |
+| a pinned handle (`seg.pin()`) in another store, leased or not | within `cache.genTtlMs` (default 2 s), while the registry can be read and storage answers the read of the pinned object's footer, whether or not its reader still holds the chunks; an outage of the registry, or a transient storage fault on that read, stretches it. A lease does not lengthen it: once a lease has lapsed, reads throw `LeaseExpiredError` first. A pin of a generation the erasure could not remove (its ledger entry has `erased: false`) reads it, the id included, until a re-run of the erasure removes it |
 | another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a `StorageChunkSource` of your own, which the store times no refresh on | **no bound**: only when its caches happen to let the segment go, or something tells it |
 
 A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not keep
@@ -282,18 +282,20 @@ serving: the read that meets it throws, and the reader is dropped with the key i
 
 **A pinned handle checks its segment on the same interval.** A pin never moves to another generation, but it asks, at
 most every `cache.genTtlMs` and by the clock on access (no timer; an idle pin makes no request), whether its segment is
-still there. One row read per interval per pinned segment serves every pin, handle and combine of that segment in the
-store. The pin fails with `NotFoundError`, and drops its reader and the key it unwrapped, when the row is gone or
+still there. One row read per interval per pinned segment, and one more after each invalidation of the segment in the store,
+serves every pin, handle and combine of that segment in the store. The pin fails with `NotFoundError`, and drops its reader and the key it unwrapped, when the row is gone or
 `destroyed` (a crypto-shred, a destroy, a drop, a retirement), when the row is another incarnation of the name, or when
 the row's ledger names the pinned generation with another checksum. A generation the ledger does not name, or a row
 with no usable ledger, is not a verdict by itself: the pin reads the object's footer once per interval instead, and
 fails once the object is gone or another. A pin of an old generation a load moved past, still in the ledger, costs the
 row read and nothing else. A read that starts between checks answers from the pin's reader and the chunk cache, which
-is the bound the table states. A transient fault of the registry keeps the pin serving and asks again after 500 ms, as a
-live read does; any other fault fails the read that meets it and is not remembered. A pin that has failed keeps failing
+is the bound the table states. A transient fault of the registry, or of the footer read (an erasure takes the pinned generation off the
+ledger, so its check reads the footer), keeps the pin serving and asks again after 500 ms, as a live read does; any other fault fails the read that meets it and is not remembered. A pin that has failed keeps failing
 until `store.invalidate(ref)` is called (the hook after a restore); [how a pin stays
 correct](correctness.md#pin-answers-from-what-it-holds) has the same in the correctness terms. A pin whose generation a load collected (an
-unleased pin past `keep`) now fails within `cache.genTtlMs` even when its reader and chunks are still cached.
+unleased pin past `keep`) fails within `cache.genTtlMs` even when its reader and chunks are still cached. An object
+lost or replaced out of band under a row whose ledger still names it is not found by this check: the pin answers from
+what it holds and fails when it must fetch.
 
 A store with a timed refresh keeps each segment's resolution, the row's wrapped keys among it (never an unwrapped
 key), for `cache.genTtlMs` from the registry read that made it, whether or not the segment's reader is still open.

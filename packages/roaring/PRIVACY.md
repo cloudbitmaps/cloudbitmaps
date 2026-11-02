@@ -185,7 +185,7 @@ bucket.
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a `StorageChunkSource` of your own, which the store times no refresh on | **no bound** — only when its caches happen to let the segment go, or something tells it |
 | `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the rows for the store whose verb made the call and for a pinned handle in another store |
 | a `materializeMany` call with a feed, and an erasure by any path but this store's `eraseSubject` | **no bound**: the call is refused only by this store's `eraseSubject` |
-| a pinned handle (`seg.pin()`) in another store, leased or not | within `cache.genTtlMs` (default 2 s), while the registry can be read, whether or not its reader still holds the chunks; an outage of the registry stretches it. A lease does not lengthen it: once a lease has lapsed, reads throw `LeaseExpiredError` first. A pin of a generation the erasure could not remove (its ledger entry has `erased: false`) reads it, the id included, until a re-run of the erasure removes it |
+| a pinned handle (`seg.pin()`) in another store, leased or not | within `cache.genTtlMs` (default 2 s), while the registry can be read and storage answers the read of the pinned object's footer, whether or not its reader still holds the chunks; an outage of the registry, or a transient storage fault on that read, stretches it. A lease does not lengthen it: once a lease has lapsed, reads throw `LeaseExpiredError` first. A pin of a generation the erasure could not remove (its ledger entry has `erased: false`) reads it, the id included, until a re-run of the erasure removes it |
 
 **An outage of the registry extends that bound.** A refresh that cannot read the row because of a transient fault
 (throttling, a 5xx, a dropped connection) keeps serving what the store resolved before the outage, for a segment
@@ -201,7 +201,7 @@ that error, and the reader is dropped with the key it held.
 `destroySegment` and `eraseNamespace` are free functions over raw drivers, not verbs of a store, so for them every
 store is another store, one in the same process included.
 
-The last two rows are the ones to design around. `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a
+The no-timed-refresh row and the feed row are the ones to design around. `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a
 legitimate setting for a read-only replica of immutable data — but a store set that way has no bound on when it
 observes a shred: until its reader cache lets the segment go, it keeps decrypting with the key it already unwrapped.
 A pinned handle in such a store is that case too: its reader keeps the key until the reader cache evicts it, and after

@@ -8,7 +8,7 @@ import { join } from 'node:path';
  * guide, and the two once disagreed about the number a pin was held to.
  *
  * The gate reads the one row that starts with the pinned handle (a row is one line) and holds every copy to the
- * same text, to the interval in it, and to saying no more than that the pin has "no bound". The row for a store with no timed
+ * same text, to the interval in it, and to no longer saying the pin has "no bound". The row for a store with no timed
  * refresh keeps that wording legitimately, and is not this row.
  *
  * A second check sweeps the source comments and the guides for the sentences that said a pin has no timed bound.
@@ -21,9 +21,10 @@ const DOCS = ['PRIVACY.md', 'packages/roaring/PRIVACY.md', 'docs/guide/erasure.m
 
 const PINNED_ROW = /^\| a pinned handle \(`seg\.pin\(\)`\) in another store[^\n]*$/gm;
 const LEASED_ROW = /^\| a leased pinned handle/m;
-const INTERVAL = 'within `cache.genTtlMs` (default 2 s), while the registry can be read';
+const INTERVAL =
+  "within `cache.genTtlMs` (default 2 s), while the registry can be read and storage answers the read of the pinned object's footer";
 
-/** The table rows that start with the pinned handle, with their line breaks undone. */
+/** The table rows that start with the pinned handle, with runs of white space made one space. */
 export function pinnedRows(text: string): string[] {
   return [...text.matchAll(PINNED_ROW)].map((m) => m[0].replace(/\s+/g, ' '));
 }
@@ -83,25 +84,36 @@ describe('the pinned handle row of the erasure table', () => {
       expect(problemsIn(mutated)).not.toEqual([]);
     });
 
+    it('a row that drops the footer-read clause is caught', () => {
+      const dropped = inRow(real, (row) =>
+        row.replace(" and storage answers the read of the pinned object's footer", ''),
+      );
+      expect(dropped).not.toBe(real);
+      expect(problemsIn(dropped)).not.toEqual([]);
+    });
+
     it('a copy that changed one word differs from the others', () => {
       const changed = pinnedRows(
         inRow(real, (row) =>
-          row.replace('an outage of the registry stretches it', 'an outage stretches it'),
+          row.replace(
+            'an outage of the registry, or a transient storage fault on that read, stretches it',
+            'an outage stretches it',
+          ),
         ),
       );
       expect(changed).not.toEqual(pinnedRows(read('PRIVACY.md')));
     });
 
-    it('ignores look-alikes: the no-timed-refresh row, the pinAt row, prose, and a wrapped row', () => {
-      const wrapped = `| a pinned handle (\`seg.pin()\`) in another store, leased or not | ${INTERVAL}; fine |`;
-      expect(problemsIn(wrapped)).toEqual([]);
+    it('ignores look-alikes: the no-timed-refresh row, the pinAt row, prose, and a row with a trailing clause', () => {
+      const trailing = `| a pinned handle (\`seg.pin()\`) in another store, leased or not | ${INTERVAL}; fine |`;
+      expect(problemsIn(trailing)).toEqual([]);
       const others = [
         '| another store with **no registry**, or with `cache: { genTtlMs: 0 }` | **no bound** |',
         '| `seg.pinAt` of a generation the erasure rewrote | a pinned handle in another store |',
         'A pinned handle (`seg.pin()`) in another store has no bound only without a timed refresh.',
       ].join('\n');
       expect(pinnedRows(others)).toEqual([]);
-      expect(problemsIn(`${wrapped}\n${others}`)).toEqual([]);
+      expect(problemsIn(`${trailing}\n${others}`)).toEqual([]);
     });
   });
 });
