@@ -6,11 +6,11 @@
  * WHY THIS EXISTS. The workload's client makes one attempt per request and every timed store runs with its own retry
  * off (`clientConfigs`, `TIMED_STORE` in `calibrate-guards.cjs`), so no retry's backoff can sit inside a latency
  * sample and every request count is exact. With nothing else, one transient fault anywhere in a run's requests (up to
- * about 94,900 GET-class and 567 PUT-class at the default workload) would fail the whole run, and a partial run is not
+ * about 116,000 GET-class and 567 PUT-class at the default workload) would fail the whole run, and a partial run is not
  * evidence. One in-region run failed on a single transient connection fault after about 86,300 requests; at that rate
- * a run of this size would finish about a third of the time.
+ * a run of this size would finish about a quarter of the time.
  *
- * So a SAMPLE — one cold intersect, one point read, one `andNot` call, the warm stage's priming pass — that fails with
+ * So a SAMPLE — one cold intersect, one point read, one `andNot` call, one `andNotCount` call, the warm stage's priming pass — that fails with
  * a transient fault is abandoned whole. Its requests were billed, so they stay in the stage's requests and in the bill,
  * and are recorded beside the stage as a discard: which sample, the error's name, its transport code, the SDK's
  * attempt count, and the requests it made. The sample then runs again from the start, from a state the failed attempt

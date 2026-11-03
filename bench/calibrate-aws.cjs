@@ -337,7 +337,7 @@ function planWorkload({ layout, spread, sweep, ranges, countVerbs }) {
       sharedChunks,
       ranges: ranges.andNot,
     },
-    // The same operands counted with `andNotCount`, as many calls as the stream's: none on a release without the verb.
+    // The same operands counted with `andNotCount`, at most as many calls as the stream's (3 against its 10): none on a release without the verb.
     counts: {
       calls: countVerbs ? Math.min(ANDNOT_CALLS, COUNT_CALLS) : 0,
       excludes: ANDNOT_EXCLUDES,
@@ -632,8 +632,8 @@ async function main() {
         refuse(err.message);
       }
     }
-    // The default suite's count stage runs where the verb exists, and is left out of a run of an older release: its
-    // stage runs no call there, so the plan holds none and the evidence of such a run is not held to it.
+    // The default suite's count stage runs where the verb exists, and runs no call on an older release: the plan
+    // holds none and the stage records `runs: 0` with no requests expected, which the figures gate holds a run to.
     countVerbs = hasCountVerbs(packageVersion);
     // The steady-load stage is held to what the engine does at `keep` 12 from 0.17.0 on, which collects by name. An
     // engine that does not would fail the run's evidence after it had spent the bill, so ask it first, in memory.
@@ -2051,7 +2051,7 @@ async function main() {
     });
     // ---- andNot, counted ----------------------------------------------------------------------------------------------
     // The same operands as the stage above, counted with `andNotCount`: it makes the stream's requests and reads fewer bytes
-    // (the in-memory counts in `bench/lib/range-counts.cjs` show where). It must return the number of ids the stream did.
+    // (the in-memory counts in `bench/lib/range-counts.cjs` give its requests and bytes). It must return the number of ids the stream did.
     await stage('counts', {
       run: async () => {
         if (plan.counts.calls === 0) return { runs: 0 };

@@ -1030,7 +1030,8 @@ describe('the evidence of a large run', () => {
   }
   // A stage added after a run was recorded is not asked of that run: evidence from before it stays valid. A run that did
   // run it is held to it like any other stage.
-  // Stages newer than the recorded rehearsal fixture: re-capture it against MinIO before the next release, then empty this.
+  // Stages newer than the recorded rehearsal fixture: re-capture it against MinIO before the next release, then drop it from the two fixture checks only. The committed
+  // large runs lack the stage too, so `problemsWith` keeps exempting it for them.
   const ADDED_LATER = ['largeCount'];
   const problemsWith = (run: LargeRun, { rehearsal = false } = {}): string[] => {
     const out: string[] = [];

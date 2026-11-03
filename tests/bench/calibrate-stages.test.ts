@@ -1165,7 +1165,7 @@ describe('the steady-load stage', () => {
 });
 
 // The default suite's count stage. The stream of an andNot and its count make the same requests, so the stage is held to
-// the same expectation; the count reads fewer bytes, because a chunk only the include holds is answered from the index.
+// the same expectation; the count reads fewer bytes (counted in memory at the default layout).
 // An intersect's count reads the very bytes of its stream, which is why the stage counts the andNot alone.
 describe('the default suite’s count stage', () => {
   const idsOf = (keys: number[]): number[] =>

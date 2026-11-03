@@ -965,6 +965,14 @@ describe('a run with a steady-load stage', () => {
     expect(Object.keys(f.stageLedger)).not.toContain('largeCount');
     // Every figure of the new stage is accounted for by the derivation, as a report's sentence about it must be.
     expect(figures.unaccounted(`The count stage made ${CALLS * GETS} GETs.`, f.values)).toEqual([]);
+    // Its per-call bytes are bytes a report may state, and a figure one byte off is refused: the default stage's three
+    // kinds of read and the large suite's total a call read.
+    for (const stated of [1_400_000, 2_600_000, 2_700, 800_000]) {
+      const said = `A count call read ${stated.toLocaleString('en-US')} bytes.`;
+      expect(figures.unaccounted(said, f.values), said).toEqual([]);
+      const off = `A count call read ${(stated + 1).toLocaleString('en-US')} bytes.`;
+      expect(figures.unaccounted(off, f.values), off).not.toEqual([]);
+    }
     // The stage is held: a request more or fewer than it expected, or a missing record, is refused.
     for (const off of [1, -1]) {
       const run = build();

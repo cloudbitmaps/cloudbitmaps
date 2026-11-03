@@ -1267,6 +1267,13 @@ function stageFiguresOf(run, pricing) {
         out.millions.push(v / 1e6);
         out.ids.push(Math.round(v));
       } else if (k === 'medianBytesPerSec') out.bytes.push(Math.round(v));
+      else if (
+        k === 'chunkBytesPerCall' ||
+        k === 'tailBytesPerCall' ||
+        k === 'pointerBytesPerCall' ||
+        k === 'bytesReadPerCall'
+      )
+        out.bytes.push(v);
       else if (k === 'segments' || k === 'segmentsEach') out.segments.push(v);
       else if (k === 'k') out.chunks.push(v);
       else if (k === 'intersects') out.intersects.push(v);
