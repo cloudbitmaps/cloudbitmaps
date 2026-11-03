@@ -123,6 +123,8 @@ const {
 const {
   STAGES: DEFAULT_STAGES,
   COUNT_CALLS,
+  checkCountedAndNot,
+  checkEngineAndNotCount,
   parseSweep,
   coldIntersectGets,
   modelRounds,
@@ -376,11 +378,7 @@ async function rehearseRanges({ layout, spread, sweepLayouts, countVerbs }) {
     if (countVerbs) {
       const counted = await coldAndNotCountIds(layoutIds(layout, 0), excludes());
       // A count must see the ids the stream does: the stage is exact on them.
-      if (counted.ids !== layout.priv) {
-        throw new Error(
-          `the engine's andNotCount counted ${counted.ids} in memory, expected ${layout.priv}`,
-        );
-      }
+      checkEngineAndNotCount(counted.ids, layout.priv);
       andNotCount = counted.getRange;
     }
   }
@@ -2052,8 +2050,8 @@ async function main() {
       },
     });
     // ---- andNot, counted ----------------------------------------------------------------------------------------------
-    // The same operands as the stage above, counted with `andNotCount`: it makes the stream's requests and reads fewer bytes,
-    // since a chunk only the include holds is answered from the index. It must return the number of ids the stream did.
+    // The same operands as the stage above, counted with `andNotCount`: it makes the stream's requests and reads fewer bytes
+    // (the in-memory counts in `bench/lib/range-counts.cjs` show where). It must return the number of ids the stream did.
     await stage('counts', {
       run: async () => {
         if (plan.counts.calls === 0) return { runs: 0 };
@@ -2071,12 +2069,7 @@ async function main() {
               .andNotCount(excludes.map((name) => store.segment(name)));
             const ms = msSince(t0);
             const after = snap();
-            if (n !== layout.priv) {
-              throw new Error(
-                `andNotCount returned ${n}; expected exactly ${layout.priv}. ` +
-                  'A count that is not exact must not produce a latency figure.',
-              );
-            }
+            checkCountedAndNot(n, layout.priv);
             return {
               ms,
               gets: after.get - before.get,

@@ -32,12 +32,32 @@ const STAGES = Object.freeze([
 ]);
 
 /**
- * The calls of the count stage, at most. The count is bounded as the stream's andNot is, by a request for every chunk of the
+ * The calls of the count stage. The count is bounded as the stream's andNot is, by a request for every chunk of the
  * include and each exclude where it overlaps, which is far above what it makes; ten calls at that bound would take the
- * default plan past the $0.05 ceiling it is held under, so the stage makes this many, whatever `CR_CALIBRATE_ANDNOT_CALLS`
- * is: three bounded calls leave the plan under it, and the requests of a count are the same on every call.
+ * default plan past the $0.05 ceiling it is held under, so the stage makes at most this many (fewer where
+ * `CR_CALIBRATE_ANDNOT_CALLS` is smaller): three bounded calls leave the plan under it, and the requests of a count are the same on every call.
  */
 const COUNT_CALLS = 3;
+
+/**
+ * Refuse a count that is not the number of ids the stream of the same `andNot` returned: the count stage is exact on it, and
+ * a count that is not exact must not produce a latency figure. `got` is what `andNotCount` returned on the store under test.
+ */
+function checkCountedAndNot(got, want) {
+  if (got !== want) {
+    throw new Error(
+      `andNotCount returned ${got}; expected exactly ${want}. ` +
+        'A count that is not exact must not produce a latency figure.',
+    );
+  }
+}
+
+/** Refuse an engine whose in-memory `andNotCount` is not the size the layout holds: the stage could not be held to it. */
+function checkEngineAndNotCount(got, want) {
+  if (got !== want) {
+    throw new Error(`the engine's andNotCount counted ${got} in memory, expected ${want}`);
+  }
+}
 
 /*
  * How many requests one after another a combine's window of chunk keys takes, at an even latency.
@@ -406,6 +426,8 @@ module.exports = {
   expectedSteady,
   STAGES,
   COUNT_CALLS,
+  checkCountedAndNot,
+  checkEngineAndNotCount,
   ENGINE_WINDOW,
   ENGINE_WINDOW_START,
   windowRounds,

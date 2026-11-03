@@ -66,6 +66,8 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   };
   sampleBounds: (w: Plan) => Record<string, number>;
   expectedReads: (w: Plan) => Record<string, number>;
+  checkCountedAndNot: (got: number, want: number) => void;
+  checkEngineAndNotCount: (got: number, want: number) => void;
   FIRST_LOAD: Bound;
   firstLoadRequests: (parts: number) => Bound;
   STEADY_KEEP: number;
@@ -1233,6 +1235,33 @@ describe('the default suite’s count stage', () => {
     expect(count).toEqual(stream);
   });
 
+  it('is held to requests by the table of expected counts, as every other stage is', () => {
+    const expected = stages.expectedReads(defaultPlan());
+    for (const name of stages.STAGES) {
+      if (name === 'load') continue;
+      expect(typeof expected[name], name).toBe('number');
+    }
+    expect(expected.counts).toBeGreaterThan(0);
+  });
+
+  it('refuses a count that is not the stream’s ids, high or low, and an engine whose count in memory is not either', () => {
+    expect(() => stages.checkCountedAndNot(54_000, 54_000)).not.toThrow();
+    for (const got of [54_001, 53_999, 0]) {
+      expect(() => stages.checkCountedAndNot(got, 54_000), `${got}`).toThrow(
+        new RegExp(
+          `andNotCount returned ${got}; expected exactly 54000\\. A count that is not exact`,
+        ),
+      );
+      expect(() => stages.checkEngineAndNotCount(got, 54_000), `${got}`).toThrow(
+        new RegExp(`the engine's andNotCount counted ${got} in memory, expected 54000`),
+      );
+    }
+    expect(() => stages.checkEngineAndNotCount(54_000, 54_000)).not.toThrow();
+    // The harness's stage and its in-memory rehearsal both call them.
+    expect(harnessSrc).toContain('checkCountedAndNot(n, layout.priv);');
+    expect(harnessSrc).toContain('checkEngineAndNotCount(counted.ids, layout.priv);');
+  });
+
   it('is bounded as the andNot is, runs at most three calls, and is nothing in a plan from before it or for a release without the verb', () => {
     expect(stages.COUNT_CALLS).toBe(3);
     const w = defaultPlan();
@@ -1250,6 +1279,7 @@ describe('the default suite’s count stage', () => {
     expect(stages.projectStages(older as Plan).stages.counts).toEqual({ put: 0, get: 0 });
     expect(stages.expectedReads(older as Plan).counts).toBe(0);
     expect(stages.sampleBounds(older as Plan).counts).toBe(0);
+    // These pin spelling and order only; `hasCountVerbs`, `checkCountVerbs` and the rehearsal are the behavioural proof.
     // The harness plans it from the release's verbs and the cap, and runs it after the andNot, before the steady load.
     expect(harnessSrc).toContain('calls: countVerbs ? Math.min(ANDNOT_CALLS, COUNT_CALLS) : 0,');
     expect(harnessSrc).toContain('countVerbs = hasCountVerbs(packageVersion);');

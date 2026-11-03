@@ -568,6 +568,17 @@ describe('the expected counts, counted against the real engine', () => {
     );
   });
 
+  // The harness's stage-close block holds each stage to `expectedLarge(plan)[name]`, so a stage with no entry (or an entry of
+  // nothing) is held to nothing: every stage in the table, the count stage included, must have requests it is held to.
+  it('hold every stage of the table to requests, so dropping the count stage from the map fails', async () => {
+    const e = large.expectedLarge(planOf(await counted));
+    for (const name of large.LARGE_STAGES) {
+      const held = e[name];
+      expect(held, name).toBeDefined();
+      expect((held?.put ?? 0) + (held?.get ?? 0), name).toBeGreaterThan(0);
+    }
+  }, 120_000);
+
   it('are held by the harness in both classes, per stage, so a wrong table fails the first rehearsal', () => {
     expect(harnessSrc).toContain(
       'recordCountMisses(results, name, kept, expectedLargeByStage[name], console.error);',
@@ -1019,6 +1030,7 @@ describe('the evidence of a large run', () => {
   }
   // A stage added after a run was recorded is not asked of that run: evidence from before it stays valid. A run that did
   // run it is held to it like any other stage.
+  // Stages newer than the recorded rehearsal fixture: re-capture it against MinIO before the next release, then empty this.
   const ADDED_LATER = ['largeCount'];
   const problemsWith = (run: LargeRun, { rehearsal = false } = {}): string[] => {
     const out: string[] = [];
@@ -1867,7 +1879,7 @@ describe('the count stage', () => {
     expect(failure?.message).toMatch(/unionCount of 1000000 ids: the engine counted \d+ in memory/);
   });
 
-  it('finds a request count off by one, in the sample and in the stage’s total', async () => {
+  it('records a request count off by one as a miss in the sample and in the stage’s total, and the run carries on', async () => {
     const exact = await run();
     const over = await run({ extraGets: 1 });
     expect(over.failure).toBeUndefined();
