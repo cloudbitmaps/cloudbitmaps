@@ -158,6 +158,7 @@ const {
 } = require('./lib/calibrate-stages.cjs');
 const {
   interruptGate,
+  ceilingGate,
   failureOf,
   stopThenTearDown,
   exitCodeAfterSignal,
@@ -697,7 +698,7 @@ async function main() {
       // the requests of a call, and a run is held to them.
       const shape = BATCH_SHAPES[batchKnobs.shape];
       log(
-        `counting the ${batchKnobs.shape} shape in memory (${shape.operands} operands, ${shape.outputs} outputs): about a minute`,
+        `counting the ${batchKnobs.shape} shape in memory (${shape.operands} operands, ${shape.outputs} outputs): tens of seconds to a few minutes`,
       );
       const counts = await countBatch({
         shape: batchKnobs.shape,
@@ -881,7 +882,9 @@ async function main() {
   }
 
   if (MODE === 'run') {
-    // The projection is an upper bound, so refusing here means the run genuinely cannot fit the ceiling.
+    // The projection is an upper bound for the default and large suites, so refusing here means the run genuinely cannot fit
+    // the ceiling. The batch suite's is an estimate (its call's grouping and a driver's resends are not bounded), so refusing
+    // here means the estimate does not fit; a run whose call makes more than estimated is stopped by the ceiling itself.
     if (breached(priced.totalUSD, ceiling)) {
       refuse(
         `projected $${priced.totalUSD.toFixed(6)} meets or exceeds the $${ceiling} ceiling — ` +
@@ -1041,7 +1044,7 @@ async function main() {
       if (leftovers.length > 0) {
         console.error('calibrate: LEFTOVERS — these still exist and may cost money:');
         for (const l of leftovers) console.error(`  ${l}`);
-        console.error(leftoversHint({ notOurs, rehearse: REHEARSE, runId }));
+        console.error(leftoversHint({ notOurs, rehearse: REHEARSE, runId, suite: SUITE }));
         process.exitCode = 1;
       }
       return leftovers;
@@ -1081,7 +1084,7 @@ async function main() {
     if (MODE === 'run') {
       // A human check that works even without a pin. Confirm the last four digits are the account you meant.
       log(
-        `projected $${priced.totalUSD.toFixed(6)} (an upper bound) against the $${ceiling} ceiling`,
+        `projected $${priced.totalUSD.toFixed(6)} (${SUITE === 'batch' ? 'an estimate; the ceiling stops the run' : 'an upper bound'}) against the $${ceiling} ceiling`,
       );
       log('Ctrl-C within 10 s to abort — nothing has been created yet.');
       await sleep(10_000);
@@ -1265,8 +1268,9 @@ async function main() {
       ...(discards.unfinished === null ? {} : { unfinished: discards.unfinished }),
     };
     if (over.length > 0) {
-      // The projection is only a ceiling if the run cannot exceed it. It just did, so the next change is to the
-      // projection — before this harness is trusted with another pre-flight check.
+      // The projection is only a bound if the run cannot exceed it. It just did, so the next change is to the
+      // projection — before this harness is trusted with another pre-flight check. (The batch suite's is an estimate:
+      // what stops its spend is the ceiling, checked before every send.)
       results.projectionExceeded = over;
       console.error(`calibrate: PROJECTION EXCEEDED — ${over.join('; ')}`);
       process.exitCode = 1;
@@ -1314,6 +1318,10 @@ async function main() {
     if (breached(spent, ceiling))
       throw new Error(`spend ceiling breached mid-run: $${spent.toFixed(6)} >= $${ceiling}`);
   };
+  // The batch suite's one call makes more requests than any other stage's, and what it makes depends on the grouping the
+  // engine chose and on the driver's own resends of throttled writes, which no projection bounds. So its client is held to
+  // the ceiling on every send: a run that reaches it stops inside the call, and tears down.
+  if (SUITE === 'batch') ceilingGate(client, checkCeiling);
 
   // Every timed sample runs through this ledger: one that meets a transient fault is discarded whole, its requests
   // recorded beside its stage, and run again from the start (on a fresh store, or a point read on its store put back

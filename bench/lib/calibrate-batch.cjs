@@ -8,8 +8,8 @@
  * to cost, are in `calibrate-batch-stages.cjs`; the workload and the counts are in `batch-counts.cjs`.
  */
 const { firstLoadRequests } = require('./calibrate-stages.cjs');
-const { checkOutputs } = require('./calibrate-batch-stages.cjs');
-const { batchOperands, batchSpecs } = require('./batch-counts.cjs');
+const { checkOutputs, checkReadBack } = require('./calibrate-batch-stages.cjs');
+const { batchOperands, batchSpecs, readBackCounts } = require('./batch-counts.cjs');
 
 /** The segment an operand is stored as. */
 const operandSegment = (i) => `batch-op${i}`;
@@ -71,6 +71,7 @@ async function runBatchSuite(ctx) {
     run: async () => {
       const specs = batchSpecs(plan.shape);
       const want = plan.counts.batch;
+      const wantReadBack = plan.counts.readBack;
       const calls = [];
       for (let g = 0; g < plan.samples; g += 1) {
         // A sample a transient fault discards runs again from the start on fresh destination names: what the failed
@@ -96,7 +97,20 @@ async function runBatchSuite(ctx) {
           const run = await store.materializeMany({ operands, outputs, keep: 12, budget: false });
           const ms = msSince(t0);
           const after = snap();
+          const depth = depthOf(before, after, ms);
           checkOutputs(run.outputs, want.outputs);
+          // Untimed, on a store that has read nothing: what each published output holds, read back from where the call put
+          // it and held, with the call's own answer, to the size set arithmetic over the generator's ids gives.
+          const reader = timedStore();
+          const readBack = await readBackCounts(run.outputs, (i) =>
+            reader.segment(destSegment(g, a, i)),
+          );
+          const checked = snap();
+          checkReadBack(
+            readBack,
+            plan.counts.sizes,
+            run.outputs.map((o) => o.published),
+          );
           return {
             ms,
             outputsPerSec: run.outputs.length / (ms / 1000),
@@ -112,7 +126,9 @@ async function runBatchSuite(ctx) {
             pointerBytes: after.wholeBytes - before.wholeBytes,
             uploadBytes: after.up - before.up,
             downloadBytes: after.down - before.down,
-            ...depthOf(before, after, ms),
+            readBackPut: checked.put - after.put,
+            readBackGet: checked.get - after.get,
+            ...depth,
           };
         });
         checkCeiling();
@@ -122,6 +138,11 @@ async function runBatchSuite(ctx) {
         if (c.put !== want.put || c.get !== want.get) {
           recordMissed(
             `materializeMany sample ${g}: ${c.put} PUT-class and ${c.get} GET-class, expected ${want.put} and ${want.get}`,
+          );
+        }
+        if (c.readBackPut !== wantReadBack.put || c.readBackGet !== wantReadBack.get) {
+          recordMissed(
+            `read-back of sample ${g}: ${c.readBackPut} PUT-class and ${c.readBackGet} GET-class, expected ${wantReadBack.put} and ${wantReadBack.get}`,
           );
         }
         return {
@@ -134,6 +155,10 @@ async function runBatchSuite(ctx) {
           get: c.get,
           expectedPut: want.put,
           expectedGet: want.get,
+          readBackPut: c.readBackPut,
+          readBackGet: c.readBackGet,
+          expectedReadBackPut: wantReadBack.put,
+          expectedReadBackGet: wantReadBack.get,
           rangeReads: c.chunkReads,
           rangeBytes: c.chunkBytes,
           tailReads: c.tailReads,
@@ -147,7 +172,7 @@ async function runBatchSuite(ctx) {
       if (calls.length > 0) {
         log(
           `  ${plan.outputs} outputs: ${calls.length} cold calls, all exact — median ${median(calls.map((c) => c.ms)).toFixed(0)} ms, ` +
-            `${median(calls.map((c) => c.groups))} groups, ${calls[0].get} GET-class and ${calls[0].put} PUT-class`,
+            `${median(calls.map((c) => c.groups))} groups, ${calls[0].get} GET-class and ${calls[0].put} PUT-class, then ${calls[0].readBackGet} GET-class to read the outputs back`,
         );
       }
       return {
@@ -180,7 +205,7 @@ function projectionLines({ plan, bounds, expected, discardBound, costliestSample
   lines.push(
     `  shape        ${plan.shape}: ${plan.operands} operands of ${plan.idsPerOperand} ids, ${plan.outputs} outputs ` +
       `(${b.published} published, ${b.refused} refused by the engine's own count), each sample one cold materializeMany ` +
-      `in ${b.groups} groups: ${b.get} GET-class and ${b.put} PUT-class`,
+      `in ${b.groups} groups: ${b.get} GET-class and ${b.put} PUT-class, and ${plan.counts.readBack.get} GET-class to read the outputs back`,
   );
   lines.push(`  samples      ${plan.samples} cold calls, each on destinations of its own`);
   lines.push(
@@ -202,10 +227,13 @@ function projectionLines({ plan, bounds, expected, discardBound, costliestSample
     { put: 0, get: 0 },
   );
   lines.push(
-    `  projected    ${ops.put} PUT-class, ${ops.get} GET-class — an upper bound, checked after the run`,
+    `  projected    ${ops.put} PUT-class, ${ops.get} GET-class — an estimate (the counted sample at 1.5 times), not a cap`,
   );
   lines.push(
-    `  projected $  ${price(ops).toFixed(6)} (the bound); the exact expected requests are ${spent.put} PUT-class and ${spent.get} GET-class, $${price(spent).toFixed(6)}`,
+    `  projected $  ${price(ops).toFixed(6)} (the estimate); the exact expected requests are ${spent.put} PUT-class and ${spent.get} GET-class, $${price(spent).toFixed(6)}`,
+  );
+  lines.push(
+    '  ceiling      the run’s CR_CALIBRATE_MAX_USD, checked before every request: a call that makes more than estimated stops there and tears down',
   );
   return lines;
 }

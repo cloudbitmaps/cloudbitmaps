@@ -17,12 +17,15 @@ so, and so do the module headers in the code.
   `CR_CALIBRATE_SUITE=batch`) loads the refresh shape of `bench/materialize-many-counts.cjs` (100 operands of 200,000 ids)
   and runs one cold `materializeMany` of its 1,000 outputs three times, each sample onto destinations of its own, recording
   the time, outputs a second, the requests by class and by kind of read, the bytes read and written and the groups the call
-  made. Each output must hold the count the engine made of it in memory, and each stage is held to the engine's exact
-  requests in both classes (at the default plan 6,200 PUT-class and 13,647 GET-class, $0.0365 at list prices, counted in memory). Its
-  projection is $0.094067, so the ceiling to give a run is $0.10; the other suites' projections are unchanged. Teardown's
-  passes and listing pages are sized for the thousand destinations a sample writes. A release below 0.18.0, which has no
-  `materializeMany`, is refused before anything is created. It has not been run on S3. No library code, package or version
-  changes.
+  made. Each output is held to the size plain set arithmetic over the generator's ids gives, by the call's own answer and by
+  a `count()` read back from the store after the call (untimed, its requests counted), and each stage is held to the engine's
+  exact requests in both classes (at the default plan 6,200 PUT-class and 16,647 GET-class, $0.037659 at list prices,
+  counted in memory). Its projection is an estimate, $0.097067, not a cap: the workload's client checks the spend ceiling
+  before every request, so a call that makes more than estimated is stopped at the ceiling and the run tears down; the ceiling
+  to give is $0.10. The other suites' projections are unchanged. Teardown's passes and listing pages are sized for the
+  thousand destinations a sample writes, and the leftovers hint names `--suite`. A release below 0.18.0, which has no
+  `materializeMany`, is refused before anything is created. The memory refusal reads a container's limit as well as
+  `MemAvailable`. It has not been run on S3. No library code, package or version changes.
 - **The calibration harness has a count stage, so `intersectCount`, `unionCount` and `andNotCount` can be measured on S3.**
   The large suite's `largeCount` runs each count verb, cold, on the operand pairs its stream stages read, and records, per
   verb and size, the median requests by kind of read and bytes a call, the latency percentiles and the count it returned, which must be the size of the

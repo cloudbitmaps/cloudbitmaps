@@ -78,6 +78,83 @@ function batchSpecs(shape) {
   return specs;
 }
 
+/** The sorted distinct ids in both of two sorted distinct arrays. */
+function intersectSorted(a, b) {
+  const out = new Uint32Array(Math.min(a.length, b.length));
+  let i = 0;
+  let j = 0;
+  let n = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] < b[j]) i++;
+    else if (a[i] > b[j]) j++;
+    else {
+      out[n++] = a[i];
+      i++;
+      j++;
+    }
+  }
+  return out.subarray(0, n);
+}
+
+/** The sorted distinct ids in either of two sorted distinct arrays. */
+function unionSorted(a, b) {
+  const out = new Uint32Array(a.length + b.length);
+  let i = 0;
+  let j = 0;
+  let n = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] < b[j]) out[n++] = a[i++];
+    else if (a[i] > b[j]) out[n++] = b[j++];
+    else {
+      out[n++] = a[i];
+      i++;
+      j++;
+    }
+  }
+  while (i < a.length) out[n++] = a[i++];
+  while (j < b.length) out[n++] = b[j++];
+  return out.subarray(0, n);
+}
+
+/** The sorted distinct ids of `a` that are not in `b`. */
+function minusSorted(a, b) {
+  const out = new Uint32Array(a.length);
+  let j = 0;
+  let n = 0;
+  for (let i = 0; i < a.length; i++) {
+    while (j < b.length && b[j] < a[i]) j++;
+    if (j >= b.length || b[j] !== a[i]) out[n++] = a[i];
+  }
+  return out.subarray(0, n);
+}
+
+/** The ids an expression of {@link makeTree} stands for, over operand id lists named `op<i>`. */
+function evaluate(expr, byName) {
+  if (typeof expr === 'string') return byName[expr];
+  if ('and' in expr) return expr.and.map((k) => evaluate(k, byName)).reduce(intersectSorted);
+  if ('or' in expr) return expr.or.map((k) => evaluate(k, byName)).reduce(unionSorted);
+  const [head, ...rest] = expr.andNot.map((k) => evaluate(k, byName));
+  return rest.reduce(minusSorted, head);
+}
+
+/**
+ * How many ids each output of `shape` must hold, by plain arithmetic over the sorted ids the generator makes: the
+ * intersection, union and difference of sorted arrays, with each output's excluded operands taken away. No library code is
+ * used, so the sizes do not come from the engine they check. Returns one number per output, in order (0 for an output
+ * whose answer is no ids: the engine publishes such an output, empty).
+ */
+function expectedSizes(shape) {
+  const byName = {};
+  for (const { index, ids } of batchOperands(shape)) byName[`op${index}`] = ids;
+  return batchSpecs(shape).map((spec) => {
+    const keep = spec.exclude.reduce(
+      (acc, name) => minusSorted(acc, byName[name]),
+      evaluate(spec.expr, byName),
+    );
+    return keep.length;
+  });
+}
+
 /**
  * What one outcome of `materializeMany` comes to, for comparison: published with its size, or refused with its reason.
  * An outcome that carries an error is not something to count, so it throws.
@@ -89,16 +166,45 @@ function outcomeOf(o, i) {
     : { published: false, reason: o.reason };
 }
 
+/** The most read-backs in flight at once: it sets how fast a run reads its outputs back, never how many requests. */
+const READ_BACK_CONCURRENCY = 16;
+
+/**
+ * Read back what each published output holds: `count()` of its stored segment, on one store, a few at a time. `segmentOf(i)`
+ * is output `i`'s destination. Returns each output's count, `null` for one that was not published.
+ */
+async function readBackCounts(outcomes, segmentOf) {
+  const counts = outcomes.map(() => null);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= outcomes.length) return;
+      if (outcomes[i].published) counts[i] = await segmentOf(i).count();
+    }
+  };
+  await Promise.all(Array.from({ length: READ_BACK_CONCURRENCY }, worker));
+  return counts;
+}
+
 /**
  * Count the batch of `shape`: the objects' sizes, and one `materializeMany` call's requests by kind, its groups and what
- * each output came to. `engine` is the library's module (required, as for `countSize`).
+ * each output came to, then the requests of reading each published output back with `count()` on a store of its own.
+ * `engine` is the library's module (required, as for `countSize`).
  *
- * Returns `{ operandBytes, batch }`, `batch` being `{ put, get, pointer, tail, range, rangeBytes, groups, published,
- * refused, outputs }`: PUT-class is the objects written, the registry's creates and swaps and the listings, GET-class the
- * pointer reads, tails and ranges the engine's storage and registry were asked.
+ * Each output's size is worked out twice before the stage may rest on it: by {@link expectedSizes}, plain arithmetic over
+ * the generator's ids, and by the engine over the in-memory backend. A difference between the two throws, so the sizes a
+ * run is held to are not the engine's word for itself.
+ *
+ * Returns `{ operandBytes, sizes, batch, readBack }`. `batch` is `{ put, get, pointer, tail, range, rangeBytes, groups,
+ * published, refused, outputs }`: PUT-class is the objects written, the registry's creates and swaps and the listings,
+ * GET-class the pointer reads, tails and ranges the engine's storage and registry were asked. `readBack` is `{ put, get,
+ * pointer, tail, range }` for the read-backs of the published outputs, one cold store for all of them. `sizes` is each
+ * output's expected size.
  */
 async function countBatch({ shape, engine }) {
   const s = BATCH_SHAPES[shape];
+  const sizes = expectedSizes(shape);
   const { loader, cold, calls, zero } = await countedBackend(engine);
   const operandBytes = [];
   for (const { index, ids } of batchOperands(shape)) {
@@ -121,23 +227,57 @@ async function countBatch({ shape, engine }) {
       `an output of ${calls.putMax} bytes would be a multipart upload on S3; the batch suite counts single-part writes`,
     );
   }
+  const batch = {
+    put: calls.put + calls.create + calls.swap + calls.list,
+    get: calls.pointer + calls.tail + calls.range,
+    pointer: calls.pointer,
+    tail: calls.tail,
+    range: calls.range,
+    rangeBytes: calls.rangeBytes,
+    groups: run.stats.groups,
+  };
   const outputs = run.outputs.map(outcomeOf);
+  for (let i = 0; i < outputs.length; i += 1) {
+    const got = outputs[i];
+    if (got.published && got.cardinality !== sizes[i]) {
+      throw new Error(
+        `output ${i}: the engine's in-memory count is ${got.cardinality}, and set arithmetic over the generator's ids gives ${sizes[i]}`,
+      );
+    }
+  }
+  const reader = cold();
+  const readBackSizes = await readBackCounts(outputs, (i) => reader.segment(`d${i}`));
+  for (let i = 0; i < outputs.length; i += 1) {
+    if (readBackSizes[i] !== (outputs[i].published ? sizes[i] : null)) {
+      throw new Error(
+        `output ${i}: read back from the in-memory store it holds ${readBackSizes[i]} ids; set arithmetic gives ${sizes[i]}`,
+      );
+    }
+  }
   const published = outputs.filter((o) => o.published).length;
   return {
     operandBytes,
-    batch: {
+    sizes,
+    batch: { ...batch, published, refused: outputs.length - published, outputs },
+    readBack: {
       put: calls.put + calls.create + calls.swap + calls.list,
       get: calls.pointer + calls.tail + calls.range,
       pointer: calls.pointer,
       tail: calls.tail,
       range: calls.range,
-      rangeBytes: calls.rangeBytes,
-      groups: run.stats.groups,
-      published,
-      refused: outputs.length - published,
-      outputs,
     },
   };
 }
 
-module.exports = { lcg, operandIds, batchOperands, makeTree, batchSpecs, outcomeOf, countBatch };
+module.exports = {
+  lcg,
+  operandIds,
+  batchOperands,
+  makeTree,
+  batchSpecs,
+  outcomeOf,
+  expectedSizes,
+  readBackCounts,
+  READ_BACK_CONCURRENCY,
+  countBatch,
+};

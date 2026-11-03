@@ -20,8 +20,9 @@ const RESULTS = join(ROOT, 'bench', 'calibrate-aws-rehearsal-batch.json');
 const BUILT = ['core', 'roaring', 's3'].map((p) => join(ROOT, 'packages', p, 'dist', 'index.js'));
 
 type Bound = { put: number; get: number };
+type Reads = Record<'whole' | 'suffix' | 'range', { n: number }>;
 type Stage = {
-  requests: Bound;
+  requests: Bound & { reads: Reads };
   discarded: { requests: Bound }[];
   expectedPuts?: number;
   expectedGets?: number;
@@ -31,6 +32,10 @@ type Stage = {
     get: number;
     expectedPut: number;
     expectedGet: number;
+    readBackPut: number;
+    readBackGet: number;
+    expectedReadBackPut: number;
+    expectedReadBackGet: number;
     groups: number;
   }[];
 };
@@ -104,6 +109,10 @@ beforeAll(async () => {
   }
 }, 60_000);
 
+/** The GetObjects a stage sent: the meter counts each by the shape of its range. */
+const getObjectsOf = (s: Stage): number =>
+  s.requests.reads.whole.n + s.requests.reads.suffix.n + s.requests.reads.range.n;
+
 const kept = (s: Stage): Bound => ({
   put: s.requests.put - s.discarded.reduce((n, d) => n + d.requests.put, 0),
   get: s.requests.get - s.discarded.reduce((n, d) => n + d.requests.get, 0),
@@ -124,6 +133,15 @@ function expectExact(results: Results) {
     expect(stage.expectedPuts, name).toBeDefined();
     expect(stage.expectedGets, name).toBeDefined();
     expect(kept(stage), name).toEqual({ put: stage.expectedPuts, get: stage.expectedGets });
+  }
+  // Each sample's own counts, and its read-backs', are the engine's: the call's and then each output read back.
+  for (const smp of (results.phases.batch as Stage).perSample ?? []) {
+    expect({ put: smp.put, get: smp.get }).toEqual({ put: smp.expectedPut, get: smp.expectedGet });
+    expect({ put: smp.readBackPut, get: smp.readBackGet }).toEqual({
+      put: smp.expectedReadBackPut,
+      get: smp.expectedReadBackGet,
+    });
+    expect(smp.readBackGet).toBeGreaterThan(0);
   }
 }
 
@@ -147,10 +165,11 @@ describe('the batch suite, rehearsed against MinIO', () => {
   }, 600_000);
 
   it('runs a sample again on destinations of its own after a transient fault, and still holds the stage to what it kept', async () => {
-    // The fault is a GetObject inside the batch call. The batch call is the last thing in a run to send a GetObject (teardown
-    // lists and deletes; the probe is a HeadBucket), so a clean run's last few GetObjects are the call's own. Not counted from
-    // the call's GET-class requests: a call opens each operand with a HeadObject, which is GET-class and is no GetObject, so
-    // that difference is not an index into GetObjects.
+    // The fault is a GetObject inside the batch call, indexed from the clean run's own counts: the GetObjects the run sent
+    // before the call are the run's total less the call's own (the meter counts each GetObject by the shape of its range,
+    // `reads`), and the fault is the third GetObject of the call. It is not an index counted from the call's GET-class
+    // requests, because those include HeadObjects: the S3 driver reads a zero-byte tail with a HeadObject, which is
+    // GET-class and no GetObject, and a fault can only be put on a GetObject.
     const clean = rehearse({ CR_CALIBRATE_BATCH_SHAPE: 'small', CR_CALIBRATE_BATCH_SAMPLES: '1' });
     expect(clean.status, clean.stderr).toBe(0);
     const cost = (
@@ -158,15 +177,30 @@ describe('the batch suite, rehearsed against MinIO', () => {
         cost: { ops: { byCommand: Record<string, number> } };
       }
     ).cost;
-    const getObjects = cost.ops.byCommand.GetObjectCommand ?? 0;
-    expect(getObjects).toBeGreaterThan(20);
+    const total = cost.ops.byCommand.GetObjectCommand ?? 0;
+    const call = clean.results.phases.batch as Stage;
+    const callGetObjects = getObjectsOf(call);
+    const callHeads = call.requests.get - callGetObjects;
+    // The comment above, checked: the call makes HeadObjects, and GetObjects besides.
+    expect(callHeads, 'the batch call sent no HeadObject').toBeGreaterThan(0);
+    expect(callGetObjects).toBeGreaterThan(3);
+    const before = total - callGetObjects;
+    expect(
+      before,
+      'the clean run sent fewer GetObjects before the call than its loads',
+    ).toBeGreaterThanOrEqual(getObjectsOf(clean.results.phases.batchLoad as Stage));
     const { status, stderr, results, bucket } = rehearse({
       CR_CALIBRATE_BATCH_SHAPE: 'small',
       CR_CALIBRATE_BATCH_SAMPLES: '1',
-      CR_CALIBRATE_FAULT_GETS: `${getObjects - 5}:reset`,
+      CR_CALIBRATE_FAULT_GETS: `${before + 3}:reset`,
     });
     expect(status, stderr).toBe(0);
-    expect(results.discards.count).toBe(1);
+    // The fault was reached inside the call, so the sample was discarded; the index is derived, so a harness that later sends
+    // a GetObject before the call moves it with the counts and a miss fails here, loudly.
+    expect(
+      results.discards.count,
+      'the injected GetObject was not reached inside the batch call',
+    ).toBe(1);
     expectExact(results);
     expect((results.phases.batch as Stage).discarded).toHaveLength(1);
     expect(await bucketsNow()).not.toContain(bucket);
@@ -191,7 +225,7 @@ function project(args: string[]) {
 }
 
 describe('the batch suite, projected', () => {
-  it('projects the batch suite without touching anything: its bound under the ceiling, each stage listed', () => {
+  it('projects the batch suite without touching anything: its estimate under the ceiling, each stage listed', () => {
     const out = project(['--suite', 'batch']);
     expect(out.status).toBe(0);
     expect(out.stdout).toMatch(/PROJECTION ONLY — nothing created, no credentials read/);

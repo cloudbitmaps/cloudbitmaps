@@ -9,20 +9,26 @@
  *   the EXPECTED  the exact requests the engine makes when nothing races it, counted by running the same call over the
  *                 in-memory backend on the same operands and outputs (`batch-counts.cjs`). The operands' loads are a
  *                 first load's requests on S3's shape.
- *   the BOUND     the most requests a stage can make, checked against the ceiling before anything is created. The
+ *   the BOUND     the requests a stage is allowed, checked against the ceiling before anything is created. The
  *                 number of groups a call runs in, which sets how often each operand is read, is the engine's to decide
- *                 from the sizes of what it holds, so the bound is the counted requests of a sample with headroom
- *                 (`BOUND_HEADROOM`), not a structural cap; a sample that exceeds it fails the run's end-of-run check.
+ *                 from the sizes of what it holds, so the bound is an ESTIMATE, the counted requests of a sample with
+ *                 headroom (`BOUND_HEADROOM`), not a cap: it leaves out a driver's resend of a throttled write (up to
+ *                 three more sends of it, and a HeadObject on each resend after the first). What caps the spend is
+ *                 the ceiling, which the workload's client checks before every send (`ceilingGate`), so a run that
+ *                 reaches it stops inside the call, whatever the retries, and tears down. A sample that exceeds the
+ *                 bound but not the ceiling fails the run's end-of-run check and writes no evidence.
  *
  * The shape is the `refresh` of `bench/materialize-many-counts.cjs`: 100 stored operands of 200,000 ids and 1,000
  * outputs, each a tree of one or two levels of `and`, `or` and `andNot` with the same opt-out operand excluded, built by
  * the same seeded generator. The stages are `batchLoad`, the 100 operands each through `store.load()`, and `batch`, one
  * `materializeMany` call of the 1,000 outputs per sample, on a store that has read nothing, onto destinations no earlier
- * sample wrote. The `target` shape of that file (operands of 3,000,000 ids, about 5 GB written a sample) is not run: it
+ * sample wrote, then, untimed, each published output's `count()` read back on a cold store and held, with the call's own
+ * answer, to the size plain set arithmetic over the generator's ids gives (`batch-counts.cjs`). The `target` shape of that file (operands of 3,000,000 ids, about 5 GB written a sample) is not run: it
  * is too big for CloudShell.
  */
 const { loadBound, releaseCore } = require('./calibrate-large-stages.cjs');
 const { firstLoadRequests } = require('./calibrate-stages.cjs');
+const { DISCARDS_PER_RUN, DISCARDS_PER_STAGE } = require('./calibrate-samples.cjs');
 const { partsOf } = require('./calibrate-large-stages.cjs');
 
 /** Every stage of the batch suite, in the order the harness runs them. */
@@ -61,14 +67,19 @@ function versionsOf({ operands, outputs, samples, discardedSamples }) {
 }
 
 /**
- * The memory the suite needs to start, in MiB: the call holds up to 256 MiB of resident bytes by its own count, and process
- * memory has been measured at 1.6 to 5 times that; the floor is the count's own peak resident set size (823 MiB for the default shape's in-memory count, measured on a laptop,
- * with every operand and destination held in memory, which a run on S3 does not), with room.
+ * The memory the suite needs to start, in MiB. The one figure measured is the in-memory count of the default shape, whose
+ * peak resident set size was 823 MiB on the maintainer's Mac (the count alone, every operand and destination held in memory,
+ * which a run on S3 does not do); the floor is that figure at 1.5 times, rounded up to 1,280. It is a chosen margin, not a
+ * measurement of the run on S3, whose own peak the evidence does not record. A machine whose memory is lower, whether
+ * `MemAvailable` or a container's limit (`calibrate-large-resources.cjs`), is refused before anything is created.
  */
 const BATCH_MIN_MEMORY_MB = 1_280;
 
-/** The most samples a stage may discard, which the batch stage's destinations are counted for (`calibrate-samples.cjs`). */
-const DISCARDED_SAMPLES = 2;
+/**
+ * The most samples the batch stage may discard (a run's allowance and a stage's, whichever is fewer), which its destinations
+ * are counted for (`calibrate-samples.cjs`).
+ */
+const DISCARDED_SAMPLES = Math.min(DISCARDS_PER_RUN, DISCARDS_PER_STAGE);
 /** The versions the largest workload the suite accepts leaves: the default shape at the default samples. */
 const BATCH_MAX_VERSIONS = versionsOf({
   ...BATCH_SHAPES[DEFAULT_BATCH_SHAPE],
@@ -179,7 +190,8 @@ const withHeadroom = (n) => Math.ceil((n * BOUND_HEADROOM.num) / BOUND_HEADROOM.
  *   w.operands, w.outputs   the shape
  *   w.operandBytes          the stored object of each operand
  *   w.samples               cold `materializeMany` calls
- *   w.counts                `countBatch`'s answer: `batch.put` and `batch.get` are a sample's counted requests
+ *   w.counts                `countBatch`'s answer: `batch.put` and `batch.get` are a call's counted requests, and
+ *                           `readBack.put` and `readBack.get` those of reading its outputs back; a sample makes both
  *   w.discards              { perRun, perStage }
  *   w.retryBound, w.fixedPuts, w.fixedGets
  *
@@ -192,7 +204,10 @@ function projectBatch(w) {
     const b = loadBound(bytes, w.retryBound);
     stages.batchLoad = { put: stages.batchLoad.put + b.put, get: stages.batchLoad.get + b.get };
   }
-  const sample = { put: withHeadroom(w.counts.batch.put), get: withHeadroom(w.counts.batch.get) };
+  const sample = {
+    put: withHeadroom(w.counts.batch.put) + withHeadroom(w.counts.readBack.put),
+    get: withHeadroom(w.counts.batch.get) + withHeadroom(w.counts.readBack.get),
+  };
   if (w.samples > 0) stages.batch = { put: w.samples * sample.put, get: w.samples * sample.get };
   const { perRun, perStage } = w.discards ?? {};
   if (!Number.isInteger(perRun) || perRun < 0) {
@@ -213,7 +228,7 @@ function projectBatch(w) {
 
 /**
  * The exact requests each stage makes when nothing races it: the operands' loads are a first load each on S3's shape, and
- * the batch is `w.samples` times the counted requests of one call.
+ * the batch is `w.samples` times the counted requests of one call and of the read-backs of its outputs.
  */
 function expectedBatch(w) {
   const stages = { batchLoad: { put: 0, get: 0 }, batch: { put: 0, get: 0 } };
@@ -222,7 +237,10 @@ function expectedBatch(w) {
     stages.batchLoad.put += r.put;
     stages.batchLoad.get += r.get;
   }
-  stages.batch = { put: w.samples * w.counts.batch.put, get: w.samples * w.counts.batch.get };
+  stages.batch = {
+    put: w.samples * (w.counts.batch.put + w.counts.readBack.put),
+    get: w.samples * (w.counts.batch.get + w.counts.readBack.get),
+  };
   return stages;
 }
 
@@ -259,6 +277,26 @@ function checkOutputs(got, want) {
   }
 }
 
+/**
+ * Hold what each output's stored segment holds, read back after the call, to the size set arithmetic gives. `got` is the
+ * `count()` of each output, `null` for one that was not published, and `sizes` the expected size of each (0 for an output
+ * whose answer is no ids, which the engine publishes empty). `published` says which outputs the call published. A mismatch
+ * throws, so a call whose stored outputs are not right produces no figure.
+ */
+function checkReadBack(got, sizes, published) {
+  if (got.length !== sizes.length) {
+    throw new Error(`${got.length} outputs read back; expected ${sizes.length}`);
+  }
+  for (let i = 0; i < sizes.length; i += 1) {
+    if (published[i] ? got[i] !== sizes[i] : got[i] !== null) {
+      throw new Error(
+        `output ${i} reads back ${got[i]} ids from the store; expected exactly ${sizes[i]}, from set arithmetic over the generator's ids. ` +
+          'A stored output that is not exact must not produce a latency figure.',
+      );
+    }
+  }
+}
+
 module.exports = {
   BATCH_STAGES,
   BATCH_SHAPES,
@@ -282,4 +320,5 @@ module.exports = {
   projectBatch,
   expectedBatch,
   checkOutputs,
+  checkReadBack,
 };
