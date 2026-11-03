@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-11-02
+
 ### Breaking
 
 - **The `.crbm` reader refuses an object that carries bytes no release writes.** An object's identity is its size and
@@ -90,8 +92,8 @@ so, and so do the module headers in the code.
 - **A registry delete on a store that does not apply a conditional delete no longer leaves the deleted row's keys in the
   bucket.** The tombstone it writes in place of the row (any S3-compatible host that is not AWS, or a GCS registry, by
   default) held the whole record, so the row's wrapped data keys, sealed summary, generation ledger and leases stayed
-  for good. It now keeps only what a re-create and the row parser read: the name, the pointer's number, the status, the
-  timestamps and the advanced token. A tombstone written before this release keeps its old contents until a re-create
+  for good. It now keeps only what a re-create and the row parser read: the namespace and name, the pointer's number,
+  the status, the timestamps and the advanced token. A tombstone written before this release keeps its old contents until a re-create
   over it replaces it, or the bucket's own tools remove it.
 
 - **A connection string the Azure SDK refuses no longer puts a part of itself in the error.** The `ValidationError`
