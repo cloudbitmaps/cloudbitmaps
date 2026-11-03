@@ -21,7 +21,7 @@ and both would be regressions if switched on:
 - **`changeset publish` is not used.** Publishing goes through `.github/workflows/release.yml`, which is
   tokenless (OIDC against a Trusted Publisher), provenance-signed, gated on a human approval, and carries
   pre-flight probes that refuse an unbootstrapped name or a version already on the registry — because
-  `pnpm publish` *silently skips* a version that is already there and exits 0. Those guards are what stop a
+  npm would reject a version that is already there part-way through the family, after the packages before it had gone out. Those guards are what stop a
   partial release; `changeset publish` has none of them.
 
 ## `"fixed"` is a glob on purpose

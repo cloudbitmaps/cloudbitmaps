@@ -80,7 +80,7 @@ The policy for releases after 1.0 is decided with the 1.0 compatibility policy a
 | **The key store** | Holds your key-encryption keys and unwraps data keys. It is the root of trust of encryption, so it is not an adversary here; a mistake in running it is |
 | **A pull-request author** | Changes workflow files, scripts and tests that CI runs |
 | **A compromised dependency** | Runs code at install or import time in a developer machine, in CI or in a consumer's install |
-| **The release runner** | Code running in the publish job after approval, able to ask for the token that npm Trusted Publishing accepts |
+| **The release runner** | Code running in the publish job after approval, able to ask for the token that npm Trusted Publishing accepts. That job runs no code from the repo's dependencies; the job that does (`verify`) holds no such token |
 
 **Where the trust boundaries are.**
 
@@ -309,13 +309,14 @@ produced the package they installed**. In short:
 | --- | --- |
 | **npm Trusted Publishing, no token** | No long-lived npm credential exists to steal: the release workflow authenticates with a short-lived identity token bound to this repository, workflow and environment |
 | **Provenance on every package** | A signed attestation links each tarball to the workflow, repository and commit that built it; verify with `npm audit signatures` or the "Provenance" panel on the package's npm page |
-| **A required reviewer on the `release` environment** | The publish job pauses until the maintainer approves it, and nothing publishes before |
+| **A required reviewer on the `release` environment** | The publish job pauses until the maintainer approves it, after the verify job has passed, and nothing publishes before |
 | **Every CI action pinned to a full commit SHA** | A moved or hijacked tag cannot inject code into the build |
 | **Frozen installs** | `pnpm install --frozen-lockfile` in CI and release; build scripts of dependencies are limited to an allowlist |
 | **The dependency audit and the leak scan** | A blocking production audit at high severity, re-run on the exact release commit; the packed tarballs are scanned for credentials, keys, emails, local paths and cloud account ids before publish |
 | **CodeQL** | Static analysis on every pull request, every push to `main` and weekly |
 | **Fuzzing** | Coverage-guided fuzz targets run nightly, with a longer weekly soak |
-| **Least-privilege workflows** | Read-only repository access by default; the publish job cannot write to the repository |
+| **Least-privilege workflows** | Read-only repository access by default; the publish job cannot write to the repository, and only it can mint the publish token |
+| **The publish job runs no dependency code** | The release is split: `verify` installs and tests with no publish identity, and `publish` runs only pinned actions, one exact npm and inline shell, publishing the tarballs `verify` packed and scanned |
 
 **What a published package contains.** Each of the six packages ships only its `dist/` build, `README.md`, `LICENSE` and
 `NOTICE` (the flavor also ships `PRIVACY.md`). Core has no runtime dependencies and no cloud SDK; each driver package has
@@ -336,7 +337,7 @@ The controls in full:
   `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually achievable keeps the guarantee
   without the trap.) npm records a **signed, publicly-verifiable attestation** linking the tarball to the exact GitHub
   Actions workflow, repository, and commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted
-  runner with `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
+  runner, in a job with `id-token: write` and no write scope). Verify an installed copy with **`npm audit signatures`**, or
   read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's release
   workflow should be treated as untrusted. A *publicly-verifiable* attestation requires the source repository to be
   public and the package published under a real version — both true of every release, so every tarball **published by
@@ -381,7 +382,7 @@ The controls in full:
   (it restores none and saves none), so nothing it ran can become an entry another job restores; the other two restore
   the pnpm cache and save the container-image cache, and a container escape from either is the risk this section accepts.
 - **The published tarball is scanned, not just the source.** Before publishing, the release workflow packs each
-  package, unpacks the `.tgz` and scans **what actually ships**
+  package once, unpacks the `.tgz` and scans **what actually ships**, then publishes those same files
   ([`scripts/leak-scan-tarballs.cjs`](scripts/leak-scan-tarballs.cjs)) for credentials, private keys, real email
   addresses, absolute local machine paths, AWS account ids and ARNs. This is deliberately a different surface from scanning the repo:
   `dist/` is gitignored, so a source-tree or git-history scan cannot see the majority of the published bytes —
@@ -389,12 +390,13 @@ The controls in full:
   because an npm tarball is immutable outside the 72-hour unpublish window; there is no fixing a string that
   has already shipped.
 - **Recoverable checks run before the irreversible one.** Every gate above that a run performs — the re-run test
-  suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`,
+  suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes the publish (and the approval),
   and [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if the audit, the tag/version
   agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the six packages
   cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
-  `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds
+  `contents: read`, and in the release workflow only the `publish` job adds `id-token: write`, for provenance and
+  Trusted Publishing; the top level grants no `id-token`. **Exactly one job holds
   `contents: write`** — `github-release`, which creates the GitHub Release object and cannot publish. The job
   that *does* publish never holds it, which is the point of splitting them: the write scope lives on the job
   an attacker gains least from. Enforced, not merely stated —
@@ -409,9 +411,13 @@ attestation, by design; with `dryRun: false` it publishes only when dispatched o
 (see *Publish only a re-verified tree* above); on any other ref it fails before any build or publish step. Either way a
 manual run creates no GitHub Release.
 
-**One limit, stated as it is.** The publish job runs `pnpm install --frozen-lockfile` and the gate in the same job that
-can ask for the publish token, so a malicious locked dependency whose build script is on the allowlist could run there;
-the frozen lockfile, the allowlist and the reviewer's pause before anything runs are what stand against it. Any publish through the workflow needs the `release`
+**One limit, stated as it is.** The release workflow's `verify` job runs `pnpm install --frozen-lockfile` and the gate,
+so a malicious locked dependency whose build script is on the allowlist could run there. It holds no `id-token` and no
+write scope, so it cannot ask for the publish token or publish, but it can change the tarballs it packs and uploads.
+Three things stand against that: the frozen lockfile and the allowlist, the leak scan of the very files that are
+published, and the reviewer's approval, which comes after `verify` and before anything is published. The `publish`
+job checks the tarballs against their `SHA256SUMS`, which catches damage or a swap between the two jobs and nothing
+more, since the sums travel with the files. None of the three would notice code a dependency injects into a tarball in `verify`. Any publish through the workflow needs the `release`
 environment's reviewer, and the Trusted Publisher is bound to the workflow and environment. The two hand-run paths above
 (a new name's bootstrap and the break-glass release) need no reviewer: only the maintainer can perform them, on the
 npm account's own protections (its login and two-factor authentication).

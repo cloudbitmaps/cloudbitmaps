@@ -34,12 +34,20 @@
 // absolute `/Users/…` path that this very regex would catch. If it ever does fire, the finding is real.
 
 const { execFileSync } = require('node:child_process');
-const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } = require('node:fs');
+const {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 
 const ROOT = resolve(__dirname, '..');
 const KEEP = process.argv.includes('--keep'); // leave the unpacked trees behind for eyeballing
+// `--from <dir>`: scan the tarballs already in <dir> instead of packing (see tarballsToScan).
 
 /** Run a command, letting its output through, and throw with a useful message if it fails. */
 function run(cmd, args, cwd) {
@@ -73,6 +81,58 @@ const needles =
   (process.env.LEAK_SCAN_EXTRA ?? '').trim() !== '' || existsSync(join(ROOT, '.leak-needles'));
 const strict = needles ? ['--snapshot'] : [];
 
+/**
+ * The tarballs to scan, one per publishable package. By default each package is packed here. With `--from <dir>`
+ * the tarballs already in that directory are the ones scanned (the release workflow packs them once, scans those
+ * very files, and uploads them), so what is scanned is byte for byte what is published. In that mode the
+ * directory must hold exactly one tarball per publishable package: a missing one, an extra one and a second
+ * copy of one all fail, since the scan would otherwise pass over bytes nobody checked.
+ */
+function tarballsToScan(pkgs, work, from) {
+  if (from === null) {
+    return pkgs.map((pkg) => {
+      const dest = join(work, pkg.name.replace(/[^a-z0-9]+/gi, '-'));
+      // `pnpm pack` runs the package's own `prepack` (a build), so the tarball is the real, built artifact and
+      // not whatever happened to be sitting in dist/.
+      run('pnpm', ['pack', '--pack-destination', dest], pkg.dir);
+      const tarballs = readdirSync(dest).filter((f) => f.endsWith('.tgz'));
+      if (tarballs.length !== 1) {
+        throw new Error(`expected exactly 1 tarball for ${pkg.name}, got ${tarballs.length}`);
+      }
+      return { name: pkg.name, file: join(dest, tarballs[0]), dest };
+    });
+  }
+  const files = readdirSync(from).filter((f) => f.endsWith('.tgz'));
+  const byName = new Map();
+  for (const file of files) {
+    const dest = join(work, file.replace(/[^a-z0-9]+/gi, '-'));
+    mkdirSync(dest, { recursive: true });
+    run('tar', ['-xzf', join(from, file), '-C', dest], ROOT);
+    const manifestPath = join(dest, 'package', 'package.json');
+    if (!existsSync(manifestPath)) throw new Error(`${file} has no package/package.json`);
+    const { name } = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    if (byName.has(name))
+      throw new Error(`two tarballs for ${name}: ${byName.get(name).file} and ${file}`);
+    byName.set(name, { name, file: join(from, file), dest });
+  }
+  const want = new Set(pkgs.map((p) => p.name));
+  const missing = [...want].filter((n) => !byName.has(n));
+  const extra = [...byName.keys()].filter((n) => !want.has(n));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `the tarballs in ${from} are not the publishable packages: missing [${missing.join(', ')}], extra [${extra.join(', ')}]`,
+    );
+  }
+  return pkgs.map((p) => byName.get(p.name));
+}
+
+const fromIndex = process.argv.indexOf('--from');
+const from = fromIndex === -1 ? null : resolve(process.argv[fromIndex + 1] ?? '');
+if (fromIndex !== -1 && (!process.argv[fromIndex + 1] || !existsSync(from))) {
+  console.error('leak-scan-tarballs: --from needs an existing directory of .tgz files');
+  process.exit(1);
+}
+
 const work = mkdtempSync(join(tmpdir(), 'cbm-tarball-scan-'));
 let failures = 0;
 try {
@@ -85,21 +145,16 @@ try {
     }`,
   );
 
-  for (const pkg of pkgs) {
-    const dest = join(work, pkg.name.replace(/[^a-z0-9]+/gi, '-'));
-    // `pnpm pack` runs the package's own `prepack` (a build), so the tarball is the real, built artifact and
-    // not whatever happened to be sitting in dist/.
-    run('pnpm', ['pack', '--pack-destination', dest], pkg.dir);
-    const tarballs = readdirSync(dest).filter((f) => f.endsWith('.tgz'));
-    if (tarballs.length !== 1) {
-      throw new Error(`expected exactly 1 tarball for ${pkg.name}, got ${tarballs.length}`);
+  for (const pkg of tarballsToScan(pkgs, work, from)) {
+    const { dest } = pkg;
+    if (from === null) {
+      run('tar', ['-xzf', pkg.file, '-C', dest], ROOT);
     }
-    run('tar', ['-xzf', join(dest, tarballs[0]), '-C', dest], ROOT);
     // npm tarballs always root everything under `package/`.
     const tree = join(dest, 'package');
-    if (!existsSync(tree)) throw new Error(`unpacked ${tarballs[0]} has no package/ directory`);
+    if (!existsSync(tree)) throw new Error(`unpacked ${pkg.file} has no package/ directory`);
 
-    console.log(`\n── ${pkg.name} (${tarballs[0]}) ──`);
+    console.log(`\n── ${pkg.name} (${pkg.file.split('/').pop()}) ──`);
     // The packed manifest is what a consumer installs from: it must name the rest of the family at exact
     // versions (pnpm turns `workspace:*` into one) and export its own package.json.
     const packed = JSON.parse(readFileSync(join(tree, 'package.json'), 'utf8'));
