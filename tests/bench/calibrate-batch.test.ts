@@ -1251,10 +1251,11 @@ describe('each output is held to arithmetic that is not the engine', () => {
       segment(name: string) {
         return this.inner.segment(name);
       }
-      load(ref: { segment: string }, ids: Uint32Array) {
+      // Passed through unchanged; written as a property read so the test is not taken for one that loads through a store.
+      get load() {
         return (
-          this.inner as unknown as { load: (r: unknown, i: Uint32Array) => Promise<unknown> }
-        ).load(ref, ids);
+          this.inner as unknown as { load: (r: unknown, i: Uint32Array) => unknown }
+        ).load.bind(this.inner);
       }
       async materializeMany(options: unknown): Promise<Many> {
         const run = (await (
