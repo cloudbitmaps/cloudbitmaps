@@ -427,7 +427,8 @@ export interface DropResult {
  * and a registry and a positive TTL** — expiry needs all three. A source built without a clock or a registry, or
  * with `cache.genTtlMs: 0`, has no timed refresh: it notices the drop only when a read has to fetch from a deleted
  * generation or its reader cache evicts the segment. Because a cache-LRU hit never reaches Storage, such a reader
- * can answer `true` for a dropped segment **indefinitely**, and must be invalidated or restarted. This is the *same* caching that makes the delete-bytes-first ordering fail intermittently rather
+ * can answer `true` for a dropped segment **indefinitely**, and must be invalidated or restarted. A pinned handle is
+ * bounded the same way: with a timed refresh it re-reads the row at that interval and fails once it is dropped. This is the *same* caching that makes the delete-bytes-first ordering fail intermittently rather
  * than loudly — it cuts both ways.
  *
  * `confirmSegment` must equal `ref.segment`, matching `destroySegment`/`eraseNamespace`. For an automated

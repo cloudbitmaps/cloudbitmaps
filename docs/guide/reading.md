@@ -125,6 +125,9 @@ for many counts over the same segments in one pass, a dry-run [`materializeMany`
 - **`has()` comes from memory once warm.** A `has()` whose chunk is in the cache makes no request, beyond at most one
   pointer read per segment each `cache.genTtlMs` (2 s by default), and, on an encrypted segment whose reader the reader
   cache let go, a key unwrapped again through the keystore.
+- **A pinned handle makes one row read per `cache.genTtlMs` per pinned segment.** Every pin, handle and combine of the
+  segment in the store shares it, an idle pin makes none, and each invalidation of the segment in the store adds one more row read, and a pin whose generation is not in the row's
+  ledger adds one footer read per interval. Between checks a pinned read makes no request of its own. A store with no timed refresh makes none.
 - **`intersect` skips.** Two 2,000,000-id segments that share 100 of their 2,000 chunks intersect by fetching only the
   shared chunks. The [at-scale benchmark](../benchmarks.md#at-scale--measured-1k--10k--100k-segments) measured it at
   24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
@@ -187,7 +190,8 @@ the key is unwrapped to open it, as for a count. A row with no summary it can us
 encrypted and whose key was not at hand writes none) is answered from the object's footer and index instead, with no
 payload read: a tail read more when cold, and a range read for an index longer than the tail read, on a segment of
 tens of thousands of chunks; that `stat()` keeps the generation open in the reader cache, as a read does. A pinned
-handle answers for the generation it pinned, and reads nothing while that generation is open. A segment with no
+handle answers for the generation it pinned, and reads nothing while that generation is open, apart from its check
+(a row read per interval on a store with a timed refresh). A segment with no
 generation answers `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a
 size answers `sizeBytes: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second
 resolution that a publish between the two can make another generation's. Answered from the row, a `stat()` reports
@@ -403,7 +407,8 @@ an id in a chunk it did not hold when the combine began is subtracted from there
 
 `seg.pin()` returns a handle held at the generation that is current right now, for the life of the handle. A long
 export, reconciliation or send then describes one instant instead of whichever generations happened to be current as
-it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not.
+it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not move, but every `cache.genTtlMs` it
+checks its segment's row, and fails once the segment is destroyed or its generation erased.
 
 <!-- typecheck: store -->
 ```ts
@@ -419,8 +424,10 @@ for await (const id of audience.iterate()) {
   `keep`, an erasure, the retention sweep) from deleting the generation underneath you. A pinned read deliberately does
   not heal forward, because silently serving a different generation is what a pin exists to prevent. It fails with
   `NotFoundError` instead, for any chunk it must fetch from a generation that has since been collected. Chunks it
-  already cached still answer, and so does every chunk of a small generation whose reader kept its chunks, for as long
-  as the pin's reader stays in the reader cache; the reader's reopen after an eviction then fails the same way.
+  already cached still answer, and so does every chunk of a small generation whose reader kept its chunks, until the
+  pin's next check on a store with a timed refresh, which fails the pin within `cache.genTtlMs` of the collection, and
+  on a store with none for as long as the pin's reader stays in the reader cache; the reader's reopen after an
+  eviction then fails the same way.
   [`pin({ leaseUntil })`](#hold-a-generation-for-a-job-a-lease) keeps the generation out of a load's collection until
   a time you choose.
 - **Size `keep` for your longest pinned job:** keep more generations than the loads that can land on the segment while
@@ -555,7 +562,9 @@ generation](correctness.md#one-generation-per-call): a combine that holds a segm
 it never reads a re-created segment's object, and where its object is gone or replaced a read that must fetch [fails
 with `NotFoundError` rather than going empty part-way through a call](correctness.md#pin-answers-from-what-it-holds).
 What invalidates a pin, what it answers from meanwhile, and what it needs are in [How a pin stays
-correct](correctness.md#how-a-pin-stays-correct).
+correct](correctness.md#how-a-pin-stays-correct). Every `cache.genTtlMs` a pin also has its segment's row read, and
+fails with `NotFoundError` once the segment is destroyed, gone or re-created, or its generation erased or collected, or recorded by its row as another object: the
+[erasure guide](erasure.md#who-stops-seeing-the-id-and-when) states the bound.
 
 ## Read a chunk at a time: `batches()`
 

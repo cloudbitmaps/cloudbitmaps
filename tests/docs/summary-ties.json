@@ -63,12 +63,6 @@
     },
     {
       "file": "PRIVACY.md",
-      "claim": "pin-answers-from-what-it-holds",
-      "sentence": "7a5659b99a3c",
-      "starts": "no bound — until that store's reader cache"
-    },
-    {
-      "file": "PRIVACY.md",
       "claim": "lease-write-refuses-no-writer",
       "sentence": "8c4ee455a856",
       "starts": "A lease write does not delay an erasure:"
@@ -489,12 +483,6 @@
     },
     {
       "file": "docs/guide/disaster-recovery.md",
-      "claim": "pin-safe-across-re-creation",
-      "sentence": "5ecb649e698c",
-      "starts": "Once a restore puts the object back, it"
-    },
-    {
-      "file": "docs/guide/disaster-recovery.md",
       "claim": "transient-error-leaves-its-object",
       "sentence": "753a10817f89",
       "starts": "A TransientError from a load whose registry writes"
@@ -606,12 +594,6 @@
       "claim": "erasure-results",
       "sentence": "1662f14a1f80",
       "starts": "Once an erasure has found an object to"
-    },
-    {
-      "file": "docs/guide/erasure.md",
-      "claim": "pin-answers-from-what-it-holds",
-      "sentence": "9124f5c9b17c",
-      "starts": "no bound: until that store's reader cache evicts"
     },
     {
       "file": "docs/guide/erasure.md",

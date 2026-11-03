@@ -4,7 +4,9 @@
  *
  * A pin exists so a long job describes a single instant. An ordinary handle re-resolves on `cache.genTtlMs`, so a
  * publish part-way through an export, a send or a reconciliation means the second half of the job describes a
- * different instant than the first — and nothing in the result says so.
+ * different instant than the first — and nothing in the result says so. A pin does not move to another generation, but
+ * on a store with a timed refresh it checks every `cache.genTtlMs` that its segment is still there, and a read fails
+ * with `NotFoundError` once it is destroyed or the pinned generation erased.
  *
  * **A pin is a generation number and the object it named, not a captured reader.** The reader behind it can live
  * in the shared bounded LRU and be evicted freely: re-opening at the same number reopens the same object, or, if
@@ -111,12 +113,24 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     return this.pins.get(segmentKey(ref));
   }
 
+  /**
+   * The pin's recheck when it is due, else `undefined`: a compare and no await between checks. A pinned read waits for
+   * it before it touches the reader or the chunk cache, and fails with its `NotFoundError` once the segment is
+   * destroyed or the pin's generation erased ({@link CrbmStorageChunkSource.recheckPin}).
+   */
+  private due(ref: SegmentRef, generation: number, pin: PinnedObject): Promise<void> | undefined {
+    return this.inner.pinDue(ref, pin) ? this.inner.recheckPin(ref, generation, pin) : undefined;
+  }
+
   getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.getChunk(ref);
-    return pin.generation === null
-      ? Promise.resolve(null)
-      : this.inner.getChunkAt(ref, pin.generation, heldBy(pin));
+    if (pin.generation === null) return Promise.resolve(null);
+    const generation = pin.generation;
+    const due = this.due(ref, generation, pin);
+    return due === undefined
+      ? this.inner.getChunkAt(ref, generation, heldBy(pin))
+      : due.then(() => this.inner.getChunkAt(ref, generation, heldBy(pin)));
   }
 
   /**
@@ -149,7 +163,11 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
       this.inner.getChunksAt(ref, pin.generation, keys, heldBy(pin), options),
     );
     try {
-      while (await pull.advance()) yield pull.take((chunk) => ({ ...chunk, version }));
+      while (await pull.advance()) {
+        // A stream in progress stops at its next chunk once the interval has lapsed and the pin is over.
+        if (this.inner.pinDue(ref, pin)) await this.inner.recheckPin(ref, pin.generation, pin);
+        yield pull.take((chunk) => ({ ...chunk, version }));
+      }
     } finally {
       await pull.close();
     }
@@ -158,41 +176,56 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
   listChunkKeys(ref: SegmentRef): Promise<number[]> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.listChunkKeys(ref);
-    return pin.generation === null
-      ? Promise.resolve([])
-      : this.inner.listChunkKeysAt(ref, pin.generation, heldBy(pin));
+    if (pin.generation === null) return Promise.resolve([]);
+    const generation = pin.generation;
+    const due = this.due(ref, generation, pin);
+    return due === undefined
+      ? this.inner.listChunkKeysAt(ref, generation, heldBy(pin))
+      : due.then(() => this.inner.listChunkKeysAt(ref, generation, heldBy(pin)));
   }
 
   sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.sizeOf(ref);
-    return pin.generation === null
-      ? Promise.resolve(null)
-      : this.inner.sizeOfAt(ref, pin.generation, heldBy(pin));
+    if (pin.generation === null) return Promise.resolve(null);
+    const generation = pin.generation;
+    const due = this.due(ref, generation, pin);
+    return due === undefined
+      ? this.inner.sizeOfAt(ref, generation, heldBy(pin))
+      : due.then(() => this.inner.sizeOfAt(ref, generation, heldBy(pin)));
   }
 
   cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.cardinalities(ref);
-    return pin.generation === null
-      ? Promise.resolve(null)
-      : this.inner.cardinalitiesAt(ref, pin.generation, heldBy(pin));
+    if (pin.generation === null) return Promise.resolve(null);
+    const generation = pin.generation;
+    const due = this.due(ref, generation, pin);
+    return due === undefined
+      ? this.inner.cardinalitiesAt(ref, generation, heldBy(pin))
+      : due.then(() => this.inner.cardinalitiesAt(ref, generation, heldBy(pin)));
   }
 
   summary(ref: SegmentRef): Promise<GenerationSummary | null> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.summary(ref);
-    return pin.generation === null
-      ? Promise.resolve(null)
-      : this.inner.summaryAt(ref, pin.generation, heldBy(pin));
+    if (pin.generation === null) return Promise.resolve(null);
+    const generation = pin.generation;
+    const due = this.due(ref, generation, pin);
+    return due === undefined
+      ? this.inner.summaryAt(ref, generation, heldBy(pin))
+      : due.then(() => this.inner.summaryAt(ref, generation, heldBy(pin)));
   }
 
   stat(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.stat(ref);
-    return pin.generation === null
-      ? Promise.resolve(null)
-      : this.inner.statAt(ref, pin.generation, heldBy(pin));
+    if (pin.generation === null) return Promise.resolve(null);
+    const generation = pin.generation;
+    const due = this.due(ref, generation, pin);
+    return due === undefined
+      ? this.inner.statAt(ref, generation, heldBy(pin))
+      : due.then(() => this.inner.statAt(ref, generation, heldBy(pin)));
   }
 
   currentGeneration(ref: SegmentRef): Promise<number | null> {
@@ -223,7 +256,9 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     // A live version starts with its generation number, so no live version can equal a pin's. The fingerprint keeps
     // two incarnations' pins apart where the version cannot: on a store with no registry it is the bare number.
     if (pin.version === null) return Promise.resolve(null);
-    return Promise.resolve(`pin ${pin.version}#${pin.fingerprint}`);
+    const version = `pin ${pin.version}#${pin.fingerprint}`;
+    const due = this.due(ref, pin.generation, pin);
+    return due === undefined ? Promise.resolve(version) : due.then(() => version);
   }
 
   exists(ref: SegmentRef): Promise<boolean> {

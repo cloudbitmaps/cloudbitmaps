@@ -357,7 +357,8 @@ outcome.
 <a id="exposure-window-is-the-ttl"></a>**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so at
 most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses: one, at the
 2 s default, against any realistic publish cadence. A sixty-second `intersect` does not need a sixty-second window. A
-pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves. So is a
+pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves, though it
+checks on the same interval, from the moment it was taken, that its segment is still there. So is a
 store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a `StorageChunkSource` of your own, which the store times no refresh on), whose
 snapshot lasts until an eviction, a read that finds its generation swept, or an invalidation moves it on, however long
 that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct. A store
@@ -576,22 +577,27 @@ it can finish only after the rollback's move, so the call's next read of the row
   combine that is refused throws before it reads anything.
 - <a id="pin-safe-across-re-creation"></a>**A pin is safe across a re-creation.** `pin()` records the pinned object's size and footer checksum. If the segment
   is purged and loaded again, which starts the new segment at generation 0 again, the pin never reads the new
-  segment: what it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, with
-  or without a registry. An object of another size counts as another object, damaged or not. A replacement it has
-  found is remembered, so later reads fail with no request, until the store forgets it. `store.invalidate(ref)` does
-  that, and so does a later `pin()` of the same version that opens the pinned object again. The store remembers at most
-  `cache.readerMax` of them. So once a restore puts the object back, invalidate its store: the pin then reads it
-  again, and a pin taken after that reads the object then stored as its generation.
+  segment. On a store with a timed refresh the pin fails with `NotFoundError` at its next check, within
+  `cache.genTtlMs`, what it had already read included, since its row is another incarnation. On a store with none, what
+  it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, with or without a
+  registry. An object of another size counts as another object, damaged or not. A replacement a read
+  found when it had to fetch is remembered, so later reads fail with no request, until the store forgets it. `store.invalidate(ref)` does
+  that, and so does a later `pin()` of the same version that opens the pinned object again; a replacement the pin's own check found is forgotten only by
+  `store.invalidate(ref)`. The store remembers at most
+  `cache.readerMax` of them. So once a restore puts the object back into the same row, invalidate its store: the pin
+  then reads it again, and a pin taken after that reads the object then stored as its generation. A restore into a
+  purged and re-created row does not revive a pin on a store with a timed refresh, whose next check ends it again:
+  take a new pin.
 - <a id="pin-opens-its-reader"></a>**`pin()` opens its reader as it pins.** With a registry, pins of one generation taken while its row is unchanged
   share that reader while the store keeps it open, pins taken at the same moment included. Only the first costs a tail
   read, and a key unwrap for an encrypted segment, even if it is never read. Without a registry, every `pin()` lists the
   segment's objects and makes the tail read. `pin()` and every pinned read are retried as the store's reads are.
 - <a id="pin-of-no-generation"></a>**A segment with no current generation pins nothing and reads empty.** A pinned segment whose row is later dropped or
-  destroyed fails with `NotFoundError` once it must open its object again, rather than going empty part-way through a
-  call.
+  destroyed fails with `NotFoundError` once it must open its object again, or once its next check of the row finds it
+  so (below), rather than going empty part-way through a call.
 - <a id="pin-answers-from-what-it-holds"></a>**A pin answers from what it holds.** It keeps the key its reader unwrapped while that reader stays open, and
   answers from the chunks it decoded while they stay cached, and, for a small generation, from the chunk bytes its
-  reader kept while the reader stays open. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
+  reader kept while the reader stays open, until its next check. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
   `dropSegment` of its segment. It also invalidates it on a `retireExpired` whose ledger lists its segment, retired or
   not, and on an `eraseSubject` that scans its segment while it is not destroyed. A dry run of `dropSegment` or
   `retireExpired` invalidates nothing. An invalidated pin opens its
@@ -602,12 +608,20 @@ it can finish only after the rollback's move, so the call's next read of the row
   in progress has](erasure.md#who-stops-seeing-the-id-and-when). It caches nothing more of what it began reading before
   the invalidation, so the pin's next read opens the object again too.
 
-  Anything else leaves it as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement
-  through another store, in the same process or another, it answers from what it holds. That lasts until its store's
-  reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
-  `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
-  fails at once, unless its reader kept the generation's chunks, which it serves until the reader is evicted. A
-  combine on another store refuses the pin.
+  Anything else leaves it as it is, until its next check. After a `destroySegment` beside its store, or an erasure, a drop
+  or a retirement through another store, in the same process or another, it answers from what it holds for at most
+  `cache.genTtlMs`: at most every `cache.genTtlMs`, by the clock on access, the pin has its segment's row read (one read
+  serves every pin of the segment in the store), and fails with `NotFoundError`, dropping its reader and the key it
+  unwrapped, when the row is gone or destroyed, is another incarnation of the name, or names the pinned generation with
+  another checksum. A generation the row's ledger does not name is not a failure by itself: the object's footer is read,
+  once per interval, and the pin fails once the object is gone or another. A transient fault of the registry, or of that footer read, keeps it
+  serving, asking again after 500 ms. Without a timed refresh (no registry, no clock, `cache.genTtlMs: 0`) nothing
+  checks it, and it answers until its store's reader cache evicts the pin's reader and the chunk cache evicts the chunks
+  the pin decoded, or until `store.invalidate(ref)` is called on its store. Where the library has deleted the object it
+  reads (an erasure or a collection takes the generation off the ledger first), the check ends the pin at its next run.
+  An object lost or replaced out of band under a row whose ledger still names the generation with the pin's checksum is
+  not found by the check: a chunk the pin has not cached fails at once, and the rest answers from the reader and the
+  chunk cache. A combine on another store refuses the pin.
 - <a id="pin-needs-a-crbm-reader"></a>**It needs a `.crbm` reader**: the store builds one over a backend, and over a bare `IStorageDriver`. A
   `StorageChunkSource` of your own throws `UnsupportedError`.
 

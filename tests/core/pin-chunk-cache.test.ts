@@ -514,7 +514,11 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     const OLD = [1, 2, C + 1, C + 2, 2 * C + 1];
     const NEW = [1, 2, 3, C + 5, C + 6, C + 7, 2 * C + 5];
     const w = await purgeable(OLD);
-    const store = new CloudRoaring({ storage: w.backend, cache: { readerMax: 1 } });
+    const store = new CloudRoaring({
+      storage: w.backend,
+      cache: { readerMax: 1 },
+      seams: { clock: manualClock() },
+    });
     const snap = await store.segment('s').pin();
     expect(await snap.has(1)).toBe(true); // caches chunk 0 of the old segment under the pin
     await w.reload(NEW);
@@ -531,7 +535,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
 
   it('two pins of one generation in two incarnations never share a reader, even with no eviction between', async () => {
     const w = await purgeable([1, 2, 3]);
-    const store = new CloudRoaring({ storage: w.backend });
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const first = await store.segment('s').pin();
     expect(await first.count()).toBe(3);
     await w.reload([9]);
@@ -545,7 +549,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
 
   it('combines two pins of one object taken either side of a write that moved the row, and refuses two incarnations', async () => {
     const w = await purgeable([1, 2, 3]);
-    const store = new CloudRoaring({ storage: w.backend });
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const before = await store.segment('s').pin();
     await setSegmentRetention(
       REF,
@@ -709,7 +713,7 @@ describe('a pin knows its object on any store, and fails rather than tear', () =
     const OLD = [1, 2, C + 1, C + 2, 2 * C + 1];
     const NEW = [1, 2, C + 3, C + 4, 2 * C + 3];
     const w = await purgeable(OLD);
-    const store = new CloudRoaring({ storage: w.backend });
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const snap = await store.segment('s').pin();
     expect(await snap.has(1)).toBe(true); // chunk 0, cached under the pin
     await w.reload(NEW);
@@ -817,7 +821,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const { storage, registry } = backend;
     const SPREAD = Array.from({ length: 12 }, (_, k) => k * C + 1);
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, SPREAD, { registry });
-    const store = new CloudRoaring({ storage: backend });
+    const store = new CloudRoaring({ storage: backend, seams: { clock: manualClock() } });
     const snap = await store.segment('s').pin();
     for await (const key of storage.list(REF)) await storage.delete(key);
     await registry.delete(REF);
@@ -853,7 +857,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
   });
   it('says a replaced object is replaced when it is gone by the time the pin reopens it', async () => {
     const w = await purgeable(OLD);
-    const store = new CloudRoaring({ storage: w.backend });
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const snap = await store.segment('s').pin();
     await w.reload(NEW);
     let misses = 1;
@@ -922,7 +926,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
-    const store = new CloudRoaring({ storage: backend });
+    const store = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
     const first = await store.segment('s').pin();
     store.invalidate(REF); // so the first pin's next read opens its version again
     let release!: () => void;
@@ -1038,6 +1042,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
+      seams: { clock: manualClock() },
     });
     const snap = await store.segment('s').pin();
     await w.reload(NEW); // through the raw backend: nothing counted
@@ -1105,6 +1110,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
+      cache: { genTtlMs: 0 },
       storage: brandAsBackend({
         storage: counted(storage, 'storage', calls),
         registry: counted(registry, 'registry', calls),
@@ -1135,7 +1141,11 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry, keystore });
-    const store = new CloudRoaring({ storage: backend, encryption: { keystore, required: true } });
+    const store = new CloudRoaring({
+      storage: backend,
+      cache: { genTtlMs: 0 },
+      encryption: { keystore, required: true },
+    });
     const snap = await store.segment('s').pin();
     for await (const key of storage.list(REF)) await storage.delete(key);
     await registry.delete(REF);
@@ -1148,6 +1158,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
+      cache: { genTtlMs: 0 },
       storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
@@ -1201,7 +1212,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
-      cache: { readerMax: 2 },
+      cache: { genTtlMs: 0, readerMax: 2 },
       seams: { clock: manualClock() },
     });
     const snap = await store.segment('s').pin();
@@ -1221,7 +1232,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
 
   it('asks the footer once, even for a read whose chunk fails after the check has ended', async () => {
     const w = await purgeable(OLD);
-    const store = new CloudRoaring({ storage: w.backend });
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const snap = await store.segment('s').pin();
     await w.reload(NEW);
     let tails = 0;
@@ -1349,7 +1360,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
 
   it('reads a checksum error by its brand, as one from another copy of core would be thrown', async () => {
     const w = await purgeable(OLD);
-    const store = new CloudRoaring({ storage: w.backend });
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const snap = await store.segment('s').pin();
     await w.reload(NEW);
     w.backend.storage.getRange = () =>
@@ -1364,7 +1375,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
 
   it('shares one footer read among the chunk reads that find the same stale reader at once', async () => {
     const w = await purgeable(OLD);
-    const store = new CloudRoaring({ storage: w.backend });
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const snap = await store.segment('s').pin();
     await w.reload(NEW);
     let tails = 0;
@@ -1664,7 +1675,9 @@ describe('what a pin found out about its object, and how it forgets', () => {
       const w = await purgeable(OLD);
       const { storage } = w.backend;
       const mine = await wholeOf(storage);
-      const store = new CloudRoaring({ storage: w.backend });
+      // No timed refresh: this is about what a footer read or a reopen keeps, and a recheck of the purged and created
+      // row would end the pin as another incarnation before the restore it models.
+      const store = new CloudRoaring({ storage: w.backend, cache: { genTtlMs: 0 } });
       const snap = await store.segment('s').pin();
       await w.reload(NEW);
       if (reopening) store.invalidate(REF); // so the read opens its generation again, rather than check its footer

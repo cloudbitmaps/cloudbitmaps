@@ -532,7 +532,13 @@ export interface CacheOptions {
    * lapses, a read of it fails with the fault, as a cold read does. A refresh that fails with anything else, an access denial or a row that will not parse, is not
    * ridden out: the read that meets it throws that error, and the reader is dropped.
    *
-   * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
+   * **A pinned handle is checked on the same interval.** It never moves to another generation, but at most every
+   * `genTtlMs` (counted on access) its segment's row is read, one read shared by every pin of the segment, and the
+   * pin fails with `NotFoundError` once the segment is destroyed, gone or re-created, or its generation erased or
+   * collected, or recorded by its row as another object, even when its reader and chunks are still cached. A transient
+   * fault of the registry, or of the footer read an erasure's check makes, keeps it serving.
+   *
+   * `0` turns this timed refresh off, and the pinned handles' check with it, and so does wiring a bare `IStorageDriver`, which has no registry. That is
    * all it does. The store still moves a segment on to whatever generation is current when its reader cache
    * evicts the segment, when a read has to fetch from a generation a sweep deleted, and when it is invalidated,
    * as its own `load`, `rollback`, `eraseSubject` and `*Into` writes do and {@link CloudRoaring.invalidate} does.
@@ -2804,7 +2810,8 @@ export class CloudRoaring {
    *   the unwrapped DEK, and decrypts with them, chunks it had never fetched before the shred included, until its
    *   snapshot re-resolves: within `cache.genTtlMs` when the store has a registry and a `genTtlMs` above 0, and
    *   otherwise only when its caches let the segment go or a read has to fetch from a generation a sweep collected.
-   *   A pin answers with no timed bound, until it is told or both caches let it go.
+   *   A pin on a store with a timed refresh fails within `cache.genTtlMs` once its segment is destroyed or its
+   *   generation erased; on a store with none it answers until it is told or both caches let it go.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
    *   staleness by `cache.genTtlMs`, and a store with no registry (a bare `IStorageDriver`), with
    *   `cache.genTtlMs: 0`, or on a `StorageChunkSource` of your own has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
@@ -2901,6 +2908,7 @@ export class CloudRoaring {
       at === null
         ? { generation: null, version: null, fingerprint: null }
         : { generation: at.generation, version: at.version, fingerprint: at.fingerprint };
+    if (at !== null) crbm.startPinChecks(pinnedAt, at.checkedAtMs);
     const pins = new Map([[segmentKey(ref), pinnedAt]]);
     return makeSegment({
       engine: this.engineWithPins(pins),
@@ -3694,7 +3702,9 @@ export class Segment {
    * `*Into` of one throws before it reads anything. Materialise one side first, with `materializeMany({ operands: { src: seg }, outputs: [{ dest, expr: { or: ['src'] } }], keep })`.
    *
    * **A pin knows its object, not only its number.** A name purged and loaded again starts again at generation
-   * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
+   * 0, so a pin of the old segment never reads the new one. On a store with a timed refresh the pin fails with
+   * `NotFoundError` at its next check, within `cache.genTtlMs`, what it had already read included, and `invalidate`
+   * does not bring it back: take a new pin. On a store with none, what it has already read still answers, as the
    * instant it pinned, and anything it would have to fetch fails with `NotFoundError`, as a swept pin's does.
    *
    * **It is a hold, and `pin({ leaseUntil })` makes it a bounded one.** Without a lease nothing stops a collection
@@ -3716,7 +3726,11 @@ export class Segment {
    * segment whose row is later dropped or destroyed fails once it must open its object again, rather than go empty
    * part-way through a call. **A pin
    * keeps the key its reader unwrapped for as long as that reader stays open, and answers from the chunks it
-   * decoded for as long as they stay cached.** This store invalidates a pin:
+   * decoded for as long as they stay cached, until its next check.** On a store with a timed refresh a pin checks its
+   * segment's row every `cache.genTtlMs` (from the moment it was taken, whether or not it was read) and fails with
+   * `NotFoundError` once the segment is destroyed, is another incarnation, or its generation is collected or recorded by its row as another object (an object lost or replaced out of band
+   * under a row that still names it is found only when the pin must fetch). This
+   * store invalidates a pin:
    *
    * - a `load`, a `rollback` or an `*Into` invalidates a pin of the segment it writes;
    * - `dropSegment` invalidates a pin of the segment it drops, and `retireExpired` a pin of each segment its ledger
@@ -3729,16 +3743,18 @@ export class Segment {
    * where the object is still there, and fails with `NotFoundError` where it is gone. It caches nothing more of what it
    * began reading before the invalidation, so the pin's next read opens the object again too.
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
-   * retirement through another store, in this process or another, the pin answers from what it holds until this
+   * retirement through another store, in this process or another, the pin answers from what it holds for at most
+   * `cache.genTtlMs` on a store with a timed refresh, and then fails. On a store with none it answers until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or
    * {@link CloudRoaring.invalidate} is called on this store. A combine on another store refuses the pin. Where the
    * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
-   * once. No timed refresh bounds any of that, as none bounds anything else a pin holds.
+   * once. With no timed refresh nothing bounds any of that, as nothing bounds anything else a pin holds.
    *
-   * A replacement a pin has found is remembered, so its later chunk reads fail with no request, until the store
+   * A replacement a read of the pin found is remembered, so its later chunk reads fail with no request, until the store
    * forgets it: an invalidation of the segment does, as does a later `pin()` of the same version that opens the object
-   * again, and the store remembers at most `cache.readerMax` of them. So once a restore puts the pinned object back,
-   * call {@link CloudRoaring.invalidate} on this store: the pin then reads the object again.
+   * again; a replacement the pin's own check found is forgotten only by an invalidation. The store remembers at most `cache.readerMax` of them. So once a restore puts the pinned object back
+   * into the same row, call {@link CloudRoaring.invalidate} on this store: the pin then reads the object again. A
+   * restore into a purged and re-created row does not revive a pin on a store with a timed refresh: take a new pin.
    *
    * `pin()` reads the registry row and opens the generation at once, so the pin knows its object before its first
    * read. With a registry, pins of one generation taken while its row is unchanged share one reader while the store

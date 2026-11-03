@@ -41,6 +41,25 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A pinned handle now stops answering once its segment is destroyed or its generation erased, within `cache.genTtlMs`.**
+  A `seg.pin()` handle in a store that did not perform the erasure or the crypto-shred kept answering from its open
+  reader and the chunk cache with no bound at all (a leased one until its lease ended, up to 14 days). On a store with a
+  registry, a clock and `cache.genTtlMs` above 0, it now has its segment's row read at most every `cache.genTtlMs`
+  (2 s by default, counted on access: no timer, and an idle pin makes no request), one read shared by every pin,
+  handle and combine of the segment in the store, and fails with `NotFoundError`, dropping its reader and the key it
+  unwrapped, when the row is gone or destroyed, is another incarnation of the name, or names the pinned generation
+  with another checksum. A generation the row's ledger does not name (or a row with no usable ledger) is not a failure
+  by itself: the object's footer is read once per interval, and the pin fails once the object is gone or another. A
+  transient fault of the registry or of that footer read keeps the pin serving and asks again after 500 ms, as a live
+  read does; any other fault of the footer read fails the read that meets it and is not remembered. A pin counts as
+  checked from when the row read it relies on was sent, so one taken and never read is checked at its first read after
+  `cache.genTtlMs`, and a row read shared from earlier never makes a pin look fresher than it is. An invalidation of
+  the segment in the store makes the next check read the row afresh, beside the one per interval. A lease no
+  longer lengthens the bound. The live read path is unchanged. **An unleased pin whose generation a load collected
+  (past `keep`) now fails within `cache.genTtlMs` even with a warm cache**, where it used to answer from it. A store
+  with `cache.genTtlMs: 0`, no registry or no clock still has no bound for its pins, as for its other readers. A pin of
+  a generation an erasure could not remove (`erased: false`) still reads it until a re-run removes it.
+
 - **An object planted at a huge generation number no longer blocks the numbering of a load or an erasure's rewrite.** Someone who can write objects to
   the bucket but not registry rows could put `<segment>.9007199254740991.crbm` next to a segment, and every later load
   that had to list the bucket to number its generation (and the erasure rewrite) failed with "no generation number left";
