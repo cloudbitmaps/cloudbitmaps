@@ -17,6 +17,7 @@ const {
   INTO_READS,
   partsOf,
   rangeCap,
+  COUNT_VERBS,
   LARGE_STAGES,
 } = require('./calibrate-large-stages.cjs');
 
@@ -104,8 +105,8 @@ async function runLargeSuite(ctx) {
     }
   };
 
-  /** One uncached read: a fresh store, so no cache can answer it. */
-  const coldRead = (of, index, run, want, what) =>
+  /** One uncached read: a fresh store, so no cache can answer it. `check` throws if what `run` returned is not exact. */
+  const coldRead = (of, index, run, check) =>
     sample(of, index, async () => {
       const store = timedStore();
       const before = snap();
@@ -114,14 +115,17 @@ async function runLargeSuite(ctx) {
       const got = await run(store);
       const ms = msSince(t0);
       const after = snap();
-      exact(what, got, want);
+      check(got);
       return {
         ms,
+        got,
         gets: after.get - before.get,
         chunkReads: after.rangeN - before.rangeN,
         chunkBytes: after.rangeBytes - before.rangeBytes,
         tailReads: after.suffixN - before.suffixN,
+        tailBytes: after.suffixBytes - before.suffixBytes,
         pointerReads: after.wholeN - before.wholeN,
+        pointerBytes: after.wholeBytes - before.wholeBytes,
         ...depthOf(before, after, ms),
       };
     });
@@ -174,8 +178,7 @@ async function runLargeSuite(ctx) {
                 of,
                 i,
                 async (store) => drain(verb.run(s, store)),
-                s.content[verb.kind],
-                `${verb.kind} of ${s.n} ids`,
+                (got) => exact(`${verb.kind} of ${s.n} ids`, got, s.content[verb.kind]),
               ),
             );
             checkCeiling();
@@ -200,6 +203,71 @@ async function runLargeSuite(ctx) {
       },
     });
   }
+
+  // The count verbs, on the operand pairs the three streams above read. Each sample is one cold call; what it returns must
+  // be the size of the combine the matching stream counted on these operands, and the size the engine's own count made.
+  await stage('largeCount', {
+    run: async () => {
+      const perSize = [];
+      for (const s of sizes) {
+        const entry = {
+          n: s.n,
+          chunksPerSegment: s.layout.chunksPerSegment,
+          sharedChunks: s.layout.sharedChunks,
+          verbs: {},
+        };
+        for (const [kind, method] of Object.entries(COUNT_VERBS)) {
+          const of = `${method} of ${s.n} ids`;
+          const want = s.content[kind].count;
+          const engineCount = s.counts.counted[kind].result;
+          const expectedGets = s.counts.counted[kind].gets;
+          if (engineCount !== want) {
+            throw new Error(
+              `${of}: the engine counted ${engineCount} in memory and the layout holds ${want}; the stage cannot be held to it`,
+            );
+          }
+          const reads = [];
+          for (let i = 0; i < plan.reads; i += 1) {
+            reads.push(
+              await coldRead(
+                of,
+                i,
+                (store) =>
+                  store.segment(operandName(s.n, 0))[method]([store.segment(operandName(s.n, 1))]),
+                (got) => {
+                  if (got !== want) {
+                    throw new Error(
+                      `${of} returned ${got}; expected exactly ${want}, the size of the ${kind} the stream stage counted. ` +
+                        'A count that is not exact must not produce a latency figure.',
+                    );
+                  }
+                },
+              ),
+            );
+            checkCeiling();
+          }
+          if (reads.length === 0) {
+            entry.verbs[method] = { runs: 0 };
+            continue;
+          }
+          const d = {
+            ...describe(reads, expectedGets),
+            count: want,
+            tailBytesPerCall: median(reads.map((r) => r.tailBytes)),
+            pointerBytesPerCall: median(reads.map((r) => r.pointerBytes)),
+            bytesReadPerCall: median(reads.map((r) => r.chunkBytes + r.tailBytes + r.pointerBytes)),
+          };
+          log(
+            `  ${method} ${s.n} ids: ${d.runs} cold, all exact (${want}) — p50 ${d.p50ms.toFixed(1)} ms, p99 ${d.p99ms.toFixed(1)} ms; ` +
+              `median ${d.medianGets} GETs, ${d.bytesReadPerCall} bytes`,
+          );
+          entry.verbs[method] = d;
+        }
+        perSize.push(entry);
+      }
+      return { sizes: perSize };
+    },
+  });
 
   await stage('largeInto', {
     run: async () => {

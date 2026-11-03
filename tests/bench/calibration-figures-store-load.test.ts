@@ -108,7 +108,14 @@ type Figures = {
   rows: Array<{ requests: string; label: string; says: RegExp }>;
   stageLedger: Record<
     string,
-    { put: number; get: number; keptGet: number; discarded: number; expectedGets: number | null }
+    {
+      put: number;
+      get: number;
+      keptGet: number;
+      discarded: number;
+      expectedGets: number | null;
+      boundGet: number | null;
+    }
   >;
   values: unknown;
 };
@@ -143,15 +150,19 @@ describe('a run that timed store.load()', () => {
   it('is a rehearsal the harness wrote, with every stage the harness runs recorded', () => {
     expect(fixture.target).toMatch(/rehearsal/);
     expect(fixture.mode).toBe('rehearse');
+    // The count stage is newer than the recording, and a run of a release without the count verbs has none: the
+    // recording has every other stage. A run that has it is held to it (below).
+    // Re-capture both rehearsal fixtures against MinIO (see their header) so they carry the count stage, then drop this filter.
+    const recorded = STAGES.filter((name) => name !== 'counts');
     expect(
       Object.keys(fixture.phases).sort(),
       're-capture the fixture: the stages changed',
-    ).toEqual([...STAGES].sort());
-    expect(Object.keys(fixture.projectedStages)).toEqual(STAGES);
+    ).toEqual([...recorded].sort());
+    expect(Object.keys(fixture.projectedStages)).toEqual(recorded);
     expect(fixture.phases.load.via).toBe('store.load()');
     expect(fixture.phases.load.perLoad.length).toBeGreaterThan(0);
     // Each stage's discards, none in this run, and the run's count of them and the projection's allowance.
-    for (const name of STAGES) {
+    for (const name of recorded) {
       expect((fixture.phases[name] as { discarded?: unknown }).discarded, name).toEqual([]);
     }
     expect(fixture.discards).toEqual({ count: 0, perRun: 3, perStage: 2 });
@@ -830,6 +841,149 @@ describe('a run with a steady-load stage', () => {
       (15 * (2 * 5e-6 + 4 * GET_USD) + (3 * 5e-6 + 5 * GET_USD)) / 16,
       12,
     );
+  });
+
+  // The count stage runs on the releases that have the count verbs (0.26.0 on): an earlier run is not asked for it, a later
+  // one is, and a run that recorded it is held to it whatever its release.
+  it('is held to the count stage from 0.26.0 on, and an earlier run is not', () => {
+    const run = asRealRun();
+    delete (run.phases as Record<string, unknown>).counts;
+    versioned(run, '0.25.0');
+    expect(stageFigures.stagesOf(run)).not.toContain('counts');
+    versioned(run, '0.26.0');
+    expect(stageFigures.stagesOf(run)).toContain('counts');
+    versioned(run, '0.100.0');
+    expect(stageFigures.stagesOf(run)).toContain('counts');
+    versioned(run, '0.25.0');
+    (run.phases as Record<string, unknown>).counts = { requests: { put: 0, get: 99 } };
+    expect(stageFigures.stagesOf(run)).toContain('counts');
+    // A run of 0.26.0 or later that records no requests for it is refused; one of 0.25.0 derives without.
+    expect(
+      refused((r) => {
+        delete (r.phases as Record<string, unknown>).counts;
+        versioned(r, '0.26.0');
+      }),
+    ).toMatch(/it records no requests for its counts stage/);
+    expect(() => {
+      const older = asRealRun();
+      delete (older.phases as Record<string, unknown>).counts;
+      versioned(older, '0.25.0');
+      stageFigures.derive(older, SOURCES);
+    }).not.toThrow();
+  });
+
+  // One results file that carries both new stages as the harness writes them: the default suite's `counts` and the large
+  // suite's `largeCount` (`sizes[].verbs[method]`). The large suite's evidence sits in its own directory, which the gates
+  // do not read, so its stage rides along here to show it is inert to them; the default suite's stage is what they hold.
+  it('derives a complete run that has the count stages, and holds the default stage to its expected requests', () => {
+    const CALLS = 3;
+    const GETS = 33;
+    const spread = { n: CALLS, p50ms: 160.1, p95ms: 190.2, p99ms: 190.2 };
+    const reads = (get: number, bytes: number): Requests => ({
+      put: 0,
+      get,
+      bytesUp: 0,
+      bytesDown: bytes,
+      parts: 0,
+      reads: {
+        whole: { n: 0, bytes: 0 },
+        suffix: { n: 0, bytes: 0 },
+        range: { n: get, bytes },
+      },
+    });
+    const build = (): Run => {
+      const run = asRealRun();
+      versioned(run, '0.26.0');
+      const plan = run.workload.plan as Record<string, unknown>;
+      plan.counts = {
+        calls: CALLS,
+        excludes: 10,
+        includeChunks: 1999,
+        sharedChunks: 100,
+        ranges: 11,
+      };
+      run.projectedStages.counts = { put: 0, get: (CALLS * run.projectedStages.andNot!.get) / 10 };
+      run.phases.counts = {
+        runs: CALLS,
+        exact: true,
+        excludes: 10,
+        includeChunks: 1999,
+        count: 54_000,
+        ...spread,
+        medianGets: GETS,
+        chunkReadsPerCall: 11,
+        chunkBytesPerCall: 1_400_000,
+        tailReadsPerCall: 11,
+        tailBytesPerCall: 2_600_000,
+        pointerReadsPerCall: 11,
+        pointerBytesPerCall: 2_700,
+        medianPeakInFlight: 11,
+        medianMeanInFlight: 1.86,
+        medianRounds: 19.5,
+        timedStore: {},
+        requests: reads(CALLS * GETS, 3_000_000),
+        discarded: [],
+        expectedGets: CALLS * GETS,
+      };
+      // The requests the stage made are in the run's metered total, as every stage's are.
+      run.cost.ops.get += CALLS * GETS;
+      run.cost.ops.byCommand.GetObjectCommand! += CALLS * GETS;
+      run.cost.ops.bytesDown += 3_000_000;
+      run.cost.ops.reads.range.n += CALLS * GETS;
+      run.cost.ops.reads.range.bytes += 3_000_000;
+      run.cost.getUSD = run.cost.ops.get * GET_USD;
+      run.cost.totalUSD = run.cost.putUSD + run.cost.getUSD;
+      run.phases.largeCount = {
+        sizes: [
+          {
+            n: 1_000_000,
+            chunksPerSegment: 15,
+            sharedChunks: 7,
+            verbs: {
+              intersectCount: { runs: 2, count: 600_000, medianGets: 6, bytesReadPerCall: 800_000 },
+              unionCount: { runs: 2, count: 1_400_000, medianGets: 8, bytesReadPerCall: 1_000_000 },
+              andNotCount: { runs: 2, count: 400_000, medianGets: 7, bytesReadPerCall: 900_000 },
+            },
+          },
+        ],
+        requests: reads(42, 5_000_000),
+        discarded: [],
+        expectedGets: 42,
+        expectedPuts: 0,
+      };
+      return run;
+    };
+    const f = figures.derive(build(), SOURCES);
+    expect(f.stageLedger.counts).toMatchObject({
+      put: 0,
+      get: CALLS * GETS,
+      keptGet: CALLS * GETS,
+      expectedGets: CALLS * GETS,
+      discarded: 0,
+    });
+    expect(f.stageLedger.counts!.boundGet!).toBeGreaterThanOrEqual(CALLS * GETS);
+    expect(Object.keys(f.stageLedger)).not.toContain('largeCount');
+    // Every figure of the new stage is accounted for by the derivation, as a report's sentence about it must be.
+    expect(figures.unaccounted(`The count stage made ${CALLS * GETS} GETs.`, f.values)).toEqual([]);
+    // Its per-call bytes are bytes a report may state, and a figure one byte off is refused: the default stage's three
+    // kinds of read and the large suite's total a call read.
+    for (const stated of [1_400_000, 2_600_000, 2_700, 800_000]) {
+      const said = `A count call read ${stated.toLocaleString('en-US')} bytes.`;
+      expect(figures.unaccounted(said, f.values), said).toEqual([]);
+      const off = `A count call read ${(stated + 1).toLocaleString('en-US')} bytes.`;
+      expect(figures.unaccounted(off, f.values), off).not.toEqual([]);
+    }
+    // The stage is held: a request more or fewer than it expected, or a missing record, is refused.
+    for (const off of [1, -1]) {
+      const run = build();
+      (run.phases.counts as { expectedGets: number }).expectedGets += off;
+      expect(() => figures.derive(run, SOURCES), `${off}`).toThrow(
+        /its counts stage made 99 GET-class requests, not the \d+ it expected/,
+      );
+    }
+    const unrecorded = build();
+    delete (unrecorded.phases as Record<string, unknown>).counts;
+    expect(() => figures.derive(unrecorded, SOURCES)).toThrow(/no requests for its counts stage/);
   });
 
   it('is held to the stage on a release that collects by name, and every committed run still derives without it', () => {

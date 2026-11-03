@@ -84,6 +84,8 @@ const {
   LARGE_STAGES,
   LARGE_SIZES,
   planLargeLayout,
+  checkCountVerbs,
+  hasCountVerbs,
   projectLarge,
   expectedLarge,
   resolveLargeKnobs,
@@ -103,6 +105,7 @@ const { resourcesNow, installedSources } = require('./lib/calibrate-large-resour
 const {
   coldIntersectIds,
   coldAndNotIds,
+  coldAndNotCountIds,
   collectsByName,
   readsRowAfterCollect,
 } = require('./lib/range-counts.cjs');
@@ -119,6 +122,9 @@ const {
 } = require('./lib/calibrate-samples.cjs');
 const {
   STAGES: DEFAULT_STAGES,
+  COUNT_CALLS,
+  checkCountedAndNot,
+  checkEngineAndNotCount,
   parseSweep,
   coldIntersectGets,
   modelRounds,
@@ -302,7 +308,7 @@ function largePartsBound() {
  * What each stage loads and reads, from the layouts: the one input both the projection and the stages' own
  * expectations are computed from.
  */
-function planWorkload({ layout, spread, sweep, ranges }) {
+function planWorkload({ layout, spread, sweep, ranges, countVerbs }) {
   const sharedChunks = layout.sharedChunks;
   return {
     loads: { segments: SEGMENTS, largeSegments: LARGE, partsBound: largePartsBound() },
@@ -331,6 +337,14 @@ function planWorkload({ layout, spread, sweep, ranges }) {
       sharedChunks,
       ranges: ranges.andNot,
     },
+    // The same operands counted with `andNotCount`, at most as many calls as the stream's (3 against its 10): none on a release without the verb.
+    counts: {
+      calls: countVerbs ? Math.min(ANDNOT_CALLS, COUNT_CALLS) : 0,
+      excludes: ANDNOT_EXCLUDES,
+      includeChunks: layout.chunksPerSegment,
+      sharedChunks,
+      ranges: ranges.andNotCount,
+    },
     // One segment loaded repeatedly at a `keep` that makes the loads collect by name (the stage says why).
     steadyLoad: { loads: STEADY_LOADS, keep: STEADY_KEEP },
     retryBound: RETRY_BOUND,
@@ -348,7 +362,7 @@ function planWorkload({ layout, spread, sweep, ranges }) {
  * backend on the same ids (`bench/lib/range-counts.cjs`) before anything is created: what the exact counts the stages are
  * held to expect of a real object store. Nothing is requested of a cloud; the ids are built and read in memory.
  */
-async function rehearseRanges({ layout, spread, sweepLayouts }) {
+async function rehearseRanges({ layout, spread, sweepLayouts, countVerbs }) {
   const pairRanges = async (idsOf) => (await coldIntersectIds(idsOf(0), idsOf(1))).rangesPerOperand;
   const intersect = READS === 0 ? 0 : await pairRanges((i) => layoutIds(layout, i));
   const spreadRanges =
@@ -356,14 +370,19 @@ async function rehearseRanges({ layout, spread, sweepLayouts }) {
   const sweep = [];
   for (const L of sweepLayouts) sweep.push(await pairRanges((i) => layoutIds(L, i)));
   let andNot = 0;
+  let andNotCount = 0;
   if (ANDNOT_CALLS > 0) {
-    const counted = await coldAndNotIds(
-      layoutIds(layout, 0),
-      Array.from({ length: ANDNOT_EXCLUDES }, (_, i) => layoutIds(layout, i + 1)),
-    );
-    andNot = counted.getRange;
+    const excludes = () =>
+      Array.from({ length: ANDNOT_EXCLUDES }, (_, i) => layoutIds(layout, i + 1));
+    andNot = (await coldAndNotIds(layoutIds(layout, 0), excludes())).getRange;
+    if (countVerbs) {
+      const counted = await coldAndNotCountIds(layoutIds(layout, 0), excludes());
+      // A count must see the ids the stream does: the stage is exact on them.
+      checkEngineAndNotCount(counted.ids, layout.priv);
+      andNotCount = counted.getRange;
+    }
   }
-  return { intersect, spread: spreadRanges, sweep, andNot };
+  return { intersect, spread: spreadRanges, sweep, andNot, andNotCount };
 }
 
 /**
@@ -583,6 +602,7 @@ async function main() {
   // A cleanup needs neither the library nor a projection, so it also runs on a checkout that has not been built.
   let pricing;
   let packageVersion;
+  let countVerbs = false;
   // Whether the installed engine's load reads the row after its collection's last delete, asked in memory: it picks the
   // table the steady loads are held to, and is recorded with the evidence so the figures read it against the same one.
   let readsAfterCollect;
@@ -603,6 +623,18 @@ async function main() {
     packageVersion = measuredVersion(ROOT);
     sdk = measuredSdk(ROOT);
     pricing = AWS_US_EAST_1_ONDEMAND;
+    // The large suite's count stage calls the count verbs, which the first release to have them is 0.26.0: ask before
+    // anything is created, and before the engine is asked to count them.
+    if (SUITE === 'large') {
+      try {
+        checkCountVerbs(packageVersion);
+      } catch (err) {
+        refuse(err.message);
+      }
+    }
+    // The default suite's count stage runs where the verb exists, and runs no call on an older release: the plan
+    // holds none and the stage records `runs: 0` with no requests expected, which the figures gate holds a run to.
+    countVerbs = hasCountVerbs(packageVersion);
     // The steady-load stage is held to what the engine does at `keep` 12 from 0.17.0 on, which collects by name. An
     // engine that does not would fail the run's evidence after it had spent the bill, so ask it first, in memory.
     if (
@@ -679,9 +711,9 @@ async function main() {
       // The projection is an upper bound that asks for no count, so it reads the engine for none; a run's exact expectations do.
       const ranges =
         MODE === 'project'
-          ? { intersect: 0, spread: 0, sweep: sweepLayouts.map(() => 0), andNot: 0 }
-          : await rehearseRanges({ layout, spread, sweepLayouts });
-      plan = planWorkload({ layout, spread, sweep, ranges });
+          ? { intersect: 0, spread: 0, sweep: sweepLayouts.map(() => 0), andNot: 0, andNotCount: 0 }
+          : await rehearseRanges({ layout, spread, sweepLayouts, countVerbs });
+      plan = planWorkload({ layout, spread, sweep, ranges, countVerbs });
       ({
         ops,
         stages: stageBounds,
@@ -730,6 +762,9 @@ async function main() {
       warm: `${READS} repeats of the calibration pairs from memory, asserted at 0 GET`,
       pointReads: `count() cold and warm on ${POINT_SEGMENTS} segments, then has() on every shared chunk: open segment, warm, first read`,
       andNot: `${ANDNOT_CALLS} calls, one segment against ${ANDNOT_EXCLUDES}`,
+      counts: countVerbs
+        ? `${plan.counts.calls} andNotCount calls, the same segment against the same ${ANDNOT_EXCLUDES}`
+        : 'none: this release has no count verbs',
       steadyLoad: `${STEADY_LOADS} loads of one segment at keep ${STEADY_KEEP}: warm-up, by name, one listing`,
     };
     for (const name of STAGES) {
@@ -2007,6 +2042,67 @@ async function main() {
           chunkReadsPerCall: median(reads.map((r) => r.chunkReads)),
           tailReadsPerCall: median(reads.map((r) => r.tailReads)),
           pointerReadsPerCall: median(reads.map((r) => r.pointerReads)),
+          medianPeakInFlight: median(reads.map((r) => r.peakInFlight)),
+          medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
+          medianRounds: median(reads.map((r) => r.rounds)),
+          timedStore: TIMED_STORE,
+        };
+      },
+    });
+    // ---- andNot, counted ----------------------------------------------------------------------------------------------
+    // The same operands as the stage above, counted with `andNotCount`: it makes the stream's requests and reads fewer bytes
+    // (the in-memory counts in `bench/lib/range-counts.cjs` give its requests and bytes). It must return the number of ids the stream did.
+    await stage('counts', {
+      run: async () => {
+        if (plan.counts.calls === 0) return { runs: 0 };
+        const include = 'seg-0';
+        const excludes = Array.from({ length: ANDNOT_EXCLUDES }, (_, i) => `seg-${i + 1}`);
+        const reads = [];
+        for (let i = 0; i < plan.counts.calls; i += 1) {
+          const read = await sample('andNotCount call', i, async () => {
+            const store = timedStore();
+            const before = snap();
+            startDepth();
+            const t0 = process.hrtime.bigint();
+            const n = await store
+              .segment(include)
+              .andNotCount(excludes.map((name) => store.segment(name)));
+            const ms = msSince(t0);
+            const after = snap();
+            checkCountedAndNot(n, layout.priv);
+            return {
+              ms,
+              gets: after.get - before.get,
+              chunkReads: after.rangeN - before.rangeN,
+              chunkBytes: after.rangeBytes - before.rangeBytes,
+              tailReads: after.suffixN - before.suffixN,
+              tailBytes: after.suffixBytes - before.suffixBytes,
+              pointerReads: after.wholeN - before.wholeN,
+              pointerBytes: after.wholeBytes - before.wholeBytes,
+              ...depthOf(before, after, ms),
+            };
+          });
+          reads.push(read);
+          checkCeiling();
+        }
+        const ms = reads.map((r) => r.ms);
+        log(
+          `  ${reads.length} andNotCount calls, all exact — p50 ${q(ms, 0.5).toFixed(1)} ms, median ${median(reads.map((r) => r.gets))} GETs`,
+        );
+        return {
+          runs: reads.length,
+          exact: true,
+          excludes: ANDNOT_EXCLUDES,
+          includeChunks: layout.chunksPerSegment,
+          count: layout.priv,
+          ...spreadOf(ms),
+          medianGets: median(reads.map((r) => r.gets)),
+          chunkReadsPerCall: median(reads.map((r) => r.chunkReads)),
+          chunkBytesPerCall: median(reads.map((r) => r.chunkBytes)),
+          tailReadsPerCall: median(reads.map((r) => r.tailReads)),
+          tailBytesPerCall: median(reads.map((r) => r.tailBytes)),
+          pointerReadsPerCall: median(reads.map((r) => r.pointerReads)),
+          pointerBytesPerCall: median(reads.map((r) => r.pointerBytes)),
           medianPeakInFlight: median(reads.map((r) => r.peakInFlight)),
           medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
           medianRounds: median(reads.map((r) => r.rounds)),

@@ -239,23 +239,24 @@ const pct = (fraction, dp) => `${fixed(100 * fraction, dp)}%`;
  * self-consistent real run — see the header.
  */
 /**
- * The stages a run is held to. Every stage in the table, except the steady load: it is measured on the releases that
- * collect by name at every `keep` (0.17.0 on), so a run of an earlier release is not held to it, and a run that
- * recorded it is held to it whatever its release.
+ * The stages a run is held to: every stage in the table, except those a release was not measured with. The steady load is
+ * measured on the releases that collect by name at every `keep` (0.17.0 on), and the count stage on the releases that have
+ * the count verbs (0.26.0 on): a run of an earlier release is not held to either, and a run that recorded one is held to
+ * it whatever its release.
  */
-const STEADY_SINCE = [0, 17, 0];
+const STAGE_SINCE = { steadyLoad: [0, 17, 0], counts: [0, 26, 0] };
 function stagesOf(run) {
   // A version that is not a release reads as the current engine, as it does for the window, so it is held to the stage.
   const release = releaseOf(run.measured?.packageVersion);
-  const since =
+  const measured = (since) =>
     release === null ||
-    release[0] > STEADY_SINCE[0] ||
-    (release[0] === STEADY_SINCE[0] &&
-      (release[1] > STEADY_SINCE[1] ||
-        (release[1] === STEADY_SINCE[1] && release[2] >= STEADY_SINCE[2])));
-  return STAGES.filter(
-    (name) => name !== 'steadyLoad' || since || run.phases?.steadyLoad !== undefined,
-  );
+    release[0] > since[0] ||
+    (release[0] === since[0] &&
+      (release[1] > since[1] || (release[1] === since[1] && release[2] >= since[2])));
+  return STAGES.filter((name) => {
+    const since = STAGE_SINCE[name];
+    return since === undefined || measured(since) || run.phases?.[name] !== undefined;
+  });
 }
 
 function derive(run, src) {
@@ -1266,6 +1267,13 @@ function stageFiguresOf(run, pricing) {
         out.millions.push(v / 1e6);
         out.ids.push(Math.round(v));
       } else if (k === 'medianBytesPerSec') out.bytes.push(Math.round(v));
+      else if (
+        k === 'chunkBytesPerCall' ||
+        k === 'tailBytesPerCall' ||
+        k === 'pointerBytesPerCall' ||
+        k === 'bytesReadPerCall'
+      )
+        out.bytes.push(v);
       else if (k === 'segments' || k === 'segmentsEach') out.segments.push(v);
       else if (k === 'k') out.chunks.push(v);
       else if (k === 'intersects') out.intersects.push(v);

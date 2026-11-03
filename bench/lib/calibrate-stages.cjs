@@ -27,8 +27,37 @@ const STAGES = Object.freeze([
   'warm',
   'pointReads',
   'andNot',
+  'counts',
   'steadyLoad',
 ]);
+
+/**
+ * The calls of the count stage. The count is bounded as the stream's andNot is, by a request for every chunk of the
+ * include and each exclude where it overlaps, which is far above what it makes; ten calls at that bound would take the
+ * default plan past the $0.05 ceiling it is held under, so the stage makes at most this many (fewer where
+ * `CR_CALIBRATE_ANDNOT_CALLS` is smaller): three bounded calls leave the plan under it, and the requests of a count are the same on every call.
+ */
+const COUNT_CALLS = 3;
+
+/**
+ * Refuse a count that is not the number of ids the stream of the same `andNot` returned: the count stage is exact on it, and
+ * a count that is not exact must not produce a latency figure. `got` is what `andNotCount` returned on the store under test.
+ */
+function checkCountedAndNot(got, want) {
+  if (got !== want) {
+    throw new Error(
+      `andNotCount returned ${got}; expected exactly ${want}. ` +
+        'A count that is not exact must not produce a latency figure.',
+    );
+  }
+}
+
+/** Refuse an engine whose in-memory `andNotCount` is not the size the layout holds: the stage could not be held to it. */
+function checkEngineAndNotCount(got, want) {
+  if (got !== want) {
+    throw new Error(`the engine's andNotCount counted ${got} in memory, expected ${want}`);
+  }
+}
 
 /*
  * How many requests one after another a combine's window of chunk keys takes, at an even latency.
@@ -169,6 +198,7 @@ const coldIntersectBound = (k) => 2 * (3 + k);
  *   w.warm             { segments, sharedChunks, rangesPerOperand }  one priming pass over `segments` segments
  *   w.pointReads       { segments, sharedChunks }                    `count()`, then `has()` per chunk, open and first read
  *   w.andNot           { calls, excludes, includeChunks, sharedChunks, ranges }
+ *   w.counts           { calls, excludes, includeChunks, sharedChunks, ranges }   `andNotCount` of the same operands, as `w.andNot`
  *   w.steadyLoad       { loads, keep }                               one segment loaded `loads` times at `keep`
  *
  * The `ranges` fields are the range requests the engine makes of the layout, counted by running it over the in-memory
@@ -222,6 +252,10 @@ function projectStages(w) {
 
   stages.andNot = { put: 0, get: w.andNot.calls * andNotCallBound(w.andNot) };
 
+  // A count of the same andNot reads no more of an operand than the stream does, so the stream's bound holds it. A plan
+  // from before the stage, or for a release without the count verbs, has none.
+  stages.counts = { put: 0, get: (w.counts?.calls ?? 0) * andNotCallBound(w.counts ?? zeroAndNot) };
+
   // Every steady load is bounded as a first load is: the most any load makes, losing races, is inside it.
   stages.steadyLoad = loads(w.steadyLoad.loads);
 
@@ -237,6 +271,14 @@ function projectStages(w) {
   // Reads are projected at least as high as writes, as `projectOps` does: every write path reads before it writes.
   return { stages, discards, costliestSample, total: { put, get: Math.max(getSum, put) } };
 }
+
+const zeroAndNot = Object.freeze({
+  calls: 0,
+  excludes: 0,
+  includeChunks: 0,
+  sharedChunks: 0,
+  ranges: 0,
+});
 
 /** One `andNot` call: every operand opened, every chunk of the include operand read, each exclude where it overlaps. */
 const andNotCallBound = (a) => (1 + a.excludes) * 3 + a.includeChunks + a.excludes * a.sharedChunks;
@@ -262,6 +304,7 @@ function sampleBounds(w) {
     // for its first.
     pointReads: p.segments === 0 ? 0 : p.sharedChunks > 0 ? 4 : 3,
     andNot: w.andNot.calls > 0 ? andNotCallBound(w.andNot) : 0,
+    counts: (w.counts?.calls ?? 0) > 0 ? andNotCallBound(w.counts) : 0,
     // Loads are not samples, and a plan from before the stage has no `steadyLoad`.
     steadyLoad: 0,
   };
@@ -288,6 +331,9 @@ function expectedReads(w) {
     pointReads: 2 * w.pointReads.segments + 4 * w.pointReads.segments * w.pointReads.sharedChunks,
     // Each operand's pointer and tail, and the ranges of the include and of every exclude together.
     andNot: a.calls * (2 * (1 + a.excludes) + a.ranges),
+    // The same count of requests for the count of that andNot: its own ranges, counted by running it.
+    counts:
+      (w.counts?.calls ?? 0) * (2 * (1 + (w.counts?.excludes ?? 0)) + (w.counts?.ranges ?? 0)),
     // The loads' GET-class requests, by kind.
     steadyLoad: expectedSteady(w.steadyLoad.loads, w.steadyLoad.keep).get,
   };
@@ -379,6 +425,9 @@ module.exports = {
   steadyKind,
   expectedSteady,
   STAGES,
+  COUNT_CALLS,
+  checkCountedAndNot,
+  checkEngineAndNotCount,
   ENGINE_WINDOW,
   ENGINE_WINDOW_START,
   windowRounds,

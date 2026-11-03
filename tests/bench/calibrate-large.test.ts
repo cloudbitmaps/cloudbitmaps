@@ -40,6 +40,17 @@ type ReadCount = { pointer: number; tail: number; range: number; gets: number; i
 type Counts = {
   operandBytes: number[];
   reads: Record<'intersect' | 'union' | 'andNot', ReadCount>;
+  counted: Record<
+    'intersect' | 'union' | 'andNot',
+    {
+      pointer: number;
+      tail: number;
+      range: number;
+      rangeBytes: number;
+      gets: number;
+      result: number;
+    }
+  >;
   into: Record<'intersectInto' | 'unionInto' | 'andNotInto', Call[]>;
 };
 type Size = {
@@ -61,6 +72,9 @@ type Plan = {
 
 const large = require_(join(ROOT, 'bench', 'lib', 'calibrate-large-stages.cjs')) as {
   LARGE_STAGES: string[];
+  COUNT_VERBS: Record<'intersect' | 'union' | 'andNot', string>;
+  COUNT_VERBS_SINCE: string;
+  checkCountVerbs: (version: string) => void;
   LARGE_SIZES: number[];
   LARGE_CHUNKS: number;
   LARGE_OVERLAP: number;
@@ -257,6 +271,7 @@ describe('the large suite is a suite of its own', () => {
       'largeIntersect',
       'largeUnion',
       'largeAndNot',
+      'largeCount',
       'largeInto',
     ]);
     for (const name of large.LARGE_STAGES) expect(stages.STAGES).not.toContain(name);
@@ -272,6 +287,9 @@ describe('the large suite is a suite of its own', () => {
       runner.indexOf('largeIntersect'),
     );
     expect(runner.indexOf('largeAndNot: {')).toBeLessThan(
+      runner.indexOf("await stage('largeCount'"),
+    );
+    expect(runner.indexOf("await stage('largeCount'")).toBeLessThan(
       runner.indexOf("await stage('largeInto'"),
     );
   });
@@ -469,11 +487,13 @@ describe('the expected counts, counted against the real engine', () => {
       largeIntersect: { put: 0, get: 40 * (6 + 8 + 10) },
       largeUnion: { put: 0, get: 40 * (8 + 24 + 26) },
       largeAndNot: { put: 0, get: 40 * (7 + 16 + 18) },
+      // The three counts of each size, each in the requests the engine makes of it: 40 x 72.
+      largeCount: { put: 0, get: 2_880 },
       largeInto: { put: 145, get: 714 },
     });
     const put = Object.values(e).reduce((n, s) => n + s.put, 0);
     const get = Object.values(e).reduce((n, s) => n + s.get, 0);
-    expect({ put, get }).toEqual({ put: 169, get: 5_652 });
+    expect({ put, get }).toEqual({ put: 169, get: 8_532 });
     // And they follow the knobs: no reads, no *Intos, leaves the loads.
     const bare = large.expectedLarge(planOf(sizes, 0, 0));
     expect(bare.largeLoad).toEqual(e.largeLoad);
@@ -548,6 +568,17 @@ describe('the expected counts, counted against the real engine', () => {
     );
   });
 
+  // The harness's stage-close block holds each stage to `expectedLarge(plan)[name]`, so a stage with no entry (or an entry of
+  // nothing) is held to nothing: every stage in the table, the count stage included, must have requests it is held to.
+  it('hold every stage of the table to requests, so dropping the count stage from the map fails', async () => {
+    const e = large.expectedLarge(planOf(await counted));
+    for (const name of large.LARGE_STAGES) {
+      const held = e[name];
+      expect(held, name).toBeDefined();
+      expect((held?.put ?? 0) + (held?.get ?? 0), name).toBeGreaterThan(0);
+    }
+  }, 120_000);
+
   it('are held by the harness in both classes, per stage, so a wrong table fails the first rehearsal', () => {
     expect(harnessSrc).toContain(
       'recordCountMisses(results, name, kept, expectedLargeByStage[name], console.error);',
@@ -575,6 +606,10 @@ describe('the bound', () => {
       const reads = large.readBounds(s);
       for (const v of ['intersect', 'union', 'andNot'] as const) {
         expect(reads[v], `${s.n} ${v}`).toBeGreaterThanOrEqual(s.counts.reads[v].gets);
+      }
+      // A count makes no more requests than the stream of its combine, so the stream's bound holds it.
+      for (const v of ['intersect', 'union', 'andNot'] as const) {
+        expect(reads[v], `${s.n} ${v}Count`).toBeGreaterThanOrEqual(s.counts.counted[v].gets);
       }
       const out = large.outputBounds(s);
       for (const [verb, calls] of Object.entries(s.counts.into)) {
@@ -639,14 +674,14 @@ describe('the bound', () => {
     const sizes = await counted;
     const { total } = large.projectLarge(planOf(sizes));
     expect(usd(total)).toBeLessThan(0.05);
-    // About a third of the ceiling at the most: bounding a range by bytes is what makes it fit.
-    expect(usd(total)).toBeLessThan(0.02);
+    // About half the ceiling at the most: bounding a range by bytes is what makes it fit.
+    expect(usd(total)).toBeLessThan(0.03);
     const expected = large.expectedLarge(planOf(sizes));
     const spent = {
       put: Object.values(expected).reduce((n, s) => n + s.put, 0),
       get: Object.values(expected).reduce((n, s) => n + s.get, 0),
     };
-    expect(usd(spent)).toBeLessThan(0.004);
+    expect(usd(spent)).toBeLessThan(0.005);
     // Reads are projected at least as high as writes, as the default suite's are.
     expect(total.get).toBeGreaterThanOrEqual(total.put);
   }, 120_000);
@@ -993,6 +1028,11 @@ describe('the evidence of a large run', () => {
     cost?: { totalUSD: number };
     projected?: Bound;
   }
+  // A stage added after a run was recorded is not asked of that run: evidence from before it stays valid. A run that did
+  // run it is held to it like any other stage.
+  // Stages newer than the recorded rehearsal fixture: re-capture it against MinIO before the next release, then drop it from the two fixture checks only. The committed
+  // large runs lack the stage too, so `problemsWith` keeps exempting it for them.
+  const ADDED_LATER = ['largeCount'];
   const problemsWith = (run: LargeRun, { rehearsal = false } = {}): string[] => {
     const out: string[] = [];
     if (run.suite !== 'large') out.push('not a run of the large suite');
@@ -1004,7 +1044,7 @@ describe('the evidence of a large run', () => {
     for (const name of large.LARGE_STAGES) {
       const phase = phases[name];
       if (phase === undefined) {
-        out.push(`${name} did not run`);
+        if (!ADDED_LATER.includes(name)) out.push(`${name} did not run`);
         continue;
       }
       const dropped = (phase.discarded ?? []).reduce(
@@ -1061,7 +1101,10 @@ describe('the evidence of a large run', () => {
           'utf8',
         ),
       );
-      expect(Object.keys(fixture.phases ?? {})).toEqual(large.LARGE_STAGES);
+      // The recording is from before the count stage: it has every other stage, in the runner's order.
+      expect(Object.keys(fixture.phases ?? {})).toEqual(
+        large.LARGE_STAGES.filter((name) => !ADDED_LATER.includes(name)),
+      );
     });
 
     // What a rehearsal's file says of its own plan: the bound the projection gave each stage and the sizes of the objects.
@@ -1092,10 +1135,16 @@ describe('the evidence of a large run', () => {
         put: recorded.projectedStages[stage]?.put ?? NaN,
         get: (recorded.projectedStages[stage]?.get ?? NaN) + loads[stage],
       });
+      // The count stage is newer than the recording: its bound is the three reads' bounds for each of the plan's reads.
+      const countBound = sizes.reduce(
+        (n, x) => n + w.reads * Object.values(large.readBounds(x)).reduce((a, b) => a + b, 0),
+        0,
+      );
       expect(plan.stages).toEqual({
         ...recorded.projectedStages,
         largeLoad: oneMore('largeLoad'),
         largeInto: oneMore('largeInto'),
+        largeCount: { put: 0, get: countBound },
       });
       expect(plan.costliestSample).toBe(recorded.projectedDiscards.costliestSample + 1);
       expect(plan.discards).toEqual({
@@ -1104,17 +1153,29 @@ describe('the evidence of a large run', () => {
       });
       expect(plan.total).toEqual({
         put: recorded.projected.put,
-        get: recorded.projected.get + loads.largeLoad + loads.largeInto + w.discards.perRun,
+        get:
+          recorded.projected.get +
+          loads.largeLoad +
+          loads.largeInto +
+          countBound +
+          w.discards.perRun,
       });
       expect(recorded.workload.sizes.map((x) => x.idsPerSegment)).toEqual(large.LARGE_SIZES);
       expect(recorded.workload.sizes.map((x) => x.operandBytes)).toEqual(
         sizes.map((x) => x.operandBytes),
       );
-      expect(recorded.workload.sizes.map((x) => x.counts)).toEqual(sizes.map((x) => x.counts));
+      // The recording's counts are the engine's of that day: every one it holds is still the engine's, and the count
+      // verbs' own counts, which it predates, are held by the tests above.
+      expect(recorded.workload.sizes.map((x) => x.counts)).toEqual(
+        sizes.map(({ counts }) => ({ ...counts, counted: undefined })),
+      );
       expect(recorded.phases.largeLoad.perLoad.map((l) => l.objectBytes)).toEqual(
         sizes.flatMap((x) => x.operandBytes),
       );
-      expect(fixture.workload?.expected).toEqual(large.expectedLarge(planOf(sizes)));
+      expect(fixture.workload?.expected).toEqual({
+        ...large.expectedLarge(planOf(sizes)),
+        largeCount: undefined,
+      });
     }, 120_000);
 
     it('fails a run of another suite, a partial one, one that missed a count, and one that overspent', () => {
@@ -1151,7 +1212,7 @@ describe('the evidence of a large run', () => {
           { rehearsal: true },
         ),
       ).toContain('largeInto did not run');
-      for (const stage of large.LARGE_STAGES) {
+      for (const stage of large.LARGE_STAGES.filter((n) => !ADDED_LATER.includes(n))) {
         const more = mutate((r) => {
           const p = r.phases?.[stage];
           if (p?.requests) p.requests.get += 1;
@@ -1169,6 +1230,29 @@ describe('the evidence of a large run', () => {
           expect(got, stage).toContain(`${stage} kept`);
       }
       expect(problemsWith(mutate((r) => delete r.cost))).toContain('no bill');
+    });
+
+    // A run that has the count stage is held to it as to every other stage; one from before it is not asked for it.
+    it('holds a run that has the count stage to it, and asks an older run for nothing', () => {
+      const expected = { put: 0, get: 100 };
+      const withCount = (get: number, discardedGets = 0): LargeRun =>
+        mutate((r) => {
+          if (r.phases === undefined || r.workload?.expected === undefined) return;
+          r.workload.expected.largeCount = expected;
+          r.phases.largeCount = {
+            requests: { put: 0, get: get + discardedGets },
+            discarded: discardedGets === 0 ? [] : [{ requests: { put: 0, get: discardedGets } }],
+          };
+        });
+      expect(problemsWith(fixture, { rehearsal: true })).toEqual([]);
+      expect(problemsWith(withCount(100), { rehearsal: true })).toEqual([]);
+      expect(problemsWith(withCount(100, 6), { rehearsal: true })).toEqual([]);
+      // One request more, or one fewer, than the engine is expected to make.
+      for (const got of [101, 99]) {
+        expect(problemsWith(withCount(got), { rehearsal: true }).join('\n'), `${got}`).toContain(
+          'largeCount kept',
+        );
+      }
     });
 
     it('counts the requests of a discarded sample out of what a stage is held to', () => {
@@ -1619,5 +1703,242 @@ describe('which suite runs, and where it was named', () => {
   it('is printed as the run starts when a suite was named, and not for a run that names none', () => {
     expect(harnessSrc).toContain("if (MODE !== 'cleanup' && SUITE_SOURCE !== 'default') {");
     expect(harnessSrc).toContain('log(`suite: ${SUITE} (named by ${SUITE_SOURCE})`);');
+  });
+});
+
+describe('the count stage', () => {
+  const KINDS = ['intersect', 'union', 'andNot'] as const;
+
+  it('counts each combine, in memory, to the size the matching stream stage reads, in no more requests than the stream', async () => {
+    const sizes = await counted;
+    for (const s of sizes) {
+      const content = large.largeExpectedContent(large.planLargeLayout(s.n));
+      for (const kind of KINDS) {
+        const c = s.counts.counted[kind];
+        expect(c.result, `${s.n} ${kind}`).toBe(content[kind].count);
+        expect(c.result, `${s.n} ${kind}`).toBe(s.counts.reads[kind].ids);
+        expect(c.gets).toBe(c.pointer + c.tail + c.range);
+        expect(c.gets, `${s.n} ${kind}`).toBeLessThanOrEqual(s.counts.reads[kind].gets);
+      }
+    }
+  }, 120_000);
+
+  it('is held to the engine’s requests: the sum of its three counts for every read, in GET-class only', async () => {
+    const sizes = await counted;
+    const e = large.expectedLarge(planOf(sizes));
+    const per = sizes.reduce(
+      (n, s) => n + KINDS.reduce((m, k) => m + s.counts.counted[k].gets, 0),
+      0,
+    );
+    expect(e.largeCount).toEqual({ put: 0, get: 40 * per });
+    expect(large.expectedLarge(planOf(sizes, 0, 5)).largeCount).toEqual({ put: 0, get: 0 });
+    expect(large.expectedLarge(planOf(sizes, 10, 5)).largeCount).toEqual({ put: 0, get: 10 * per });
+    // The bound holds it, and is nothing at no reads.
+    const bound = large.projectLarge(planOf(sizes)).stages.largeCount;
+    expect(bound?.put).toBe(0);
+    expect(bound?.get).toBeGreaterThanOrEqual(40 * per);
+    expect(large.projectLarge(planOf(sizes, 0, 5)).stages.largeCount).toEqual({ put: 0, get: 0 });
+    // The run's total carries it.
+    const total = large.projectLarge(planOf(sizes)).total.get;
+    const without = large.projectLarge(planOf(sizes, 40, 5)).stages;
+    expect(total).toBeGreaterThanOrEqual(Object.values(without).reduce((n, st) => n + st.get, 0));
+  }, 120_000);
+
+  // The stage, run by `runLargeSuite` over a store that answers a count and sends a number of requests we choose.
+  const runner = require_(join(ROOT, 'bench', 'lib', 'calibrate-large.cjs')) as {
+    runLargeSuite: (ctx: Record<string, unknown>) => Promise<void>;
+  };
+  const GETS = { intersect: 6, union: 8, andNot: 7 };
+  const run = async ({
+    answer = (_kind: string, want: number) => want,
+    extraGets = 0,
+    engineCount,
+    reads = 2,
+  }: {
+    answer?: (kind: string, want: number) => number;
+    extraGets?: number;
+    engineCount?: (kind: string, want: number) => number;
+    reads?: number;
+  } = {}) => {
+    const layout = large.planLargeLayout(1_000_000);
+    const content = large.largeExpectedContent(layout);
+    const counted = Object.fromEntries(
+      KINDS.map((k) => [
+        k,
+        { gets: GETS[k], result: engineCount?.(k, content[k].count) ?? content[k].count },
+      ]),
+    );
+    const tally = { get: 0 };
+    const methods = Object.fromEntries(
+      KINDS.map((k) => [
+        large.COUNT_VERBS[k],
+        async () => {
+          tally.get += GETS[k] + extraGets;
+          return answer(k, content[k].count);
+        },
+      ]),
+    );
+    const snap = () => ({
+      put: 0,
+      get: tally.get,
+      rangeN: 0,
+      rangeBytes: 0,
+      suffixN: 0,
+      suffixBytes: 0,
+      wholeN: 0,
+      wholeBytes: 0,
+    });
+    const stage: { result?: { sizes: { verbs: Record<string, Record<string, number>> }[] } } = {};
+    const plan = {
+      reads,
+      intos: 0,
+      sizes: [
+        {
+          n: 1_000_000,
+          layout,
+          counts: { counted, reads: {}, into: {}, operandBytes: [1, 1] },
+          chunksPerSegment: layout.chunksPerSegment,
+          sharedChunks: layout.sharedChunks,
+          operandBytes: [1, 1],
+        },
+      ],
+    };
+    const failure = await runner
+      .runLargeSuite({
+        stage: async (name: string, { run: body }: { run: () => Promise<never> }) => {
+          if (name === 'largeCount') stage.result = await body();
+        },
+        sample: (_of: string, _i: number, attempt: () => Promise<unknown>) => attempt(),
+        load: () => undefined,
+        perLoad: () => [],
+        summarise: () => ({}),
+        snap,
+        startDepth: () => undefined,
+        depthOf: () => ({ peakInFlight: 1, requestMs: 1, meanInFlight: 1, rounds: 1 }),
+        checkCeiling: () => undefined,
+        msSince: () => 1,
+        median: (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)],
+        spreadOf: (xs: number[]) => ({ p50ms: xs[0], p99ms: xs[0] }),
+        timedStore: () => ({ segment: () => methods }),
+        log: () => undefined,
+        plan,
+        recordMissed: () => undefined,
+      })
+      .then(
+        () => undefined,
+        (err: Error) => err,
+      );
+    return { failure, stage: stage.result, tally, plan };
+  };
+
+  it('runs each count verb the plan’s reads, and records its requests, bytes, time and count per size', async () => {
+    const { failure, stage, tally } = await run();
+    expect(failure).toBeUndefined();
+    const verbs = stage?.sizes[0]?.verbs ?? {};
+    expect(Object.keys(verbs)).toEqual(['intersectCount', 'unionCount', 'andNotCount']);
+    for (const kind of KINDS) {
+      const v = verbs[large.COUNT_VERBS[kind]] ?? {};
+      expect(v.runs).toBe(2);
+      expect(v.medianGets).toBe(GETS[kind]);
+      expect(v.expectedGets).toBe(GETS[kind]);
+      expect(v.offExpected).toBe(0);
+      expect(v.count).toBeGreaterThan(0);
+      for (const field of [
+        'p50ms',
+        'chunkReadsPerCall',
+        'chunkBytesPerCall',
+        'tailReadsPerCall',
+        'tailBytesPerCall',
+        'pointerReadsPerCall',
+        'pointerBytesPerCall',
+        'bytesReadPerCall',
+      ]) {
+        expect(v, field).toHaveProperty(field);
+      }
+    }
+    expect(tally.get).toBe(2 * (6 + 8 + 7));
+    // No reads, no samples.
+    const none = await run({ reads: 0 });
+    expect(none.stage?.sizes[0]?.verbs.intersectCount).toEqual({ runs: 0 });
+  });
+
+  it('fails the stage on a wrong count, each verb, high or low', async () => {
+    for (const kind of KINDS) {
+      for (const off of [1, -1]) {
+        const { failure } = await run({ answer: (k, want) => (k === kind ? want + off : want) });
+        expect(failure?.message, `${kind} ${off}`).toMatch(
+          new RegExp(
+            `${large.COUNT_VERBS[kind]} of 1000000 ids returned \\d+; expected exactly \\d+`,
+          ),
+        );
+      }
+    }
+  });
+
+  it('fails the stage when the engine’s count in memory is not the size of the combine the layout holds', async () => {
+    const { failure } = await run({ engineCount: (k, want) => (k === 'union' ? want + 1 : want) });
+    expect(failure?.message).toMatch(/unionCount of 1000000 ids: the engine counted \d+ in memory/);
+  });
+
+  it('records a request count off by one as a miss in the sample and in the stage’s total, and the run carries on', async () => {
+    const exact = await run();
+    const over = await run({ extraGets: 1 });
+    expect(over.failure).toBeUndefined();
+    for (const kind of KINDS) {
+      const v = over.stage?.sizes[0]?.verbs[large.COUNT_VERBS[kind]] ?? {};
+      expect(v.medianGets).toBe(GETS[kind] + 1);
+      expect(v.offExpected).toBe(2);
+    }
+    // The stage's total is what `recordCountMisses` holds to `expectedLarge`: one more request a call is a miss.
+    const want = { put: 0, get: 2 * (6 + 8 + 7) };
+    expect(large.countMisses({ put: 0, get: exact.tally.get }, want)).toEqual([]);
+    expect(large.countMisses({ put: 0, get: over.tally.get }, want)).toEqual([
+      { class: 'GET-class', kept: want.get + 6, expected: want.get },
+    ]);
+  });
+
+  it('refuses an installed release below 0.26.0, which has no count verbs, in the shape of the 0.17.0 refusal', () => {
+    expect(large.COUNT_VERBS_SINCE).toBe('0.26.0');
+    for (const v of ['0.25.0', '0.25.99', '0.17.0', '0.10.9']) {
+      expect(() => large.checkCountVerbs(v), v).toThrow(
+        new RegExp(
+          `is ${v.replace(/\./g, '\\.')}, and a release below 0\\.26\\.0 has no intersectCount`,
+        ),
+      );
+    }
+    expect(() => large.checkCountVerbs('0.25.0')).toThrow(
+      /0\.26\.0 is the first release that does\. Nothing was created\. Install it, or run from the 0\.26\.0 release\./,
+    );
+    // The look-alikes: this release and any above it, numbers compared as numbers, not as text.
+    for (const v of [
+      '0.26.0',
+      '0.26.1',
+      '0.27.0',
+      '0.100.0',
+      '1.0.0',
+      '2.0.0',
+      '0.27.0-rc.1',
+      '0.27.0+build',
+    ]) {
+      expect(() => large.checkCountVerbs(v), v).not.toThrow();
+    }
+    // A version that cannot be read is refused: it cannot be shown to have them.
+    for (const v of ['', 'latest', '0.26', 'v0.26.0', 'undefined']) {
+      expect(() => large.checkCountVerbs(v), v).toThrow(/which is not a version/);
+    }
+  });
+
+  it('is asked by the harness for every mode but a cleanup, before the engine is asked to count or anything is created', () => {
+    const main = harnessSrc.indexOf('async function main');
+    const check = harnessSrc.indexOf('checkCountVerbs(packageVersion)', main);
+    expect(check).toBeGreaterThan(main);
+    expect(
+      harnessSrc.slice(harnessSrc.lastIndexOf("if (SUITE === 'large')", check), check),
+    ).toContain("if (SUITE === 'large') {");
+    expect(check).toBeLessThan(harnessSrc.indexOf('await countSize(', main));
+    expect(check).toBeLessThan(harnessSrc.indexOf('new s3.CreateBucketCommand', main));
+    // It sits inside the block a cleanup does not enter, and refuses with the exit code of every other refusal.
+    expect(harnessSrc.lastIndexOf("if (MODE !== 'cleanup') {", check)).toBeGreaterThan(main);
+    expect(harnessSrc.slice(check, check + 120)).toContain('refuse(err.message)');
   });
 });

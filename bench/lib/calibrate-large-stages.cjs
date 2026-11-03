@@ -28,8 +28,18 @@ const LARGE_STAGES = Object.freeze([
   'largeIntersect',
   'largeUnion',
   'largeAndNot',
+  'largeCount',
   'largeInto',
 ]);
+
+/** The count verbs `largeCount` runs, by the combine each one counts. */
+const COUNT_VERBS = Object.freeze({
+  intersect: 'intersectCount',
+  union: 'unionCount',
+  andNot: 'andNotCount',
+});
+/** The first release that has the count verbs: an installed release below it cannot run `largeCount`. */
+const COUNT_VERBS_SINCE = '0.26.0';
 
 /** The ids an operand segment holds, from the shapes the suite measures. */
 const LARGE_SIZES = Object.freeze([1_000_000, 5_000_000, 10_000_000]);
@@ -201,6 +211,12 @@ function projectLarge(w) {
         costliest = Math.max(costliest, gets);
       }
     }
+    // A count reads no more of an operand than the stream of the same combine does, so it is bounded by the same figures:
+    // a test holds the engine's count to them.
+    if (w.reads > 0) {
+      const gets = reads.intersect + reads.union + reads.andNot;
+      stages.largeCount = add(stages.largeCount, { put: 0, get: w.reads * gets });
+    }
     if (w.intos > 0) {
       const out = outputBounds(size);
       for (const [verb, read] of Object.entries(INTO_READS)) {
@@ -248,6 +264,9 @@ function expectedLarge(w) {
     stages.largeIntersect.get += w.reads * c.reads.intersect.gets;
     stages.largeUnion.get += w.reads * c.reads.union.gets;
     stages.largeAndNot.get += w.reads * c.reads.andNot.gets;
+    for (const verb of Object.keys(COUNT_VERBS)) {
+      stages.largeCount.get += w.reads * c.counted[verb].gets;
+    }
     for (const calls of Object.values(c.into)) {
       for (const call of calls.slice(0, w.intos)) {
         stages.largeInto.put += call.put;
@@ -256,6 +275,39 @@ function expectedLarge(w) {
     }
   }
   return stages;
+}
+
+/**
+ * Whether an installed release has the count verbs. `version` is the installed `@cloudbitmaps/roaring`'s; one that is not
+ * a plain `major.minor.patch` (a pre-release counts as its core) has none shown, since a version that cannot be read
+ * cannot be shown to have them.
+ */
+function hasCountVerbs(version) {
+  const have = releaseCore(version);
+  const need = releaseCore(COUNT_VERBS_SINCE);
+  if (have === null) return false;
+  for (let i = 0; i < 3; i += 1) {
+    if (have[i] !== need[i]) return have[i] > need[i];
+  }
+  return true;
+}
+
+/** The numbers of a plain `major.minor.patch` version (a pre-release or build suffix is dropped), or `null`. */
+function releaseCore(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(version));
+  return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/** Refuse an installed release that has no count verbs, naming the release that has them. */
+function checkCountVerbs(version) {
+  if (!hasCountVerbs(version)) {
+    throw new Error(
+      `the installed @cloudbitmaps/roaring is ${releaseCore(version) === null ? `"${version}", which is not a version` : version}, ` +
+        `and a release below ${COUNT_VERBS_SINCE} has no intersectCount, unionCount or andNotCount, which the largeCount stage ` +
+        `measures; ${COUNT_VERBS_SINCE} is the first release that does. Nothing was created. Install it, or run from the ` +
+        `${COUNT_VERBS_SINCE} release.`,
+    );
+  }
 }
 
 /**
@@ -520,6 +572,10 @@ function resolveFloors(env) {
 
 module.exports = {
   LARGE_STAGES,
+  COUNT_VERBS,
+  COUNT_VERBS_SINCE,
+  checkCountVerbs,
+  hasCountVerbs,
   LARGE_SIZES,
   LARGE_CHUNKS,
   LARGE_OVERLAP,

@@ -195,6 +195,21 @@ async function coldAndNotIds(includeIds, excludeIds) {
   );
 }
 
+/**
+ * A cold `andNotCount` of the segment holding `includeIds` against one holding each list of `excludeIds`: what its requests
+ * were, and the count it returned, as `coldAndNotIds` reports a stream's.
+ */
+async function coldAndNotCountIds(includeIds, excludeIds) {
+  const { loader, cold, calls } = await countedBackend();
+  await loader.load({ segment: 'a' }, [...includeIds]);
+  for (const [i, ids] of excludeIds.entries()) await loader.load({ segment: `s${i}` }, [...ids]);
+  const store = cold();
+  const ids = await store
+    .segment('a')
+    .andNotCount(excludeIds.map((_, i) => store.segment(`s${i}`)));
+  return { ...calls, ids };
+}
+
 /** A cold iterate of the segment that holds the chunks `keys`: what its requests were. */
 async function coldIterate(keys, idsPerChunk) {
   return coldRead([['a', [...idsOfChunks(keys, idsPerChunk)]]], (store) =>
@@ -243,6 +258,7 @@ module.exports = {
   coldAndNot,
   coldIntersectIds,
   coldAndNotIds,
+  coldAndNotCountIds,
   coldIterate,
   collectsByName,
   readsRowAfterCollect,
