@@ -11,6 +11,17 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **The calibration harness has a count stage, so `intersectCount`, `unionCount` and `andNotCount` can be measured on S3.**
+  The large suite's `largeCount` runs each count verb, cold, on the operand pairs its stream stages read, and records, per
+  verb and size, the median requests by kind of read and bytes a call, the latency percentiles and the count it returned, which must be the size of the
+  combine the matching stream stage read and the size the engine counted in memory; it is held to the engine's exact
+  requests and bounded like the streams. The default suite has a `counts` stage for the `andNot`, whose count makes the
+  stream's requests and reads fewer bytes (at the default layout an intersect's count reads exactly its stream's, so it has none). A release
+  below 0.26.0, which has no count verbs, is refused by the large suite, and the default suite's stage runs no call on it. Evidence from
+  before the stage is still valid. It has not been run on S3. No library code, package or version changes.
+
 ## [0.27.0] — 2026-11-02
 
 ### Breaking
@@ -40,15 +51,6 @@ so, and so do the module headers in the code.
   listed numbers far above anything the row names that are still above the number the load took. It is `{ count: 0,
   generations: [] }` when there are none and when the load did not list the bucket. Look at what it names, then delete it
   with your bucket tools; a load never deletes it.
-
-- **The calibration harness has a count stage, so `intersectCount`, `unionCount` and `andNotCount` can be measured on S3.**
-  The large suite's `largeCount` runs each count verb, cold, on the operand pairs its stream stages read, and records each
-  call's requests by class and kind of read, its bytes, its time and the count it returned, which must be the size of the
-  combine the matching stream stage read and the size the engine counted in memory; it is held to the engine's exact
-  requests and bounded like the streams. The default suite has a `counts` stage for the `andNot`, whose count makes the
-  stream's requests and reads fewer bytes (an intersect's count reads exactly its stream's, so it has none). A release
-  below 0.26.0, which has no count verbs, is refused by the large suite, and the default suite's stage runs no call on it. Evidence from
-  before the stage is still valid. It has not been run on S3. No library code, package or version changes.
 
 ### Fixed
 
