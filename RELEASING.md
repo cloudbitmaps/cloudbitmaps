@@ -275,8 +275,11 @@ which defaults to `true`. `verify` runs without approval; `publish` waits for th
   only version tags, so a dry run reaches `publish` on a tag, which is a released version once the release has
   gone out, and every step up to the publish step runs. It skips the still-private check and the registry probes.
   No dry run of this workflow is possible before it is merged: a dispatch runs the workflow file at its ref,
-  and a tag carries the file it was made with. The new shape is first exercised by the next release; to prove
-  it first, dispatch a dry run on that tag and read the `publish` log before approving the publish.
+  and a tag carries the file it was made with. Nor can a dry run on a release's tag come before that release's
+  run: pushing the tag starts the real run, and a run dispatched on the same tag joins its concurrency group,
+  which cancels nothing, so it waits until the real run has finished. A change to this workflow is first
+  exercised by the next release's real run: read its `verify` log before approving, and `publish` still checks
+  the tarballs' sums, their set and the registry before its publish step, refusing before anything is uploaded.
 - **`dryRun: false` publishes for real, and only from a version tag.** Dispatched on a tag ref (`refs/tags/v…`) it
   runs the tag/version check, the release-notes check, the gate, the still-private check and the tarball leak scan in
   `verify`, then the checksum check, the registry probes and the publish in `publish`, and publishes the version the
