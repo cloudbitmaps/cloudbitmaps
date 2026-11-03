@@ -147,7 +147,10 @@ describe('the batch suite, rehearsed against MinIO', () => {
   }, 600_000);
 
   it('runs a sample again on destinations of its own after a transient fault, and still holds the stage to what it kept', async () => {
-    // The fault is a GetObject inside the batch call: the loads' and the fixed requests' GetObjects come first.
+    // The fault is a GetObject inside the batch call. The batch call is the last thing in a run to send a GetObject (teardown
+    // lists and deletes; the probe is a HeadBucket), so a clean run's last few GetObjects are the call's own. Not counted from
+    // the call's GET-class requests: a call opens each operand with a HeadObject, which is GET-class and is no GetObject, so
+    // that difference is not an index into GetObjects.
     const clean = rehearse({ CR_CALIBRATE_BATCH_SHAPE: 'small', CR_CALIBRATE_BATCH_SAMPLES: '1' });
     expect(clean.status, clean.stderr).toBe(0);
     const cost = (
@@ -156,13 +159,11 @@ describe('the batch suite, rehearsed against MinIO', () => {
       }
     ).cost;
     const getObjects = cost.ops.byCommand.GetObjectCommand ?? 0;
-    const batchGets = (clean.results.phases.batch as Stage).requests.get;
-    const before = getObjects - batchGets;
-    expect(before).toBeGreaterThan(0);
+    expect(getObjects).toBeGreaterThan(20);
     const { status, stderr, results, bucket } = rehearse({
       CR_CALIBRATE_BATCH_SHAPE: 'small',
       CR_CALIBRATE_BATCH_SAMPLES: '1',
-      CR_CALIBRATE_FAULT_GETS: `${before + 10}:reset`,
+      CR_CALIBRATE_FAULT_GETS: `${getObjects - 5}:reset`,
     });
     expect(status, stderr).toBe(0);
     expect(results.discards.count).toBe(1);
