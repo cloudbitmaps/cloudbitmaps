@@ -43,6 +43,7 @@ take a run's numbers from one derivation, and hold them to it with one matcher.
 | directory | what it holds |
 |---|---|
 | [`large/`](large/) | The evidence of the large suite (`--suite large`), which measures combines on operands of about a million to ten million ids. It has [its own README](large/README.md). The figures and report gates above list this directory without descending into it, so nothing in `large/` is a run of theirs. |
+| [`batch/`](batch/) | The evidence of the batch suite (`--suite batch`), which measures one refresh-shaped `materializeMany` call. It has [its own README](batch/README.md). The figures and report gates above list this directory without descending into it, so nothing in `batch/` is a run of theirs. |
 
 ## Adding a run
 
