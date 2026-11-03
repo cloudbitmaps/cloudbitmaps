@@ -39,6 +39,15 @@ so, and so do the module headers in the code.
   generations: [] }` when there are none and when the load did not list the bucket. Look at what it names, then delete it
   with your bucket tools; a load never deletes it.
 
+- **The calibration harness has a count stage, so `intersectCount`, `unionCount` and `andNotCount` can be measured on S3.**
+  The large suite's `largeCount` runs each count verb, cold, on the operand pairs its stream stages read, and records each
+  call's requests by class and kind of read, its bytes, its time and the count it returned, which must be the size of the
+  combine the matching stream stage read and the size the engine counted in memory; it is held to the engine's exact
+  requests and bounded like the streams. The default suite has a `counts` stage for the `andNot`, whose count makes the
+  stream's requests and reads fewer bytes (an intersect's count reads exactly its stream's, so it has none). A release
+  below 0.26.0, which has no count verbs, is refused by the large suite and skips the default suite's stage. Evidence from
+  before the stage is still valid. It has not been run on S3. No library code, package or version changes.
+
 ### Fixed
 
 - **A pinned handle now stops answering once its segment is destroyed or its generation erased, within `cache.genTtlMs`.**

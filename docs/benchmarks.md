@@ -689,7 +689,7 @@ throughput on S3. These are not published yet:
   1 MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
-- **The count methods on S3.** `intersectCount`, `unionCount` and `andNotCount` are [counted in memory](#counting-a-combine--counted-in-memory-not-measured), not measured on S3, and the calibration harness has no count stage.
+- **The count methods on S3.** `intersectCount`, `unionCount` and `andNotCount` are [counted in memory](#counting-a-combine--counted-in-memory-not-measured), not measured on S3. The calibration harness has the stage for it (the large suite's `largeCount`, and a `counts` stage in the default suite), and it has not been run on S3.
 - **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-10-30-5a2f4), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
