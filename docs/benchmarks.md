@@ -117,7 +117,7 @@ chunks lie in the object, not how many there are.
   Every load was a segment's first, and made 2 PUT + 3 GET single-part and, for a multipart load, 5 PUT-class + 3 GET.
 - **`andNot`** of a 1,999-chunk segment against ten excludes took 230.61 ms at the median and made 33 GETs: for each
   of the eleven operands, a pointer read, a tail read and one range read.
-- **`andNotCount`, measured on S3 for the first time.** The same call as the `andNot`, returning the size of the result and not the ids, over the same operands: 3 calls, each returned 475,000, the `andNot`'s size, and each made the same 33 GETs. Its median was 124.62 ms (p95 155.73 ms), against the stream's 230.61 ms. It read 3,455,937 bytes a call (567,600 of chunks, 2,883,584 of tails, 4,753 of pointers), against the stream's 4,436,321: the same tails and pointers, and only the shared chunks. Beyond the bytes the in-memory count of the same call reads are the 4,753 bytes of pointer reads, which that count leaves out (**derived**). The run's [report](../bench/calibration/2026-11-03-56b81.md#the-count-stage) sets the two side by side.
+- **`andNotCount`, measured on S3 for the first time.** The same call as the `andNot`, returning the size of the result and not the ids, over the same operands: 3 calls, each returned 475,000, the `andNot`'s size, and each made the same 33 GETs. Its median was 124.62 ms (p95 155.73 ms), against the stream's 230.61 ms: 3 calls against 10, the stream drained by the harness one id at a time and the count not, so this sets the count method against stream-and-count, the recipe it replaces, on the same operands in the same run, and does not say how much of the gap is the bytes. It read 3,455,937 bytes a call (567,600 of chunks, 2,883,584 of tails, 4,753 of pointers), against the stream's 4,436,321: the same tails and pointers, and only the shared chunks. The measured bytes are 4,753 above the in-memory count of the same call: the pointer reads that count leaves out (**derived**). The run's [report](../bench/calibration/2026-11-03-56b81.md#the-count-stage) sets the two side by side.
 - **A steady `store.load()` at `keep: 12` is measured**, on the same run. One segment was loaded in 18 loads, and each
   load made the requests of its kind (the table below). A segment's first load made 2 PUT + 3 GET. A reload made
   2 PUT + 2 GET. A load that deleted by name made 2 PUT + 5 GET and a delete. Each load that collects, by name or by listing, reads the registry once more after its last delete, a GET a load that
@@ -249,7 +249,7 @@ stream of the same combine in this run (**measured**):
 - **The count's cost does not follow the combine.** The three count verbs read the same chunks, the shared ones, so at each size they made the same GETs (6, 8 and 10) and read the same chunk bytes, 809,600, 4,009,280 and 4,514,400 a call, the bytes the `intersect` stream read too. The `union` stream read 4,047,904, 20,046,400 and 22,555,584 chunk bytes a call, and made 8, 24 and 26 GETs.
 - **An `intersectCount` reads an `intersect`'s requests and bytes.** At every size it made the `intersect` stream's GETs and chunk bytes, and its medians, 103.4, 113.3 and 108.6 ms, sit beside the stream's 98.7, 115.5 and 122.4 ms with no consistent difference: two sets of 40 calls from one session.
 - **Bytes a call** (**measured**): a count read, beside its chunks, 524,288 bytes of tails and 884, 888 and 892 bytes of pointers: 1,334,772 bytes a call at a million ids, 4,534,456 at five million and 5,039,580 at ten million.
-- The latencies are this session's, from one run of 40 calls a verb and size, and latencies of runs from different CloudShell sessions are not comparable. The medians of one session are fair to set against each other, and the stream and the count ran minutes apart, so a difference of a few milliseconds is not a finding.
+- The latencies are this session's, from one run of 40 calls a verb and size, and latencies of runs from different CloudShell sessions are not comparable. The medians are of one session (the whole run took about two and a half minutes), and the streams are drained a chunk at a time with `.batches()` while the count returns a number, so a gap between a count and its stream compares the count method with stream-and-count and is not all bytes, and a difference of a few milliseconds is not a finding.
 
 **The `*Into` verbs.** Each verb ran 5 calls a size onto a destination segment of its own, on a fresh store, and each
 published exactly the cardinality the layout says. An output of more than one part is written as a multipart
@@ -306,7 +306,7 @@ call that returns a number.
 >
 > **Measured on S3 as well.** The two tables below stay what they are, in-memory counts. Run
 > [`2026-11-03-56b81`](../bench/calibration/2026-11-03-56b81.md#the-count-stage) measured `andNotCount` on S3 against the
-> `andNot` stream (33 GETs each, 3,455,937 bytes a call against 4,436,321, 124.62 ms at the median against 230.61 ms), and the
+> `andNot` stream (33 GETs each, 3,455,937 bytes a call against 4,436,321, 124.62 ms at the median against 230.61 ms, 3 calls against 10 and the stream drained one id at a time by the harness, so that pair compares the count method with stream-and-count), and the
 > [large run `2026-11-03-fbbb8`](#large-operands--run-2026-11-03-fbbb8) measured all three count verbs on operands of
 > about a million, five million and ten million ids, where each made the GETs of an `intersect` of the same operands and read
 > only the chunks they share. The requests and the bytes of those runs are the engine's counts and the pointer reads the
@@ -731,12 +731,12 @@ throughput on S3. These are not published yet:
 - **GCS and Azure Blob in-region runs** — the run measured S3 only.
 
 **The harness is built, and has run for real from inside the region.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
-(`pnpm calibrate:aws`) measures, in one run against a real bucket, in the default suite's eight stages: load throughput through
+(`pnpm calibrate:aws`) measures, in one run against a real bucket, in the default suite's nine stages: load throughput through
 `store.load()`, single-part and multipart, each load's own requests recorded; cold `A ∩ B` latency for two 500,000-id
 operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the at-scale section reports, at a quarter
 of its density — and again with the same overlap spread uniformly over each segment's chunks; a sweep over how many
 chunks the operands share; the same intersects answered again from memory, held to no requests at all; `count()` and
-`has()` as a first read, `has()` on a segment already open, and both again warm; `andNot` of one segment against ten; and a steady `store.load()`, one segment loaded repeatedly at `keep: 12`, each load held to the requests of its kind. Every request the single-bucket topology
+`has()` as a first read, `has()` on a segment already open, and both again warm; `andNot` of one segment against ten, and `andNotCount` over the same operands; and a steady `store.load()`, one segment loaded repeatedly at `keep: 12`, each load held to the requests of its kind. Every request the single-bucket topology
 bills, pointer reads and conditional PUTs included, is counted attempt by attempt and by stage. Each intersect must
 return exactly the planned ids or no latency is reported, and each cold one turns off its store's timed pointer
 refresh, so its request count does not move with the network. A sample that meets a transient fault is not retried

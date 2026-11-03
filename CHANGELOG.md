@@ -25,15 +25,17 @@ so, and so do the module headers in the code.
 ### Changed
 
 - **The count verbs are measured on S3, by the calibration runs of 2026-11-03.** Two runs from AWS CloudShell in
-  `us-east-1`, against the published `0.27.0` packages (`2026-11-03-56b81` and `2026-11-03-fbbb8`), the first with the
-  count stage in each suite. `andNotCount` over the default suite's `andNot` operands made the stream's 33 GETs and read
-  3,455,937 bytes a call against the stream's 4,436,321, in 124.62 ms at the median against 230.61 ms, and returned the
+  `us-east-1`, against the published `0.27.0` packages (`2026-11-03-56b81` and `2026-11-03-fbbb8`), the first run of each
+  suite with the count stage. `andNotCount` over the default suite's `andNot` operands made the stream's 33 GETs and read
+  3,455,937 bytes a call against the stream's 4,436,321, in 124.62 ms at the median against 230.61 ms (3 calls against 10, the stream drained one id at
+  a time by the harness, so that pair compares the count method with stream-and-count), and returned the
   stream's 475,000 ids. In the large suite each count verb read only the chunks the operands share: 6, 8 and 10 GETs
   at a million, five million and ten million ids, whichever combine it counted, where the `union` stream made 8, 24 and 26.
   Every other stage made the requests of the runs before, and the bills are $0.0027964 and $0.0042822. Latencies of runs
   from different CloudShell sessions are not comparable, so none is set against another's. The benchmarks page, the
-  roadmap, the site and the calibration READMEs quote them. The calibration figures gate also accepts a run's recorded
-  large-segment ids to a part in a million of its two load rates, which medians of different loads can differ by.
+  roadmap, the site and the calibration READMEs quote them. The calibration figures gate also holds a run's recorded
+  large-segment ids to its two load rates: the two imply one load's upload, which must be a whole number of bytes
+  between the object and its upload, whichever loads the two medians come from.
   No library code changes.
 
 ## [0.27.0] — 2026-11-02
