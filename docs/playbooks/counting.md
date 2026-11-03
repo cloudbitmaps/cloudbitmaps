@@ -60,7 +60,7 @@ all its operands hold, so `intersectCount` is exact and makes the requests `inte
 a chunk key only one operand holds, that no exclude holds and that the range does not cut is answered from its index, as
 `count()` is, and its chunk is not read; every other key is decoded and counted as the stream reads it. So `unionCount`
 and `andNotCount` make no more requests than their streams and read fewer bytes where the operands share few chunks: in the bench's record, a union of two 10,000,000-id segments on the packed layout made 6 requests and read
-2,165,888 bytes where its stream made 36 and read 33,339,872 ([what it costs](../guide/reading.md#count-a-combine); [the whole record](../benchmarks.md#counting-a-combine--counted-in-memory-not-measured)).
+2,165,888 bytes where its stream made 36 and read 33,339,872 ([what it costs](../guide/reading.md#count-a-combine); [the whole record](../benchmarks.md#counting-a-combine--counted-in-memory-and-measured-on-s3)).
 It writes nothing and holds no result: the memory is the stream's window of ranges.
 
 `unionCount` and `andNotCount` trust what `count()` trusts: the index, for each key they answer without decoding
@@ -106,7 +106,7 @@ shoppers only 7
 This is exact for every key, since it decodes every payload it reads; `intersectCount` is just as exact and makes the same requests, so use this way only for a union or a difference where exactness matters more than the request count, since `unionCount` and `andNotCount` trust the index for keys only one operand holds. It writes nothing. The array you receive is at most 65,536 ids (256 KiB); the combine
 also holds the ranges it reads ahead (up to `concurrency` per operand, each up to 1 MiB) and one reader per operand
 ([the memory ceilings](../guide/production.md#the-memory-ceilings)). Its requests are the combine's own: an `intersect` reads only the chunks every operand holds (a cold intersect of
-two segments that share 100 of their 1,999 chunks made 6 GETs in [the in-region run](../benchmarks.md#the-in-region-run--run-2026-10-30-16fa6)),
+two segments that share 100 of their 1,999 chunks made 6 GETs in [the in-region run](../benchmarks.md#the-in-region-run--run-2026-11-03-56b81)),
 an `andNot` reads all of the first segment and the others only where they overlap it, and a `union` reads every chunk of
 every operand ([what each combine reads](../guide/reading.md#combine-segments-intersect-union-andnot)). So way 1 reads
 no more than `intersectCount` for an intersection, which does the same without building the ids, and is the expensive way to count
