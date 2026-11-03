@@ -80,7 +80,7 @@ describe('a run result of a combine, then a write into it', () => {
           expectSet(result, set);
           if (result === null) return;
           // A write keeps the kind rule only into a run. Two runs can combine into a set the rule makes an array (a
-          // tie: three consecutive ids are 6 bytes either way), and a write into an array never makes a run.
+          // tie: three consecutive ids are 6 bytes either way) or a bitset, and a write into either never makes a run.
           const fromRun = result.kind === RUN;
           const added = containerAdd(result, extra[0] as number);
           expectSet(added, sortedUnique([...set, extra[0] as number]), fromRun);
