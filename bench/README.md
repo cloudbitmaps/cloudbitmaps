@@ -79,7 +79,7 @@ figure is published from it with no check behind it, the row says that too.
 | `resolution-heap-results.json` | `resolution-heap.cjs` | `sizing.cjs`, which publishes the range of its heap-to-counted multiples, and the Node version that measured them, in the `SIZING:RESOLUTIONS` region of `docs/guide/sizing.md`, and `pnpm bench:sizing:check`, which holds the page to it. Measured, not derived |
 | `encoding-results.json` | `encoding.cjs` | `scripts/site-figures.cjs`, against the sizes `site/flavors/roaring.html` quotes |
 | `rss-gate-results.json` | `scripts/rss-gate.sh` | `scripts/site-figures.cjs` — the hard RSS ceiling on the benchmarks page |
-| `calibration/` | `calibrate-aws.cjs`: one evidence file per real run, beside that run's report. The directory has [its own README](calibration/README.md), which lists every run; the large suite's runs live in `calibration/large/`, which has [one of its own](calibration/large/README.md) and which these gates do not read | `tests/docs/calibration-reports.test.ts`, against each run's report and the benchmarks page's section on the latest run; `scripts/site-figures.cjs`, against the site's single-bucket figures |
+| `calibration/` | `calibrate-aws.cjs`: one evidence file per real run, beside that run's report. The directory has [its own README](calibration/README.md), which lists every run; the large suite's runs live in `calibration/large/`, which has [one of its own](calibration/large/README.md), and the batch suite's in `calibration/batch/` ([its README](calibration/batch/README.md)); these gates read neither | `tests/docs/calibration-reports.test.ts`, against each run's report and the benchmarks page's section on the latest run; `scripts/site-figures.cjs`, against the site's single-bucket figures |
 
 A rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores — it has the same shape as a real
 run's file, so under an evidence name it would be one `git add` from being committed as the evidence.
@@ -447,7 +447,7 @@ The script installs Node 22 if CloudShell's is older, installs the **published**
 billed at, and runs the harness against those — so the figures describe what a consumer installs, not a build of this
 checkout. A finished run's results land in `~/<runId>.json`, and an
 interrupted one's in `~/<runId>.partial.json`, which is not evidence; the large suite's land under
-`~/bench/calibration/large/` instead. A name already taken in `~` is left alone,
+`~/bench/calibration/large/` instead, and the batch suite's under `~/bench/calibration/batch/`. A name already taken in `~` is left alone,
 and this run's copy goes beside it with a timestamp, still a `.partial.json` if it was one. The script runs the
 harness as a job of its own and passes on every signal that would stop it: a Ctrl-C, a closed CloudShell tab or a
 `kill` reaches the harness exactly once, and the results are copied out only after it has stopped, with SIGPIPE
@@ -548,6 +548,58 @@ evidence's own gate, which is proven on a rehearsal's file and holds each commit
 harness's own socket limit; array-only and bitset-only containers; one task at a time, and `keep` left at its default for
 the destinations. Latencies from different CloudShell sessions are not comparable.
 
+### The batch suite
+
+`node bench/calibrate-aws.cjs --suite batch` measures one refresh-shaped `store.materializeMany` call on S3: **100 stored
+operands of 200,000 ids and 1,000 outputs**, each output a tree of one or two levels of `and`, `or` and `andNot` with the
+same opt-out operand excluded, built by the generator `materialize-many-counts.cjs` uses (its `refresh` shape: the same
+seeds, so the same operands and outputs, which a test holds). It is a suite of its own, so the default suite's projection
+and the large suite's are untouched. The `target` shape of that file (operands of 3,000,000 ids over 1,500 chunks, about
+5 GB written a sample and a few gigabytes of memory) is not run: it is too big for CloudShell. An `*Into` side is not run
+either: its requests are counted in memory, at about $0.07 a sample.
+
+| stage | what it does | requests it is expected to make |
+|---|---|---|
+| `batchLoad` | the 100 operands through `store.load()` | a first load each, as the other suites' loads are |
+| `batch` | `N` cold `materializeMany` calls of the 1,000 outputs (`N` is 3), each on a store that has read nothing, at the default memory budget, onto destinations no earlier sample wrote; per sample it records the wall time, outputs a second, the requests by class and by kind of read, the bytes read and written and the groups the call made | the requests of the same call over the in-memory backend, counted before anything is created: 4,449 GET-class and 2,000 PUT-class a sample (every destination is new, so each output is an object and a registry create), in 8 groups (**counted** in memory, `lib/batch-counts.cjs`) |
+
+Every output is checked: its count must equal the engine's count for that output, computed in memory from the same ids
+(and an output the engine publishes must be published, with the same size), or the stage fails; an output that comes back
+with an error is thrown as it is, so a transient fault discards the sample and runs it again on destinations of its own.
+**Not yet run on S3.** A release below `0.18.0`, the first with `materializeMany`, is refused before anything is created.
+
+**Counted, not restated.** The shape is counted over the in-memory backend before anything is created (about 12 seconds,
+printed as it starts), and each stage is held to its exact requests in both classes, as the other suites' stages are; a
+difference is recorded under `expectedMissed`. At the default plan the stages are expected to make 6,200 PUT-class and
+13,647 GET-class requests: $0.0365 at `us-east-1` on-demand prices (**derived** from the counts).
+
+**The bound.** The number of groups, which sets how many times each operand is read, is the engine's to decide from the
+sizes of what it holds, so the bound is not a structural cap: a sample is bounded at one and a half times its counted
+requests, and a load's bound is the default suite's. Only the `batch` stage can discard a sample, so the discard allowance
+is the fewer of a run's and a stage's (2), each at the costliest sample's bound. At the default plan the bound is 16,015
+PUT-class and 34,981 GET-class requests, **$0.094067**, and the ceiling to give it is **$0.10** (a cap equal to the bound
+is refused). The per-sample ceiling check and the end-of-run `PROJECTION EXCEEDED` check work as they do for the others.
+
+**Teardown.** The suite writes a thousand destinations a sample, each an object and a registry row (and a delete marker, on
+a versioned bucket, for an output the call refused), far more than the first listing of a thousand versions the other
+suites leave. Teardown's delete passes and listing pages are sized for the largest workload the suite accepts, a thousand
+versions a pass (`teardownLimits`), and the pre-flight refuses a workload past it; `--cleanup <runId> --suite batch` uses
+the same limits. The rehearsal proves the bucket ends gone.
+
+**Rehearse it, then run it.** `node bench/calibrate-aws.cjs --suite batch` prints the projection;
+`node bench/calibrate-aws.cjs --rehearse --suite batch` runs the suite against MinIO and writes
+`calibrate-aws-rehearsal-batch.json`. `CR_CALIBRATE_BATCH_SAMPLES` sets the cold calls (at most 3) and
+`CR_CALIBRATE_BATCH_SHAPE=small` (20 operands of 100,000 ids, 100 outputs) makes the rehearsal smaller. A real run, from
+CloudShell:
+
+```
+CR_CALIBRATE_SUITE=batch CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.10 bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-batch-$(date -u +%Y%m%dT%H%M%SZ).log
+```
+
+The evidence goes under `calibration/batch/`, which the default suite's gates do not read. The suite needs 1,280 MiB of
+memory (the in-memory count peaked at 823 MiB resident on a laptop, with every operand and destination held in memory,
+which a run on S3 does not), and the large suite's two floors' settings raise it.
+
 ### What it does not measure
 
 The default suite's scope is the three measurements above, on one workload shape. Still owed, and **not** in this harness yet:
@@ -602,6 +654,9 @@ Compare the two evidence files: the request counts of every stage are identical 
 | `lib/calibrate-large-stages.cjs` | The large suite's table of stages (`LARGE_STAGES`), its shapes (`planLargeLayout`, `largeStride`), the most each stage can request, with each range bounded by the object's bytes (`projectLarge`, `rangeCap`) and the exact requests the engine is expected to make (`expectedLarge`), the literal copies of the engine's coalescing constants and the driver's part size, which a test holds to their source and the harness holds to the installed packages' own (`constantsIn`, `checkEngineConstants`), which suite a run is and where it was named (`resolveSuite`, `suiteFrom`), the knobs (`resolveLargeKnobs`, `refuseDefaultKnobs`) and the floors the machine must meet (`checkResources`, `resolveFloors`). Pure, so each can be tested against the bug it exists for. |
 | `lib/calibrate-large.cjs` | The large suite's stages: the loads, the uncached intersects, unions and `andNot`s, the count verbs (`largeCount`) and the `*Into` calls, run through the harness's own meter, discard ledger, load helper and ceiling check, each read held to exactly the ids the layout says. Also its projection-only report (`projectionLines`). |
 | `lib/calibrate-large-resources.cjs` | What the machine has for the large suite, and the installed engine's text to check its constants against (`installedSources`): the memory available (`/proc/meminfo`'s `MemAvailable`, the machine's total where there is no such figure) and the disk free in the home directory, and the one line a run prints about them. |
+| `lib/calibrate-batch-stages.cjs` | The batch suite's table of stages (`BATCH_STAGES`), its shapes, the most each stage can request (the counted requests with headroom), the expected counts, the per-output check (`checkOutputs`), its knobs and the refusal of a release below `0.18.0`. |
+| `lib/calibrate-batch.cjs` | The batch suite's stages: the operands' loads and the cold `materializeMany` calls, run through the harness's own meter, discard ledger, load helper and ceiling check, each output held to the engine's count. Also its projection-only report. |
+| `lib/batch-counts.cjs` | The batch suite's operands and outputs, built as `materialize-many-counts.cjs` builds them without the native binding, and one call's requests, groups and per-output results counted by running the real engine over the in-memory backend. |
 | `lib/large-counts.cjs` | Counts the large suite's requests by running the real engine over the in-memory backend: the operands' object sizes, each cold read's pointers, tails and ranges, each count verb's with the count it returned, and each `*Into` call repeated onto one destination, with its parts and PUT-class requests. The engine's module is passed in, so a test counts the source. |
 | `lib/calibrate-process.cjs` | How a run stops and what it leaves behind: the gate that stops the workload's client and waits for what it sent before teardown (`interruptGate`, `stopThenTearDown`), what a failure records, its name, its code and its message, and what a signal exits with (`faultOf`, `failureOf`, `describeFault`, `exitCodeAfterSignal`), the SDK's own classes of retryable fault (`sdkFaultClasses`), the terminal's streams opened at startup and silenced on a hang-up (`holdTerminal`, `silenceTerminal`), results written without ever replacing a file (`writeResultsFile`), and the harness commit, marked when dirty (`harnessRef`). Kept apart from the pure guards so each can be driven in a test. |
 | `lib/calibrate-samples.cjs` | The timed samples that survive a transient fault: what counts as one (`transientFault`), the ledger every timed sample runs through, which discards a failed one whole, records it beside its stage and runs it again, at most three a run and two a stage (`discardLedger`, `DISCARDS_PER_RUN`, `DISCARDS_PER_STAGE`), the wait for a failed sample's requests to answer (`quiesce`), a stage's requests with and without its discards (`keptRequests`, `discardedRequests`), and a rehearsal's injected faults (`parseFaultGets`, `injectFaults`). |

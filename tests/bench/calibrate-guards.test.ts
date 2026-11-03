@@ -2467,7 +2467,9 @@ describe('teardown — what counts as done', () => {
     expect(teardown).toContain('bucketIsGone(');
     expect(teardown).not.toContain('probeMeansAbsent(');
     expect(teardown).toContain('uploadIsGone(');
-    expect(teardown).toContain('TEARDOWN_PASSES');
+    // The limits are the suite's own (`teardownLimits`), the default ones for the default and large suites.
+    expect(teardown).toContain('TEARDOWN.passes');
+    expect(src).toContain('teardownLimits(');
     expect(src).toMatch(/fixedPuts:\s*1 \/\* CreateBucket \*\/ \+ TEARDOWN_PUTS/);
   });
 
@@ -2492,7 +2494,7 @@ describe('teardown — what counts as done', () => {
     expect(teardown.slice(check, teardown.indexOf(']);', check))).toMatch(/uploads\.map/);
     expect(check).toBeLessThan(teardown.indexOf('new s3.AbortMultipartUploadCommand'));
     expect(check).toBeLessThan(teardown.indexOf('new s3.DeleteObjectsCommand'));
-    expect(teardown).toContain('MAX_LISTING_PAGES');
+    expect(teardown).toContain('TEARDOWN.pages');
     expect(src).toContain('prefix: STORE_PREFIX');
     // What LEFTOVERS says last: how to remove them, unless --cleanup would only refuse again.
     expect(guards.leftoversHint({ notOurs: false, rehearse: true, runId: '2026-09-23-a' })).toBe(

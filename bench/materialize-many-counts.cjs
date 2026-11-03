@@ -270,7 +270,7 @@ async function countShape(id) {
   return { ...shape, batch, into };
 }
 
-(async () => {
+async function main() {
   const args = process.argv.slice(2);
   const check = args.includes('--check');
   const all = args.includes('--all');
@@ -311,4 +311,8 @@ async function countShape(id) {
   };
   fs.writeFileSync(FILE, JSON.stringify(out, null, 2) + '\n');
   console.log(`materialize-many-counts: wrote ${FILE} (${ids.join(', ')})`);
-})();
+}
+
+// Run as a script; `require`d, it only offers the generators, which the calibration harness's batch suite is held to.
+if (require.main === module) main();
+else module.exports = { SHAPES, lcg, makeOperand, makeTree };

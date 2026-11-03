@@ -128,6 +128,7 @@ const DIRECTORIES = [
   { dir: 'bench', minimum: 12, lib: true },
   { dir: 'bench/calibration', minimum: 2, lib: false },
   { dir: 'bench/calibration/large', minimum: 0, lib: false },
+  { dir: 'bench/calibration/batch', minimum: 0, lib: false },
   { dir: 'scripts', minimum: 20, lib: true },
   { dir: 'api-surface', minimum: 2, lib: false },
 ];

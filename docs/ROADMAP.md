@@ -82,7 +82,7 @@ marked with the release it is to ship in, and sits under `[Unreleased]` in the [
 | WASM CRoaring research | **not planned** — the store's codec is Roaring in TypeScript, so there is no native addon for a WebAssembly build to replace (a WebAssembly module for this codec's own dense word kernels is a separate item, under Planned / exploring) |
 | A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — no library behaviour changes: the large suite has run against real S3, runs `2026-10-07-88cd3` and `2026-10-30-5a2f4`, whose latest figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-30-5a2f4) |
 
-**What is next:** the table of the public bitmap API against the native binding is built and published ([the codec page](guide/roaring-codec.md#the-public-class-against-native-in-memory)); what stays is its re-measure on each release build. A method more than 10 times slower than native on some data set ships only on the maintainer's decision; the two there are the union of 64 dense bitmaps with `orMany` and the first `deserialize` in a fresh process, and both ship with their figures shown. Ranges, `rank` and `select` are not planned yet, because each needs container-level fast paths or a running count per container that taxes every write, and are built when a user asks; the batch stage (a refresh-shaped `materializeMany` measured on S3), a Lambda run, the count methods on S3 (the calibration harness has the stage now; a run is what remains), other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
+**What is next:** the table of the public bitmap API against the native binding is built and published ([the codec page](guide/roaring-codec.md#the-public-class-against-native-in-memory)); what stays is its re-measure on each release build. A method more than 10 times slower than native on some data set ships only on the maintainer's decision; the two there are the union of 64 dense bitmaps with `orMany` and the first `deserialize` in a fresh process, and both ship with their figures shown. Ranges, `rank` and `select` are not planned yet, because each needs container-level fast paths or a running count per container that taxes every write, and are built when a user asks; the batch stage (a refresh-shaped `materializeMany` measured on S3: the calibration harness has the suite now, `--suite batch`; a run is what remains), a Lambda run, the count methods on S3 (the calibration harness has the stage now; a run is what remains), other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
 
 Current install and publish status lives in the [README](../README.md) — this page deliberately doesn't
 restate it, so the two can't drift. You install **one codec flavor plus the one storage package you need**,
@@ -312,7 +312,7 @@ the requests the engine actually issued and the time they took, from the 2026-10
 inside the region. It measured the topology that ships, with the pointer in the same bucket as the data: what a cold
 intersect and a load cost, pointer included, how long they take, and how fast a load runs. The 2026-10-30 large run,
 from the same place, measured combines and the `*Into` verbs on operands of about 1, 5 and 10 million ids. What is **not** yet
-measured is [what is still owed](benchmarks.md#what-is-still-owed): a Lambda's cold start, `materializeMany` on S3, the count methods on S3, other
+measured is [what is still owed](benchmarks.md#what-is-still-owed): a Lambda's cold start, `materializeMany` on S3 (the harness has the suite; it has not been run), the count methods on S3, other
 combine shapes, and GCS and Azure on a real account. RSS under a soak is measured and published
 as a ceiling. There is no stress, tail-latency or chaos harness for the loaded store. Benchmark numbers come with their methodology: the benchmarks page and each run's report say,
 section by section, whether a figure is measured, derived, modelled or expected, and laptop and emulator numbers
@@ -340,7 +340,7 @@ between here and there:
 2. **Loaded-store benchmarks — partly owed.** Load throughput and `intersect` latency are measured in-region (the
    run above, with a sweep to 2,000 shared chunks). `*Into` latency and combines on operands of a million to ten million ids
    are measured on S3 by the harness's [large suite](../bench/README.md#the-large-suite) (`node bench/calibrate-aws.cjs --suite large`),
-   run `2026-10-30-5a2f4`; `materializeMany` on S3, the count methods on S3 (the harness has the stage; it has not been run),
+   run `2026-10-30-5a2f4`; `materializeMany` on S3 (the harness has the [batch suite](../bench/README.md#the-batch-suite); it has not been run), the count methods on S3 (the harness has the stage; it has not been run),
    `intersect` over more than two operands and other overlaps are not measured.
    `iterate`'s request count is expected from the engine, not measured: the harness does not time it.
    **The RSS soak is measured:** `pnpm rss-gate` records its run, and

@@ -296,13 +296,13 @@ describe('the large suite is a suite of its own', () => {
 
   it('is the harness’s own table when asked for: the projection, the end-of-run check and the refusal read it', () => {
     expect(harnessSrc).toContain(
-      "const STAGES = SUITE === 'large' ? LARGE_STAGES : DEFAULT_STAGES;",
+      "SUITE === 'large' ? LARGE_STAGES : SUITE === 'batch' ? BATCH_STAGES : DEFAULT_STAGES;",
     );
     expect(harnessSrc).toContain('if (!STAGES.includes(name))');
     expect(harnessSrc).toContain('for (const name of STAGES) {');
-    // The default suite's stages sit below the large suite's call, and the helper skips them for a large run.
+    // The default suite's stages sit below the large suite's call, and the helper skips them for any other suite's run.
     expect(harnessSrc).toContain(
-      "if (SUITE === 'large' && DEFAULT_STAGES.includes(name)) return undefined;",
+      "if (SUITE !== 'default' && DEFAULT_STAGES.includes(name)) return undefined;",
     );
     expect(harnessSrc.indexOf('await runLargeSuite(')).toBeLessThan(
       harnessSrc.indexOf("await stage('load'"),
@@ -1325,7 +1325,7 @@ describe('the machine it runs on', () => {
     expect(check).toBeLessThan(harnessSrc.indexOf("await packageOf('roaring')", main));
     expect(check).toBeLessThan(harnessSrc.indexOf('new s3.CreateBucketCommand', main));
     expect(harnessSrc).toContain(
-      "if (SUITE === 'large' && (MODE === 'rehearse' || MODE === 'run')) {",
+      "if (SUITE !== 'default' && (MODE === 'rehearse' || MODE === 'run')) {",
     );
   });
 });
@@ -1477,7 +1477,7 @@ describe('the files the harness runs from', () => {
       timeout: 30_000,
     });
     expect(bad.status).toBe(2);
-    expect(bad.stderr).toMatch(/CR_CALIBRATE_SUITE must be default or large/);
+    expect(bad.stderr).toMatch(/CR_CALIBRATE_SUITE must be default, large or batch/);
   });
 
   // A large run committed beside the default suite's evidence would become the default suite's latest report, so its file
@@ -1676,7 +1676,7 @@ describe('the engine the suite is run against', () => {
     expect(check).toBeLessThan(harnessSrc.indexOf("await packageOf('roaring')", main));
     expect(check).toBeLessThan(harnessSrc.indexOf('new s3.CreateBucketCommand', main));
     const block = harnessSrc.slice(
-      harnessSrc.lastIndexOf("if (SUITE === 'large' &&", check),
+      harnessSrc.lastIndexOf("if (SUITE !== 'default' &&", check),
       check,
     );
     expect(block).toContain("MODE === 'rehearse' || MODE === 'run'");

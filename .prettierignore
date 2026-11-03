@@ -12,6 +12,7 @@ pnpm-lock.yaml
 # for the rehearsals the bench tests read, which a test holds to the harness's own formatting byte for byte.
 bench/calibration/*.json
 bench/calibration/large/*.json
+bench/calibration/batch/*.json
 tests/bench/fixtures/calibration-rehearsal*.json
 tests/bench/fixtures/calibration-large-rehearsal.json
 

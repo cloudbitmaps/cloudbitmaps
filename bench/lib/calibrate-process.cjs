@@ -255,6 +255,9 @@ function resultsJson(results) {
 const HARNESS_FILES = [
   'bench/calibrate-aws.cjs',
   'bench/lib/aws-meter.cjs',
+  'bench/lib/batch-counts.cjs',
+  'bench/lib/calibrate-batch-stages.cjs',
+  'bench/lib/calibrate-batch.cjs',
   'bench/lib/calibrate-guards.cjs',
   'bench/lib/calibrate-large-resources.cjs',
   'bench/lib/calibrate-large-stages.cjs',

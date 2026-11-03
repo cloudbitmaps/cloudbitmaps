@@ -27,7 +27,10 @@
 #           copied or installed.
 #           CR_CALIBRATE_SUITE=large runs the large suite (combines on operands of 10^6 to 10^7 ids) in place of the
 #           default one, and CR_CALIBRATE_LARGE_READS and CR_CALIBRATE_LARGE_INTOS size it; its evidence is written
-#           under bench/calibration/large/. Any other suite name is refused by the harness, before anything is created.
+#           under bench/calibration/large/. CR_CALIBRATE_SUITE=batch runs the batch suite (one refresh-shaped
+#           materializeMany of 1,000 outputs over 100 operands), sized by CR_CALIBRATE_BATCH_SHAPE and
+#           CR_CALIBRATE_BATCH_SAMPLES, its evidence under bench/calibration/batch/. Any other suite name is refused by
+#           the harness, before anything is created.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -44,13 +47,13 @@ refuse_bad_rehearse() {
 }
 refuse_bad_rehearse
 
-# Only unset, empty, `default` or `large` name a suite. The harness refuses any other, but only once the packages are
+# Only unset, empty, `default`, `large` or `batch` name a suite. The harness refuses any other, but only once the packages are
 # installed, so it is refused here first, and a name it would take is left to it.
 refuse_bad_suite() {
   case "${CR_CALIBRATE_SUITE:-}" in
-    '' | default | large) ;;
+    '' | default | large | batch) ;;
     *)
-      echo "cloudshell: CR_CALIBRATE_SUITE must be default or large, not \"${CR_CALIBRATE_SUITE}\"" >&2
+      echo "cloudshell: CR_CALIBRATE_SUITE must be default, large or batch, not \"${CR_CALIBRATE_SUITE}\"" >&2
       exit 2
       ;;
   esac
@@ -137,7 +140,7 @@ harness_ref() {
   ref="$(git rev-parse --short HEAD 2>/dev/null)" || { echo unknown; return; }
   if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib/aws-meter.cjs \
     bench/lib/calibrate-guards.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs \
-    bench/lib/calibrate-large.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
+    bench/lib/calibrate-large.cjs bench/lib/batch-counts.cjs bench/lib/calibrate-batch-stages.cjs bench/lib/calibrate-batch.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
     bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs \
     bench/lib/range-counts.cjs 2>/dev/null)" ]; then
     ref="${ref}-dirty"
@@ -153,6 +156,7 @@ export CR_CALIBRATE_HARNESS_REF
 refuse_committed_run_id() {
   local dir="bench/calibration"
   if [ "${CR_CALIBRATE_SUITE:-}" = "large" ]; then dir="bench/calibration/large"; fi
+  if [ "${CR_CALIBRATE_SUITE:-}" = "batch" ]; then dir="bench/calibration/batch"; fi
   if [ -n "${CR_CALIBRATE_RUN_ID:-}" ] && [ -f "${dir}/${CR_CALIBRATE_RUN_ID}.json" ]; then
     echo "cloudshell: ${dir}/${CR_CALIBRATE_RUN_ID}.json is committed evidence — choose another CR_CALIBRATE_RUN_ID, or leave it unset" >&2
     exit 2
@@ -217,13 +221,16 @@ finish() {
   local kept=0
   local tilde='~'
   for f in "$WORK"/bench/calibration/*.json "$WORK"/bench/calibration/large/*.json \
-    "$WORK/bench/calibrate-aws-rehearsal.json" "$WORK/bench/calibrate-aws-rehearsal-large.json"; do
+    "$WORK"/bench/calibration/batch/*.json \
+    "$WORK/bench/calibrate-aws-rehearsal.json" "$WORK/bench/calibrate-aws-rehearsal-large.json" \
+    "$WORK/bench/calibrate-aws-rehearsal-batch.json"; do
     [ -f "$f" ] || continue
     local name dest out
     name="$(basename "$f")"
     out="$HOME"
     case "$f" in
       "$WORK"/bench/calibration/large/*) out="$HOME/bench/calibration/large" ;;
+      "$WORK"/bench/calibration/batch/*) out="$HOME/bench/calibration/batch" ;;
     esac
     dest="$out/$name"
     if [ -e "$dest" ]; then
@@ -241,7 +248,7 @@ finish() {
         echo "cloudshell: results at ${dest/#$HOME/$tilde} (Actions → Download file, or cat it)"
       else
         # Download file refused a file under a nested directory: copy it to the home directory first.
-        echo "cloudshell: results at ${dest/#$HOME/$tilde} (copy it to the home directory first: cp ${dest/#$HOME/$tilde} ${tilde}/large-${dest##*/}, then Actions → Download file on that, or cat it)"
+        echo "cloudshell: results at ${dest/#$HOME/$tilde} (copy it to the home directory first: cp ${dest/#$HOME/$tilde} ${tilde}/${out##*/}-${dest##*/}, then Actions → Download file on that, or cat it)"
       fi
     else
       echo "cloudshell: could not copy the results — they are at $f" >&2
@@ -287,7 +294,7 @@ run_harness() {
 
 mkdir -p "$WORK/bench/lib"
 cp bench/calibrate-aws.cjs "$WORK/bench/"
-cp bench/lib/aws-meter.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs bench/lib/calibrate-large.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs bench/lib/range-counts.cjs "$WORK/bench/lib/"
+cp bench/lib/aws-meter.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs bench/lib/calibrate-large.cjs bench/lib/batch-counts.cjs bench/lib/calibrate-batch-stages.cjs bench/lib/calibrate-batch.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs bench/lib/range-counts.cjs "$WORK/bench/lib/"
 # With a codec named, the stores come from a bundle of this clone's sources (bench/lib/codec-engine.cjs): copy the
 # sources the bundle reads, and install the bundler beside them, at the version this clone's lockfile pins.
 if [ -n "${CR_CALIBRATE_CODEC:-}" ]; then

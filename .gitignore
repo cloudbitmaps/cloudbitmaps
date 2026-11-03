@@ -62,6 +62,9 @@ bench/calibration/*.partial.json
 # The large suite (`--suite large`) writes the same three kinds of file, its evidence under `bench/calibration/large/`.
 bench/calibrate-aws-rehearsal-large.json
 bench/calibration/large/*.partial.json
+# The batch suite (`--suite batch`) the same, its evidence under `bench/calibration/batch/`.
+bench/calibrate-aws-rehearsal-batch.json
+bench/calibration/batch/*.partial.json
 
 # Local review artifact from `pnpm site:screenshots` — regenerable, and 12 MB of PNGs that go stale
 # silently: a committed set would keep showing pages long after they changed.

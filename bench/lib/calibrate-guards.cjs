@@ -571,7 +571,8 @@ function checkCleanupId(runId) {
 function suiteEvidenceDir(suite) {
   if (suite === 'default') return EVIDENCE_DIR;
   if (suite === 'large') return `${EVIDENCE_DIR}/large`;
-  throw new Error(`"${String(suite)}" is not a suite: the suites are default and large`);
+  if (suite === 'batch') return `${EVIDENCE_DIR}/batch`;
+  throw new Error(`"${String(suite)}" is not a suite: the suites are default, large and batch`);
 }
 
 /**
@@ -717,6 +718,24 @@ function foreignKeys(keys) {
 const MAX_LISTING_PAGES = 10;
 
 /**
+ * What teardown may do for a workload that leaves at most `maxVersions` object versions: the delete passes it makes and
+ * the listing pages it reads before it touches anything, each page and each pass reaching a thousand versions. Never
+ * fewer than {@link TEARDOWN_PASSES} and {@link MAX_LISTING_PAGES}; a workload of a thousand versions or fewer, as the
+ * default and large suites leave, gets exactly those. `puts` is the listings (PUT-class) it can send at every attempt
+ * of its retrying client, which the projection counts.
+ */
+function teardownLimits(maxVersions = 0) {
+  const pagesNeeded = Math.ceil(maxVersions / 1_000) + 2;
+  const passes = Math.max(TEARDOWN_PASSES, pagesNeeded);
+  const pages = Math.max(MAX_LISTING_PAGES, pagesNeeded);
+  const puts =
+    passes === TEARDOWN_PASSES && pages === MAX_LISTING_PAGES
+      ? TEARDOWN_PUTS
+      : ADMIN_ATTEMPTS * (1 + pages + passes + 1);
+  return { passes, pages, puts };
+}
+
+/**
  * The last line of a LEFTOVERS report: how to remove what is left, or, for a bucket that holds keys the harness did
  * not write, that `--cleanup` will not.
  */
@@ -775,6 +794,7 @@ module.exports = {
   STORE_PREFIX,
   foreignKeys,
   MAX_LISTING_PAGES,
+  teardownLimits,
   leftoversHint,
   ADMIN_TIMEOUTS,
   PRICED_REGION,
