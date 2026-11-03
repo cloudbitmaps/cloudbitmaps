@@ -1,6 +1,1 @@
-[
-  {
-    "entry": "@cloudbitmaps/roaring LoadResult.strays",
-    "reason": "adds a required member `strays` to the result of a load: the generation numbers it ignored when numbering; no existing signature changes"
-  }
-]
+[]
