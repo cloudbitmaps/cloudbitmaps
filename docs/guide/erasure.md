@@ -146,8 +146,8 @@ searches every generation in the bucket. It usually reports `erased: true` again
 all if a racing collector took that generation first, or if this call's own delete of it landed after a fault the call could not settle (its read failed too, or the delete landed after the read): gone, but unreceipted. A storage delete that gets no answer and whose object is gone when the call reads it back is not this case: it counts as deleted, and the call answers `erased: true`.
 
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. But "not listed" is not by
-itself proof the id is gone. A segment whose registry row was purged is not scanned either, and its objects outlive it
-as orphans. `store.generations(ref)` lists those, since it reads the bucket whether or not a row exists, and
+itself proof the id is gone. A segment whose registry row was purged (including one deleted by hand outside the library, so drop the segment first)
+is not scanned either, and its objects outlive it as orphans. `store.generations(ref)` lists those, since it reads the bucket whether or not a row exists, and
 `store.dropSegment(ref, { confirmSegment })` deletes them, writing a `destroyed` row first, which
 then fences the name. `store.checkConsistency()` and the collection a load runs start from the rows, so neither
 reaches them.

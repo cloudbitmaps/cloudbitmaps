@@ -16,7 +16,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3
 
 Install the same version of every `@cloudbitmaps/*` package: they release together, and each pins the exact version of `core` it was built with.
 
-`@aws-sdk/client-s3` (`>=3.700.0 <4`) is a real dependency of this package, so installing it is the whole step.
+`@aws-sdk/client-s3` (`>=3.700.0 <4`) is a real dependency of this package, so installing it is the whole step. A fresh install can resolve to the newest 3.x release, unless a lockfile pins it: install from a lockfile, run `npm audit signatures`, and review an SDK bump before you take it.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use

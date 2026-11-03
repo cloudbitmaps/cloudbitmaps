@@ -86,7 +86,9 @@ Events carry raw observations (bytes, counts, ms). Two things to keep in mind:
 - **`segment` / `namespace` are your own strings** — they may be PII and are unbounded-cardinality. Don't map
   them to per-series metric labels/tags unless your names are known low-cardinality and PII-free (aggregate,
   bucket, or scrub inside the sink instead). Events never contain bitmap contents or ids — only names, counts,
-  bytes, and timings.
+  bytes, and timings. Every `storage.get` event carries them, and so do the library's error messages, and **the library
+  does not redact a name**. If a name carries tenant or customer meaning, pass one that does not
+  ([how](../../PRIVACY.md#audit--accountability-gdpr-art-30--art-52)).
 
 A sink that switches on `kind` with a `never` check in its default branch, as `CountingMetricsSink` does, stops
 compiling at `advisory` until it has a case for it: ignoring the event is fine. A sink with an ordinary default branch needs no change.
