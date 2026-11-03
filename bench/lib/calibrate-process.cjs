@@ -98,6 +98,26 @@ function failureOf(err) {
 }
 
 /**
+ * Hold a client to a spend ceiling on every send, not only between samples. `check()` is the harness's own ceiling check
+ * (it throws once what the meter has priced reaches the ceiling); it runs before each request is sent, so once the
+ * ceiling is reached every later send fails at once, a driver's own resend of a throttled write included. The meter counts
+ * a request before it is sent, and the gate runs before the meter, so the requests in flight are already in the tally:
+ * past the ceiling only the request that reached it, and teardown's listings (on the admin client, which the gate does not
+ * cover), are billed. It sits at `initialize` with high priority, outside the meter, so a send it
+ * refuses is not counted: it is not a request, and it is not billed. The error is the check's own, so it is not a
+ * transient fault and no sample is run again over it.
+ */
+function ceilingGate(client, check) {
+  client.middlewareStack.add(
+    (next) => async (args) => {
+      check();
+      return next(args);
+    },
+    { step: 'initialize', priority: 'high', name: 'cloudbitmapsCeilingGate' },
+  );
+}
+
+/**
  * Stop a client from sending anything more, and know when what it already sent has answered.
  *
  * A signal that starts teardown while the workload is still writing leaves the bucket behind: teardown lists the
@@ -255,6 +275,9 @@ function resultsJson(results) {
 const HARNESS_FILES = [
   'bench/calibrate-aws.cjs',
   'bench/lib/aws-meter.cjs',
+  'bench/lib/batch-counts.cjs',
+  'bench/lib/calibrate-batch-stages.cjs',
+  'bench/lib/calibrate-batch.cjs',
   'bench/lib/calibrate-guards.cjs',
   'bench/lib/calibrate-large-resources.cjs',
   'bench/lib/calibrate-large-stages.cjs',
@@ -515,6 +538,7 @@ module.exports = {
   resolveSocketLimit,
   limitWorkloadSockets,
   interruptGate,
+  ceilingGate,
   isInterruption,
   failureOf,
   stopThenTearDown,

@@ -18,6 +18,8 @@
  *   node bench/calibrate-aws.cjs --suite large [--rehearse | --run]   the large suite (operands of 10^6 to 10^7 ids)
  *                                                            in place of the default one; CR_CALIBRATE_SUITE=large
  *                                                            names it from the environment
+ *   node bench/calibrate-aws.cjs --suite batch [--rehearse | --run]   the batch suite (one refresh-shaped
+ *                                                            materializeMany call), in place of the default one
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
@@ -68,15 +70,15 @@ const {
   clientConfigs,
   bucketIsGone,
   uploadIsGone,
-  TEARDOWN_PASSES,
   TEARDOWN_PUTS,
   checkCleanupId,
   evidenceConflict,
   checkWorkload,
   STORE_PREFIX,
   foreignKeys,
-  MAX_LISTING_PAGES,
   leftoversHint,
+  batchBucketNote,
+  teardownLimits,
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
 const { CODECS, packageFor, bundledSources } = require('./lib/codec-engine.cjs');
@@ -94,6 +96,7 @@ const {
   constantsIn,
   checkEngineConstants,
   refuseDefaultKnobs,
+  DEFAULT_SUITE_KNOBS,
   checkLargeWorkload,
   checkResources,
   resolveFloors,
@@ -101,6 +104,24 @@ const {
 } = require('./lib/calibrate-large-stages.cjs');
 const { countSize } = require('./lib/large-counts.cjs');
 const { runLargeSuite, projectionLines } = require('./lib/calibrate-large.cjs');
+const {
+  BATCH_STAGES,
+  BATCH_SHAPES,
+  BATCH_MAX_VERSIONS,
+  resolveBatchKnobs,
+  refuseBatchKnobs,
+  refuseOtherSuiteKnobs,
+  checkBatchWorkload,
+  checkMaterializeMany,
+  BATCH_MIN_MEMORY_MB,
+  projectBatch,
+  expectedBatch,
+} = require('./lib/calibrate-batch-stages.cjs');
+const { countBatch } = require('./lib/batch-counts.cjs');
+const {
+  runBatchSuite,
+  projectionLines: batchProjectionLines,
+} = require('./lib/calibrate-batch.cjs');
 const { resourcesNow, installedSources } = require('./lib/calibrate-large-resources.cjs');
 const {
   coldIntersectIds,
@@ -138,6 +159,7 @@ const {
 } = require('./lib/calibrate-stages.cjs');
 const {
   interruptGate,
+  ceilingGate,
   failureOf,
   stopThenTearDown,
   exitCodeAfterSignal,
@@ -208,7 +230,9 @@ if (CODEC !== '' && !CODECS.includes(CODEC)) {
 /** A package's exports: the installed published one, or, with a codec named, the same package from the bundle. */
 const packageOf = (name) => packageFor(name, ROOT);
 /** The stages this suite runs: the projection, the run's end-of-run check and the harness's own refusal read this list. */
-const STAGES = SUITE === 'large' ? LARGE_STAGES : DEFAULT_STAGES;
+const STAGES = SUITE === 'large' ? LARGE_STAGES : SUITE === 'batch' ? BATCH_STAGES : DEFAULT_STAGES;
+/** What teardown may do: the batch suite's destinations are far more versions than a bucket of the other suites holds. */
+const TEARDOWN = teardownLimits(SUITE === 'batch' ? BATCH_MAX_VERSIONS : 0);
 
 // ---- the workload ----------------------------------------------------------------------------------------------
 // Every size is overridable so a run can be made smaller; an explicit 0 really means 0.
@@ -461,12 +485,18 @@ async function main() {
   // refusal holds on a checkout that has not been built and costs nothing to test.
   let sweep = [];
   let largeKnobs = null;
+  let batchKnobs = null;
   try {
     // A cleanup loads nothing, so no workload setting can refuse it.
+    if (MODE !== 'cleanup' && SUITE !== 'batch') refuseBatchKnobs(process.env, SUITE);
     if (MODE !== 'cleanup' && SUITE === 'large') {
       refuseDefaultKnobs(process.env);
       largeKnobs = resolveLargeKnobs(process.env);
       checkLargeWorkload({ sizes: LARGE_SIZES.length, intos: largeKnobs.intos });
+    } else if (MODE !== 'cleanup' && SUITE === 'batch') {
+      refuseOtherSuiteKnobs(process.env, DEFAULT_SUITE_KNOBS);
+      batchKnobs = resolveBatchKnobs(process.env);
+      checkBatchWorkload(batchKnobs);
     } else if (MODE !== 'cleanup') {
       sweep = parseSweep(process.env.CR_CALIBRATE_SWEEP);
       checkWorkload({
@@ -579,23 +609,29 @@ async function main() {
   // once, and refuse to start below the floor it names, before the library is imported or anything is created. These
   // come after the refusals made from the inputs alone, which hold on a checkout that has not been built.
   let resourcesSeen = null;
-  if (SUITE === 'large' && (MODE === 'rehearse' || MODE === 'run')) {
+  if (SUITE !== 'default' && (MODE === 'rehearse' || MODE === 'run')) {
     const now = resourcesNow();
     log(`resources: ${now.line}`);
     resourcesSeen = now.have;
     try {
-      checkResources(now.have, resolveFloors(process.env));
+      checkResources(
+        now.have,
+        resolveFloors(process.env),
+        SUITE === 'batch' ? { suite: 'batch', memoryMB: BATCH_MIN_MEMORY_MB } : undefined,
+      );
     } catch (err) {
       refuse(`${redact(err.message)}. Nothing was created.`);
     }
     // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the engine the
     // stores come from is asked (the installed packages, or the bundle a codec was named for), and a run against
-    // others is refused.
-    try {
-      const sources = bundledSources(ROOT) ?? installedSources(ROOT);
-      checkEngineConstants(constantsIn(sources.core, sources.s3));
-    } catch (err) {
-      refuse(`${redact(err.message)}. Nothing was created.`);
+    // others is refused. The batch suite's bound is the counted requests, which rest on no such constant.
+    if (SUITE === 'large') {
+      try {
+        const sources = bundledSources(ROOT) ?? installedSources(ROOT);
+        checkEngineConstants(constantsIn(sources.core, sources.s3));
+      } catch (err) {
+        refuse(`${redact(err.message)}. Nothing was created.`);
+      }
     }
   }
 
@@ -632,6 +668,15 @@ async function main() {
         refuse(err.message);
       }
     }
+    // The batch suite measures `materializeMany`, which the first release to have is 0.18.0: ask before anything is
+    // created, and before the engine is asked to count it.
+    if (SUITE === 'batch') {
+      try {
+        checkMaterializeMany(packageVersion);
+      } catch (err) {
+        refuse(err.message);
+      }
+    }
     // The default suite's count stage runs where the verb exists, and runs no call on an older release: the plan
     // holds none and the stage records `runs: 0` with no requests expected, which the figures gate holds a run to.
     countVerbs = hasCountVerbs(packageVersion);
@@ -650,7 +695,38 @@ async function main() {
     if (SUITE === 'default' && MODE !== 'project') {
       readsAfterCollect = await readsRowAfterCollect(await packageOf('roaring'), STEADY_KEEP);
     }
-    if (SUITE === 'large') {
+    if (SUITE === 'batch') {
+      // The shape counted over the in-memory backend before anything is created: the bound needs the objects' sizes and
+      // the requests of a call, and a run is held to them.
+      const shape = BATCH_SHAPES[batchKnobs.shape];
+      log(
+        `counting the ${batchKnobs.shape} shape in memory (${shape.operands} operands, ${shape.outputs} outputs): tens of seconds to a few minutes`,
+      );
+      const counts = await countBatch({
+        shape: batchKnobs.shape,
+        engine: await packageOf('roaring'),
+      });
+      plan = {
+        suite: 'batch',
+        shape: batchKnobs.shape,
+        operands: shape.operands,
+        outputs: shape.outputs,
+        idsPerOperand: shape.idsPerOperand,
+        samples: batchKnobs.samples,
+        counts,
+        operandBytes: counts.operandBytes,
+        retryBound: RETRY_BOUND,
+        discards: { perRun: DISCARDS_PER_RUN, perStage: DISCARDS_PER_STAGE },
+        fixedGets: 1 + RTT_SAMPLES,
+        fixedPuts: 1 /* CreateBucket */ + TEARDOWN.puts,
+      };
+      const bound = projectBatch(plan);
+      ops = bound.total;
+      stageBounds = bound.stages;
+      discardBound = bound.discards;
+      costliestSample = bound.costliestSample;
+      priced = priceTally({ put: ops.put, get: ops.get }, pricing);
+    } else if (SUITE === 'large') {
       // The layouts, and what the engine does on them, counted in memory before anything is created: the bound needs the
       // objects' sizes and a run is held to the counts.
       largeSizes = [];
@@ -726,6 +802,24 @@ async function main() {
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
+    if (SUITE === 'batch') {
+      for (const line of batchProjectionLines({
+        plan,
+        bounds: stageBounds,
+        expected: expectedBatch(plan),
+        discardBound,
+        costliestSample,
+        ops,
+        price: (t) => priceTally(t, pricing).totalUSD,
+      })) {
+        console.log(line);
+      }
+      console.log(
+        '\n  --rehearse   the workload against MinIO, free — the money guards do not run',
+      );
+      console.log('  --run        the real thing (needs region + ceiling + confirmation)');
+      return 0;
+    }
     if (SUITE === 'large') {
       for (const line of projectionLines({
         plan,
@@ -790,7 +884,9 @@ async function main() {
   }
 
   if (MODE === 'run') {
-    // The projection is an upper bound, so refusing here means the run genuinely cannot fit the ceiling.
+    // The projection is an upper bound for the default and large suites, so refusing here means the run genuinely cannot fit
+    // the ceiling. The batch suite's is an estimate (its call's grouping and a driver's resends are not bounded), so refusing
+    // here means the estimate does not fit; a run whose call makes more than estimated is stopped by the ceiling itself.
     if (breached(priced.totalUSD, ceiling)) {
       refuse(
         `projected $${priced.totalUSD.toFixed(6)} meets or exceeds the $${ceiling} ceiling — ` +
@@ -830,6 +926,12 @@ async function main() {
   meter(admin, tally);
 
   const bucket = `cloudbitmaps-calib-${runId}`;
+  // A cleanup told no suite cannot know a bucket is the batch suite's, whose versions pass its default limits; so what it
+  // refuses or leaves says which command reaches them.
+  const batchNote =
+    MODE === 'cleanup'
+      ? batchBucketNote({ suite: SUITE, runId, maxVersions: BATCH_MAX_VERSIONS })
+      : '';
 
   /**
    * Teardown, memoised: one promise awaited by every exit path — the `finally`, the signal handler, and the
@@ -851,14 +953,14 @@ async function main() {
           VersionId: o.VersionId,
         }));
       // Every page of a listing, from its first. A bucket this harness made fits one page, so the rest are read only
-      // for a bucket it did not make, and no more than MAX_LISTING_PAGES of them.
+      // for a bucket it did not make, and no more than TEARDOWN.pages of them.
       const allPages = async (first, list, after) => {
         const pages = [first];
         while (pages[pages.length - 1].IsTruncated) {
-          if (pages.length === MAX_LISTING_PAGES) {
+          if (pages.length === TEARDOWN.pages) {
             throw new Error(
-              `its listing runs past ${MAX_LISTING_PAGES} pages, which no bucket this harness made does — ` +
-                'refusing to touch anything in it; inspect it by hand',
+              `its listing runs past ${TEARDOWN.pages} pages, which no bucket this harness made does — ` +
+                `refusing to touch anything in it; inspect it by hand${batchNote}`,
             );
           }
           pages.push(await list(after(pages[pages.length - 1])));
@@ -922,9 +1024,9 @@ async function main() {
           if (objects.length === 0) break;
           // Anything written since the first listing is held to the same rule.
           refuseForeign(objects.map((o) => o.Key));
-          if (pass === TEARDOWN_PASSES) {
+          if (pass === TEARDOWN.passes) {
             throw new Error(
-              `${objects.length}${listing.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes`,
+              `${objects.length}${listing.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes${batchNote}`,
             );
           }
           // NOT spread into a plain object: a command carries `resolveMiddleware` on its prototype.
@@ -950,7 +1052,10 @@ async function main() {
       if (leftovers.length > 0) {
         console.error('calibrate: LEFTOVERS — these still exist and may cost money:');
         for (const l of leftovers) console.error(`  ${l}`);
-        console.error(leftoversHint({ notOurs, rehearse: REHEARSE, runId }));
+        console.error(
+          leftoversHint({ notOurs, rehearse: REHEARSE, runId, suite: SUITE }) +
+            (notOurs ? '' : batchNote),
+        );
         process.exitCode = 1;
       }
       return leftovers;
@@ -990,7 +1095,7 @@ async function main() {
     if (MODE === 'run') {
       // A human check that works even without a pin. Confirm the last four digits are the account you meant.
       log(
-        `projected $${priced.totalUSD.toFixed(6)} (an upper bound) against the $${ceiling} ceiling`,
+        `projected $${priced.totalUSD.toFixed(6)} (${SUITE === 'batch' ? 'an estimate; the ceiling stops the run' : 'an upper bound'}) against the $${ceiling} ceiling`,
       );
       log('Ctrl-C within 10 s to abort — nothing has been created yet.');
       await sleep(10_000);
@@ -1050,36 +1155,48 @@ async function main() {
     },
     pricing: pricing.name,
     // The large suite says which suite it is; the default suite's evidence has no such field.
-    ...(SUITE === 'large' ? { suite: SUITE, resources: resourcesSeen } : {}),
+    ...(SUITE !== 'default' ? { suite: SUITE, resources: resourcesSeen } : {}),
     workload:
-      SUITE === 'large'
+      SUITE === 'batch'
         ? {
-            // What each size is, and the requests the engine made of it in memory, which the run is held to.
-            reads: plan.reads,
-            intos: plan.intos,
-            sizes: largeSizes.map((s) => ({
-              idsPerSegment: s.n,
-              stride: s.layout.stride,
-              chunksPerSegment: s.chunksPerSegment,
-              sharedChunks: s.sharedChunks,
-              operandBytes: s.operandBytes,
-              rangeCap: rangeCap(Math.max(...s.operandBytes)),
-              counts: s.counts,
-            })),
-            expected: expectedLarge(plan),
+            // What the shape is, and the requests the engine made of it in memory, which the run is held to.
+            shape: plan.shape,
+            operands: plan.operands,
+            outputs: plan.outputs,
+            idsPerOperand: plan.idsPerOperand,
+            samples: plan.samples,
+            operandBytes: plan.operandBytes,
+            counts: plan.counts,
+            expected: expectedBatch(plan),
           }
-        : {
-            segments: SEGMENTS,
-            idsPerSegment: IDS,
-            chunksPerSegment: layout.chunksPerSegment,
-            sharedChunks: layout.sharedChunks,
-            largeSegments: LARGE,
-            largeChunks: LARGE_CHUNKS,
-            largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
-            coldIntersects: READS,
-            // Everything every stage loads and reads, as the projection was computed from it.
-            plan,
-          },
+        : SUITE === 'large'
+          ? {
+              // What each size is, and the requests the engine made of it in memory, which the run is held to.
+              reads: plan.reads,
+              intos: plan.intos,
+              sizes: largeSizes.map((s) => ({
+                idsPerSegment: s.n,
+                stride: s.layout.stride,
+                chunksPerSegment: s.chunksPerSegment,
+                sharedChunks: s.sharedChunks,
+                operandBytes: s.operandBytes,
+                rangeCap: rangeCap(Math.max(...s.operandBytes)),
+                counts: s.counts,
+              })),
+              expected: expectedLarge(plan),
+            }
+          : {
+              segments: SEGMENTS,
+              idsPerSegment: IDS,
+              chunksPerSegment: layout.chunksPerSegment,
+              sharedChunks: layout.sharedChunks,
+              largeSegments: LARGE,
+              largeChunks: LARGE_CHUNKS,
+              largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
+              coldIntersects: READS,
+              // Everything every stage loads and reads, as the projection was computed from it.
+              plan,
+            },
     projected: ops,
     projectedStages: stageBounds,
     // What the samples a run may discard can cost, beside the stages' bounds: each at the costliest sample's bound.
@@ -1162,8 +1279,9 @@ async function main() {
       ...(discards.unfinished === null ? {} : { unfinished: discards.unfinished }),
     };
     if (over.length > 0) {
-      // The projection is only a ceiling if the run cannot exceed it. It just did, so the next change is to the
-      // projection — before this harness is trusted with another pre-flight check.
+      // The projection is only a bound if the run cannot exceed it. It just did, so the next change is to the
+      // projection — before this harness is trusted with another pre-flight check. (The batch suite's is an estimate:
+      // what stops its spend is the ceiling, checked before every send.)
       results.projectionExceeded = over;
       console.error(`calibrate: PROJECTION EXCEEDED — ${over.join('; ')}`);
       process.exitCode = 1;
@@ -1211,6 +1329,10 @@ async function main() {
     if (breached(spent, ceiling))
       throw new Error(`spend ceiling breached mid-run: $${spent.toFixed(6)} >= $${ceiling}`);
   };
+  // The batch suite's one call makes more requests than any other stage's, and what it makes depends on the grouping the
+  // engine chose and on the driver's own resends of throttled writes, which no projection bounds. So its client is held to
+  // the ceiling on every send: a run that reaches it stops inside the call, and tears down.
+  if (SUITE === 'batch') ceilingGate(client, checkCeiling);
 
   // Every timed sample runs through this ledger: one that meets a transient fault is discarded whole, its requests
   // recorded beside its stage, and run again from the start (on a fresh store, or a point read on its store put back
@@ -1336,12 +1458,13 @@ async function main() {
     // make and what the projection allows. `setup` is what a stage loads for itself, kept apart from what it times.
     // `discarded` is every sample it discarded after a transient fault: those requests are in `requests`, since they
     // were billed, and out of what the stage is held to, which is what its kept samples made (`keptRequests`).
-    const expectedByStage = SUITE === 'large' ? {} : expectedReads(plan);
+    const expectedByStage = SUITE !== 'default' ? {} : expectedReads(plan);
     // The large suite's exact requests, PUT-class as well as GET-class: each of its stages is held to both.
-    const expectedLargeByStage = SUITE === 'large' ? expectedLarge(plan) : {};
+    const expectedLargeByStage =
+      SUITE === 'large' ? expectedLarge(plan) : SUITE === 'batch' ? expectedBatch(plan) : {};
     const stage = async (name, { setup, run }) => {
       // The large suite runs its own stages (`runLargeSuite`); the default suite's are laid out below it, and are not run.
-      if (SUITE === 'large' && DEFAULT_STAGES.includes(name)) return undefined;
+      if (SUITE !== 'default' && DEFAULT_STAGES.includes(name)) return undefined;
       if (!STAGES.includes(name)) throw new Error(`${name} is not a stage the projection covers`);
       const s0 = snap();
       const prepared = setup === undefined ? undefined : await setup();
@@ -1357,15 +1480,15 @@ async function main() {
       results.phases[name] = record;
       const kept = keptRequests(record);
       const expected =
-        SUITE === 'large'
+        SUITE !== 'default'
           ? expectedLargeByStage[name]?.get
           : name === 'load'
             ? phase.expected?.get
             : expectedByStage[name];
       const expectedPut = expectedLargeByStage[name]?.put;
       if (expectedPut !== undefined) record.expectedPuts = expectedPut;
-      if (SUITE === 'large') {
-        // The large suite's stages are held to both classes by one function, so a mismatch in either is found the same way.
+      if (SUITE !== 'default') {
+        // The large and batch suites' stages are held to both classes by one function, so a mismatch in either is found the same way.
         if (expected !== undefined) record.expectedGets = expected;
         recordCountMisses(results, name, kept, expectedLargeByStage[name], console.error);
       } else if (expected !== undefined) {
@@ -1465,6 +1588,30 @@ async function main() {
 
     if (SUITE === 'large') {
       await runLargeSuite({
+        stage,
+        sample,
+        load,
+        perLoad,
+        summarise,
+        snap,
+        startDepth,
+        depthOf,
+        checkCeiling,
+        msSince,
+        median,
+        spreadOf,
+        timedStore,
+        log,
+        plan,
+        recordMissed: (message) => {
+          (results.expectedMissed ??= []).push(message);
+          console.error(`calibrate: EXPECTED COUNT MISSED — ${message}`);
+        },
+      });
+    }
+
+    if (SUITE === 'batch') {
+      await runBatchSuite({
         stage,
         sample,
         load,

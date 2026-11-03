@@ -724,7 +724,7 @@ throughput on S3. These are not published yet:
   1 MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
-- **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The `*Into` verbs and combines on
+- **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The calibration harness has the suite for it (`--suite batch`: one call of the refresh shape's 1,000 outputs over 100 operands, onto destinations nothing has written: a first materialization, not the refresh call whose every destination already holds a generation, so a run measures its own counts, 4,449 GET-class and 2,000 PUT-class in 8 groups, and neither measures nor confirms the 3,732, 1,768 and 6 the guide publishes for the refresh), and it has not been run on S3. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-11-03-fbbb8), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.

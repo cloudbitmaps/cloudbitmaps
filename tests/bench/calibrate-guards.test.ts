@@ -126,7 +126,13 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   STORE_PREFIX: string;
   PRICED_REGION: string;
   checkRunRegion: (region: unknown) => string;
-  leftoversHint: (i: { notOurs: boolean; rehearse: boolean; runId: string }) => string;
+  leftoversHint: (i: {
+    notOurs: boolean;
+    rehearse: boolean;
+    runId: string;
+    suite?: string;
+  }) => string;
+  batchBucketNote: (i: { suite: string; runId: string; maxVersions: number }) => string;
   MAX_LISTING_PAGES: number;
   stampOf: (iso: string) => string;
   EVIDENCE_DIR: string;
@@ -2467,7 +2473,9 @@ describe('teardown — what counts as done', () => {
     expect(teardown).toContain('bucketIsGone(');
     expect(teardown).not.toContain('probeMeansAbsent(');
     expect(teardown).toContain('uploadIsGone(');
-    expect(teardown).toContain('TEARDOWN_PASSES');
+    // The limits are the suite's own (`teardownLimits`), the default ones for the default and large suites.
+    expect(teardown).toContain('TEARDOWN.passes');
+    expect(src).toContain('teardownLimits(');
     expect(src).toMatch(/fixedPuts:\s*1 \/\* CreateBucket \*\/ \+ TEARDOWN_PUTS/);
   });
 
@@ -2492,7 +2500,7 @@ describe('teardown — what counts as done', () => {
     expect(teardown.slice(check, teardown.indexOf(']);', check))).toMatch(/uploads\.map/);
     expect(check).toBeLessThan(teardown.indexOf('new s3.AbortMultipartUploadCommand'));
     expect(check).toBeLessThan(teardown.indexOf('new s3.DeleteObjectsCommand'));
-    expect(teardown).toContain('MAX_LISTING_PAGES');
+    expect(teardown).toContain('TEARDOWN.pages');
     expect(src).toContain('prefix: STORE_PREFIX');
     // What LEFTOVERS says last: how to remove them, unless --cleanup would only refuse again.
     expect(guards.leftoversHint({ notOurs: false, rehearse: true, runId: '2026-09-23-a' })).toBe(
@@ -2501,7 +2509,56 @@ describe('teardown — what counts as done', () => {
     expect(guards.leftoversHint({ notOurs: true, rehearse: false, runId: '2026-09-23-a' })).toMatch(
       /inspect it by hand/,
     );
-    expect(teardown).toContain('leftoversHint({ notOurs, rehearse: REHEARSE, runId })');
+    // A bucket of the batch suite holds more versions than a default bucket's cleanup can delete in one command, so the
+    // hint names the suite, and so does the large suite's: it is always the command that finishes the job.
+    for (const suite of ['batch', 'large']) {
+      expect(
+        guards.leftoversHint({ notOurs: false, rehearse: false, runId: '2026-09-23-a', suite }),
+      ).toBe(
+        `  remove them with: node bench/calibrate-aws.cjs --suite ${suite} --cleanup 2026-09-23-a`,
+      );
+      expect(
+        guards.leftoversHint({ notOurs: false, rehearse: true, runId: '2026-09-23-a', suite }),
+      ).toBe(
+        `  remove them with: node bench/calibrate-aws.cjs --rehearse --suite ${suite} --cleanup 2026-09-23-a`,
+      );
+    }
+    expect(
+      guards.leftoversHint({
+        notOurs: false,
+        rehearse: false,
+        runId: '2026-09-23-a',
+        suite: 'default',
+      }),
+    ).toBe('  remove them with: node bench/calibrate-aws.cjs --cleanup 2026-09-23-a');
+    expect(teardown).toContain(
+      'leftoversHint({ notOurs, rehearse: REHEARSE, runId, suite: SUITE })',
+    );
+  });
+
+  // A cleanup told no suite cannot tell a batch bucket from a default one, and its default limits (3 passes, 10 pages) cannot
+  // clear one. What it leaves or refuses therefore names the command that can: the exact one, with the id and the flag.
+  it('names `--suite batch --cleanup <id>` where a cleanup without the suite stops on a batch bucket', () => {
+    const note = guards.batchBucketNote({
+      suite: 'default',
+      runId: '2026-09-23-a',
+      maxVersions: 15_200,
+    });
+    expect(note).toContain('node bench/calibrate-aws.cjs --suite batch --cleanup 2026-09-23-a');
+    expect(note).toContain('15200');
+    // A cleanup that named a suite already has that suite's limits: nothing to add.
+    for (const suite of ['batch', 'large']) {
+      expect(guards.batchBucketNote({ suite, runId: '2026-09-23-a', maxVersions: 15_200 })).toBe(
+        '',
+      );
+    }
+    // It is on all three stops: the page-limit refusal, the passes' error and the printed hint.
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const teardownSrc = src.slice(src.indexOf('const teardown = '));
+    expect(teardownSrc).toContain('inspect it by hand${batchNote}');
+    expect(teardownSrc).toContain('delete passes${batchNote}');
+    expect(teardownSrc).toMatch(/leftoversHint\(\{[^}]*\}\)\s*\+\s*\(notOurs \? '' : batchNote\)/);
+    expect(src).toMatch(/MODE === 'cleanup'\s*\? batchBucketNote\(/);
   });
 
   // The account pin holds for `--cleanup`, the mode that deletes, as it does for a run.

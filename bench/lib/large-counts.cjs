@@ -35,6 +35,7 @@ async function countedBackend(engine) {
       'list',
       'put',
       'putBytes',
+      'putMax',
     ]) {
       calls[k] = 0;
     }
@@ -62,6 +63,7 @@ async function countedBackend(engine) {
     const written = await putImmutable(...args);
     calls.put += 1;
     calls.putBytes = written.size;
+    calls.putMax = Math.max(calls.putMax, written.size);
     return written;
   };
   count(backend.registry, 'get', () => {

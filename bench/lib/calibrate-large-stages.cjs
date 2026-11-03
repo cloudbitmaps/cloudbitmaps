@@ -330,7 +330,7 @@ function resolveLargeKnobs(env) {
 }
 
 /**
- * Which suite a run is: `--suite large` or `CR_CALIBRATE_SUITE=large`, and the default suite otherwise. Both naming
+ * Which suite a run is: `--suite large|batch` or `CR_CALIBRATE_SUITE=large|batch`, and the default suite otherwise. Both naming
  * different suites, or a suite that does not exist, is refused, since a run that measured another suite than the one
  * asked for would write evidence under the wrong name.
  */
@@ -340,7 +340,7 @@ function resolveSuite(argv, env) {
 
 /** Which suite a run is and where it was named: `{ suite, source }`, the source `--suite`, `CR_CALIBRATE_SUITE` or `default`. */
 function suiteFrom(argv, env) {
-  const SUITES = ['default', 'large'];
+  const SUITES = ['default', 'large', 'batch'];
   const at = argv.indexOf('--suite');
   let fromArg;
   if (at !== -1) {
@@ -526,20 +526,24 @@ const LARGE_MIN_DISK_MB = 256;
  * Refuse to start below the floors. `have` is `{ memoryMB, diskMB }`, each a number or `null` when the machine could not
  * say, which is refused too: a floor that cannot be read cannot be met. `floors` may only raise them.
  */
-function checkResources(have, floors = {}) {
-  const memory = Math.max(floors.memoryMB ?? 0, LARGE_MIN_MEMORY_MB);
+function checkResources(
+  have,
+  floors = {},
+  { suite = 'large', memoryMB: base = LARGE_MIN_MEMORY_MB } = {},
+) {
+  const memory = Math.max(floors.memoryMB ?? 0, base);
   const disk = Math.max(floors.diskMB ?? 0, LARGE_MIN_DISK_MB);
   const problems = [];
   if (typeof have.memoryMB !== 'number' || !(have.memoryMB >= memory)) {
     problems.push(
-      `${have.memoryMB === null ? 'unknown' : `${Math.floor(have.memoryMB)} MiB`} of memory available, the large suite ` +
+      `${have.memoryMB === null ? 'unknown' : `${Math.floor(have.memoryMB)} MiB`} of memory available, the ${suite} suite ` +
         `needs ${memory} MiB`,
     );
   }
   if (typeof have.diskMB !== 'number' || !(have.diskMB >= disk)) {
     problems.push(
       `${have.diskMB === null ? 'unknown' : `${Math.floor(have.diskMB)} MiB`} of disk free in the home directory, the ` +
-        `large suite needs ${disk} MiB`,
+        `${suite} suite needs ${disk} MiB`,
     );
   }
   if (problems.length > 0) throw new Error(`${problems.join('; ')} — refusing to start`);
@@ -576,6 +580,7 @@ module.exports = {
   COUNT_VERBS_SINCE,
   checkCountVerbs,
   hasCountVerbs,
+  releaseCore,
   LARGE_SIZES,
   LARGE_CHUNKS,
   LARGE_OVERLAP,
