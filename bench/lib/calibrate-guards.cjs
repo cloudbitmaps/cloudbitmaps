@@ -739,10 +739,13 @@ function teardownLimits(maxVersions = 0) {
  * The last line of a LEFTOVERS report: how to remove what is left, or, for a bucket that holds keys the harness did
  * not write, that `--cleanup` will not.
  */
-function leftoversHint({ notOurs, rehearse, runId }) {
+function leftoversHint({ notOurs, rehearse, runId, suite = 'default' }) {
+  // A bucket of the batch suite holds far more versions than a default bucket, which `--cleanup` is sized for only when it is
+  // told the suite; the large suite's is named too, so a hint is always the command that finishes the job.
+  const suiteFlag = suite === 'default' ? '' : ` --suite ${suite}`;
   return notOurs
     ? '  --cleanup will not empty a bucket holding keys the harness did not write; inspect it by hand'
-    : `  remove them with: node bench/calibrate-aws.cjs${rehearse ? ' --rehearse' : ''} --cleanup ${runId}`;
+    : `  remove them with: node bench/calibrate-aws.cjs${rehearse ? ' --rehearse' : ''}${suiteFlag} --cleanup ${runId}`;
 }
 
 /**

@@ -98,6 +98,24 @@ function failureOf(err) {
 }
 
 /**
+ * Hold a client to a spend ceiling on every send, not only between samples. `check()` is the harness's own ceiling check
+ * (it throws once what the meter has priced reaches the ceiling); it runs before each request is sent, so once the
+ * ceiling is reached every later send fails at once, a driver's own resend of a throttled write included, and nothing more
+ * is billed beyond what was already in flight. It sits at `initialize` with high priority, outside the meter, so a send it
+ * refuses is not counted: it is not a request, and it is not billed. The error is the check's own, so it is not a
+ * transient fault and no sample is run again over it.
+ */
+function ceilingGate(client, check) {
+  client.middlewareStack.add(
+    (next) => async (args) => {
+      check();
+      return next(args);
+    },
+    { step: 'initialize', priority: 'high', name: 'cloudbitmapsCeilingGate' },
+  );
+}
+
+/**
  * Stop a client from sending anything more, and know when what it already sent has answered.
  *
  * A signal that starts teardown while the workload is still writing leaves the bucket behind: teardown lists the
@@ -518,6 +536,7 @@ module.exports = {
   resolveSocketLimit,
   limitWorkloadSockets,
   interruptGate,
+  ceilingGate,
   isInterruption,
   failureOf,
   stopThenTearDown,
