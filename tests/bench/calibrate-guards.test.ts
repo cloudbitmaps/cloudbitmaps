@@ -2557,8 +2557,8 @@ describe('teardown — what counts as done', () => {
     const teardownSrc = src.slice(src.indexOf('const teardown = '));
     expect(teardownSrc).toContain('inspect it by hand${batchNote}');
     expect(teardownSrc).toContain('delete passes${batchNote}');
-    expect(teardownSrc).toMatch(/leftoversHint\(\{[^}]*\}\) \+ \(notOurs \? '' : batchNote\)/);
-    expect(src).toMatch(/MODE === 'cleanup' \? batchBucketNote\(/);
+    expect(teardownSrc).toMatch(/leftoversHint\(\{[^}]*\}\)\s*\+\s*\(notOurs \? '' : batchNote\)/);
+    expect(src).toMatch(/MODE === 'cleanup'\s*\? batchBucketNote\(/);
   });
 
   // The account pin holds for `--cleanup`, the mode that deletes, as it does for a run.
