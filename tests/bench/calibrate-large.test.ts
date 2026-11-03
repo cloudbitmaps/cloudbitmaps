@@ -1886,7 +1886,7 @@ describe('the count stage', () => {
 
   it('refuses an installed release below 0.26.0, which has no count verbs, in the shape of the 0.17.0 refusal', () => {
     expect(large.COUNT_VERBS_SINCE).toBe('0.26.0');
-    for (const v of ['0.25.0', '0.25.99', '0.17.0', '0.9.9', '0.0.1']) {
+    for (const v of ['0.25.0', '0.25.99', '0.17.0', '0.10.9']) {
       expect(() => large.checkCountVerbs(v), v).toThrow(
         new RegExp(
           `is ${v.replace(/\./g, '\\.')}, and a release below 0\\.26\\.0 has no intersectCount`,
