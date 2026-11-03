@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-11-02
+
 ### Breaking
 
 - **The `.crbm` reader refuses an object that carries bytes no release writes.** An object's identity is its size and
