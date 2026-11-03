@@ -707,22 +707,29 @@ function derive(run, src) {
       );
     }
   } else {
-    // With the ids recorded, the check needs no tolerance on ids. The median ids a second and the median bytes a
-    // second can come from different loads, so the pairing above of one with the other's upload is only close. But
-    // the rates divide to the bytes per id of one load (time cancels), so the recorded ids times that ratio is the
-    // upload of that load, which is a whole number of bytes, and lies between the object and the object with its
-    // pointer's body. A wrong id count is a fraction of a byte off the next whole number for every id it is out
-    // (the object's bytes per id is about one). The only slack is floating-point rounding: the two recorded
-    // medians, one product and one quotient are four roundings of at most one half unit in the last place each.
+    // With the ids recorded, the check needs no tolerance on ids. The median rates and the median upload can come
+    // from different loads (in `2026-11-03-56b81` the rates are of the load that uploaded 12,623,395 bytes and the
+    // median upload is 12,623,397). Every load has the same ids, so both rates order the loads by time and are of one
+    // load, and their ratio is that load's bytes per id (time cancels). The recorded ids times that ratio is then the
+    // upload of that load: a whole number of bytes. A wrong id count is a fraction of a byte off the next whole
+    // number for every id it is out (the object's bytes per id is about one). When the run records each load, the
+    // implied upload must also be one of the multipart loads' own uploads, which needs no band. Without it, the
+    // upload must lie between the object and the object with its pointer's body. The only slack is floating-point
+    // rounding: the two recorded medians, one product and one quotient are four roundings of at most one half unit
+    // in the last place each, a relative error of at most two units in the last place.
     const impliedUpload = (w.largeIdsPerSegment * multi.medianBytesPerSec) / multi.medianIdsPerSec;
-    const rounding = 4 * Number.EPSILON * impliedUpload;
-    if (
-      Math.abs(impliedUpload - Math.round(impliedUpload)) > rounding ||
-      impliedUpload < multipartObject - rounding ||
-      impliedUpload > uploadOf(multi) + rounding
-    ) {
+    const rounding = 2 * Number.EPSILON * impliedUpload;
+    const loadUploads = (run.phases.load.perLoad ?? [])
+      .filter((l) => l.kind === 'multipart')
+      .map((l) => l.uploadBytes);
+    const fits =
+      loadUploads.length > 0
+        ? loadUploads.includes(Math.round(impliedUpload))
+        : impliedUpload >= multipartObject - rounding &&
+          impliedUpload <= uploadOf(multi) + rounding;
+    if (Math.abs(impliedUpload - Math.round(impliedUpload)) > rounding || !fits) {
       throw new Error(
-        `calibration evidence ${run.runId}: its multipart rates imply an upload of ${impliedUpload} bytes for ${w.largeIdsPerSegment} ids a segment, not a whole number between the object and its upload`,
+        `calibration evidence ${run.runId}: its multipart rates imply an upload of ${impliedUpload} bytes for ${w.largeIdsPerSegment} ids a segment, not a whole number that one of its multipart loads uploaded (or, with no loads recorded, one between the object and its upload)`,
       );
     }
   }
@@ -1311,12 +1318,13 @@ function stageFiguresOf(run, pricing) {
     ) {
       out.bytes.push(o.chunkBytesPerCall + o.tailBytesPerCall + o.pointerBytesPerCall);
     }
-    // What a stage's calls read down over its calls, per call, when that is a whole number of bytes. This is kept for
-    // every stage, not only the count stages: a stream stage records no per-call byte fields (its `andNot` states
-    // the bytes a call of the stream the count is set against), and the meter's total over its runs is that stage's
-    // own measured figure. A stage whose total does not divide into whole bytes a call admits nothing.
+    // What a stage's kept calls read down, per call, when that is a whole number of bytes. This is kept for every
+    // stage, not only the count stages: a stream stage records no per-call byte fields (its `andNot` states the bytes
+    // a call of the stream the count is set against). It divides the bytes of the samples the stage kept by its kept
+    // runs: the meter's own total also holds its discarded samples' bytes, and that total over the kept runs is no
+    // call's figure. A stage whose kept bytes do not divide into whole bytes a call admits nothing.
     if (typeof o.runs === 'number' && o.runs > 0 && typeof o.requests?.bytesDown === 'number') {
-      const perCall = o.requests.bytesDown / o.runs;
+      const perCall = keptRequests(o).bytesDown / o.runs;
       if (Number.isInteger(perCall)) out.bytes.push(perCall);
     }
     if (typeof o.medianUploadBytes === 'number' && typeof o.medianObjectBytes === 'number') {

@@ -548,6 +548,27 @@ describe('a run that discarded a sample after a transient fault', () => {
     ['andNot', IN_ANDNOT()],
   ];
 
+  // A stage's meter keeps its discarded samples' bytes, so the meter's total over the stage's kept runs is no
+  // per-call figure: a stage with a discard states bytes a call from the samples it kept, or not at all.
+  it("does not state a stage's bytes a call from its meter total when a sample was discarded", () => {
+    const base = asRealRun();
+    const stage = base.phases.andNot as unknown as { runs: number; requests: Requests };
+    const kept = stage.requests.bytesDown;
+    const dropped = IN_ANDNOT();
+    // Pad the discard so that the total divides into whole bytes a call: the figure a naive division would state.
+    const pad = (stage.runs - ((kept + dropped.requests.bytesDown) % stage.runs)) % stage.runs;
+    dropped.requests.bytesDown += pad;
+    dropped.requests.reads.range.bytes += pad;
+    const run = withDiscards(asRealRun(), [['andNot', dropped]]);
+    const naive = (kept + dropped.requests.bytesDown) / stage.runs;
+    expect(Number.isInteger(naive)).toBe(true);
+    const f = figures.derive(run, SOURCES);
+    const text = (n: number): string => `${n.toLocaleString('en-US')} bytes a call`;
+    expect(figures.unaccounted(text(naive), f.values)).toEqual([
+      `${naive.toLocaleString('en-US')} bytes`,
+    ]);
+  });
+
   it("is evidence within its bounds, its figures the kept samples' and its discards stated beside them", () => {
     const base = figures.derive(asRealRun(), SOURCES);
     const f = figures.derive(withDiscards(asRealRun(), both()), SOURCES);

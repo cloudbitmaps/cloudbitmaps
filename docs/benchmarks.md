@@ -373,7 +373,8 @@ recipe reads and also writes the scratch segment, so it makes more requests.
 **What this does not show.** These tables record no time and touched no cloud, so request prices, latency and the behaviour of
 a real object store are not in them; the S3 runs above measured `andNotCount` at one layout and the three verbs at the large suite's
 layout, and not the 31-operand union, the spread layout's shapes or other overlaps. Whether a smaller read is a faster one is
-measured there only as medians of one session each. The tables ran on the in-memory
+not measured: the S3 runs set each count method against its stream drained by the harness (stream-and-count), as medians of one
+session each, and the large suite's union and `andNot` counts also make fewer requests than their streams. The tables ran on the in-memory
 backend, over chunks of 250 ids (the 500,000-id shapes, the calibration's own layout) to 5,003 ids (the 10,000,000-id shape)
 each; real ids can be denser or sparser, and operands with other overlaps, run-encoded containers or more than the shapes
 above are not counted.
