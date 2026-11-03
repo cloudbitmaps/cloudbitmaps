@@ -18,7 +18,7 @@ so, and so do the module headers in the code.
   and runs one cold `materializeMany` of its 1,000 outputs three times, each sample onto destinations of its own, recording
   the time, outputs a second, the requests by class and by kind of read, the bytes read and written and the groups the call
   made. Each output is held to the size plain set arithmetic over the generator's ids gives, by the call's own answer and by
-  a `count()` read back from the store after the call (untimed, its requests counted), and each stage is held to the engine's
+  the size read back from each stored output after the call (untimed, its requests counted), and each stage is held to the engine's
   exact requests in both classes (at the default plan 6,200 PUT-class and 16,647 GET-class, $0.037659 at list prices,
   counted in memory). Its projection is an estimate, $0.097067, not a cap: the workload's client checks the spend ceiling
   before every request, so a call that makes more than estimated is stopped at the ceiling and the run tears down; the ceiling
