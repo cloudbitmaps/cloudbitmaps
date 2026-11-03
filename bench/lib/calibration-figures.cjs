@@ -700,7 +700,10 @@ function derive(run, src) {
   // object: paired with the object, it would refuse every file a harness recording the two apart writes.
   const idsFromRates = (uploadOf(multi) * multi.medianIdsPerSec) / multi.medianBytesPerSec;
   const multipartIds = w.largeIdsPerSegment ?? Math.round(idsFromRates);
-  if (Math.abs(idsFromRates - multipartIds) > 0.5) {
+  // The two medians can come from different loads, whose uploads differ by a byte or two (a segment's name, its
+  // pointer's body), so the rates pin the ids to a few parts in ten million, not to within one id.
+  const idsFromRatesSlack = w.largeIdsPerSegment === undefined ? 0.5 : multipartIds * 1e-6;
+  if (Math.abs(idsFromRates - multipartIds) > idsFromRatesSlack) {
     throw new Error(
       `calibration evidence ${run.runId}: its multipart rates imply ${idsFromRates} ids a segment, not ${multipartIds}`,
     );
@@ -1274,12 +1277,26 @@ function stageFiguresOf(run, pricing) {
         k === 'bytesReadPerCall'
       )
         out.bytes.push(v);
+      else if (k === 'count' && typeof o.runs === 'number') out.ids.push(v);
       else if (k === 'segments' || k === 'segmentsEach') out.segments.push(v);
       else if (k === 'k') out.chunks.push(v);
       else if (k === 'intersects') out.intersects.push(v);
     }
     if (typeof o.p50ms === 'number' && typeof o.medianRounds === 'number') {
       out.ms.push(o.p50ms / o.medianRounds);
+    }
+    // A count stage's bytes a call: its chunk, tail and pointer reads together, and what the stage's calls read down
+    // in all over its calls.
+    if (
+      typeof o.chunkBytesPerCall === 'number' &&
+      typeof o.tailBytesPerCall === 'number' &&
+      typeof o.pointerBytesPerCall === 'number'
+    ) {
+      out.bytes.push(o.chunkBytesPerCall + o.tailBytesPerCall + o.pointerBytesPerCall);
+    }
+    if (typeof o.runs === 'number' && o.runs > 0 && typeof o.requests?.bytesDown === 'number') {
+      const perCall = o.requests.bytesDown / o.runs;
+      if (Number.isInteger(perCall)) out.bytes.push(perCall);
     }
     if (typeof o.medianUploadBytes === 'number' && typeof o.medianObjectBytes === 'number') {
       out.bytes.push(o.medianUploadBytes - o.medianObjectBytes);

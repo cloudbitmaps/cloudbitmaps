@@ -193,6 +193,7 @@ const RECORDED_MODELS: Readonly<Record<string, Model>> = {
   '2026-10-05-50b5d': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-06-9d36b': COLLECT_WITHOUT_ROW_REREAD_MODEL,
   '2026-10-13-b329d': COLLECT_WITH_ROW_REREAD_MODEL,
+  '2026-10-30-16fa6': COLLECT_WITH_ROW_REREAD_MODEL,
 };
 const LATEST = EVIDENCE.at(-1);
 /** The model a run is read against: the live one for the latest, the recorded one for every run before it. */
@@ -1185,6 +1186,40 @@ describe('calibration reports are held to their evidence', () => {
       const after = deriveAs(later);
       expect(after.anchors).toEqual(before.anchors);
       expect(after.rows).toEqual(before.rows);
+    });
+  });
+
+  // The ids a large segment holds are recorded by the harness and cross-checked against the two rates, which are
+  // medians that can come from loads whose uploads differ by a byte or two.
+  describe('the large segment ids a run records, held to its rates', () => {
+    const file = EVIDENCE.find((e) => e.includes('2026-10-30-16fa6'));
+    const base = (): { workload: { largeIdsPerSegment: number } } | undefined =>
+      file === undefined ? undefined : JSON.parse(read(file));
+    it('accepts ids the rates put a couple of ids away, and refuses ids a percent away', () => {
+      const run = base();
+      expect(run).toBeDefined();
+      if (run === undefined) return;
+      expect(() => deriveAs(run)).not.toThrow();
+      const near = structuredClone(run);
+      near.workload.largeIdsPerSegment += 2;
+      expect(() => deriveAs(near)).not.toThrow();
+      const far = structuredClone(run);
+      far.workload.largeIdsPerSegment = Math.round(far.workload.largeIdsPerSegment * 1.01);
+      expect(() => deriveAs(far)).toThrow(/multipart rates imply/);
+    });
+  });
+
+  // A count stage's per-call bytes (its chunk, tail and pointer reads, and their sum) and the count it returned are
+  // figures a report may state; a neighbouring figure is not.
+  describe('the count stage figures a report may state', () => {
+    const file = EVIDENCE.find((e) => e.includes('2026-11-03-56b81'));
+    it('accepts the per-call bytes and the count, and refuses a figure one byte off', () => {
+      expect(file).toBeDefined();
+      if (file === undefined) return;
+      const f = deriveAs(JSON.parse(read(file)));
+      expect(figures.unaccounted('3,455,937 bytes a call, and 475,000 ids', f.values)).toEqual([]);
+      expect(figures.unaccounted('3,455,938 bytes a call', f.values)).toEqual(['3,455,938 bytes']);
+      expect(figures.unaccounted('475,001 ids', f.values)).toEqual(['475,001 ids']);
     });
   });
 
