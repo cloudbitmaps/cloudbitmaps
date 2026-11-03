@@ -20,7 +20,23 @@ so, and so do the module headers in the code.
   requests and bounded like the streams. The default suite has a `counts` stage for the `andNot`, whose count makes the
   stream's requests and reads fewer bytes (at the default layout an intersect's count reads exactly its stream's, so it has none). A release
   below 0.26.0, which has no count verbs, is refused by the large suite, and the default suite's stage runs no call on it. Evidence from
-  before the stage is still valid. It has not been run on S3. No library code, package or version changes.
+  before the stage is still valid. No library code, package or version changes.
+
+### Changed
+
+- **The count verbs are measured on S3, by the calibration runs of 2026-11-03.** Two runs from AWS CloudShell in
+  `us-east-1`, against the published `0.27.0` packages (`2026-11-03-56b81` and `2026-11-03-fbbb8`), the first run of each
+  suite with the count stage. `andNotCount` over the default suite's `andNot` operands made the stream's 33 GETs and read
+  3,455,937 bytes a call against the stream's 4,436,321, in 124.62 ms at the median against 230.61 ms (3 calls against 10, the stream drained one id at
+  a time by the harness, so that pair compares the count method with stream-and-count), and returned the
+  stream's 475,000 ids. In the large suite each count verb read only the chunks the operands share: 6, 8 and 10 GETs
+  at a million, five million and ten million ids, whichever combine it counted, where the `union` stream made 8, 24 and 26.
+  Every other stage made the requests of the previous run of its suite, and the bills are $0.0027964 and $0.0042822. Latencies of runs
+  from different CloudShell sessions are not comparable, so none is set against another's. The benchmarks page, the
+  roadmap, the site and the calibration READMEs quote them. The calibration figures gate also holds a run's recorded
+  large-segment ids to its two load rates: the two imply one load's upload, which must be a whole number of bytes
+  that one of the run's multipart loads uploaded (the median rates and the median upload can come from different loads).
+  No library code changes.
 
 ## [0.27.0] — 2026-11-02
 
