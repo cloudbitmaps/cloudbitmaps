@@ -690,7 +690,7 @@ throughput on S3. These are not published yet:
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 - **The count methods on S3.** `intersectCount`, `unionCount` and `andNotCount` are [counted in memory](#counting-a-combine--counted-in-memory-not-measured), not measured on S3. The calibration harness has the stage for it (the large suite's `largeCount`, and a `counts` stage in the default suite), and it has not been run on S3.
-- **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The calibration harness has the suite for it (`--suite batch`: one refresh-shaped call of 1,000 outputs over 100 operands), and it has not been run on S3. The `*Into` verbs and combines on
+- **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The calibration harness has the suite for it (`--suite batch`: one call of the refresh shape's 1,000 outputs over 100 operands, onto destinations nothing has written: a first materialization, not the refresh call whose every destination already holds a generation, so a run measures its own counts, 4,449 GET-class and 2,000 PUT-class in 8 groups, and neither measures nor confirms the 3,732, 1,768 and 6 the guide publishes for the refresh), and it has not been run on S3. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-10-30-5a2f4), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.

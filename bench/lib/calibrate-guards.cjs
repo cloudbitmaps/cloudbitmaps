@@ -749,6 +749,17 @@ function leftoversHint({ notOurs, rehearse, runId, suite = 'default' }) {
 }
 
 /**
+ * The sentence a cleanup that ran out of passes or pages adds when it was not told the batch suite: a bucket that suite
+ * made holds up to `maxVersions` object versions, more than the default limits reach, and `--suite batch` sizes them for it.
+ * Empty for a run that named a suite, since its limits already are the one's it asked for.
+ */
+function batchBucketNote({ suite, runId, maxVersions }) {
+  return suite !== 'default'
+    ? ''
+    : ` (a bucket the batch suite made holds up to ${maxVersions} object versions: run node bench/calibrate-aws.cjs --suite batch --cleanup ${runId})`;
+}
+
+/**
  * The one region this harness has prices for.
  *
  * It prices every run at `AWS_US_EAST_1_ONDEMAND`, so a run elsewhere would record the wrong bill and check its
@@ -799,6 +810,7 @@ module.exports = {
   MAX_LISTING_PAGES,
   teardownLimits,
   leftoversHint,
+  batchBucketNote,
   ADMIN_TIMEOUTS,
   PRICED_REGION,
   checkRunRegion,

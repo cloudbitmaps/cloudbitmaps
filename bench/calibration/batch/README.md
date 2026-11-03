@@ -1,8 +1,9 @@
 # `bench/calibration/batch/` — the batch suite's runs
 
-The evidence of `node bench/calibrate-aws.cjs --suite batch`: one refresh-shaped `store.materializeMany` call (100 stored
-operands of 200,000 ids and 1,000 outputs, each a tree of one or two levels with an opt-out operand excluded), measured
-against a real object store. [`bench/README.md`](../../README.md#the-batch-suite) says what the suite measures, how each
+The evidence of `node bench/calibrate-aws.cjs --suite batch`: one `store.materializeMany` call of the refresh shape's outputs (100
+stored operands of 200,000 ids and 1,000 outputs, each a tree of one or two levels with an opt-out operand excluded) onto
+destinations nothing has written, measured against a real object store. It is not the guide's refresh call, whose
+destinations already hold a generation, so its counts are not that call's figures. [`bench/README.md`](../../README.md#the-batch-suite) says what the suite measures, how each
 stage is bounded and held to its exact counts, and how to rehearse and run it.
 
 Each finished run has one file here, named by its run id and committed unedited, as in the

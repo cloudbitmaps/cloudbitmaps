@@ -31,8 +31,8 @@ function cgroupLimitMB(read = (f) => fs.readFileSync(f, 'utf8')) {
 }
 
 /**
- * The memory a process can still take, in MiB: `MemAvailable` where the kernel says it, or the container's own limit
- * ({@link cgroupLimitMB}) where that is lower, since in a container `MemAvailable` reports the host's and a limit would go
+ * The memory a process may use, in MiB: `MemAvailable` where the kernel says it, or the container's own limit
+ * ({@link cgroupLimitMB}: the cap, not what is left under it) where that is lower, since in a container `MemAvailable` reports the host's and a limit would go
  * unseen (`kind: 'limit'`). Elsewhere Node can say only what is free this instant, which on a laptop is far below what a
  * process could take (the system keeps its caches in the rest), so the machine's total stands in and the report says so.
  */

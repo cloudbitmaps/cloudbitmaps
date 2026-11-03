@@ -100,8 +100,10 @@ function failureOf(err) {
 /**
  * Hold a client to a spend ceiling on every send, not only between samples. `check()` is the harness's own ceiling check
  * (it throws once what the meter has priced reaches the ceiling); it runs before each request is sent, so once the
- * ceiling is reached every later send fails at once, a driver's own resend of a throttled write included, and nothing more
- * is billed beyond what was already in flight. It sits at `initialize` with high priority, outside the meter, so a send it
+ * ceiling is reached every later send fails at once, a driver's own resend of a throttled write included. The meter counts
+ * a request before it is sent, and the gate runs before the meter, so the requests in flight are already in the tally:
+ * past the ceiling only the request that reached it, and teardown's listings (on the admin client, which the gate does not
+ * cover), are billed. It sits at `initialize` with high priority, outside the meter, so a send it
  * refuses is not counted: it is not a request, and it is not billed. The error is the check's own, so it is not a
  * transient fault and no sample is run again over it.
  */

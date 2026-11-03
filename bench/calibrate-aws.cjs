@@ -77,6 +77,7 @@ const {
   STORE_PREFIX,
   foreignKeys,
   leftoversHint,
+  batchBucketNote,
   teardownLimits,
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
@@ -624,12 +625,13 @@ async function main() {
     // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the engine the
     // stores come from is asked (the installed packages, or the bundle a codec was named for), and a run against
     // others is refused. The batch suite's bound is the counted requests, which rest on no such constant.
-    try {
-      if (SUITE !== 'large') throw undefined;
-      const sources = bundledSources(ROOT) ?? installedSources(ROOT);
-      checkEngineConstants(constantsIn(sources.core, sources.s3));
-    } catch (err) {
-      if (err !== undefined) refuse(`${redact(err.message)}. Nothing was created.`);
+    if (SUITE === 'large') {
+      try {
+        const sources = bundledSources(ROOT) ?? installedSources(ROOT);
+        checkEngineConstants(constantsIn(sources.core, sources.s3));
+      } catch (err) {
+        refuse(`${redact(err.message)}. Nothing was created.`);
+      }
     }
   }
 
@@ -924,6 +926,12 @@ async function main() {
   meter(admin, tally);
 
   const bucket = `cloudbitmaps-calib-${runId}`;
+  // A cleanup told no suite cannot know a bucket is the batch suite's, whose versions pass its default limits; so what it
+  // refuses or leaves says which command reaches them.
+  const batchNote =
+    MODE === 'cleanup'
+      ? batchBucketNote({ suite: SUITE, runId, maxVersions: BATCH_MAX_VERSIONS })
+      : '';
 
   /**
    * Teardown, memoised: one promise awaited by every exit path — the `finally`, the signal handler, and the
@@ -952,7 +960,7 @@ async function main() {
           if (pages.length === TEARDOWN.pages) {
             throw new Error(
               `its listing runs past ${TEARDOWN.pages} pages, which no bucket this harness made does — ` +
-                'refusing to touch anything in it; inspect it by hand',
+                `refusing to touch anything in it; inspect it by hand${batchNote}`,
             );
           }
           pages.push(await list(after(pages[pages.length - 1])));
@@ -1018,7 +1026,7 @@ async function main() {
           refuseForeign(objects.map((o) => o.Key));
           if (pass === TEARDOWN.passes) {
             throw new Error(
-              `${objects.length}${listing.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes`,
+              `${objects.length}${listing.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes${batchNote}`,
             );
           }
           // NOT spread into a plain object: a command carries `resolveMiddleware` on its prototype.
@@ -1044,7 +1052,10 @@ async function main() {
       if (leftovers.length > 0) {
         console.error('calibrate: LEFTOVERS — these still exist and may cost money:');
         for (const l of leftovers) console.error(`  ${l}`);
-        console.error(leftoversHint({ notOurs, rehearse: REHEARSE, runId, suite: SUITE }));
+        console.error(
+          leftoversHint({ notOurs, rehearse: REHEARSE, runId, suite: SUITE }) +
+            (notOurs ? '' : batchNote),
+        );
         process.exitCode = 1;
       }
       return leftovers;

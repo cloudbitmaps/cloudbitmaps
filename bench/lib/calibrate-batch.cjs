@@ -4,7 +4,7 @@
  *
  * As the large suite's, the harness hands this module what a stage is built from (its meter, its discard ledger, its
  * loader, its ceiling check), so a batch stage is held to exactly what every other one is: every request metered, every
- * timed sample run through the ledger, the ceiling checked after each send. What a stage may cost, and what it is expected
+ * timed sample run through the ledger, the ceiling checked before each send. What a stage may cost, and what it is expected
  * to cost, are in `calibrate-batch-stages.cjs`; the workload and the counts are in `batch-counts.cjs`.
  */
 const { firstLoadRequests } = require('./calibrate-stages.cjs');
@@ -99,8 +99,8 @@ async function runBatchSuite(ctx) {
           const after = snap();
           const depth = depthOf(before, after, ms);
           checkOutputs(run.outputs, want.outputs);
-          // Untimed, on a store that has read nothing: what each published output holds, read back from where the call put
-          // it and held, with the call's own answer, to the size set arithmetic over the generator's ids gives.
+          // Untimed, on a store that has read nothing: the count the store records for each published output (its
+          // registry row, one pointer read; the object itself is not read), held, with the call's own answer, to the size set arithmetic over the generator's ids gives.
           const reader = timedStore();
           const readBack = await readBackCounts(run.outputs, (i) =>
             reader.segment(destSegment(g, a, i)),
@@ -128,6 +128,9 @@ async function runBatchSuite(ctx) {
             downloadBytes: after.down - before.down,
             readBackPut: checked.put - after.put,
             readBackGet: checked.get - after.get,
+            // The process's resident-set high-water mark so far (it only rises), in MiB: the one chance a real run gives to
+            // check the memory floor. It makes no request.
+            peakRssMB: Math.ceil(process.resourceUsage().maxRSS / 1024),
             ...depth,
           };
         });
@@ -167,6 +170,7 @@ async function runBatchSuite(ctx) {
           pointerBytes: c.pointerBytes,
           bytesRead: c.chunkBytes + c.tailBytes + c.pointerBytes,
           bytesWritten: c.uploadBytes,
+          peakRssMB: c.peakRssMB,
         };
       });
       if (calls.length > 0) {

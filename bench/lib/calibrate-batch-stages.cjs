@@ -13,12 +13,14 @@
  *                 number of groups a call runs in, which sets how often each operand is read, is the engine's to decide
  *                 from the sizes of what it holds, so the bound is an ESTIMATE, the counted requests of a sample with
  *                 headroom (`BOUND_HEADROOM`), not a cap: it leaves out a driver's resend of a throttled write (up to
- *                 three more sends of it, and a HeadObject on each resend after the first). What caps the spend is
+ *                 three more sends of it, and at most one HeadObject, when a resend is answered with a conflict). What caps the spend is
  *                 the ceiling, which the workload's client checks before every send (`ceilingGate`), so a run that
  *                 reaches it stops inside the call, whatever the retries, and tears down. A sample that exceeds the
  *                 bound but not the ceiling fails the run's end-of-run check and writes no evidence.
  *
- * The shape is the `refresh` of `bench/materialize-many-counts.cjs`: 100 stored operands of 200,000 ids and 1,000
+ * The shape is the `refresh` of `bench/materialize-many-counts.cjs` (its operands and outputs), but onto destinations
+ * nothing has written: the guide's refresh figures are for a call whose every destination already holds a generation, which
+ * this suite does not measure (a first materialization costs more requests and groups differently). 100 stored operands of 200,000 ids and 1,000
  * outputs, each a tree of one or two levels of `and`, `or` and `andNot` with the same opt-out operand excluded, built by
  * the same seeded generator. The stages are `batchLoad`, the 100 operands each through `store.load()`, and `batch`, one
  * `materializeMany` call of the 1,000 outputs per sample, on a store that has read nothing, onto destinations no earlier
@@ -68,8 +70,9 @@ function versionsOf({ operands, outputs, samples, discardedSamples }) {
 
 /**
  * The memory the suite needs to start, in MiB. The one figure measured is the in-memory count of the default shape, whose
- * peak resident set size was 823 MiB on the maintainer's Mac (the count alone, every operand and destination held in memory,
- * which a run on S3 does not do); the floor is that figure at 1.5 times, rounded up to 1,280. It is a chosen margin, not a
+ * peak resident set size was 812 MiB on a Mac (`/usr/bin/time -l`, measured once and not recorded: the count alone, every
+ * operand and destination held in memory, which a run on S3 does not do); the floor is about 1.5 times that, rounded up to
+ * 1,280. It is a chosen margin, not a
  * measurement of the run on S3, whose own peak the evidence does not record. A machine whose memory is lower, whether
  * `MemAvailable` or a container's limit (`calibrate-large-resources.cjs`), is refused before anything is created.
  */

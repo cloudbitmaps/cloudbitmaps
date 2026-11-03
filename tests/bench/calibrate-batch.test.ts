@@ -597,6 +597,7 @@ describe('the stages, run over a store that answers as we choose', () => {
     extraGets = 0,
     extraPuts = 0,
     extraReadBackGets = 0,
+    extraReadBackPuts = 0,
     readBackAnswer = (_i: number, size: number) => size as number | null,
     discardFirst = false,
     planOverride = plan,
@@ -605,6 +606,7 @@ describe('the stages, run over a store that answers as we choose', () => {
     extraGets?: number;
     extraPuts?: number;
     extraReadBackGets?: number;
+    extraReadBackPuts?: number;
     readBackAnswer?: (i: number, size: number) => number | null;
     discardFirst?: boolean;
     planOverride?: typeof plan;
@@ -618,6 +620,7 @@ describe('the stages, run over a store that answers as we choose', () => {
         name,
         count: async () => {
           tally.get += 1 + extraReadBackGets;
+          tally.put += extraReadBackPuts;
           const i = Number(/-o(\d+)$/.exec(name)?.[1]);
           return readBackAnswer(i, counts.sizes[i] ?? 0);
         },
@@ -704,6 +707,9 @@ describe('the stages, run over a store that answers as we choose', () => {
         groups: 2,
         published: 5,
       });
+      // The process's resident-set high-water mark, in whole MiB: what a real run leaves to check the memory floor against.
+      expect(Number.isInteger(s.peakRssMB)).toBe(true);
+      expect(s.peakRssMB).toBeGreaterThan(0);
     }
     expect(tally).toEqual({ get: 70, put: 24 });
     const none = await run({ planOverride: { ...plan, samples: 0 } });
@@ -768,6 +774,21 @@ describe('the stages, run over a store that answers as we choose', () => {
         'read-back GET +1',
         { extraReadBackGets: 1 },
         /read-back of sample 0: 0 PUT-class and 10 GET-class, expected 0 and 5/,
+      ],
+      [
+        'read-back PUT +1',
+        { extraReadBackPuts: 1 },
+        /read-back of sample 0: 5 PUT-class and 5 GET-class, expected 0 and 5/,
+      ],
+      [
+        'read-back PUT -1',
+        {
+          planOverride: {
+            ...plan,
+            counts: { ...plan.counts, readBack: { ...plan.counts.readBack, put: 1 } },
+          },
+        },
+        /read-back of sample 0: 0 PUT-class and 5 GET-class, expected 1 and 5/,
       ],
       [
         'read-back GET -1',
@@ -1511,5 +1532,56 @@ describe('the memory it needs is read from the container as well as from the hos
     expect(stagesLib.DISCARDED_SAMPLES).toBe(
       Math.min(samples.DISCARDS_PER_RUN, samples.DISCARDS_PER_STAGE),
     );
+  });
+
+  // Sentences about the suite that were once false, held by what they must say and must not say.
+  describe('what the suite’s docs and comments say', () => {
+    const read = (...parts: string[]) => readFileSync(join(ROOT, ...parts), 'utf8');
+    const flat = (text: string) => text.replace(/\s+/g, ' ');
+    const readme = flat(read('bench', 'README.md'));
+    const stagesSrc = flat(read('bench', 'lib', 'calibrate-batch-stages.cjs'));
+    const processSrc = flat(read('bench', 'lib', 'calibrate-process.cjs'));
+    const bench = flat(read('docs', 'benchmarks.md'));
+    const roadmap = flat(read('docs', 'ROADMAP.md'));
+    const changelog = flat(read('CHANGELOG.md'));
+
+    it('says a resend sends at most one HeadObject, only on a conflict, and not one on each resend', () => {
+      for (const text of [readme, stagesSrc]) {
+        expect(text).not.toMatch(/HeadObject on each resend/);
+        expect(text).toMatch(/at most one HeadObject, when a resend is answered with a conflict/);
+      }
+    });
+
+    it('bills past the ceiling only the request that reached it and teardown’s listings, not requests in flight', () => {
+      expect(readme).not.toMatch(/only what was in flight/);
+      expect(readme).toMatch(/past it only the request that reached it is billed/);
+      expect(processSrc).not.toMatch(/nothing more is billed beyond what was already in flight/);
+      expect(processSrc).toMatch(/requests in flight are already in the tally/);
+    });
+
+    it('states the memory floor’s one measured figure as 812 MiB on a Mac, and cites no other', () => {
+      for (const text of [readme, stagesSrc]) {
+        expect(text).not.toMatch(/\b823\b/);
+        expect(text).toMatch(/812 MiB/);
+        expect(text).not.toMatch(/maintainer's Mac/);
+      }
+    });
+
+    it('says everywhere it cites the suite that it measures new destinations, not the guide’s refresh figures', () => {
+      expect(readme).toMatch(/does not measure, and cannot confirm, the guide's refresh figures/);
+      expect(bench).toMatch(/neither measures nor confirms the 3,732, 1,768 and 6/);
+      expect(roadmap).toMatch(/does not measure the guide's refresh call/);
+      expect(roadmap).toMatch(
+        /not the guide's refresh call onto destinations that already hold a generation/,
+      );
+      expect(changelog).toMatch(/which the suite does not measure and a run does not confirm/);
+      expect(
+        readFileSync(join(ROOT, 'bench', 'calibration', 'batch', 'README.md'), 'utf8'),
+      ).toMatch(/not the guide's refresh call/);
+    });
+
+    it('names `--suite batch` for a cleanup in the README’s cleanup row', () => {
+      expect(readme).toMatch(/--suite batch --cleanup <runId>/);
+    });
   });
 });
