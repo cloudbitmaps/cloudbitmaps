@@ -193,6 +193,7 @@ const RECORDED_MODELS: Readonly<Record<string, Model>> = {
   '2026-10-05-50b5d': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-06-9d36b': COLLECT_WITHOUT_ROW_REREAD_MODEL,
   '2026-10-13-b329d': COLLECT_WITH_ROW_REREAD_MODEL,
+  '2026-10-30-16fa6': COLLECT_WITH_ROW_REREAD_MODEL,
 };
 const LATEST = EVIDENCE.at(-1);
 /** The model a run is read against: the live one for the latest, the recorded one for every run before it. */
@@ -1185,6 +1186,91 @@ describe('calibration reports are held to their evidence', () => {
       const after = deriveAs(later);
       expect(after.anchors).toEqual(before.anchors);
       expect(after.rows).toEqual(before.rows);
+    });
+  });
+
+  // The ids a large segment holds are recorded by the harness and cross-checked against the two rates. The median
+  // rates and the median upload can come from different loads; every load has the same ids, so both rates are of one
+  // load and the recorded ids must imply a whole number of upload bytes (floating-point rounding aside) that a
+  // multipart load made.
+  describe('the large segment ids a run records, held to its rates', () => {
+    const find = (id: string): string | undefined => EVIDENCE.find((e) => e.includes(id));
+    const baseOf = (id: string): { workload: { largeIdsPerSegment?: number } } | undefined => {
+      const file = find(id);
+      return file === undefined ? undefined : JSON.parse(read(file));
+    };
+    it('derives the run whose rates are a couple of ids from the recorded ones', () => {
+      const run = baseOf('2026-11-03-56b81');
+      expect(run).toBeDefined();
+      if (run === undefined) return;
+      expect(run.workload.largeIdsPerSegment).toBe(12_582_912);
+      expect(() => deriveAs(run)).not.toThrow();
+    });
+    it('refuses a run off by one id, and a run off by twelve', () => {
+      const run = baseOf('2026-11-03-56b81');
+      expect(run).toBeDefined();
+      if (run === undefined) return;
+      for (const off of [1, -1, 12, 13, 125_829]) {
+        const wrong = structuredClone(run);
+        wrong.workload.largeIdsPerSegment = (wrong.workload.largeIdsPerSegment ?? 0) + off;
+        expect(() => deriveAs(wrong)).toThrow(/multipart rates imply an upload of/);
+      }
+    });
+    it('refuses a run whose ids imply an upload no multipart load made, though the upload is whole', () => {
+      const run = baseOf('2026-11-03-56b81');
+      expect(run).toBeDefined();
+      if (run === undefined) return;
+      // Doubling the ids doubles the implied upload: still a whole number of bytes, but no load's.
+      const wrong = structuredClone(run);
+      wrong.workload.largeIdsPerSegment = (wrong.workload.largeIdsPerSegment ?? 0) * 2;
+      expect(() => deriveAs(wrong)).toThrow(/multipart rates imply an upload of/);
+    });
+    it('leaves a run that records no ids to the half-id check', () => {
+      const run = baseOf('2026-09-23-94416');
+      expect(run).toBeDefined();
+      if (run === undefined) return;
+      expect(run.workload.largeIdsPerSegment).toBeUndefined();
+      expect(() => deriveAs(run)).not.toThrow();
+    });
+  });
+
+  // A count stage's per-call bytes (its chunk, tail and pointer reads, and their sum) and the count it returned are
+  // figures a report may state; a neighbouring figure is not.
+  describe('the count stage figures a report may state', () => {
+    const file = EVIDENCE.find((e) => e.includes('2026-11-03-56b81'));
+    it('accepts the per-call bytes and the count, and refuses a figure one byte off', () => {
+      expect(file).toBeDefined();
+      if (file === undefined) return;
+      const f = deriveAs(JSON.parse(read(file)));
+      expect(figures.unaccounted('3,455,937 bytes a call, and 475,000 ids', f.values)).toEqual([]);
+      expect(figures.unaccounted('3,455,938 bytes a call', f.values)).toEqual(['3,455,938 bytes']);
+      expect(figures.unaccounted('475,001 ids', f.values)).toEqual(['475,001 ids']);
+    });
+    // The count stage's per-call figure is the sum of its three read fields, and the meter's total over its runs gives
+    // the same figure here; with the meter's bytes not a whole number a call, only the sum can state it.
+    it("states a count stage's bytes a call from its read fields when its meter does not divide", () => {
+      expect(file).toBeDefined();
+      if (file === undefined) return;
+      const run = JSON.parse(read(file)) as {
+        phases: { counts: { runs: number; requests: { bytesDown: number } } };
+      };
+      const stage = run.phases.counts;
+      expect(stage.requests.bytesDown / stage.runs).toBe(3_455_937);
+      const f = deriveAs(run);
+      expect(figures.unaccounted('3,455,937 bytes a call', f.values)).toEqual([]);
+      // Take the meter's figure away (one more call's worth of bytes it cannot divide), leaving the sum.
+      stage.requests.bytesDown += 1;
+      expect(stage.requests.bytesDown / stage.runs).not.toBe(3_455_937);
+      const g = deriveAs(run);
+      expect(figures.unaccounted('3,455,937 bytes a call', g.values)).toEqual([]);
+    });
+    // The stream stage records no per-call byte fields: its bytes a call come from the meter's total over its runs.
+    it('accepts a stream stage per-call bytes from its meter, and refuses that figure plus one', () => {
+      expect(file).toBeDefined();
+      if (file === undefined) return;
+      const f = deriveAs(JSON.parse(read(file)));
+      expect(figures.unaccounted('4,436,321 bytes a call', f.values)).toEqual([]);
+      expect(figures.unaccounted('4,436,322 bytes a call', f.values)).toEqual(['4,436,322 bytes']);
     });
   });
 
