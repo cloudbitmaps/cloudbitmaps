@@ -1260,12 +1260,8 @@ describe('calibration reports are held to their evidence', () => {
       expect(figures.unaccounted('3,455,937 bytes a call', f.values)).toEqual([]);
       // Take the meter's figure away (one more call's worth of bytes it cannot divide), leaving the sum.
       stage.requests.bytesDown += 1;
-      let g: Figures | undefined;
-      try {
-        g = deriveAs(run);
-      } catch {
-        return;
-      }
+      expect(stage.requests.bytesDown / stage.runs).not.toBe(3_455_937);
+      const g = deriveAs(run);
       expect(figures.unaccounted('3,455,937 bytes a call', g.values)).toEqual([]);
     });
     // The stream stage records no per-call byte fields: its bytes a call come from the meter's total over its runs.
