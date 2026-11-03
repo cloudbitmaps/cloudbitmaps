@@ -18,9 +18,8 @@ so, and so do the module headers in the code.
   and runs one cold `materializeMany` of its 1,000 outputs three times, each sample onto destinations of its own that
   nothing has written: a first materialization (4,449 GET-class and 2,000 PUT-class a sample, in 8 groups), not the guide's
   refresh call onto destinations that already hold a generation (3,732, 1,768 and 6 groups), which the suite does not
-  measure and a run does not confirm. It records
-  the time, outputs a second, the requests by class and by kind of read, the bytes read and written and the groups the call
-  made. Each output is held to the size plain set arithmetic over the generator's ids gives, by the call's own answer and by
+  measure and a run does not confirm. It records the time, outputs a second, the requests by class and by kind of read,
+  the bytes read and written and the groups the call made. Each output is held to the size plain set arithmetic over the generator's ids gives, by the call's own answer and by
   the count the store records for each stored output, read back after the call (untimed, its requests counted; one pointer read each, the object is not read), and each stage is held to the engine's
   exact requests in both classes (at the default plan 6,200 PUT-class and 16,647 GET-class, $0.037659 at list prices,
   counted in memory). Its projection is an estimate, $0.097067, not a cap: the workload's client checks the spend ceiling

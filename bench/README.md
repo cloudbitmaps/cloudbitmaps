@@ -629,10 +629,12 @@ The evidence goes under `calibration/batch/`, which the default suite's gates do
 **Memory.** The suite refuses to start below 1,280 MiB, read as the lower of `MemAvailable` and the container's limit
 (cgroup v2 `memory.max`, or v1 `memory.limit_in_bytes`). The one measured figure is the in-memory count's peak resident set
 size, **812 MiB** on a Mac (`/usr/bin/time -l`, measured once and not recorded; the count alone with every operand and destination held in memory, which a
-run on S3 does not; the arithmetic for the sizes is part of it); the floor is that at about 1.5 times, a chosen margin. The
-run on S3's own peak is recorded in each sample (`peakRssMB`, the process's resident-set high-water mark so far, in MiB), and the large suite's two CloudShell runs recorded about 2.5 GiB available (2,536 and 2,563 MiB) of 3,771 MiB, but the container's limit has not been read: check it in the shell with `free -m` and
+run on S3 does not; the arithmetic for the sizes is part of it); the floor is that at about 1.5 times, a chosen margin. Each
+sample records `peakRssMB`, the process's resident-set high-water mark so far, in MiB, which includes the in-memory
+count made earlier in the same process, so it is not the call's own peak; and the large suite's two CloudShell runs recorded about 2.5 GiB available (2,536 and 2,563 MiB) of 3,771 MiB, but the container's limit has not been read: check it in the shell with `free -m` and
 `cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes` before a run. The large
-suite's two floors' settings raise the floor.
+suite's settings `CR_CALIBRATE_LARGE_MIN_MEMORY_MB` and `CR_CALIBRATE_LARGE_MIN_DISK_MB` apply here too: they
+raise a floor, never lower one.
 
 ### What it does not measure
 

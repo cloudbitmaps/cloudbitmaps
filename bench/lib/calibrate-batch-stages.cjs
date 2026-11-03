@@ -72,8 +72,8 @@ function versionsOf({ operands, outputs, samples, discardedSamples }) {
  * The memory the suite needs to start, in MiB. The one figure measured is the in-memory count of the default shape, whose
  * peak resident set size was 812 MiB on a Mac (`/usr/bin/time -l`, measured once and not recorded: the count alone, every
  * operand and destination held in memory, which a run on S3 does not do); the floor is about 1.5 times that, rounded up to
- * 1,280. It is a chosen margin, not a
- * measurement of the run on S3, whose own peak the evidence does not record. A machine whose memory is lower, whether
+ * 1,280. It is a chosen margin, not a measurement of the run on S3 (each sample records the process's high-water mark,
+ * `peakRssMB`, which includes that count). A machine whose memory is lower, whether
  * `MemAvailable` or a container's limit (`calibrate-large-resources.cjs`), is refused before anything is created.
  */
 const BATCH_MIN_MEMORY_MB = 1_280;
