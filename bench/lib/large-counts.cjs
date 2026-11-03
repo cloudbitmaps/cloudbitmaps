@@ -12,7 +12,7 @@
  * HeadObject that checks the generation's number is free, which the in-memory driver does not model and a verb's
  * publish does not make: the operands' loads are counted by `firstLoadRequests`, not here.
  */
-const { partsOf } = require('./calibrate-large-stages.cjs');
+const { partsOf, COUNT_VERBS } = require('./calibrate-large-stages.cjs');
 
 /** One storage and registry backend, with each request the engine makes of it counted. */
 async function countedBackend(engine) {
@@ -101,7 +101,8 @@ const drain = async (stream) => {
  * one its stores come from, so a count is never taken from another engine than the one under test), and each `*Into` runs `intos` times onto one destination, so the first is a first load and
  * the rest are not.
  *
- * Returns the operands' object bytes; each cold read's requests by kind; and each `*Into`'s, per call: the requests of
+ * Returns the operands' object bytes; each cold read's requests by kind; each count verb's requests by kind, with the
+ * count it returned; and each `*Into`'s, per call: the requests of
  * the read and of the destination's load together, the output's bytes and so its parts.
  */
 async function countSize({ layout, layoutIds, intos, engine }) {
@@ -130,6 +131,13 @@ async function countSize({ layout, layoutIds, intos, engine }) {
     const ids = await drain(stream(store));
     reads[name] = { ...read(calls), ids };
   }
+  // The three count verbs, each on a store that has read nothing: what they were asked, and the count they returned.
+  const counted = {};
+  for (const [name, method] of Object.entries(COUNT_VERBS)) {
+    const store = cold();
+    const result = await store.segment('s0')[method]([store.segment('s1')]);
+    counted[name] = { ...read(calls), result };
+  }
   const into = {};
   const intoVerbs = {
     intersectInto: (s, d) => s.segment('s0').intersectInto(d, [s.segment('s1')]),
@@ -157,7 +165,7 @@ async function countSize({ layout, layoutIds, intos, engine }) {
       });
     }
   }
-  return { operandBytes, reads, into };
+  return { operandBytes, reads, counted, into };
 }
 
 module.exports = { countSize, countedBackend };

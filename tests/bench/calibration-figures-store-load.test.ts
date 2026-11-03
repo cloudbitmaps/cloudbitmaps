@@ -143,15 +143,18 @@ describe('a run that timed store.load()', () => {
   it('is a rehearsal the harness wrote, with every stage the harness runs recorded', () => {
     expect(fixture.target).toMatch(/rehearsal/);
     expect(fixture.mode).toBe('rehearse');
+    // The count stage is newer than the recording, and a run of a release without the count verbs has none: the
+    // recording has every other stage. A run that has it is held to it (below).
+    const recorded = STAGES.filter((name) => name !== 'counts');
     expect(
       Object.keys(fixture.phases).sort(),
       're-capture the fixture: the stages changed',
-    ).toEqual([...STAGES].sort());
-    expect(Object.keys(fixture.projectedStages)).toEqual(STAGES);
+    ).toEqual([...recorded].sort());
+    expect(Object.keys(fixture.projectedStages)).toEqual(recorded);
     expect(fixture.phases.load.via).toBe('store.load()');
     expect(fixture.phases.load.perLoad.length).toBeGreaterThan(0);
     // Each stage's discards, none in this run, and the run's count of them and the projection's allowance.
-    for (const name of STAGES) {
+    for (const name of recorded) {
       expect((fixture.phases[name] as { discarded?: unknown }).discarded, name).toEqual([]);
     }
     expect(fixture.discards).toEqual({ count: 0, perRun: 3, perStage: 2 });
@@ -830,6 +833,35 @@ describe('a run with a steady-load stage', () => {
       (15 * (2 * 5e-6 + 4 * GET_USD) + (3 * 5e-6 + 5 * GET_USD)) / 16,
       12,
     );
+  });
+
+  // The count stage runs on the releases that have the count verbs (0.26.0 on): an earlier run is not asked for it, a later
+  // one is, and a run that recorded it is held to it whatever its release.
+  it('is held to the count stage from 0.26.0 on, and an earlier run is not', () => {
+    const run = asRealRun();
+    delete (run.phases as Record<string, unknown>).counts;
+    versioned(run, '0.25.0');
+    expect(stageFigures.stagesOf(run)).not.toContain('counts');
+    versioned(run, '0.26.0');
+    expect(stageFigures.stagesOf(run)).toContain('counts');
+    versioned(run, '0.100.0');
+    expect(stageFigures.stagesOf(run)).toContain('counts');
+    versioned(run, '0.25.0');
+    (run.phases as Record<string, unknown>).counts = { requests: { put: 0, get: 99 } };
+    expect(stageFigures.stagesOf(run)).toContain('counts');
+    // A run of 0.26.0 or later that records no requests for it is refused; one of 0.25.0 derives without.
+    expect(
+      refused((r) => {
+        delete (r.phases as Record<string, unknown>).counts;
+        versioned(r, '0.26.0');
+      }),
+    ).toMatch(/it records no requests for its counts stage/);
+    expect(() => {
+      const older = asRealRun();
+      delete (older.phases as Record<string, unknown>).counts;
+      versioned(older, '0.25.0');
+      stageFigures.derive(older, SOURCES);
+    }).not.toThrow();
   });
 
   it('is held to the stage on a release that collects by name, and every committed run still derives without it', () => {

@@ -33,6 +33,13 @@ type Plan = {
     sharedChunks: number;
     ranges: number;
   };
+  counts?: {
+    calls: number;
+    excludes: number;
+    includeChunks: number;
+    sharedChunks: number;
+    ranges: number;
+  };
   steadyLoad: { loads: number; keep: number };
   discards: { perRun: number; perStage: number };
   retryBound: number;
@@ -41,6 +48,7 @@ type Plan = {
 };
 const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   STAGES: string[];
+  COUNT_CALLS: number;
   DEFAULT_SWEEP: { k: number; intersects: number }[];
   parseSweep: (raw: unknown) => { k: number; intersects: number }[];
   ENGINE_WINDOW: number;
@@ -142,6 +150,14 @@ function defaultPlan(): Plan {
     pointReads: { segments: 10, sharedChunks: layout.sharedChunks },
     andNot: {
       calls: 10,
+      excludes: 10,
+      includeChunks: layout.chunksPerSegment,
+      sharedChunks: layout.sharedChunks,
+      ranges: 11,
+    },
+    // The count of the same andNot: three calls, and the ranges the stream makes.
+    counts: {
+      calls: stages.COUNT_CALLS,
       excludes: 10,
       includeChunks: layout.chunksPerSegment,
       sharedChunks: layout.sharedChunks,
@@ -830,6 +846,8 @@ describe('the ceiling covers every stage', () => {
       pointReads: 4_020,
       // An include and ten excludes: eleven operands' pointer and tail, and a range each.
       andNot: 330,
+      // The same operands counted: three calls of the same 33.
+      counts: 99,
       // 18 loads of one segment: the first 3, twelve reloads of 2, four by name of 5 and a listing of 6.
       steadyLoad: 53,
     });
@@ -853,9 +871,9 @@ describe('the ceiling covers every stage', () => {
     const steady = stages.expectedSteady(18, 12);
     expect(steady).toEqual({ put: 37, get: 53, free: 5 });
     const put = loads.put + setup.put + fixed.put + steady.put;
-    expect({ put, get }).toEqual({ put: 138, get: 5_167 });
+    expect({ put, get }).toEqual({ put: 138, get: 5_266 });
     const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
-    expect(expectedUSD).toBeCloseTo(0.0027568, 7);
+    expect(expectedUSD).toBeCloseTo(0.0027964, 7);
     // The bounds are unchanged by coalescing: each is what a request for every chunk would cost, which a read of
     // ranges never exceeds, so they are far above what is expected now. The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
     // at the costliest sample's bound, a cold intersect sharing 2,000 chunks.
@@ -865,9 +883,11 @@ describe('the ceiling covers every stage', () => {
     // Each of the 59 loads the plan names, in the stages and their setups, is projected at the load bound's 16 GET-class
     // requests, the steady stage's 18 among them.
     expect(projected.stages.steadyLoad).toEqual({ put: 18 * 9, get: 18 * 16 });
-    expect(projected.total).toEqual({ put: 567, get: 94_647 + 288 + 12_018 });
+    // The count stage's three calls are bounded as the stream's andNot is, which is what keeps the plan under the ceiling.
+    expect(projected.stages.counts).toEqual({ put: 0, get: 3 * 3_032 });
+    expect(projected.total).toEqual({ put: 567, get: 94_647 + 9_096 + 288 + 12_018 });
     const bound = meterLib.priceTally(projected.total, pricing).totalUSD;
-    expect(bound).toBeCloseTo(0.0456162, 7);
+    expect(bound).toBeCloseTo(0.0492546, 7);
     expect(bound).toBeGreaterThan(expectedUSD);
     expect(bound).toBeLessThan(0.05);
   });
@@ -890,6 +910,7 @@ describe('the ceiling covers every stage', () => {
       warm: p.stages.warm?.get,
       pointReads: 4,
       andNot: (p.stages.andNot?.get ?? 0) / w.andNot.calls,
+      counts: (p.stages.counts?.get ?? 0) / stages.COUNT_CALLS,
       steadyLoad: 0,
     });
     for (const name of stages.STAGES) {
@@ -1138,5 +1159,105 @@ describe('the steady-load stage', () => {
     expect(harnessSrc.match(/loader\.load\(/g)?.length).toBe(1);
     expect(harnessSrc).toContain('if (!reload) claimFirstLoad(segment);');
     expect(harnessSrc).toContain('reload: g > 0');
+  });
+});
+
+// The default suite's count stage. The stream of an andNot and its count make the same requests, so the stage is held to
+// the same expectation; the count reads fewer bytes, because a chunk only the include holds is answered from the index.
+// An intersect's count reads the very bytes of its stream, which is why the stage counts the andNot alone.
+describe('the default suite’s count stage', () => {
+  const idsOf = (keys: number[]): number[] =>
+    keys.flatMap((k) => Array.from({ length: 200 }, (_, i) => k * 65_536 + i * 7 + 1));
+  const range = (from: number, n: number): number[] =>
+    Array.from({ length: n }, (_, i) => from + i);
+  /** The requests and bytes read of one cold read of operands holding these chunk keys. */
+  const measure = async (
+    operands: number[][],
+    read: (store: CloudRoaring, others: ReturnType<CloudRoaring['segment']>[]) => Promise<number>,
+  ) => {
+    const backend = new MemoryStorage();
+    const t = { gets: 0, bytes: 0 };
+    const wrap = (target: object, name: string, bytes: (r: never) => number): void => {
+      const original = (target as Record<string, (...a: unknown[]) => Promise<never>>)[name]!.bind(
+        target,
+      );
+      (target as Record<string, unknown>)[name] = async (...args: unknown[]) => {
+        t.gets += 1;
+        const r = await original(...args);
+        t.bytes += bytes(r);
+        return r;
+      };
+    };
+    wrap(backend.storage, 'getRange', (r: Uint8Array) => r.length);
+    wrap(backend.storage, 'getTail', (r: { bytes: Uint8Array }) => r.bytes.length);
+    wrap(backend.registry, 'get', () => 0);
+    const loader = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
+    for (const [i, keys] of operands.entries())
+      await loader.load({ segment: `s${i}` }, idsOf(keys));
+    t.gets = 0;
+    t.bytes = 0;
+    const store = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
+    const result = await read(
+      store,
+      operands.slice(1).map((_, i) => store.segment(`s${i + 1}`)),
+    );
+    return { ...t, result };
+  };
+  const drain = async (stream: {
+    batches(): AsyncIterable<ArrayLike<number>>;
+  }): Promise<number> => {
+    let n = 0;
+    for await (const ids of stream.batches()) n += ids.length;
+    return n;
+  };
+  // The include holds 60 chunks, 6 of them shared with each of three excludes.
+  const include = range(0, 60);
+  const excludes = [0, 1, 2].map((j) => [...range(0, 6), ...range(1_000 + j * 100, 40)]);
+
+  it('makes an andNot’s requests and returns its ids in fewer bytes, where the include holds chunks of its own', async () => {
+    const stream = await measure([include, ...excludes], (s, o) =>
+      drain(s.segment('s0').andNot(o)),
+    );
+    const count = await measure([include, ...excludes], (s, o) => s.segment('s0').andNotCount(o));
+    expect(count.result).toBe(stream.result);
+    expect(count.result).toBe(54 * 200);
+    expect(count.gets).toBe(stream.gets);
+    expect(count.bytes).toBeLessThan(stream.bytes);
+  });
+
+  it('is not needed for an intersect, whose count reads what its stream does', async () => {
+    const operands = [include, [...range(0, 6), ...range(1_000, 40)]];
+    const stream = await measure(operands, (s, o) => drain(s.segment('s0').intersect(o)));
+    const count = await measure(operands, (s, o) => s.segment('s0').intersectCount(o));
+    expect(count.result).toBe(stream.result);
+    expect(count).toEqual(stream);
+  });
+
+  it('is bounded as the andNot is, runs at most three calls, and is nothing in a plan from before it or for a release without the verb', () => {
+    expect(stages.COUNT_CALLS).toBe(3);
+    const w = defaultPlan();
+    const andNot = stages.projectStages(w).stages.andNot?.get ?? 0;
+    expect(stages.projectStages(w).stages.counts).toEqual({
+      put: 0,
+      get: (3 * andNot) / w.andNot.calls,
+    });
+    const none = { ...w, counts: { ...w.counts!, calls: 0 } };
+    expect(stages.projectStages(none).stages.counts).toEqual({ put: 0, get: 0 });
+    expect(stages.expectedReads(none).counts).toBe(0);
+    expect(stages.sampleBounds(none).counts).toBe(0);
+    const older: Partial<Plan> = { ...w };
+    delete older.counts;
+    expect(stages.projectStages(older as Plan).stages.counts).toEqual({ put: 0, get: 0 });
+    expect(stages.expectedReads(older as Plan).counts).toBe(0);
+    expect(stages.sampleBounds(older as Plan).counts).toBe(0);
+    // The harness plans it from the release's verbs and the cap, and runs it after the andNot, before the steady load.
+    expect(harnessSrc).toContain('calls: countVerbs ? Math.min(ANDNOT_CALLS, COUNT_CALLS) : 0,');
+    expect(harnessSrc).toContain('countVerbs = hasCountVerbs(packageVersion);');
+    expect(harnessSrc.indexOf("await stage('andNot'")).toBeLessThan(
+      harnessSrc.indexOf("await stage('counts'"),
+    );
+    expect(harnessSrc.indexOf("await stage('counts'")).toBeLessThan(
+      harnessSrc.indexOf("await stage('steadyLoad'"),
+    );
   });
 });
