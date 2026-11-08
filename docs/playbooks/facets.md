@@ -271,7 +271,7 @@ ValidationError
   `cache.genTtlMs` after that ([how soon a reader sees a new load](../guide/reading.md#how-soon-a-reader-sees-a-new-load)).
 - **Single-valued fields.** An item with two colours is in two colour segments, so the counts of a field no longer sum to
   the total, and an item with no value for a field is in none of its segments.
-- **Wide expressions are unmeasured on S3.** More than two operands, other overlaps and a `materializeMany` onto destinations that already hold a generation (whose request
+- **Wide expressions are unmeasured on S3.** More than two operands, other overlaps, `materializeMany`'s dry run and a `materializeMany` onto destinations that already hold a generation (whose request
   counts are counted in memory, not measured) are not published, so the requests and latency of the counts and the `or`
   expressions across many facets are unknown ([what is still owed](../benchmarks.md#what-is-still-owed)).
 - **Not measured here.** This page ran on `MemoryStorage`, so it says nothing about latency or cost; see

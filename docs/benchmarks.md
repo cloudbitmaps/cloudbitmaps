@@ -312,7 +312,7 @@ call that returns a number.
 operands of 200,000 ids, each sample onto destinations nothing had written. **It is a first materialization, not the
 guide's refresh call**, whose every destination already holds a generation: the [refresh figures](guide/loading.md#many-outputs-from-one-pass-materializemany)
 (3,732 GET-class, 1,768 PUT-class, 6 groups) are counted in memory and are **not measured**, and these runs neither
-measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest ran at its defaults,
+measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest, among it `maxBufferedBytes` (which sets the 8 groups), ran at its defaults,
 `publishConcurrency` 8 and `concurrency` 1. The evidence does not record those two values.
 
 **Requests.** Every sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
@@ -327,8 +327,11 @@ count the engine was expected to make):
 | the three calls and their read-backs | 6,000 | 16,347 |
 | the whole run, the bucket's own requests included | 6,216 | 16,658 |
 
-Per sample the call made 722 range reads (156,515,808 bytes), 100 tail reads (13,232,140 bytes) and 627 pointer reads,
-read 170,019,702 bytes in all and wrote about 292.4 MB (**measured**). The evidence records the run's bill, by request class, at the
+Of each call's 4,449 GET-class, 722 were range reads (156,515,808 bytes), 100 tail reads (13,232,140 bytes) and 627 pointer reads
+that returned an object, 170,019,702 bytes in all (**measured**); the call wrote about 292.4 MB (**measured**). The other 3,000 found
+nothing: the 1,000 new destinations were each read before their publish (two row reads and a size check), and the meter files such
+reads under no kind (**derived**: the 3,000 is the GET-class less the three kinds, and the engine's own count in the evidence,
+1,100 tail reads and 2,627 pointer reads, agrees with that split). The evidence records the run's bill, by request class, at the
 `aws-us-east-1-ondemand` list prices (`cost` in the file).
 
 **Time and memory.** The three calls took 61,032 ms, 52,998 ms and 53,192 ms: a median of 53,192 ms and, of 3 calls, a
@@ -336,8 +339,8 @@ read 170,019,702 bytes in all and wrote about 292.4 MB (**measured**). The evide
 slowest). The process's resident-set high-water mark (`peakRssMB`) was 724, 753 and 754 MiB across the samples, with 2,609 MiB
 available (the figure includes the in-memory count made earlier in the same process, so it is not the call's own peak).
 
-**In flight.** At most 49 requests were in flight at once, and on average about 5.11 (summed request time over wall time,
-**measured**), against the client's 128 sockets. That fits a call that publishes 8 outputs at a time; that reading is an
+**In flight.** The median call peaked at 49 requests in flight and averaged 5.11 (summed request time over wall time,
+**measured**; the evidence records each call's peak only as the median of the three, not the run's maximum), against the client's 128 sockets. That fits a call that publishes 8 outputs at a time; that reading is an
 **inference** from the defaults and the measured figure. The run did not vary `publishConcurrency`, and no other value is measured.
 
 **Against the earlier run** (**measured**): [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json) made the same
@@ -345,7 +348,7 @@ requests in every stage and sample and the same bill. Its median was 64,034 ms (
 `peakRssMB` 740 to 751). Latencies of runs from different CloudShell sessions are not comparable, so no difference between the two
 is called a speed-up or a slowdown.
 
-**What these figures are not.** A first materialization onto new destinations: not the refresh call onto destinations that
+**What these figures are not.** A first materialization onto new destinations: not a dry run, not the refresh call onto destinations that
 already hold a generation, not another `publishConcurrency`, not the `target` shape (operands of 3,000,000 ids) and not the `*Into`
 side. It is one client with 128 sockets and 2 CPUs, one storage class in one region, three calls on cold stores.
 
@@ -779,7 +782,7 @@ throughput on S3. These are not published yet:
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 - **The refresh call of `materializeMany` onto destinations that already hold a generation.** Its request counts (3,732
   GET-class, 1,768 PUT-class, 6 groups) are counted in memory, not measured. The [batch suite's runs](#many-outputs-from-one-call--run-2026-11-08-b12e6)
-  measured a first materialization onto new destinations, which neither measures nor confirms the 3,732, 1,768 and 6. Also unmeasured: any
+  measured a first materialization onto new destinations; the runs neither measure nor confirm the 3,732, 1,768 and 6. Also unmeasured: any
   `publishConcurrency` other than the default 8, the `target` shape (operands of 3,000,000 ids) and the `*Into` side. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-11-03-fbbb8), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.

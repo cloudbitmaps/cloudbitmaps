@@ -7,16 +7,24 @@ import { join } from 'node:path';
  * the page, fails here.
  *
  * HELD, each against the run it names (the latest run is the one with the newest `startedAt`):
- *  - docs/benchmarks.md, the section headed with the latest run id: every figure of the latest run (all three
- *    samples, the stage table's rows, the three sample times in order), the earlier runs' median, 95th percentile,
- *    outputs a second and memory range, and the guide's refresh figures against bench/materialize-many-counts.json;
+ *  - docs/benchmarks.md, the section headed with the latest run id: every figure of the latest run (every sample's
+ *    requests, kinds of read, groups, outputs published, bytes and time, the stage table's rows, the sample times in
+ *    order, the run's date, version and number of calls, the median call's peak and mean in flight beside the word
+ *    "median", the 3,000 GET-class per call that found nothing (derived: GET-class less the three kinds) with the
+ *    engine's own 1,100 tail and 2,627 pointer reads), the earlier runs' median, 95th percentile, outputs a second
+ *    and memory range, and the guide's refresh figures against bench/materialize-many-counts.json;
  *  - docs/ROADMAP.md: each of the two sentences that quote the batch requests, as a phrase;
- *  - bench/calibration/batch/README.md: each run's row (found by its run id) against that run's file;
- *  - CHANGELOG.md [Unreleased]: the entry on the batch runs, against both runs' files.
- * Numbers are matched whole: no digit, comma or point beside them, so 118.80 does not satisfy 18.80.
+ *  - bench/calibration/batch/README.md: each run's row (found by its run id) against that run's file: date, version,
+ *    harness, number of calls, outputs published in groups, and the rest of its figures;
+ *  - CHANGELOG.md [Unreleased]: the entry on the batch runs, against both runs' files, including its workload,
+ *    version, number of calls and the median call's peak.
+ * Numbers are matched whole: no digit, comma or point beside them, so 118.80 does not satisfy 18.80. A count
+ * stated with a count unit (GET-class, PUT-class, bytes, range, tail or pointer reads) that no run recorded is
+ * refused, a rounded one ("about 4,400 GET-class") included; a count kept beside a different unit is not seen.
  *
  * KNOWN LIMITS. It reads figures, not the sentences around them. Not held: bench/README.md (its batch row and its
- * memory sentence), site/benchmarks.html and tests/README.md; the page's `128 sockets`; the words "median" and
+ * memory sentence), site/benchmarks.html and tests/README.md; the page's `128 sockets`; the rows' and the entry's
+ * prose about the run's workload beyond the phrases listed above; the words "median" and
  * "95th percentile" beside a figure (the three sample times are held in order, but a median quoted for the wrong
  * sample time is not caught); any figure of an earlier run that the page states and this file does not list. The
  * stray-count checks accept a count either run recorded (the two runs' counts are identical today). The evidence
@@ -30,6 +38,7 @@ const DIR = join(ROOT, 'bench', 'calibration', 'batch');
 interface Sample {
   ms: number;
   groups: number;
+  published: number;
   put: number;
   get: number;
   readBackPut: number;
@@ -46,18 +55,26 @@ interface Sample {
 interface Evidence {
   runId: string;
   startedAt: string;
-  measured: { packageVersion: string };
+  measured: { packageVersion: string; harness: string };
   resources: { memoryMB: number; cpus: number };
   network: { rttFloorMs: number };
-  workload: { operands: number; outputs: number; idsPerOperand: number };
-  cost: { totalUSD: number; ops: { put: number; get: number; peakInFlight: number } };
+  workload: {
+    operands: number;
+    outputs: number;
+    idsPerOperand: number;
+    samples: number;
+    counts: { batch: { tail: number; pointer: number } };
+  };
+  cost: { totalUSD: number; ops: { put: number; get: number } };
   phases: {
     batchLoad: { requests: { put: number; get: number } };
     batch: {
       requests: { put: number; get: number };
       p50ms: number;
       p95ms: number;
+      n: number;
       medianOutputsPerSec: number;
+      medianPeakInFlight: number;
       medianMeanInFlight: number;
       perSample: Sample[];
     };
@@ -87,6 +104,11 @@ const list = (xs: (number | string)[]): string =>
 const range = (xs: number[]): string => `${Math.min(...xs)} to ${Math.max(...xs)}`;
 const rssOf = (e: Evidence): number[] => e.phases.batch.perSample.map((x) => x.peakRssMB);
 const mib = (n: number): string => fmt(n);
+/** A call's GET-class that returned no object: not filed under a kind of read by the meter (derived). */
+const unfiled = (x: Sample): number => x.get - x.rangeReads - x.tailReads - x.pointerReads;
+const day = (e: Evidence): string => e.startedAt.slice(0, 10);
+const inFlight = (e: Evidence): string =>
+  `median call peaked at ${e.phases.batch.medianPeakInFlight} requests in flight and averaged ${e.phases.batch.medianMeanInFlight.toFixed(2)}`;
 
 /** The stated numbers (by unit) that are not in `known`. */
 function stray(text: string, unitPattern: string, known: Set<string>): string[] {
@@ -124,6 +146,9 @@ function known(es: Evidence[]): { ms: Set<string>; counts: Set<string>; mib: Set
     }
     for (const x of b.perSample) {
       for (const n of [
+        unfiled(x),
+        e.workload.counts.batch.tail,
+        e.workload.counts.batch.pointer,
         x.put,
         x.get,
         x.readBackGet,
@@ -169,8 +194,12 @@ function figures(e: Evidence): string[] {
     fmt(b.p50ms),
     fmt(b.p95ms),
     b.medianOutputsPerSec.toFixed(2),
-    b.medianMeanInFlight.toFixed(2),
-    `${e.cost.ops.peakInFlight} requests were in flight at once`,
+    `on ${day(e)} (UTC)`,
+    `published \`${e.measured.packageVersion}\` packages`,
+    `of ${b.n} calls`,
+    `with ${b.n} calls`,
+    // The median of the calls' peaks and of their means: the evidence records no maximum for the run.
+    inFlight(e),
     `${fmt(e.resources.memoryMB)} MiB`,
     e.network.rttFloorMs.toFixed(2),
     `${e.resources.cpus} CPUs`,
@@ -186,13 +215,14 @@ function figures(e: Evidence): string[] {
   ];
   for (const x of b.perSample) {
     out.push(
-      `${x.groups} groups`,
+      `published ${fmt(x.published)} outputs in ${x.groups} groups`,
       `${fmt(x.put)} PUT-class and ${fmt(x.get)} GET-class`,
+      `The other ${fmt(unfiled(x))} found nothing`,
+      `${fmt(e.workload.counts.batch.tail)} tail reads and ${fmt(e.workload.counts.batch.pointer)} pointer reads`,
       `${fmt(x.readBackGet)} more GET-class`,
-      `${fmt(x.rangeReads)} range reads (${fmt(x.rangeBytes)} bytes)`,
+      `${fmt(x.rangeReads)} were range reads (${fmt(x.rangeBytes)} bytes)`,
       `${fmt(x.tailReads)} tail reads (${fmt(x.tailBytes)} bytes)`,
-      `${fmt(x.pointerReads)} pointer reads`,
-      `read ${fmt(x.bytesRead)} bytes`,
+      `${fmt(x.pointerReads)} pointer reads that returned an object, ${fmt(x.bytesRead)} bytes in all`,
       `wrote about ${(x.bytesWritten / 1e6).toFixed(1)} MB`,
     );
   }
@@ -267,16 +297,20 @@ describe('the batch suite figures', () => {
       const row = rows.find((r) => r.startsWith('|') && r.includes(`[\`${e.runId}.json\`]`));
       expect(row, `bench/calibration/batch/README.md has no row for ${e.runId}`).toBeDefined();
       const b = e.phases.batch;
+      const s0 = b.perSample[0]!;
       const need = [
         fmt(b.p50ms),
         b.medianOutputsPerSec.toFixed(2),
         `\`peakRssMB\` ${range(rssOf(e))}`,
+        `${day(e)} (UTC)`,
+        `\`${e.measured.packageVersion}\` packages, harness \`${e.measured.harness}\``,
+        `(${b.n} calls)`,
       ];
       if (e === latest) {
         need.push(
           fmt(b.p95ms),
-          `\`medianMeanInFlight\` ${b.medianMeanInFlight.toFixed(2)}`,
-          `at most ${e.cost.ops.peakInFlight}`,
+          `median call averaged about five requests in flight (\`medianMeanInFlight\` ${b.medianMeanInFlight.toFixed(2)}`,
+          `peaked at ${b.medianPeakInFlight} (\`medianPeakInFlight\`, **measured**)`,
           `${fmt(e.resources.memoryMB)} MiB`,
           e.network.rttFloorMs.toFixed(2),
         );
@@ -300,6 +334,7 @@ describe('the batch suite figures', () => {
         // The row that states the per-sample requests states each sample's.
         expect(
           lacking(row!, [
+            `${s0.groups} groups with ${fmt(s0.published)} outputs published`,
             ...b.perSample.map((x) => `${fmt(x.put)} PUT-class and ${fmt(x.get)} GET-class`),
             `${fmt(b.requests.put)} PUT-class and ${fmt(b.requests.get)} GET-class`,
             `${fmt(e.cost.ops.put)} PUT-class and ${fmt(e.cost.ops.get)} GET-class`,
@@ -319,7 +354,10 @@ describe('the batch suite figures', () => {
     const s = b.perSample[0]!;
     const need = [
       ...runs.map((e) => e.runId),
-      `${s.groups} groups`,
+      `\`${latest.measured.packageVersion}\` packages`,
+      `${fmt(latest.workload.outputs)} outputs over ${fmt(latest.workload.operands)} stored operands of ${fmt(latest.workload.idsPerOperand)} ids`,
+      `published ${fmt(s.published)} outputs in ${s.groups} groups`,
+      `${b.n} calls`,
       `${fmt(s.put)} PUT-class and ${fmt(s.get)} GET-class`,
       `${fmt(b.requests.put)} PUT-class and ${fmt(b.requests.get)} GET-class`,
       `$${latest.cost.totalUSD}`,
@@ -328,7 +366,7 @@ describe('the batch suite figures', () => {
       b.medianOutputsPerSec.toFixed(2),
       ...earlier.map((e) => `${fmt(e.phases.batch.p50ms)} ms in the first`),
       ...runs.map((e) => e.phases.batch.medianMeanInFlight.toFixed(2)),
-      `at most ${latest.cost.ops.peakInFlight}`,
+      `peaked at ${latest.phases.batch.medianPeakInFlight}`,
       `\`peakRssMB\` was ${range(runs.flatMap(rssOf))} MiB`,
       refreshFigures(),
     ];
