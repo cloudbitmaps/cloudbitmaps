@@ -29,7 +29,8 @@
 #           default one, and CR_CALIBRATE_LARGE_READS and CR_CALIBRATE_LARGE_INTOS size it; its evidence is written
 #           under bench/calibration/large/. CR_CALIBRATE_SUITE=batch runs the batch suite (one refresh-shaped
 #           materializeMany of 1,000 outputs over 100 operands), sized by CR_CALIBRATE_BATCH_SHAPE and
-#           CR_CALIBRATE_BATCH_SAMPLES, its evidence under bench/calibration/batch/. Any other suite name is refused by
+#           CR_CALIBRATE_BATCH_SAMPLES, with CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY (1 to 1024) setting the call's
+#           publishConcurrency, its evidence under bench/calibration/batch/. Any other suite name is refused by
 #           the harness, before anything is created.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

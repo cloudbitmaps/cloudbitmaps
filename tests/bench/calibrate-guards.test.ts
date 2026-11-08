@@ -207,7 +207,14 @@ const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
   meter: (
     client: unknown,
     tally?: unknown,
-  ) => { put: number; get: number; bytesDown: number; byCommand: Record<string, number> };
+  ) => {
+    put: number;
+    get: number;
+    bytesDown: number;
+    byCommand: Record<string, number>;
+    noObject: number;
+    reads: Record<'whole' | 'suffix' | 'range', { n: number; bytes: number }>;
+  };
   classify: (command: string) => 'put' | 'get' | 'free';
   rangeShape: (range: unknown) => 'whole' | 'suffix' | 'range';
   priceTally: (
@@ -1901,6 +1908,48 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
     }
   });
 
+  // A read is filed under a kind (range, suffix, whole) only when it returns an object, so the GET-class that returned none
+  // (a HEAD, a read that found nothing) are counted apart, and `get` is always the kinds plus that count.
+  it('counts the GET-class that returned no object apart, so get is the three kinds of read plus that count', async () => {
+    const server = createServer((req, res) => {
+      if (req.url?.includes('missing')) {
+        res.writeHead(404, { 'content-type': 'application/xml' });
+        res.end('<Error><Code>NoSuchKey</Code><Message>no</Message></Error>');
+        return;
+      }
+      const ranged = req.headers.range !== undefined;
+      const len = ranged ? 10 : 136;
+      res.writeHead(ranged ? 206 : 200, { 'content-length': String(len) });
+      res.end(req.method === 'HEAD' ? undefined : Buffer.alloc(len));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const client = clientFor(`http://127.0.0.1:${port}`, 1);
+    const tally = meterLib.meter(client);
+    const { HeadObjectCommand, GetObjectCommand } = require_('@aws-sdk/client-s3') as Record<
+      string,
+      new (i: { Bucket: string; Key: string; Range?: string }) => unknown
+    >;
+    const kinds = () => tally.reads.whole.n + tally.reads.suffix.n + tally.reads.range.n;
+    try {
+      expect(tally.noObject).toBe(0);
+      await client.send(new HeadObjectCommand!({ Bucket: 'b', Key: 'k' }));
+      expect([tally.get, kinds(), tally.noObject]).toEqual([1, 0, 1]);
+      await client.send(new GetObjectCommand!({ Bucket: 'b', Key: 'k', Range: 'bytes=0-9' }));
+      await client.send(new GetObjectCommand!({ Bucket: 'b', Key: 'k', Range: 'bytes=-10' }));
+      await client.send(new GetObjectCommand!({ Bucket: 'b', Key: 'k' }));
+      expect([tally.get, kinds(), tally.noObject]).toEqual([4, 3, 1]);
+      await expect(
+        client.send(new GetObjectCommand!({ Bucket: 'b', Key: 'missing' })),
+      ).rejects.toBeDefined();
+      expect([tally.get, kinds(), tally.noObject]).toEqual([5, 3, 2]);
+      expect(tally.get).toBe(kinds() + tally.noObject);
+    } finally {
+      client.destroy();
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  });
+
   it('counts a retried request once per attempt', async () => {
     const server = await flakyS3(1);
     const client = clientFor(server.url, 3);
@@ -1910,6 +1959,8 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
       expect(server.hits()).toBe(2); // the premise: the SDK really did retry
       expect(tally.get).toBe(2);
       expect(tally.byCommand.HeadBucketCommand).toBe(2);
+      // Neither attempt filed a kind of read: a request that returns no object is counted apart, so `get` stays the sum.
+      expect(tally.noObject).toBe(2);
     } finally {
       client.destroy();
       await server.close();
@@ -1924,6 +1975,7 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
       await expect(client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))).rejects.toBeDefined();
       expect(server.hits()).toBe(2);
       expect(tally.get).toBe(2);
+      expect(tally.noObject).toBe(2);
     } finally {
       client.destroy();
       await server.close();

@@ -43,6 +43,11 @@ type Plan = {
   fixedGets: number;
 };
 
+interface CallSettings {
+  publishConcurrency: number | null;
+  concurrency: number | null;
+  maxBufferedBytes: number | null;
+}
 const stagesLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-batch-stages.cjs')) as {
   BATCH_STAGES: string[];
   BATCH_SHAPES: Record<string, { operands: number; outputs: number; idsPerOperand: number }>;
@@ -54,7 +59,12 @@ const stagesLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-batch-stages.cj
   resolveBatchKnobs: (env: Record<string, string | undefined>) => {
     shape: string;
     samples: number;
+    publishConcurrency: number | null;
   };
+  MAX_PUBLISH_CONCURRENCY: number;
+  BATCH_SUITE_KNOBS: string[];
+  callSettings: (knobs?: { publishConcurrency?: number | null }) => CallSettings;
+  passedOptions: (settings?: Partial<CallSettings>) => Record<string, number>;
   refuseBatchKnobs: (env: Record<string, string | undefined>, suite: string) => void;
   refuseOtherSuiteKnobs: (env: Record<string, string | undefined>, knobs: string[]) => void;
   checkBatchWorkload: (i: { shape: string; samples: number }) => void;
@@ -75,6 +85,12 @@ const stagesLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-batch-stages.cj
 };
 // The repo's gate on a batch run's evidence, loaded when a test asks for it.
 const batchEvidence = {
+  settingsOf: (run: unknown): CallSettings =>
+    (
+      require_(join(ROOT, 'bench', 'lib', 'batch-evidence.cjs')) as {
+        settingsOf: (run: unknown) => CallSettings;
+      }
+    ).settingsOf(run),
   batchRunProblems: (run: unknown, options?: { rehearsal?: boolean }): string[] =>
     (
       require_(join(ROOT, 'bench', 'lib', 'batch-evidence.cjs')) as {
@@ -92,7 +108,7 @@ const batchCounts = require_(join(ROOT, 'bench', 'lib', 'batch-counts.cjs')) as 
     segmentOf: (i: number) => { count: () => Promise<number> },
   ) => Promise<(number | null)[]>;
   READ_BACK_CONCURRENCY: number;
-  countBatch: (i: { shape: string; engine: unknown }) => Promise<Counts>;
+  countBatch: (i: { shape: string; engine: unknown; call?: CallSettings }) => Promise<Counts>;
 };
 const runner = require_(join(ROOT, 'bench', 'lib', 'calibrate-batch.cjs')) as {
   runBatchSuite: (ctx: Record<string, unknown>) => Promise<void>;
@@ -224,8 +240,16 @@ const completeRun = async () => {
     readBackGet: counts.readBack.get,
     expectedReadBackPut: counts.readBack.put,
     expectedReadBackGet: counts.readBack.get,
+    // One GET-class that found nothing, so the three kinds make one fewer than the sample's `get`.
+    rangeReads: counts.batch.range - 1,
+    tailReads: counts.batch.tail,
+    pointerReads: counts.batch.pointer,
+    noObjectReads: 1,
+    peakInFlight: 8,
+    meanInFlight: 4.5,
   }));
   return {
+    runId: '2026-12-01-abcde',
     suite: 'batch',
     partial: false,
     expectedMissed: undefined as string[] | undefined,
@@ -241,7 +265,13 @@ const completeRun = async () => {
         },
       ]),
     ),
-    workload: { expected },
+    workload: {
+      samples: plan.samples,
+      publishConcurrency: null,
+      concurrency: null,
+      maxBufferedBytes: null,
+      expected,
+    },
     cost: { totalUSD: 0.01 },
   };
 };
@@ -279,17 +309,22 @@ describe('the batch suite is a suite of its own', () => {
   });
 
   it('reads its two knobs at the published shape and three samples, and refuses what it cannot read', () => {
-    expect(stagesLib.resolveBatchKnobs({})).toEqual({ shape: 'refresh', samples: 3 });
+    expect(stagesLib.resolveBatchKnobs({})).toEqual({
+      shape: 'refresh',
+      samples: 3,
+      publishConcurrency: null,
+    });
     expect(stagesLib.resolveBatchKnobs({ CR_CALIBRATE_BATCH_SHAPE: ' ' })).toEqual({
       shape: 'refresh',
       samples: 3,
+      publishConcurrency: null,
     });
     expect(
       stagesLib.resolveBatchKnobs({
         CR_CALIBRATE_BATCH_SHAPE: 'small',
         CR_CALIBRATE_BATCH_SAMPLES: '0',
       }),
-    ).toEqual({ shape: 'small', samples: 0 });
+    ).toEqual({ shape: 'small', samples: 0, publishConcurrency: null });
     expect(() => stagesLib.resolveBatchKnobs({ CR_CALIBRATE_BATCH_SHAPE: 'target' })).toThrow(
       /the shapes are refresh and small/,
     );
@@ -298,6 +333,55 @@ describe('the batch suite is a suite of its own', () => {
         /CR_CALIBRATE_BATCH_SAMPLES/,
       );
     }
+  });
+
+  it('reads CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY as an integer from 1 to the engine’s maximum, and passes nothing when it is unset', () => {
+    // The ceiling is the engine's own: `MAX_BATCH_PARALLELISM` in core's combine-many.
+    const engineMax = Number(
+      /const MAX_BATCH_PARALLELISM = (\d[\d_]*);/
+        .exec(src('packages', 'core', 'src', 'core', 'combine-many.ts'))?.[1]
+        ?.replace(/_/g, ''),
+    );
+    expect(stagesLib.MAX_PUBLISH_CONCURRENCY).toBe(engineMax);
+    expect(engineMax).toBe(1024);
+    const knob = (v: string | undefined) =>
+      stagesLib.resolveBatchKnobs({ CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY: v }).publishConcurrency;
+    for (const unset of [undefined, '', '  ']) expect(knob(unset), String(unset)).toBeNull();
+    expect(knob('1')).toBe(1);
+    expect(knob(' 64 ')).toBe(64);
+    expect(knob('1024')).toBe(1024);
+    for (const bad of ['0', '1025', '-1', '1.5', '8e0', '0x10', '+8', 'many', '64 64']) {
+      expect(() => knob(bad), bad).toThrow(
+        /CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY is ".*"; expected an integer from 1 to 1024/,
+      );
+    }
+    expect(stagesLib.BATCH_SUITE_KNOBS).toContain('CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY');
+    for (const suite of ['default', 'large']) {
+      expect(() =>
+        stagesLib.refuseBatchKnobs({ CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY: '64' }, suite),
+      ).toThrow(/CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY size the batch suite/);
+      expect(() =>
+        stagesLib.refuseBatchKnobs({ CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY: '' }, suite),
+      ).not.toThrow();
+    }
+  });
+
+  it('records the call’s settings as passed, and passes to the call exactly the ones that were', () => {
+    expect(stagesLib.callSettings()).toEqual({
+      publishConcurrency: null,
+      concurrency: null,
+      maxBufferedBytes: null,
+    });
+    expect(stagesLib.callSettings({ publishConcurrency: 64 })).toEqual({
+      publishConcurrency: 64,
+      concurrency: null,
+      maxBufferedBytes: null,
+    });
+    expect(stagesLib.passedOptions(stagesLib.callSettings())).toEqual({});
+    expect(stagesLib.passedOptions(undefined)).toEqual({});
+    expect(stagesLib.passedOptions(stagesLib.callSettings({ publishConcurrency: 64 }))).toEqual({
+      publishConcurrency: 64,
+    });
   });
 
   it('refuses another suite’s workload setting under --suite batch, and its own under any other suite, each by name', () => {
@@ -506,6 +590,47 @@ describe('the version guard', () => {
   });
 });
 
+describe('the in-memory count is of the call the run makes', () => {
+  // The grouping depends on `publishConcurrency`, so the count the run is held to must pass what the call passes.
+  const spyEngine = () => {
+    const seen: Record<string, unknown>[] = [];
+    class Spy extends CloudRoaring {}
+    const proto = Spy.prototype as unknown as { materializeMany: (...a: unknown[]) => unknown };
+    const original = CloudRoaring.prototype.materializeMany as unknown as (
+      ...a: unknown[]
+    ) => unknown;
+    proto.materializeMany = function (this: unknown, ...a: unknown[]) {
+      seen.push(a[0] as Record<string, unknown>);
+      return original.apply(this, a);
+    };
+    return { seen, engine: { CloudRoaring: Spy, MemoryStorage } };
+  };
+
+  it('passes the call’s settings to the call it counts, and nothing when the run set none', async () => {
+    const dflt = spyEngine();
+    await batchCounts.countBatch({ shape: 'small', engine: dflt.engine });
+    expect(dflt.seen).toHaveLength(1);
+    expect(Object.keys(dflt.seen[0]!).sort()).toEqual(['budget', 'keep', 'operands', 'outputs']);
+    const set = spyEngine();
+    await batchCounts.countBatch({
+      shape: 'small',
+      engine: set.engine,
+      call: stagesLib.callSettings({ publishConcurrency: 2 }),
+    });
+    expect(set.seen).toHaveLength(1);
+    expect(set.seen[0]).toMatchObject({ keep: 12, budget: false, publishConcurrency: 2 });
+  }, 120_000);
+
+  it('is read by the harness from the same settings it hands the suite, so the count and the call cannot differ', () => {
+    const at = harnessSrc.indexOf('const call = callSettings(batchKnobs);');
+    expect(at).toBeGreaterThan(0);
+    const body = harnessSrc.slice(at, at + 700);
+    expect(body).toMatch(/countBatch\(\{[^}]*call,/);
+    expect(body).toMatch(/plan = \{[\s\S]*\bcall,/);
+    expect(harnessSrc).toMatch(/\.\.\.plan\.call,/);
+  });
+});
+
 describe('each output is held to the engine’s own count', () => {
   const want: Outcome[] = [
     { published: true, cardinality: 10 },
@@ -612,6 +737,8 @@ describe('the stages, run over a store that answers as we choose', () => {
     planOverride?: typeof plan;
   } = {}) => {
     const tally = { get: 0, put: 0 };
+    const noObject = { n: 0 };
+    const seen: Record<string, unknown>[] = [];
     const dests: string[][] = [];
     let calls = 0;
     const store = {
@@ -625,7 +752,12 @@ describe('the stages, run over a store that answers as we choose', () => {
           return readBackAnswer(i, counts.sizes[i] ?? 0);
         },
       }),
-      materializeMany: async (o: { outputs: { dest: { name: string } }[] }) => {
+      materializeMany: async (o: {
+        outputs: { dest: { name: string } }[];
+        [k: string]: unknown;
+      }) => {
+        seen.push(o);
+        noObject.n += 3;
         dests.push(o.outputs.map((x) => x.dest.name));
         tally.get += 30 + extraGets;
         tally.put += 12 + extraPuts;
@@ -643,6 +775,7 @@ describe('the stages, run over a store that answers as we choose', () => {
       suffixBytes: 0,
       wholeN: 0,
       wholeBytes: 0,
+      noObject: noObject.n,
     });
     const phases: Record<string, Record<string, unknown>> = {};
     const missed: string[] = [];
@@ -668,7 +801,7 @@ describe('the stages, run over a store that answers as we choose', () => {
         summarise: () => ({}),
         snap,
         startDepth: () => undefined,
-        depthOf: () => ({ peakInFlight: 1, requestMs: 1, meanInFlight: 1, rounds: 1 }),
+        depthOf: () => ({ peakInFlight: 7, requestMs: 1, meanInFlight: 2.5, rounds: 1 }),
         checkCeiling: () => undefined,
         msSince: () => 10,
         median: (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)],
@@ -682,7 +815,7 @@ describe('the stages, run over a store that answers as we choose', () => {
         () => undefined,
         (err: Error) => err,
       );
-    return { failure, phases, tally, dests, missed, loads };
+    return { failure, phases, tally, dests, missed, loads, seen };
   };
 
   it('loads each operand once, then runs the plan’s samples, each recording its requests, groups and time', async () => {
@@ -712,9 +845,37 @@ describe('the stages, run over a store that answers as we choose', () => {
       expect(s.peakRssMB).toBeGreaterThan(0);
     }
     expect(tally).toEqual({ get: 70, put: 24 });
+    // Each sample's own depth and the reads that returned no object, which the evidence kept only as a median or not at all.
+    for (const s of batch.perSample) {
+      expect(s).toMatchObject({ peakInFlight: 7, meanInFlight: 2.5, noObjectReads: 3 });
+    }
     const none = await run({ planOverride: { ...plan, samples: 0 } });
     expect((none.phases.batch as { runs: number }).runs).toBe(0);
     expect(none.tally.get).toBe(0);
+  });
+
+  it('passes the call the options the plan set and no others, and the library’s defaults when it set none', async () => {
+    const dflt = await run();
+    for (const o of dflt.seen) {
+      expect(Object.keys(o).sort()).toEqual(['budget', 'keep', 'operands', 'outputs']);
+    }
+    const set = await run({
+      planOverride: {
+        ...plan,
+        call: { publishConcurrency: 64, concurrency: null, maxBufferedBytes: null },
+      } as typeof plan,
+    });
+    expect(set.seen).toHaveLength(2);
+    for (const o of set.seen) {
+      expect(o).toMatchObject({ keep: 12, budget: false, publishConcurrency: 64 });
+      expect(Object.keys(o).sort()).toEqual([
+        'budget',
+        'keep',
+        'operands',
+        'outputs',
+        'publishConcurrency',
+      ]);
+    }
   });
 
   it('runs every sample on destinations no other sample, and no discarded attempt, wrote', async () => {
@@ -947,7 +1108,14 @@ describe('the evidence of a batch run', () => {
         perSample?: Record<string, number>[];
       }
     >;
-    workload?: { expected?: Record<string, Bound> };
+    workload?: {
+      expected?: Record<string, Bound>;
+      samples?: number;
+      publishConcurrency?: unknown;
+      concurrency?: unknown;
+      maxBufferedBytes?: unknown;
+    };
+    runId?: string;
     cost?: unknown;
   }
   // The gate on a finished run is the repo's own (`bench/lib/batch-evidence.cjs`): its suite, both stages, every stage's kept
@@ -1033,6 +1201,110 @@ describe('the evidence of a batch run', () => {
     );
     expect(problemsWith(await mutate((r) => (r.interrupted = true)))).toContain('interrupted');
     expect(problemsWith(await mutate((r) => (r.partial = true)))).toContain('partial');
+  }, 120_000);
+
+  it('records the call’s settings and the sample count, and refuses a new run’s file without them or with one it cannot read', async () => {
+    const names = ['publishConcurrency', 'concurrency', 'maxBufferedBytes'] as const;
+    for (const name of names) {
+      const run = await mutate((r) => delete r.workload?.[name]);
+      expect(problemsWith(run).join('\n'), name).toContain(
+        `the workload does not record ${name} (null when not passed)`,
+      );
+    }
+    expect(problemsWith(await mutate((r) => delete r.workload?.samples))).toContain(
+      'the workload records no sample count',
+    );
+    // Null is "not passed"; a value is accepted inside its range.
+    expect(problemsWith(await mutate((r) => (r.workload!.publishConcurrency = 64)))).toEqual([]);
+    expect(problemsWith(await mutate((r) => (r.workload!.publishConcurrency = 1024)))).toEqual([]);
+    expect(problemsWith(await mutate((r) => (r.workload!.concurrency = 2)))).toEqual([]);
+    expect(problemsWith(await mutate((r) => (r.workload!.maxBufferedBytes = 1_048_576)))).toEqual(
+      [],
+    );
+    for (const bad of [0, 1025, -1, 1.5, '64', true]) {
+      const run = await mutate((r) => (r.workload!.publishConcurrency = bad));
+      expect(problemsWith(run).join('\n'), String(bad)).toMatch(
+        /publishConcurrency is .*not null or an integer from 1 to 1024/,
+      );
+    }
+    for (const bad of [0, 1.5, '2']) {
+      expect(
+        problemsWith(await mutate((r) => (r.workload!.concurrency = bad))).join('\n'),
+        String(bad),
+      ).toMatch(/concurrency is/);
+    }
+  }, 120_000);
+
+  it('reads the settings of a run as recorded, and a file that has none as not passed', async () => {
+    const run = await complete();
+    expect(batchEvidence.settingsOf(run)).toEqual({
+      publishConcurrency: null,
+      concurrency: null,
+      maxBufferedBytes: null,
+    });
+    run.workload!.publishConcurrency = 64;
+    expect(batchEvidence.settingsOf(run).publishConcurrency).toBe(64);
+    expect(batchEvidence.settingsOf({ workload: {} })).toEqual({
+      publishConcurrency: null,
+      concurrency: null,
+      maxBufferedBytes: null,
+    });
+    expect(batchEvidence.settingsOf({})).toEqual(stagesLib.callSettings());
+  }, 120_000);
+
+  it('lets the two runs committed before the fields existed lack them, and no other run', async () => {
+    const dir = join(ROOT, 'bench', 'calibration', 'batch');
+    const committed = readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}-[0-9a-f]+\.json$/.test(f));
+    expect(committed.length).toBeGreaterThanOrEqual(2);
+    for (const f of committed) {
+      const run = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Run;
+      // The premise: neither file records a setting or a per-sample depth, and both pass the gate as written.
+      expect(run.workload?.publishConcurrency, f).toBeUndefined();
+      expect(run.phases?.batch?.perSample?.[0]?.peakInFlight, f).toBeUndefined();
+      expect(problemsWith(run), f).toEqual([]);
+      expect(batchEvidence.settingsOf(run), f).toEqual(stagesLib.callSettings());
+      // The same file under any other run id is refused for what it lacks.
+      const renamed = { ...run, runId: '2026-12-01-abcde' };
+      const why = problemsWith(renamed).join('\n');
+      expect(why, f).toContain('does not record publishConcurrency');
+      expect(why, f).toContain('records no peakInFlight, meanInFlight or noObjectReads');
+    }
+  });
+
+  it('records each sample’s peak and mean in flight and its GET-class that returned no object, and holds get to the kinds plus that count', async () => {
+    expect(problemsWith(await complete())).toEqual([]);
+    for (const field of ['peakInFlight', 'meanInFlight', 'noObjectReads'] as const) {
+      const run = await mutate((r) => delete r.phases?.batch?.perSample?.[1]?.[field]);
+      expect(problemsWith(run).join('\n'), field).toContain(
+        `batch sample 1 has no usable ${field}`,
+      );
+    }
+    const none = await mutate((r) => {
+      const s = r.phases?.batch?.perSample?.[0];
+      if (s) for (const f of ['peakInFlight', 'meanInFlight', 'noObjectReads']) delete s[f];
+    });
+    expect(problemsWith(none).join('\n')).toContain(
+      'batch sample 0 records no peakInFlight, meanInFlight or noObjectReads',
+    );
+    // The identity, off by one either way, in any of the four terms, even where get is edited to match nothing else.
+    for (const field of ['rangeReads', 'tailReads', 'pointerReads', 'noObjectReads'] as const) {
+      for (const delta of [1, -1]) {
+        const run = await mutate((r) => {
+          const s = r.phases?.batch?.perSample?.[2];
+          if (s) s[field] = (s[field] ?? 0) + delta;
+        });
+        expect(problemsWith(run).join('\n'), `${field} ${delta}`).toMatch(
+          /batch sample 2: its \d+ GET-class are .* which make \d+/,
+        );
+      }
+    }
+    const peak0 = await mutate((r) => {
+      const s = r.phases?.batch?.perSample?.[0];
+      if (s) s.peakInFlight = 0;
+    });
+    expect(problemsWith(peak0).join('\n')).toContain(
+      'peakInFlight that is not a whole number of at least 1',
+    );
   }, 120_000);
 
   it('goes under bench/calibration/batch/, its rehearsal and partials beside it and apart from the default suite’s', () => {
@@ -1193,6 +1465,16 @@ describe('the harness, run', () => {
     const bad = harness(['--suite', 'batch'], { CR_CALIBRATE_BATCH_SHAPE: 'target' });
     expect(bad.status).toBe(2);
     expect(bad.stderr).toMatch(/the shapes are refresh and small/);
+    for (const args of [[], ['--suite', 'large']]) {
+      const out = harness(args, { CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY: '64' });
+      expect(out.status, args.join(' ')).toBe(2);
+      expect(out.stderr).toMatch(/CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY size the batch suite/);
+    }
+    for (const value of ['0', '1025', 'x']) {
+      const out = harness(['--suite', 'batch'], { CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY: value });
+      expect(out.status, value).toBe(2);
+      expect(out.stderr).toMatch(/expected an integer from 1 to 1024/);
+    }
     const many = harness(['--suite', 'batch'], { CR_CALIBRATE_BATCH_SAMPLES: '9' });
     expect(many.status).toBe(2);
     expect(many.stderr).toMatch(/object versions/);
