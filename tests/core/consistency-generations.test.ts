@@ -387,28 +387,38 @@ describe.each(registries)('checkConsistency with generations over %s', (_name, m
     ]);
   });
 
-  it('a wide ledger, as an *Into destination writes, is one footer read per entry', async () => {
-    const w = world();
-    // The `keep` an `*Into` call publishes with: no generation is collected, and the ledger holds 128.
-    await loadMany(w.deps, SEG, 140, Number.MAX_SAFE_INTEGER);
-    const row = await w.registry.get(SEG);
-    expect(numbers(row)).toHaveLength(128);
-    w.calls.length = 0;
-    const report = await runConsistencyCheck(w.deps, { generations: true });
-    expect(report).toEqual({ checked: 1, inconsistent: [], errored: [], generationsUnchecked: 0 });
-    expect(footerReads(w.calls)).toHaveLength(128);
-    expect(w.calls).toHaveLength(129);
-    // One swapped among them is found, and the 128 reads are still the whole cost.
-    await putOver(
-      w.memory,
-      { ...SEG, generation: 20 },
-      await bytesOf(w.memory, { ...SEG, generation: 21 }),
-    );
-    w.calls.length = 0;
-    const swapped = await runConsistencyCheck(w.deps, { generations: true });
-    expect(swapped.inconsistent).toEqual([mismatch(20, 139)]);
-    expect(footerReads(w.calls)).toHaveLength(128);
-  });
+  it(
+    'a wide ledger, as an *Into destination writes, is one footer read per entry',
+    // 140 loads on a registry that may touch the disk: 3.5 s once on a loaded runner, over half the default 5 s limit.
+    { timeout: 15_000 },
+    async () => {
+      const w = world();
+      // The `keep` an `*Into` call publishes with: no generation is collected, and the ledger holds 128.
+      await loadMany(w.deps, SEG, 140, Number.MAX_SAFE_INTEGER);
+      const row = await w.registry.get(SEG);
+      expect(numbers(row)).toHaveLength(128);
+      w.calls.length = 0;
+      const report = await runConsistencyCheck(w.deps, { generations: true });
+      expect(report).toEqual({
+        checked: 1,
+        inconsistent: [],
+        errored: [],
+        generationsUnchecked: 0,
+      });
+      expect(footerReads(w.calls)).toHaveLength(128);
+      expect(w.calls).toHaveLength(129);
+      // One swapped among them is found, and the 128 reads are still the whole cost.
+      await putOver(
+        w.memory,
+        { ...SEG, generation: 20 },
+        await bytesOf(w.memory, { ...SEG, generation: 21 }),
+      );
+      w.calls.length = 0;
+      const swapped = await runConsistencyCheck(w.deps, { generations: true });
+      expect(swapped.inconsistent).toEqual([mismatch(20, 139)]);
+      expect(footerReads(w.calls)).toHaveLength(128);
+    },
+  );
 
   it('a footer read never has more requests in flight than the concurrency', async () => {
     const w = world();
