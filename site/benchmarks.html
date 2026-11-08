@@ -520,10 +520,10 @@
           </li>
           <li>
             <span class="rl-mark">04</span>
-            <span class="rl-what"><span class="m">materializeMany</span> on S3</span>
+            <span class="rl-what"><span class="m">materializeMany</span> onto loaded destinations</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              Its request counts are counted in memory and not measured on S3. The <span class="m">*Into</span> verbs and combines on operands of about a million, five million and ten million ids are measured, and operands that are run-encoded, or with other overlaps, are not.
+              The refresh call, whose every destination already holds a generation, has its request counts counted in memory and not measured on S3; the two batch runs measured a first materialization onto new destinations, which does not confirm them. The <span class="m">*Into</span> verbs and combines on operands of about a million, five million and ten million ids are measured, and operands that are run-encoded, or with other overlaps, are not.
             </span>
           </li>
           <li>
