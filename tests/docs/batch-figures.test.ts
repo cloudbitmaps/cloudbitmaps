@@ -30,7 +30,7 @@ interface Evidence {
   measured: { packageVersion: string };
   resources: { memoryMB: number };
   network: { rttFloorMs: number };
-  cost: { totalUSD: number; ops: { put: number; get: number; peakInFlight: number } };
+  cost: { ops: { put: number; get: number; peakInFlight: number } };
   phases: {
     batchLoad: { requests: { put: number; get: number } };
     batch: {
@@ -75,7 +75,6 @@ function figures(e: Evidence): string[] {
     fmt(b.requests.get),
     fmt(e.cost.ops.put),
     fmt(e.cost.ops.get),
-    `$${e.cost.totalUSD}`,
     fmt(s.rangeReads),
     fmt(s.rangeBytes),
     fmt(s.tailReads),

@@ -312,7 +312,7 @@ call that returns a number.
 operands of 200,000 ids, each sample onto destinations nothing had written. **It is a first materialization, not the
 guide's refresh call**, whose every destination already holds a generation: the [refresh figures](guide/loading.md#many-outputs-from-one-pass-materializemany)
 (3,732 GET-class, 1,768 PUT-class, 6 groups) are counted in memory and are **not measured**, and these runs neither
-measure nor confirm them. The call ran at its defaults, `materializeMany({ operands, outputs, keep: 12, budget: false })`:
+measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call ran at its defaults, `materializeMany({ operands, outputs, keep: 12, budget: false })`:
 `publishConcurrency` 8 and `concurrency` 1.
 
 **Requests.** Every sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
@@ -328,8 +328,8 @@ count the engine was expected to make):
 | the whole run, the bucket's own requests included | 6,216 | 16,658 |
 
 Per sample the call made 722 range reads (156,515,808 bytes), 100 tail reads (13,232,140 bytes) and 627 pointer reads,
-read 170,019,702 bytes in all and wrote about 292.4 MB (**measured**). The run's bill at the `aws-us-east-1-ondemand` list
-prices is $0.0377432 (the evidence's `cost`).
+read 170,019,702 bytes in all and wrote about 292.4 MB (**measured**). The evidence records the run's bill, by request class, at the
+`aws-us-east-1-ondemand` list prices (`cost` in the file).
 
 **Time and memory.** The three calls took 61,032 ms, 52,998 ms and 53,192 ms: a median of 53,192 ms and, of 3 calls, a
 95th percentile of 61,032 ms, at a median of 18.80 outputs a second (**measured**; with 3 calls, the percentile is the
@@ -779,7 +779,7 @@ throughput on S3. These are not published yet:
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 - **The refresh call of `materializeMany` onto destinations that already hold a generation.** Its request counts (3,732
   GET-class, 1,768 PUT-class, 6 groups) are counted in memory, not measured. The [batch suite's runs](#many-outputs-from-one-call--run-2026-11-08-b12e6)
-  measured a first materialization onto new destinations, which neither measures nor confirms them. Also unmeasured: any
+  measured a first materialization onto new destinations, which neither measures nor confirms the 3,732, 1,768 and 6. Also unmeasured: any
   `publishConcurrency` other than the default 8, the `target` shape (operands of 3,000,000 ids) and the `*Into` side. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-11-03-fbbb8), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
