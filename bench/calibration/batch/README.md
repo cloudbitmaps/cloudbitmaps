@@ -49,7 +49,7 @@ another value lands, give it:
 - a row in the table below that names the same settings, as `` `publishConcurrency` 64 ``;
 - and, in the same change, the four places that say no run at another value has been made: the `[Unreleased]` entry in
   [`CHANGELOG.md`](../../../CHANGELOG.md), the batch bullet of "What it does not measure" in
-  [`bench/README.md`](../../README.md), the batch section's "What these figures are not" in [`docs/benchmarks.md`](../../../docs/benchmarks.md)
+  [`bench/README.md`](../../README.md), the batch section's "In flight" paragraph in [`docs/benchmarks.md`](../../../docs/benchmarks.md)
   and the loaded-store row of [`docs/ROADMAP.md`](../../../docs/ROADMAP.md).
 
 `tests/docs/batch-figures.test.ts` holds both, and holds every link to the defaults section's anchor to the latest run at

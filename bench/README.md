@@ -426,7 +426,7 @@ CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibr
 
 From CloudShell, in practice:
 
-- **CloudShell keeps the home directory between sessions**, so the first two lines reuse a clone an earlier session left
+- **CloudShell keeps the home directory between sessions**, so the first two commands reuse a clone an earlier session left
   and bring it up to `main`; a bare `git clone` there stops at "already exists", and a run started from the home
   directory finds no script.
 
