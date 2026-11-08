@@ -121,6 +121,7 @@ function resolveBatchKnobs(env) {
   const rawPublish = env.CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY;
   let publishConcurrency = null;
   if (rawPublish !== undefined && String(rawPublish).trim() !== '') {
+    // Leading zeros are accepted (`08` is 8): the value is the integer, and a refusal would protect nothing.
     const text = String(rawPublish).trim();
     publishConcurrency = /^\d+$/.test(text) ? Number(text) : Number.NaN;
     if (

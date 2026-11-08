@@ -895,7 +895,7 @@ async function main() {
     if (breached(priced.totalUSD, ceiling)) {
       refuse(
         `projected $${priced.totalUSD.toFixed(6)} meets or exceeds the $${ceiling} ceiling — ` +
-          'nothing was created. Raise CR_CALIBRATE_MAX_USD or shrink the workload.',
+          'nothing was created. Raise CR_CALIBRATE_MAX_USD, shrink the workload or, for the batch suite, change CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY (the groups and so the requests depend on it).',
       );
     }
   }

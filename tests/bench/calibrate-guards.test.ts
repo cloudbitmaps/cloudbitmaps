@@ -1791,6 +1791,7 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
       destroy: () => void;
     };
     HeadBucketCommand: new (i: { Bucket: string }) => unknown;
+    GetObjectCommand: new (i: { Bucket: string; Key: string }) => unknown;
   };
 
   /** A stand-in S3 that fails the first `failures` requests with 503, then answers 200. */
@@ -1964,6 +1965,41 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
     } finally {
       client.destroy();
       await server.close();
+    }
+  });
+
+  it('files a GetObject that was retried and then served once, and counts its retries apart', async () => {
+    const server = await flakyS3(1);
+    const client = clientFor(server.url, 3);
+    const tally = meterLib.meter(client);
+    try {
+      await client.send(new s3.GetObjectCommand({ Bucket: 'b', Key: 'k' }));
+      expect(server.hits()).toBe(2); // the premise: the SDK really did retry
+      const kinds = tally.reads.whole.n + tally.reads.suffix.n + tally.reads.range.n;
+      // One object came down: one kind of read. The failed first attempt returned none, and is counted apart.
+      expect([tally.get, kinds, tally.noObject]).toEqual([2, 1, 1]);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+
+  it('files a GetObject that answers without a length as an object, and adds no bytes', async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200); // chunked: no content-length
+      res.end(Buffer.alloc(5));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const client = clientFor(`http://127.0.0.1:${port}`, 1);
+    const tally = meterLib.meter(client);
+    try {
+      await client.send(new s3.GetObjectCommand({ Bucket: 'b', Key: 'k' }));
+      expect([tally.get, tally.reads.whole.n, tally.noObject]).toEqual([1, 1, 0]);
+      expect(tally.bytesDown).toBe(0);
+    } finally {
+      client.destroy();
+      await new Promise<void>((done) => server.close(() => done()));
     }
   });
 

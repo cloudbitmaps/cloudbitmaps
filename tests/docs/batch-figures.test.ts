@@ -227,6 +227,7 @@ const refreshFigures = (): string => {
 };
 const COUNT_UNITS = ' (?:GET-class|PUT-class|bytes|range reads|tail reads|pointer reads)';
 
+const raw = readFileSync(join(ROOT, 'docs/benchmarks.md'), 'utf8');
 const page = flat('docs/benchmarks.md');
 const HEADING = '## Many outputs from one call — run';
 /** The section of the benchmarks page headed with a run's id: its heading line and what follows to the next section. */
@@ -235,8 +236,10 @@ function sectionOf(e: { runId: string }): { heading: string; text: string } {
   if (start < 0) return { heading: '', text: '' };
   const end = page.indexOf(' ## ', start + 4);
   const text = page.slice(start, end < 0 ? undefined : end);
-  const headingEnd = text.indexOf(' > ');
-  return { heading: headingEnd < 0 ? text.slice(0, 200) : text.slice(0, headingEnd), text };
+  // The heading is the one line of the raw page, so body text after it cannot satisfy a check on the heading.
+  const at = raw.indexOf(`${HEADING} \`${e.runId}\``);
+  const heading = raw.slice(at, raw.indexOf('\n', at) < 0 ? undefined : raw.indexOf('\n', at));
+  return { heading, text };
 }
 const section = sectionOf(latest).text;
 
@@ -371,8 +374,9 @@ describe('the batch suite figures', () => {
       if (e === latest) {
         need.push(
           fmt(b.p95ms),
-          `median call averaged about five requests in flight (\`medianMeanInFlight\` ${b.medianMeanInFlight.toFixed(2)}`,
-          `peaked at ${b.medianPeakInFlight} (\`medianPeakInFlight\`, **measured**)`,
+          // The figures and their field names, not the words around them: a run whose mean is 6.4 must not need "about five".
+          `\`medianMeanInFlight\` ${b.medianMeanInFlight.toFixed(2)}`,
+          `${b.medianPeakInFlight} (\`medianPeakInFlight\`, **measured**)`,
           `${fmt(e.resources.memoryMB)} MiB`,
           e.network.rttFloorMs.toFixed(2),
         );
@@ -466,7 +470,11 @@ describe('the batch suite figures', () => {
   it('gives each run at another value a section of its own, headed with what it passed, that states its figures', () => {
     for (const e of others) {
       const own = sectionOf(e);
-      expect(own.text, `docs/benchmarks.md has no section headed with run ${e.runId}`).not.toBe('');
+      expect(
+        own.text,
+        'docs/benchmarks.md has no section headed "' +
+          `${HEADING} \`${e.runId}\` (${passedPhrases(e).join(', ')})"`,
+      ).not.toBe('');
       const headed = lacking(own.heading, passedPhrases(e));
       expect(headed, `the heading of ${e.runId} must name: ${headed.join(' | ')}`).toEqual([]);
       const missing = lacking(own.text, figures(e));

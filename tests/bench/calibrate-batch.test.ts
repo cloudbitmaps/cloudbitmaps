@@ -1087,6 +1087,17 @@ describe('the stages, run over a store that answers as we choose', () => {
     expect(text).toMatch(/shape\s+small: 20 operands of 100000 ids, 100 outputs/);
     expect(text).toMatch(/projected\s+\d+ PUT-class, \d+ GET-class/);
     expect(text).toMatch(/projected \$\s+0\.010000/);
+    expect(text).toContain("counted at the library's defaults");
+    const at64 = runner.projectionLines({
+      plan: { ...p, call: stagesLib.callSettings({ publishConcurrency: 64 }) },
+      bounds: b.stages,
+      expected: stagesLib.expectedBatch(p),
+      discardBound: b.discards,
+      costliestSample: b.costliestSample,
+      ops: b.total,
+      price: () => 0.01,
+    });
+    expect(at64.join('\n')).toContain('counted at publishConcurrency 64');
   }, 120_000);
 });
 

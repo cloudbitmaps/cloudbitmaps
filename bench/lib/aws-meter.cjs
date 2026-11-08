@@ -145,14 +145,14 @@ function meter(client, tally = newTally()) {
       count(retries(result?.output?.$metadata));
       const len = Number(result?.output?.ContentLength);
       // A HEAD answers with the object's size in `ContentLength` and sends no body: nothing came down.
-      if (Number.isFinite(len) && name !== 'HeadObjectCommand') {
-        tally.bytesDown += len;
-        if (name === 'GetObjectCommand') {
-          const shape = tally.reads[rangeShape(args?.input?.Range)];
-          shape.n += 1;
-          shape.bytes += len;
-          filed = 1;
-        }
+      if (Number.isFinite(len) && name !== 'HeadObjectCommand') tally.bytesDown += len;
+      // A GetObject that answered is an object, whether or not the answer carries a length (S3 always sends one); only
+      // the bytes need it.
+      if (name === 'GetObjectCommand') {
+        const shape = tally.reads[rangeShape(args?.input?.Range)];
+        shape.n += 1;
+        if (Number.isFinite(len)) shape.bytes += len;
+        filed = 1;
       }
       if (klass === 'get') tally.noObject += sent - filed;
       return result;

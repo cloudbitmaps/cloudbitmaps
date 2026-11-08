@@ -602,14 +602,13 @@ own.
 ```
 # in AWS CloudShell in us-east-1, in one session
 git clone https://github.com/cloudbitmaps/cloudbitmaps && cd cloudbitmaps
-git fetch origin bench/batch-publish-concurrency && git checkout bench/batch-publish-concurrency
 CR_CALIBRATE_SUITE=batch CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.10 bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-batch-default-$(date -u +%Y%m%dT%H%M%SZ).log
 CR_CALIBRATE_SUITE=batch CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY=64 CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.10 bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-batch-publish64-$(date -u +%Y%m%dT%H%M%SZ).log
 ls -l ~/bench/calibration/batch/
 ```
 
 Each run copies its evidence to `~/bench/calibration/batch/<runId>.json`; copy each to the home directory before
-downloading it, as above. The two files are committed unedited under `calibration/batch/`, and the page and the README
+downloading it (`cp ~/bench/calibration/batch/<runId>.json ~/batch-<runId>.json`). The two files are committed unedited under `calibration/batch/`, and the page and the README
 give the run at the other value a place of its own ([how](calibration/batch/README.md#a-run-at-another-value)); the run at
 the defaults never takes over the page's section on the defaults.
 
@@ -620,7 +619,7 @@ untimed, the count the store records for each published output is read back (its
 the arithmetic's size, or the stage fails; an output that comes back with an error is thrown as it is, so a transient fault
 discards the sample and runs it again on destinations of its own, and a wrong count is not run again. The read-backs'
 requests are counted and held to the same exact counts as the call's (per sample, and in the stage's total).
-**Run on S3 twice** (2026-11-03 and 2026-11-08, from CloudShell in `us-east-1`; [the runs](calibration/batch/README.md#runs)). A release below `0.18.0`, the first with `materializeMany`, is refused before anything is created.
+**Run on S3** (the runs so far: 2026-11-03 and 2026-11-08, from CloudShell in `us-east-1`; [the runs](calibration/batch/README.md#runs)). A release below `0.18.0`, the first with `materializeMany`, is refused before anything is created.
 
 **Counted, not restated.** The shape is counted over the in-memory backend before anything is created (about 20 seconds on a
 laptop, measured once and not recorded, and printed as it starts; the large suite's two CloudShell runs recorded two CPUs, so expect tens of seconds to a few minutes there), and each
@@ -688,8 +687,8 @@ The default suite's scope is the three measurements above, on one workload shape
   operand. This suite measures two operands, and one include operand against ten excluded.
 - **Lambda.** CloudShell is a long-lived shell inside the region; a function's cold start and initialisation are
   a separate figure, which needs a run from inside a function.
-- **Another `publishConcurrency` on S3.** The option exists and no run at another value has been made: the batch suite's two
-  runs are at the library's default.
+- **Another `publishConcurrency` on S3.** The option exists and no run at another value has been made: the batch suite's runs so
+  far are at the library's default.
 - **A steady load at another `keep`.** The steady-load stage runs at `keep: 12`, with a first load, 12 reloads, 4 loads that
   delete by name and one that lists; the requests at a `keep` of 1 or 64, of a multipart or an encrypted segment, are not measured.
 

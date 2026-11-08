@@ -224,7 +224,15 @@ function projectionLines({ plan, bounds, expected, discardBound, costliestSample
       `(${b.published} published, ${b.refused} refused by the engine's own count), each sample one cold materializeMany ` +
       `in ${b.groups} groups: ${b.get} GET-class and ${b.put} PUT-class, and ${plan.counts.readBack.get} GET-class to read the outputs back`,
   );
-  lines.push(`  samples      ${plan.samples} cold calls, each on destinations of its own`);
+  const passed = passedOptions(plan.call);
+  const setting = Object.keys(passed).length
+    ? Object.entries(passed)
+        .map(([k, v]) => `${k} ${v}`)
+        .join(', ')
+    : "the library's defaults";
+  lines.push(
+    `  samples      ${plan.samples} cold calls, each on destinations of its own; counted at ${setting}`,
+  );
   lines.push(
     `  ${''.padEnd(12)} ${'bound PUT'.padStart(9)} ${'bound GET'.padStart(10)}  ${'expected PUT'.padStart(12)} ${'expected GET'.padStart(12)}`,
   );
