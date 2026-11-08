@@ -48,7 +48,8 @@ import { join } from 'node:path';
  * times are held in order, but a median quoted for the wrong sample time is not caught); the order words ("the first
  * run", "in the second") of the prose, which no longer force a sentence a third run could make false; any figure of
  * an earlier run that the page states and this file does not list. The stray-count checks accept a count any run at
- * the defaults recorded.
+ * the defaults recorded. A section on a run at another value is held to its own figures, but not by the stray-number
+ * checks the defaults section has, so a mistyped or borrowed figure there is not caught.
  */
 const ROOT = join(__dirname, '..', '..');
 const evidenceLib = createRequire(import.meta.url)(

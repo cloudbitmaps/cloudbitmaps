@@ -312,9 +312,9 @@ call that returns a number.
 operands of 200,000 ids, each sample onto destinations nothing had written. **It is a first materialization, not the
 guide's refresh call**, whose every destination already holds a generation: the [refresh figures](guide/loading.md#many-outputs-from-one-pass-materializemany)
 (3,732 GET-class, 1,768 PUT-class, 6 groups) are counted in memory and are **not measured**, and these runs neither
-measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest, among it `maxBufferedBytes` (which sets the 8 groups), ran at its defaults,
+measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest, among it `maxBufferedBytes` (which, with `publishConcurrency`, sets the 8 groups), ran at its defaults,
 `publishConcurrency` 8 and `concurrency` 1. This run's file predates the fields that record a call's settings, and the
-harness reads their absence as "not passed": the library's defaults. A run made after the fields were added records `publishConcurrency`,
+gates read their absence as "not passed": the library's defaults. A run made after the fields were added records `publishConcurrency`,
 `concurrency` and `maxBufferedBytes` as passed (null when not passed), so a run at another value is told apart from this one.
 
 **Requests.** Every sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
