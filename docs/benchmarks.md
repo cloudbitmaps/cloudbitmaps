@@ -296,6 +296,59 @@ different CloudShell sessions are not comparable either, and this is one session
 them run-encoded. The count verbs were each called 40 times a size and not drained, so their latencies are those of a
 call that returns a number.
 
+## Many outputs from one call — run `2026-11-08-b12e6`
+
+> **Codec:** the TypeScript codec, the one the store uses in the release the run installed (named by the evidence's `packageVersion`).
+>
+> **Measured** against real S3 in `us-east-1` on 2026-11-08 (UTC), from AWS CloudShell in the same region (2 CPUs, a
+> round-trip floor of 5.64 ms to the region, so in-region), through the published `0.27.0` packages. This is the second run
+> of the harness's [batch suite](../bench/README.md#the-batch-suite), after
+> [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json), which made the same requests. The evidence is
+> [`bench/calibration/batch/2026-11-08-b12e6.json`](../bench/calibration/batch/2026-11-08-b12e6.json). It has no report
+> file; this section and the evidence's own gate (`tests/docs/batch-figures.test.ts`) are its record.
+
+**What was called.** One `store.materializeMany` call on a cold store, three times: the refresh shape's 1,000 outputs
+(trees of one or two levels of `and`, `or` and `andNot`, each with the same opt-out operand excluded) over 100 stored
+operands of 200,000 ids, each sample onto destinations nothing had written. **It is a first materialization, not the
+guide's refresh call**, whose every destination already holds a generation: the [refresh figures](guide/loading.md#many-outputs-from-one-pass-materializemany)
+(3,732 GET-class, 1,768 PUT-class, 6 groups) are counted in memory and are **not measured**, and these runs neither
+measure nor confirm them. The call ran at its defaults, `materializeMany({ operands, outputs, keep: 12, budget: false })`:
+`publishConcurrency` 8 and `concurrency` 1.
+
+**Requests.** Every sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
+and reading the outputs back (one pointer read each, untimed) took 1,000 more GET-class (**measured**, each equal to the
+count the engine was expected to make):
+
+| Stage | PUT-class | GET-class |
+| --- | --- | --- |
+| each sample's call | 2,000 | 4,449 |
+| each sample's read-back | 0 | 1,000 |
+| the 100 operands' loads | 200 | 300 |
+| the three calls and their read-backs | 6,000 | 16,347 |
+| the whole run, the bucket's own requests included | 6,216 | 16,658 |
+
+Per sample the call made 722 range reads (156,515,808 bytes), 100 tail reads (13,232,140 bytes) and 627 pointer reads,
+read 170,019,702 bytes in all and wrote about 292.4 MB (**measured**). The run's bill at the `aws-us-east-1-ondemand` list
+prices is $0.0377432 (the evidence's `cost`).
+
+**Time and memory.** The three calls took 61,032 ms, 52,998 ms and 53,192 ms: a median of 53,192 ms and, of 3 calls, a
+95th percentile of 61,032 ms, at a median of 18.80 outputs a second (**measured**; with 3 calls, the percentile is the
+slowest). The process's resident-set high-water mark (`peakRssMB`) was 724, 753 and 754 MiB across the samples, with 2,609 MiB
+available (the figure includes the in-memory count made earlier in the same process, so it is not the call's own peak).
+
+**In flight.** At most 49 requests were in flight at once, and on average about 5.11 (summed request time over wall time,
+**measured**), against the client's 128 sockets. That fits a call that publishes 8 outputs at a time; that reading is an
+**inference** from the defaults and the measured figure. The run did not vary `publishConcurrency`, and no other value is measured.
+
+**Against the earlier run** (**measured**): [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json) made the same
+requests in every stage and sample and the same bill. Its median was 64,034 ms (95th percentile 68,668 ms, 15.62 outputs a second,
+`peakRssMB` 740 to 751). Latencies of runs from different CloudShell sessions are not comparable, so no difference between the two
+is called a speed-up or a slowdown.
+
+**What these figures are not.** A first materialization onto new destinations: not the refresh call onto destinations that
+already hold a generation, not another `publishConcurrency`, not the `target` shape (operands of 3,000,000 ids) and not the `*Into`
+side. It is one client with 128 sockets and 2 CPUs, one storage class in one region, three calls on cold stores.
+
 ## Counting a combine — counted in memory, and measured on S3
 
 > **Counted**, not measured. These are the requests and bytes the engine makes, taken by running it over the in-memory
@@ -724,7 +777,10 @@ throughput on S3. These are not published yet:
   1 MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
-- **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The calibration harness has the suite for it (`--suite batch`: one call of the refresh shape's 1,000 outputs over 100 operands, onto destinations nothing has written: a first materialization, not the refresh call whose every destination already holds a generation, so a run measures its own counts, 4,449 GET-class and 2,000 PUT-class in 8 groups, and neither measures nor confirms the 3,732, 1,768 and 6 the guide publishes for the refresh), and it has not been run on S3. The `*Into` verbs and combines on
+- **The refresh call of `materializeMany` onto destinations that already hold a generation.** Its request counts (3,732
+  GET-class, 1,768 PUT-class, 6 groups) are counted in memory, not measured. The [batch suite's runs](#many-outputs-from-one-call--run-2026-11-08-b12e6)
+  measured a first materialization onto new destinations, which neither measures nor confirms them. Also unmeasured: any
+  `publishConcurrency` other than the default 8, the `target` shape (operands of 3,000,000 ids) and the `*Into` side. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-11-03-fbbb8), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.

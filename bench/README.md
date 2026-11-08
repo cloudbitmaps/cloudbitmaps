@@ -579,7 +579,7 @@ untimed, the count the store records for each published output is read back (its
 the arithmetic's size, or the stage fails; an output that comes back with an error is thrown as it is, so a transient fault
 discards the sample and runs it again on destinations of its own, and a wrong count is not run again. The read-backs'
 requests are counted and held to the same exact counts as the call's (per sample, and in the stage's total).
-**Not yet run on S3.** A release below `0.18.0`, the first with `materializeMany`, is refused before anything is created.
+**Run on S3 twice** (2026-11-03 and 2026-11-08, from CloudShell in `us-east-1`; [the runs](calibration/batch/README.md#runs)). A release below `0.18.0`, the first with `materializeMany`, is refused before anything is created.
 
 **Counted, not restated.** The shape is counted over the in-memory backend before anything is created (about 20 seconds on a
 laptop, measured once and not recorded, and printed as it starts; the large suite's two CloudShell runs recorded two CPUs, so expect tens of seconds to a few minutes there), and each
@@ -631,7 +631,7 @@ The evidence goes under `calibration/batch/`, which the default suite's gates do
 size, **812 MiB** on a Mac (`/usr/bin/time -l`, measured once and not recorded; the count alone with every operand and destination held in memory, which a
 run on S3 does not; the arithmetic for the sizes is part of it); the floor is that at about 1.5 times, a chosen margin. Each
 sample records `peakRssMB`, the process's resident-set high-water mark so far, in MiB, which includes the in-memory
-count made earlier in the same process, so it is not the call's own peak; and the large suite's two CloudShell runs recorded about 2.5 GiB available (2,536 and 2,563 MiB) of 3,771 MiB, but the container's limit has not been read: check it in the shell with `free -m` and
+count made earlier in the same process, so it is not the call's own peak; and the large suite's two CloudShell runs recorded about 2.5 GiB available (2,536 and 2,563 MiB) of 3,771 MiB. The batch suite's two runs recorded `peakRssMB` 724 to 754 MiB with 2,581 and 2,609 MiB available; in CloudShell neither cgroup file exists (seen once, before the 2026-11-08 run), so the harness read `MemAvailable`. Check it in the shell with `free -m` and
 `cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes` before a run. The large
 suite's settings `CR_CALIBRATE_LARGE_MIN_MEMORY_MB` and `CR_CALIBRATE_LARGE_MIN_DISK_MB` apply here too: they
 raise a floor, never lower one.
