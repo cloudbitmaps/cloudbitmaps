@@ -782,7 +782,7 @@ throughput on S3. These are not published yet:
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 - **The refresh call of `materializeMany` onto destinations that already hold a generation.** Its request counts (3,732
   GET-class, 1,768 PUT-class, 6 groups) are counted in memory, not measured. The [batch suite's runs](#many-outputs-from-one-call--run-2026-11-08-b12e6)
-  measured a first materialization onto new destinations; the runs neither measure nor confirm the 3,732, 1,768 and 6. Also unmeasured: any
+  measured a first materialization onto new destinations. That call neither measures nor confirms the 3,732, 1,768 and 6. Also unmeasured: any
   `publishConcurrency` other than the default 8, the `target` shape (operands of 3,000,000 ids) and the `*Into` side. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-11-03-fbbb8), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
