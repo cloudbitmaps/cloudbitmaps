@@ -43,7 +43,7 @@ sessions are not comparable. So, to make the comparison, run the defaults first 
 the same session (the commands are in [`bench/README.md`](../../README.md#the-batch-suite)). When the evidence of a run at
 another value lands, give it:
 
-- a section in [`docs/benchmarks.md`](../../docs/benchmarks.md) headed
+- a section in [`docs/benchmarks.md`](../../../docs/benchmarks.md) headed
   ``## Many outputs from one call — run `<run id>` (`publishConcurrency` 64)``, naming each setting that was passed, that
   states every figure the defaults section states for its own file;
 - a row in the table below that names the same settings, as `` `publishConcurrency` 64 ``.
