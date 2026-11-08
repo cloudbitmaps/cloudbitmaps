@@ -20,6 +20,37 @@ Each finished run has one file here, named by its run id and committed unedited,
 finished run of the batch suite with no count missed, the projection not exceeded, a bill, and every stage's and every
 sample's requests equal to the expected ones in both classes. No default-suite figure is derived from a batch run.
 
+## What a run records about its call
+
+- **The call's settings**, in `workload`: `publishConcurrency`, `concurrency` and `maxBufferedBytes` as passed to
+  `materializeMany`, each `null` for "not passed: the library's default", beside the sample count (`samples`). The harness
+  passes `publishConcurrency` only when `CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY` (1 to 1,024) is set; the other two are
+  never passed. The expected requests and groups in the file are those of a call made with the same settings, since the
+  grouping depends on them. The gate refuses a new run's file that lacks them. The two files below were written before
+  the fields existed and are never edited, so the gate reads their absence as "not passed".
+- **Each sample's depth and unfiled reads**: `peakInFlight` and `meanInFlight` of that call (its peak requests in flight,
+  and its requests' summed time over its wall time), and `noObjectReads`, the call's GET-class requests that returned no
+  object (a HEAD, a read that found nothing, the earlier attempt of a retried one). The meter files a read under a kind
+  only when it returns an object, so a sample's `get` is `rangeReads + tailReads + pointerReads + noObjectReads`, and the
+  gate holds that identity for every new run.
+
+## A run at another value
+
+A run whose settings are not all `null` is a run at another value. The benchmarks page's section headed with the latest
+run at the defaults stays on the newest run that passed nothing, however new a run at another value is, and a run at
+another value is never compared with it unless both ran in one CloudShell session: latencies of runs from different
+sessions are not comparable. So, to make the comparison, run the defaults first and the other value straight after, in
+the same session (the commands are in [`bench/README.md`](../../README.md#the-batch-suite)). When the evidence of a run at
+another value lands, give it:
+
+- a section in [`docs/benchmarks.md`](../../docs/benchmarks.md) headed
+  ``## Many outputs from one call — run `<run id>` (`publishConcurrency` 64)``, naming each setting that was passed, that
+  states every figure the defaults section states for its own file;
+- a row in the table below that names the same settings, as `` `publishConcurrency` 64 ``.
+
+`tests/docs/batch-figures.test.ts` holds both, and holds every link to the defaults section's anchor to the latest run at
+the defaults, so a new run at the defaults moves those links in the same change.
+
 This directory is separate from `bench/calibration/` on purpose: the default suite's figures, its report gates and the
 site's single-bucket figures list that directory without descending into it, so a run of the batch suite is never their
 latest run and cannot move them.
