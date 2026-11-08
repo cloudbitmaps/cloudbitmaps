@@ -356,7 +356,7 @@ ValidationError
 - **Overlap matrices.** N audiences against each other is N(N-1)/2 combines. Read each audience once (way 3 or way 4);
   never stream one combine per pair.
 - **Some shapes are unmeasured on S3.** An intersect, a union, an `andNot`, the three count verbs and the `*Into` verbs are
-  measured on real S3 for two operands, and `andNot` and `andNotCount` of one segment against ten ([the count verbs' record](../benchmarks.md#counting-a-combine--counted-in-memory-and-measured-on-s3)); more than two operands, other overlaps and `materializeMany` (way 4, counted in memory only) are not
+  measured on real S3 for two operands, and `andNot` and `andNotCount` of one segment against ten ([the count verbs' record](../benchmarks.md#counting-a-combine--counted-in-memory-and-measured-on-s3)); more than two operands and other overlaps are not, and `materializeMany` (way 4) has a first materialization measured on S3 (onto new destinations) while the refresh call onto destinations that already hold a generation is counted in memory only
   ([what is still owed](../benchmarks.md#what-is-still-owed), [the validated envelope](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt)).
 - **Not measured here.** This page's own run used `MemoryStorage`, so it says nothing about the latency or cost of a count; the benchmarks page has the count methods measured on S3
   ([the benchmarks](../benchmarks.md)), and [the cost guide](../guide/cost.md) has the prices.

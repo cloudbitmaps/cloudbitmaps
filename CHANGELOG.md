@@ -44,12 +44,12 @@ so, and so do the module headers in the code.
 - **`store.materializeMany` is measured on S3, by the batch suite's first two runs.** Two runs from AWS CloudShell in
   `us-east-1`, against the published `0.27.0` packages (`2026-11-03-78516` and `2026-11-08-b12e6`), of one cold call
   of the refresh shape's 1,000 outputs over 100 stored operands of 200,000 ids, three times a run, onto destinations
-  nothing had written, at the call's defaults. Every sample published 1,000 outputs in 8 groups with exactly 2,000
+  nothing had written, with `keep: 12` and the request budget lifted and `publishConcurrency` 8 and `concurrency` 1 at their defaults. Every sample published 1,000 outputs in 8 groups with exactly 2,000
   PUT-class and 4,449 GET-class requests, then 1,000 GET-class to read them back; the stages made the expected 6,000
   PUT-class and 16,347 GET-class, and the bill was $0.0377432 in both. The median call took 53,192 ms in the second run
   (95th percentile 61,032 ms, 3 calls, 18.80 outputs a second) and 64,034 ms in the first; latencies of runs from
   different CloudShell sessions are not comparable, so neither is set against the other. About five requests were in
-  flight on average and at most 49 against the client's 128 sockets, which fits a call that publishes 8 outputs at a
+  flight on average (5.11 in the second run, 4.63 in the first) and at most 49 against the client's 128 sockets, which fits a call that publishes 8 outputs at a
   time (an inference from the defaults, not something the runs varied). `peakRssMB` was 724 to 754 MiB. This is a
   first materialization onto new destinations: the guide's refresh figures (3,732 GET-class, 1,768 PUT-class, 6 groups,
   onto destinations that already hold a generation) are counted in memory and still not measured, and neither run

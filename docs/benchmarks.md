@@ -305,15 +305,15 @@ call that returns a number.
 > of the harness's [batch suite](../bench/README.md#the-batch-suite), after
 > [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json), which made the same requests. The evidence is
 > [`bench/calibration/batch/2026-11-08-b12e6.json`](../bench/calibration/batch/2026-11-08-b12e6.json). It has no report
-> file; this section and the evidence's own gate (`tests/docs/batch-figures.test.ts`) are its record.
+> file; this section and the gate over it (`tests/docs/batch-figures.test.ts`), with the evidence's own gate (`bench/lib/batch-evidence.cjs`), are its record.
 
 **What was called.** One `store.materializeMany` call on a cold store, three times: the refresh shape's 1,000 outputs
 (trees of one or two levels of `and`, `or` and `andNot`, each with the same opt-out operand excluded) over 100 stored
 operands of 200,000 ids, each sample onto destinations nothing had written. **It is a first materialization, not the
 guide's refresh call**, whose every destination already holds a generation: the [refresh figures](guide/loading.md#many-outputs-from-one-pass-materializemany)
 (3,732 GET-class, 1,768 PUT-class, 6 groups) are counted in memory and are **not measured**, and these runs neither
-measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call ran at its defaults, `materializeMany({ operands, outputs, keep: 12, budget: false })`:
-`publishConcurrency` 8 and `concurrency` 1.
+measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest ran at its defaults,
+`publishConcurrency` 8 and `concurrency` 1. The evidence does not record those two values.
 
 **Requests.** Every sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
 and reading the outputs back (one pointer read each, untimed) took 1,000 more GET-class (**measured**, each equal to the

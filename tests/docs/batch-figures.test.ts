@@ -2,20 +2,37 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * The benchmarks page's section on the batch suite's latest run, and the roadmap's sentence on it, state the
- * figures the latest evidence file under `bench/calibration/batch/` gives. Nothing here measures: it holds the
- * prose to the file, so a figure retyped by hand, or a newer run committed without the page, fails here.
+ * The batch suite's published figures are held to the evidence files under `bench/calibration/batch/`. Nothing
+ * here measures: it holds the prose to the files, so a figure retyped by hand, or a newer run committed without
+ * the page, fails here.
  *
- * KNOWN LIMIT. It reads figures, not the sentences around them, and it checks the milliseconds the section
- * states against both runs' evidence (so a figure from the wrong run of the two still passes).
+ * HELD, each against the run it names (the latest run is the one with the newest `startedAt`):
+ *  - docs/benchmarks.md, the section headed with the latest run id: every figure of the latest run (all three
+ *    samples, the stage table's rows, the three sample times in order), the earlier runs' median, 95th percentile,
+ *    outputs a second and memory range, and the guide's refresh figures against bench/materialize-many-counts.json;
+ *  - docs/ROADMAP.md: each of the two sentences that quote the batch requests, as a phrase;
+ *  - bench/calibration/batch/README.md: each run's row (found by its run id) against that run's file;
+ *  - CHANGELOG.md [Unreleased]: the entry on the batch runs, against both runs' files.
+ * Numbers are matched whole: no digit, comma or point beside them, so 118.80 does not satisfy 18.80.
+ *
+ * KNOWN LIMITS. It reads figures, not the sentences around them. Not held: bench/README.md (its batch row and its
+ * memory sentence), site/benchmarks.html and tests/README.md; the page's `128 sockets`; the words "median" and
+ * "95th percentile" beside a figure (the three sample times are held in order, but a median quoted for the wrong
+ * sample time is not caught); any figure of an earlier run that the page states and this file does not list. The
+ * stray-count checks accept a count either run recorded (the two runs' counts are identical today). The evidence
+ * records no `publishConcurrency`, so the prose "publishConcurrency 8" is held by nothing, and a run at another
+ * value or shape would be forced into the existing sentences until the harness option that sets it records the
+ * value in the evidence and this gate holds it (that option is a later change).
  */
 const ROOT = join(__dirname, '..', '..');
 const DIR = join(ROOT, 'bench', 'calibration', 'batch');
 
 interface Sample {
   ms: number;
+  groups: number;
   put: number;
   get: number;
+  readBackPut: number;
   readBackGet: number;
   rangeReads: number;
   rangeBytes: number;
@@ -23,14 +40,17 @@ interface Sample {
   tailBytes: number;
   pointerReads: number;
   bytesRead: number;
+  bytesWritten: number;
   peakRssMB: number;
 }
 interface Evidence {
   runId: string;
+  startedAt: string;
   measured: { packageVersion: string };
-  resources: { memoryMB: number };
+  resources: { memoryMB: number; cpus: number };
   network: { rttFloorMs: number };
-  cost: { ops: { put: number; get: number; peakInFlight: number } };
+  workload: { operands: number; outputs: number; idsPerOperand: number };
+  cost: { totalUSD: number; ops: { put: number; get: number; peakInFlight: number } };
   phases: {
     batchLoad: { requests: { put: number; get: number } };
     batch: {
@@ -44,144 +64,278 @@ interface Evidence {
   };
 }
 
-const files = readdirSync(DIR)
-  .filter((f) => /^\d{4}-\d{2}-\d{2}-[0-9a-f]+\.json$/.test(f))
-  .sort();
 const read = (f: string): Evidence => JSON.parse(readFileSync(join(DIR, f), 'utf8')) as Evidence;
-const runs = files.map(read);
+const files = readdirSync(DIR).filter((f) => /^\d{4}-\d{2}-\d{2}-[0-9a-f]+\.json$/.test(f));
+// Oldest first, by when each run started: a file name sorts same-day runs by their random suffix.
+const runs = files.map(read).sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
 const latest = runs[runs.length - 1]!;
+const earlier = runs.slice(0, -1);
 const fmt = (n: number): string => Math.round(n).toLocaleString('en-US');
 const flat = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8').replace(/\s+/g, ' ');
+const esc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Whether `text` holds `phrase` with no digit, comma or point running on from a number at either end. */
+function holds(text: string, phrase: string): boolean {
+  const lead = /^\d/.test(phrase) ? '(?<![\\d.,])' : '';
+  const tail = /\d$/.test(phrase) ? '(?!\\d|[.,]\\d)' : '';
+  return new RegExp(lead + esc(phrase) + tail).test(text);
+}
+const lacking = (text: string, phrases: string[]): string[] =>
+  phrases.filter((f) => !holds(text, f));
+const list = (xs: (number | string)[]): string =>
+  xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
+const range = (xs: number[]): string => `${Math.min(...xs)} to ${Math.max(...xs)}`;
+const rssOf = (e: Evidence): number[] => e.phases.batch.perSample.map((x) => x.peakRssMB);
+const mib = (n: number): string => fmt(n);
+
+/** The stated numbers (by unit) that are not in `known`. */
+function stray(text: string, unitPattern: string, known: Set<string>): string[] {
+  const stated = [...text.matchAll(new RegExp(`(\\d[\\d,]*(?:\\.\\d+)?)${unitPattern}`, 'g'))].map(
+    (m) => m[1]!,
+  );
+  return stated.filter((n) => !known.has(n));
+}
+/** Every request count, byte count and millisecond figure a run records. */
+function known(es: Evidence[]): { ms: Set<string>; counts: Set<string>; mib: Set<string> } {
+  const refresh = (
+    JSON.parse(readFileSync(join(ROOT, 'bench', 'materialize-many-counts.json'), 'utf8')) as {
+      shapes: { refresh: { batch: { getClass: number; putClass: number } } };
+    }
+  ).shapes.refresh.batch;
+  const ms = new Set<string>();
+  // The refresh call's counted figures stay on the page, named as counted and not measured.
+  const counts = new Set<string>([fmt(refresh.getClass), fmt(refresh.putClass)]);
+  const mibs = new Set<string>();
+  for (const e of es) {
+    const b = e.phases.batch;
+    for (const n of [b.p50ms, b.p95ms, ...b.perSample.map((x) => x.ms)]) ms.add(fmt(n));
+    ms.add(e.network.rttFloorMs.toFixed(2));
+    mibs.add(mib(e.resources.memoryMB));
+    for (const n of rssOf(e)) mibs.add(String(n));
+    for (const n of [
+      e.phases.batchLoad.requests.put,
+      e.phases.batchLoad.requests.get,
+      b.requests.put,
+      b.requests.get,
+      e.cost.ops.put,
+      e.cost.ops.get,
+    ]) {
+      counts.add(fmt(n));
+    }
+    for (const x of b.perSample) {
+      for (const n of [
+        x.put,
+        x.get,
+        x.readBackGet,
+        x.rangeReads,
+        x.rangeBytes,
+        x.tailReads,
+        x.tailBytes,
+        x.pointerReads,
+        x.bytesRead,
+      ]) {
+        counts.add(fmt(n));
+      }
+    }
+  }
+  return { ms, counts, mib: mibs };
+}
+const refreshFigures = (): string => {
+  const r = (
+    JSON.parse(readFileSync(join(ROOT, 'bench', 'materialize-many-counts.json'), 'utf8')) as {
+      shapes: { refresh: { batch: { getClass: number; putClass: number; groups: number } } };
+    }
+  ).shapes.refresh.batch;
+  return `${fmt(r.getClass)} GET-class, ${fmt(r.putClass)} PUT-class, ${r.groups} groups`;
+};
+const COUNT_UNITS = ' (?:GET-class|PUT-class|bytes|range reads|tail reads|pointer reads)';
 
 const page = flat('docs/benchmarks.md');
 const start = page.indexOf(`## Many outputs from one call — run \`${latest.runId}\``);
 const end = page.indexOf(' ## ', start + 4);
 const section = start < 0 ? '' : page.slice(start, end < 0 ? undefined : end);
 
-/** Every figure of the latest run the section must state. */
+/** Every figure of the latest run the section must state: all three samples, each stage row, the times in order. */
 function figures(e: Evidence): string[] {
   const b = e.phases.batch;
-  const s = b.perSample[0]!;
-  const rss = b.perSample.map((x) => x.peakRssMB);
-  return [
+  const w = e.workload;
+  const out = [
     e.runId,
     e.measured.packageVersion,
-    fmt(s.put),
-    fmt(s.get),
-    fmt(s.readBackGet),
-    fmt(e.phases.batchLoad.requests.put),
-    fmt(e.phases.batchLoad.requests.get),
-    fmt(b.requests.put),
+    `${fmt(b.requests.put)}`,
     fmt(b.requests.get),
     fmt(e.cost.ops.put),
     fmt(e.cost.ops.get),
-    fmt(s.rangeReads),
-    fmt(s.rangeBytes),
-    fmt(s.tailReads),
-    fmt(s.tailBytes),
-    fmt(s.pointerReads),
-    fmt(s.bytesRead),
     fmt(b.p50ms),
     fmt(b.p95ms),
     b.medianOutputsPerSec.toFixed(2),
     b.medianMeanInFlight.toFixed(2),
-    String(e.cost.ops.peakInFlight),
-    ...rss.map(String),
-    fmt(e.resources.memoryMB),
+    `${e.cost.ops.peakInFlight} requests were in flight at once`,
+    `${fmt(e.resources.memoryMB)} MiB`,
     e.network.rttFloorMs.toFixed(2),
-    ...b.perSample.map((x) => fmt(x.ms)),
+    `${e.resources.cpus} CPUs`,
+    `${fmt(w.outputs)} outputs`,
+    `${fmt(w.operands)} stored operands of ${fmt(w.idsPerOperand)} ids`,
+    `| each sample's call | ${fmt(b.perSample[0]!.put)} | ${fmt(b.perSample[0]!.get)} |`,
+    `| each sample's read-back | ${fmt(b.perSample[0]!.readBackPut)} | ${fmt(b.perSample[0]!.readBackGet)} |`,
+    `| the ${fmt(w.operands)} operands' loads | ${fmt(e.phases.batchLoad.requests.put)} | ${fmt(e.phases.batchLoad.requests.get)} |`,
+    `| the three calls and their read-backs | ${fmt(b.requests.put)} | ${fmt(b.requests.get)} |`,
+    `| the whole run, the bucket's own requests included | ${fmt(e.cost.ops.put)} | ${fmt(e.cost.ops.get)} |`,
+    `${list(b.perSample.map((x) => `${fmt(x.ms)} ms`))}`,
+    `${list(rssOf(e))} MiB`,
   ];
+  for (const x of b.perSample) {
+    out.push(
+      `${x.groups} groups`,
+      `${fmt(x.put)} PUT-class and ${fmt(x.get)} GET-class`,
+      `${fmt(x.readBackGet)} more GET-class`,
+      `${fmt(x.rangeReads)} range reads (${fmt(x.rangeBytes)} bytes)`,
+      `${fmt(x.tailReads)} tail reads (${fmt(x.tailBytes)} bytes)`,
+      `${fmt(x.pointerReads)} pointer reads`,
+      `read ${fmt(x.bytesRead)} bytes`,
+      `wrote about ${(x.bytesWritten / 1e6).toFixed(1)} MB`,
+    );
+  }
+  return out;
 }
 
 describe('the batch suite figures', () => {
-  it('has a latest run and its section on the benchmarks page', () => {
+  it('takes the latest run by when it started, and finds its section on the benchmarks page', () => {
     expect(files.length).toBeGreaterThanOrEqual(2);
     expect(section, 'docs/benchmarks.md has no section headed with the latest run id').not.toBe('');
   });
 
-  it("the benchmarks page states every figure of the latest run's evidence", () => {
-    const missing = figures(latest).filter((f) => !section.includes(f));
-    expect(missing, `docs/benchmarks.md lacks: ${missing.join(', ')}`).toEqual([]);
+  it("the benchmarks page states every figure of the latest run's evidence, every sample", () => {
+    const missing = lacking(section, figures(latest));
+    expect(missing, `docs/benchmarks.md lacks: ${missing.join(' | ')}`).toEqual([]);
   });
 
-  it('the page names each earlier run with its own median and outputs a second', () => {
-    for (const e of runs.slice(0, -1)) {
-      for (const f of [
+  it('the page names each earlier run with its own figures and the guide refresh figures as counted', () => {
+    for (const e of earlier) {
+      const b = e.phases.batch;
+      const missing = lacking(section, [
         e.runId,
-        fmt(e.phases.batch.p50ms),
-        e.phases.batch.medianOutputsPerSec.toFixed(2),
-      ]) {
-        expect(section, `the section must quote ${f} for ${e.runId}`).toContain(f);
-      }
+        fmt(b.p50ms),
+        fmt(b.p95ms),
+        b.medianOutputsPerSec.toFixed(2),
+        `\`peakRssMB\` ${range(rssOf(e))}`,
+      ]);
+      expect(missing, `the section must quote, for ${e.runId}: ${missing.join(' | ')}`).toEqual([]);
     }
+    expect(lacking(section, [refreshFigures()])).toEqual([]);
   });
 
-  it('every millisecond figure the section states is one a run recorded', () => {
-    const known = new Set<string>();
+  it('every millisecond figure the section states is one a run recorded, the earlier run only by its median and 95th percentile', () => {
+    const ok = new Set<string>();
+    for (const e of [latest, ...earlier]) ok.add(e.network.rttFloorMs.toFixed(2));
+    for (const x of latest.phases.batch.perSample) ok.add(fmt(x.ms));
     for (const e of runs) {
-      known.add(fmt(e.phases.batch.p50ms));
-      known.add(fmt(e.phases.batch.p95ms));
-      for (const s of e.phases.batch.perSample) known.add(fmt(s.ms));
-      known.add(e.network.rttFloorMs.toFixed(2));
+      ok.add(fmt(e.phases.batch.p50ms));
+      ok.add(fmt(e.phases.batch.p95ms));
     }
-    const stated = [...section.matchAll(/(\d[\d,]*(?:\.\d+)?) ms\b/g)].map((m) => m[1]!);
-    const stray = stated.filter((n) => !known.has(n));
-    expect(stray, `milliseconds no run recorded: ${stray.join(', ')}`).toEqual([]);
+    const bad = stray(section, ' ms\\b', ok);
+    expect(bad, `milliseconds no run recorded: ${bad.join(', ')}`).toEqual([]);
+  });
+
+  it('every CPU count the section states is the one the latest run recorded', () => {
+    const bad = stray(section, ' CPUs', new Set([String(latest.resources.cpus)]));
+    expect(bad, `CPU counts the run did not record: ${bad.join(', ')}`).toEqual([]);
   });
 
   it('every request count and byte count the section states is one a run recorded', () => {
-    // The refresh call's counted figures stay on the page, named as counted and not measured.
-    const refresh = (
-      JSON.parse(readFileSync(join(ROOT, 'bench', 'materialize-many-counts.json'), 'utf8')) as {
-        shapes: { refresh: { batch: { getClass: number; putClass: number } } };
-      }
-    ).shapes.refresh.batch;
-    const known = new Set<string>([fmt(refresh.getClass), fmt(refresh.putClass)]);
-    for (const e of runs) {
-      for (const n of [
-        e.phases.batchLoad.requests.put,
-        e.phases.batchLoad.requests.get,
-        e.phases.batch.requests.put,
-        e.phases.batch.requests.get,
-        e.cost.ops.put,
-        e.cost.ops.get,
-      ]) {
-        known.add(fmt(n));
-      }
-      for (const s of e.phases.batch.perSample) {
-        for (const n of [
-          s.put,
-          s.get,
-          s.readBackGet,
-          s.rangeReads,
-          s.rangeBytes,
-          s.tailBytes,
-          s.bytesRead,
-        ]) {
-          known.add(fmt(n));
-        }
-      }
-    }
-    const stated = [
-      ...section.matchAll(
-        /(\d[\d,]*) (?:GET-class|PUT-class|bytes|range reads|tail reads|pointer reads)/g,
-      ),
-    ].map((m) => m[1]!);
-    for (const e of runs) {
-      for (const s of e.phases.batch.perSample) {
-        known.add(fmt(s.tailReads));
-        known.add(fmt(s.pointerReads));
-      }
-    }
-    const stray = stated.filter((n) => !known.has(n));
-    expect(stray, `counts no run recorded: ${stray.join(', ')}`).toEqual([]);
+    const k = known(runs).counts;
+    const bad = stray(section, COUNT_UNITS, k);
+    expect(bad, `counts no run recorded: ${bad.join(', ')}`).toEqual([]);
   });
 
-  it('the roadmap quotes the requests of the latest run and median', () => {
+  it("the roadmap's two sentences on the batch requests each state them, as a phrase", () => {
     const road = flat('docs/ROADMAP.md');
-    const s = latest.phases.batch.perSample[0]!;
-    for (const f of [fmt(s.get), fmt(s.put), fmt(latest.phases.batch.p50ms), latest.runId]) {
-      expect(road, `docs/ROADMAP.md must quote ${f}`).toContain(f);
+    const b = latest.phases.batch;
+    const s = b.perSample[0]!;
+    const req = `${fmt(s.get)} GET-class and ${fmt(s.put)} PUT-class`;
+    const sentences = [
+      `run \`${latest.runId}\`: ${req} a call, in ${s.groups} groups`,
+      `${req} requests a call, a median of ${fmt(b.p50ms)} ms`,
+    ];
+    const missing = lacking(road, sentences);
+    expect(missing, `docs/ROADMAP.md must say: ${missing.join(' | ')}`).toEqual([]);
+  });
+
+  it("the batch README's row for each run holds that run's figures", () => {
+    const rows = readFileSync(join(DIR, 'README.md'), 'utf8').split('\n');
+    for (const e of runs) {
+      const row = rows.find((r) => r.startsWith('|') && r.includes(`[\`${e.runId}.json\`]`));
+      expect(row, `bench/calibration/batch/README.md has no row for ${e.runId}`).toBeDefined();
+      const b = e.phases.batch;
+      const need = [
+        fmt(b.p50ms),
+        b.medianOutputsPerSec.toFixed(2),
+        `\`peakRssMB\` ${range(rssOf(e))}`,
+      ];
+      if (e === latest) {
+        need.push(
+          fmt(b.p95ms),
+          `\`medianMeanInFlight\` ${b.medianMeanInFlight.toFixed(2)}`,
+          `at most ${e.cost.ops.peakInFlight}`,
+          `${fmt(e.resources.memoryMB)} MiB`,
+          e.network.rttFloorMs.toFixed(2),
+        );
+      }
+      const missing = lacking(row!, need);
+      expect(missing, `the row of ${e.runId} lacks: ${missing.join(' | ')}`).toEqual([]);
+      const k = known([e]);
+      const bad = [
+        ...stray(row!, ' ms\\b', k.ms),
+        ...stray(row!, COUNT_UNITS, k.counts),
+        ...stray(row!, ' MiB', k.mib),
+        ...[...row!.matchAll(/\$(\d+\.\d+)/g)]
+          .map((m) => m[1]!)
+          .filter((n) => n !== String(e.cost.totalUSD)),
+        ...stray(row!, ' outputs a second', new Set([b.medianOutputsPerSec.toFixed(2)])),
+      ];
+      expect(bad, `the row of ${e.runId} states what its file does not: ${bad.join(', ')}`).toEqual(
+        [],
+      );
+      if (e === runs[0]) {
+        // The row that states the per-sample requests states each sample's.
+        expect(
+          lacking(row!, [
+            ...b.perSample.map((x) => `${fmt(x.put)} PUT-class and ${fmt(x.get)} GET-class`),
+            `${fmt(b.requests.put)} PUT-class and ${fmt(b.requests.get)} GET-class`,
+            `${fmt(e.cost.ops.put)} PUT-class and ${fmt(e.cost.ops.get)} GET-class`,
+          ]),
+        ).toEqual([]);
+      }
     }
+  });
+
+  it("the changelog's entry on the batch runs holds both runs' figures", () => {
+    const log = flat('CHANGELOG.md');
+    const at = log.indexOf('**`store.materializeMany` is measured on S3, by the batch suite');
+    expect(at, 'CHANGELOG.md has no entry on the batch runs').toBeGreaterThanOrEqual(0);
+    const stop = log.indexOf(' - **', at + 4);
+    const entry = log.slice(at, stop < 0 ? undefined : stop);
+    const b = latest.phases.batch;
+    const s = b.perSample[0]!;
+    const need = [
+      ...runs.map((e) => e.runId),
+      `${s.groups} groups`,
+      `${fmt(s.put)} PUT-class and ${fmt(s.get)} GET-class`,
+      `${fmt(b.requests.put)} PUT-class and ${fmt(b.requests.get)} GET-class`,
+      `$${latest.cost.totalUSD}`,
+      `${fmt(b.p50ms)} ms in the second run`,
+      `${fmt(b.p95ms)} ms`,
+      b.medianOutputsPerSec.toFixed(2),
+      ...earlier.map((e) => `${fmt(e.phases.batch.p50ms)} ms in the first`),
+      ...runs.map((e) => e.phases.batch.medianMeanInFlight.toFixed(2)),
+      `at most ${latest.cost.ops.peakInFlight}`,
+      `\`peakRssMB\` was ${range(runs.flatMap(rssOf))} MiB`,
+      refreshFigures(),
+    ];
+    const missing = lacking(entry, need);
+    expect(missing, `the CHANGELOG entry lacks: ${missing.join(' | ')}`).toEqual([]);
+    const k = known(runs);
+    const bad = [...stray(entry, ' ms\\b', k.ms), ...stray(entry, COUNT_UNITS, k.counts)];
+    expect(bad, `the CHANGELOG entry states what no run recorded: ${bad.join(', ')}`).toEqual([]);
   });
 });
