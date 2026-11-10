@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A bitmap-api bench pass records a digest of the build it measured.** `bench/bitmap-api.cjs` imports the built
+  `packages/roaring/dist` and `packages/core/dist`, which git ignores, so the `head` it recorded could differ from the
+  code it timed when it was run by hand over a stale build. A pass now records `environment.built` (a SHA-256 of each
+  folder's code), and the gate refuses a new pass without it; the six passes already committed predate the field and
+  stay valid. No library change.
+
 - **The batch suite can run `materializeMany` at another `publishConcurrency`, and its evidence records what a comparison
   needs.** `CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY` (an integer from 1 to the engine's maximum, 1,024, refused otherwise;
   unset passes nothing, so the call runs at the library's default) sets the option of the measured call, and of the
