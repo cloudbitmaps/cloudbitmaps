@@ -63,6 +63,8 @@ function plantedResults(): Record<string, unknown> {
     stallMs: { median: 3, worst: 7 },
     nsPerMember: 1,
     samples: [],
+    sizes: [1],
+    sha256: ['a'.repeat(64)],
   });
   const shapes = Object.fromEntries(
     SHAPES.map((s) => [
@@ -71,8 +73,8 @@ function plantedResults(): Record<string, unknown> {
         members: 1,
         chunkCount: 1,
         crbmBytes: 1,
-        containers: {},
-        identicalObjects: true,
+        inputContainers: {},
+        identicalBytes: true,
         ...Object.fromEntries(VARIANTS.map((v) => [v, variant()])),
       },
     ]),
@@ -100,6 +102,42 @@ describe('the committed files', () => {
     const d = copy();
     cpSync(join(ROOT, RESULTS), join(d, RESULTS));
     expect(check(d).status).toBe(0);
+  });
+
+  it('record the machine, the commit, the load and one set of bytes for every input of every set', () => {
+    const r = JSON.parse(readFileSync(join(ROOT, RESULTS), 'utf8')) as {
+      measuredOn: string;
+      trials: number;
+      env: Record<string, unknown>;
+      shapes: Record<
+        string,
+        Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+      >;
+    };
+    expect(r.measuredOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(r.env.node).toMatch(/^v\d+\./);
+    expect(r.env.cpu).toEqual(expect.any(String));
+    expect(r.env.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(r.env.loadavgStart).toHaveLength(3);
+    expect(r.env.loadavgEnd).toHaveLength(3);
+    expect([...SHAPES].sort()).toEqual(Object.keys(r.shapes).sort());
+    for (const s of SHAPES) {
+      const shape = r.shapes[s]!;
+      expect(shape.identicalBytes).toBe(true);
+      const hashes = new Set<string>();
+      for (const v of VARIANTS) {
+        const cell = shape[v];
+        expect(cell.trials).toBe(r.trials);
+        expect(cell.samples).toHaveLength(r.trials);
+        const walls = (cell.samples as { wallMs: number }[])
+          .map((x) => x.wallMs)
+          .sort((a, b) => a - b);
+        expect(cell.wallMs.median).toBeCloseTo(walls[walls.length >> 1]!, 0);
+        expect(cell.sizes).toEqual([shape.crbmBytes]);
+        for (const h of cell.sha256) hashes.add(h);
+      }
+      expect(hashes.size).toBe(1);
+    }
   });
 });
 
@@ -199,13 +237,33 @@ describe('bench:load-input:check, once results are recorded', () => {
     expect(check(d).status).toBe(1);
   });
 
-  it('fails when the results record an input writing a different object', () => {
+  it('fails when the results record an input writing different bytes', () => {
     const d = copy();
     const results = plantedResults();
-    (results.shapes as Record<string, { identicalObjects: boolean }>).runs!.identicalObjects =
-      false;
+    (results.shapes as Record<string, { identicalBytes: boolean }>).runs!.identicalBytes = false;
     withResults(d, results);
+    const r = check(d);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('the same bytes');
+  });
+
+  it('fails when two inputs recorded different hashes or sizes, whatever the stored flag says', () => {
+    type Shapes = Record<string, Record<string, { sha256: string[]; sizes: number[] }>>;
+    const hashes = plantedResults();
+    (hashes.shapes as Shapes).sparse!.bitmap!.sha256 = ['b'.repeat(64)];
+    const d = copy();
+    withResults(d, hashes);
     expect(check(d).status).toBe(1);
+    const sizes = plantedResults();
+    (sizes.shapes as Shapes).dense!.serialized!.sizes = [2];
+    const e = copy();
+    withResults(e, sizes);
+    expect(check(e).status).toBe(1);
+    const malformed = plantedResults();
+    (malformed.shapes as Shapes).runs!.idsSync!.sha256 = ['not a hash'];
+    const f = copy();
+    withResults(f, malformed);
+    expect(check(f).status).toBe(1);
   });
 
   it('fails on fewer than five trials, and on a guide that does not name the machine', () => {
