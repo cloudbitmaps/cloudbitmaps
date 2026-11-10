@@ -271,7 +271,8 @@ it, that the call pins every operand, and that it holds each output's result in 
 ## Way 5: keep the result as a segment
 
 When the answer is a report that recurs ("active this month"), write it once a period as a segment and count it with
-`count()`. An `*Into` verb returns the written size too.
+`count()`. An `*Into` verb returns the written size too. [The active users playbook](active-users.md) runs a monthly
+total and a retention table over day segments with the count verbs.
 
 <!-- typecheck -->
 ```ts
