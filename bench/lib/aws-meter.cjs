@@ -63,6 +63,9 @@ function newTally() {
     peakInFlight: 0,
     requestMs: 0,
     reads: { whole: { n: 0, bytes: 0 }, suffix: { n: 0, bytes: 0 }, range: { n: 0, bytes: 0 } },
+    // The GET-class requests that returned no object, so filed under no kind of read: a HEAD, a read that threw (a
+    // not-found read), and the earlier attempt of a retried one. `get` is `reads` plus this count, always.
+    noObject: 0,
   };
 }
 
@@ -105,7 +108,10 @@ function meter(client, tally = newTally()) {
     (next, context) => async (args) => {
       const name = context.commandName ?? 'UnknownCommand';
       const klass = classify(name);
+      let sent = 0;
+      let filed = 0;
       const count = (n) => {
+        sent += n;
         tally[klass] += n;
         tally.byCommand[name] = (tally.byCommand[name] ?? 0) + n;
       };
@@ -130,6 +136,7 @@ function meter(client, tally = newTally()) {
         result = await next(args);
       } catch (err) {
         count(retries(err?.$metadata));
+        if (klass === 'get') tally.noObject += sent;
         throw err;
       } finally {
         tally.inFlight -= 1;
@@ -138,14 +145,16 @@ function meter(client, tally = newTally()) {
       count(retries(result?.output?.$metadata));
       const len = Number(result?.output?.ContentLength);
       // A HEAD answers with the object's size in `ContentLength` and sends no body: nothing came down.
-      if (Number.isFinite(len) && name !== 'HeadObjectCommand') {
-        tally.bytesDown += len;
-        if (name === 'GetObjectCommand') {
-          const shape = tally.reads[rangeShape(args?.input?.Range)];
-          shape.n += 1;
-          shape.bytes += len;
-        }
+      if (Number.isFinite(len) && name !== 'HeadObjectCommand') tally.bytesDown += len;
+      // A GetObject that answered is an object, whether or not the answer carries a length (S3 always sends one); only
+      // the bytes need it.
+      if (name === 'GetObjectCommand') {
+        const shape = tally.reads[rangeShape(args?.input?.Range)];
+        shape.n += 1;
+        if (Number.isFinite(len)) shape.bytes += len;
+        filed = 1;
       }
+      if (klass === 'get') tally.noObject += sent - filed;
       return result;
     },
     // `initialize` sees the command before the SDK resolves it, which is where `context.commandName` is set. It is

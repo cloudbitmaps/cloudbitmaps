@@ -419,11 +419,16 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 
 ```
 # in AWS CloudShell, in the region being measured
-git clone https://github.com/cloudbitmaps/cloudbitmaps && cd cloudbitmaps
+test -d ~/cloudbitmaps || git clone https://github.com/cloudbitmaps/cloudbitmaps ~/cloudbitmaps
+cd ~/cloudbitmaps && git checkout main && git pull --ff-only
 CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-default-$(date -u +%Y%m%dT%H%M%SZ).log
 ```
 
 From CloudShell, in practice:
+
+- **CloudShell keeps the home directory between sessions**, so the first two commands reuse a clone an earlier session left
+  and bring it up to `main`; a bare `git clone` there stops at "already exists", and a run started from the home
+  directory finds no script.
 
 - **Pipe the script through `tee` into the home directory**, as above, so a session that ends keeps the log. Give each run its own log name (the stamp above does), or use `tee -a`, so a second run does not overwrite the first's log; for a large run, the command is in [the large suite](#the-large-suite). Once the harness has stopped, the script ignores a `tee` that has gone away, so the copy-out of the evidence completes.
 - **A run's evidence lands in the home directory even when the session ends after the run**, because the script copies it out on every exit. Before running again, list `~/*.json` and `~/bench/calibration/large/` to see what an earlier run left. A finished run is `<runId>.json` and one that stopped early is `<runId>.partial.json`; a name that was already taken gets the new copy beside it, stamped (`<runId>.<UTC stamp>.json`, or `<runId>.<UTC stamp>.partial.json`); a rehearsal writes `calibrate-aws-rehearsal.json` (or `calibrate-aws-rehearsal-large.json`), never a run's name. The large suite's files are under `~/bench/calibration/large/`.
@@ -570,7 +575,48 @@ either: its requests are counted in memory, at about $0.07 a sample.
 
 The call is `materializeMany({ operands, outputs, keep: 12, budget: false })`: `keep: 12` is the generations kept, and
 `budget: false` lifts the engine's own cap on the requests of one call, so what limits the spend of a call is the ceiling
-below, not the engine.
+below, not the engine. The call's other options (`publishConcurrency`, `concurrency`, `maxBufferedBytes`) are the library's
+defaults unless a run sets one (below).
+
+**`CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY`** passes `publishConcurrency` to the call: an integer from 1 to 1,024 (the
+engine's own maximum, refused with a message otherwise), and unset passes nothing, so the call runs at the library's
+default. It belongs to the batch suite, so any other suite refuses it, as it refuses the shape and the samples. It
+changes more than the pace: the engine groups outputs by what each group costs to hold and to publish, so the number of
+groups, and with it how many times each operand is read, depends on it. The in-memory count the run is held to is therefore
+made with the same option, and the expected requests and groups in the evidence are those of the call that was made. The
+printed projection and the spend ceiling keep their shape (the estimate is the counted sample at one and a half times, and
+the ceiling is checked before every request the workload's client sends); at `publishConcurrency` 64 the same call is counted at 9 groups, 4,617 GET-class and 2,000 PUT-class a sample (the
+default's is 8 groups and 4,449 GET-class; **counted** in memory), the estimate is 16,015 PUT-class and 43,741 GET-class,
+**$0.097571** (the default's is $0.097067), and the **$0.10** ceiling still covers it, 2.5% above the estimate; the exact
+expected requests are 6,200 PUT-class and 17,151 GET-class, $0.037860 (**derived** from the counts).
+
+**What a run records about its call.** The evidence's `workload` records `publishConcurrency`, `concurrency` and
+`maxBufferedBytes` as passed to the call (`null` for "not passed: the library's default"), beside `samples`, and each
+sample records `peakInFlight` and `meanInFlight` (the call's own peak requests in flight, and its requests' summed time
+over its wall time) and `noObjectReads`, its GET-class requests that returned no object (a HEAD, a read that found nothing,
+the earlier attempt of a retried one), which the meter files under no kind of read: a sample's `get` is `rangeReads +
+tailReads + pointerReads + noObjectReads`. `lib/batch-evidence.cjs` refuses a new run's file that lacks them, and reads their
+absence in the two committed files, written before the fields existed, as "not passed". Nothing measured yet says what
+`publishConcurrency` does to the time of the call: that the default of 8 publishes at a time sets the pace is an
+**inference** from the in-flight figures, and a run at another value is how it is checked.
+
+**Comparing `publishConcurrency` values.** Latencies of runs from different CloudShell sessions are not comparable, so a
+comparison needs both runs **in one CloudShell session**: the defaults first, then the other value, each with a log of its
+own.
+
+```
+# in AWS CloudShell in us-east-1, in one session
+test -d ~/cloudbitmaps || git clone https://github.com/cloudbitmaps/cloudbitmaps ~/cloudbitmaps
+cd ~/cloudbitmaps && git checkout main && git pull --ff-only
+CR_CALIBRATE_SUITE=batch CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.10 bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-batch-default-$(date -u +%Y%m%dT%H%M%SZ).log
+CR_CALIBRATE_SUITE=batch CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY=64 CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.10 bash bench/calibrate-cloudshell.sh 2>&1 | tee -a ~/calibrate-batch-publish64-$(date -u +%Y%m%dT%H%M%SZ).log
+ls -l ~/bench/calibration/batch/
+```
+
+Each run copies its evidence to `~/bench/calibration/batch/<runId>.json`; copy each to the home directory before
+downloading it (`cp ~/bench/calibration/batch/<runId>.json ~/batch-<runId>.json`). The two files are committed unedited under `calibration/batch/`, and the page and the README
+give the run at the other value a place of its own ([how](calibration/batch/README.md#a-run-at-another-value)); the run at
+the other value never takes over the page's section on the defaults.
 
 **Each output is checked three ways.** The size each output must have is worked out by plain arithmetic over the ids the
 generator makes (intersection, union and difference of sorted arrays, written in `lib/batch-counts.cjs` with no library
@@ -579,7 +625,7 @@ untimed, the count the store records for each published output is read back (its
 the arithmetic's size, or the stage fails; an output that comes back with an error is thrown as it is, so a transient fault
 discards the sample and runs it again on destinations of its own, and a wrong count is not run again. The read-backs'
 requests are counted and held to the same exact counts as the call's (per sample, and in the stage's total).
-**Run on S3 twice** (2026-11-03 and 2026-11-08, from CloudShell in `us-east-1`; [the runs](calibration/batch/README.md#runs)). A release below `0.18.0`, the first with `materializeMany`, is refused before anything is created.
+**Run on S3** (the runs so far: 2026-11-03 and 2026-11-08, from CloudShell in `us-east-1`; [the runs](calibration/batch/README.md#runs)). A release below `0.18.0`, the first with `materializeMany`, is refused before anything is created.
 
 **Counted, not restated.** The shape is counted over the in-memory backend before anything is created (about 20 seconds on a
 laptop, measured once and not recorded, and printed as it starts; the large suite's two CloudShell runs recorded two CPUs, so expect tens of seconds to a few minutes there), and each
@@ -617,7 +663,8 @@ rehearsal proves the bucket ends gone.
 **Rehearse it, then run it.** `node bench/calibrate-aws.cjs --suite batch` prints the projection;
 `node bench/calibrate-aws.cjs --rehearse --suite batch` runs the suite against MinIO and writes
 `calibrate-aws-rehearsal-batch.json`. `CR_CALIBRATE_BATCH_SAMPLES` sets the cold calls (at most 3 for the refresh shape, which a real run is; the small shape accepts more) and
-`CR_CALIBRATE_BATCH_SHAPE=small` (20 operands of 100,000 ids, 100 outputs) makes the rehearsal smaller. A real run, from
+`CR_CALIBRATE_BATCH_SHAPE=small` (20 operands of 100,000 ids, 100 outputs) makes the rehearsal smaller;
+`CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY` (above) sets the call's `publishConcurrency`. A real run, from
 CloudShell:
 
 ```
@@ -646,6 +693,8 @@ The default suite's scope is the three measurements above, on one workload shape
   operand. This suite measures two operands, and one include operand against ten excluded.
 - **Lambda.** CloudShell is a long-lived shell inside the region; a function's cold start and initialisation are
   a separate figure, which needs a run from inside a function.
+- **Another `publishConcurrency` on S3.** The option exists and no run at another value has been made: the batch suite's runs so
+  far are at the library's default.
 - **A steady load at another `keep`.** The steady-load stage runs at `keep: 12`, with a first load, 12 reloads, 4 loads that
   delete by name and one that lists; the requests at a `keep` of 1 or 64, of a multipart or an encrypted segment, are not measured.
 

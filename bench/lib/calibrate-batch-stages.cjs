@@ -90,9 +90,14 @@ const BATCH_MAX_VERSIONS = versionsOf({
   discardedSamples: DISCARDED_SAMPLES,
 });
 
+/** The most outputs the engine publishes at once (`MAX_BATCH_PARALLELISM`), the ceiling of `publishConcurrency`. */
+const MAX_PUBLISH_CONCURRENCY = 1024;
+
 /**
- * Parse the suite's two knobs: `CR_CALIBRATE_BATCH_SHAPE` (`refresh` or `small`) and `CR_CALIBRATE_BATCH_SAMPLES` (cold
- * calls, a non-negative integer). Unset or empty is the default.
+ * Parse the suite's three knobs: `CR_CALIBRATE_BATCH_SHAPE` (`refresh` or `small`), `CR_CALIBRATE_BATCH_SAMPLES` (cold
+ * calls, a non-negative integer) and `CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY` (an integer from 1 to
+ * {@link MAX_PUBLISH_CONCURRENCY}). Unset or empty is the default; for the last that is `null`, which passes nothing, so the
+ * call runs at the library's own default.
  */
 function resolveBatchKnobs(env) {
   const raw = env.CR_CALIBRATE_BATCH_SHAPE;
@@ -113,11 +118,45 @@ function resolveBatchKnobs(env) {
       );
     }
   }
-  return { shape, samples };
+  const rawPublish = env.CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY;
+  let publishConcurrency = null;
+  if (rawPublish !== undefined && String(rawPublish).trim() !== '') {
+    // Leading zeros are accepted (`08` is 8): the value is the integer, and a refusal would protect nothing.
+    const text = String(rawPublish).trim();
+    publishConcurrency = /^\d+$/.test(text) ? Number(text) : Number.NaN;
+    if (
+      !Number.isInteger(publishConcurrency) ||
+      publishConcurrency < 1 ||
+      publishConcurrency > MAX_PUBLISH_CONCURRENCY
+    ) {
+      throw new Error(
+        `CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY is "${rawPublish}"; expected an integer from 1 to ${MAX_PUBLISH_CONCURRENCY}`,
+      );
+    }
+  }
+  return { shape, samples, publishConcurrency };
+}
+
+/**
+ * The options one `materializeMany` call is made with, as the evidence records them: each is the value passed, or `null`
+ * for "not passed: the library's default". The suite passes `publishConcurrency` when the knob sets it, and neither of the
+ * others.
+ */
+function callSettings({ publishConcurrency = null } = {}) {
+  return { publishConcurrency, concurrency: null, maxBufferedBytes: null };
+}
+
+/** The settings that were passed, as the options object of the call: a `null` is left out, so the library's default applies. */
+function passedOptions(settings) {
+  return Object.fromEntries(Object.entries(settings ?? {}).filter(([, v]) => v !== null));
 }
 
 /** The knobs only the batch suite reads: a run of another suite that sets one is refused, since it would ignore it. */
-const BATCH_SUITE_KNOBS = Object.freeze(['CR_CALIBRATE_BATCH_SHAPE', 'CR_CALIBRATE_BATCH_SAMPLES']);
+const BATCH_SUITE_KNOBS = Object.freeze([
+  'CR_CALIBRATE_BATCH_SHAPE',
+  'CR_CALIBRATE_BATCH_SAMPLES',
+  'CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY',
+]);
 
 /** Refuse a batch-suite setting made for a run of another suite. */
 function refuseBatchKnobs(env, suite) {
@@ -141,7 +180,7 @@ function refuseOtherSuiteKnobs(env, defaultKnobs) {
   if (set.length > 0) {
     throw new Error(
       `${set.join(', ')} size another suite, which --suite batch does not read; unset ` +
-        `${set.length === 1 ? 'it' : 'them'}, or set CR_CALIBRATE_BATCH_SHAPE and CR_CALIBRATE_BATCH_SAMPLES`,
+        `${set.length === 1 ? 'it' : 'them'}, or set the batch suite's own knobs (${BATCH_SUITE_KNOBS.join(', ')})`,
     );
   }
 }
@@ -312,6 +351,9 @@ module.exports = {
   BATCH_MAX_VERSIONS,
   versionsOf,
   resolveBatchKnobs,
+  MAX_PUBLISH_CONCURRENCY,
+  callSettings,
+  passedOptions,
   BATCH_SUITE_KNOBS,
   refuseBatchKnobs,
   LARGE_SUITE_KNOBS,

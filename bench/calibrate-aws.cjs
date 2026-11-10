@@ -109,6 +109,7 @@ const {
   BATCH_SHAPES,
   BATCH_MAX_VERSIONS,
   resolveBatchKnobs,
+  callSettings,
   refuseBatchKnobs,
   refuseOtherSuiteKnobs,
   checkBatchWorkload,
@@ -702,9 +703,12 @@ async function main() {
       log(
         `counting the ${batchKnobs.shape} shape in memory (${shape.operands} operands, ${shape.outputs} outputs): tens of seconds to a few minutes`,
       );
+      // The call's options are the run's: the in-memory count is of the same call, since the grouping depends on them.
+      const call = callSettings(batchKnobs);
       const counts = await countBatch({
         shape: batchKnobs.shape,
         engine: await packageOf('roaring'),
+        call,
       });
       plan = {
         suite: 'batch',
@@ -713,6 +717,7 @@ async function main() {
         outputs: shape.outputs,
         idsPerOperand: shape.idsPerOperand,
         samples: batchKnobs.samples,
+        call,
         counts,
         operandBytes: counts.operandBytes,
         retryBound: RETRY_BOUND,
@@ -890,7 +895,7 @@ async function main() {
     if (breached(priced.totalUSD, ceiling)) {
       refuse(
         `projected $${priced.totalUSD.toFixed(6)} meets or exceeds the $${ceiling} ceiling — ` +
-          'nothing was created. Raise CR_CALIBRATE_MAX_USD or shrink the workload.',
+          'nothing was created. Raise CR_CALIBRATE_MAX_USD, shrink the workload or, for the batch suite, change CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY (the groups and so the requests depend on it).',
       );
     }
   }
@@ -1165,6 +1170,9 @@ async function main() {
             outputs: plan.outputs,
             idsPerOperand: plan.idsPerOperand,
             samples: plan.samples,
+            // The options the call was made with (`null`: not passed, the library's default), which the grouping, and so the
+            // requests counted below, depend on.
+            ...plan.call,
             operandBytes: plan.operandBytes,
             counts: plan.counts,
             expected: expectedBatch(plan),
@@ -1306,6 +1314,7 @@ async function main() {
     wholeN: tally.reads.whole.n,
     wholeBytes: tally.reads.whole.bytes,
     requestMs: tally.requestMs,
+    noObject: tally.noObject,
     free: tally.free,
     commands: { ...tally.byCommand },
   });

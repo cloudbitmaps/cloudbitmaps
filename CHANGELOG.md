@@ -13,6 +13,19 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **The batch suite can run `materializeMany` at another `publishConcurrency`, and its evidence records what a comparison
+  needs.** `CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY` (an integer from 1 to the engine's maximum, 1,024, refused otherwise;
+  unset passes nothing, so the call runs at the library's default) sets the option of the measured call, and of the
+  in-memory count the run is held to, since the grouping, and so the requests, depend on it; the other suites refuse it.
+  A run's evidence now records the call's `publishConcurrency`, `concurrency` and `maxBufferedBytes` as passed (`null`
+  for not passed), and each sample's `peakInFlight`, `meanInFlight` and `noObjectReads`, its GET-class requests that
+  returned no object (a HEAD, a read that found nothing), so a sample's `get` equals its range, tail and pointer reads plus
+  that count; the evidence's gate refuses a new file without them and reads their absence in the two committed files as
+  not passed. The page's section on the latest run at the defaults stays on a run that passed nothing, a run at another
+  value gets a section of its own, and the figures gate no longer fixes the number of runs or calls. The library's default
+  is unchanged, and no run at another value has been made: the option exists and is unmeasured. For a comparison, run the
+  defaults and the other value in one CloudShell session, since latencies of runs from different sessions are not
+  comparable. No library code, package or version changes.
 - **The calibration harness has a batch suite, so `store.materializeMany` can be measured on S3.** `--suite batch` (or
   `CR_CALIBRATE_SUITE=batch`) loads the refresh shape of `bench/materialize-many-counts.cjs` (100 operands of 200,000 ids)
   and runs one cold `materializeMany` of its 1,000 outputs three times, each sample onto destinations of its own that

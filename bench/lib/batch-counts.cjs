@@ -13,7 +13,7 @@
  */
 const { countedBackend } = require('./large-counts.cjs');
 const { PART_BYTES } = require('./calibrate-large-stages.cjs');
-const { BATCH_SHAPES } = require('./calibrate-batch-stages.cjs');
+const { BATCH_SHAPES, passedOptions } = require('./calibrate-batch-stages.cjs');
 
 /** A seeded generator, so a draw is the same on every machine. */
 function lcg(seed) {
@@ -190,7 +190,8 @@ async function readBackCounts(outcomes, segmentOf) {
 /**
  * Count the batch of `shape`: the objects' sizes, and one `materializeMany` call's requests by kind, its groups and what
  * each output came to, then the requests of reading each published output back with `count()` on a store of its own.
- * `engine` is the library's module (required, as for `countSize`).
+ * `engine` is the library's module (required, as for `countSize`). `call` is the run's call settings (`callSettings`): the
+ * count is of the call the run makes, so it passes the same options (the grouping, and so the requests, depend on them).
  *
  * Each output's size is worked out twice before the stage may rest on it: by {@link expectedSizes}, plain arithmetic over
  * the generator's ids, and by the engine over the in-memory backend. A difference between the two throws, so the sizes a
@@ -202,7 +203,7 @@ async function readBackCounts(outcomes, segmentOf) {
  * pointer, tail, range }` for the read-backs of the published outputs, one cold store for all of them. `sizes` is each
  * output's expected size.
  */
-async function countBatch({ shape, engine }) {
+async function countBatch({ shape, engine, call }) {
   const s = BATCH_SHAPES[shape];
   const sizes = expectedSizes(shape);
   const { loader, cold, calls, zero } = await countedBackend(engine);
@@ -221,6 +222,7 @@ async function countBatch({ shape, engine }) {
     outputs: batchSpecs(shape).map((spec, i) => ({ dest: store.segment(`d${i}`), ...spec })),
     keep: 12,
     budget: false,
+    ...passedOptions(call),
   });
   if (calls.putMax >= PART_BYTES) {
     throw new Error(

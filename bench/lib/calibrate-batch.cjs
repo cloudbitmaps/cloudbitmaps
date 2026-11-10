@@ -8,7 +8,7 @@
  * to cost, are in `calibrate-batch-stages.cjs`; the workload and the counts are in `batch-counts.cjs`.
  */
 const { firstLoadRequests } = require('./calibrate-stages.cjs');
-const { checkOutputs, checkReadBack } = require('./calibrate-batch-stages.cjs');
+const { checkOutputs, checkReadBack, passedOptions } = require('./calibrate-batch-stages.cjs');
 const { batchOperands, batchSpecs, readBackCounts } = require('./batch-counts.cjs');
 
 /** The segment an operand is stored as. */
@@ -94,7 +94,14 @@ async function runBatchSuite(ctx) {
           const before = snap();
           startDepth();
           const t0 = process.hrtime.bigint();
-          const run = await store.materializeMany({ operands, outputs, keep: 12, budget: false });
+          // The options the run set (`plan.call`) and nothing else: an option it did not set is the library's default.
+          const run = await store.materializeMany({
+            operands,
+            outputs,
+            keep: 12,
+            budget: false,
+            ...passedOptions(plan.call),
+          });
           const ms = msSince(t0);
           const after = snap();
           const depth = depthOf(before, after, ms);
@@ -124,6 +131,7 @@ async function runBatchSuite(ctx) {
             tailBytes: after.suffixBytes - before.suffixBytes,
             pointerReads: after.wholeN - before.wholeN,
             pointerBytes: after.wholeBytes - before.wholeBytes,
+            noObjectReads: after.noObject - before.noObject,
             uploadBytes: after.up - before.up,
             downloadBytes: after.down - before.down,
             readBackPut: checked.put - after.put,
@@ -168,6 +176,11 @@ async function runBatchSuite(ctx) {
           tailBytes: c.tailBytes,
           pointerReads: c.pointerReads,
           pointerBytes: c.pointerBytes,
+          // GET-class requests that returned no object (a HEAD, a not-found read): `get` is the three kinds above plus these.
+          noObjectReads: c.noObjectReads,
+          // The call's own depth: its peak requests in flight, and the requests' summed time over its wall time.
+          peakInFlight: c.peakInFlight,
+          meanInFlight: c.meanInFlight,
           bytesRead: c.chunkBytes + c.tailBytes + c.pointerBytes,
           bytesWritten: c.uploadBytes,
           peakRssMB: c.peakRssMB,
@@ -211,7 +224,15 @@ function projectionLines({ plan, bounds, expected, discardBound, costliestSample
       `(${b.published} published, ${b.refused} refused by the engine's own count), each sample one cold materializeMany ` +
       `in ${b.groups} groups: ${b.get} GET-class and ${b.put} PUT-class, and ${plan.counts.readBack.get} GET-class to read the outputs back`,
   );
-  lines.push(`  samples      ${plan.samples} cold calls, each on destinations of its own`);
+  const passed = passedOptions(plan.call);
+  const setting = Object.keys(passed).length
+    ? Object.entries(passed)
+        .map(([k, v]) => `${k} ${v}`)
+        .join(', ')
+    : "the library's defaults";
+  lines.push(
+    `  samples      ${plan.samples} cold calls, each on destinations of its own; counted at ${setting}`,
+  );
   lines.push(
     `  ${''.padEnd(12)} ${'bound PUT'.padStart(9)} ${'bound GET'.padStart(10)}  ${'expected PUT'.padStart(12)} ${'expected GET'.padStart(12)}`,
   );

@@ -312,8 +312,10 @@ call that returns a number.
 operands of 200,000 ids, each sample onto destinations nothing had written. **It is a first materialization, not the
 guide's refresh call**, whose every destination already holds a generation: the [refresh figures](guide/loading.md#many-outputs-from-one-pass-materializemany)
 (3,732 GET-class, 1,768 PUT-class, 6 groups) are counted in memory and are **not measured**, and these runs neither
-measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest, among it `maxBufferedBytes` (which sets the 8 groups), ran at its defaults,
-`publishConcurrency` 8 and `concurrency` 1. The evidence does not record those two values.
+measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest, among it `maxBufferedBytes` (which, with `publishConcurrency`, sets the 8 groups), ran at its defaults,
+`publishConcurrency` 8 and `concurrency` 1. This run's file predates the fields that record a call's settings, and the
+gates read their absence as "not passed": the library's defaults. A run made after the fields were added records `publishConcurrency`,
+`concurrency` and `maxBufferedBytes` as passed (null when not passed), so a run at another value is told apart from this one.
 
 **Requests.** Every sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
 and reading the outputs back (one pointer read each, untimed) took 1,000 more GET-class (**measured**, each equal to the
@@ -341,7 +343,9 @@ available (the figure includes the in-memory count made earlier in the same proc
 
 **In flight.** The median call peaked at 49 requests in flight and averaged 5.11 (summed request time over wall time,
 **measured**; the evidence records each call's peak only as the median of the three, not the run's maximum), against the client's 128 sockets. That fits a call that publishes 8 outputs at a time; that reading is an
-**inference** from the defaults and the measured figure. The run did not vary `publishConcurrency`, and no other value is measured.
+**inference** from the defaults and the measured figure. The run did not vary `publishConcurrency`, and no other value is measured: the harness can set it
+(`CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY`, an integer from 1 to 1,024), and no run at another value has been made yet.
+A run at another value gets a section of its own beside this one, never this section's figures.
 
 **Against the earlier run** (**measured**): [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json) made the same
 requests in every stage and sample and the same bill. Its median was 64,034 ms (95th percentile 68,668 ms, 15.62 outputs a second,
