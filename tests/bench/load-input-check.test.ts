@@ -95,11 +95,15 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-describe('bench:load-input:check, before anything is measured', () => {
-  it('passes on the committed files', () => {
-    expect(check(copy()).status).toBe(0);
+describe('the committed files', () => {
+  it('pass the check: the guide quotes exactly the committed results', () => {
+    const d = copy();
+    cpSync(join(ROOT, RESULTS), join(d, RESULTS));
+    expect(check(d).status).toBe(0);
   });
+});
 
+describe('bench:load-input:check, before anything is measured', () => {
   it('fails on a figure the guide quotes with no results file to give it', () => {
     const d = copy();
     replaceSection(d, 'These figures have not been measured yet. A 12M load takes 5 ms.');

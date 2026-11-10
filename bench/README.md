@@ -76,6 +76,7 @@ figure is published from it with no check behind it, the row says that too.
 | `ts-codec-results-before.json` | `ts-codec.cjs` with `TS_CODEC_SRC_DIR` | nothing: the same bench run on the TypeScript codec of the parent branch (58fd21c2), the "before" column of the speed-up table |
 | `soak-results.json` | `soak.cjs` | `scripts/site-figures.cjs`, against the combine count and external-memory creep `site/benchmarks.html` quotes |
 | `event-loop-results.json` | `event-loop.cjs` | `event-loop.cjs --check`, against the guide's "What blocks the event loop, and where to run it" section and the figures quoted in `packages/core/src/core/cooperative.ts` and `packages/roaring/src/system-clock.ts` |
+| `load-input-results.json` | `load-input.cjs` | `load-input.cjs --check`, against the figures in the loading guide's "How fast a bitmap loads" section |
 | `resolution-heap-results.json` | `resolution-heap.cjs` | `sizing.cjs`, which publishes the range of its heap-to-counted multiples, and the Node version that measured them, in the `SIZING:RESOLUTIONS` region of `docs/guide/sizing.md`, and `pnpm bench:sizing:check`, which holds the page to it. Measured, not derived |
 | `encoding-results.json` | `encoding.cjs` | `scripts/site-figures.cjs`, against the sizes `site/flavors/roaring.html` quotes |
 | `rss-gate-results.json` | `scripts/rss-gate.sh` | `scripts/site-figures.cjs` — the hard RSS ceiling on the benchmarks page |
