@@ -396,7 +396,7 @@ between here and there:
 
    Open questions the freeze review also has to answer about how encrypted data is sealed. None is decided, and none is
    built:
-   - *The wrapped key's binding.* The associated data of a wrapped data key is its `keyId` alone today. Should it also
+   - *The wrapped key's binding.* The associated data of a wrapped data key in the in-process keystore is its `keyId` alone today. Should it also
      bind the namespace and the segment, so a registry writer cannot move one segment's wrapping onto another segment's
      row? A keystore adapter such as a KMS chooses its own bytes inside the wrapping, so the binding would reach it only
      if the keystore port passed it the namespace and segment, which is a public port change.

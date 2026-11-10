@@ -176,14 +176,18 @@ you can lose.
   - **`LocalFsStorage`**: an object is written to a temporary file beside it
     (`<segment>.<generation>.crbm.<uuid>.tmp`) and linked into place. A killed process leaves that file; a listing
     ignores it, and a write of an object or a registry row removes the `.tmp` files of that kind beside it that were
-    last written over 24 hours ago, scanning each directory at most once an hour per process, best effort. A kill in
-    the instant after the object is linked into place leaves the whole generation under its `.tmp` name (the same
-    inode as the published object), not a part of one: an erasure or a drop deletes the generation's own name and not
-    that file, so the bytes stay readable until the file is removed, and a drop writes nothing in the directory, so
-    no sweep follows it. With no writer running on the root, list the leftovers with `find <root> -name '*.tmp'` and
-    delete the ones you do not expect to be in use; a `.tmp` that a running write still holds is removed from under
-    it, and that write fails with a retryable error. The same holds for a registry row's `.tmp` copy, which carries
-    the row's wrapped keys.
+    last written over 24 hours ago, scanning each directory at most once an hour per process, best effort. A kill while the object is being written leaves a part of it; a kill after the file was fully written and closed, before or
+    after the link, leaves the whole object under its `.tmp` name (before the link it is the only name the object has and
+    the generation was never published; after it, a second name for the published generation, the same inode). Where the `.tmp`
+    holds the whole object, an erasure or a drop does not delete it, since it is not the generation's own name, so the bytes
+    stay readable until the file is removed. The library removes a `.tmp` leftover last written more than 24 hours ago,
+    best effort, scanning a directory at most once an hour per process, and only from a write into that same directory: a
+    generation write sweeps the storage directory it writes into, and a registry-row write (a load, an erasure's rewrite or a
+    drop's tombstone) sweeps the registry directory. A drop's tombstone write never reaches the storage directory, so do not
+    count on the sweep for a generation's `.tmp`. With no writer running on the root, list the leftovers with
+    `find <root> -name '*.tmp'` and delete them yourself; a `.tmp` that a running write still holds is removed from under it,
+    and that write fails with a retryable error. A registry row's `.tmp` copy carries the row's wrapped keys, and holds the
+    whole row once it was fully written and before it was renamed into place.
 - [ ] **Registry**: object versioning on, covering the `registry/` prefix — **required** to restore every row to
       `T`, and the store that sets your RPO. It also keeps the wrapped keys a crypto-shred removes from a row; see
       [Encryption & DR](#encryption--dr).

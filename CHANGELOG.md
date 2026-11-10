@@ -54,14 +54,15 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **The docs say what a killed `LocalFsStorage` write can leave, and one limit of its row lock.** A process killed in the
-  instant after a generation is linked into place leaves the whole object under its `.tmp` name, not a part of it: an
-  erasure or a drop deletes the generation's own name and not that file, so the bytes stay readable until it is removed,
-  and a drop writes nothing in the directory, so no sweep follows it. The privacy note and the disaster-recovery guide now
-  say so, and how to find the leftovers (`find <root> -name '*.tmp'`) and remove them safely, with no writer running on the
-  root. The guide and the API reference also say that the row lock is keyed on the resolved path, lowercased, so a root
-  reached under two spellings (a non-ASCII root in two Unicode normalization forms, say) gets two locks: use one
-  spelling. The roadmap's format-freeze item lists, as open questions and not decisions, what the wrapped key's
+- **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
+  was killed while the object was being written, and the whole object once the file was fully written and closed: before
+  the link it is the only name the object has (the generation was never published), after the link a second name for the
+  published generation. Where it holds the whole object, an erasure or a drop does not delete it, so the bytes stay
+  readable until the file is removed. The library removes a `.tmp` last written over 24 hours ago, best effort, and only
+  from a write into the same directory: a generation write sweeps the storage directory, a registry-row write (a load, an
+  erasure's rewrite or a drop's tombstone) the registry directory, so a drop's tombstone write never reaches the storage
+  directory. The privacy note, the disaster-recovery guide, the erasure sections and the API reference now say so, and how to
+  find the leftovers (`find <root> -name '*.tmp'`) and remove them, with no writer running on the root. The roadmap's format-freeze item lists, as open questions and not decisions, what the wrapped key's
   associated data binds, an identity of the store in the authenticated data, a key per generation or a sealing
   counter, and settling them with one format change. Two of the roadmap's deferrals now say exactly what is left: an Azure
   Blob create replayed more than an hour late (the sweep already refuses a grace under an hour), and a tombstone
