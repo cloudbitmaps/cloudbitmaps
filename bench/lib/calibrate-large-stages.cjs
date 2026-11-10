@@ -330,7 +330,7 @@ function resolveLargeKnobs(env) {
 }
 
 /**
- * Which suite a run is: `--suite large|batch` or `CR_CALIBRATE_SUITE=large|batch`, and the default suite otherwise. Both naming
+ * Which suite a run is: `--suite large|batch|multi` or `CR_CALIBRATE_SUITE=large|batch|multi`, and the default suite otherwise. Both naming
  * different suites, or a suite that does not exist, is refused, since a run that measured another suite than the one
  * asked for would write evidence under the wrong name.
  */
@@ -340,7 +340,7 @@ function resolveSuite(argv, env) {
 
 /** Which suite a run is and where it was named: `{ suite, source }`, the source `--suite`, `CR_CALIBRATE_SUITE` or `default`. */
 function suiteFrom(argv, env) {
-  const SUITES = ['default', 'large', 'batch'];
+  const SUITES = ['default', 'large', 'batch', 'multi'];
   const at = argv.indexOf('--suite');
   let fromArg;
   if (at !== -1) {
@@ -595,6 +595,7 @@ module.exports = {
   MAX_CHUNK_BYTES,
   partsOf,
   rangeCap,
+  operandBound,
   INTO_READS,
   readBounds,
   outputBounds,

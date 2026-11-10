@@ -20,6 +20,8 @@
  *                                                            names it from the environment
  *   node bench/calibrate-aws.cjs --suite batch [--rehearse | --run]   the batch suite (one refresh-shaped
  *                                                            materializeMany call), in place of the default one
+ *   node bench/calibrate-aws.cjs --suite multi [--rehearse | --run]   the multi suite (an intersect over 3 to 10
+ *                                                            operands), in place of the default one
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
@@ -111,6 +113,7 @@ const {
   resolveBatchKnobs,
   callSettings,
   refuseBatchKnobs,
+  LARGE_SUITE_KNOBS,
   refuseOtherSuiteKnobs,
   checkBatchWorkload,
   checkMaterializeMany,
@@ -123,6 +126,17 @@ const {
   runBatchSuite,
   projectionLines: batchProjectionLines,
 } = require('./lib/calibrate-batch.cjs');
+const { countMulti } = require('./lib/multi-counts.cjs');
+const {
+  MULTI_STAGES,
+  MULTI_POOLS,
+  resolveMultiKnobs,
+  refuseMultiKnobs,
+  refuseOtherKnobsUnderMulti,
+  projectMulti,
+  expectedMulti,
+} = require('./lib/calibrate-multi-stages.cjs');
+const { runMultiSuite, projectionLines: multiProjectionLines } = require('./lib/calibrate-multi.cjs');
 const { resourcesNow, installedSources } = require('./lib/calibrate-large-resources.cjs');
 const {
   coldIntersectIds,
@@ -231,7 +245,14 @@ if (CODEC !== '' && !CODECS.includes(CODEC)) {
 /** A package's exports: the installed published one, or, with a codec named, the same package from the bundle. */
 const packageOf = (name) => packageFor(name, ROOT);
 /** The stages this suite runs: the projection, the run's end-of-run check and the harness's own refusal read this list. */
-const STAGES = SUITE === 'large' ? LARGE_STAGES : SUITE === 'batch' ? BATCH_STAGES : DEFAULT_STAGES;
+const STAGES =
+  SUITE === 'large'
+    ? LARGE_STAGES
+    : SUITE === 'batch'
+      ? BATCH_STAGES
+      : SUITE === 'multi'
+        ? MULTI_STAGES
+        : DEFAULT_STAGES;
 /** What teardown may do: the batch suite's destinations are far more versions than a bucket of the other suites holds. */
 const TEARDOWN = teardownLimits(SUITE === 'batch' ? BATCH_MAX_VERSIONS : 0);
 
@@ -487,13 +508,18 @@ async function main() {
   let sweep = [];
   let largeKnobs = null;
   let batchKnobs = null;
+  let multiKnobs = null;
   try {
     // A cleanup loads nothing, so no workload setting can refuse it.
     if (MODE !== 'cleanup' && SUITE !== 'batch') refuseBatchKnobs(process.env, SUITE);
+    if (MODE !== 'cleanup' && SUITE !== 'multi') refuseMultiKnobs(process.env, SUITE);
     if (MODE !== 'cleanup' && SUITE === 'large') {
       refuseDefaultKnobs(process.env);
       largeKnobs = resolveLargeKnobs(process.env);
       checkLargeWorkload({ sizes: LARGE_SIZES.length, intos: largeKnobs.intos });
+    } else if (MODE !== 'cleanup' && SUITE === 'multi') {
+      refuseOtherKnobsUnderMulti(process.env, [...DEFAULT_SUITE_KNOBS, ...LARGE_SUITE_KNOBS]);
+      multiKnobs = resolveMultiKnobs(process.env);
     } else if (MODE !== 'cleanup' && SUITE === 'batch') {
       refuseOtherSuiteKnobs(process.env, DEFAULT_SUITE_KNOBS);
       batchKnobs = resolveBatchKnobs(process.env);
@@ -618,15 +644,20 @@ async function main() {
       checkResources(
         now.have,
         resolveFloors(process.env),
-        SUITE === 'batch' ? { suite: 'batch', memoryMB: BATCH_MIN_MEMORY_MB } : undefined,
+        SUITE === 'batch'
+          ? { suite: 'batch', memoryMB: BATCH_MIN_MEMORY_MB }
+          : SUITE === 'multi'
+            ? { suite: 'multi' }
+            : undefined,
       );
     } catch (err) {
       refuse(`${redact(err.message)}. Nothing was created.`);
     }
     // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the engine the
     // stores come from is asked (the installed packages, or the bundle a codec was named for), and a run against
-    // others is refused. The batch suite's bound is the counted requests, which rest on no such constant.
-    if (SUITE === 'large') {
+    // others is refused. The batch suite's bound is the counted requests, which rest on no such constant. The multi suite's
+    // read bound rests on the same range cap.
+    if (SUITE === 'large' || SUITE === 'multi') {
       try {
         const sources = bundledSources(ROOT) ?? installedSources(ROOT);
         checkEngineConstants(constantsIn(sources.core, sources.s3));
@@ -662,7 +693,7 @@ async function main() {
     pricing = AWS_US_EAST_1_ONDEMAND;
     // The large suite's count stage calls the count verbs, which the first release to have them is 0.26.0: ask before
     // anything is created, and before the engine is asked to count them.
-    if (SUITE === 'large') {
+    if (SUITE === 'large' || SUITE === 'multi') {
       try {
         checkCountVerbs(packageVersion);
       } catch (err) {
@@ -696,7 +727,30 @@ async function main() {
     if (SUITE === 'default' && MODE !== 'project') {
       readsAfterCollect = await readsRowAfterCollect(await packageOf('roaring'), STEADY_KEEP);
     }
-    if (SUITE === 'batch') {
+    if (SUITE === 'multi') {
+      // The operand sets counted over the in-memory backend before anything is created: the bound needs the objects' sizes and
+      // a run is held to the counts.
+      log(
+        `counting the ${Object.keys(MULTI_POOLS).length} operand sets in memory: tens of seconds to a few minutes`,
+      );
+      const counts = await countMulti({ engine: await packageOf('roaring') });
+      plan = {
+        suite: 'multi',
+        reads: multiKnobs.reads,
+        pools: counts.pools,
+        shapes: counts.shapes,
+        retryBound: RETRY_BOUND,
+        discards: { perRun: DISCARDS_PER_RUN, perStage: DISCARDS_PER_STAGE },
+        fixedGets: 1 + RTT_SAMPLES,
+        fixedPuts: 1 /* CreateBucket */ + TEARDOWN_PUTS,
+      };
+      const bound = projectMulti(plan);
+      ops = bound.total;
+      stageBounds = bound.stages;
+      discardBound = bound.discards;
+      costliestSample = bound.costliestSample;
+      priced = priceTally({ put: ops.put, get: ops.get }, pricing);
+    } else if (SUITE === 'batch') {
       // The shape counted over the in-memory backend before anything is created: the bound needs the objects' sizes and
       // the requests of a call, and a run is held to them.
       const shape = BATCH_SHAPES[batchKnobs.shape];
@@ -807,6 +861,24 @@ async function main() {
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
+    if (SUITE === 'multi') {
+      for (const line of multiProjectionLines({
+        plan,
+        bounds: stageBounds,
+        expected: expectedMulti(plan),
+        discardBound,
+        costliestSample,
+        ops,
+        price: (t) => priceTally(t, pricing).totalUSD,
+      })) {
+        console.log(line);
+      }
+      console.log(
+        '\n  --rehearse   the workload against MinIO, free — the money guards do not run',
+      );
+      console.log('  --run        the real thing (needs region + ceiling + confirmation)');
+      return 0;
+    }
     if (SUITE === 'batch') {
       for (const line of batchProjectionLines({
         plan,
@@ -1162,7 +1234,15 @@ async function main() {
     // The large suite says which suite it is; the default suite's evidence has no such field.
     ...(SUITE !== 'default' ? { suite: SUITE, resources: resourcesSeen } : {}),
     workload:
-      SUITE === 'batch'
+      SUITE === 'multi'
+        ? {
+            // What each operand set and shape is, and the requests the engine made of it in memory, which the run is held to.
+            reads: plan.reads,
+            pools: plan.pools,
+            shapes: plan.shapes,
+            expected: expectedMulti(plan),
+          }
+        : SUITE === 'batch'
         ? {
             // What the shape is, and the requests the engine made of it in memory, which the run is held to.
             shape: plan.shape,
@@ -1470,7 +1550,13 @@ async function main() {
     const expectedByStage = SUITE !== 'default' ? {} : expectedReads(plan);
     // The large suite's exact requests, PUT-class as well as GET-class: each of its stages is held to both.
     const expectedLargeByStage =
-      SUITE === 'large' ? expectedLarge(plan) : SUITE === 'batch' ? expectedBatch(plan) : {};
+      SUITE === 'large'
+        ? expectedLarge(plan)
+        : SUITE === 'batch'
+          ? expectedBatch(plan)
+          : SUITE === 'multi'
+            ? expectedMulti(plan)
+            : {};
     const stage = async (name, { setup, run }) => {
       // The large suite runs its own stages (`runLargeSuite`); the default suite's are laid out below it, and are not run.
       if (SUITE !== 'default' && DEFAULT_STAGES.includes(name)) return undefined;
@@ -1616,6 +1702,26 @@ async function main() {
           (results.expectedMissed ??= []).push(message);
           console.error(`calibrate: EXPECTED COUNT MISSED — ${message}`);
         },
+      });
+    }
+
+    if (SUITE === 'multi') {
+      await runMultiSuite({
+        stage,
+        sample,
+        load,
+        perLoad,
+        summarise,
+        snap,
+        startDepth,
+        depthOf,
+        checkCeiling,
+        msSince,
+        median,
+        spreadOf,
+        timedStore,
+        log,
+        plan,
       });
     }
 

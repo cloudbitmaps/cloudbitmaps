@@ -30,8 +30,9 @@
 #           under bench/calibration/large/. CR_CALIBRATE_SUITE=batch runs the batch suite (one refresh-shaped
 #           materializeMany of 1,000 outputs over 100 operands), sized by CR_CALIBRATE_BATCH_SHAPE and
 #           CR_CALIBRATE_BATCH_SAMPLES, with CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY (1 to 1024) setting the call's
-#           publishConcurrency, its evidence under bench/calibration/batch/. Any other suite name is refused by
-#           the harness, before anything is created.
+#           publishConcurrency, its evidence under bench/calibration/batch/. CR_CALIBRATE_SUITE=multi runs the multi
+#           suite (an intersect over 3 to 10 operands), sized by CR_CALIBRATE_MULTI_READS, its evidence under
+#           bench/calibration/multi/. Any other suite name is refused by the harness, before anything is created.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -48,13 +49,13 @@ refuse_bad_rehearse() {
 }
 refuse_bad_rehearse
 
-# Only unset, empty, `default`, `large` or `batch` name a suite. The harness refuses any other, but only once the packages are
+# Only unset, empty, `default`, `large`, `batch` or `multi` name a suite. The harness refuses any other, but only once the packages are
 # installed, so it is refused here first, and a name it would take is left to it.
 refuse_bad_suite() {
   case "${CR_CALIBRATE_SUITE:-}" in
-    '' | default | large | batch) ;;
+    '' | default | large | batch | multi) ;;
     *)
-      echo "cloudshell: CR_CALIBRATE_SUITE must be default, large or batch, not \"${CR_CALIBRATE_SUITE}\"" >&2
+      echo "cloudshell: CR_CALIBRATE_SUITE must be default, large, batch or multi, not \"${CR_CALIBRATE_SUITE}\"" >&2
       exit 2
       ;;
   esac
@@ -142,6 +143,7 @@ harness_ref() {
   if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib/aws-meter.cjs \
     bench/lib/calibrate-guards.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs \
     bench/lib/calibrate-large.cjs bench/lib/batch-counts.cjs bench/lib/calibrate-batch-stages.cjs bench/lib/calibrate-batch.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
+    bench/lib/calibrate-multi-stages.cjs bench/lib/calibrate-multi.cjs bench/lib/calibrate-reads.cjs bench/lib/multi-counts.cjs \
     bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs \
     bench/lib/range-counts.cjs 2>/dev/null)" ]; then
     ref="${ref}-dirty"
@@ -158,6 +160,7 @@ refuse_committed_run_id() {
   local dir="bench/calibration"
   if [ "${CR_CALIBRATE_SUITE:-}" = "large" ]; then dir="bench/calibration/large"; fi
   if [ "${CR_CALIBRATE_SUITE:-}" = "batch" ]; then dir="bench/calibration/batch"; fi
+  if [ "${CR_CALIBRATE_SUITE:-}" = "multi" ]; then dir="bench/calibration/multi"; fi
   if [ -n "${CR_CALIBRATE_RUN_ID:-}" ] && [ -f "${dir}/${CR_CALIBRATE_RUN_ID}.json" ]; then
     echo "cloudshell: ${dir}/${CR_CALIBRATE_RUN_ID}.json is committed evidence — choose another CR_CALIBRATE_RUN_ID, or leave it unset" >&2
     exit 2
@@ -222,9 +225,9 @@ finish() {
   local kept=0
   local tilde='~'
   for f in "$WORK"/bench/calibration/*.json "$WORK"/bench/calibration/large/*.json \
-    "$WORK"/bench/calibration/batch/*.json \
+    "$WORK"/bench/calibration/batch/*.json "$WORK"/bench/calibration/multi/*.json \
     "$WORK/bench/calibrate-aws-rehearsal.json" "$WORK/bench/calibrate-aws-rehearsal-large.json" \
-    "$WORK/bench/calibrate-aws-rehearsal-batch.json"; do
+    "$WORK/bench/calibrate-aws-rehearsal-batch.json" "$WORK/bench/calibrate-aws-rehearsal-multi.json"; do
     [ -f "$f" ] || continue
     local name dest out
     name="$(basename "$f")"
@@ -232,6 +235,7 @@ finish() {
     case "$f" in
       "$WORK"/bench/calibration/large/*) out="$HOME/bench/calibration/large" ;;
       "$WORK"/bench/calibration/batch/*) out="$HOME/bench/calibration/batch" ;;
+      "$WORK"/bench/calibration/multi/*) out="$HOME/bench/calibration/multi" ;;
     esac
     dest="$out/$name"
     if [ -e "$dest" ]; then
@@ -295,7 +299,7 @@ run_harness() {
 
 mkdir -p "$WORK/bench/lib"
 cp bench/calibrate-aws.cjs "$WORK/bench/"
-cp bench/lib/aws-meter.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs bench/lib/calibrate-large.cjs bench/lib/batch-counts.cjs bench/lib/calibrate-batch-stages.cjs bench/lib/calibrate-batch.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs bench/lib/range-counts.cjs "$WORK/bench/lib/"
+cp bench/lib/aws-meter.cjs bench/lib/codec-engine.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs bench/lib/calibrate-large.cjs bench/lib/batch-counts.cjs bench/lib/calibrate-batch-stages.cjs bench/lib/calibrate-batch.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs bench/lib/range-counts.cjs bench/lib/calibrate-multi-stages.cjs bench/lib/calibrate-multi.cjs bench/lib/calibrate-reads.cjs bench/lib/multi-counts.cjs "$WORK/bench/lib/"
 # With a codec named, the stores come from a bundle of this clone's sources (bench/lib/codec-engine.cjs): copy the
 # sources the bundle reads, and install the bundler beside them, at the version this clone's lockfile pins.
 if [ -n "${CR_CALIBRATE_CODEC:-}" ]; then
