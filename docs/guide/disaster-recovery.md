@@ -187,7 +187,7 @@ you can lose.
     count on the sweep for a generation's `.tmp`. With no writer running on the root, list the leftovers with
     `find <root> -name '*.tmp'` and delete them yourself; a `.tmp` that a running write still holds is removed from under it,
     and that write fails with a retryable error. A registry row's `.tmp` copy carries the row's wrapped keys, and holds the
-    whole row once it was fully written and before it was renamed into place.
+    whole row once it was fully written and before it was moved into place.
 - [ ] **Registry**: object versioning on, covering the `registry/` prefix — **required** to restore every row to
       `T`, and the store that sets your RPO. It also keeps the wrapped keys a crypto-shred removes from a row; see
       [Encryption & DR](#encryption--dr).
