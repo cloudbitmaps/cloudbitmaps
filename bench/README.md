@@ -720,7 +720,7 @@ four bands, which is 331,076 ids, not 1,000,000. Thirty operands are loaded in a
 
 | stage | what it does | requests it is expected to make |
 |---|---|---|
-| `multiLoad` | the 30 operands through `store.load()` | a first load each: 75 PUT-class and 90 GET-class |
+| `multiLoad` | the 30 operands through `store.load()` | a first load each: 25 single-part and 5 multipart objects |
 | `multiIntersect` | `R` cold `intersect` reads of each shape (`R` is 20), each a fresh store, drained a chunk at a time with every id counted and summed | the requests of the same reads over the in-memory backend: 2,380 GET-class in all (**counted**, `lib/multi-counts.cjs`) |
 | `multiCount` | `R` cold `intersectCount` reads of each shape, each a fresh store | the same, as a count makes the requests of its stream: 2,380 GET-class |
 

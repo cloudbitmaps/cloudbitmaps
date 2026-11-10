@@ -53,7 +53,8 @@ refuse_bad_rehearse
 # installed, so it is refused here first, and a name it would take is left to it.
 refuse_bad_suite() {
   case "${CR_CALIBRATE_SUITE:-}" in
-    '' | default | large | batch | multi) ;;
+    '' | default | large | batch) ;;
+    multi) ;;
     *)
       echo "cloudshell: CR_CALIBRATE_SUITE must be default, large, batch or multi, not \"${CR_CALIBRATE_SUITE}\"" >&2
       exit 2

@@ -696,7 +696,15 @@ async function main() {
     pricing = AWS_US_EAST_1_ONDEMAND;
     // The large suite's count stage calls the count verbs, which the first release to have them is 0.26.0: ask before
     // anything is created, and before the engine is asked to count them.
-    if (SUITE === 'large' || SUITE === 'multi') {
+    if (SUITE === 'large') {
+      try {
+        checkCountVerbs(packageVersion);
+      } catch (err) {
+        refuse(err.message);
+      }
+    }
+    // The multi suite's count stage calls `intersectCount`, which the same release first has.
+    if (SUITE === 'multi') {
       try {
         checkCountVerbs(packageVersion);
       } catch (err) {
@@ -1553,13 +1561,9 @@ async function main() {
     const expectedByStage = SUITE !== 'default' ? {} : expectedReads(plan);
     // The large suite's exact requests, PUT-class as well as GET-class: each of its stages is held to both.
     const expectedLargeByStage =
-      SUITE === 'large'
-        ? expectedLarge(plan)
-        : SUITE === 'batch'
-          ? expectedBatch(plan)
-          : SUITE === 'multi'
-            ? expectedMulti(plan)
-            : {};
+      SUITE === 'large' ? expectedLarge(plan) : SUITE === 'batch' ? expectedBatch(plan) : {};
+    // The multi suite's are the same two classes, held by the same function: an empty table above, filled here.
+    if (SUITE === 'multi') Object.assign(expectedLargeByStage, expectedMulti(plan));
     const stage = async (name, { setup, run }) => {
       // The large suite runs its own stages (`runLargeSuite`); the default suite's are laid out below it, and are not run.
       if (SUITE !== 'default' && DEFAULT_STAGES.includes(name)) return undefined;

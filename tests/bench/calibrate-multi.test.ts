@@ -182,7 +182,9 @@ describe('the multi suite is a suite of its own', () => {
   it('has its own stages, which the harness’s own table, and the stage helper, read', () => {
     expect(stagesLib.MULTI_STAGES).toEqual(['multiLoad', 'multiIntersect', 'multiCount']);
     expect(harnessSrc).toContain("SUITE === 'multi'\n        ? MULTI_STAGES");
-    expect(harnessSrc).toContain("SUITE === 'multi'\n            ? expectedMulti(plan)");
+    expect(harnessSrc).toContain(
+      "if (SUITE === 'multi') Object.assign(expectedLargeByStage, expectedMulti(plan));",
+    );
     expect(harnessSrc).toContain('await runMultiSuite(');
     expect(harnessSrc.indexOf('await runMultiSuite(')).toBeLessThan(
       harnessSrc.indexOf("await stage('load'"),
@@ -267,7 +269,7 @@ describe('the multi suite is a suite of its own', () => {
       expect(cp, m).toContain(m);
       expect(sh.slice(sh.indexOf('harness_ref() {')), m).toContain(m);
     }
-    expect(sh).toContain('| multi) ;;');
+    expect(sh).toContain('    multi) ;;');
     expect(sh).toContain('"$WORK"/bench/calibration/multi/*.json');
     expect(sh).toContain('"$WORK/bench/calibrate-aws-rehearsal-multi.json"');
     expect(sh).toContain('dir="bench/calibration/multi"');
