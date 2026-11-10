@@ -107,6 +107,8 @@ const largeStages = require_(join(ROOT, 'bench', 'lib', 'calibrate-large-stages.
     env: Record<string, string | undefined>,
   ) => { suite: string; source: string };
   DEFAULT_SUITE_KNOBS: string[];
+  checkCountVerbs: (version: string, stage?: string) => void;
+  checkEngineConstants: (found: Record<string, number | null>, suite?: string) => void;
   operandBound: (chunks: number, cap: number) => number;
   rangeCap: (bytes: number) => number;
   countMisses: (
@@ -407,12 +409,24 @@ describe('the layouts hold exactly the intersection they claim', () => {
   );
 
   it('near miss: no key outside the core is in all k key sets, and every band key is in exactly k-1', () => {
+    // The last is the suite's own group D, as `planMultiPool` lays it out (5 operands, a 200,000-id core, bands of 50 chunks).
+    const real = stagesLib.planMultiPool('d');
     for (const params of [
       { operands: 5, shared: 20_000, bandChunks: 6, stride: 98 },
       { operands: 4, shared: 1_000, bandChunks: 3, stride: 400 },
       { operands: 7, shared: 700, bandChunks: 2, stride: 1000 },
+      {
+        operands: real.operands,
+        shared: real.shared,
+        bandChunks: real.bandChunks,
+        stride: real.stride,
+      },
     ]) {
       const layout = stagesLib.planNearMissLayout(params);
+      if (params.shared === real.shared) {
+        expect(layout.idsPerOperand).toBe(real.idsPerOperand);
+        expect(params).toEqual({ operands: 5, shared: 200_000, bandChunks: 50, stride: 98 });
+      }
       const keySets = Array.from({ length: params.operands }, (_, i) => {
         const keys = new Set<number>();
         for (const id of layout.idsOf(i)) keys.add(keyOf(id));
@@ -442,7 +456,7 @@ describe('the layouts hold exactly the intersection they claim', () => {
       // A pairwise intersection of two operands holds more than the core, which is what a k-way plan must not read.
       expect(intersectAll(arrays.slice(0, 2)).length).toBeGreaterThan(layout.expected.count);
     }
-  });
+  }, 120_000);
 
   it('refuses a near-miss layout that cannot be what it claims', () => {
     const ok = { operands: 5, shared: 1000, bandChunks: 4, stride: 98 };
@@ -724,10 +738,9 @@ describe('the evidence gate over a rehearsal’s file', () => {
     counts: { [verb]: { gets } },
   });
   const build = (): Run => {
-    const defs = [
-      { name: 'k3', gets: 20, bound: 36 },
-      { name: 'k5', gets: 30, bound: 60 },
-    ];
+    const defs = stagesLib.MULTI_SHAPES.map((m, i) =>
+      i === 0 ? { name: m.name, gets: 20, bound: 36 } : { name: m.name, gets: 30, bound: 60 },
+    );
     const entry = (name: string, gets: number, bound: number) => ({
       shape: name,
       runs: reads,
@@ -848,7 +861,7 @@ describe('the evidence gate over a rehearsal’s file', () => {
     expect(problems(withDiscard)).toEqual([]);
   });
 
-  it('refuses a shape with a read that made other than the expected requests, an inexact or short one, or one over its bound', () => {
+  it('refuses a shape with a read that made other than the expected requests, a short one, or one over its bound', () => {
     const edit = (change: (e: Record<string, unknown>) => void) =>
       mutate((x) =>
         change(
@@ -861,7 +874,6 @@ describe('the evidence gate over a rehearsal’s file', () => {
     expect(problems(edit((e) => (e.offExpected = 1))).join('\n')).toMatch(
       /other than the expected/,
     );
-    expect(problems(edit((e) => (e.exact = false))).join('\n')).toMatch(/not marked exact/);
     expect(problems(edit((e) => (e.runs = 1))).join('\n')).toMatch(
       /ran 1 reads, the workload asked for 2/,
     );
@@ -887,11 +899,12 @@ describe('the evidence gate over a rehearsal’s file', () => {
       ).join('\n'),
     ).toMatch(/no usable peakInFlight/);
     expect(problems(mutate((x) => (x.phases.multiCount?.shapes as unknown[]).pop()))).toContain(
-      'multiCount has no k5',
+      'multiCount has no k5-nearmiss',
     );
   });
 
-  it('is quiet on look-alikes: a run with no reads at all is a run whose shapes ran none', () => {
+  it('refuses a run that made no reads, and a file whose shapes are not the suite’s own', () => {
+    // Zero reads is a legal knob, but a run of it measured nothing and is not a finished, exact run.
     const none = mutate((x) => {
       x.workload.reads = 0;
       x.workload.expected = {
@@ -902,13 +915,45 @@ describe('the evidence gate over a rehearsal’s file', () => {
       for (const name of ['multiIntersect', 'multiCount']) {
         const p = x.phases[name] as { requests: Bound; shapes?: Record<string, unknown>[] };
         p.requests = { put: 0, get: 0 };
-        p.shapes = ['k3', 'k5'].map((s) => ({ shape: s, runs: 0 }));
+        p.shapes = stagesLib.MULTI_SHAPES.map((m) => ({ shape: m.name, runs: 0 }));
       }
     });
-    expect(problems(none)).toEqual([]);
+    expect(problems(none)).toContain(
+      'the workload records no reads: a run that read nothing measured nothing',
+    );
+    // A file with fewer shapes than the suite has, or another shape, is refused even if it is self-consistent.
+    const fewer = mutate((x) => {
+      x.workload.shapes = x.workload.shapes.slice(0, 2);
+      for (const name of ['multiIntersect', 'multiCount']) {
+        const p = x.phases[name] as { shapes: unknown[] };
+        p.shapes = p.shapes.slice(0, 2);
+      }
+    });
+    expect(problems(fewer).join('\n')).toMatch(/workload's shapes are not the suite's/);
+    const other = mutate((x) => {
+      (x.workload.shapes[2] as { name: string }).name = 'k7';
+    });
+    expect(problems(other).join('\n')).toMatch(/workload's shapes are not the suite's/);
     expect(countMissesAreNone()).toBe(true);
   });
 });
 
 const countMissesAreNone = () =>
   largeStages.countMisses({ put: 1, get: 2 }, { put: 1, get: 2 }).length === 0;
+
+describe('the refusals name the suite that is running', () => {
+  it('names the multi suite’s own stage and suite, and the large suite’s by default', () => {
+    expect(() => largeStages.checkCountVerbs('0.25.0', 'multiCount')).toThrow(
+      /which the multiCount stage measures/,
+    );
+    expect(() => largeStages.checkCountVerbs('0.25.0')).toThrow(
+      /which the largeCount stage measures/,
+    );
+    expect(() => largeStages.checkEngineConstants({}, 'multi')).toThrow(
+      /where the multi suite's bound was derived/,
+    );
+    expect(() => largeStages.checkEngineConstants({})).toThrow(
+      /where the large suite's bound was derived/,
+    );
+  });
+});

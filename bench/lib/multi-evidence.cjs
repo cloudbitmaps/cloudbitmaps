@@ -8,9 +8,12 @@
  * what it is held to), holds them to the requests the plan expected in both classes (`countMisses`, the function the harness
  * records a miss with), and refuses a run the harness itself marked: not finished, interrupted, a count missed, the
  * projection exceeded, no bill. Each shape of a read stage is held too: its reads all exact, as many as the workload asked
- * for, each of the expected requests, and no more than the bound.
+ * for, each of the expected requests, and no more than the bound. The shapes are the suite's own (`MULTI_SHAPES`), all of
+ * them, and a run asked for at least one read: a file of fewer or other shapes, or of none read, measured nothing like it.
+ * Whether a read was exact is not read from the file: the stage throws on an inexact read and records nothing, so a flag
+ * in the file would prove no more than the file says.
  */
-const { MULTI_STAGES } = require('./calibrate-multi-stages.cjs');
+const { MULTI_STAGES, MULTI_SHAPES } = require('./calibrate-multi-stages.cjs');
 const { keptRequests } = require('./calibrate-samples.cjs');
 const { countMisses } = require('./calibrate-large-stages.cjs');
 
@@ -26,7 +29,6 @@ function shapeProblems(name, entry, shape, reads) {
   if (entry.runs !== reads)
     out.push(`${at} ran ${entry.runs} reads, the workload asked for ${reads}`);
   if (entry.runs === 0) return out;
-  if (entry.exact !== true) out.push(`${at} is not marked exact`);
   if (entry.offExpected !== 0) {
     out.push(`${at} had ${entry.offExpected} reads that made other than the expected requests`);
   }
@@ -70,6 +72,15 @@ function multiRunProblems(run, { rehearsal = false } = {}) {
   if (run.projectionExceeded !== undefined) out.push('the projection was exceeded');
   const w = run.workload ?? {};
   if (!Number.isInteger(w.reads)) out.push('the workload records no read count');
+  else if (w.reads < 1)
+    out.push('the workload records no reads: a run that read nothing measured nothing');
+  const have = (w.shapes ?? []).map((s) => s.name).join(',');
+  const suites = MULTI_SHAPES.map((s) => s.name).join(',');
+  if (have !== suites) {
+    out.push(
+      `the workload's shapes are not the suite's: ${have || 'none'}, where the suite has ${suites}`,
+    );
+  }
   for (const name of MULTI_STAGES) {
     const phase = run.phases?.[name];
     if (phase === undefined) {

@@ -663,7 +663,7 @@ async function main() {
     if (SUITE === 'large' || SUITE === 'multi') {
       try {
         const sources = bundledSources(ROOT) ?? installedSources(ROOT);
-        checkEngineConstants(constantsIn(sources.core, sources.s3));
+        checkEngineConstants(constantsIn(sources.core, sources.s3), SUITE);
       } catch (err) {
         refuse(`${redact(err.message)}. Nothing was created.`);
       }
@@ -706,7 +706,7 @@ async function main() {
     // The multi suite's count stage calls `intersectCount`, which the same release first has.
     if (SUITE === 'multi') {
       try {
-        checkCountVerbs(packageVersion);
+        checkCountVerbs(packageVersion, 'multiCount');
       } catch (err) {
         refuse(err.message);
       }
@@ -742,7 +742,7 @@ async function main() {
       // The operand sets counted over the in-memory backend before anything is created: the bound needs the objects' sizes and
       // a run is held to the counts.
       log(
-        `counting the ${Object.keys(MULTI_POOLS).length} operand sets in memory: tens of seconds to a few minutes`,
+        `counting the ${Object.keys(MULTI_POOLS).length} operand sets in memory: a few seconds on a laptop, longer on fewer CPUs`,
       );
       const counts = await countMulti({ engine: await packageOf('roaring') });
       plan = {

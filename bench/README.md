@@ -737,7 +737,8 @@ is the range bytes of one read, **counted** in memory):
 | k = 5, 50 % core | 15 | 5 | 5,059,840 | 10,195,044 | 60 |
 | k = 5, near miss | 15 | 5 | 2,024,000 | 3,376,270 | 35 |
 
-Requests are 3k at these sizes (a pointer, a tail and one range an operand): they do not rise with the core. The bytes do,
+Requests are 3k at 1,000,000 ids in every shape (a pointer, a tail and one range an operand, **counted**), whatever the
+core, and 4k at 5,000,000 ids (two ranges an operand, since each object is two parts): they do not rise with the core. The bytes do,
 from 5 % of the objects at a 5 % core to about half at a 50 % core, and the near-miss shape reads the same bytes as the
 20 % core of group A at k = 5, though its objects hold the bands too.
 
@@ -752,12 +753,15 @@ GET-class requests, the range cap being the large suite's (`ceil(object bytes / 
 at 10 MB). The bound is checked against the ceiling before anything is created, and the end-of-run `PROJECTION EXCEEDED`
 check works as in the large suite. At the default plan: **306 PUT-class and 24,576 GET-class, $0.011360** (the bound,
 **derived** from the counts), against exactly **75 PUT-class and 4,850 GET-class, $0.002315** expected. The ceiling to give is
-**`CR_CALIBRATE_MAX_USD=0.02`**, 1.8 times the bound; the harness refuses a ceiling at or below the printed bound. `CR_CALIBRATE_MULTI_READS` sets `R`
+**`CR_CALIBRATE_MAX_USD=0.02`**, 1.76 times the bound (**derived**); the harness refuses a ceiling at or below the printed bound. The
+read bound has no allowance for a read the client retries (a retry is a request the meter counts, and a throttled sample is
+discarded and run again); the discard allowance in the bound (up to 3 samples at the costliest shape's bound) and the ceiling's
+margin cover it; a run that exceeds the bound anyway is reported as `PROJECTION EXCEEDED` after it, and the spend ceiling stops it first if it reaches it. `CR_CALIBRATE_MULTI_READS` sets `R`
 (a non-negative integer; the other suites refuse it, as it refuses theirs). A release below `0.26.0`, the first with the
 count verbs, is refused before anything is created, as the large suite's is.
 
 **Rehearse it, then run it.** `node bench/calibrate-aws.cjs --suite multi` prints the projection (counting the five
-operand sets in memory takes seconds on a laptop);
+operand sets in memory took about 3 s on a laptop, measured once and not recorded, and takes longer on the two CPUs CloudShell has);
 `node bench/calibrate-aws.cjs --rehearse --suite multi` runs the suite against MinIO and writes
 `calibrate-aws-rehearsal-multi.json`; `tests/integration/calibrate-multi-rehearsal.test.ts` does it in CI. A real run, from
 CloudShell in `us-east-1`, after the change has merged, from `main`:
