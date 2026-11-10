@@ -1077,6 +1077,19 @@ const NOT_A_GROUP: Readonly<Record<string, string>> = {
   String: 'a boxed string',
 };
 
+/** The three fields a pinned batch operand carries, from what the pin holds. */
+function wholePin(at: PinnedAt): {
+  readonly pinnedGeneration: number | null;
+  readonly pinnedVersion: string | null;
+  readonly pinnedFingerprint: string | null;
+} {
+  return {
+    pinnedGeneration: at.generation,
+    pinnedVersion: at.version,
+    pinnedFingerprint: at.fingerprint,
+  };
+}
+
 /**
  * The store: Roaring bitmap segments kept as write-once `.crbm` generations in the storage you give it, read through
  * a bounded in-memory cache. Build one per process from a backend,
@@ -1735,14 +1748,7 @@ export class CloudRoaring {
           current: (read?: { readonly fingerprint?: boolean }) =>
             this.currentRowOf(seg.ref, read?.fingerprint === true),
         };
-        return pinnedAt === undefined
-          ? operand
-          : {
-              ...operand,
-              pinnedGeneration: pinnedAt.generation,
-              pinnedVersion: pinnedAt.version,
-              pinnedFingerprint: pinnedAt.fingerprint,
-            };
+        return pinnedAt === undefined ? operand : { ...operand, ...wholePin(pinnedAt) };
       });
     const request = (pins: ReadonlyMap<string, PinnedAt | undefined>) => ({
       operands: operandSpecs(pins),
