@@ -52,19 +52,6 @@ so, and so do the module headers in the code.
   below 0.26.0, which has no count verbs, is refused by the large suite, and the default suite's stage runs no call on it. Evidence from
   before the stage is still valid. No library code, package or version changes.
 
-### Fixed
-
-- **Two hardenings in core, neither reachable through the shipped drivers or the `CloudRoaring` facade.** A reader that
-  keeps the chunk bytes of a small generation from its tail read now keeps a copy even when a third-party driver
-  returned a Node `Buffer` (whose `slice` is a view onto the driver's memory, which would have been kept alive and
-  changed if the driver reused it); a plain `Uint8Array`, which the shipped drivers return, is copied once, as before.
-  And a caller of core's batch combine can no longer skip the check that a subtracted, pinned operand is still the
-  generation it was pinned to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned
-  operand now names all of them in the type, `compileCombineMany` and `rebindCombineMany` refuse a partial pin (a
-  generation without both, either without a generation, or a pin of no generation holding one), and the re-check
-  fails closed for a numbered pin with no fingerprint. Core's main entry is
-  outside the stability promise.
-
 ### Changed
 
 - **`store.materializeMany` is measured on S3, by the batch suite's first two runs.** Two runs from AWS CloudShell in
@@ -94,6 +81,15 @@ so, and so do the module headers in the code.
   large-segment ids to its two load rates: the two imply one load's upload, which must be a whole number of bytes
   that one of the run's multipart loads uploaded (the median rates and the median upload can come from different loads).
   No library code changes.
+
+### Fixed
+
+- **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
+  batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned
+  to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned operand now names
+  all of them in the type, `compileCombineMany` and `rebindCombineMany` refuse a partial pin (a generation without
+  both, either without a generation, or a pin of no generation holding one), and the re-check fails closed for a
+  numbered pin with no fingerprint. Core's main entry is outside the stability promise.
 
 ## [0.27.0] — 2026-11-02
 

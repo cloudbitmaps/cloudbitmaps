@@ -624,7 +624,7 @@ export class CrbmReader {
       // Only a tail that began at the front of the object holds the chunks, and only a region the caller's limit
       // allows is kept: a copy of just that region, so the tail buffer is not held.
       tailCoversFrom === 0 && payloadEnd - PAYLOAD_START <= (keepLimits.get(options) ?? 0)
-        ? plainCopy(tail, PAYLOAD_START, payloadEnd)
+        ? tail.slice(PAYLOAD_START, payloadEnd)
         : undefined,
     );
   }
@@ -705,8 +705,8 @@ export class CrbmReader {
   /**
    * Range-GET one chunk's payload, verifying its CRC32C before returning. Returns `null` if the chunk is
    * absent. Throws `IntegrityError` on a CRC mismatch (the bytes must never reach the codec's
-   * deserializer). A chunk the reader keeps is handed out as a copy, so changing the returned bytes
-   * changes nothing the reader holds.
+   * deserializer). The returned bytes may be shared (a small generation's chunks are kept by the reader and handed out
+   * again), so callers must not change them.
    */
   async getChunk(chunkKey: number): Promise<Uint8Array | null> {
     const slot = this.slotOf(chunkKey);
@@ -738,7 +738,7 @@ export class CrbmReader {
       return undefined;
     }
     const from = offset - PAYLOAD_START;
-    return plainCopy(kept, from, from + length);
+    return kept.slice(from, from + length);
   }
 
   /**
@@ -961,16 +961,6 @@ class StreamClosed extends Error {
   constructor() {
     super('the chunk stream was closed');
   }
-}
-
-/**
- * A copy of `bytes[from, to)` as a plain `Uint8Array`, whatever `bytes` is. A driver may return a Node `Buffer`, whose own
- * `slice` is a view onto the driver's memory (kept alive by it, and changed if the driver reuses the buffer), so the copy
- * is taken from a `subarray` view with the typed-array constructor, which copies for every subclass. One copy, as for a
- * plain `Uint8Array`.
- */
-function plainCopy(bytes: Uint8Array, from: number, to: number): Uint8Array {
-  return new Uint8Array(Uint8Array.prototype.subarray.call(bytes, from, to) as Uint8Array);
 }
 
 /** `bytes[from, to)` of a buffer that starts at object offset `start`, or an IntegrityError when it holds less. */
