@@ -1728,20 +1728,21 @@ export class CloudRoaring {
         const handle = handles.get(name)!;
         const seg = viewOf(handle);
         const pinnedAt = pins.get(handle.key());
-        return {
+        const operand = {
           name,
           ref: seg.ref,
           ...(handle.lease === undefined ? {} : { check: () => this.assertLease(handle) }),
-          ...(pinnedAt === undefined
-            ? {}
-            : {
-                pinnedGeneration: pinnedAt.generation,
-                pinnedVersion: pinnedAt.version,
-                pinnedFingerprint: pinnedAt.fingerprint,
-              }),
           current: (read?: { readonly fingerprint?: boolean }) =>
             this.currentRowOf(seg.ref, read?.fingerprint === true),
         };
+        return pinnedAt === undefined
+          ? operand
+          : {
+              ...operand,
+              pinnedGeneration: pinnedAt.generation,
+              pinnedVersion: pinnedAt.version,
+              pinnedFingerprint: pinnedAt.fingerprint,
+            };
       });
     const request = (pins: ReadonlyMap<string, PinnedAt | undefined>) => ({
       operands: operandSpecs(pins),

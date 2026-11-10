@@ -108,6 +108,26 @@ describe.each(variants)('a reader that keeps the chunk region ($name)', ({ encry
     expect(spy.ranges).toBe(2);
   });
 
+  it('keeps its own copy of the region when the driver returns a Buffer it later changes', async () => {
+    const bytes = await build(crypto);
+    // A driver that hands back a Node Buffer over memory it keeps, and reuses after the read.
+    const driverMemory = Buffer.from(bytes);
+    const blob: BlobReader = {
+      getRange: (offset, length) => Promise.resolve(driverMemory.subarray(offset, offset + length)),
+      getTail: (maxBytes) => {
+        const take = Math.min(Math.max(maxBytes, 0), driverMemory.length);
+        return Promise.resolve({
+          bytes: driverMemory.subarray(driverMemory.length - take),
+          size: driverMemory.length,
+        });
+      },
+    };
+    const reader = await openCrbmReaderKeeping(blob, opts, regionBytes);
+    driverMemory.fill(0xa5);
+    for (const k of KEYS) expectSameBytes(await reader.getChunk(k), PAYLOADS.get(k));
+    expect(reader.retainedBytes).toBeGreaterThan(reader.retainedIndexBytes);
+  });
+
   it('keeps nothing when it was opened with no limit or a limit of zero', async () => {
     for (const limit of [undefined, 0]) {
       const { reader, spy } = await open(limit);

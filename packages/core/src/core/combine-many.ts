@@ -81,8 +81,35 @@ const BUDGET_HEADROOM_FLOOR = 1_000;
 /** The most operands read at once: their indexes, whether one exists, and their registry rows. */
 const INDEX_PARALLELISM = 16;
 
+/**
+ * What an operand pinned to a generation carries, always all three, so a caller cannot skip the identity re-check of a
+ * subtracted operand by leaving one out.
+ */
+interface PinnedOperand {
+  /** The generation the operand is pinned to: `null` when pinned to a segment with none. */
+  readonly pinnedGeneration: number | null;
+  /**
+   * The pin's version: the generation and the registry row's `pointerId` it was taken under (`<generation>:<pointerId>`),
+   * or just the generation where there is no row. It is what tells a name deleted and created again, which restarts at
+   * generation 0, from the one that was pinned.
+   */
+  readonly pinnedVersion: string | null;
+  /**
+   * The fingerprint of the object the pin holds: the identity of the generation's bytes, where a number can be taken
+   * again. `null` only where the pinned segment has no object.
+   */
+  readonly pinnedFingerprint: string | null;
+}
+
+/** An operand that is not pinned: none of the pin's fields is present. */
+interface UnpinnedOperand {
+  readonly pinnedGeneration?: undefined;
+  readonly pinnedVersion?: undefined;
+  readonly pinnedFingerprint?: undefined;
+}
+
 /** One named stored operand, as the pass reads it. */
-export interface CombineManyOperand {
+interface CombineManyOperandBase {
   readonly name: string;
   readonly ref: SegmentRef;
   /**
@@ -91,16 +118,6 @@ export interface CombineManyOperand {
    * empty.
    */
   readonly check?: () => void;
-  /** The generation the operand is pinned to: `null` when pinned to a segment with none, `undefined` when not pinned. */
-  readonly pinnedGeneration?: number | null;
-  /**
-   * The pin's version: the generation and the registry row's `pointerId` it was taken under (`<generation>:<pointerId>`),
-   * or just the generation where there is no row. It is what tells a name deleted and created again, which restarts at
-   * generation 0, from the one that was pinned.
-   */
-  readonly pinnedVersion?: string | null;
-  /** The fingerprint of the object the pin holds: the identity of the generation's bytes, where a number can be taken again. */
-  readonly pinnedFingerprint?: string | null;
   /**
    * A fresh read of the segment's registry row: its current generation and, as `token`, its `pointerId` (the token of the
    * last write that named a field a read resolves through, so a lease or a policy write does not change it), or `null`
@@ -114,6 +131,9 @@ export interface CombineManyOperand {
     readonly fingerprint?: string | null;
   } | null>;
 }
+
+/** One stored operand of a batch combine: pinned (all of the pin's fields) or not (none). */
+export type CombineManyOperand = CombineManyOperandBase & (PinnedOperand | UnpinnedOperand);
 
 /** What one output asks for. */
 export interface CombineManyOutput<R> {
@@ -367,6 +387,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   if (!Array.isArray(outputs) || outputs.length === 0) {
     throw new ValidationError('outputs must be a non-empty array');
   }
+  checkPins(operands);
   requireInteger(request.keep, { min: 0, what: 'keep', note: 'required' });
   requirePositiveInteger(request.maxBufferedBytes, 'maxBufferedBytes');
   requireInteger(request.publishConcurrency, {
@@ -465,9 +486,26 @@ export function rebindCombineMany<R>(
       'rebindCombineMany takes the operands compileCombineMany was given, by name and order',
     );
   }
+  checkPins(operands);
   const result: CompiledCombineMany<R> = { request: { ...compiled.request, operands } };
   COMPILED.set(result, checked);
   return result;
+}
+
+/**
+ * Refuses an operand that names a pinned generation without the rest of its pin, which the type already forbids: a
+ * caller that leaves the fingerprint (or the version) out would skip the identity re-check of a subtracted operand.
+ */
+function checkPins(operands: readonly CombineManyOperand[]): void {
+  for (const op of operands as readonly CombineManyOperandBase[] &
+    readonly Partial<PinnedOperand>[]) {
+    if (op.pinnedGeneration === undefined) continue;
+    if (op.pinnedVersion === undefined || op.pinnedFingerprint === undefined) {
+      throw new ValidationError(
+        `operand "${op.name}" is pinned to a generation without its pinnedVersion and pinnedFingerprint`,
+      );
+    }
+  }
 }
 
 function subtractedList(node: ExprNode): number[] {

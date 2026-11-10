@@ -116,7 +116,7 @@ class TableSource implements StorageChunkSource {
 
 const operandsOf = (
   names: string[],
-  extra: Partial<CombineManyOperand> = {},
+  extra: Partial<Pick<CombineManyOperand, 'check' | 'current'>> = {},
 ): CombineManyOperand[] => names.map((name) => ({ name, ref: { segment: name }, ...extra }));
 
 async function run(
@@ -570,6 +570,7 @@ function pinnedOperands(
       ...o,
       pinnedGeneration: at[0],
       pinnedVersion: at[0] === null ? null : `${at[0]}:${at[1]}`,
+      pinnedFingerprint: null,
       current: async () => (reads.n++, now[o.name] ?? null),
     };
   });
@@ -686,7 +687,13 @@ describe('the re-check of subtracted operands', () => {
     const setup = seed({ a: ids([1]), opt: ids([1]) });
     const operands = setup.operands.map((o) =>
       o.name === 'opt'
-        ? { ...o, pinnedGeneration: 0, current: () => Promise.reject(new Error('registry down')) }
+        ? {
+            ...o,
+            pinnedGeneration: 0,
+            pinnedVersion: null,
+            pinnedFingerprint: null,
+            current: () => Promise.reject(new Error('registry down')),
+          }
         : o,
     );
     const r = await runCombineMany(
@@ -1016,6 +1023,45 @@ describe('the identity of a pinned operand', () => {
     expect((await go('10:1', null)).outputs[0]!.ok).toBe(true);
     const message = ((await go('10:1', '10:2')).outputs[0] as { error: Error }).error.message;
     expect(message).toMatch(/its row or its object is not the pinned one/);
+  });
+
+  it('types a pinned operand as carrying all of its pin', () => {
+    const base = { name: 'x', ref: { segment: 'x' } };
+    // @ts-expect-error a generation without its version and fingerprint is not an operand
+    const bare: CombineManyOperand = { ...base, pinnedGeneration: 1 };
+    const whole: CombineManyOperand = {
+      ...base,
+      pinnedGeneration: 1,
+      pinnedVersion: '1:t',
+      pinnedFingerprint: null,
+    };
+    expect([bare, whole]).toHaveLength(2);
+  });
+
+  it('refuses a pinned operand that leaves out its fingerprint or its version', () => {
+    const setup = seed({ a: ids([1]), opt: ids([1]) });
+    const pinnedWith = (left: 'pinnedFingerprint' | 'pinnedVersion'): CombineManyOperand[] =>
+      setup.operands.map((o) => {
+        if (o.name !== 'opt') return o;
+        const pin = {
+          pinnedGeneration: 1,
+          pinnedVersion: `1:${token('a')}`,
+          pinnedFingerprint: '10:1',
+        };
+        return { ...o, ...pin, [left]: undefined } as unknown as CombineManyOperand;
+      });
+    for (const left of ['pinnedFingerprint', 'pinnedVersion'] as const) {
+      const compile = () =>
+        compileCombineMany({
+          ...request(setup, [collecting({ expr: 'a', exclude: ['opt'] })]),
+          operands: pinnedWith(left),
+        });
+      expect(compile).toThrow(
+        /pinned to a generation without its pinnedVersion and pinnedFingerprint/,
+      );
+    }
+    const compiled = compileCombineMany(request(setup, [collecting({ expr: 'a' })]));
+    expect(() => rebindCombineMany(compiled, pinnedWith('pinnedFingerprint'))).toThrow(/without/);
   });
 
   it('rebinds only the operands it was compiled with, and runs only what was compiled', async () => {
