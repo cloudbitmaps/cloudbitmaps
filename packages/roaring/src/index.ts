@@ -3036,9 +3036,11 @@ export class CloudRoaring {
    * answers the number its row records, while a read of the object throws, so the count alone never shows it. With
    * `summaries: true` it also opens each segment's current object (one tail read each) and reports a segment whose
    * row's summary names another object by its fingerprint, or says another id count or metadata than the object holds,
-   * as `summary-mismatch`, which is what a
-   * restore of the registry from another point than the bucket leaves a count to answer. A sealed summary is held
-   * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
+   * as `summary-mismatch`, which is what a restore of the registry from another point than the bucket leaves a count
+   * to answer. On a row with no keys it also reports, as `summary-mismatch`, every summary no read uses: a sealed one,
+   * one of another generation than the pointer's, one whose fingerprint names no object, and one whose `tailBytes` no
+   * object of that size can have. On a keyed row a sealed summary is held against its object when this store has the
+   * key, and counted in `summariesUnchecked` when it does not.
    *
    * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
    * included, against its object: one footer read each (104 bytes, no key, not retried), reporting

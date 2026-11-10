@@ -36,7 +36,6 @@ import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRe
 import type { BlobReader } from './blob';
 import { openNamedGeneration, storageBlobReader } from './crbm-open';
 import { checkSize, readFooter } from './crbm/reader';
-import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
 import { MAX_STORED_KNOWN_GENERATIONS, usableKnownGens } from './known-generations';
@@ -80,8 +79,8 @@ export interface ConsistencyIssue {
    * `summary-mismatch` (only when asked for): the generation is there, but its row's summary names another object
    * than the one under its number, says a different id count or metadata than the object holds (a row restored from
    * another point than its bucket, or an object put back from outside the library), or is one no read uses: on a row
-   * with no keys, a summary that is sealed, that describes another generation than the pointer's, or that records a
-   * fingerprint naming no object. A summary that names another object is what a count and a `stat()` answer from while
+   * with no keys, a summary that is sealed, that describes another generation than the pointer's, that records a
+   * fingerprint naming no object, or that records a `tailBytes` no object of that size can have. A summary that names another object is what a count and a `stat()` answer from while
    * every read that opens the object refuses it; one whose count or metadata disagrees is answered from until a read
    * opens the object, which stops that store using it; one no read uses leaves every read opening the object unchecked.
    * `known-generation-mismatch` (only when asked for): the object under the number `generation` is not the one the row's
@@ -199,18 +198,11 @@ async function checkSummary(
   };
   const described = usableSummary(ref, live, aead);
   if (described === undefined) {
-    // A summary on an unkeyed active row that no read uses (a registry of your own can hand one over) leaves the object
-    // opened unchecked: a row to report, not one that passes. Three shapes: a sealed summary, which an unkeyed row has
-    // no key to open; one of another generation than the row's pointer; and a clear one of this generation whose
-    // fingerprint names no object.
-    const summary = live.summary;
-    const unnamed =
-      !keyed &&
-      live.status === 'active' &&
-      summary !== undefined &&
-      ('sealed' in summary ||
-        summary.generation !== generation ||
-        fingerprintParts(summary.fingerprint) === undefined);
+    // On an unkeyed active row, `usableSummary` refuses a summary only because no read can use it: a sealed one (the row
+    // has no key to open it), one of another generation than the row's pointer, a clear one whose fingerprint names no
+    // object, or one whose `tailBytes` no object of that size can have. A registry of your own can hand one over, and it
+    // leaves the object opened unchecked: a row to report, not one that passes. A keyed row is left as it was.
+    const unnamed = !keyed && live.status === 'active' && live.summary !== undefined;
     return unnamed ? mismatch : { kind: 'ok', unchecked: keyed };
   }
   // The object must be the one the summary names, as well as hold what it says: another object under the number (a
@@ -394,8 +386,9 @@ async function checkCurrentObject(
  *
  * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
  * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count and metadata
- * it says, reporting `summary-mismatch` where they disagree, and for a clear summary whose fingerprint names no
- * object, which no read uses. For a row with a clear summary that open is the only request of the object; if it fails
+ * it says, reporting `summary-mismatch` where they disagree, and, on a row with no keys, for every summary no read
+ * uses (a sealed one, one of another generation, one whose fingerprint names no object, one whose `tailBytes` no object
+ * of that size can have). For a row with a clear summary that open is the only request of the object; if it fails
  * before its first read answered, the listing decides, and once that read has answered a failure is an error of the
  * segment. A sealed summary needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by
  * default, since the default check only looks for the object.

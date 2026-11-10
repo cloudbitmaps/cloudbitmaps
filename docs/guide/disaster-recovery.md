@@ -606,7 +606,9 @@ if (report.errored.length > 0) {
   does not find it. With the option it opens each segment's current object (one tail read each, sized from the summary so that it takes the
   index however wide it is) and holds the row's summary against it: the object its fingerprint names, the same id count, the
   same metadata and the same `tailBytes`. A segment whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is
-  a summary no read uses on a row with no keys: a clear one whose fingerprint names no object, a sealed one, or one that describes another generation than the pointer's. A sealed summary on an encrypted row needs the store's keystore;
+  every summary no read uses on a row with no keys: a clear one whose fingerprint names no object or whose `tailBytes`
+  no object of that size can have, a sealed one, or one that describes another generation than the pointer's. A sealed
+  summary on an encrypted row needs the store's keystore;
   a segment whose summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row
   with no summary has nothing to check.
 - **`generations: true` also checks the older generations the row knows.** A row's ledger of known generations

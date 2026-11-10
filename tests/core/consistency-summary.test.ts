@@ -78,47 +78,10 @@ describe('checkConsistency with summaries', () => {
     expect((await w.store.checkConsistency()).inconsistent).toEqual([]);
   });
 
-  // A registry of your own can hand over a clear summary whose fingerprint names no object. No read uses it, so the
-  // object is opened unchecked: that is a row the check reports, not one it passes.
-  it.each([['abc'], [5], ['0:1']])(
-    'a clear summary whose fingerprint is %j, from a registry of your own, is a summary-mismatch',
-    async (fingerprint) => {
-      const w = world(false);
-      await w.store.load(SEG, [1, 2, 3]);
-      const registry: IRegistryDriver = {
-        capabilities: () => w.registry.capabilities(),
-        get: async (ref) => {
-          const row = await w.registry.get(ref);
-          return row === null
-            ? row
-            : ({ ...row, summary: { ...row.summary!, fingerprint } } as unknown as RegistryRecord);
-        },
-        create: (ref, rec, o) => w.registry.create(ref, rec, o),
-        compareAndSwap: (ref, t, patch, o) => w.registry.compareAndSwap(ref, t, patch, o),
-        list: async function* (ns) {
-          for await (const row of w.registry.list(ns)) {
-            yield {
-              ...row,
-              summary: { ...row.summary!, fingerprint },
-            } as unknown as RegistryRecord;
-          }
-        },
-        delete: (ref, t) => w.registry.delete(ref, t),
-      };
-      const report = await runConsistencyCheck(
-        { storage: w.storage, registry },
-        { summaries: true },
-      );
-      expect(report.inconsistent).toEqual([
-        { segment: 's', namespace: 'ns', currentGen: 0, issue: 'summary-mismatch' },
-      ]);
-      expect(report.summariesUnchecked).toBe(0);
-    },
-  );
-
-  // A registry of your own can also hand over a sealed summary on a row with no keys, or a summary of another generation
-  // than the pointer's. Neither is used by any read, so the object is opened unchecked: each is a row to report. The
-  // summaries a shipped registry stores are still passed.
+  // No read uses a summary of these kinds, so the object is opened unchecked: each is a row the check reports, not one
+  // it passes. Four shapes on a row with no keys; a shipped registry refuses each when it writes the row.
+  // A registry of your own can hand over a row whose summary no read uses; the helper returns a registry that changes
+  // each row's summary (or drops it) on get and list.
   const summaryOverride = (
     w: ReturnType<typeof world>,
     change: (summary: Record<string, unknown>) => Record<string, unknown> | undefined,
@@ -144,6 +107,23 @@ describe('checkConsistency with summaries', () => {
     };
   };
 
+  it.each([['abc'], [5], ['0:1']])(
+    'a clear summary whose fingerprint is %j, from a registry of your own, is a summary-mismatch',
+    async (fingerprint) => {
+      const w = world(false);
+      await w.store.load(SEG, [1, 2, 3]);
+      const registry = summaryOverride(w, (s) => ({ ...s, fingerprint }));
+      const report = await runConsistencyCheck(
+        { storage: w.storage, registry },
+        { summaries: true },
+      );
+      expect(report.inconsistent).toEqual([
+        { segment: 's', namespace: 'ns', currentGen: 0, issue: 'summary-mismatch' },
+      ]);
+      expect(report.summariesUnchecked).toBe(0);
+    },
+  );
+
   it.each([
     [
       'a sealed summary on a row with no keys',
@@ -152,6 +132,10 @@ describe('checkConsistency with summaries', () => {
     [
       'a clear summary of another generation than the pointer',
       (s: Record<string, unknown>) => ({ ...s, generation: 1 }),
+    ],
+    [
+      'a clear summary whose tailBytes no object of its size can have',
+      (s: Record<string, unknown>) => ({ ...s, tailBytes: 1e9 }),
     ],
   ])('%s, from a registry of your own, is a summary-mismatch', async (_name, change) => {
     const w = world(false);
@@ -178,6 +162,39 @@ describe('checkConsistency with summaries', () => {
     // A rollback onto an older generation leaves a summary of that generation, which is the pointer's.
     await w.store.rollback(SEG, 0);
     expect((await w.store.checkConsistency({ summaries: true })).inconsistent).toEqual([]);
+  });
+
+  it('a keyed row keeps its behaviour for each shape: its sealed and other-generation shapes are not reported, and are counted as unchecked', async () => {
+    const w = world(true);
+    await w.store.load(SEG, [1, 2, 3]);
+    // (A keyed row's tailBytes is inside its sealed summary, so a clear one is not a shape a keyed row has.)
+    for (const [i, change] of [
+      (s: Record<string, unknown>) => ({ generation: s.generation, sealed: 'AAAA' }),
+      (s: Record<string, unknown>) => ({ ...s, generation: 1 }),
+    ].entries()) {
+      const registry = summaryOverride(w, change);
+      const report = await runConsistencyCheck(
+        { storage: w.storage, registry, keystore: w.keystore },
+        { summaries: true },
+      );
+      expect(report.inconsistent).toEqual([]);
+      expect([i, report.summariesUnchecked]).toEqual([i, 1]);
+    }
+  });
+
+  it('the default check does not look at any of the shapes', async () => {
+    const w = world(false);
+    await w.store.load(SEG, [1, 2, 3]);
+    for (const change of [
+      (s: Record<string, unknown>) => ({ generation: s.generation, sealed: 'AAAA' }),
+      (s: Record<string, unknown>) => ({ ...s, generation: 1 }),
+      (s: Record<string, unknown>) => ({ ...s, tailBytes: 1e9 }),
+      (s: Record<string, unknown>) => ({ ...s, fingerprint: 'abc' }),
+    ]) {
+      const registry = summaryOverride(w, change);
+      const report = await runConsistencyCheck({ storage: w.storage, registry });
+      expect(report).toEqual({ checked: 1, inconsistent: [], errored: [] });
+    }
   });
 
   it('a torn restore is still the missing generation, and is not also a mismatch', async () => {

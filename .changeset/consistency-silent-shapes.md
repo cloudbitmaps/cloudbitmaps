@@ -7,4 +7,4 @@
 '@cloudbitmaps/tools': patch
 ---
 
-`checkConsistency({ summaries: true })` reports a sealed summary, and a summary of another generation, on a row with no keys as `summary-mismatch`.
+`checkConsistency({ summaries: true })` reports every summary no read uses on a row with no keys (a sealed one, one of another generation, one whose `tailBytes` no object of that size can have) as `summary-mismatch`. A shipped registry refuses each of these shapes when it writes the row, so no row it holds is reported by this change.

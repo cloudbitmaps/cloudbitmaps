@@ -84,11 +84,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **`checkConsistency({ summaries: true })` reports a sealed summary, and a summary of another generation, on a row with no
-  keys.** A registry of your own can store either; no read uses it, so the object is opened unchecked, but the check
-  passed the row. It now reports each as `summary-mismatch`, as it already did a clear summary whose fingerprint names
-  no object. The summaries a shipped registry stores, which are refused at write when they are either shape, are
-  reported as before, and no read changes.
+- **`checkConsistency({ summaries: true })` reports every summary no read uses on a row with no keys.** A registry of
+  your own can store a sealed summary, a summary of another generation, or a clear one whose `tailBytes` no object of
+  its size can have; no read uses any of them, so the object is opened unchecked, but the check passed the row. It now
+  reports each as `summary-mismatch`, as it already did a clear summary whose fingerprint names no object. A shipped
+  registry refuses each of these shapes when it writes the row, so no row it holds is reported by this change, and no
+  read changes.
 
 ## [0.27.0] — 2026-11-02
 
