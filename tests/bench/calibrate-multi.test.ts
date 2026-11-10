@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { CloudRoaring, MemoryStorage } from '@/index';
 
 // The multi suite (`--suite multi`): an `intersect` over three to ten operands, measured on S3. It is a suite of its own,
@@ -456,12 +456,12 @@ describe('the layouts hold exactly the intersection they claim', () => {
 });
 
 describe('the counts, taken from the real engine in memory', () => {
-  let counts: Counts;
-  beforeAll(async () => {
-    counts = await countsLib.countMulti({ engine });
-  }, 300_000);
+  // Counted once, by the first test that needs it: slow work belongs in a test, which has a budget of its own.
+  let pending: Promise<Counts> | undefined;
+  const getCounts = () => (pending ??= countsLib.countMulti({ engine }));
 
-  it('count every shape, each read at 2k pointer and tail requests and its ranges, content exact', () => {
+  it('count every shape, each read at 2k pointer and tail requests and its ranges, content exact', async () => {
+    const counts = await getCounts();
     expect(counts.shapes.map((s) => s.name)).toEqual(stagesLib.MULTI_SHAPES.map((s) => s.name));
     for (const s of counts.shapes) {
       for (const c of [s.counts.intersect, s.counts.count]) {
@@ -482,9 +482,10 @@ describe('the counts, taken from the real engine in memory', () => {
       // Chunk-skipping: far fewer bytes than the k objects hold.
       expect(s.counts.intersect.rangeBytes, s.name).toBeLessThan(s.objectBytes);
     }
-  });
+  }, 120_000);
 
-  it('keep the objects of a pool the same for every shape that reads it', () => {
+  it('keep the objects of a pool the same for every shape that reads it', async () => {
+    const counts = await getCounts();
     const k = (n: string) => counts.shapes.find((s) => s.name === n) as Shape;
     const a = counts.pools.find((p) => p.name === 'a') as Pool;
     expect(a.operandBytes).toHaveLength(10);
@@ -499,7 +500,7 @@ describe('the counts, taken from the real engine in memory', () => {
     for (const p of counts.pools.filter((q) => q.name !== 'b')) {
       expect(parts(p).some(Boolean), p.name).toBe(false);
     }
-  });
+  }, 120_000);
 
   it('fail a planted engine whose answer is wrong by one, or that drops an id', async () => {
     const wrongCount = {
@@ -547,7 +548,8 @@ describe('the counts, taken from the real engine in memory', () => {
     );
   }, 300_000);
 
-  it('feed a projection whose bound the ceiling covers, whose count is the exact expected', () => {
+  it('feed a projection whose bound the ceiling covers, whose count is the exact expected', async () => {
+    const counts = await getCounts();
     const plan = {
       reads: stagesLib.DEFAULT_MULTI_READS,
       pools: counts.pools,
@@ -594,9 +596,10 @@ describe('the counts, taken from the real engine in memory', () => {
     expect(harnessSrc).toMatch(
       /if \(breached\(priced\.totalUSD, ceiling\)\) \{\s+refuse\(\s+`projected/,
     );
-  });
+  }, 120_000);
 
-  it('are printed in the projection with each shape’s counted requests, bytes and bound', () => {
+  it('are printed in the projection with each shape’s counted requests, bytes and bound', async () => {
+    const counts = await getCounts();
     const plan = {
       reads: 20,
       pools: counts.pools,
@@ -621,7 +624,7 @@ describe('the counts, taken from the real engine in memory', () => {
     for (const name of stagesLib.MULTI_STAGES)
       expect(text).toMatch(new RegExp(`^  ${name}\\b`, 'm'));
     expect(text).toMatch(/projected \$/);
-  });
+  }, 120_000);
 });
 
 describe('the bound holds the engine, over random layouts', () => {
