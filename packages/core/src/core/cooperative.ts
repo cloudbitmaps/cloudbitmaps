@@ -3,10 +3,10 @@
  *
  * Everything this library does on the hot read path is small. Bulk-load is the exception: it is the one place
  * where a single call legitimately occupies the CPU for hundreds of milliseconds, and Node has exactly one thread
- * to occupy. Measured on the native codec of 0.23.0 (every figure in this header is the native codec's, to be
- * re-measured on the TypeScript codec), on a 1M-id load of 65,536 chunks onto in-memory storage, on a loaded Apple M3
- * Pro: **518 ms wall, and 519 ms during which the event loop did not turn at all** (medians of 20 fresh-process
- * runs). Wire that to a request handler and every other in-flight request on the instance — health
+ * to occupy. Measured on the TypeScript codec (the end-to-end figures; the synthetic yield-primitive and threadpool
+ * experiments below were taken earlier, on the native codec of 0.23.0), on a 1M-id load of 65,536 chunks onto
+ * in-memory storage, on an Apple M3 Pro with a one-minute load average of about 2: **394 ms wall, and 399 ms during
+ * which the event loop did not turn at all** (medians of 20 fresh-process runs). Wire that to a request handler and every other in-flight request on the instance — health
  * checks included — waits out the whole load.
  *
  * The fix is not to make the work asynchronous. That was measured too, on the native codec's threadpool insert, and
@@ -22,7 +22,7 @@
  *    the microtask queue drains to empty before the event loop advances a single phase. A loop awaiting them
  *    yields to other *microtasks* and to nothing else; no pending I/O callback runs. Measured: 555 ms of
  *    starvation against a 568 ms unyielded baseline **on the synthetic yield-primitive benchmark below** —
- *    a different, smaller workload than the 518 ms end-to-end load above, which is why the two baselines
+ *    a different workload from the 394 ms end-to-end load above, which is why the two baselines
  *    differ. The yield must be a **macrotask** — hence
  *    `Clock.yieldNow`, backed by `setImmediate` in production wiring.
  * 2. **Yielding per unit of work costs more than the work.** The yield has to be periodic, and `everyN` has to be
@@ -32,7 +32,7 @@
  * baseline, with the worst event-loop gap down from 568 ms to 13.8 ms.
  *
  * **Three experiments, three sets of numbers — do not mix them.** (a) The end-to-end 1M-id bulk load:
- * 518 ms wall / 519 ms blocked unyielded, 526 ms / 24 ms yielded. (b) This synthetic yield-primitive comparison:
+ * 394 ms wall / 399 ms blocked unyielded, 399 ms / 31 ms yielded, on the TypeScript codec. (b) This synthetic yield-primitive comparison:
  * 568 ms / 568 ms unyielded, 569 ms / 13.8 ms with `setImmediate`. (c) A per-chunk insert microbenchmark:
  * 92 ms sync versus 636 ms via the threadpool. Quoting a baseline from one against a result from another describes
  * work none of them did, such as a 92 ms operation with 450 ms of starvation inside it.

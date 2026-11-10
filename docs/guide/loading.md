@@ -191,9 +191,25 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 **How fast a bitmap loads.** `pnpm bench:load-input` measures a load from ids against one from a bitmap, on five sets
 up to 14.4M members, and on one container layout at 10 % and at 90 % density. That pair holds nine times the members
 in the same containers, so a path that works per id is expected to cost about nine times as much on the second, and
-one that does not is expected to cost about the same. Its figures have not been measured yet. What is checked on every
-change is that a 12M-member load from a bitmap calls none of the per-id routes: no iteration, no build from values,
-no id split (`tests/roaring/load-no-per-id.test.ts`).
+one that does not is expected to cost about the same.
+
+Measured on an Apple M3 Pro (Node v24.22.1, `store.load()` onto in-memory storage through the built package, the
+median of 5 runs, each in a fresh process, on 2026-11-10, with a one-minute load average of about 2):
+
+| set | ids, a plain array | ids, an async generator | `{ bitmap }` | `{ serialized }` |
+| --- | --- | --- | --- | --- |
+| dense: 72 % of 16M, 245 bitset containers | 439 ms | 1,995 ms | 15 ms | 14 ms |
+| sparse: 184 members in each of 65,536 chunks | 732 ms | 2,439 ms | 202 ms | 188 ms |
+| runs: ranges of 1 to 400 ids, to 12M members | 445 ms | 2,165 ms | 15 ms | 14 ms |
+
+On the density pair, a load from ids took 6.7× as long at 90 % as at 10 %, and a load from a bitmap took 1× as long:
+the bitmap's cost follows its containers, not its members, while the id path's follows its members (less than the full
+nine times, since part of each load does not depend on the member count). The longest event-loop stall of any load
+from a bitmap, on any of the five sets, was 48 ms. The times are the CPU cost on memory storage; a real bucket adds
+the same upload for every input. They are one machine's wall-clock figures, not a promise.
+
+What is checked on every change is that a 12M-member load from a bitmap calls none of the per-id routes: no
+iteration, no build from values, no id split (`tests/roaring/load-no-per-id.test.ts`).
 <!-- load-input:end -->
 
 That bench is a different measurement from the in-memory table of a load of a `RoaringBitmap`
