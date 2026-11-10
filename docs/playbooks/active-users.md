@@ -236,7 +236,7 @@ MAU over what is left 272
 
 The first four days were retired, so the same 30-name window now counts the 26 that remain. `allowAbsentOperands` is what lets
 a window name days that are gone, and it is also what hides a day that was never loaded, so a job that needs every day
-present checks its days with `store.exists` first.
+present checks its days with `store.exists` first (with a registry, which retention needs, it answers false for a retired day).
 
 ## What goes wrong
 
@@ -271,7 +271,7 @@ BudgetExceededError
 |---|---|
 | `ValidationError` from a count | A day in the window names no segment, and `allowAbsentOperands` was not passed. Pass it when a missing day is legitimate; leave it out to be told. |
 | `BudgetExceededError` | The call needs more requests than its budget. Narrow the window, or raise `budget` for a trusted job ([the budget](../guide/production.md#the-request-budget)). |
-| `WriteConflictError`, `TransientError` | A race or a fault the store did not settle. Run the operation again. [The errors table](../guide/api-reference.md#errors-typed--you-catch-these) has each error. |
+| `TransientError` | A read fault the store did not settle after its retries. Run the count again. A load, `*Into` or `setRetention` can also raise `WriteConflictError`; run that again too. [The errors table](../guide/api-reference.md#errors-typed--you-catch-these) has each error. |
 
 ## What it costs
 
@@ -281,11 +281,12 @@ which ran on `MemoryStorage`. For a window of D days (D operands in one combine)
 | Call | What it makes | Figure |
 |---|---|---|
 | `day.count()` | no chunk read; the registry row's summary or the index answers | derived: [what `count()` trusts](../guide/reading.md#what-count-trusts) |
-| `unionCount` over D days | at least a pointer read and a tail read for each day, and the chunks of every key more than one day holds | counted in memory: 31 operands of 500,000 ids made 93 requests, 3 a day, and read 9,726,064 bytes where the stream read 40,102,468 ([the record](../benchmarks.md#counting-a-combine--counted-in-memory-and-measured-on-s3)) |
+| `unionCount` over D days | at least a pointer read and a tail read for each day, and the chunks of every key more than one day holds | counted in memory: 31 operands of 500,000 ids made 93 requests, 3 a day, and, in the spread layout, which matches ids dense in one range as here, read 39,798,544 bytes where the stream read 40,102,468 (counted; the packed layout, where the days share few chunks, read 9,726,064; [the record](../benchmarks.md#counting-a-combine--counted-in-memory-and-measured-on-s3)) |
 | `intersectCount` of a cohort and a day | the requests `intersect` makes: only the chunks both hold | measured on S3: 6 GETs at a million ids an operand, 8 at five million, 10 at ten million ([the S3 run](../benchmarks.md#large-operands--run-2026-11-03-fbbb8)) |
 
-A 30-day MAU is therefore a call of order 90 requests, where a stream of the same union reads every chunk of every day. The
-counts write nothing and hold no result. Over a day's retention, a table of N days by `intersectCount` is N combines; read
+A 30-day MAU is therefore a call of about 90 requests by the same model, as for the 31-day count, and where the days share
+few chunks it reads far fewer bytes than a stream of the union; with dense ids it reads nearly as many. The counts write
+nothing and hold no result. A retention table of N days by `intersectCount` is N combines; read
 the cohort once with a dry run of `materializeMany` when N is large.
 
 ## Limits
@@ -295,7 +296,7 @@ the cohort once with a dry run of `materializeMany` when N is large.
   is not known ([what is still owed](../benchmarks.md#what-is-still-owed), [the validated envelope](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt)).
 - **Operands and budget.** A combine takes as many operands as you list, each charged to the per-op budget (1,000,000
   request units by default), and a wide union is refused rather than quietly billed. This page ran 30 days and one 32-name
-  window; the largest measured is 31.
+  window; the largest counted is 31, in memory.
 - **The numbers are as exact as `count()` is trusted.** `unionCount` answers a key only one day holds from that day's index;
   where that is not enough, stream the union with `.batches()` and add up the lengths, or use `intersectCount`, which decodes
   every key it counts ([what it trusts](../guide/reading.md#count-a-combine)).
