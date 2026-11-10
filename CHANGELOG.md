@@ -54,6 +54,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The TypeScript codec's per-operation figures and the at-scale benchmark are re-measured on this machine.** On an
+  Apple M3 Pro (Node v24.22.1, 2026-11-10), the per-operation record has the union of one dense pair of containers at 3.41
+  times native (900 ns against 3,066 ns), the worst `or` pair, and a run chunk's `optimize` at 3.06 times; the pages had
+  4.22 times (a skewed pair) and 3.31 times from the run of 2026-10-21. The at-scale run, now on the TypeScript codec,
+  holds the retained heap at 13.2, 12.5 and 12.7 MiB for 1,000, 10,000 and 100,000 segments (8.2, 8.3 and 7.4 MiB before)
+  and took 29,130.6 ms to enumerate the 100,000-segment fleet (11,606.4 ms before), on a machine whose load rose from 2.2
+  to 4 during the run; the intersection of two 2,000,000-id segments fetched the same 100 of 2,000 chunks in 24.6 ms. That
+  run's counter of payload bytes recorded none for the in-memory drivers, so the demo page and the benchmarks page no
+  longer state the 3,000 bytes of the earlier run. Both result files now record the day of the run, and the at-scale
+  file its commit and load. No library behaviour or version changes.
+
 - **`store.materializeMany` is measured on S3, by the batch suite's first two runs.** Two runs from AWS CloudShell in
   `us-east-1`, against the published `0.27.0` packages (`2026-11-03-78516` and `2026-11-08-b12e6`), of one cold call
   of the refresh shape's 1,000 outputs over 100 stored operands of 200,000 ids, three times a run, onto destinations

@@ -101,7 +101,7 @@
             <p class="hero-lede">
               The soak and the hard RSS ceiling were measured on the TypeScript codec, the one the store uses, on 2026-10-21 (the
               ceiling's record is the file CI's gate wrote that day). The in-region run and the large-operand run were measured
-              on the TypeScript codec, on 2026-11-03, through the published packages. The read, fleet-memory and at-scale figures
+              on the TypeScript codec, on 2026-11-03, through the published packages. The at-scale figures were measured on the TypeScript codec on 2026-11-10. The read and fleet-memory figures
               were measured on the native codec, in the release each section names, and are to be re-measured. The cost model and the crossover do not depend on the codec. The comparison is
               <a href="#codec">the TypeScript codec against native</a>.</p>
             <p class="actions">
@@ -594,7 +594,7 @@
           claim — memory is a function of the cap you set, not of how much data you own.
         </p>
         <!-- BENCH:SCALE:START -->
-<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured on the native codec &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><td>1,000 segments</td><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><td>10,000 segments</td><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><td>100,000 segments</td><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">Across a <strong>100&times;</strong> larger fleet, retained heap stayed inside a <strong>0.9 MiB</strong> band. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms against the in-memory drivers. Fleet seeded by writing and publishing each generation at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
+<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><td>1,000 segments</td><td class="num">13.2 MiB</td><td class="num">85.7 MiB</td><td class="num">179.6 ms</td></tr><tr><td>10,000 segments</td><td class="num">12.5 MiB</td><td class="num">183.5 MiB</td><td class="num">1,682 ms</td></tr><tr><td>100,000 segments</td><td class="num">12.7 MiB</td><td class="num">187.1 MiB</td><td class="num">29,130.6 ms</td></tr></tbody></table></div><p class="tpanel-foot">Across a <strong>100&times;</strong> larger fleet, retained heap stayed inside a <strong>0.7 MiB</strong> band. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms against the in-memory drivers. Fleet seeded through <code>store.load()</code> at ~59&ndash;64 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.22.1, commit 4f82a7ae, 2026-11-10, load 2.2 at the start and 4 at the end) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
 <!-- BENCH:SCALE:END -->
         <ul class="rowlist">
           <li>
@@ -685,10 +685,10 @@
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">One container pair</span>
-            <span class="rl-fig">up to 4.2&times; slower</span>
+            <span class="rl-fig">up to 3.4&times; slower</span>
             <span class="rl-note">
-              In the per-operation record (2026-10-21, Apple M3 Pro, Node v24.18.1, commit <span class="m">7bf70e54</span>, before later kernel changes; to be re-measured), a union of a skewed pair of containers took 3,341 ns native and 14,099 ns
-              TypeScript. Through the store the combines above are inside the bar anyway.
+              In the per-operation record (2026-11-10, Apple M3 Pro, Node v24.22.1, commit <span class="m">1bee11b9</span>), a union of a dense pair of containers took 900 ns native and 3,066 ns
+              TypeScript; of a skewed pair, 4,393 ns native and 14,133 ns TypeScript. Through the store the combines above are inside the bar anyway.
             </span>
           </li>
         </ul>

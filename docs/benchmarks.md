@@ -9,8 +9,8 @@
 > **Which figures are on which codec.** The soak ([limitation 04](../site/benchmarks.html#limits)) and the hard RSS
 > ceiling were measured on the TypeScript codec, the one the store uses, on 2026-10-21; the file CI's gate wrote that day
 > is the ceiling's record. The in-region run and the large-operand run of 2026-11-03 (and the earlier pair of 2026-10-30) were measured on the TypeScript codec,
-> through the published packages (each run's evidence names the release, as `packageVersion`). The read, fleet-memory and at-scale figures were measured on the native codec, in the release each
-> section names, and are to be re-measured. The cost model and the
+> through the published packages (each run's evidence names the release, as `packageVersion`). The read and fleet-memory figures were measured on the native codec, in the release each
+> section names, and are to be re-measured. The at-scale figures were measured on the TypeScript codec on 2026-11-10. The cost model and the
 > crossover do not depend on the codec. [The TypeScript codec against native](#the-typescript-codec-against-native)
 > has the comparison, and [the public bitmap class against native, in memory](#the-public-bitmap-class-against-native-in-memory)
 > is a third body of figures, taken in a loop with no store.
@@ -441,7 +441,7 @@ above are not counted.
 
 ## At scale — measured (1K → 10K → 100K segments)
 
-> **Codec:** the native codec (the results file was last committed before the switch to the TypeScript codec). Not re-run on the TypeScript codec: the retained-heap column is the reader cache's heap, which the codec does not change, but the chunk-skipping intersect row does run the codec. To be re-measured.
+> **Codec:** the TypeScript codec, the one the store uses, on 2026-11-10 (the commit, Node version and load are in the footnote under the table). The 1-minute load average rose from 2.2 at the start of the run to 4 at its end, so read the wall-clock columns (the discovery scan, the seed rate) with that in mind.
 >
 > **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
@@ -456,13 +456,13 @@ measured evidence at fleet scale:
 <!-- BENCH:SCALE:START -->
 | Fleet | Retained heap (cap 1024) | Peak RSS | Discovery scan |
 | --- | --- | --- | --- |
-| 1,000 segments | 8.2 MiB | 68.1 MiB | 87.6 ms |
-| 10,000 segments | 8.3 MiB | 86.8 MiB | 1,067.9 ms |
-| 100,000 segments | 7.4 MiB | 162.2 MiB | 11,606.4 ms |
+| 1,000 segments | 13.2 MiB | 85.7 MiB | 179.6 ms |
+| 10,000 segments | 12.5 MiB | 183.5 MiB | 1,682 ms |
+| 100,000 segments | 12.7 MiB | 187.1 MiB | 29,130.6 ms |
 
 Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.6 ms, which times the engine rather than object storage.
 
-_Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained heap** (post-GC), flat at 8.2 MiB @ 1,000 · 8.3 MiB @ 10,000 · 7.4 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded by writing and publishing each generation at ~38–51 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
+_Measured on Apple M3 Pro (arm64, node v24.22.1, commit 4f82a7ae, 2026-11-10, load 2.2 at the start and 4 at the end). **The bound is the retained heap** (post-GC), flat at 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.7 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~59–64 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment
@@ -498,11 +498,8 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend
-  on how the ids inside a chunk are distributed. The accompanying **bytes** figure does: this fixture seeds each
-  chunk with a contiguous run of ids, which Roaring stores as a single run, so the 3,000 bytes read (measured) over
-  200 chunk reads (derived: each of the 100 shared keys is read from both segments) come to 15 bytes a read: a
-  **best case for the encoding** rather than a typical segment. Real ids at that density are scattered and land in an array container nearer 2 KB per chunk. Read the byte count as "the window is
-  small and bounded", not as a size to plan a bill around — for that, price the requests.
+  on how the ids inside a chunk are distributed. The run's counter of payload bytes recorded none for the in-memory drivers (0), so no byte figure is published
+  from it; how many bytes a chunk read takes depends on how the ids sit inside the chunk, so for a bill, price the requests.
 
 ## What RSS is, and why it is the number we bound
 
@@ -518,7 +515,7 @@ number the kernel consults when a container hits its memory limit and something 
 ### Why RSS and not the JavaScript heap
 
 CloudBitmaps keeps a bitmap's containers in typed arrays, whose backing memory V8 allocates outside its JavaScript
-object heap, and a `Buffer` read from storage is the same kind of memory. (The read, fleet-memory and at-scale figures on this page were measured on the native codec, whose containers sat in `malloc`
+object heap, and a `Buffer` read from storage is the same kind of memory. (The read and fleet-memory figures on this page were measured on the native codec, whose containers sat in `malloc`
 memory outside V8 altogether; the soak and the RSS gate were measured on the TypeScript codec on 2026-10-21.) So a process holding a large bitmap looks like this:
 
 ```
@@ -667,14 +664,15 @@ Given the same smallest-first order, native is itself 7.7% slower per process on
 shipped, and the TypeScript codec reads -3.8% against that reordered native (both measured), so the +2.9% in the table is
 not purely a codec difference.
 
-**There is no union row, and the reason matters.** Every per-operation figure on this page (here and in the paragraph after the memory table) was taken at commit `7bf70e54`, before later kernel changes (clone sharing, intersect of three or more operands smallest-first, the similar-sized array difference, the bitset-in-runs result); those figures describe the code at that commit, not the code the store comparison ran, and are to be re-measured. The store comparison is on the final kernels and is the headline. The store comparison times `intersect` and `andNot`, not `union`: no
+**There is no union row, and the reason matters.** Every per-operation figure on this page (here and in the paragraph after the memory table) was taken on 2026-11-10 at commit `1bee11b9`, a later commit than the store comparison's own run (2026-10-22); read each as that commit's figure on that day. The store comparison is the headline. The store comparison times `intersect` and `andNot`, not `union`: no
 union cell was measured through the store. The per-operation microbenchmark (one operation on one chunk, medians of 11
-interleaved rounds after a warm-up, Apple M3 Pro, Node v24.18.1, commit `7bf70e54` of 2026-10-21, a load of about 2.5, record
+interleaved rounds after a warm-up, Apple M3 Pro, Node v24.22.1, commit `1bee11b9` of 2026-11-10, a 1-minute load of 1.57 before and 2.41 after (2.82 at most inside a cell), record
 [`bench/ts-codec-results.json`](../bench/ts-codec-results.json)) is the only union figure, and it is not a win for the
-TypeScript codec: `or` on one pair of containers took 1,056 ns native and 3,124 ns TypeScript on dense/dense (2.96 times),
-1,691 and 3,759 on sparse/sparse (2.22), 1,575 and 3,782 on run/run (2.40), and 3,341 against 14,099 on a skewed pair of
-64 and 4,000 values (4.22), the worst pair measured. Its `and` and `andNot` on one pair are 1.3 to 3.6 times slower in the
-same record, except `andNot` on the skewed pair (0.52). Through the store, the combines above are inside the bar or faster
+TypeScript codec: `or` on one pair of containers took 900 ns native and 3,066 ns TypeScript on dense/dense (3.41 times, the worst pair
+measured),
+1,431 and 3,731 on sparse/sparse (2.61), 1,634 and 2,686 on run/run (1.64), and 4,393 against 14,133 on a skewed pair of
+64 and 4,000 values (3.22). Its `and` and `andNot` on one pair are 1.2 to 2.9 times slower in the
+same record, except `andNot` on the skewed pair (0.45). Through the store, the combines above are inside the bar or faster
 anyway, because a store combine is dominated by chunk handling and the store's own work, not the pair kernel; that is a
 measured result for `intersect` and `andNot`, and an expectation, not a measurement, for `union`.
 
@@ -725,9 +723,9 @@ growth, which includes what V8's counters cannot see, is unreliable (an order of
 was 1.08 on dense, 0.86 on sparse, 1.18 on runs, 1.26 on mixed and 0.95 on spread8k, with the two codecs' ranges overlapping
 on all but spread8k, where every TypeScript sample is below every native one. No multiple of native's memory is claimed.
 
-**One container pair at a time is slower, and a few operations a lot.** In the per-operation record (commit `7bf70e54`, before later kernel changes, to be re-measured; one chunk, ratio of
-TypeScript to native): `optimize` on a run chunk 3.31 times (1,992 ns to 6,599 ns), `build` on a run chunk 1.75 times,
-`iterate` of a dense chunk 1.35 times; the other way, `build` of a dense chunk is 0.38 times, `serialize` 0.60 to 0.75 times,
+**One container pair at a time is slower, and a few operations a lot.** In the per-operation record (commit `1bee11b9`, 2026-11-10; one chunk, ratio of
+TypeScript to native): `optimize` on a run chunk 3.06 times (1,985 ns to 6,081 ns), `build` on a run chunk 1.74 times,
+`iterate` of a dense chunk 1.34 times; the other way, `build` of a dense chunk is 0.32 times, `serialize` 0.55 to 0.85 times,
 and a dense `has` 0.32 times.
 
 **What was not measured.** The two codecs have not been compared in region against real S3 (the in-region comparison is
