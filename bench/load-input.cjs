@@ -345,6 +345,7 @@ function publishedFigures(results) {
   const ratio = (v) =>
     `${round1(results.shapes['density-90'][v].wallMs.median / results.shapes['density-10'][v].wallMs.median)}×`;
   out['density 90/10, ids'] = ratio('idsSync');
+  out['density 90/10, ids through an async generator'] = ratio('idsAsync');
   out['density 90/10, bitmap'] = ratio('bitmap');
   out['longest stall, bitmap'] = ms(
     Math.max(...SHAPES.map((s) => results.shapes[s].bitmap.stallMs.worst)),

@@ -6,8 +6,10 @@
  * to occupy. Measured on the TypeScript codec (the end-to-end figures; the synthetic yield-primitive and threadpool
  * experiments below were taken earlier, on the native codec of 0.23.0), on a 1M-id load of 65,536 chunks onto
  * in-memory storage, on an Apple M3 Pro with a one-minute load average of about 2: **394 ms wall, and 399 ms during
- * which the event loop did not turn at all** (medians of 20 fresh-process runs). Wire that to a request handler and every other in-flight request on the instance — health
- * checks included — waits out the whole load.
+ * which the event loop did not turn at all** (medians of 20 fresh-process runs). The stall is read by a separate
+ * `setImmediate` chain beside the load, a different instrument from the wall time, so it can read a little above it.
+ * Wire that to a request handler and every other in-flight request on the instance, health checks included, waits
+ * out the whole load.
  *
  * The fix is not to make the work asynchronous. That was measured too, on the native codec's threadpool insert, and
  * it was a 7x *regression*: handing each chunk's insert to the threadpool cost ~9 µs of dispatch against ~1.5 µs of
@@ -32,10 +34,10 @@
  * baseline, with the worst event-loop gap down from 568 ms to 13.8 ms.
  *
  * **Three experiments, three sets of numbers — do not mix them.** (a) The end-to-end 1M-id bulk load:
- * 394 ms wall / 399 ms blocked unyielded, 399 ms / 31 ms yielded, on the TypeScript codec. (b) This synthetic yield-primitive comparison:
- * 568 ms / 568 ms unyielded, 569 ms / 13.8 ms with `setImmediate`. (c) A per-chunk insert microbenchmark:
- * 92 ms sync versus 636 ms via the threadpool. Quoting a baseline from one against a result from another describes
- * work none of them did, such as a 92 ms operation with 450 ms of starvation inside it.
+ * 394 ms wall / 399 ms blocked unyielded, 399 ms / 31 ms yielded, on the TypeScript codec. (b) This synthetic
+ * yield-primitive comparison: 568 ms / 568 ms unyielded, 569 ms / 13.8 ms with `setImmediate`. (c) A per-chunk
+ * insert microbenchmark: 92 ms sync versus 636 ms via the threadpool. Quoting a baseline from one against a result
+ * from another describes work none of them did, such as a 92 ms operation with 450 ms of starvation inside it.
  */
 /**
  * The only part of a `Clock` that yielding actually needs.

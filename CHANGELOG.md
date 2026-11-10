@@ -57,10 +57,10 @@ so, and so do the module headers in the code.
 - **The event-loop figures are re-measured on the TypeScript codec, and a load from a bitmap has its first recorded
   figures.** On an Apple M3 Pro (Node v24.22.1, in-memory storage, 2026-11-10), a 1M-id load takes a median 399 ms
   with a longest stall of 31 ms (35 ms at worst), and holds the loop for 399 ms when it yields nothing; the guide had the
-  native codec's 526 ms and 24 ms. A load of the 11.5M-member dense set from `{ bitmap }` takes 15 ms against 439 ms from ids in
-  an array; the loading guide has the table, and the sparse and runs sets. The load-input bench now records that every input
-  wrote an object of one size with the same members in the same chunks, since the objects' bytes always differ by their write
-  identity. No library code, package or version changes.
+  native codec's 526 ms and 24 ms. A load of the 11.5M-member dense set from `{ bitmap }` takes 15 ms against 449 ms from ids in
+  an array; the loading guide has the table, and the sparse and runs sets. The load-input bench now records a SHA-256 of
+  every stored object with the footer's write identity (the nonce and the checksum covering it) zeroed, and its check
+  fails unless every input of a set wrote the same bytes. No library code, package or version changes.
 
 - **`store.materializeMany` is measured on S3, by the batch suite's first two runs.** Two runs from AWS CloudShell in
   `us-east-1`, against the published `0.27.0` packages (`2026-11-03-78516` and `2026-11-08-b12e6`), of one cold call
