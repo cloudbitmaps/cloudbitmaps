@@ -77,12 +77,13 @@ export interface ConsistencyIssue {
   /**
    * `missing-storage-generation`: `currentGen` references a Storage generation that is not present (torn restore).
    * `summary-mismatch` (only when asked for): the generation is there, but its row's summary names another object
-   * than the one under its number, says a different id count or metadata than the object holds (a row restored from
-   * another point than its bucket, or an object put back from outside the library), or is one no read uses: on a row
-   * with no keys, a summary that is sealed, that describes another generation than the pointer's, that records a
-   * fingerprint naming no object, or that records a `tailBytes` no object of that size can have. A summary that names another object is what a count and a `stat()` answer from while
-   * every read that opens the object refuses it; one whose count or metadata disagrees is answered from until a read
-   * opens the object, which stops that store using it; one no read uses leaves every read opening the object unchecked.
+   * than the one under its number, says a different id count, metadata or tail size than the object holds (a row
+   * restored from another point than its bucket, or an object put back from outside the library), or is one no read
+   * uses: on a row with no keys, a summary that is sealed, that describes another generation than the pointer's, that
+   * records a fingerprint naming no object, or that records a `tailBytes` no object of that size can have. A summary
+   * that names another object is what a count and a `stat()` answer from while every read that opens the object
+   * refuses it; one whose count or metadata disagrees is answered from until a read opens the object, which stops that
+   * store using it; one no read uses leaves every read opening the object unchecked.
    * `known-generation-mismatch` (only when asked for): the object under the number `generation` is not the one the row's
    * ledger of known generations recorded for it: its footer checksum differs, or its footer fails its own checks (it is
    * not a `.crbm` object, or is cut short). It says nothing of what a rollback does with that generation.
@@ -130,9 +131,11 @@ export interface ConsistencyReport {
    */
   readonly errored: ConsistencyErrorEntry[];
   /**
-   * With `summaries: true`, the segments whose row's summary could not be held against its object because it is
-   * sealed and no keystore was given, or does not open under the one given: neither checked nor found wrong. Present
-   * only when summaries were asked for.
+   * With `summaries: true`, the segments whose row has keys and a summary that could not be held against its object:
+   * a summary is held there only when the keystore opens the row's key and the summary is a sealed one of the
+   * pointer's generation that opens under it, and any other (no keystore, a key the keystore refuses or cannot find, a
+   * summary that does not open, one of another generation, a clear one) is counted here: neither checked nor found
+   * wrong. Present only when summaries were asked for.
    */
   readonly summariesUnchecked?: number;
   /**
@@ -385,13 +388,15 @@ async function checkCurrentObject(
  * object that is there as present, where every segment was reported errored.
  *
  * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
- * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count and metadata
- * it says, reporting `summary-mismatch` where they disagree, and, on a row with no keys, for every summary no read
- * uses (a sealed one, one of another generation, one whose fingerprint names no object, one whose `tailBytes` no object
- * of that size can have). For a row with a clear summary that open is the only request of the object; if it fails
+ * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count, metadata and
+ * tail size it says, reporting `summary-mismatch` where they disagree, and, on a row with no keys, for every summary
+ * no read uses (a sealed one, one of another generation, one whose fingerprint names no object, one whose `tailBytes`
+ * no object of that size can have). For a row with a clear summary that open is the only request of the object; if it fails
  * before its first read answered, the listing decides, and once that read has answered a failure is an error of the
- * segment. A sealed summary needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by
- * default, since the default check only looks for the object.
+ * segment. On a row with keys, a summary is held against its object only when `deps.keystore` opens the row's key and
+ * the summary is a sealed one of the pointer's generation that opens under it; any other (no keystore, a key the
+ * keystore refuses or cannot find, a summary that does not open, one of another generation, a clear one) is counted in
+ * `summariesUnchecked`. Off by default, since the default check only looks for the object.
  *
  * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
  * included, against its object: one footer read each (104 bytes, no key, not retried), reporting

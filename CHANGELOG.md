@@ -88,8 +88,9 @@ so, and so do the module headers in the code.
   your own can store a sealed summary, a summary of another generation, or a clear one whose `tailBytes` no object of
   its size can have; no read uses any of them, so the object is opened unchecked, but the check passed the row. It now
   reports each as `summary-mismatch`, as it already did a clear summary whose fingerprint names no object. A shipped
-  registry refuses each of these shapes when it writes the row, so no row it holds is reported by this change, and no
-  read changes.
+  registry refuses each of these shapes when it writes the row, so no row the library wrote is reported by this change,
+  and no read changes. A row edited by hand can still hold a sealed summary or one of another generation, since a read
+  checks only the summary's own shape, and such a row is now reported.
 
 ## [0.27.0] — 2026-11-02
 

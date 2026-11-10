@@ -167,7 +167,7 @@ describe('checkConsistency with summaries', () => {
   it('a keyed row keeps its behaviour for each shape: its sealed and other-generation shapes are not reported, and are counted as unchecked', async () => {
     const w = world(true);
     await w.store.load(SEG, [1, 2, 3]);
-    // (A keyed row's tailBytes is inside its sealed summary, so a clear one is not a shape a keyed row has.)
+    // (The `tailBytes` shape does not apply to a keyed row: its `tailBytes` is sealed.)
     for (const [i, change] of [
       (s: Record<string, unknown>) => ({ generation: s.generation, sealed: 'AAAA' }),
       (s: Record<string, unknown>) => ({ ...s, generation: 1 }),
