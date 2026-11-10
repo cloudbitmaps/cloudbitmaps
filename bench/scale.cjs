@@ -377,7 +377,7 @@ function render(r) {
     .slice(1)
     .map((f, i) => {
       const prev = r.fleets[i];
-      return `${round(f.discoveryMs / prev.discoveryMs, 1)}x for ${Math.round(f.n / prev.n)}x the segments`;
+      return `${(f.discoveryMs / prev.discoveryMs).toFixed(1)}x for ${Math.round(f.n / prev.n)}x the segments`;
     })
     .join(', then ');
   const rssFigures = r.fleets.map((f) => f.rssPeakMiB).join(', ');

@@ -101,7 +101,7 @@ wall-clock, recorded and not asserted:
   memory is claimed.
 - **No union cell through the store:** the store comparison times `intersect` and `andNot`, not `union`. One container
   pair of `or` is 1.1 to 3.4 times slower in the per-operation record (measured on 2026-11-10 on an Apple M3 Pro under Node
-  v24.22.1 at commit `1bee11b9`), and that
+  v24.22.1 at commit `1bee11b9`, load 1.57 before and 2.41 after), and that
   does not show in the combines that were timed through the store. The `or` of the public class in memory is timed against
   native in [the table below](#the-public-class-against-native-in-memory); what a store `union` costs on this codec is expected to
   be inside the same bar, and is not measured.

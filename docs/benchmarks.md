@@ -441,7 +441,7 @@ above are not counted.
 
 ## At scale — measured (1K → 10K → 100K segments)
 
-> **Codec:** the TypeScript codec, the one the store uses, on 2026-11-10 (the commit, Node version and load are in the footnote under the table). The 1-minute load average rose from 2.2 at the start of the run to 4 at its end, so read the wall-clock columns (the discovery scan, the seed rate) with that in mind.
+> **Codec:** the TypeScript codec, the one the store uses, on 2026-11-10 (the commit, Node version and load are in the footnote under the table). The 1-minute load average rose from 1.9 at the start of the run to 3 at its end, so read the wall-clock columns (the discovery scan, the seed rate) with that in mind.
 >
 > **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
@@ -462,7 +462,7 @@ measured evidence at fleet scale:
 
 Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.1 ms, which times the engine rather than object storage.
 
-_Measured on Apple M3 Pro (arm64, node v24.22.1, commit f140176e, 2026-11-10, load 1.9 at the start and 3 at the end). **The bound is the retained heap** (post-GC): 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.8 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (88.4, 182.8, 183.2 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~57–60 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 10x for 10x the segments, then 16.8x for 10x the segments — read the milliseconds as this run's, not as a law._
+_Measured on Apple M3 Pro (arm64, node v24.22.1, commit f140176e, 2026-11-10, load 1.9 at the start and 3 at the end). **The bound is the retained heap** (post-GC): 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.8 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (88.4, 182.8, 183.2 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~57–60 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 10.0x for 10x the segments, then 16.8x for 10x the segments — read the milliseconds as this run's, not as a law._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment
