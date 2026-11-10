@@ -771,12 +771,13 @@ The **stall** column is the number that decides whether co-resident work survive
 cost. A load yields the event loop periodically, so its ~399 ms is spent in slices — the longest ~31 ms in the
 median run and 35 ms in the worst — with the loop free in between: other requests interleave rather than
 queueing behind the whole load. Without a clock to yield through, the two columns are the same number: the same
-1M-id load holds the loop for **~399 ms straight** (median), long enough for a health check to time out and the
-instance to be pulled from its load balancer.
+1M-id load holds the loop for **~399 ms straight** (median), long enough to delay every request on the instance by
+that much, and a larger load can outlast a health check's timeout and have the instance pulled from its load
+balancer.
 
 **Read these as one machine's figures.** The machine was close to idle: its one-minute load average was about 2
-at the start and the end of the run, on Node v24.22.1 at commit `21463cc2`. Another machine's cost and stall will differ, and the worst
-stall is the figure a busy neighbour moves most. The two columns' proportions are the finding.
+at the start and the end of the run, on Node v24.22.1 at commit `21463cc2`. Another machine's cost and stall will
+differ, and the worst stall is the figure a busy neighbour moves most. The two columns' proportions are the finding.
 The harness, the per-run samples, the Node version and the load averages are in
 [`bench/event-loop-results.json`](../../bench/event-loop-results.json), written by
 [`bench/event-loop.cjs`](../../bench/event-loop.cjs); `pnpm bench:event-loop:check` fails in CI if this section's

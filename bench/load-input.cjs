@@ -20,8 +20,9 @@
  *   density-10   10 % of the same 245 chunks: about 1.6M members.
  *   density-90   90 % of them: about 14.4M members, the same 245 bitset containers.
  *
- * The last two are the falsifiable figure. Same container layout, nine times the members: a path with per-id work
- * costs about nine times as much on the second, and a path without it costs about the same.
+ * The last two are the falsifiable figure. Same container layout, nine times the members: a path with per-id work is
+ * expected to cost close to nine times as much on the second, and a path without it about the same. Recorded: 5.4x
+ * from a plain array, 8.2x through an async generator and 0.9x from a bitmap (the loading guide has the table).
  *
  * Four inputs per set: ids as a plain array (the sync id path), the same ids through an async generator (what a
  * caller iterating its bitmap into `load` pays), `{ bitmap }`, and `{ serialized }`. Building the set and the
@@ -32,7 +33,7 @@
  * the write's identity zeroed (the footer's cleartext `indexNonce` and the `footerCrc32c` that covers it, the only
  * bytes that differ between two writes of the same input). So the run also records that every input of a set wrote
  * the same bytes, apart from that identity. `inputContainers` is the layout of the input bitmap before the load (the
- * library's `statistics()`, with no run optimization), not of the stored object.
+ * `roaring` package's `statistics()`, with no run optimization), not of the stored object.
  *
  * HONESTY BOUNDARY — read this before quoting any number here.
  *

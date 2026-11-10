@@ -206,8 +206,8 @@ the footer, which is what the run records:
 
 On the density pair, a load from ids took 5.4× as long at 90 % as at 10 % from a plain array (8.2× through an async
 generator), and a load from a bitmap took 0.9× as long: the bitmap's cost follows its containers, not its members,
-while the id path's follows its members (less than the full nine times, since part of each load does not depend on the
-member count). The worst event-loop stall of any load from a bitmap, on any of the five sets, was 49 ms (the worst
+while the id path's follows its members (less than the full nine times, likely because part of each load does not depend
+on the member count). The worst event-loop stall of any load from a bitmap, on any of the five sets, was 49 ms (the worst
 trial, where the table's figures are medians). The stall is read by a separate `setImmediate` chain beside the load,
 so it is a different instrument from the wall time. The times are the CPU cost on memory storage; a real bucket adds
 the same upload for every input. They are one machine's wall-clock figures, not a promise.
@@ -360,7 +360,8 @@ nothing. `MemoryStorage` holds the whole object, as it holds every object.
 
 **A load is a batch job, not a request handler.** It streams the object to the bucket and is CPU-heavy in short bursts
 (serializing about 65,000 chunks for a segment spread across the id space). It yields the event loop periodically, so
-it is a well-behaved neighbour, but it still burns a core for a fraction of a second and, unless its ids are sorted,
+it is a well-behaved neighbour, but it still burns a core for a fraction of a second to a few seconds, depending on its
+size and its input, and, unless its ids are sorted,
 holds a whole generation in RAM. Run it from a job runner, a queue consumer, a scheduled task or a short-lived container, and keep the request
 path for `has`, `count` and `intersect`. See [where to run it](production.md#what-blocks-the-event-loop-and-where-to-run-it).
 

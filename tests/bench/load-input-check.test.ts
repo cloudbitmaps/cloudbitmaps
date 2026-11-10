@@ -253,17 +253,25 @@ describe('bench:load-input:check, once results are recorded', () => {
     (hashes.shapes as Shapes).sparse!.bitmap!.sha256 = ['b'.repeat(64)];
     const d = copy();
     withResults(d, hashes);
-    expect(check(d).status).toBe(1);
+    const rd = check(d);
+    expect(rd.status).toBe(1);
+    expect(rd.err).toContain('the same bytes');
     const sizes = plantedResults();
     (sizes.shapes as Shapes).dense!.serialized!.sizes = [2];
     const e = copy();
     withResults(e, sizes);
-    expect(check(e).status).toBe(1);
+    const re = check(e);
+    expect(re.status).toBe(1);
+    expect(re.err).toContain('the same bytes');
+    // Every input of the set gets the same malformed hash, so only the hash's form can fail it.
     const malformed = plantedResults();
-    (malformed.shapes as Shapes).runs!.idsSync!.sha256 = ['not a hash'];
+    for (const v of ['idsSync', 'idsAsync', 'bitmap', 'serialized'])
+      (malformed.shapes as Shapes).runs![v]!.sha256 = ['not a hash'];
     const f = copy();
     withResults(f, malformed);
-    expect(check(f).status).toBe(1);
+    const rf = check(f);
+    expect(rf.status).toBe(1);
+    expect(rf.err).toContain('the same bytes');
   });
 
   it('fails on fewer than five trials, and on a guide that does not name the machine', () => {
