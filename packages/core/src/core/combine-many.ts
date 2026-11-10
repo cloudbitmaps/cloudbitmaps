@@ -96,7 +96,7 @@ interface PinnedOperand {
   readonly pinnedVersion: string | null;
   /**
    * The fingerprint of the object the pin holds: the identity of the generation's bytes, where a number can be taken
-   * again. `null` only where the pinned segment has no object.
+   * again. `null` only where `pinnedGeneration` is `null`: a pin of a generation always holds its object's fingerprint.
    */
   readonly pinnedFingerprint: string | null;
 }
@@ -493,16 +493,30 @@ export function rebindCombineMany<R>(
 }
 
 /**
- * Refuses an operand that names a pinned generation without the rest of its pin, which the type already forbids: a
- * caller that leaves the fingerprint (or the version) out would skip the identity re-check of a subtracted operand.
+ * Refuses an operand that carries a partial pin, which the type already forbids: the three fields are all present or all
+ * absent, and a pin of a generation carries a version and a fingerprint (only a pin of no generation holds `null` in all
+ * three). A caller that left one out, or set it to `null` under a numbered generation, would skip the identity re-check
+ * of a subtracted operand, or be taken as unpinned.
  */
 function checkPins(operands: readonly CombineManyOperand[]): void {
   for (const op of operands as readonly CombineManyOperandBase[] &
     readonly Partial<PinnedOperand>[]) {
-    if (op.pinnedGeneration === undefined) continue;
-    if (op.pinnedVersion === undefined || op.pinnedFingerprint === undefined) {
+    const { pinnedGeneration: gen, pinnedVersion: version, pinnedFingerprint: fingerprint } = op;
+    if (gen === undefined) {
+      if (version !== undefined || fingerprint !== undefined) {
+        throw new ValidationError(
+          `operand "${op.name}" has a pinnedVersion or pinnedFingerprint without a pinnedGeneration`,
+        );
+      }
+      continue;
+    }
+    const whole =
+      gen === null
+        ? version === null && fingerprint === null
+        : typeof version === 'string' && typeof fingerprint === 'string';
+    if (!whole) {
       throw new ValidationError(
-        `operand "${op.name}" is pinned to a generation without its pinnedVersion and pinnedFingerprint`,
+        `operand "${op.name}" is pinned to ${gen === null ? 'no generation' : 'a generation'} with a pinnedVersion and pinnedFingerprint that do not match it (a generation needs both as strings, no generation needs both null)`,
       );
     }
   }
@@ -1920,7 +1934,11 @@ function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boole
   const was = tokenOfVersion(spec.pinnedVersion);
   if (was !== undefined && !sameRow(was, now.token)) return false;
   const held = spec.pinnedFingerprint;
-  return held == null || now.fingerprint == null || held === now.fingerprint;
+  // A numbered pin always holds its object's fingerprint (a caller that has none is refused up front), so none fails closed.
+  if (held == null) return false;
+  // The row read carries no fingerprint where the store has no summary it can use for that row: there is no object
+  // identity to compare, and the row's incarnation, checked above, is what is left.
+  return now.fingerprint == null || held === now.fingerprint;
 }
 
 /** Whether an operand read live has changed row or generation since its index was read. */

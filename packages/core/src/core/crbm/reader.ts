@@ -705,8 +705,8 @@ export class CrbmReader {
   /**
    * Range-GET one chunk's payload, verifying its CRC32C before returning. Returns `null` if the chunk is
    * absent. Throws `IntegrityError` on a CRC mismatch (the bytes must never reach the codec's
-   * deserializer). The returned bytes may be shared (a small generation's chunks are kept by the reader and handed out
-   * again), so callers must not change them.
+   * deserializer). A chunk the reader keeps is handed out as a copy, so changing the returned bytes
+   * changes nothing the reader holds.
    */
   async getChunk(chunkKey: number): Promise<Uint8Array | null> {
     const slot = this.slotOf(chunkKey);

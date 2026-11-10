@@ -59,8 +59,10 @@ so, and so do the module headers in the code.
   returned a Node `Buffer` (whose `slice` is a view onto the driver's memory, which would have been kept alive and
   changed if the driver reused it); a plain `Uint8Array`, which the shipped drivers return, is copied once, as before.
   And a caller of core's batch combine can no longer skip the check that a subtracted, pinned operand is still the
-  generation it was pinned to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out: a pinned operand now names all
-  of them in the type, and `compileCombineMany` and `rebindCombineMany` refuse one that does not. Core's main entry is
+  generation it was pinned to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned
+  operand now names all of them in the type, `compileCombineMany` and `rebindCombineMany` refuse a partial pin (a
+  generation without both, either without a generation, or a pin of no generation holding one), and the re-check
+  fails closed for a numbered pin with no fingerprint. Core's main entry is
   outside the stability promise.
 
 ### Changed
