@@ -20,7 +20,8 @@ so, and so do the module headers in the code.
   and a near miss, where a band of 50 chunks is held by every operand but one, so a pairwise fold would read what the
   k-way plan must not. Each read is held to the exact ids the layout holds and to the requests the engine makes over the
   in-memory backend on the same operands (3k requests a read at 1,000,000 ids, a pointer, a tail and one range an operand,
-  and 4k at 5,000,000 ids, where each object is two parts: the requests barely grow with k, so the figure that matters is
+  and 4k at 5,000,000 ids, where each operand's core read passes the 1 MiB read cap: per operand the requests do not grow
+  with k, so the figure that matters is
   the bytes read against the bytes of the k objects, which each run records). The projection's upper bound is $0.011360
   (derived from the counts; the exact expected requests cost $0.002315), and the ceiling to give is
   `CR_CALIBRATE_MAX_USD=0.02`, 1.76 times the bound. The run will not establish a `union` or `andNot` over k operands, nor a

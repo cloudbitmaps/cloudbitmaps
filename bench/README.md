@@ -693,7 +693,8 @@ first run is still to be made, so no figure of it is published.
 **What a k-way intersect reads.** The engine takes the chunk keys present in *every* operand, starting from the smallest
 key set, and reads each operand at those keys only: per operand a pointer read and a tail read (the index, no payload),
 then range requests over the common chunks. Those ranges are coalesced (a gap up to 256 KiB, a read up to 1 MiB), so on
-operands this small **the requests barely grow with k or with the size of the common core**: the headline is **the bytes
+operands this small **per operand the requests do not grow with k or with the size of the common core** (3 an operand at
+1,000,000 ids): the headline is **the bytes
 read against the bytes of the k objects**, and, in the near-miss group, the chunks a pairwise fold would read and the
 k-way plan does not. Each run records both, with the requests by kind.
 
@@ -738,7 +739,7 @@ is the range bytes of one read, **counted** in memory):
 | k = 5, near miss | 15 | 5 | 2,024,000 | 3,376,270 | 35 |
 
 Requests are 3k at 1,000,000 ids in every shape (a pointer, a tail and one range an operand, **counted**), whatever the
-core, and 4k at 5,000,000 ids (two ranges an operand, since each object is two parts): they do not rise with the core. The bytes do,
+core, and 4k at 5,000,000 ids (two ranges an operand: each operand's core is about 2.0 MB, over the engine's 1 MiB read cap): they do not rise with the core. The bytes do,
 from 5 % of the objects at a 5 % core to about half at a 50 % core, and the near-miss shape reads the same bytes as the
 20 % core of group A at k = 5, though its objects hold the bands too.
 
@@ -754,9 +755,9 @@ at 10 MB). The bound is checked against the ceiling before anything is created, 
 check works as in the large suite. At the default plan: **306 PUT-class and 24,576 GET-class, $0.011360** (the bound,
 **derived** from the counts), against exactly **75 PUT-class and 4,850 GET-class, $0.002315** expected. The ceiling to give is
 **`CR_CALIBRATE_MAX_USD=0.02`**, 1.76 times the bound (**derived**); the harness refuses a ceiling at or below the printed bound. The
-read bound has no allowance for a read the client retries (a retry is a request the meter counts, and a throttled sample is
-discarded and run again); the discard allowance in the bound (up to 3 samples at the costliest shape's bound) and the ceiling's
-margin cover it; a run that exceeds the bound anyway is reported as `PROJECTION EXCEEDED` after it, and the spend ceiling stops it first if it reaches it. `CR_CALIBRATE_MULTI_READS` sets `R`
+read is never retried: the workload's client makes one attempt and the timed store's retry is off; a sample that meets a fault
+is discarded and run again, within the discard allowance in the bound (up to 3 samples at the costliest shape's bound), and the
+ceiling's margin is beyond it; a run that exceeds the bound anyway is reported as `PROJECTION EXCEEDED` after it, and the spend ceiling stops it first if it reaches it. `CR_CALIBRATE_MULTI_READS` sets `R`
 (a non-negative integer; the other suites refuse it, as it refuses theirs). A release below `0.26.0`, the first with the
 count verbs, is refused before anything is created, as the large suite's is.
 
