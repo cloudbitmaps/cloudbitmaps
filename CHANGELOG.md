@@ -55,9 +55,9 @@ so, and so do the module headers in the code.
 ### Changed
 
 - **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
-  was killed while the object was being written, and the whole object once the file was fully written and closed: before
-  the link it is the only name the object has (the generation was never published), after the link a second name for the
-  published generation. Where it holds the whole object, an erasure or a drop does not delete it, so the bytes stay
+  was killed while the object was being written, and the whole object once every byte was written: before
+  the link it is the only name the object has (the generation was never published), after the link a second name for the object under its generation's name, which the killed write never
+  published (a later load's collection, an erasure that finds the id in it, or a drop deletes that name, and the `.tmp` link keeps the bytes). Where it holds the whole object, an erasure or a drop does not delete it, so the bytes stay
   readable until the file is removed. The library removes a `.tmp` last written over 24 hours ago, best effort, and only
   from a write into the same directory: a generation write sweeps the storage directory, a registry-row write (a load, an
   erasure's rewrite or a drop's tombstone) the registry directory, so a drop's tombstone write never reaches the storage
