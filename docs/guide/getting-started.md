@@ -85,7 +85,7 @@ await store.load({ segment: 'active-this-week' }, [1, 2, 3]);
 ```
 
 `LocalFsStorage` creates its files owner-only (at most `0600`) and its directories at most `0700`: the process umask can only narrow them, so another user of the machine cannot read or list your segments; a missing parent of the root is created with the default mode, an existing directory keeps the mode it has, a registry row is always rewritten owner-only, and Windows ignores modes. It is for one process on one folder: two processes on the same folder do not protect each other from
-writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket. A delete removes the file and
+writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket. Give the root one spelling in a process: the per-row lock is keyed on the resolved path, lowercased, so a root reached under two spellings (for instance a non-ASCII root in two Unicode normalization forms, which a file system such as APFS treats as one folder) gets two locks. A delete removes the file and
 leaves its directory, so a dropped namespace, and the preflight probe's `cbm.due.preflight` folder, stay as empty
 directories.
 
