@@ -1938,9 +1938,9 @@ function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boole
   if (held == null) return false;
   // The object is compared only where the row read carries a fingerprint, and that is up to the caller's `current`. The
   // facade's read for the re-check before a publish carries one for every row that resolves a generation; its read at
-  // the end of the call, for the stats' `moved`, asks for none. A row that resolves none (a destroyed row, or a `null`
-  // current generation) reports its kept generation number. A row read without a fingerprint is compared by generation
-  // number and incarnation alone, and a pinned operand with no `current` is not re-checked at all.
+  // the end of the call, for the stats, asks for none. A row that resolves none carries none (a destroyed row reports
+  // the tombstone's kept generation number). A row read without a fingerprint is compared by generation number and
+  // incarnation alone, and a pinned operand with no `current` is not re-checked at all.
   return now.fingerprint == null || held === now.fingerprint;
 }
 
