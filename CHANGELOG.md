@@ -114,6 +114,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`checkConsistency({ summaries: true })` reports a sealed summary, and a summary of another generation, on a row with no
+  keys.** A registry of your own can store either; no read uses it, so the object is opened unchecked, but the check
+  passed the row. It now reports each as `summary-mismatch`, as it already did a clear summary whose fingerprint names
+  no object. The summaries a shipped registry stores, which are refused at write when they are either shape, are
+  reported as before, and no read changes.
 - **A pinned handle now stops answering once its segment is destroyed or its generation erased, within `cache.genTtlMs`.**
   A `seg.pin()` handle in a store that did not perform the erasure or the crypto-shred kept answering from its open
   reader and the chunk cache with no bound at all (a leased one until its lease ended, up to 14 days). On a store with a

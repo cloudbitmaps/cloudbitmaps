@@ -79,11 +79,11 @@ export interface ConsistencyIssue {
    * `missing-storage-generation`: `currentGen` references a Storage generation that is not present (torn restore).
    * `summary-mismatch` (only when asked for): the generation is there, but its row's summary names another object
    * than the one under its number, says a different id count or metadata than the object holds (a row restored from
-   * another point than its bucket, or an object put back from outside the library), or records a fingerprint that
-   * names no object. A summary that names another object is what a count and a `stat()` answer from while every read
-   * that opens the object refuses it; one whose count or metadata disagrees is answered from until a read opens the
-   * object, which stops that store using it; one whose fingerprint names no object is not used, so every read opens the
-   * object unchecked.
+   * another point than its bucket, or an object put back from outside the library), or is one no read uses: on a row
+   * with no keys, a summary that is sealed, that describes another generation than the pointer's, or that records a
+   * fingerprint naming no object. A summary that names another object is what a count and a `stat()` answer from while
+   * every read that opens the object refuses it; one whose count or metadata disagrees is answered from until a read
+   * opens the object, which stops that store using it; one no read uses leaves every read opening the object unchecked.
    * `known-generation-mismatch` (only when asked for): the object under the number `generation` is not the one the row's
    * ledger of known generations recorded for it: its footer checksum differs, or its footer fails its own checks (it is
    * not a `.crbm` object, or is cut short). It says nothing of what a rollback does with that generation.
@@ -199,16 +199,18 @@ async function checkSummary(
   };
   const described = usableSummary(ref, live, aead);
   if (described === undefined) {
-    // A clear summary of this generation whose fingerprint names no object (a registry of your own can hand one over)
-    // is not used by any read, so the object is opened unchecked: a row to report, not one that passes.
+    // A summary on an unkeyed active row that no read uses (a registry of your own can hand one over) leaves the object
+    // opened unchecked: a row to report, not one that passes. Three shapes: a sealed summary, which an unkeyed row has
+    // no key to open; one of another generation than the row's pointer; and a clear one of this generation whose
+    // fingerprint names no object.
     const summary = live.summary;
     const unnamed =
       !keyed &&
       live.status === 'active' &&
       summary !== undefined &&
-      !('sealed' in summary) &&
-      summary.generation === generation &&
-      fingerprintParts(summary.fingerprint) === undefined;
+      ('sealed' in summary ||
+        summary.generation !== generation ||
+        fingerprintParts(summary.fingerprint) === undefined);
     return unnamed ? mismatch : { kind: 'ok', unchecked: keyed };
   }
   // The object must be the one the summary names, as well as hold what it says: another object under the number (a
