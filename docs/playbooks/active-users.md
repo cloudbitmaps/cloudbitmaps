@@ -281,11 +281,12 @@ which ran on `MemoryStorage`. For a window of D days (D operands in one combine)
 | Call | What it makes | Figure |
 |---|---|---|
 | `day.count()` | no chunk read; the registry row's summary or the index answers | derived: [what `count()` trusts](../guide/reading.md#what-count-trusts) |
-| `unionCount` over D days | at least a pointer read and a tail read for each day, and the chunks of every key more than one day holds | counted in memory: 31 operands of 500,000 ids made 93 requests, 3 a day, and, in the spread layout, which matches ids dense in one range as here, read 39,798,544 bytes where the stream read 40,102,468 (counted; the packed layout, where the days share few chunks, read 9,726,064; [the record](../benchmarks.md#counting-a-combine--counted-in-memory-and-measured-on-s3)) |
+| `unionCount` over D days | at least a pointer read and a tail read for each day, and the chunks of every key more than one day holds | counted in memory: 31 operands of 500,000 ids sharing 100 chunks made 93 requests, 3 a day. The bytes depend on where the shared chunks sit: packed together in each object, the count read 9,726,064 bytes where the stream read 40,102,468; spread among each operand's own chunks, it read 39,798,544. Both counted; [the record](../benchmarks.md#counting-a-combine--counted-in-memory-and-measured-on-s3) |
 | `intersectCount` of a cohort and a day | the requests `intersect` makes: only the chunks both hold | measured on S3: 6 GETs at a million ids an operand, 8 at five million, 10 at ten million ([the S3 run](../benchmarks.md#large-operands--run-2026-11-03-fbbb8)) |
 
-A 30-day MAU is therefore a call of about 90 requests by the same model, as for the 31-day count, and where the days share
-few chunks it reads far fewer bytes than a stream of the union; with dense ids it reads nearly as many. The counts write
+A 30-day MAU is therefore a call of about 90 requests by the same model, as for the 31-day count, and where the chunks the days share
+sit together in each object it reads far fewer bytes than a stream of the union; spread among each day's own chunks, it
+reads nearly as many. The counts write
 nothing and hold no result. A retention table of N days by `intersectCount` is N combines; read
 the cohort once with a dry run of `materializeMany` when N is large.
 
