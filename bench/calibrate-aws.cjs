@@ -136,7 +136,10 @@ const {
   projectMulti,
   expectedMulti,
 } = require('./lib/calibrate-multi-stages.cjs');
-const { runMultiSuite, projectionLines: multiProjectionLines } = require('./lib/calibrate-multi.cjs');
+const {
+  runMultiSuite,
+  projectionLines: multiProjectionLines,
+} = require('./lib/calibrate-multi.cjs');
 const { resourcesNow, installedSources } = require('./lib/calibrate-large-resources.cjs');
 const {
   coldIntersectIds,
@@ -1243,48 +1246,48 @@ async function main() {
             expected: expectedMulti(plan),
           }
         : SUITE === 'batch'
-        ? {
-            // What the shape is, and the requests the engine made of it in memory, which the run is held to.
-            shape: plan.shape,
-            operands: plan.operands,
-            outputs: plan.outputs,
-            idsPerOperand: plan.idsPerOperand,
-            samples: plan.samples,
-            // The options the call was made with (`null`: not passed, the library's default), which the grouping, and so the
-            // requests counted below, depend on.
-            ...plan.call,
-            operandBytes: plan.operandBytes,
-            counts: plan.counts,
-            expected: expectedBatch(plan),
-          }
-        : SUITE === 'large'
           ? {
-              // What each size is, and the requests the engine made of it in memory, which the run is held to.
-              reads: plan.reads,
-              intos: plan.intos,
-              sizes: largeSizes.map((s) => ({
-                idsPerSegment: s.n,
-                stride: s.layout.stride,
-                chunksPerSegment: s.chunksPerSegment,
-                sharedChunks: s.sharedChunks,
-                operandBytes: s.operandBytes,
-                rangeCap: rangeCap(Math.max(...s.operandBytes)),
-                counts: s.counts,
-              })),
-              expected: expectedLarge(plan),
+              // What the shape is, and the requests the engine made of it in memory, which the run is held to.
+              shape: plan.shape,
+              operands: plan.operands,
+              outputs: plan.outputs,
+              idsPerOperand: plan.idsPerOperand,
+              samples: plan.samples,
+              // The options the call was made with (`null`: not passed, the library's default), which the grouping, and so the
+              // requests counted below, depend on.
+              ...plan.call,
+              operandBytes: plan.operandBytes,
+              counts: plan.counts,
+              expected: expectedBatch(plan),
             }
-          : {
-              segments: SEGMENTS,
-              idsPerSegment: IDS,
-              chunksPerSegment: layout.chunksPerSegment,
-              sharedChunks: layout.sharedChunks,
-              largeSegments: LARGE,
-              largeChunks: LARGE_CHUNKS,
-              largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
-              coldIntersects: READS,
-              // Everything every stage loads and reads, as the projection was computed from it.
-              plan,
-            },
+          : SUITE === 'large'
+            ? {
+                // What each size is, and the requests the engine made of it in memory, which the run is held to.
+                reads: plan.reads,
+                intos: plan.intos,
+                sizes: largeSizes.map((s) => ({
+                  idsPerSegment: s.n,
+                  stride: s.layout.stride,
+                  chunksPerSegment: s.chunksPerSegment,
+                  sharedChunks: s.sharedChunks,
+                  operandBytes: s.operandBytes,
+                  rangeCap: rangeCap(Math.max(...s.operandBytes)),
+                  counts: s.counts,
+                })),
+                expected: expectedLarge(plan),
+              }
+            : {
+                segments: SEGMENTS,
+                idsPerSegment: IDS,
+                chunksPerSegment: layout.chunksPerSegment,
+                sharedChunks: layout.sharedChunks,
+                largeSegments: LARGE,
+                largeChunks: LARGE_CHUNKS,
+                largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
+                coldIntersects: READS,
+                // Everything every stage loads and reads, as the projection was computed from it.
+                plan,
+              },
     projected: ops,
     projectedStages: stageBounds,
     // What the samples a run may discard can cost, beside the stages' bounds: each at the costliest sample's bound.

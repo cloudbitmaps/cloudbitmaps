@@ -13,6 +13,18 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **The calibration harness has a multi suite, so an `intersect` over three to ten operands can be measured on S3.**
+  `--suite multi` (or `CR_CALIBRATE_SUITE=multi`) loads thirty operands in five sets and runs 20 cold `intersect` reads
+  (streamed and drained) and 20 cold `intersectCount` reads of seven shapes on stores that have read nothing: k = 3, 5 and
+  10 at 1,000,000 ids with a 20 % common core; k = 5 at 5,000,000 ids (multipart objects); k = 5 at a 5 % and a 50 % core;
+  and a near miss, where a band of 50 chunks is held by every operand but one, so a pairwise fold would read what the
+  k-way plan must not. Each read is held to the exact ids the layout holds and to the requests the engine makes over the
+  in-memory backend on the same operands (a pointer, a tail and one range an operand at these sizes: the requests barely
+  grow with k, so the figure that matters is the bytes read against the bytes of the k objects, which each run records).
+  The projection is $0.011360 against a bound, and the ceiling to give is `CR_CALIBRATE_MAX_USD=0.02`. Evidence goes under
+  `bench/calibration/multi/`, with its own gate. The suite has not run on S3, so nothing here is a measurement, and the
+  other suites' projections, stages, expected counts and evidence are unchanged. No library code, package or version
+  changes.
 - **The batch suite can run `materializeMany` at another `publishConcurrency`, and its evidence records what a comparison
   needs.** `CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY` (an integer from 1 to the engine's maximum, 1,024, refused otherwise;
   unset passes nothing, so the call runs at the library's default) sets the option of the measured call, and of the

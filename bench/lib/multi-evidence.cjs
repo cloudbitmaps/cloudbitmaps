@@ -23,14 +23,17 @@ function shapeProblems(name, entry, shape, reads) {
   const at = `${name} ${entry.shape}`;
   if (shape === undefined) return [`${at} is not a shape of the workload`];
   const want = shape.counts?.[COUNTED[name]];
-  if (entry.runs !== reads) out.push(`${at} ran ${entry.runs} reads, the workload asked for ${reads}`);
+  if (entry.runs !== reads)
+    out.push(`${at} ran ${entry.runs} reads, the workload asked for ${reads}`);
   if (entry.runs === 0) return out;
   if (entry.exact !== true) out.push(`${at} is not marked exact`);
   if (entry.offExpected !== 0) {
     out.push(`${at} had ${entry.offExpected} reads that made other than the expected requests`);
   }
   if (want === undefined || entry.expectedGets !== want.gets) {
-    out.push(`${at} expects ${entry.expectedGets} GET-class, the workload's count is ${want?.gets}`);
+    out.push(
+      `${at} expects ${entry.expectedGets} GET-class, the workload's count is ${want?.gets}`,
+    );
   }
   if (entry.medianGets > shape.bound) {
     out.push(`${at} made a median ${entry.medianGets} GET-class, over its bound ${shape.bound}`);

@@ -99,7 +99,9 @@ function planNearMissLayout({ operands, shared, bandChunks, stride }) {
   }
   const sum = (stride * shared * (shared - 1)) / 2;
   if (!Number.isSafeInteger(sum)) {
-    throw new Error('the expected intersection sum exceeds 2^53 — the exact-content check would be unsound');
+    throw new Error(
+      'the expected intersection sum exceeds 2^53 — the exact-content check would be unsound',
+    );
   }
   function* idsOf(i) {
     for (let k = 0; k < shared; k += 1) yield k * stride;
@@ -195,9 +197,13 @@ function projectMulti(w) {
   }
   const discards = { put: 0, get: perRun * costliest };
   const put = Object.values(stages).reduce((n, s) => n + s.put, 0) + w.fixedPuts;
-  const getSum =
-    Object.values(stages).reduce((n, s) => n + s.get, 0) + w.fixedGets + discards.get;
-  return { stages, discards, costliestSample: costliest, total: { put, get: Math.max(getSum, put) } };
+  const getSum = Object.values(stages).reduce((n, s) => n + s.get, 0) + w.fixedGets + discards.get;
+  return {
+    stages,
+    discards,
+    costliestSample: costliest,
+    total: { put, get: Math.max(getSum, put) },
+  };
 }
 
 /**
