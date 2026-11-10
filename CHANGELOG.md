@@ -58,7 +58,7 @@ so, and so do the module headers in the code.
   Apple M3 Pro (Node v24.22.1, 2026-11-10), the per-operation record has the union of one dense pair of containers at 3.41
   times native (900 ns against 3,066 ns), the worst `or` pair, and a run chunk's `optimize` at 3.06 times; the pages had
   4.22 times (a skewed pair) and 3.31 times from the run of 2026-10-21. The at-scale run was taken twice
-  and the two runs agree: a first run (commit `4f82a7ae`) agreed with the second, whose record is published. The retained heap
+  and the two runs agree: a first run agreed with the second, whose record is published. The retained heap
   is 13.2, 12.5 and 12.8 MiB for 1,000, 10,000 and 100,000 segments, against 8.2, 8.3 and 7.4 MiB in the earlier record,
   and the scan that enumerates the 100,000-segment fleet took 28,530.8 ms against 11,606.4 ms. Among what differs between the
   earlier record and these runs (none isolated as the cause): the codec, the seeding route (each segment loaded through

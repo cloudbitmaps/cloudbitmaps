@@ -127,11 +127,11 @@
            cursor is that comparison moving along the key space — the skip is the default, not an optimisation
            applied afterwards. -->
       <section>
-        <h2>Which chunks, decided before a byte moves</h2>
+        <h2>Which chunks, decided before a chunk is requested</h2>
         <p class="lede">
           Each segment's chunk keys come out of its index, and every key of the smaller one is looked up in the
           other's. A key present in only one segment cannot contribute to an intersection, so it is dropped
-          without being read — <strong>skipping is the default</strong>, not an optimisation applied after the
+          without being requested — <strong>skipping is the default</strong>, not an optimisation applied after the
           fact.
         </p>
 
