@@ -456,22 +456,22 @@ measured evidence at fleet scale:
 <!-- BENCH:SCALE:START -->
 | Fleet | Retained heap (cap 1024) | Peak RSS | Discovery scan |
 | --- | --- | --- | --- |
-| 1,000 segments | 13.2 MiB | 85.7 MiB | 179.6 ms |
-| 10,000 segments | 12.5 MiB | 183.5 MiB | 1,682 ms |
-| 100,000 segments | 12.7 MiB | 187.1 MiB | 29,130.6 ms |
+| 1,000 segments | 13.2 MiB | 88.4 MiB | 169.9 ms |
+| 10,000 segments | 12.5 MiB | 182.8 MiB | 1,702 ms |
+| 100,000 segments | 12.8 MiB | 183.2 MiB | 28,530.8 ms |
 
-Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.6 ms, which times the engine rather than object storage.
+Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.1 ms, which times the engine rather than object storage.
 
-_Measured on Apple M3 Pro (arm64, node v24.22.1, commit 4f82a7ae, 2026-11-10, load 2.2 at the start and 4 at the end). **The bound is the retained heap** (post-GC): 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.7 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (85.7, 183.5, 187.1 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~59–64 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 9.4x for 10x the segments, then 17.3x for 10x the segments — read the milliseconds as this run's, not as a law._
+_Measured on Apple M3 Pro (arm64, node v24.22.1, commit f140176e, 2026-11-10, load 1.9 at the start and 3 at the end). **The bound is the retained heap** (post-GC): 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.8 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (88.4, 182.8, 183.2 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~57–60 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 10x for 10x the segments, then 16.8x for 10x the segments — read the milliseconds as this run's, not as a law._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment
   _count_ (`cache.readerMax`, default 1024) **and** aggregate parsed-index _bytes_ (`cache.readerMaxBytes`,
   default 64 MiB), so **retained live heap after reading the _entire_ fleet is flat from 1K to 100K segments** — a 100×
   larger fleet holds the same resident reader set, and unusually _wide_ segments can't pin gigabytes of indices
-  while the count looks "in bounds". Peak RSS is shown for context only: it is a **process high-water** that also
-  folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after GC), so it grows with
-  fleet size here and is **not** a clean read-path footprint. The flat **live-heap** column is the bound. Live
+  while the count looks "in bounds". Peak RSS is shown for context only: it is a **process high-water** that may also
+  fold in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after GC), and is **not** a clean
+  read-path footprint. The flat **live-heap** column is the bound. Live
   heap plus the soak's external-memory watch (typed arrays' backing stores, which the store's bitmaps use) prove **no leak** on the read path. A store with a timed refresh also keeps each segment's resolution in a second cache bounded at 8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default), a few hundred bytes an entry; [what each reader holds](guide/sizing.md#what-each-reader-holds) gives the heap it takes.
 - **The hard RSS ceiling — measured.** A sustained read + combine + re-load workload over **400 segments**
   completes inside a hard **384 MiB** cgroup ceiling with swap disabled (`--memory-swap == --memory`), so the
@@ -483,7 +483,7 @@ _Measured on Apple M3 Pro (arm64, node v24.22.1, commit 4f82a7ae, 2026-11-10, lo
   figure is a property of the machine, and published as a headline it gets read as a spec the project has not
   promised. [Why a ceiling is published](#why-a-ceiling-is-published-and-not-a-number) says more.
 
-- **The fleet-wide registry scan is `O(total segments)`** — the near-linear "discovery" column is the
+- **The fleet-wide registry scan is `O(total segments)`** — the "discovery" column (its step-by-step growth is in the footnote above) is the
   enumeration that every admin pass (`checkConsistency`, `retireExpired`, `eraseSubject`, `subjectReport`)
   pays before it does any
   work. **No read verb enumerates**: `has`, `count`, `iterate` and `intersect` each address one segment. The
@@ -498,7 +498,7 @@ _Measured on Apple M3 Pro (arm64, node v24.22.1, commit 4f82a7ae, 2026-11-10, lo
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend
-  on how the ids inside a chunk are distributed. The run's counter of payload bytes recorded none for the in-memory drivers (0), so no byte figure is published
+  on how the ids inside a chunk are distributed. The run's counter of payload bytes read 0: it counts the bytes of range requests sent, and a segment small enough for its reader to keep whole is read with none, so no byte figure is published
   from it; how many bytes a chunk read takes depends on how the ids sit inside the chunk, so for a bill, price the requests.
 
 ## What RSS is, and why it is the number we bound
@@ -726,7 +726,7 @@ on all but spread8k, where every TypeScript sample is below every native one. No
 **One container pair at a time is slower, and a few operations a lot.** In the per-operation record (commit `1bee11b9`, 2026-11-10; one chunk, ratio of
 TypeScript to native): `optimize` on a run chunk 3.06 times (1,985 ns to 6,081 ns), `build` on a run chunk 1.74 times,
 `iterate` of a dense chunk 1.34 times; the other way, `build` of a dense chunk is 0.32 times, `serialize` 0.55 to 0.85 times,
-and a dense `has` 0.32 times.
+and a dense `has` 0.32 times. The largest moves from the record of 2026-10-21 are `clone` (dense 1.09 to 0.03 times, sparse 1.05 to 0.06, run 0.91 to 0.07; the class's clone shares containers, so these cells time that policy) and `optimize` of a dense chunk (1.22 to 0.40).
 
 **What was not measured.** The two codecs have not been compared in region against real S3 (the in-region comparison is
 prepared in [`bench/README.md`](../bench/README.md#the-codec-comparison-in-region) and not run). The in-region runs of 2026-10-30 and 2026-11-03 ran the TypeScript codec alone, and latencies of runs from different CloudShell sessions are not comparable, so how far the codec moves a latency in region is not measured. The request counts the engine makes were measured to be

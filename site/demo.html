@@ -22,7 +22,7 @@
     <title>CloudBitmaps — a measured intersection, replayed</title>
     <meta
       name="description"
-      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and the result comes back in 24.6 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and the result comes back in 24.1 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -97,7 +97,7 @@
         <p class="hero-lede" style="max-width: 74ch">
           Two segments of <strong>2,000,000 ids</strong> each. Intersecting them fetches
           <strong>100 chunks</strong> of each and returns <strong>100,000 ids</strong> in
-          <strong>24.6 ms</strong> on the in-memory drivers — because keys are compared before any bytes
+          <strong>24.1 ms</strong> on the in-memory drivers — because keys are compared before any bytes
           move, and <strong>3,800</strong> chunk reads simply never happen.
         </p>
         <p class="note" style="max-width: 78ch">
@@ -228,7 +228,7 @@
           data-bytes="0"
           data-bytes-per-chunk="0"
           data-ids="100000"
-          data-ms="24.6"
+          data-ms="24.1"
           data-density="1000"
         >
           <!-- The beat rail. Real buttons: a beat is a destination, and a reader who wants to sit on beat
@@ -348,13 +348,13 @@
               <p class="beat-head"><span class="beat-n">03</span> 100 chunks</p>
               <p>
                 Only the hundred aligned <em>keys</em> are fetched. A key is read from each operand, so two
-                segments make ~200 GETs, not 100. The run's byte counter recorded nothing for the in-memory
-                drivers, so no byte figure is stated. The other <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never
+                segments make ~200 GETs (derived: 2 x 100, not counted), not 100. The run's byte counter read 0 (it counts the bytes of range
+                requests sent), so no byte figure is stated. The other <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never
                 issued. On object storage that is 3,800 GET requests you are not charged for.
               </p>
             </article>
             <article class="beat" data-beat="3">
-              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 24.6 ms</p>
+              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 24.1 ms</p>
               <p>
                 One hundred shared keys times 1,000 ids per key is 100,000 ids — and 100,000 is what the run
                 reported. The result is <em>derivable from the setup</em> as well as observed, which is the
@@ -422,11 +422,11 @@
                   <tr>
                     <td>Chunk payload bytes counted</td>
                     <td class="num">0</td>
-                    <td class="from">metrics sink; it records no bytes for the in-memory drivers</td>
+                    <td class="from">metrics sink; counts the bytes of range requests sent</td>
                   </tr>
                   <tr>
                     <td>Wall time</td>
-                    <td class="num">24.6 ms</td>
+                    <td class="num">24.1 ms</td>
                     <td class="from">timer around the drained stream</td>
                   </tr>
                   <tr>
@@ -515,14 +515,14 @@
             <p>
               Key alignment does not care how ids sit inside a chunk, so <em>100 of 2,000</em> holds for any
               segment. A byte figure would care: it depends on how the ids sit inside a chunk. This run's counter
-              recorded no bytes for the in-memory drivers, so the page states none; price the requests, not a
+              read 0 (it counts the bytes of range requests sent), so the page states none; price the requests, not a
               byte count.
             </p>
           </div>
           <div class="limit">
             <p class="label">Memory drivers, not S3</p>
             <p>
-              24.6 ms is compute, not cloud latency. It is the right number for
+              24.1 ms is compute, not cloud latency. It is the right number for
               <em>how many</em> requests happen and the wrong one for how long they take — the
               <a href="benchmarks.html">benchmarks</a> carry the real-backend costs, and the rate past which a flat
               tier is cheaper.

@@ -130,7 +130,7 @@ for many counts over the same segments in one pass, a dry-run [`materializeMany`
   ledger adds one footer read per interval. Between checks a pinned read makes no request of its own. A store with no timed refresh makes none.
 - **`intersect` skips.** Two 2,000,000-id segments that share 100 of their 2,000 chunks intersect by fetching only the
   shared chunks. The [at-scale benchmark](../benchmarks.md#at-scale--measured-1k--10k--100k-segments) measured it at
-  24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
+  24.1 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
 - **A `has()` that misses the cache is a ranged GET against object storage.** Callers that miss the same chunk of the
   same generation while a request for it is open wait on that request, with or without a cache, so fifty concurrent
   cold `has()` calls of one chunk make one GET. A combine or `iterate` does not join those requests: it reads each
