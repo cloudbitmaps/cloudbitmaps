@@ -72,7 +72,7 @@ function plantedResults(): Record<string, unknown> {
         chunkCount: 1,
         crbmBytes: 1,
         containers: {},
-        identicalBytes: true,
+        identicalObjects: true,
         ...Object.fromEntries(VARIANTS.map((v) => [v, variant()])),
       },
     ]),
@@ -195,10 +195,11 @@ describe('bench:load-input:check, once results are recorded', () => {
     expect(check(d).status).toBe(1);
   });
 
-  it('fails when the results record an input writing other bytes', () => {
+  it('fails when the results record an input writing a different object', () => {
     const d = copy();
     const results = plantedResults();
-    (results.shapes as Record<string, { identicalBytes: boolean }>).runs!.identicalBytes = false;
+    (results.shapes as Record<string, { identicalObjects: boolean }>).runs!.identicalObjects =
+      false;
     withResults(d, results);
     expect(check(d).status).toBe(1);
   });

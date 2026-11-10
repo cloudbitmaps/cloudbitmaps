@@ -27,8 +27,10 @@
  * caller iterating its bitmap into `load` pays), `{ bitmap }`, and `{ serialized }`. Building the set and the
  * caller-side array or bytes is outside the timed region; `{ bitmap }`'s own `serialize` is inside it, because the
  * load makes that call. Per trial it records the load's wall time, the longest single event-loop stall (the
- * longest gap between two turns of a `setImmediate` chain beside the load), and the object's SHA-256, so the run
- * also records that every input wrote the same bytes.
+ * longest gap between two turns of a `setImmediate` chain beside the load), and the object's size, member count and
+ * chunk count, so the run also records that every input wrote an object of one size holding the same members in the
+ * same chunks. (The objects are never byte for byte equal: each write carries its own write identity in the
+ * footer, so a hash of the object would differ between two loads of the same input.)
  *
  * HONESTY BOUNDARY — read this before quoting any number here.
  *
@@ -171,7 +173,6 @@ async function child() {
         members: result.cardinality,
         chunkCount: result.chunkCount,
         size: result.size,
-        sha256: result.sha256,
         containers: {
           array: stats.arrayContainers,
           bitset: stats.bitsetContainers,
@@ -268,7 +269,10 @@ function parent() {
       chunkCount: first.chunkCount,
       crbmBytes: first.size,
       containers: first.containers,
-      identicalBytes: all.every((t) => t.sha256 === first.sha256 && t.size === first.size),
+      identicalObjects: all.every(
+        (t) =>
+          t.size === first.size && t.members === first.members && t.chunkCount === first.chunkCount,
+      ),
       ...Object.fromEntries(VARIANTS.map((v) => [v, summarize(trials[v])])),
     };
   }
@@ -390,8 +394,10 @@ function checkProblems() {
   if (results.trials < MIN_TRIALS)
     problems.push(`the results file records ${results.trials} trials, fewer than ${MIN_TRIALS}`);
   for (const shape of SHAPES) {
-    if (results.shapes[shape]?.identicalBytes !== true)
-      problems.push(`the results do not record every input writing the same bytes for "${shape}"`);
+    if (results.shapes[shape]?.identicalObjects !== true)
+      problems.push(
+        `the results do not record every input writing an object of one size, with the same members in the same chunks, for "${shape}"`,
+      );
   }
   return problems;
 }
