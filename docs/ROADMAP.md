@@ -449,7 +449,7 @@ between here and there:
      listing pages through every leftover probe and names the first few. A `LocalFsStorage` host path can appear in an
      `EACCES` detail. The steps that follow a failed write read `no object was written`, which a write that lost its response
      could contradict;
-   - the one round trip between a tombstone collection's last re-proof of the row and its delete by number: a name
+   - the one round trip ([the purge's window](guide/correctness.md#tombstones-purged-narrowly)) between a tombstone collection's last re-proof of the row and its delete by number: a name
      purged and created again inside it can lose a generation under that number (the delete removes the new load's
      generation, a loss of that load's data and not an exposure of erased data), and the pass does not see it, since
      no read of the row follows its last delete. Only a conditional delete from the listing's object
