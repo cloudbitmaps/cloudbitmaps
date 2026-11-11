@@ -572,7 +572,10 @@ function suiteEvidenceDir(suite) {
   if (suite === 'default') return EVIDENCE_DIR;
   if (suite === 'large') return `${EVIDENCE_DIR}/large`;
   if (suite === 'batch') return `${EVIDENCE_DIR}/batch`;
-  throw new Error(`"${String(suite)}" is not a suite: the suites are default, large and batch`);
+  if (suite === 'multi') return `${EVIDENCE_DIR}/multi`;
+  throw new Error(
+    `"${String(suite)}" is not a suite: the suites are default, large, batch and multi`,
+  );
 }
 
 /**
@@ -794,6 +797,8 @@ module.exports = {
   breached,
   planLayout,
   planSweepLayout,
+  layoutFromCounts,
+  chunksFor,
   layoutIds,
   maskAccount,
   redact,

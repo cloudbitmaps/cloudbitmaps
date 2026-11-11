@@ -81,8 +81,35 @@ const BUDGET_HEADROOM_FLOOR = 1_000;
 /** The most operands read at once: their indexes, whether one exists, and their registry rows. */
 const INDEX_PARALLELISM = 16;
 
+/**
+ * What an operand pinned to a generation carries, always all three, so a caller cannot skip the identity re-check of a
+ * subtracted operand by leaving one out.
+ */
+interface PinnedOperand {
+  /** The generation the operand is pinned to: `null` when pinned to a segment with none. */
+  readonly pinnedGeneration: number | null;
+  /**
+   * The pin's version: the generation and the registry row's `pointerId` it was taken under (`<generation>:<pointerId>`),
+   * or just the generation where there is no row. It is what tells a name deleted and created again, which restarts at
+   * generation 0, from the one that was pinned.
+   */
+  readonly pinnedVersion: string | null;
+  /**
+   * The fingerprint of the object the pin holds: the identity of the generation's bytes, where a number can be taken
+   * again. `null` only where `pinnedGeneration` is `null`: a pin of a generation always holds its object's fingerprint.
+   */
+  readonly pinnedFingerprint: string | null;
+}
+
+/** An operand that is not pinned: none of the pin's fields is present. */
+interface UnpinnedOperand {
+  readonly pinnedGeneration?: undefined;
+  readonly pinnedVersion?: undefined;
+  readonly pinnedFingerprint?: undefined;
+}
+
 /** One named stored operand, as the pass reads it. */
-export interface CombineManyOperand {
+interface CombineManyOperandBase {
   readonly name: string;
   readonly ref: SegmentRef;
   /**
@@ -91,16 +118,6 @@ export interface CombineManyOperand {
    * empty.
    */
   readonly check?: () => void;
-  /** The generation the operand is pinned to: `null` when pinned to a segment with none, `undefined` when not pinned. */
-  readonly pinnedGeneration?: number | null;
-  /**
-   * The pin's version: the generation and the registry row's `pointerId` it was taken under (`<generation>:<pointerId>`),
-   * or just the generation where there is no row. It is what tells a name deleted and created again, which restarts at
-   * generation 0, from the one that was pinned.
-   */
-  readonly pinnedVersion?: string | null;
-  /** The fingerprint of the object the pin holds: the identity of the generation's bytes, where a number can be taken again. */
-  readonly pinnedFingerprint?: string | null;
   /**
    * A fresh read of the segment's registry row: its current generation and, as `token`, its `pointerId` (the token of the
    * last write that named a field a read resolves through, so a lease or a policy write does not change it), or `null`
@@ -114,6 +131,9 @@ export interface CombineManyOperand {
     readonly fingerprint?: string | null;
   } | null>;
 }
+
+/** One stored operand of a batch combine: pinned (all of the pin's fields) or not (none). */
+export type CombineManyOperand = CombineManyOperandBase & (PinnedOperand | UnpinnedOperand);
 
 /** What one output asks for. */
 export interface CombineManyOutput<R> {
@@ -367,6 +387,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   if (!Array.isArray(outputs) || outputs.length === 0) {
     throw new ValidationError('outputs must be a non-empty array');
   }
+  checkPins(operands);
   requireInteger(request.keep, { min: 0, what: 'keep', note: 'required' });
   requirePositiveInteger(request.maxBufferedBytes, 'maxBufferedBytes');
   requireInteger(request.publishConcurrency, {
@@ -465,9 +486,40 @@ export function rebindCombineMany<R>(
       'rebindCombineMany takes the operands compileCombineMany was given, by name and order',
     );
   }
+  checkPins(operands);
   const result: CompiledCombineMany<R> = { request: { ...compiled.request, operands } };
   COMPILED.set(result, checked);
   return result;
+}
+
+/**
+ * Refuses an operand that carries a partial pin, which the type already forbids: the three fields are all present or all
+ * absent, and a pin of a generation carries a version and a fingerprint (only a pin of no generation holds `null` in all
+ * three). A caller that left one out, or set it to `null` under a numbered generation, would skip the identity re-check
+ * of a subtracted operand, or be taken as unpinned.
+ */
+function checkPins(operands: readonly CombineManyOperand[]): void {
+  for (const op of operands as readonly CombineManyOperandBase[] &
+    readonly Partial<PinnedOperand>[]) {
+    const { pinnedGeneration: gen, pinnedVersion: version, pinnedFingerprint: fingerprint } = op;
+    if (gen === undefined) {
+      if (version !== undefined || fingerprint !== undefined) {
+        throw new ValidationError(
+          `operand "${op.name}" has a pinnedVersion or pinnedFingerprint without a pinnedGeneration`,
+        );
+      }
+      continue;
+    }
+    const whole =
+      gen === null
+        ? version === null && fingerprint === null
+        : typeof version === 'string' && typeof fingerprint === 'string';
+    if (!whole) {
+      throw new ValidationError(
+        `operand "${op.name}" is pinned to ${gen === null ? 'no generation' : 'a generation'} with a pinnedVersion and pinnedFingerprint that do not match it (a generation needs both as strings, no generation needs both null)`,
+      );
+    }
+  }
 }
 
 function subtractedList(node: ExprNode): number[] {
@@ -1882,7 +1934,14 @@ function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boole
   const was = tokenOfVersion(spec.pinnedVersion);
   if (was !== undefined && !sameRow(was, now.token)) return false;
   const held = spec.pinnedFingerprint;
-  return held == null || now.fingerprint == null || held === now.fingerprint;
+  // A numbered pin always holds its object's fingerprint (a caller that has none is refused up front), so none fails closed.
+  if (held == null) return false;
+  // The object is compared only where the row read carries a fingerprint, and that is up to the caller's `current`. The
+  // facade's read for the re-check before a publish carries one for every row that resolves a generation; its read at
+  // the end of the call, for the stats, asks for none. A row that resolves none carries none (a destroyed row reports
+  // the tombstone's kept generation number). A row read without a fingerprint is compared by generation number and
+  // incarnation alone, and a pinned operand with no `current` is not re-checked at all.
+  return now.fingerprint == null || held === now.fingerprint;
 }
 
 /** Whether an operand read live has changed row or generation since its index was read. */

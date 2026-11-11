@@ -13,6 +13,7 @@ pnpm-lock.yaml
 bench/calibration/*.json
 bench/calibration/large/*.json
 bench/calibration/batch/*.json
+bench/calibration/multi/*.json
 tests/bench/fixtures/calibration-rehearsal*.json
 tests/bench/fixtures/calibration-large-rehearsal.json
 
