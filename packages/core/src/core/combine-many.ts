@@ -123,7 +123,9 @@ interface CombineManyOperandBase {
    * last write that named a field a read resolves through, so a lease or a policy write does not change it), or `null`
    * when it
    * has no row. Read for every subtracted pinned operand just before the publishes, and once more at the end of the call
-   * for the rest.
+   * for the rest. A row that resolves no generation (destroyed, or with no current generation) must report `generation:
+   * null`, whatever number it keeps: it is then refused where a number was pinned. A read made with `fingerprint: true`
+   * must carry the fingerprint of the current object for every numbered row; one that does not is refused, not passed.
    */
   readonly current?: (options?: { readonly fingerprint?: boolean }) => Promise<{
     readonly generation: number | null;
@@ -1703,7 +1705,7 @@ class Run<R> {
             new StaleOperandError(
               `materializeMany: operand "${op.spec.name}", subtracted by an output, was replaced while the call ran ` +
                 `(pinned at generation ${String(op.spec.pinnedGeneration)}; the registry now holds ` +
-                `${now === null ? 'no row' : `generation ${String(now.generation)}, and its row or its object is not the pinned one`}), ` +
+                `${now === null ? 'no row' : now.generation === null ? 'a row that resolves no generation (destroyed, dropped or never loaded)' : `generation ${String(now.generation)}, and its row or its object is not the pinned one`}), ` +
                 'so its outputs were not published. Run the call again to subtract the current one.',
               op.spec.name,
               'moved',

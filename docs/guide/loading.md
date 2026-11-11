@@ -952,13 +952,15 @@ fingerprint, a tail read of the current generation where the store does not alre
 StaleOperandError }` and is not published, and the others publish. `StaleOperandError` carries `code: 'stale-operand'`, the
 operand's name in the call (`operand`) and why (`reason: 'moved'`). A subtracted operand that cannot be re-read is not
 assumed unchanged, and its outputs are not published. A subtracted operand destroyed during the call (crypto-shredded, destroyed in the clear or dropped) resolves no
-generation, so it counts as moved and its outputs are not published, as such an operand is refused at the start of a call;
-one pinned as absent (`allowAbsentOperands`) and still absent is unchanged.
+generation, so it counts as moved and its outputs are not published, as such an operand is refused at the start of a call.
+One pinned as absent (`allowAbsentOperands`) and still absent is not refused, whatever its row: a tombstone pinned as
+absent publishes, where an earlier release refused it as moved.
 
 **`stats.operands[name]`** (an object with no prototype, so any name is a key) gives each operand's `pinnedGeneration`,
 `startGeneration`, `endGeneration` and `moved`, for every operand of the call, those read live included: the end is one
 registry read of the operand's row when the call finishes, or the re-check's read for a subtracted one, so it is the last
-read of the call and not a snapshot of one instant. `stats.outputs[i]` gives the operands an output read, the group that
+read of the call and not a snapshot of one instant. An operand whose row resolves no generation then (destroyed, or dropped),
+whatever its role in the call, reports `endGeneration: null` and `moved: true`. `stats.outputs[i]` gives the operands an output read, the group that
 computed it and when it ran.
 
 **Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass counts
