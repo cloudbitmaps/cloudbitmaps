@@ -703,7 +703,7 @@ export interface SubjectErasureEntry {
    * listed at the end, whether or not a rewrite was published first — also re-runs, but **read what the re-run
    * says**: it usually reports `erased: true` against the generation it found the id in, it reports
    * nothing at all if a racing collector took that generation first, or this call's own delete of it landed after a
-   * fault the call could not settle (the bit is gone, but no run holds a receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
+   * fault the call could not settle (the bit is gone, but no run holds a receipt for it; the failed call's own `segment.collect` names only what it knew it had deleted), and if the segment's row has since been purged it is no longer scanned at all — anything
    * left in its bucket is an orphan, which `store.generations(ref)` lists and `store.dropSegment(ref, {
    * confirmSegment })` deletes; `checkConsistency` and the collection a load runs read rows, so neither reaches it.
    * **Segments the id is not in
@@ -2115,8 +2115,9 @@ export class CloudRoaring {
    * the id and nothing was rewritten). A segment where the erasure deleted only objects no read of it can open (a first
    * load's sealed under a key no row holds) found the id in none, so the ledger does not list it; the audit sink gets
    * `segment.collect` for it with no `fromGeneration`, which is the only record of that deletion. A segment whose call
-   * deleted a generation and then did not finish (`erased: false`, or a throw) also gets a `segment.collect` for exactly
-   * what it deleted, with no `fromGeneration`; the ledger's `erased`, not the event, says whether it finished.
+   * deleted a generation and then did not finish (`erased: false`, or a throw) also gets a `segment.collect` for the
+   * generations it deleted (or found already deleted while deleting), with no `fromGeneration`; a delete whose outcome it
+   * could not learn is in no event. The ledger's `erased`, not the event, says whether it finished.
    *
    * Uses the backend's **own** two halves, so the membership check and the rewrite provably run
    * over the same generation. Requires the store built with a **backend** (throws

@@ -317,8 +317,9 @@ export interface EraseIdResult {
    * `collected`. Another object under the number, for a delete conditioned on the version searched, is not counted as
    * deleted: the receipt then rests on the listing of the bucket, and says `erased: true` only when that object does
    * not hold the id. When that read fails too, or the delete lands after it, the call reports the fault, and a re-run
-   * finds the object gone and lists nothing for the segment: the `segment.collect` event the failed call emitted for what it
-   * had deleted is the record, and the error with the ledger shows the call did not finish.
+   * finds the object gone and lists nothing for the segment. That delete is in no event: the call recorded only the
+   * generations it knew it had deleted (answered, or found gone by the read-back), and this one it could not learn the
+   * outcome of, so the thrown error, kept with the ledger, is the record of it, as before.
    *
    * A rollback that lands between the call's read of the row and one of its deletes, onto the generation being deleted,
    * leaves the pointer on an object that is gone. The call finds it at its next read of the row, or by reading the row
@@ -333,8 +334,9 @@ export interface EraseIdResult {
    *  - `erased: true` naming the generation it found the id in — the ordinary case, and the one that gives you
    *    the receipt the failed call could not;
    *  - `'not-member'` — a racing collector took that generation first. The bit is gone, but **no run reports a
-   *    receipt for it** (the failed call's own `segment.collect` event names what it deleted), so keep the failed call's
-   *    error alongside your ledger if you need the ledger-side trail;
+   *    receipt for it** (the failed call's own `segment.collect` event names the generations it knew it had deleted; a
+   *    delete whose outcome it could not learn is in no event), so keep the failed call's error alongside your ledger
+   *    if you need the full trail;
    *  - `'absent'` — the segment's registry row is gone, so it is no longer a segment at all and
    *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: list it with
    *    `listGenerations` (`store.generations`) and delete it with `dropSegment` (`store.dropSegment`), which both
@@ -355,9 +357,12 @@ export interface EraseIdResult {
  * event comes before the `NotFoundError` of a rollback that moved the pointer onto a generation the call deleted.
  *
  * A call that does not finish (it reports `erased: false`, or throws) emits one `segment.collect` too when it had
- * deleted at least one object, with exactly the generations it deleted and no `fromGeneration`, and a throw is thrown
- * after it. The result's `erased`, not the event, says whether the erasure finished. A sink that throws never replaces
- * the call's own error.
+ * deleted at least one object, with the generations it deleted (or found already deleted while deleting) and no
+ * `fromGeneration`, and a throw is thrown after it. The event holds only what the call confirmed: a delete that got
+ * no answer and whose read-back failed too is in no event, and its thrown error is the record. A refused rewrite's
+ * delete of the call's own unpublished object is not an erasure of a holder and is not in it. The result's `erased`,
+ * not the event, says whether the erasure finished. The sink's own faults are swallowed, so they never replace the
+ * call's error.
  */
 export async function eraseIdFromSegment(
   ref: SegmentRef,
@@ -375,12 +380,9 @@ export async function eraseIdFromSegment(
   try {
     result = await erasePasses(ref, id, deps, options, start);
   } catch (err) {
-    // The call is already failing: what it deleted is recorded first, and a fault of the recording never replaces `err`.
-    try {
-      recordUnfinished(ref, passes, options);
-    } catch {
-      /* the original error wins */
-    }
+    // The call is already failing: what it deleted is recorded first. `safeAudit` swallows a sink's fault, so the
+    // recording never replaces `err`.
+    recordUnfinished(ref, passes, options);
     throw err;
   }
   if (!result.erased) recordUnfinished(ref, passes, options);
@@ -419,8 +421,8 @@ async function erasePasses(
 
 /**
  * Emit `segment.collect` for what a call deleted when it did not finish (it ended `superseded`, refused, or threw) and
- * has emitted nothing for those deletions: exactly the generations its passes deleted, once, naming no generation the
- * id was found in. Nothing when it deleted nothing, or when a pass already emitted the event for them. The ledger's
+ * has emitted nothing for those deletions: the generations its passes deleted or found deleted while deleting, once,
+ * naming no generation the id was found in. A delete whose outcome the call could not learn is not among them. Nothing when it deleted nothing, or when a pass already emitted the event for them. The ledger's
  * `erased`, not the event, says whether the erasure finished.
  */
 function recordUnfinished(

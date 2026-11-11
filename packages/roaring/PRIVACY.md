@@ -88,8 +88,10 @@ not in are not listed. A segment where the erasure found the id in nothing it co
 no read of it can open, is not listed either: the audit sink gets `segment.collect { collected }` for it, with no
 `fromGeneration`, and that event is the only record of the deletion. An erasure that deleted a generation and then did not finish
 (another writer won the row and the entry says `erased: false`, or the call threw) emits `segment.collect { collected }` too, for
-exactly what it deleted and with no `fromGeneration`, so a deletion is never unrecorded; the ledger's `erased`, not the event, says
-whether the erasure finished. `store.subjectReport(id, { namespace })` answers
+the generations it deleted (or found already deleted while deleting) and with no `fromGeneration`, so every delete the call confirmed is recorded;
+the ledger's `erased`, not the event, says whether the erasure finished. A delete whose outcome the call could not learn (it
+got no answer and the read of the object that followed failed too) is in no event: the thrown error is then the record, so keep it
+with your ledger. A refused rewrite's delete of the call's own unpublished object is not an erasure of a holder and is not in the event. `store.subjectReport(id, { namespace })` answers
 the read side (Art. 15 — which segments
 an id is in, and which destroyed segments still hold it in objects left in the bucket).
 
@@ -136,7 +138,8 @@ same one, a generation still holding the id — can also come from the collect-o
 only outside the current generation and nothing was published; there the pointer has not moved, and a re-run
 simply repeats the attempt.) **Read what the re-run says.** Usually it reports `erased: true` against the
 generation it found the id in, which is the receipt the failed call could not give you. If a racing collector took
-that generation first, or this call's own delete of it landed after a fault the call could not settle, it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so
+that generation first, or this call's own delete of it landed after a fault the call could not settle, it reports nothing for the segment: the bit is gone, but no run holds a receipt for it. The failed call's own
+`segment.collect` names the generations it knew it had deleted; a delete it could not learn the outcome of is in no event, so
 keep the failed call's error alongside your ledger. And if the segment's registry row has since been purged, it is
 not a segment any more and `eraseSubject` does not scan it at all — anything left in its bucket is an **orphan**,
 which neither `store.checkConsistency()` (it visits registry rows only) nor the collection a load and the retention

@@ -233,12 +233,14 @@ which may be 0).
   for the subject: the call found the id in nothing it could search and deleted only objects no read of the segment can
   open, which it deletes whatever id it erases, so the ledger has no entry for that segment and the event is the only
   record of that deletion. Keep the events and the ledger both. A call whose entry says `erased: false`, or that threw,
-  and that had deleted a generation emits a `segment.collect` for exactly what it deleted, with no `fromGeneration`, so a
-  deletion is never unrecorded; the ledger's `erased`, not the event, says whether the erasure finished, and its re-run
+  and that had deleted a generation emits a `segment.collect` for the generations it deleted (or found already deleted while deleting), with no
+  `fromGeneration`, so every delete the call confirmed is recorded; a delete whose outcome it could not learn (no answer and a
+  failed read-back) is in no event, and the thrown error is its record; the ledger's `erased`, not the event, says whether the erasure finished, and its re-run
   emits for what it deletes. A call that deleted nothing emits nothing. If another collection deleted the last holder meanwhile, the re-run
   [lists nothing for that segment](correctness.md#erasure-results) (the engine's result is `'not-member'`) and emits no
   event, so for that segment the
-  failed call's ledger entry is the only record.
+  failed call's own `segment.collect` (when it confirmed a delete) and its ledger entry are the record, and a delete it could not
+  learn the outcome of is recorded only by the error it threw.
 - A `segment.publish` is not a receipt for anything: it says a set was loaded, not what was removed from it.
 
 **`segment.erase`, `segment.rewrite`, `segment.collect` and `segment.dispose` are deliberately different receipts, and `segment.tombstone` is none of them: it records a tombstone that destroyed no key and deleted nothing.

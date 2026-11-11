@@ -126,9 +126,12 @@ export type AuditEvent =
        * not hold, or an encrypted one under a cleartext row (a first load's that lost the race, or crashed). The one
        * emitter is `eraseIdFromSegment`. A finished erasure emits it once a listing of the bucket shows nothing left
        * holding the id. A call that ends otherwise (it reports `erased: false` with `'superseded'` or another reason,
-       * or throws) emits it too, whenever it had deleted at least one object by then, with exactly the generations it
-       * deleted and no `fromGeneration`: the deletion is on the record whatever way the call ends, so the event does
-       * not say that the erasure finished. The ledger's `erased` does. A call that deleted nothing emits nothing, and
+       * or throws) emits it too, whenever it had deleted at least one object by then, with the generations it
+       * deleted, or found already deleted while deleting, and no `fromGeneration`: every delete the call confirmed is
+       * on the record whatever way the call ends, so the event does not say that the erasure finished. A delete whose
+       * outcome the call could not learn (no answer, and the read-back failed too) is in no event: the thrown error is
+       * its record. A refused rewrite's delete of the call's own unpublished object is not an erasure of a holder and is
+       * not in it. The ledger's `erased` does. A call that deleted nothing emits nothing, and
        * so does one whose deletions another event already records. Its re-run emits for what it deletes, and, when
        * another collection deleted the last holder meanwhile, emits nothing and answers `'not-member'`, which
        * `eraseSubject`'s ledger shows by listing nothing for the segment. One finished erasure emits it and then
