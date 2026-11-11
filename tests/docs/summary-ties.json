@@ -166,12 +166,6 @@
     {
       "file": "docs/ROADMAP.md",
       "claim": "erasure-number-taken-again",
-      "sentence": "4a8864215b19",
-      "starts": "the one round trip between a tombstone collection's"
-    },
-    {
-      "file": "docs/ROADMAP.md",
-      "claim": "erasure-number-taken-again",
       "sentence": "7c54a354292b",
       "starts": "On a registry whose tokens carry no incarnation"
     },

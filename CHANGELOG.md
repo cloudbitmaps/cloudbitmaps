@@ -13,6 +13,22 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **The calibration harness has a multi suite, so an `intersect` over three to ten operands can be measured on S3.**
+  `--suite multi` (or `CR_CALIBRATE_SUITE=multi`) loads thirty operands in five sets and runs 20 cold `intersect` reads
+  (streamed and drained) and 20 cold `intersectCount` reads of seven shapes on stores that have read nothing: k = 3, 5 and
+  10 at 1,000,000 ids with a 20 % common core; k = 5 at 5,000,000 ids (multipart objects); k = 5 at a 5 % and a 50 % core;
+  and a near miss, where a band of 50 chunks is held by every operand but one, so a pairwise fold would read what the
+  k-way plan must not. Each read is held to the exact ids the layout holds and to the requests the engine makes over the
+  in-memory backend on the same operands (3k requests a read at 1,000,000 ids, a pointer, a tail and one range an operand,
+  and 4k at 5,000,000 ids, where each operand's core read passes the 1 MiB read cap: per operand the requests do not grow
+  with k, so the figure that matters is
+  the bytes read against the bytes of the k objects, which each run records). The projection's upper bound is $0.011360
+  (derived from the counts; the exact expected requests cost $0.002315), and the ceiling to give is
+  `CR_CALIBRATE_MAX_USD=0.02`, 1.76 times the bound. The run will not establish a `union` or `andNot` over k operands, nor a
+  speed-up over a pairwise fold. Evidence goes under
+  `bench/calibration/multi/`, with its own gate. The suite has not run on S3, so nothing here is a measurement, and the
+  other suites' projections, stages, expected counts and evidence are unchanged. No library code, package or version
+  changes.
 - **The batch suite can run `materializeMany` at another `publishConcurrency`, and its evidence records what a comparison
   needs.** `CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY` (an integer from 1 to the engine's maximum, 1,024, refused otherwise;
   unset passes nothing, so the call runs at the library's default) sets the option of the measured call, and of the
@@ -54,6 +70,20 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
+  was killed while the object was being written, and the whole object once every byte was written: before
+  the link it is the only name the object has (the generation was never published), after the link a second name for the object under its generation's name, which the killed write never
+  published (a later load's collection, an erasure that finds the id in it, or a drop deletes that name, and the `.tmp` link keeps the bytes). Where it holds the whole object, an erasure or a drop does not delete it, so the bytes stay
+  readable until the file is removed. The library removes a `.tmp` last written over 24 hours ago, best effort, and only
+  from a write into the same directory: a generation write sweeps the storage directory, a registry-row write (a load, an
+  erasure's rewrite or a drop's tombstone) the registry directory, so a drop's tombstone write never reaches the storage
+  directory. The privacy note, the disaster-recovery guide, the erasure sections and the API reference now say so, and how to
+  find the leftovers (`find <root> -name '*.tmp'`) and remove them, with no writer running on the root. The roadmap's format-freeze item lists, as open questions and not decisions, what the wrapped key's
+  associated data binds, an identity of the store in the authenticated data, a key per generation or a sealing
+  counter, and settling them with one format change. Two of the roadmap's deferrals now say exactly what is left: an Azure
+  Blob create replayed more than an hour late (the sweep already refuses a grace under an hour), and a tombstone
+  collection's delete by number that can remove a new load's generation (a loss of that load's data, not an exposure of
+  erased data). No library code changes.
 - **`store.materializeMany` is measured on S3, by the batch suite's first two runs.** Two runs from AWS CloudShell in
   `us-east-1`, against the published `0.27.0` packages (`2026-11-03-78516` and `2026-11-08-b12e6`), of one cold call
   of the refresh shape's 1,000 outputs over 100 stored operands of 200,000 ids, three times a run, onto destinations
@@ -91,6 +121,13 @@ so, and so do the module headers in the code.
   registry refuses each of these shapes when it writes the row, so no row the library wrote is reported by this change,
   and no read changes. A row edited by hand can still hold a sealed summary or one of another generation, since a read
   checks only the summary's own shape, and such a row is now reported.
+
+- **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
+  batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned
+  to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned operand now names
+  all of them in the type, `compileCombineMany` and `rebindCombineMany` refuse a partial pin (a generation without
+  both, either without a generation, or a pin of no generation holding one), and the re-check fails closed for a
+  numbered pin with no fingerprint. Core's main entry is outside the stability promise.
 
 ## [0.27.0] — 2026-11-02
 

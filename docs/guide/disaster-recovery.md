@@ -175,8 +175,18 @@ you can lose.
     until Azure garbage-collects uncommitted blocks, a week after the last one staged for that blob.
   - **`LocalFsStorage`**: an object is written to a temporary file beside it
     (`<segment>.<generation>.crbm.<uuid>.tmp`) and linked into place. A killed process leaves that file; a listing
-    ignores it, and a write of an object or a registry row removes the `.tmp` files of that kind beside it that were
-    last written over 24 hours ago, scanning each directory at most once an hour per process.
+    ignores it, and the sweep is below. A kill while the object is being written leaves a part of it; a kill once every byte was written, before or
+    after the link, leaves the whole object under its `.tmp` name (before the link it is the only name the object has and
+    the generation was never published; after it, a second name, the same inode, for the object under its generation's name, which the killed write never published: a later load's collection, an erasure that finds the id in it, or a drop deletes that object by its own name, and that leaves the `.tmp` link and its bytes in place). Where the `.tmp`
+    holds the whole object, an erasure or a drop does not delete it, since it is not the generation's own name, so the bytes
+    stay readable until the file is removed. The library removes a `.tmp` leftover last written more than 24 hours ago,
+    best effort, scanning a directory at most once an hour per process, and only from a write into that same directory: a
+    generation write sweeps the storage directory it writes into, and a registry-row write (a load, an erasure's rewrite or a
+    drop's tombstone) sweeps the registry directory. A drop's tombstone write never reaches the storage directory, so do not
+    count on the sweep for a generation's `.tmp`. With no writer running on the root, list the leftovers with
+    `find <root> -name '*.tmp'` and delete them yourself; a `.tmp` that a running write still holds is removed from under it,
+    and that write fails with a retryable error. A registry row's `.tmp` copy carries the row's wrapped keys, and holds the
+    whole row once every byte of it was written and before it was moved into place.
 - [ ] **Registry**: object versioning on, covering the `registry/` prefix — **required** to restore every row to
       `T`, and the store that sets your RPO. It also keeps the wrapped keys a crypto-shred removes from a row; see
       [Encryption & DR](#encryption--dr).

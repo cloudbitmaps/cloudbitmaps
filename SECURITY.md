@@ -208,7 +208,7 @@ expires current objects or the `registry/` prefix ([bucket lifecycle](docs/guide
 
 **Versioning and backups keep copies that erasure cannot reach.** Erasing an id or crypto-shredding a segment acts on the
 bucket and the row as they are now. A noncurrent object version, a cross-region replica, a backup, a locked object and a
-point-in-time copy of the registry keep the older bytes until their own lifecycle removes them, and a restore can bring
+point-in-time copy of the registry keep the older bytes until their own lifecycle removes them, as does the leftover of a failed or killed write (on `LocalFsStorage` a `.tmp` file that can hold the whole object), and a restore can bring
 an erased id back ([PRIVACY](PRIVACY.md), [disaster recovery](docs/guide/disaster-recovery.md)). Decide what you retain,
 and plan the erasure of those copies, before you promise erasure to anyone.
 

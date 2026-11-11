@@ -12,6 +12,7 @@
  */
 const { layoutIds } = require('./calibrate-guards.cjs');
 const { firstLoadRequests } = require('./calibrate-stages.cjs');
+const { drain, exact, readHelpers } = require('./calibrate-reads.cjs');
 const {
   largeExpectedContent,
   INTO_READS,
@@ -86,66 +87,15 @@ async function runLargeSuite(ctx) {
     },
   });
 
-  /** Drain a read a chunk at a time: how many ids, and their sum. */
-  const drain = async (stream) => {
-    let n = 0;
-    let sum = 0;
-    for await (const ids of stream.batches()) {
-      n += ids.length;
-      for (let i = 0; i < ids.length; i += 1) sum += ids[i];
-    }
-    return { n, sum };
-  };
-  const exact = (what, got, want) => {
-    if (got.n !== want.count || got.sum !== want.sum) {
-      throw new Error(
-        `${what} returned ${got.n} ids (sum ${got.sum}); expected exactly ${want.count} (sum ${want.sum}). ` +
-          'A read that is not exact must not produce a latency figure.',
-      );
-    }
-  };
-
-  /** One uncached read: a fresh store, so no cache can answer it. `check` throws if what `run` returned is not exact. */
-  const coldRead = (of, index, run, check) =>
-    sample(of, index, async () => {
-      const store = timedStore();
-      const before = snap();
-      startDepth();
-      const t0 = process.hrtime.bigint();
-      const got = await run(store);
-      const ms = msSince(t0);
-      const after = snap();
-      check(got);
-      return {
-        ms,
-        got,
-        gets: after.get - before.get,
-        chunkReads: after.rangeN - before.rangeN,
-        chunkBytes: after.rangeBytes - before.rangeBytes,
-        tailReads: after.suffixN - before.suffixN,
-        tailBytes: after.suffixBytes - before.suffixBytes,
-        pointerReads: after.wholeN - before.wholeN,
-        pointerBytes: after.wholeBytes - before.wholeBytes,
-        ...depthOf(before, after, ms),
-      };
-    });
-
-  const describe = (reads, expectedGets) => ({
-    runs: reads.length,
-    cold: true,
-    exact: true,
-    ...spreadOf(reads.map((r) => r.ms)),
-    medianGets: median(reads.map((r) => r.gets)),
-    expectedGets,
-    // Reads whose request count was not the one the engine is expected to make: zero unless a read found something.
-    offExpected: reads.filter((r) => r.gets !== expectedGets).length,
-    chunkReadsPerCall: median(reads.map((r) => r.chunkReads)),
-    chunkBytesPerCall: median(reads.map((r) => r.chunkBytes)),
-    tailReadsPerCall: median(reads.map((r) => r.tailReads)),
-    pointerReadsPerCall: median(reads.map((r) => r.pointerReads)),
-    medianPeakInFlight: median(reads.map((r) => r.peakInFlight)),
-    medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
-    medianRounds: median(reads.map((r) => r.rounds)),
+  const { coldRead, describe } = readHelpers({
+    sample,
+    timedStore,
+    snap,
+    startDepth,
+    msSince,
+    depthOf,
+    spreadOf,
+    median,
   });
 
   const verbs = {
