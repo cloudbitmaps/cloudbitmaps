@@ -70,6 +70,7 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An erasure that deleted a generation and did not finish now has an audit event.** A call that deleted an object holding the subject's id and then ended `superseded` (another writer won the row), refused, or threw used to emit nothing, and `eraseSubject`'s ledger entry did not carry what it had deleted, so a deletion could leave no record. It now emits `segment.collect` with exactly the generations it deleted, before a throw is raised, whenever that list is not empty when the call exits. The event has no `fromGeneration` and its shape is unchanged; a finished call still emits its single event, and a call that deleted nothing emits none. The event does not say the erasure finished: the ledger's `erased` does. A sink that throws while the call is already failing never replaces the call's error. The audit contract in `PRIVACY.md`, the erasure and observability guides and the `AuditEvent` doc comment say so.
 - **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
   was killed while the object was being written, and the whole object once every byte was written: before
   the link it is the only name the object has (the generation was never published), after the link a second name for the object under its generation's name, which the killed write never

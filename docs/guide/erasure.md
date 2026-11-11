@@ -40,6 +40,9 @@ keystore, or a cleartext one on a store built with `encryption: { required: true
 whatever id you erase, because the call cannot tell whether the id is there. A segment where the erasure found the id in nothing it could search, and
 deleted only objects no read of the segment can open ([below](#three-rules-while-you-erase)), is not listed either: the
 audit sink gets `segment.collect` for it with no `fromGeneration`, and that event is the only record of the deletion.
+A call that deleted a generation and then did not finish (its entry says `erased: false`, or it threw) emits `segment.collect`
+for exactly what it deleted, with no `fromGeneration`, so a deletion is never unrecorded; the ledger's `erased`, not the
+event, says whether the erasure finished.
 The two calls look in different places: `subjectReport` reads what a reader reads, each segment's current generation,
 and searches each destroyed segment's leftover objects as the erasure does, listing one that holds the id under
 `tombstones`. A cleartext `destroySegment` (`allowCleartext`), or a `dropSegment` whose sweep missed an object a load was

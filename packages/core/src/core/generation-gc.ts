@@ -377,7 +377,7 @@ export const LIST_COLLECTION_CADENCE = 16;
 export async function gcOrphanGenerations(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: Pick<ListingOptions, 'keep' | 'incarnation'> = {},
+  options: Pick<ListingOptions, 'keep' | 'incarnation' | 'onDeleted'> = {},
 ): Promise<number[]> {
   const { deleted, missing } = await collectBelowPointer(ref, deps, options);
   if (missing !== undefined) {
@@ -395,18 +395,19 @@ export async function gcOrphanGenerations(
 export async function collectBelowPointer(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: Pick<ListingOptions, 'keep' | 'skipKnown' | 'incarnation'> = {},
+  options: Pick<ListingOptions, 'keep' | 'skipKnown' | 'incarnation' | 'onDeleted'> = {},
 ): Promise<{
   readonly deleted: number[];
   readonly missing?: number;
   readonly knownSpared?: number[];
 }> {
-  // Only the window, the known-name rule and the incarnation are passed on, whatever the caller's object carries: this
+  // Only the window, the known-name rule, the incarnation and the delete callback are passed on, whatever the caller's object carries: this
   // pass never reads a lease.
   const { deleted, missing, knownSpared } = await listingPass(ref, deps, {
     keep: options.keep,
     skipKnown: options.skipKnown,
     incarnation: options.incarnation,
+    onDeleted: options.onDeleted,
   });
   return missing === undefined ? { deleted, knownSpared } : { deleted, missing, knownSpared };
 }
@@ -519,6 +520,11 @@ interface ListingOptions {
    * a load's: a quiet pass is never given one, and is refused with a `ValidationError` if it is.
    */
   incarnation?: AskedRow;
+  /**
+   * Called with each generation as soon as its delete has succeeded, so a caller that must record what a pass deleted
+   * has it even when the pass then throws and returns nothing.
+   */
+  onDeleted?: (generation: number) => void;
 }
 
 /**
@@ -711,9 +717,7 @@ export async function listingPass(
   // and is never on the read path, and one more after the last delete (below).
   for (const generation of toDelete) {
     const verdict = await stillCollectable(generation);
-    if (typeof verdict === 'object') {
-      return { deleted: done, missing: verdict.missing };
-    }
+    if (typeof verdict === 'object') return { deleted: done, missing: verdict.missing };
     if (verdict === 'stop') return { deleted: done };
     if (verdict === 'skip' || verdict === 'skipKnown') {
       if (verdict === 'skipKnown') knownSpared.push(generation);
@@ -722,6 +726,7 @@ export async function listingPass(
     }
     await deleteGeneration(deps, ref, generation);
     done.push(generation);
+    options.onDeleted?.(generation);
     watch.deleted(generation);
   }
   // No re-proof follows the last delete, so a rollback onto it would go unseen: one read of the row covers it. Not on a

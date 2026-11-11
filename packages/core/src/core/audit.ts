@@ -124,18 +124,23 @@ export type AuditEvent =
        * destroy, or a drop whose sweep left one); a first load's object on a segment with no generation yet (its load
        * still running, or one that crashed before its publish); and an object sealed under a key the segment's row does
        * not hold, or an encrypted one under a cleartext row (a first load's that lost the race, or crashed). The one
-       * emitter is `eraseIdFromSegment`, once a listing of the bucket shows nothing left holding the id, so the record
-       * exists only for a finished erasure. A call that ends otherwise throws or reports `erased: false` with another
-       * reason and emits nothing, even when it had deleted a holder; its re-run emits when it finishes, and, when
+       * emitter is `eraseIdFromSegment`. A finished erasure emits it once a listing of the bucket shows nothing left
+       * holding the id. A call that ends otherwise (it reports `erased: false` with `'superseded'` or another reason,
+       * or throws) emits it too, whenever it had deleted at least one object by then, with exactly the generations it
+       * deleted and no `fromGeneration`: the deletion is on the record whatever way the call ends, so the event does
+       * not say that the erasure finished. The ledger's `erased` does. A call that deleted nothing emits nothing, and
+       * so does one whose deletions another event already records. Its re-run emits for what it deletes, and, when
        * another collection deleted the last holder meanwhile, emits nothing and answers `'not-member'`, which
        * `eraseSubject`'s ledger shows by listing nothing for the segment. One finished erasure emits it and then
        * throws `NotFoundError`: one that found, after its deletes, the segment's pointer on a generation it had
        * deleted (a rollback moved it there meanwhile), so the deletion is on the record although the call cannot
-       * answer.
+       * answer. A throw is thrown after the event is emitted, and a sink that throws while the call is already failing
+       * never replaces the call's error.
        *
        * `fromGeneration` is the newest generation the call found holding the id, and is absent when it found the id in
        * none and deleted only objects it could not search: then the ledger lists no entry for the segment, and this
-       * event is the record of the deletion. `collected` is every generation the call deleted, ascending, and the same
+       * event is the record of the deletion. It is absent too on the event of a call that did not finish, which
+       * claims no generation held the id. `collected` is every generation the call deleted, ascending, and the same
        * list as its result's: below the pointer, when a searched generation held the id, that is every generation,
        * holder or not, since the deletion takes them all; above it, and wherever none did, only the holders and the
        * objects it could not search. A holder another collection deleted first is not in it, so the list can be empty.

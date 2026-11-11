@@ -82,7 +82,10 @@ when its registry token carries one, so a segment created again under the same n
 erased. Segments the id is
 not in are not listed. A segment where the erasure found the id in nothing it could search, and deleted only objects
 no read of it can open, is not listed either: the audit sink gets `segment.collect { collected }` for it, with no
-`fromGeneration`, and that event is the only record of the deletion. `store.subjectReport(id, { namespace })` answers
+`fromGeneration`, and that event is the only record of the deletion. An erasure that deleted a generation and then did not finish
+(another writer won the row and the entry says `erased: false`, or the call threw) emits `segment.collect { collected }` too, for
+exactly what it deleted and with no `fromGeneration`, so a deletion is never unrecorded; the ledger's `erased`, not the event, says
+whether the erasure finished. `store.subjectReport(id, { namespace })` answers
 the read side (Art. 15 — which segments
 an id is in, and which destroyed segments still hold it in objects left in the bucket).
 
@@ -422,7 +425,7 @@ not publish, because its guard refused it or another writer got there first), `s
 the pointer to a generation it named), `segment.rewrite` (a subject-erasure
 rewrite: `fromGeneration` → `generation`), `segment.collect` (a subject erasure that rewrote nothing and deleted what
 no reader resolves: the generations holding the id, when it found the id only outside the current generation, or, with
-no `fromGeneration`, only objects no read of the segment can open, which it deletes whatever the id), `segment.erase`
+no `fromGeneration`, only objects no read of the segment can open, which it deletes whatever the id; and, with no `fromGeneration`, what an erasure that did not finish had deleted when it ended), `segment.erase`
 (a genuine
 crypto-shred), `segment.tombstone` (a cleartext tombstone from `allowCleartext`, which deletes nothing), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
 `namespace.erase` — for your audit log / SIEM. Each `segment.*` event names the segment's `incarnation` when its

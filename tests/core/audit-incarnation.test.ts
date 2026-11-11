@@ -645,3 +645,170 @@ describe('audit: the incarnation is the one the operation acted on, not the row 
     expect(res).not.toHaveProperty('token');
   });
 });
+
+describe('audit: segment.collect for an erasure that deleted and did not finish', () => {
+  /** A storage whose deletes are routed through `patch`: it receives each delete and the real one to call. */
+  function overDeletes(
+    storage: IStorageDriver,
+    patch: (
+      key: Parameters<IStorageDriver['delete']>[0],
+      real: () => Promise<void>,
+    ) => Promise<void>,
+  ): IStorageDriver {
+    return Object.assign(Object.create(storage) as IStorageDriver, {
+      delete: (...args: Parameters<IStorageDriver['delete']>) =>
+        patch(args[0], () => storage.delete(...args)),
+    });
+  }
+
+  /** Generations 0 and 1 hold id 2, and the current generation 2 does not; `keep: 5` retains them all. */
+  async function holdersBelowPointer(w: ReturnType<typeof world>): Promise<void> {
+    await loadSegment(SEG, [1, 2], w.deps, { keep: 5 });
+    await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 5 });
+    await loadSegment(SEG, [1, 3], w.deps, { keep: 5 });
+  }
+
+  it('emits one event for what it deleted when another writer wins the row after its first delete', async () => {
+    const w = world();
+    // Generations 1 and 2 hold id 2 above the pointer, which a rollback put on generation 0 (that one does not hold it).
+    await loadSegment(SEG, [1], w.deps, { keep: 5 });
+    await loadSegment(SEG, [1, 2], w.deps, { keep: 5 });
+    await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 5 });
+    await rollbackSegment(SEG, 0, w.deps);
+    const deletedGens: number[] = [];
+    let landed = false;
+    const racing = overDeletes(w.storage, async (key, real) => {
+      await real();
+      deletedGens.push(key.generation);
+      if (!landed) {
+        landed = true;
+        // A load publishes after the first delete: the row is no longer the one the erasure read.
+        await loadSegment(SEG, [1, 5], w.deps, { keep: 5 });
+      }
+    });
+    const audit = new RecordingAuditSink();
+
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage: racing }, { audit });
+
+    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [2] });
+    expect(deletedGens).toEqual([2]);
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.collect',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: expect.any(String),
+        collected: [2],
+      },
+    ]);
+  });
+
+  it('emits one event for the first delete, then throws, when a later delete fails', async () => {
+    const w = world();
+    await holdersBelowPointer(w);
+    const deletedGens: number[] = [];
+    const fault = new Error('storage fault');
+    const failing = overDeletes(w.storage, async (key, real) => {
+      if (deletedGens.length === 1) throw fault;
+      await real();
+      deletedGens.push(key.generation);
+    });
+    const audit = new RecordingAuditSink();
+
+    const failure = await eraseIdFromSegment(
+      SEG,
+      2,
+      { ...w.deps, storage: failing },
+      { audit },
+    ).catch((e: unknown) => e);
+
+    expect(failure).toBe(fault);
+    expect(deletedGens).toHaveLength(1);
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.collect',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: expect.any(String),
+        collected: deletedGens,
+      },
+    ]);
+  });
+
+  it('keeps the original error when the sink throws while the call is failing', async () => {
+    const w = world();
+    await holdersBelowPointer(w);
+    let deleted = 0;
+    const fault = new Error('storage fault');
+    const failing = overDeletes(w.storage, async (_key, real) => {
+      if (deleted === 1) throw fault;
+      await real();
+      deleted += 1;
+    });
+    const sink = {
+      onEvent: (): void => {
+        throw new Error('sink fault');
+      },
+    };
+
+    const failure = await eraseIdFromSegment(
+      SEG,
+      2,
+      { ...w.deps, storage: failing },
+      { audit: sink },
+    ).catch((e: unknown) => e);
+
+    expect(failure).toBe(fault);
+  });
+
+  it('emits no event when the failing delete is the first one: nothing was deleted', async () => {
+    const w = world();
+    await holdersBelowPointer(w);
+    const fault = new Error('storage fault');
+    const failing = overDeletes(w.storage, () => Promise.reject(fault));
+    const audit = new RecordingAuditSink();
+
+    const failure = await eraseIdFromSegment(
+      SEG,
+      2,
+      { ...w.deps, storage: failing },
+      { audit },
+    ).catch((e: unknown) => e);
+
+    expect(failure).toBe(fault);
+    expect(audit.snapshot()).toEqual([]);
+  });
+
+  it('a finished collect still emits exactly one event, the same as its result', async () => {
+    const w = world();
+    await holdersBelowPointer(w);
+    const audit = new RecordingAuditSink();
+
+    const res = await eraseIdFromSegment(SEG, 2, w.deps, { audit });
+
+    expect(res).toMatchObject({ erased: true, fromGeneration: 1, collected: [0, 1] });
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.collect',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: await w.incarnation(),
+        fromGeneration: 1,
+        collected: [0, 1],
+      },
+    ]);
+  });
+
+  it('a finished rewrite emits its segment.rewrite and no segment.collect', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2], w.deps, { keep: 5 });
+    await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 5 });
+    const audit = new RecordingAuditSink();
+
+    const res = await eraseIdFromSegment(SEG, 2, w.deps, { audit });
+
+    expect(res).toMatchObject({ erased: true, fromGeneration: 1, generation: 2 });
+    expect(res.collected.length).toBeGreaterThan(0);
+    expect(audit.snapshot().map((e) => e.kind)).toEqual(['segment.rewrite']);
+  });
+});
