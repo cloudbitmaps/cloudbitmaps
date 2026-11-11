@@ -298,12 +298,15 @@ function releaseCore(version) {
   return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-/** Refuse an installed release that has no count verbs, naming the release that has them. */
-function checkCountVerbs(version) {
+/**
+ * Refuse an installed release that has no count verbs, naming the release that has them and the stage that measures them
+ * (`stage`: the large suite's `largeCount` unless another suite names its own).
+ */
+function checkCountVerbs(version, stage = 'largeCount') {
   if (!hasCountVerbs(version)) {
     throw new Error(
       `the installed @cloudbitmaps/roaring is ${releaseCore(version) === null ? `"${version}", which is not a version` : version}, ` +
-        `and a release below ${COUNT_VERBS_SINCE} has no intersectCount, unionCount or andNotCount, which the largeCount stage ` +
+        `and a release below ${COUNT_VERBS_SINCE} has no intersectCount, unionCount or andNotCount, which the ${stage} stage ` +
         `measures; ${COUNT_VERBS_SINCE} is the first release that does. Nothing was created. Install it, or run from the ` +
         `${COUNT_VERBS_SINCE} release.`,
     );
@@ -330,7 +333,7 @@ function resolveLargeKnobs(env) {
 }
 
 /**
- * Which suite a run is: `--suite large|batch` or `CR_CALIBRATE_SUITE=large|batch`, and the default suite otherwise. Both naming
+ * Which suite a run is: `--suite large|batch|multi` or `CR_CALIBRATE_SUITE=large|batch|multi`, and the default suite otherwise. Both naming
  * different suites, or a suite that does not exist, is refused, since a run that measured another suite than the one
  * asked for would write evidence under the wrong name.
  */
@@ -340,7 +343,7 @@ function resolveSuite(argv, env) {
 
 /** Which suite a run is and where it was named: `{ suite, source }`, the source `--suite`, `CR_CALIBRATE_SUITE` or `default`. */
 function suiteFrom(argv, env) {
-  const SUITES = ['default', 'large', 'batch'];
+  const SUITES = ['default', 'large', 'batch', 'multi'];
   const at = argv.indexOf('--suite');
   let fromArg;
   if (at !== -1) {
@@ -488,8 +491,9 @@ function constantsIn(coreText, s3Text) {
  * Refuse to run the large suite against an engine whose constants are not the ones this suite's bound was derived with.
  * A run from CloudShell measures the published packages, which may be another release than this clone's source, and
  * a different gap, read cap or part size would make the pre-flight bound wrong; one that cannot be read is refused too.
+ * `suite` names the suite whose bound is at stake in the message (the large suite's unless another says).
  */
-function checkEngineConstants(found) {
+function checkEngineConstants(found, suite = 'large') {
   const copies = {
     MAX_COALESCE_GAP_BYTES,
     MAX_COALESCED_READ_BYTES,
@@ -503,7 +507,7 @@ function checkEngineConstants(found) {
           ([name]) =>
             `${name} is ${found[name] === null || found[name] === undefined ? 'unreadable' : found[name]}`,
         )
-        .join(', ')}, where the large suite's bound was derived with ${wrong
+        .join(', ')}, where the ${suite} suite's bound was derived with ${wrong
         .map(([, value]) => value)
         .join(
           ', ',
@@ -595,6 +599,7 @@ module.exports = {
   MAX_CHUNK_BYTES,
   partsOf,
   rangeCap,
+  operandBound,
   INTO_READS,
   readBounds,
   outputBounds,
