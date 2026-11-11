@@ -1,11 +1,14 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  InProcessKeystore,
   BudgetExceededError,
   LeaseExpiredError,
   NotFoundError,
   StaleOperandError,
   ValidationError,
   WriteConflictError,
+  destroySegment,
   errorKind,
 } from '@/index';
 import type { MaterializeManyOutput, MaterializeResult, MetricEvent } from '@/index';
@@ -188,6 +191,81 @@ describe('store.materializeMany', () => {
       endGeneration: 0,
       moved: true,
     });
+  });
+
+  describe('a subtracted operand destroyed after the call read it', () => {
+    const keyed = () => ({
+      encryption: {
+        keystore: new InProcessKeystore({ keys: { k: randomBytes(32) }, activeKeyId: 'k' }),
+      },
+    });
+    const run = async (w: Awaited<ReturnType<typeof batchWorld>>, destroy: () => Promise<void>) => {
+      const s = (n: string) => w.store.segment(n);
+      let passed = false;
+      w.hooks.beforeRange = () => {
+        passed = true;
+      };
+      w.hooks.beforeRowRead = async (segment) => {
+        if (!passed || segment !== 'optout') return;
+        w.hooks.beforeRowRead = undefined;
+        await destroy();
+      };
+      return w.store.materializeMany({
+        operands: { a: s('a'), optout: s('optout') },
+        outputs: [
+          { dest: s('d1'), expr: 'a', exclude: ['optout'] },
+          { dest: s('d2'), expr: 'a' },
+        ],
+        keep: 1,
+      });
+    };
+    const refusedAndPublished = async (
+      w: Awaited<ReturnType<typeof batchWorld>>,
+      r: Awaited<ReturnType<typeof run>>,
+    ) => {
+      expect((r.outputs[0] as { error: Error }).error).toBeInstanceOf(StaleOperandError);
+      expect((r.outputs[0] as { error: Error }).error).toMatchObject({
+        operand: 'optout',
+        reason: 'moved',
+      });
+      published(r.outputs[1]);
+      expect(await w.backend.registry.get({ segment: 'd1' })).toBeNull();
+      expect(r.stats.operands.optout!.moved).toBe(true);
+    };
+
+    it('is refused when it was crypto-shredded', async () => {
+      const w = await batchWorld(DATA, keyed());
+      const r = await run(w, async () => {
+        await destroySegment(
+          { segment: 'optout' },
+          { registry: w.backend.registry },
+          { confirmSegment: 'optout' },
+        );
+      });
+      expect((await w.backend.registry.get({ segment: 'optout' }))?.status).toBe('destroyed');
+      await refusedAndPublished(w, r);
+    });
+
+    it('is refused when it was dropped', async () => {
+      const w = await batchWorld(DATA);
+      const r = await run(w, async () => {
+        await w.other.dropSegment({ segment: 'optout' }, { confirmSegment: 'optout' });
+      });
+      await refusedAndPublished(w, r);
+    });
+  });
+
+  it('a subtracted operand pinned absent, and still absent at the re-check, publishes', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    const r = await w.store.materializeMany({
+      operands: { a: s('a'), ghost: s('ghost') },
+      outputs: [{ dest: s('d1'), expr: 'a', exclude: ['ghost'] }],
+      keep: 1,
+      allowAbsentOperands: true,
+    });
+    published(r.outputs[0]);
+    expect(await w.ids('d1')).toEqual(await w.ids('a'));
   });
 
   it('with pin: false an operand read live can move under the call', async () => {

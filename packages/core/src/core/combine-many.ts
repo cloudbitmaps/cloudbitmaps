@@ -1697,7 +1697,7 @@ class Run<R> {
       const op = this.operands[i]!;
       try {
         const now = await this.readRow(op, true);
-        if (!pinnedStillCurrent(op.spec, now)) {
+        if (!pinnedStillCurrent(op.spec, now, true)) {
           verdict.set(
             i,
             new StaleOperandError(
@@ -1925,9 +1925,13 @@ function sameRow(a: string, b: string): boolean {
  * Whether what `spec` was pinned to is still what the registry holds, given the row read now (`null`: no row). The
  * generation number alone is not an identity: a name deleted and created again starts at generation 0, and a number can be
  * taken again once its object is gone. So the incarnation of the row is compared (two `pointerId`s of one incarnation are
- * writes of one row), and, where the row read carries the current object's fingerprint, the object's too.
+ * writes of one row), and the current object's fingerprint where the read carries one (`fingerprintAsked`: it must).
  */
-function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boolean {
+function pinnedStillCurrent(
+  spec: CombineManyOperand,
+  now: EndRow | null,
+  fingerprintAsked = false,
+): boolean {
   const pinned = spec.pinnedGeneration ?? null;
   if (pinned !== (now?.generation ?? null)) return false;
   if (pinned === null || now === null) return true;
@@ -1936,12 +1940,14 @@ function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boole
   const held = spec.pinnedFingerprint;
   // A numbered pin always holds its object's fingerprint (a caller that has none is refused up front), so none fails closed.
   if (held == null) return false;
-  // The object is compared only where the row read carries a fingerprint, and that is up to the caller's `current`. The
-  // facade's read for the re-check before a publish carries one for every row that resolves a generation; its read at
-  // the end of the call, for the stats, asks for none. A row that resolves none carries none (a destroyed row reports
-  // the tombstone's kept generation number). A row read without a fingerprint is compared by generation number and
-  // incarnation alone, and a pinned operand with no `current` is not re-checked at all.
-  return now.fingerprint == null || held === now.fingerprint;
+  // Where the read asked for the fingerprint (the re-check before a publish), a numbered row that carries none fails
+  // closed: its object cannot be compared, so it is not shown to be the pinned one. The facade reports a row that
+  // resolves no generation (destroyed, or no current generation) as generation null, so it fails the number check
+  // above. Where the read asked for none (the end of the call, for the stats), the number and the incarnation are what
+  // is compared, and a fingerprint, if one came back, is compared too. A pinned operand with no `current` is not
+  // re-checked at all.
+  if (now.fingerprint == null) return !fingerprintAsked;
+  return held === now.fingerprint;
 }
 
 /** Whether an operand read live has changed row or generation since its index was read. */

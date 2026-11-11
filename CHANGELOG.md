@@ -114,6 +114,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`materializeMany` refuses the outputs that subtract an operand destroyed while the call ran.** An operand that was
+  crypto-shredded, destroyed in the clear or dropped after the call read it passed the re-check before the publishes,
+  because the row it left reports the generation number it kept, and the outputs that subtracted it were published with
+  its old contents; such an operand is refused at the start of a call. The re-check now treats a row that resolves no
+  generation as holding none, so those outputs get `StaleOperandError` (`reason: 'moved'`) and `stats.operands[name].moved`
+  is `true`. A call that published such an output now refuses it; an operand pinned as absent and still absent is
+  unchanged. In core, the re-check before a publish also fails closed when it asked for a fingerprint and the row it got
+  back is numbered but carries none.
 - **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
   batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned
   to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned operand now names

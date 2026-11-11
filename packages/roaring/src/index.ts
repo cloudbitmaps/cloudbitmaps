@@ -1962,7 +1962,10 @@ export class CloudRoaring {
       }
     }
     const row = await this.withRetries(() => registry.get(ref));
-    return row === null ? null : { generation: row.currentGen, token: pointerIdOf(row) };
+    if (row === null) return null;
+    // A row that resolves no generation (destroyed, or no current generation) holds none, whatever number a tombstone keeps.
+    const resolves = row.status !== 'destroyed' && row.currentGen !== null;
+    return { generation: resolves ? row.currentGen : null, token: pointerIdOf(row) };
   }
 
   /** Throw what a read of, or a publish to, `handle` must throw now: its lease error, if it has one. */
