@@ -914,8 +914,8 @@ not forward-only, for the reason given in [which fence a publish carries](#how-a
   only then) makes the call throw `NotFoundError` rather than answer, never `erased: true`. When nothing left in the
   bucket holds the id, it emits its `segment.collect` event first, so the deletion is on the record; with a holder
   left, it emits that event for the generations it deleted all the same, and the `erased` of the ledger, not the event, says whether
-  the erasure finished. A delete whose outcome it could not learn (no answer, and a failed read-back) is in no event: the
-  error it throws is the record. A rollback whose own check ran after the delete finds the object gone and puts the pointer
+  the erasure finished. The one delete it never heard back from, whose read-back failed too, is in no event; the
+  error it throws is the record of it. A rollback whose own check ran after the delete finds the object gone and puts the pointer
   back, and the erasure can read the row between the two, so before it raises it reads the row again, at once and after
   waits of up to 1.75 s in all on the store's clock, and raises only if every read still names the missing object. A
   slower rollback can still be undoing itself, so check `store.generations(ref)` or `checkConsistency()` first: while
