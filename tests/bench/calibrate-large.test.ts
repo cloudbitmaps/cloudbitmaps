@@ -296,7 +296,7 @@ describe('the large suite is a suite of its own', () => {
 
   it('is the harness’s own table when asked for: the projection, the end-of-run check and the refusal read it', () => {
     expect(harnessSrc).toContain(
-      "SUITE === 'large' ? LARGE_STAGES : SUITE === 'batch' ? BATCH_STAGES : DEFAULT_STAGES;",
+      "SUITE === 'large'\n    ? LARGE_STAGES\n    : SUITE === 'batch'\n      ? BATCH_STAGES\n      : SUITE === 'multi'\n        ? MULTI_STAGES\n        : DEFAULT_STAGES;",
     );
     expect(harnessSrc).toContain('if (!STAGES.includes(name))');
     expect(harnessSrc).toContain('for (const name of STAGES) {');
@@ -1477,7 +1477,7 @@ describe('the files the harness runs from', () => {
       timeout: 30_000,
     });
     expect(bad.status).toBe(2);
-    expect(bad.stderr).toMatch(/CR_CALIBRATE_SUITE must be default, large or batch/);
+    expect(bad.stderr).toMatch(/CR_CALIBRATE_SUITE must be default, large, batch or multi/);
   });
 
   // A large run committed beside the default suite's evidence would become the default suite's latest report, so its file

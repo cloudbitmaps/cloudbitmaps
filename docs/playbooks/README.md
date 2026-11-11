@@ -30,5 +30,6 @@ your TypeScript runner as an ES module, which allows the top-level `await` the b
 | [Faceted filters: a segment per field and value](facets.md) | Names a segment per field and value, filters with AND across fields and OR within one, and counts each facet | `intersect`, `materializeMany` with expressions and a dry run, `segments`, namespaces | M |
 | [Serverless intersection in AWS Lambda](lambda.md) | Builds a handler that intersects segments once per container, sizes the cache against the function's memory and states what is not measured | `intersect` with `after`, `cache` options, `S3Storage`, `errorKind` | M |
 | [Funnels: what sets can answer and what they cannot](funnels.md) | Counts "did both" from step sets, shows order and time are out of reach and names what to use instead | `intersect`, `andNot`, `count`, `RoaringBitmap` | S |
+| [Daily and monthly active users, and retention by cohort](active-users.md) | Loads a segment per day, counts daily and monthly actives, reads day-N retention of a signup cohort and expires old days from a rolling window | `unionCount`, `intersectCount`, `count`, `materializeMany` dry run, `intersectInto`, `andNot`, `allowAbsentOperands`, `setRetention`, `retireExpired` | L |
 
 More are planned: [the roadmap](../ROADMAP.md) lists them.
