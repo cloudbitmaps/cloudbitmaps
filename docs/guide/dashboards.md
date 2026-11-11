@@ -235,7 +235,7 @@ which may be 0).
   record of that deletion. Keep the events and the ledger both. A call whose entry says `erased: false`, or that threw,
   and that had deleted a generation emits a `segment.collect` for the generations it deleted (or found already deleted while deleting), with no
   `fromGeneration`, so every delete the call confirmed is recorded; the one delete it never heard back from, whose read-back failed too, is in no
-  event, and the thrown error is its record; the ledger's `erased`, not the event, says whether the erasure finished, and its re-run
+  event, and the thrown error is its record ([the rollback case](correctness.md#rollback-during-erasure)); the ledger's `erased`, not the event, says whether the erasure finished, and its re-run
   emits for what it deletes. A call that deleted nothing emits nothing. If another collection deleted the last holder meanwhile, the re-run
   [lists nothing for that segment](correctness.md#erasure-results) (the engine's result is `'not-member'`) and emits no
   event, so for that segment the
