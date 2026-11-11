@@ -114,6 +114,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`checkConsistency({ summaries: true })` reports every summary no read uses on a row with no keys.** A registry of
+  your own can store a sealed summary, a summary of another generation, or a clear one whose `tailBytes` no object of
+  its size can have; no read uses any of them, so the object is opened unchecked, but the check passed the row. It now
+  reports each as `summary-mismatch`, as it already did a clear summary whose fingerprint names no object. A shipped
+  registry refuses each of these shapes when it writes the row, so no row the library wrote is reported by this change,
+  and no read changes. A row edited by hand can still hold a sealed summary or one of another generation, since a read
+  checks only the summary's own shape, and such a row is now reported.
+
 - **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
   batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned
   to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned operand now names
