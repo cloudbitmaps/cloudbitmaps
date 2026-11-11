@@ -96,6 +96,15 @@ so, and so do the module headers in the code.
   that one of the run's multipart loads uploaded (the median rates and the median upload can come from different loads).
   No library code changes.
 
+### Fixed
+
+- **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
+  batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned
+  to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned operand now names
+  all of them in the type, `compileCombineMany` and `rebindCombineMany` refuse a partial pin (a generation without
+  both, either without a generation, or a pin of no generation holding one), and the re-check fails closed for a
+  numbered pin with no fingerprint. Core's main entry is outside the stability promise.
+
 ## [0.27.0] — 2026-11-02
 
 ### Breaking
