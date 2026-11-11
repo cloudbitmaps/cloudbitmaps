@@ -756,32 +756,28 @@ billion members. `maxScanSegments`, an option of `store.retireExpired` and `stor
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
 is network-bound and irrelevant here — a `has()` spends a negligible fraction of its time on bit math — but a
 **load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation.
-Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process, **on the native codec, before
-the TypeScript codec**:
+Measured on an Apple M3 Pro on 2026-11-10, the median of 20 runs, each in a fresh process, **on the TypeScript codec the
+store runs**:
 
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
-| a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~526 ms | **~24 ms** (47 ms at worst) | a batch job or worker; survivable off the request path |
+| a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~399 ms | **~31 ms** (35 ms at worst) | a batch job or worker; survivable off the request path |
 | `eraseSubject` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
 | `store.materializeMany` | decodes each operand chunk once per group and encodes every output, as an `*Into` does | not measured | a batch job or worker, as for a load |
 | a `RoaringBitmap`: a large `deserialize`, `toArray` or combine | synchronous, on the calling thread, for the whole call; its time is the in-memory table in [the codec page](roaring-codec.md#the-public-class-against-native-in-memory), and no event-loop figure exists for it | not measured | a worker or a batch job for large inputs; anywhere for small ones |
 | `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
-cost. A load yields the event loop periodically, so its ~526 ms is spent in slices — the longest ~24 ms in the
-median run and 47 ms in the worst — with the loop free in between: other requests interleave rather than
+cost. A load yields the event loop periodically, so its ~399 ms is spent in slices — the longest ~31 ms in the
+median run and 35 ms in the worst — with the loop free in between: other requests interleave rather than
 queueing behind the whole load. Without a clock to yield through, the two columns are the same number: the same
-1M-id load holds the loop for **~519 ms straight** (median), long enough for a health check to time out and the
-instance to be pulled from its load balancer.
+1M-id load holds the loop for **~399 ms straight** (median), long enough to delay every request on the instance by
+that much, and a larger load can outlast a health check's timeout and have the instance pulled from its load
+balancer.
 
-**These are the native codec's figures, to be re-measured on the TypeScript codec.** The store runs the TypeScript codec,
-and its bulk load measured faster than the native one's in a warm process (see [the codec's costs and
-gains](roaring-codec.md#what-it-costs-and-gains-against-native)), so ~526 ms is not what a load costs on it; no event-loop
-run exists on it yet, and the stall column is likewise native's.
-
-**Read these as a loaded machine's figures.** The machine was not idle: its one-minute load average was about 5
-at the start and the end of the run, so the cost column in particular is likely higher than an idle machine would
-give, and the worst stall is the figure a busy neighbour moves most. The two columns' proportions are the finding.
+**Read these as one machine's figures.** The machine was close to idle: its one-minute load average was about 2
+at the start and the end of the run, on Node v24.22.1 at commit `21463cc2`. Another machine's cost and stall will
+differ, and the worst stall is the figure a busy neighbour moves most. The two columns' proportions are the finding.
 The harness, the per-run samples, the Node version and the load averages are in
 [`bench/event-loop-results.json`](../../bench/event-loop-results.json), written by
 [`bench/event-loop.cjs`](../../bench/event-loop.cjs); `pnpm bench:event-loop:check` fails in CI if this section's

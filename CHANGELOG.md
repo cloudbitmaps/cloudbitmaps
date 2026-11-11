@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A bitmap-api bench pass records a digest of the build it measured.** `bench/bitmap-api.cjs` imports the built
+  `packages/roaring/dist` and `packages/core/dist`, which git ignores, so the `head` it recorded could differ from the
+  code it timed when it was run by hand over a stale build. A pass now records `environment.built` (a SHA-256 of each
+  folder's code), and the gate refuses a new pass without it; the six passes already committed predate the field and
+  stay valid. No library change.
+
 - **The calibration harness has a multi suite, so an `intersect` over three to ten operands can be measured on S3.**
   `--suite multi` (or `CR_CALIBRATE_SUITE=multi`) loads thirty operands in five sets and runs 20 cold `intersect` reads
   (streamed and drained) and 20 cold `intersectCount` reads of seven shapes on stores that have read nothing: k = 3, 5 and
@@ -71,6 +77,16 @@ so, and so do the module headers in the code.
 ### Changed
 
 - **An erasure that deleted a generation and did not finish now has an audit event.** A call that deleted an object holding the subject's id and then ended `superseded` (another writer won the row), refused, or threw used to emit nothing, and `eraseSubject`'s ledger entry did not carry what it had deleted, so a deletion could leave no record. It now emits `segment.collect` with the generations it deleted (or found already deleted while deleting), before a throw is raised, whenever that list is not empty when the call exits. A delete whose outcome the call could not learn (no answer, and the read-back failed too) is in no event: the thrown error is its record. The event has no `fromGeneration` and its shape is unchanged; a finished call still emits its single event, and a call that deleted nothing emits none. The event does not say the erasure finished: the ledger's `erased` does. The audit contract in `PRIVACY.md`, the erasure and observability guides and the `AuditEvent` doc comment say so.
+- **The event-loop figures are re-measured on the TypeScript codec, and a load from a bitmap has its first recorded
+  figures.** On an Apple M3 Pro (Node v24.22.1, in-memory storage, 2026-11-10), a 1M-id load takes a median 399 ms
+  with a longest stall of 31 ms (35 ms at worst), and holds the loop for 399 ms when it yields nothing; the guide had the
+  native codec's 526 ms and 24 ms. A load of the 11.5M-member dense set from `{ bitmap }` takes a median 15 ms against
+  449 ms from ids in an array; the loading guide has the table, and the sparse and runs sets. The load-input bench's
+  check of identical bytes hashed the whole object, which no two writes can match, since each carries its own write
+  identity in the footer; it now hashes every stored object with that identity (the nonce and the checksum covering it)
+  zeroed, and fails unless every input of a set wrote the same bytes. No library behaviour or version changes; two
+  source comments quote the new run.
+
 - **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
   was killed while the object was being written, and the whole object once every byte was written: before
   the link it is the only name the object has (the generation was never published), after the link a second name for the object under its generation's name, which the killed write never
@@ -114,6 +130,14 @@ so, and so do the module headers in the code.
   No library code changes.
 
 ### Fixed
+
+- **`checkConsistency({ summaries: true })` reports every summary no read uses on a row with no keys.** A registry of
+  your own can store a sealed summary, a summary of another generation, or a clear one whose `tailBytes` no object of
+  its size can have; no read uses any of them, so the object is opened unchecked, but the check passed the row. It now
+  reports each as `summary-mismatch`, as it already did a clear summary whose fingerprint names no object. A shipped
+  registry refuses each of these shapes when it writes the row, so no row the library wrote is reported by this change,
+  and no read changes. A row edited by hand can still hold a sealed summary or one of another generation, since a read
+  checks only the summary's own shape, and such a row is now reported.
 
 - **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
   batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned

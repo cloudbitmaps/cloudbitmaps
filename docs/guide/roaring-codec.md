@@ -108,7 +108,7 @@ wall-clock, recorded and not asserted:
 - **Not measured:** the two codecs compared in region against real S3 (the TypeScript codec alone was measured in region, in the default and large suites, on 2026-10-30), Alpine, arm64 Lambda; Bun and Deno ran a local self-check only. CI runs Node
   22 and 24.
 
-The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) are the native
+The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) are the TypeScript
 codec's, and say so. On the benchmarks page the in-region and large-operand figures are the TypeScript codec's
 (the runs of 2026-10-30, through the published packages), and the read, fleet-memory and at-scale figures are the native codec's, and say so.
 
