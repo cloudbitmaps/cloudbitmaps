@@ -393,6 +393,25 @@ between here and there:
    Every generation's footer also carries a random write identity: the `indexNonce` field holds the index's AEAD
    nonce on an encrypted generation and 12 bytes its writer drew on a cleartext one, covered by the footer checksum, so
    two loads of the same ids are two objects with two fingerprints.
+
+   Open questions the freeze review also has to answer about how encrypted data is sealed. None is decided, and none is
+   built:
+   - *The wrapped key's binding.* The associated data of a wrapped data key in the in-process keystore is its `keyId` alone today. Should it also
+     bind the namespace and the segment, so a registry writer cannot move one segment's wrapping onto another segment's
+     row? A keystore adapter such as a KMS chooses its own bytes inside the wrapping, so the binding would reach it only
+     if the keystore port passed it the namespace and segment, which is a public port change.
+   - *An identity of the store in the authenticated data.* Here "an identity of the store" means a value that names one
+     store (one bucket or folder and its registry), kept with the data and bound into the associated data of
+     every object and row, so a copy of an object or row placed in another store under the same data key does not
+     open. Who mints that value, where it is kept, and what a restore or a deliberate copy of a store does to it are
+     part of the question.
+   - *A key per generation, or a sealing counter.* Either a key derived for each generation (see "A data key per
+     generation" below) or a count of the seals under one key that the writer keeps and refuses past a
+     limit. The first changes how a generation is sealed and the keystore port; the second keeps the sealing and adds a
+     stored counter and a refusal. A per-write value in the associated data, which [the format reference](format.md#11-versioning-and-compatibility)
+     also asks about, belongs to the same weighing.
+   - *Decided together?* Should these be settled with one format change, so that encrypted segments are reloaded once
+     rather than once per change?
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
 9. **Closing the named deferrals.** None of these is built:
    - self-healing disaster recovery;
@@ -430,10 +449,11 @@ between here and there:
      listing pages through every leftover probe and names the first few. A `LocalFsStorage` host path can appear in an
      `EACCES` detail. The steps that follow a failed write read `no object was written`, which a write that lost its response
      could contradict;
-   - the one round trip between a tombstone collection's last re-proof of the row and its delete by number: a name
-     purged and created again inside it can lose a generation under that number, and the pass does not see it, since
+   - the one round trip ([the purge's window](guide/correctness.md#tombstones-purged-narrowly)) between a tombstone collection's last re-proof of the row and its delete by number: a name
+     purged and created again inside it can lose a generation under that number (the delete removes the new load's
+     generation, a loss of that load's data and not an exposure of erased data), and the pass does not see it, since
      no read of the row follows its last delete. Only a conditional delete from the listing's object
-     versions closes it. A read of the row after the last delete, held to the row's incarnation, would report the loss
+     versions would close it; that is a possible later change, not a promise. A read of the row after the last delete, held to the row's incarnation, would report the loss
      rather than prevent it: today a loss after an earlier delete shows at the next re-proof as a changed row, a lost
      race; after the last it is unseen, and if the re-created name still has objects the sweep counts a purge fault
      (the tombstone's objects were still there after its collection), while with none left its row delete loses its
@@ -449,10 +469,13 @@ between here and there:
      a compare-and-swap only: a create starts a new incarnation, so it has no counter to compare. The SDK exposes no
      request counter to read instead;
    - on Azure Blob a create's only condition is `ifNoneMatch: '*'`, its client's retry sends it again, and a success has
-     no read-back. Inside the retry window after a `setRetention`, a retirement and its purge, the replay finds the row
-     absent and creates it again with the token it was first written with and, on a first load that minted a key, the
-     wrapped key a shred removed, and the load reports itself published. Rare, since only the retention sweep deletes a
-     segment row. To fix;
+     no read-back. A retention sweep refuses a `tombstoneGraceMs` under one hour, so a replay of a first load's create
+     cannot land through the library's own timing. What remains is a create replayed more than an hour late, or a clock
+     skewed by more than that between the call that retired the segment and the sweep that purged it: with the row
+     purged, the replay finds it absent and creates it again with the token it was first written with and, on a first
+     load that minted a key, the wrapped key a shred removed, and the load reports itself published. That is the old
+     incarnation back under its old token. S3 and GCS send a create once, so they have no replay to land. Rare, since
+     only the retention sweep deletes a segment row. To fix;
    - the erasure's own collections on an active row, which are not held to the row they worked from (one round trip,
      and the collection spares what the row names): they should decline quietly when the row changed;
    - the erasure's two passes over a tombstone: an erasure that finds the row tombstoned mid-call (the first pass
@@ -509,7 +532,8 @@ move it up.
   passes the 2³² seals below which a repeated random nonce is negligibly unlikely
   ([how many seals one key takes](guide/correctness.md#seal-count)). Deriving a key per generation from the segment's
   key bounds each key to one generation's seals. It changes how a generation is sealed and the keystore port, so it is
-  decided at the `1.0` format freeze, not before.
+  decided at the `1.0` format freeze, not before. A counter of the seals under one key, kept by the writer and refused
+  past a limit, is the alternative the freeze weighs against it.
 - **A scope of its own for un-namespaced segments.** A segment loaded with no `namespace` is reached by
   `subjectReport`, `eraseSubject` and `retireExpired` only when the call covers every namespace (`allNamespaces: true`,
   or no `namespace` on a sweep), because the registry port cannot list the absent namespace alone, and `'_default'`

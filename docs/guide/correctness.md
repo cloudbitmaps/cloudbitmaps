@@ -788,8 +788,9 @@ member of, it streams the current generation through, with every chunk decoded a
 id with that bit cleared. It verifies the new object, publishes it fenced on the generation it streamed, and then
 deletes the generation that held the bit (a collection with `keep: 0`). For every segment its ledger reports
 `erased: true`, the bit is physically gone from the bucket when the call returns; a noncurrent version, a replica or a
-backup keeps the old object until its own lifecycle removes it, and the uploaded part of a write that failed or was
-killed, which no listing shows, is not reached. It reads the generation through the reader's coalesced chunk stream, in key order: chunks that sit within 256 KiB of
+backup keeps the old object until its own lifecycle removes it, and the leftover of a write that failed or was
+killed, which no listing shows (the uploaded part of a generation on a cloud store; on `LocalFsStorage` a `.tmp` file, a part of
+the object or, once every byte was written, the whole of it), is not reached. It reads the generation through the reader's coalesced chunk stream, in key order: chunks that sit within 256 KiB of
 each other are fetched in one range request of at most 1 MiB, so a segment of 2,000 chunks of about 8 KiB takes about
 16 range requests rather than 2,000 (expected, from the test that counts them), and the ranges go out 4 at a time. Every
 chunk is checked exactly as a read of it alone is checked: its CRC32C, its AEAD on an encrypted segment, and the

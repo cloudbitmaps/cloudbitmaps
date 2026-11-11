@@ -54,6 +54,20 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
+  was killed while the object was being written, and the whole object once every byte was written: before
+  the link it is the only name the object has (the generation was never published), after the link a second name for the object under its generation's name, which the killed write never
+  published (a later load's collection, an erasure that finds the id in it, or a drop deletes that name, and the `.tmp` link keeps the bytes). Where it holds the whole object, an erasure or a drop does not delete it, so the bytes stay
+  readable until the file is removed. The library removes a `.tmp` last written over 24 hours ago, best effort, and only
+  from a write into the same directory: a generation write sweeps the storage directory, a registry-row write (a load, an
+  erasure's rewrite or a drop's tombstone) the registry directory, so a drop's tombstone write never reaches the storage
+  directory. The privacy note, the disaster-recovery guide, the erasure sections and the API reference now say so, and how to
+  find the leftovers (`find <root> -name '*.tmp'`) and remove them, with no writer running on the root. The roadmap's format-freeze item lists, as open questions and not decisions, what the wrapped key's
+  associated data binds, an identity of the store in the authenticated data, a key per generation or a sealing
+  counter, and settling them with one format change. Two of the roadmap's deferrals now say exactly what is left: an Azure
+  Blob create replayed more than an hour late (the sweep already refuses a grace under an hour), and a tombstone
+  collection's delete by number that can remove a new load's generation (a loss of that load's data, not an exposure of
+  erased data). No library code changes.
 - **`store.materializeMany` is measured on S3, by the batch suite's first two runs.** Two runs from AWS CloudShell in
   `us-east-1`, against the published `0.27.0` packages (`2026-11-03-78516` and `2026-11-08-b12e6`), of one cold call
   of the refresh shape's 1,000 outputs over 100 stored operands of 200,000 ids, three times a run, onto destinations
