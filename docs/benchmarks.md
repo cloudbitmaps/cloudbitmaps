@@ -736,7 +736,7 @@ identical on both codecs (`bench/range-counts.json`, held to the engine in CI). 
 Bun and Deno ran a local self-check only, so no edge-runtime claim is made. A week of nightly fuzz on the TypeScript codec had
 not run when these figures were taken. The in-memory table of the public class also times a load of a bitmap, `store.load(ref, { bitmap })`, on memory storage
 (see the next section); the guide's `bench:load-input` bench, which pairs a load from ids with one from a bitmap on five
-sets up to 14.4M members, has no figure yet.
+sets up to 14.4M members, has its figures in [the loading guide](guide/loading.md).
 
 [Our own Roaring](guide/roaring-codec.md) says what the codec guarantees and what it can be used for alone.
 

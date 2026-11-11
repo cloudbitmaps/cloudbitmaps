@@ -76,6 +76,16 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The event-loop figures are re-measured on the TypeScript codec, and a load from a bitmap has its first recorded
+  figures.** On an Apple M3 Pro (Node v24.22.1, in-memory storage, 2026-11-10), a 1M-id load takes a median 399 ms
+  with a longest stall of 31 ms (35 ms at worst), and holds the loop for 399 ms when it yields nothing; the guide had the
+  native codec's 526 ms and 24 ms. A load of the 11.5M-member dense set from `{ bitmap }` takes a median 15 ms against
+  449 ms from ids in an array; the loading guide has the table, and the sparse and runs sets. The load-input bench's
+  check of identical bytes hashed the whole object, which no two writes can match, since each carries its own write
+  identity in the footer; it now hashes every stored object with that identity (the nonce and the checksum covering it)
+  zeroed, and fails unless every input of a set wrote the same bytes. No library behaviour or version changes; two
+  source comments quote the new run.
+
 - **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
   was killed while the object was being written, and the whole object once every byte was written: before
   the link it is the only name the object has (the generation was never published), after the link a second name for the object under its generation's name, which the killed write never
