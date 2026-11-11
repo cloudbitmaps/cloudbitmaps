@@ -108,10 +108,16 @@ taken before these fields existed has neither and stays valid; a gate refuses a 
 (unsorted or repeated paths, a total below the paths named, a list over the cap) and a clean pass that carries them.
 
 Files git ignores do not count, `dist/` included: a rebuilt or hand-edited `dist/` reads clean. `bitmap-api.cjs`
-imports the built `packages/roaring/dist`; its `pnpm` script builds first, but `node bench/bitmap-api.cjs` run by hand
-measures whatever `dist/` is there, under a clean tree. A fix, not built here: record a digest of `dist/index.js` in the
-pass beside `head`, or refuse a `dist/` older than the newest source file. `ts-codec-paired.cjs` and `count-kernels.cjs`
-bundle the sources themselves and are not affected.
+imports the built `packages/roaring/dist`, which imports the built `packages/core/dist`; its `pnpm` script builds first,
+but `node bench/bitmap-api.cjs` run by hand measures whatever `dist/` is there, under a clean tree. So a pass records
+`environment.built`, one SHA-256 for each of those two folders beside `head` (`lib/built-digest.cjs`: the sorted lines
+`<path> <SHA-256 of the file>` of every `.js`, `.mjs` and `.cjs` file under the folder, so a changed, added, removed or
+renamed file changes it; declarations and source maps are left out), taken when the pass starts, and the run stops when
+a folder is missing. The digest says which build a pass measured; it does not say that build came from `head`: a reader
+who needs that builds `head` and compares. Passes 1 to 6 were committed before the field existed and stay valid as they
+are; the gate (`pnpm bench:bitmap-api:table:check`, and `--gate`) refuses any later pass that lacks it or records it
+malformed. `ts-codec-paired.cjs` and `count-kernels.cjs` bundle the sources themselves and are not affected;
+`event-loop.cjs` and `load-input.cjs` import the built package too and record no digest.
 
 The benches that make a temp folder (`ts-codec-paired.cjs`, `bitmap-api.cjs`, `count-kernels.cjs`,
 `ts-codec-engine.cjs`, `soak.cjs`, `scale.cjs`) make it through `lib/work-folder.cjs`, which removes it however the
@@ -868,6 +874,7 @@ Compare the two evidence files: the request counts of every stage are identical 
 | `lib/elasticache-prices.cjs` | ElastiCache's reserved prices for every catalogue node type, and the one reader of AWS's price list they are held to: each node on its full key, `NodeUsage:<type>`, and a key that matches none or several refused |
 | `lib/calibration-figures.cjs` | Every figure a calibration run lets the project publish, derived from the run's evidence, the pricing profile and the library's own constants — and a refusal for evidence that does not reconcile with itself. `tests/docs/calibration-reports.test.ts` holds the latest run's report and the benchmarks page to it as it stands, each earlier report to the model recorded for it, and `scripts/site-figures.cjs` takes the site's single-bucket figures from it. |
 | `lib/remove-all.cjs` | Takes markup out of a page's text for the gates that read what a reader sees (`scripts/site-figures.cjs`, `scripts/site-replay.cjs`, `calibration-figures.cjs` and the docs tests): a replace repeated until nothing matches, since removing one comment or tag can join the text around it into another |
+| `lib/built-digest.cjs` | The digest of the built folders `bitmap-api.cjs` imports (`builtDigest`) and the gate's reading of a pass's `environment.built` (`builtProblems`: required of a pass numbered after 6, checked for shape wherever present). `tests/bench/built-digest.test.ts` holds it. |
 | `lib/tree-state.cjs` | Whether a pass's tree was the commit's own (`treeState`: `clean` when only the bench's own results file differs, else `dirty` with the paths that differ, sorted and capped, and their total) and the gates' reading of those fields (`treeProblems`). |
 | `lib/work-folder.cjs` | A bench's temp folder, removed however the process ends (`make`). |
 | `lib/work-folder-sentinel.cjs` | The detached process `work-folder.cjs` starts: it removes the bench's folders when the pipe from the bench closes, which is when the bench is gone. |

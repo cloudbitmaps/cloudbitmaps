@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A bitmap-api bench pass records a digest of the build it measured.** `bench/bitmap-api.cjs` imports the built
+  `packages/roaring/dist` and `packages/core/dist`, which git ignores, so the `head` it recorded could differ from the
+  code it timed when it was run by hand over a stale build. A pass now records `environment.built` (a SHA-256 of each
+  folder's code), and the gate refuses a new pass without it; the six passes already committed predate the field and
+  stay valid. No library change.
+
 - **The calibration harness has a multi suite, so an `intersect` over three to ten operands can be measured on S3.**
   `--suite multi` (or `CR_CALIBRATE_SUITE=multi`) loads thirty operands in five sets and runs 20 cold `intersect` reads
   (streamed and drained) and 20 cold `intersectCount` reads of seven shapes on stores that have read nothing: k = 3, 5 and

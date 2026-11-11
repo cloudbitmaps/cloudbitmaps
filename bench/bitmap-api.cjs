@@ -84,6 +84,7 @@ const cellsLib = require('./lib/bitmap-api-cells.cjs');
 const countRecord = require('./lib/bitmap-api-count.cjs');
 const paired = require('./lib/paired-verdict.cjs');
 const { treeState } = require('./lib/tree-state.cjs');
+const { builtDigest } = require('./lib/built-digest.cjs');
 const workFolder = require('./lib/work-folder.cjs');
 
 const { MAX_LOAD, RULE, UNIT, nsToMs, figurePlaces, keepRound, collectRounds } = verdict;
@@ -520,6 +521,7 @@ function environment() {
     cpu: os.cpus()[0]?.model ?? 'unknown',
     cores: os.cpus().length,
     head: git('rev-parse', 'HEAD'),
+    built: builtDigest(ROOT),
     tree,
     ...dirt,
     roaring,
