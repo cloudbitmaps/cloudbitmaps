@@ -65,6 +65,9 @@ bench/calibration/large/*.partial.json
 # The batch suite (`--suite batch`) the same, its evidence under `bench/calibration/batch/`.
 bench/calibrate-aws-rehearsal-batch.json
 bench/calibration/batch/*.partial.json
+# The multi suite (`--suite multi`) the same, its evidence under `bench/calibration/multi/`.
+bench/calibrate-aws-rehearsal-multi.json
+bench/calibration/multi/*.partial.json
 
 # Local review artifact from `pnpm site:screenshots` — regenerable, and 12 MB of PNGs that go stale
 # silently: a committed set would keep showing pages long after they changed.
