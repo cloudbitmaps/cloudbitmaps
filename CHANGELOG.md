@@ -76,6 +76,8 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An erasure that deleted a generation and did not finish now has an audit event.** A call that deleted an object holding the subject's id and then ended `superseded` (another writer won the row, or a conditional delete was refused) or threw used to emit nothing, and `eraseSubject`'s ledger entry did not carry what it had deleted, so a deletion could leave no record. It now emits `segment.collect` with the generations it deleted (or found already deleted while deleting), before a throw is raised, whenever that list is not empty when the call exits. A delete whose outcome the call could not learn (no answer, and the read-back failed too) is in no event: the thrown error is its record. The event has no `fromGeneration` and its shape is unchanged; a finished call still emits its single event, and a call that deleted nothing emits none. The event does not say the erasure finished: the ledger's `erased` does. The audit contract in `PRIVACY.md`, the erasure and observability guides and the `AuditEvent` doc comment say so.
+
 - **The TypeScript codec's per-operation figures and the at-scale benchmark are re-measured.** On an
   Apple M3 Pro (Node v24.22.1, 2026-11-10), the per-operation record has the union of one dense pair of containers at 3.41
   times native (900 ns against 3,066 ns), the worst `or` pair, and a run chunk's `optimize` at 3.06 times; the pages had

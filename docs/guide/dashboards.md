@@ -206,9 +206,10 @@ Without this event the absence of a `segment.publish` is not otherwise distingui
 generation derived from the segment itself replaced it — `fromGeneration` → `generation`; today the one
 emitter is a subject erasure, and it fires at the publish, *before* the superseded generation is collected, so
 the record exists the moment the generation without the id is authoritative — no `segment.publish`
-accompanies it), `segment.collect` (a subject erasure that rewrote nothing and deleted objects no reader resolves: the
+accompanies it), `segment.collect` (a subject erasure that rewrote nothing, or, after a rewrite, a call that threw, and deleted objects no reader resolves: the
 generations holding the id, when it found the id only outside the current generation, or, with no `fromGeneration`, only
-objects no read of the segment can open, which it cannot search and deletes whatever id it erases), and the erasure
+objects no read of the segment can open, which it cannot search and deletes whatever id it erases, or what an erasure that
+did not finish had deleted when it ended), and the erasure
 trail: `segment.erase` fires per segment on a **genuine crypto-shred** (not a
 cleartext tombstone, whose bytes stay readable: that one is a `segment.tombstone`), `segment.dispose` fires per `dropSegment` that tombstones a segment
 or finds its tombstone, and
@@ -229,14 +230,19 @@ which may be 0).
   under a tombstone; or a first load's object on a segment with no generation yet) is **collected**: nothing is
   rewritten, the generations holding it are deleted, and the event is `segment.collect`, with the ledger entry
   `{ erased: true, fromGeneration }` and no `generation`. A `segment.collect` with no `fromGeneration` is not a receipt
-  for the subject: the call found the id in nothing it could search and deleted only objects no read of the segment can
-  open, which it deletes whatever id it erases, so the ledger has no entry for that segment and the event is the only
-  record of that deletion. Keep the events and the ledger both. A call whose entry says `erased: false` emits nothing,
-  even when it deleted a generation
-  holding the id; its re-run emits when it finishes. If another collection deleted the last holder meanwhile, the re-run
+  for the subject, and it has two causes. Either the call finished having found the id in nothing it could search, and
+  deleted only objects no read of the segment can open, which it deletes whatever id it erases; or the call did not
+  finish, and the event records only what it had deleted. A segment whose row was dropped or purged during the call is
+  unlisted too, so on an unlisted segment the event does not tell the two cases apart. Either way the event is the
+  only record of those deletions, and only the ledger's `erased` says whether the erasure finished. Keep the events and the ledger both. A call whose entry says `erased: false`, or that threw,
+  and that had deleted a generation emits a `segment.collect` for the generations it deleted (or found already deleted while deleting), with no
+  `fromGeneration`, so every delete the call confirmed is recorded; the one delete it never heard back from, whose read-back failed too, is in no
+  event, and the thrown error is its record (so is a delete that landed after a lost answer when the read-back found another object under the number: no event and no error, and the call ends `superseded` or finished with nothing collected) ([the lost-answer case](correctness.md#rollback-during-erasure)); the ledger's `erased`, not the event, says whether the erasure finished, and its re-run
+  emits for what it deletes. A call that deleted nothing emits nothing. If another collection deleted the last holder meanwhile, the re-run
   [lists nothing for that segment](correctness.md#erasure-results) (the engine's result is `'not-member'`) and emits no
   event, so for that segment the
-  failed call's ledger entry is the only record.
+  failed call's own `segment.collect` (when it confirmed a delete) and its ledger entry are the record, and a delete it could not
+  learn the outcome of is recorded only by the error it threw.
 - A `segment.publish` is not a receipt for anything: it says a set was loaded, not what was removed from it.
 
 **`segment.erase`, `segment.rewrite`, `segment.collect` and `segment.dispose` are deliberately different receipts, and `segment.tombstone` is none of them: it records a tombstone that destroyed no key and deleted nothing.
@@ -246,7 +252,7 @@ Conflating them would make your dashboard over-attest.**
 |---|---|---|
 | `segment.erase` | The wrapped DEK(s) are gone from the segment's **current** registry row, so nothing that opens the segment through that row from then on can decrypt its bytes — in the bucket, or in any backup, replica, PITR snapshot or WORM copy of its objects. The one erasure event whose claim reaches immutable copies of the objects | **Not** that no copy of the wrapped key survives. A shred is one compare-and-swap on the row and destroys no KEK: a noncurrent version, a backup or a PITR copy of the registry row still holds the wrapped DEK(s), which decrypt the segment with a KEK that wrapped them, and a registry restore to a point before the event makes the segment readable again. The destruction is complete once no retained copy of the row holds them, or once every KEK that wrapped them is destroyed |
 | `segment.rewrite` | A generation without the erased id is now current, derived from `fromGeneration`. With the ledger entry it came with, the object that held the bit is gone from the bucket | **Not** that every copy is gone. A noncurrent object version, a cross-region replica or a backup can still hold `fromGeneration` until its own lifecycle removes it — for a claim that reaches those, the segment has to be encrypted and the receipt is `segment.erase`, on the terms in its row |
-| `segment.collect` | No generation in the bucket holds the erased id, and nothing was rewritten. With a `fromGeneration`, the id was only in generations no reader resolves, and the call deleted what it found holding it (`collected`, which is empty when another collection got there first). With none, the call found the id in nothing it could search, and `collected` lists the objects no read of the segment can open that it deleted | The same as `segment.rewrite`: **not** that a noncurrent object version, a replica or a backup of a deleted generation is gone. With no `fromGeneration`, **not** that the segment held the subject at all: the ledger has no entry for it |
+| `segment.collect` | From a finished erasure (`erased: true`, or a sealed-only one the ledger does not list): no generation in the bucket holds the erased id, and nothing was rewritten. With a `fromGeneration`, the id was only in generations no reader resolves, and the call deleted what it found holding it (`collected`, which is empty when another collection got there first). With none, the call found the id in nothing it could search, and `collected` lists the objects no read of the segment can open that it deleted. From a call that did not finish (`erased: false`, or a throw, including one after a `segment.rewrite`): only that the generations in `collected` are gone | The same as `segment.rewrite`: **not** that a noncurrent object version, a replica or a backup of a deleted generation is gone. With no `fromGeneration`, **not** that the segment held the subject at all (the ledger may have no entry for it), **not** that the erasure finished, and **not** that no holder is left |
 | `segment.tombstone` | The segment's row was turned into a `destroyed` tombstone, by `destroySegment` or `eraseNamespace` with `allowCleartext`, and no read resolves the segment any more. It is the record of the tombstone, which a registry restore undoes | **Not** an erasure: no key was destroyed and no object was deleted, so every copy of the bytes stays readable (`objectsReadable: true`). Never count it as a destruction claim |
 | `segment.dispose` | The segment was tombstoned and its storage reclaimed (`generationsDeleted` Storage generations). Emitted by `dropSegment` — including **every retirement a `retireExpired` sweep performs**, since the sweep forwards its `audit` sink through. A retention-driven fleet will therefore emit these in batches on whatever schedule you gave the sweep | **Not** that the bytes are unreadable. A noncurrent object version, a cross-region replica or a PITR snapshot can still hold the cleartext. Also not that reclamation is *complete* — check `DropResult.generationsRemaining` |
 

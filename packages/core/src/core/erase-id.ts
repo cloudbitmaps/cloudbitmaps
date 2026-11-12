@@ -317,8 +317,9 @@ export interface EraseIdResult {
    * `collected`. Another object under the number, for a delete conditioned on the version searched, is not counted as
    * deleted: the receipt then rests on the listing of the bucket, and says `erased: true` only when that object does
    * not hold the id. When that read fails too, or the delete lands after it, the call reports the fault, and a re-run
-   * finds the object gone and lists nothing for the segment: keep the error with the ledger as the record of the
-   * deletion.
+   * finds the object gone and lists nothing for the segment. That delete is in no event: the call recorded only the
+   * generations it knew it had deleted (answered, or found gone by the read-back), and this one it could not learn the
+   * outcome of, so the thrown error, kept with the ledger, is the record of it, as before.
    *
    * A rollback that lands between the call's read of the row and one of its deletes, onto the generation being deleted,
    * leaves the pointer on an object that is gone. The call finds it at its next read of the row, or by reading the row
@@ -333,7 +334,9 @@ export interface EraseIdResult {
    *  - `erased: true` naming the generation it found the id in — the ordinary case, and the one that gives you
    *    the receipt the failed call could not;
    *  - `'not-member'` — a racing collector took that generation first. The bit is gone, but **no run reports a
-   *    receipt for it**, so keep the failed call's error alongside your ledger if you need the audit trail;
+   *    receipt for it** (the failed call's own `segment.collect` event names the generations it knew it had deleted; a
+   *    delete whose outcome it could not learn is in no event), so keep the failed call's error alongside your ledger
+   *    if you need the full trail;
    *  - `'absent'` — the segment's registry row is gone, so it is no longer a segment at all and
    *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: list it with
    *    `listGenerations` (`store.generations`) and delete it with `dropSegment` (`store.dropSegment`), which both
@@ -352,6 +355,14 @@ export interface EraseIdResult {
  * because only other generations held the id, emits one `segment.collect` once no generation holds it, and so does one
  * that deleted only objects no read of the segment can open, which names no generation the id was found in. Either
  * event comes before the `NotFoundError` of a rollback that moved the pointer onto a generation the call deleted.
+ *
+ * A call that does not finish (it reports `erased: false`, or throws) emits one `segment.collect` too when it had
+ * deleted at least one object, with the generations it deleted (or found already deleted while deleting) and no
+ * `fromGeneration`, and a throw is thrown after it. The event holds only what the call confirmed: a delete that got
+ * no answer and whose read-back failed too is in no event, and its thrown error is the record. A refused rewrite's
+ * delete of the call's own unpublished object is not an erasure of a holder and is not in it. The result's `erased`,
+ * not the event, says whether the erasure finished. The sink's own faults are swallowed, so they never replace the
+ * call's error.
  */
 export async function eraseIdFromSegment(
   ref: SegmentRef,
@@ -359,12 +370,39 @@ export async function eraseIdFromSegment(
   deps: EraseIdDeps,
   options: { audit?: IAuditSink } = {},
 ): Promise<EraseIdResult> {
-  const first: Pass = {};
+  const passes: Pass[] = [];
+  const start = (): Pass => {
+    const pass: Pass = { removed: new Set() };
+    passes.push(pass);
+    return pass;
+  };
+  let result: EraseIdResult;
+  try {
+    result = await erasePasses(ref, id, deps, options, start);
+  } catch (err) {
+    // The call is already failing: what it deleted is recorded first. `safeAudit` swallows a sink's fault, so the
+    // recording never replaces `err`.
+    recordUnfinished(ref, passes, options);
+    throw err;
+  }
+  if (!result.erased) recordUnfinished(ref, passes, options);
+  return result;
+}
+
+/** The passes of {@link eraseIdFromSegment}: one, and a second when a row tombstoned during the first. */
+async function erasePasses(
+  ref: SegmentRef,
+  id: number,
+  deps: EraseIdDeps,
+  options: { audit?: IAuditSink },
+  start: () => Pass,
+): Promise<EraseIdResult> {
+  const first = start();
   const result = await eraseOnce(ref, id, deps, options, first);
   // A row tombstoned while this call ran is searched as a fresh call searches one: a cleartext destroy, or a drop whose
   // sweep left an object, leaves objects that can still hold the id. Once: the second pass starts on the tombstone.
   if (result.reason === 'destroyed' && first.tombstoned === false) {
-    const second: Pass = {};
+    const second = start();
     const again = await eraseOnce(ref, id, deps, options, second);
     // Nothing under the tombstone holds the id: the first pass's report stands, with the generation it read.
     if (again.reason === 'destroyed') return result;
@@ -382,7 +420,33 @@ export async function eraseIdFromSegment(
 }
 
 /**
- * What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, the token of the row it
+ * Emit `segment.collect` for what a call deleted when it did not finish (it ended `superseded`, refused, or threw) and
+ * has emitted nothing for those deletions: the generations its passes deleted or found deleted while deleting, once,
+ * naming no generation the id was found in. A delete whose outcome the call could not learn is not among them.
+ * Nothing when it deleted nothing, or when a pass already emitted the event for them. The ledger's
+ * `erased`, not the event, says whether the erasure finished.
+ */
+function recordUnfinished(
+  ref: SegmentRef,
+  passes: readonly Pass[],
+  options: { audit?: IAuditSink },
+): void {
+  if (passes.some((pass) => pass.audited === true)) return;
+  const removed = [...new Set(passes.flatMap((pass) => [...pass.removed]))].sort(ascending);
+  if (removed.length === 0) return;
+  const token = [...passes].reverse().find((pass) => pass.readToken !== undefined)?.readToken;
+  safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+    kind: 'segment.collect',
+    namespace: ref.namespace,
+    segment: ref.segment,
+    ...incarnationField(token),
+    collected: removed,
+  });
+}
+
+/**
+ * What one pass of {@link eraseIdFromSegment} saw: every generation it deleted, whether the row it read first was a
+ * tombstone, the token of the row it
  * read when it finished by deleting objects and rewriting none, whether one of those it searched held the id, and the
  * error to raise once the call has recorded what it deleted, when the row named a generation it deleted.
  */
@@ -391,6 +455,12 @@ interface Pass {
   collectedOn?: Token;
   found?: boolean;
   missing?: NotFoundError;
+  /** Every generation a delete of this pass removed, noted the moment it succeeds, so a pass that then throws still has it. */
+  readonly removed: Set<number>;
+  /** The token of the row the pass read first, which an event for what it removed names the incarnation by. */
+  readToken?: Token;
+  /** Whether the pass's `segment.collect` event has been emitted, so the call emits at most one for its deletions. */
+  audited?: boolean;
 }
 
 /** What the row says about a call's premise: `null` while it holds, otherwise the reason to report. */
@@ -495,6 +565,7 @@ function recordCollect(
   options: { audit?: IAuditSink },
 ): EraseIdResult {
   if (pass.collectedOn !== undefined) {
+    pass.audited = true;
     safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
       kind: 'segment.collect',
       namespace: ref.namespace,
@@ -548,6 +619,7 @@ async function eraseOnce(
 
   const record = await deps.registry.get(ref);
   if (record === null) return { ...base, erased: false, reason: 'absent', collected: [] };
+  seen.readToken = record.token;
   // A tombstone is no proof nothing readable is left (see `underTombstone`), nor a row with no pointer that nothing
   // was written (see `unpublished`): both are searched.
   const tombstoned = record.status === 'destroyed';
@@ -1142,7 +1214,11 @@ async function collectAgain(
       break;
     }
     if (!again.pruned) break;
-    const more = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
+    const more = await collectBelowPointer(ref, deps, {
+      keep: 0,
+      skipKnown: true,
+      onDeleted: noteRemoved(c),
+    });
     deleted.push(...more.deleted);
     missing = more.missing;
     spared = more.knownSpared ?? [];
@@ -1213,6 +1289,7 @@ async function deleteFenced(
       break;
     }
     deleted.push(generation);
+    c.seen.removed.add(generation);
     watch.deleted(generation);
   }
   // No read follows the last delete, so a rollback onto it would go unseen: one read of the row covers it.
@@ -1221,10 +1298,18 @@ async function deleteFenced(
   return { deleted, moved };
 }
 
+/** The callback a collection pass of this call is given, noting each generation it deletes in the pass's record. */
+function noteRemoved(c: EraseCall): (generation: number) => void {
+  return (generation) => {
+    c.seen.removed.add(generation);
+  };
+}
+
 /**
  * Note that a delete loop of this call found the row naming `missing`, a generation it deleted. The call raises it in
  * place of its answer ({@link recordCollect}), after the `segment.collect` event when nothing left in the bucket holds
- * the id, and with no event when something does, since the erasure did not finish. Not thrown here: a `NotFoundError`
+ * the id, and when something does, after the unfinished call's event for what it deleted ({@link recordUnfinished}).
+ * Not thrown here: a `NotFoundError`
  * thrown while {@link stage} runs is translated by re-reading the row, which would report this as a race.
  */
 function notePointerOnDeleted(c: EraseCall, missing: number): void {
@@ -1375,7 +1460,11 @@ async function underTombstone(c: EraseCall): Promise<EraseIdResult> {
   const { ref, deps, base } = c;
   const holder = await holderUnderTombstone(c);
   if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
-  const collected = await gcOrphanGenerations(ref, deps, { keep: 0, incarnation: c.record });
+  const collected = await gcOrphanGenerations(ref, deps, {
+    keep: 0,
+    incarnation: c.record,
+    onDeleted: noteRemoved(c),
+  });
   const left = await holderLeft(c, new Set());
   if (left !== undefined) throw cannotRemove(c, left);
   return collectedAll(c, holder.generation, collected);
@@ -1415,8 +1504,8 @@ async function underTombstone(c: EraseCall): Promise<EraseIdResult> {
  *    lands inside it onto the generation being deleted leaves the pointer naming a missing object. The rollback's
  *    own move-then-verify catches every such landing except one whose check runs before the delete. A condition on
  *    the object cannot close that one, since the pointer then names the very object this call read, so the call
- *    detects it, as collection does, and throws `NotFoundError`: after its `segment.collect` event when nothing left
- *    in the bucket holds the id, at once when something does.
+ *    detects it, as collection does, and throws `NotFoundError`, after its `segment.collect` event for what it
+ *    deleted.
  *    What the condition does close is another object under the number: in that round trip another erasure can
  *    delete the holder and a load take its number, write and publish. Each delete passes the version of the read
  *    that made the object a holder (`versions`), so a driver that reports `conditionalDelete` refuses it for any
@@ -1503,7 +1592,7 @@ async function notInCurrent(c: EraseCall): Promise<EraseIdResult> {
     past = made.past === true;
   }
   const swept: { deleted: number[]; missing?: number; knownSpared?: number[] } = sweep
-    ? await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true })
+    ? await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true, onDeleted: noteRemoved(c) })
     : { deleted: [] };
   const collected = [...swept.deleted];
   let missing = swept.missing;
@@ -1919,7 +2008,11 @@ async function finishRewrite(c: EraseCall, staged: Staged): Promise<EraseIdResul
   // rather than trusting the one this call read, and why the receipt below reads what is left rather than
   // assuming. A rollback that lands between a re-proof and its delete, and that the row still shows when read again, makes
   // the call throw `NotFoundError`, after the `segment.rewrite` event above: the collection stopped there.
-  const swept = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
+  const swept = await collectBelowPointer(ref, deps, {
+    keep: 0,
+    skipKnown: true,
+    onDeleted: noteRemoved(c),
+  });
   if (swept.missing !== undefined) {
     throw pointerOnDeletedError(ref, { kind: 'erasure' }, swept.missing);
   }

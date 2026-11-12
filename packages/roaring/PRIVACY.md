@@ -86,7 +86,12 @@ when its registry token carries one, so a segment created again under the same n
 erased. Segments the id is
 not in are not listed. A segment where the erasure found the id in nothing it could search, and deleted only objects
 no read of it can open, is not listed either: the audit sink gets `segment.collect { collected }` for it, with no
-`fromGeneration`, and that event is the only record of the deletion. `store.subjectReport(id, { namespace })` answers
+`fromGeneration`, and that event is the only record of the deletion. An erasure that deleted a generation and then did not finish
+(another writer won the row and the entry says `erased: false`, or the call threw) emits `segment.collect { collected }` too, for
+the generations it deleted (or found already deleted while deleting) and with no `fromGeneration`, so every delete the call confirmed is recorded;
+the ledger's `erased`, not the event, says whether the erasure finished: that event says only that those generations are gone, not that no holder is left (a segment whose row was dropped or purged during the call is unlisted too, so on an unlisted segment the event does not tell the two cases apart). A delete whose outcome the call could not learn (it
+got no answer and the read of the object that followed failed too) is in no event: the thrown error is then the record, so keep it
+with your ledger. Neither is a delete that landed after a lost answer when the read of the object that followed found another object under the number: the call ends `superseded`, or finished with nothing collected, and nothing records it. A refused rewrite's delete of the call's own unpublished object is not an erasure of a holder and is not in the event. `store.subjectReport(id, { namespace })` answers
 the read side (Art. 15 — which segments
 an id is in, and which destroyed segments still hold it in objects left in the bucket).
 
@@ -133,7 +138,8 @@ same one, a generation still holding the id — can also come from the collect-o
 only outside the current generation and nothing was published; there the pointer has not moved, and a re-run
 simply repeats the attempt.) **Read what the re-run says.** Usually it reports `erased: true` against the
 generation it found the id in, which is the receipt the failed call could not give you. If a racing collector took
-that generation first, or this call's own delete of it landed after a fault the call could not settle, it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so
+that generation first, or this call's own delete of it landed after a fault the call could not settle, it reports nothing for the segment: the bit is gone, but no run holds a receipt for it. The failed call's own
+`segment.collect` names the generations it knew it had deleted; a delete it could not learn the outcome of is in no event, so
 keep the failed call's error alongside your ledger. And if the segment's registry row has since been purged, it is
 not a segment any more and `eraseSubject` does not scan it at all — anything left in its bucket is an **orphan**,
 which neither `store.checkConsistency()` (it visits registry rows only) nor the collection a load and the retention
@@ -425,8 +431,8 @@ state changes — `segment.publish` (a loaded generation became current), `segme
 not publish, because its guard refused it or another writer got there first), `segment.rollback` (an operator moved
 the pointer to a generation it named), `segment.rewrite` (a subject-erasure
 rewrite: `fromGeneration` → `generation`), `segment.collect` (a subject erasure that rewrote nothing and deleted what
-no reader resolves: the generations holding the id, when it found the id only outside the current generation, or, with
-no `fromGeneration`, only objects no read of the segment can open, which it deletes whatever the id), `segment.erase`
+no reader resolves (or, after a rewrite, a call that threw): the generations holding the id, when it found the id only outside the current generation, or, with
+no `fromGeneration`, only objects no read of the segment can open, which it deletes whatever the id; and, with no `fromGeneration`, what an erasure that did not finish had deleted when it ended), `segment.erase`
 (a genuine
 crypto-shred), `segment.tombstone` (a cleartext tombstone from `allowCleartext`, which deletes nothing), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
 `namespace.erase` — for your audit log / SIEM. Each `segment.*` event names the segment's `incarnation` when its

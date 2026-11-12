@@ -274,7 +274,7 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
     await namesMissing(w, 0, [1]);
   });
 
-  it("an erasure's collection after its rewrite published: NotFoundError after the rewrite is audited, never erased: true", async () => {
+  it("an erasure's collection after its rewrite published: NotFoundError after the rewrite and the delete are audited, never erased: true", async () => {
     const w = world();
     await loadSegment(REF, [1, 2, 3, X], w.deps, { keep: 9 }); // 0 holds the id
     await loadSegment(REF, [1, 2, X], w.deps, { keep: 9 }); // 1 is current and holds it
@@ -292,8 +292,10 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(0, /an erasure/));
+    // The rewrite is on the record, and so are the deletes of generations 1 and 0 that the call made before it threw.
     expect(audit.snapshot()).toEqual([
       expect.objectContaining({ kind: 'segment.rewrite', generation: 2 }),
+      expect.objectContaining({ kind: 'segment.collect', collected: [0, 1] }),
     ]);
     expect((await w.registry.get(REF))?.currentGen).toBe(0);
     expect(await generations(w.storage)).not.toContain(0);
@@ -440,7 +442,7 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
     await namesMissing(w, 1, [0]);
   });
 
-  it('a holder it deleted, seen at the re-read before the next: NotFoundError, and no record of a finished erasure', async () => {
+  it('a holder it deleted, seen at the re-read before the next: NotFoundError, and the record is of the delete it made, not of a finished erasure', async () => {
     const w = world();
     await holdersAbove(w, 2); // 1 and 2 hold the id; the erasure deletes 2, then 1
     const at = gate();
@@ -458,8 +460,10 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(2, /erasure/));
-    // Generation 1 still holds the id: the erasure did not finish, so it records nothing.
-    expect(audit.snapshot()).toEqual([]);
+    // Generation 1 still holds the id: the erasure did not finish, and the delete of generation 2 it made is on the record.
+    expect(audit.snapshot()).toEqual([
+      expect.objectContaining({ kind: 'segment.collect', collected: [2] }),
+    ]);
     await namesMissing(w, 2, [0, 1]);
   });
 });

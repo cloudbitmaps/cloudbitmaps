@@ -538,8 +538,8 @@ What the caller sees is `NotFoundError` naming the generation, in place of the a
 |---|---|---|
 | a load's collection, after its publish landed | the load took effect at its generation, and its collection deleted the one the pointer named | `segment.publish` |
 | a refused load's delete of its own object | the load was refused, naming the refusal, and published nothing | `segment.load-refused` for a refusal the load answers (a guard's, or a publish that answered `false`); nothing for one its publish raised as a `ValidationError` or `KeyUnavailableError`, whose name and message it carries |
-| the erasure's collection, after its rewrite published | an erasure deleted the generation | `segment.rewrite` |
-| the erasure's deletes when it rewrote nothing | an erasure deleted the generation | `segment.collect` when nothing left in the bucket holds the id; nothing when a holder is left |
+| the erasure's collection, after its rewrite published | an erasure deleted the generation | `segment.rewrite`, then `segment.collect` for the generations its collection deleted |
+| the erasure's deletes when it rewrote nothing | an erasure deleted the generation | `segment.collect` for the generations the call deleted, when it finished and when it did not (a holder left, `'superseded'`, a throw); nothing when it deleted none |
 
 <a id="rollback-race-what-to-do"></a>**What to do.** Look before you act: `store.generations(ref)` lists what the bucket holds and marks the current
 generation, and `checkConsistency()` reports the segment as `missing-storage-generation` while its pointer names a
@@ -913,7 +913,9 @@ not forward-only, for the reason given in [which fence a publish carries](#how-a
   what it deleted, and a row that names one of those generations with no object under it (one zero-byte read, made
   only then) makes the call throw `NotFoundError` rather than answer, never `erased: true`. When nothing left in the
   bucket holds the id, it emits its `segment.collect` event first, so the deletion is on the record; with a holder
-  left, it emits nothing. A rollback whose own check ran after the delete finds the object gone and puts the pointer
+  left, it emits that event for the generations it deleted all the same, and the `erased` of the ledger, not the event, says whether
+  the erasure finished. The one delete it never heard back from, whose read-back failed too, is in no event; the
+  error it throws is the record of it. A rollback whose own check ran after the delete finds the object gone and puts the pointer
   back, and the erasure can read the row between the two, so before it raises it reads the row again, at once and after
   waits of up to 1.75 s in all on the store's clock, and raises only if every read still names the missing object. A
   slower rollback can still be undoing itself, so check `store.generations(ref)` or `checkConsistency()` first: while
