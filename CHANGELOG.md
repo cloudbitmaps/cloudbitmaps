@@ -115,16 +115,19 @@ so, and so do the module headers in the code.
 ### Fixed
 
 - **`materializeMany` refuses the outputs that subtract a pinned operand destroyed while the call ran.** An operand that
-  was crypto-shredded, destroyed in the clear or dropped after the call read it passed the re-check before the publishes,
-  because the row it left reports the generation number it kept, and the outputs that subtracted it were published with
-  its old contents; such an operand is refused at the start of a call. The re-check now treats a row that resolves no
-  generation as holding none, so those outputs get `StaleOperandError` (`reason: 'moved'`). With `pin: false` an operand
-  is still not re-checked. Two other behaviours change with it. An operand pinned as absent (`allowAbsentOperands`) whose
-  row is a tombstone was refused as moved (the tombstone's kept number against the pin's none); it is no longer: an
-  absent operand that stays absent is not refused, whatever its row. And the end-of-call stats for an operand whose row
-  resolves no generation then, whatever its role (added or subtracted, pinned or not), read `endGeneration: null` and
-  `moved: true`, where they read the kept number and `false`. In core, the re-check before a publish also fails closed
-  when it asked for a fingerprint and the row it got back is numbered but carries none.
+  was crypto-shredded, destroyed in the clear or dropped after the call read it passed the re-check before the
+  publishes, because the row it left reports the generation number it kept, and the outputs that subtracted it were
+  published having subtracted its old contents; such an operand is refused at the start of a call (without
+  `allowAbsentOperands`). The re-check now treats a row that resolves no generation as holding none, so those outputs
+  get `StaleOperandError` (`reason: 'moved'`). With `pin: false` an operand is still not re-checked. Two other
+  behaviours change with it. A subtracted operand pinned as absent (`allowAbsentOperands`) whose row is a tombstone was
+  refused as moved (the tombstone's kept number against the pin's none); it is no longer: an absent operand that stays
+  absent is not refused, whatever its row. And the end-of-call stats change for an operand whose row resolves no
+  generation at the end: one that held a generation when the call read it (pinned at one, or read live at one) reads
+  `endGeneration: null` and `moved: true`, whatever its role, where it read the kept number and `false`; one absent at
+  the start and still absent reads `endGeneration: null` and `moved: false`, where it read the kept number and `true`.
+  In core, the re-check before a publish also fails closed when it asked for a fingerprint and the row it got back is
+  numbered but carries none.
 - **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
   batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned
   to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned operand now names

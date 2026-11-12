@@ -326,6 +326,11 @@ describe('store.materializeMany', () => {
     });
     published(r.outputs[0]);
     expect(await w.ids('d1')).toEqual(await w.ids('a'));
+    expect(r.stats.operands.optout!).toMatchObject({
+      pinnedGeneration: null,
+      endGeneration: null,
+      moved: false,
+    });
   });
 
   it('a subtracted operand whose row has no current generation (a policy before the first load), pinned absent, publishes', async () => {

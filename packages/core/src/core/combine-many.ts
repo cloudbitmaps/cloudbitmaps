@@ -232,8 +232,9 @@ export interface MaterializeManyOperandStats {
   readonly endGeneration: number | null | undefined;
   /**
    * Whether the operand was replaced while the call ran: for a pinned operand, its pin no longer names what the
-   * registry holds (another generation, the name deleted and created again, or the generation's number taken again by
-   * other bytes, which an operand an output subtracts is compared for by the object's fingerprint); for one read live, its
+   * registry holds (another generation, a row that now resolves none, the name deleted and created again, or the
+   * generation's number taken again by other bytes, which an operand an output subtracts is compared for by the object's
+   * fingerprint); for one read live, its
    * generation or its incarnation changed from where the call began. `undefined` where `endGeneration` is, and for a live
    * operand the call never opened, whose start is unknown.
    */
