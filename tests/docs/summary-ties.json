@@ -309,12 +309,6 @@
     },
     {
       "file": "docs/guide/api-reference.md",
-      "claim": "erasure-results",
-      "sentence": "ac873065eb0c",
-      "starts": "segment.collect is what eraseSubject emits when it deletes"
-    },
-    {
-      "file": "docs/guide/api-reference.md",
       "claim": "sdk-retry",
       "sentence": "ab0e452d85b5",
       "starts": "It does not govern writes: a write is"
