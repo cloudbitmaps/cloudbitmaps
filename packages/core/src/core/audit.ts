@@ -117,7 +117,8 @@ export type AuditEvent =
     }
   | {
       /**
-       * An erasure of one id **deleted objects** no reader resolves, and rewrote none. It found the id only in such
+       * An erasure of one id **deleted objects** no reader resolves, and rewrote none; or one that rewrote and then
+       * threw, and this is what its collection had deleted. A call that rewrote none found the id only in such
        * objects, or deleted only objects no read of the segment can open, which it cannot search and deletes whatever
        * the id. The cases: an id that only generations other than the current one hold (someone who left the segment,
        * whose bit the reader grace window or a rollback target keeps); objects left under a tombstone (a cleartext
@@ -128,12 +129,14 @@ export type AuditEvent =
        * holding the id. A call that ends otherwise (it reports `erased: false` with `'superseded'` or another reason,
        * or throws) emits it too, whenever it had deleted at least one object by then, with the generations it
        * deleted, or found already deleted while deleting, and no `fromGeneration`: every delete the call confirmed is
-       * on the record whatever way the call ends, so the event does not say that the erasure finished. A delete whose
-       * outcome the call could not learn (no answer, and the read-back failed too) is in no event: the thrown error is
-       * its record. A refused rewrite's delete of the call's own unpublished object is not an erasure of a holder and is
-       * not in it. The ledger's `erased` does. A call that deleted nothing emits nothing, and
-       * so does one whose deletions another event already records. Its re-run emits for what it deletes, and, when
-       * another collection deleted the last holder meanwhile, emits nothing and answers `'not-member'`, which
+       * on the record whatever way the call ends. So the event of a finished call shows no generation left holding the
+       * id, and the event of an unfinished one shows only what it deleted: it does not say that the erasure finished
+       * or that no holder is left, and the ledger's `erased` does. A delete whose outcome the call could not learn
+       * (no answer, and the read-back failed too), and one whose read-back finds another object under the number, are
+       * in no event: the thrown error, if any, is the record. A refused rewrite's delete of the call's own unpublished
+       * object is not an erasure of a holder and is not in it. A call that deleted nothing emits nothing, and so does
+       * one whose deletions another event already records. Its re-run emits for what it deletes, and, when another
+       * collection deleted the last holder meanwhile, emits nothing and answers `'not-member'`, which
        * `eraseSubject`'s ledger shows by listing nothing for the segment. One finished erasure emits it and then
        * throws `NotFoundError`: one that found, after its deletes, the segment's pointer on a generation it had
        * deleted (a rollback moved it there meanwhile), so the deletion is on the record although the call cannot
@@ -142,11 +145,13 @@ export type AuditEvent =
        *
        * `fromGeneration` is the newest generation the call found holding the id, and is absent when it found the id in
        * none and deleted only objects it could not search: then the ledger lists no entry for the segment, and this
-       * event is the record of the deletion. It is absent too on the event of a call that did not finish, which
-       * claims no generation held the id. `collected` is every generation the call deleted, ascending, and the same
-       * list as its result's: below the pointer, when a searched generation held the id, that is every generation,
-       * holder or not, since the deletion takes them all; above it, and wherever none did, only the holders and the
-       * objects it could not search. A holder another collection deleted first is not in it, so the list can be empty.
+       * event is the record of the deletion. It is absent too on the event of a call that did not finish, which names
+       * no generation the id was found in. `collected` is every generation the call deleted, ascending, and for a
+       * call that returned a result, the same list as its result's (when a second pass ends `erased: false`, the
+       * result carries that pass's list and the event both passes'): below the pointer, when a searched generation held
+       * the id, that is every generation, holder or not, since the deletion takes them all; above it, and wherever
+       * none did, only the holders and the objects it could not search. A holder gone before the call listed the
+       * bucket (another collection deleted it first) is not in it, so the list can be empty.
        */
       readonly kind: 'segment.collect';
       readonly namespace?: string;

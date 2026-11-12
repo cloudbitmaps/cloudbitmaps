@@ -538,7 +538,7 @@ What the caller sees is `NotFoundError` naming the generation, in place of the a
 |---|---|---|
 | a load's collection, after its publish landed | the load took effect at its generation, and its collection deleted the one the pointer named | `segment.publish` |
 | a refused load's delete of its own object | the load was refused, naming the refusal, and published nothing | `segment.load-refused` for a refusal the load answers (a guard's, or a publish that answered `false`); nothing for one its publish raised as a `ValidationError` or `KeyUnavailableError`, whose name and message it carries |
-| the erasure's collection, after its rewrite published | an erasure deleted the generation | `segment.rewrite` |
+| the erasure's collection, after its rewrite published | an erasure deleted the generation | `segment.rewrite`, then `segment.collect` for the generations its collection deleted |
 | the erasure's deletes when it rewrote nothing | an erasure deleted the generation | `segment.collect` for the generations the call deleted, when it finished and when it did not (a holder left, `'superseded'`, a throw); nothing when it deleted none |
 
 <a id="rollback-race-what-to-do"></a>**What to do.** Look before you act: `store.generations(ref)` lists what the bucket holds and marks the current

@@ -422,7 +422,8 @@ async function erasePasses(
 /**
  * Emit `segment.collect` for what a call deleted when it did not finish (it ended `superseded`, refused, or threw) and
  * has emitted nothing for those deletions: the generations its passes deleted or found deleted while deleting, once,
- * naming no generation the id was found in. A delete whose outcome the call could not learn is not among them. Nothing when it deleted nothing, or when a pass already emitted the event for them. The ledger's
+ * naming no generation the id was found in. A delete whose outcome the call could not learn is not among them.
+ * Nothing when it deleted nothing, or when a pass already emitted the event for them. The ledger's
  * `erased`, not the event, says whether the erasure finished.
  */
 function recordUnfinished(
@@ -444,7 +445,8 @@ function recordUnfinished(
 }
 
 /**
- * What one pass of {@link eraseIdFromSegment} saw: every generation it deleted, whether the row it read first was a tombstone, the token of the row it
+ * What one pass of {@link eraseIdFromSegment} saw: every generation it deleted, whether the row it read first was a
+ * tombstone, the token of the row it
  * read when it finished by deleting objects and rewriting none, whether one of those it searched held the id, and the
  * error to raise once the call has recorded what it deleted, when the row named a generation it deleted.
  */
@@ -1306,7 +1308,8 @@ function noteRemoved(c: EraseCall): (generation: number) => void {
 /**
  * Note that a delete loop of this call found the row naming `missing`, a generation it deleted. The call raises it in
  * place of its answer ({@link recordCollect}), after the `segment.collect` event when nothing left in the bucket holds
- * the id, and when something does, after the unfinished call's event for what it deleted ({@link recordUnfinished}). Not thrown here: a `NotFoundError`
+ * the id, and when something does, after the unfinished call's event for what it deleted ({@link recordUnfinished}).
+ * Not thrown here: a `NotFoundError`
  * thrown while {@link stage} runs is translated by re-reading the row, which would report this as a race.
  */
 function notePointerOnDeleted(c: EraseCall, missing: number): void {

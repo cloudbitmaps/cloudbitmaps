@@ -401,7 +401,8 @@ export async function collectBelowPointer(
   readonly missing?: number;
   readonly knownSpared?: number[];
 }> {
-  // Only the window, the known-name rule, the incarnation and the delete callback are passed on, whatever the caller's object carries: this
+  // Only the window, the known-name rule, the incarnation and the delete callback are passed on, whatever the
+  // caller's object carries: this
   // pass never reads a lease.
   const { deleted, missing, knownSpared } = await listingPass(ref, deps, {
     keep: options.keep,
