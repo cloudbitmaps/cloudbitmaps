@@ -547,9 +547,9 @@
               A ∩ B without downloading A or B
             </h2>
             <p class="lede">
-              Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are
+              Intersecting two 2,000,000-id segments does not request or decode the 1,900 chunks per segment outside the shared 100 (at this size the opening read brings each segment whole). Chunk keys are
               compared first, and only chunks whose keys appear in <strong>both</strong> are ever
-              fetched — 100 of 2,000, in 24.6 ms on the in-memory drivers. The other 1,900 are never
+              fetched — 100 of 2,000, in 24.1 ms on the in-memory drivers. The other 1,900 are never
               fetched, and never billed.
             </p>
             <figure class="keys">
@@ -560,7 +560,7 @@
                 ><i></i><i></i><i></i><i></i>
               </div>
               <figcaption class="keys-foot">
-                <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 24.6 ms in memory</span>
+                <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 24.1 ms in memory</span>
               </figcaption>
               <a class="keys-link" href="architecture.html">See the full walk-through →</a>
             </figure>

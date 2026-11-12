@@ -29,7 +29,7 @@
     <meta property="og:title" content="CloudBitmaps architecture — only the chunks that can contribute" />
     <meta
       property="og:description"
-      content="Keys are metadata, remainders are payload, and they live apart. Intersecting two 2,000,000-id segments fetches 100 chunks of 2,000, in 24.6 ms on the in-memory drivers."
+      content="Keys are metadata, remainders are payload, and they live apart. Intersecting two 2,000,000-id segments fetches 100 chunks of 2,000, in 24.1 ms on the in-memory drivers."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/architecture" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -114,9 +114,8 @@
             <div class="panel-head label">One measured intersection</div>
             <p class="panel-row is-pair"><span>Chunks fetched</span><span class="is-live">100 / 2,000</span></p>
             <p class="panel-row is-pair"><span>Reads skipped</span><span>3,800</span></p>
-            <p class="panel-row is-pair"><span>Chunk payload bytes read</span><span>3,000</span></p>
             <p class="panel-row is-pair"><span>Ids returned</span><span>100,000</span></p>
-            <p class="panel-row is-pair"><span>Elapsed, in-memory drivers</span><span class="is-live">24.6 ms</span></p>
+            <p class="panel-row is-pair"><span>Elapsed, in-memory drivers</span><span class="is-live">24.1 ms</span></p>
             <p class="link-row"><a href="demo.html">Where these came from →</a></p>
           </aside>
         </div>
@@ -128,11 +127,11 @@
            cursor is that comparison moving along the key space — the skip is the default, not an optimisation
            applied afterwards. -->
       <section>
-        <h2>Which chunks, decided before a byte moves</h2>
+        <h2>Which chunks, decided before a chunk is requested</h2>
         <p class="lede">
           Each segment's chunk keys come out of its index, and every key of the smaller one is looked up in the
           other's. A key present in only one segment cannot contribute to an intersection, so it is dropped
-          without being read — <strong>skipping is the default</strong>, not an optimisation applied after the
+          without being requested — <strong>skipping is the default</strong>, not an optimisation applied after the
           fact.
         </p>
 
@@ -218,7 +217,7 @@
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">Stream the AND</span>
-            <span class="rl-fig">3,000 bytes</span>
+            <span class="rl-fig">100 of 2,000 chunks</span>
             <span class="rl-note">
               The payload in flight is bounded by
               <span class="m">concurrency × operands × the 1 MiB a range may be</span> — the window, not the segment size. The
