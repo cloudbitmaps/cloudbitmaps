@@ -123,7 +123,9 @@ interface CombineManyOperandBase {
    * last write that named a field a read resolves through, so a lease or a policy write does not change it), or `null`
    * when it
    * has no row. Read for every subtracted pinned operand just before the publishes, and once more at the end of the call
-   * for the rest.
+   * for the rest. A row that resolves no generation (destroyed, or with no current generation) must report `generation:
+   * null`, whatever number it keeps: it is then refused where a number was pinned. A read made with `fingerprint: true`
+   * must carry the fingerprint of the current object for every numbered row; one that does not is refused, not passed.
    */
   readonly current?: (options?: { readonly fingerprint?: boolean }) => Promise<{
     readonly generation: number | null;
@@ -230,8 +232,9 @@ export interface MaterializeManyOperandStats {
   readonly endGeneration: number | null | undefined;
   /**
    * Whether the operand was replaced while the call ran: for a pinned operand, its pin no longer names what the
-   * registry holds (another generation, the name deleted and created again, or the generation's number taken again by
-   * other bytes, which an operand an output subtracts is compared for by the object's fingerprint); for one read live, its
+   * registry holds (another generation, a row that now resolves none, the name deleted and created again, or the
+   * generation's number taken again by other bytes, which an operand an output subtracts is compared for by the object's
+   * fingerprint); for one read live, its
    * generation or its incarnation changed from where the call began. `undefined` where `endGeneration` is, and for a live
    * operand the call never opened, whose start is unknown.
    */
@@ -1697,13 +1700,13 @@ class Run<R> {
       const op = this.operands[i]!;
       try {
         const now = await this.readRow(op, true);
-        if (!pinnedStillCurrent(op.spec, now)) {
+        if (!pinnedStillCurrent(op.spec, now, true)) {
           verdict.set(
             i,
             new StaleOperandError(
               `materializeMany: operand "${op.spec.name}", subtracted by an output, was replaced while the call ran ` +
                 `(pinned at generation ${String(op.spec.pinnedGeneration)}; the registry now holds ` +
-                `${now === null ? 'no row' : `generation ${String(now.generation)}, and its row or its object is not the pinned one`}), ` +
+                `${now === null ? 'no row' : now.generation === null ? 'a row that resolves no generation (destroyed, dropped or never loaded)' : `generation ${String(now.generation)}, and its row or its object is not the pinned one`}), ` +
                 'so its outputs were not published. Run the call again to subtract the current one.',
               op.spec.name,
               'moved',
@@ -1925,9 +1928,13 @@ function sameRow(a: string, b: string): boolean {
  * Whether what `spec` was pinned to is still what the registry holds, given the row read now (`null`: no row). The
  * generation number alone is not an identity: a name deleted and created again starts at generation 0, and a number can be
  * taken again once its object is gone. So the incarnation of the row is compared (two `pointerId`s of one incarnation are
- * writes of one row), and, where the row read carries the current object's fingerprint, the object's too.
+ * writes of one row), and the current object's fingerprint where the read carries one (`fingerprintAsked`: it must).
  */
-function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boolean {
+function pinnedStillCurrent(
+  spec: CombineManyOperand,
+  now: EndRow | null,
+  fingerprintAsked = false,
+): boolean {
   const pinned = spec.pinnedGeneration ?? null;
   if (pinned !== (now?.generation ?? null)) return false;
   if (pinned === null || now === null) return true;
@@ -1936,12 +1943,14 @@ function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boole
   const held = spec.pinnedFingerprint;
   // A numbered pin always holds its object's fingerprint (a caller that has none is refused up front), so none fails closed.
   if (held == null) return false;
-  // The object is compared only where the row read carries a fingerprint, and that is up to the caller's `current`. The
-  // facade's read for the re-check before a publish carries one for every row that resolves a generation; its read at
-  // the end of the call, for the stats, asks for none. A row that resolves none carries none (a destroyed row reports
-  // the tombstone's kept generation number). A row read without a fingerprint is compared by generation number and
-  // incarnation alone, and a pinned operand with no `current` is not re-checked at all.
-  return now.fingerprint == null || held === now.fingerprint;
+  // Where the read asked for the fingerprint (the re-check before a publish), a numbered row that carries none fails
+  // closed: its object cannot be compared, so it is not shown to be the pinned one. The facade reports a row that
+  // resolves no generation (destroyed, or no current generation) as generation null, so it fails the number check
+  // above. Where the read asked for none (the end of the call, for the stats), the number and the incarnation are what
+  // is compared, and a fingerprint, if one came back, is compared too. A pinned operand with no `current` is not
+  // re-checked at all.
+  if (now.fingerprint == null) return !fingerprintAsked;
+  return held === now.fingerprint;
 }
 
 /** Whether an operand read live has changed row or generation since its index was read. */

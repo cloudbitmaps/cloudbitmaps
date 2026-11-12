@@ -1,11 +1,14 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  InProcessKeystore,
   BudgetExceededError,
   LeaseExpiredError,
   NotFoundError,
   StaleOperandError,
   ValidationError,
   WriteConflictError,
+  destroySegment,
   errorKind,
 } from '@/index';
 import type { MaterializeManyOutput, MaterializeResult, MetricEvent } from '@/index';
@@ -188,6 +191,174 @@ describe('store.materializeMany', () => {
       endGeneration: 0,
       moved: true,
     });
+  });
+
+  describe('a subtracted operand destroyed after the call read it', () => {
+    const keyed = () => ({
+      encryption: {
+        keystore: new InProcessKeystore({ keys: { k: randomBytes(32) }, activeKeyId: 'k' }),
+      },
+    });
+    const run = async (
+      w: Awaited<ReturnType<typeof batchWorld>>,
+      destroy: () => Promise<void>,
+      added = false,
+    ) => {
+      const s = (n: string) => w.store.segment(n);
+      let passed = false;
+      w.hooks.beforeRange = () => {
+        passed = true;
+      };
+      w.hooks.beforeRowRead = async (segment) => {
+        if (!passed || segment !== 'optout') return;
+        w.hooks.beforeRowRead = undefined;
+        await destroy();
+      };
+      return w.store.materializeMany({
+        operands: { a: s('a'), optout: s('optout') },
+        outputs: [
+          added
+            ? { dest: s('d1'), expr: { or: ['a', 'optout'] } }
+            : { dest: s('d1'), expr: 'a', exclude: ['optout'] },
+          { dest: s('d2'), expr: 'a' },
+        ],
+        keep: 1,
+      });
+    };
+    const refusedAndPublished = async (
+      w: Awaited<ReturnType<typeof batchWorld>>,
+      r: Awaited<ReturnType<typeof run>>,
+    ) => {
+      expect((r.outputs[0] as { error: Error }).error).toBeInstanceOf(StaleOperandError);
+      expect((r.outputs[0] as { error: Error }).error).toMatchObject({
+        operand: 'optout',
+        reason: 'moved',
+      });
+      published(r.outputs[1]);
+      expect(await w.backend.registry.get({ segment: 'd1' })).toBeNull();
+      expect(r.stats.operands.optout!).toMatchObject({
+        pinnedGeneration: 0,
+        endGeneration: null,
+        moved: true,
+      });
+    };
+    const shred = (w: Awaited<ReturnType<typeof batchWorld>>) => async () => {
+      await destroySegment(
+        { segment: 'optout' },
+        { registry: w.backend.registry },
+        { confirmSegment: 'optout' },
+      );
+    };
+
+    it('is refused when it was crypto-shredded', async () => {
+      const w = await batchWorld(DATA, keyed());
+      const r = await run(w, shred(w));
+      expect((await w.backend.registry.get({ segment: 'optout' }))?.status).toBe('destroyed');
+      await refusedAndPublished(w, r);
+    });
+
+    it('is refused when it was dropped', async () => {
+      const w = await batchWorld(DATA);
+      const r = await run(w, async () => {
+        await w.other.dropSegment({ segment: 'optout' }, { confirmSegment: 'optout' });
+      });
+      expect((await w.backend.registry.get({ segment: 'optout' }))?.status).toBe('destroyed');
+      await refusedAndPublished(w, r);
+    });
+
+    it('is only reported, not refused, when an output adds it: its end generation is null and it moved', async () => {
+      const w = await batchWorld(DATA, keyed());
+      const r = await run(w, shred(w), true);
+      published(r.outputs[0]);
+      published(r.outputs[1]);
+      expect(r.stats.operands.optout!).toMatchObject({
+        pinnedGeneration: 0,
+        endGeneration: null,
+        moved: true,
+      });
+    });
+
+    it('is reported as moved, with a null end generation, when it is read live (pin: false)', async () => {
+      const w = await batchWorld(DATA, keyed());
+      const s = (n: string) => w.store.segment(n);
+      let passed = false;
+      w.hooks.beforeRange = () => {
+        passed = true;
+      };
+      w.hooks.beforeRowRead = async (segment) => {
+        if (!passed || segment !== 'optout') return;
+        w.hooks.beforeRowRead = undefined;
+        await shred(w)();
+      };
+      const r = await w.store.materializeMany({
+        operands: { a: s('a'), optout: s('optout') },
+        outputs: [{ dest: s('d1'), expr: 'a', exclude: ['optout'] }],
+        keep: 1,
+        pin: false,
+      });
+      published(r.outputs[0]);
+      expect(r.stats.operands.optout!).toMatchObject({
+        pinned: false,
+        endGeneration: null,
+        moved: true,
+      });
+    });
+  });
+
+  it('a subtracted operand that was destroyed before the call, pinned absent and still a tombstone at the re-check, publishes', async () => {
+    const w = await batchWorld(DATA, {
+      encryption: {
+        keystore: new InProcessKeystore({ keys: { k: randomBytes(32) }, activeKeyId: 'k' }),
+      },
+    });
+    const s = (n: string) => w.store.segment(n);
+    await destroySegment(
+      { segment: 'optout' },
+      { registry: w.backend.registry },
+      { confirmSegment: 'optout' },
+    );
+    expect((await w.backend.registry.get({ segment: 'optout' }))?.status).toBe('destroyed');
+    const r = await w.store.materializeMany({
+      operands: { a: s('a'), optout: s('optout') },
+      outputs: [{ dest: s('d1'), expr: 'a', exclude: ['optout'] }],
+      keep: 1,
+      allowAbsentOperands: true,
+    });
+    published(r.outputs[0]);
+    expect(await w.ids('d1')).toEqual(await w.ids('a'));
+    expect(r.stats.operands.optout!).toMatchObject({
+      pinnedGeneration: null,
+      endGeneration: null,
+      moved: false,
+    });
+  });
+
+  it('a subtracted operand whose row has no current generation (a policy before the first load), pinned absent, publishes', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    await w.store.setRetention({ segment: 'optout-new' }, { expiresAt: Date.now() + 86_400_000 });
+    expect((await w.backend.registry.get({ segment: 'optout-new' }))?.currentGen).toBeNull();
+    const r = await w.store.materializeMany({
+      operands: { a: s('a'), optout: s('optout-new') },
+      outputs: [{ dest: s('d1'), expr: 'a', exclude: ['optout'] }],
+      keep: 1,
+      allowAbsentOperands: true,
+    });
+    published(r.outputs[0]);
+    expect(await w.ids('d1')).toEqual(await w.ids('a'));
+  });
+
+  it('a subtracted operand pinned absent, and still absent at the re-check, publishes', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    const r = await w.store.materializeMany({
+      operands: { a: s('a'), ghost: s('ghost') },
+      outputs: [{ dest: s('d1'), expr: 'a', exclude: ['ghost'] }],
+      keep: 1,
+      allowAbsentOperands: true,
+    });
+    published(r.outputs[0]);
+    expect(await w.ids('d1')).toEqual(await w.ids('a'));
   });
 
   it('with pin: false an operand read live can move under the call', async () => {

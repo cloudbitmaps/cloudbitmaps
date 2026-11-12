@@ -965,19 +965,26 @@ one registry read at the end, that it moved.
 dangerous staleness. An output subtracts an operand when it is in its `exclude`, or under any entry of an `andNot` after
 the first, at any depth, so `{ andNot: ['us', 'opt-out'] }` and `exclude: ['opt-out']` are guarded alike. Immediately
 before the publishes the call re-reads the registry row of every pinned operand any output of the group subtracts, and
-compares what it finds with what was pinned: the generation, the row's incarnation and, where both reads carry one, the fingerprint of the generation's
+compares what it finds with what was pinned: the generation, the row's incarnation and the fingerprint of the generation's
 object, not the generation number alone, since a name deleted and created again starts at generation 0 and a number can be
 taken again by other bytes once its object is gone. A write to the row that is not a replacement (a retention policy, a
 lease) is not a move. The re-check costs one registry read per subtracted operand per group, and, to read the object's
 fingerprint, a tail read of the current generation where the store does not already hold its reader. If one moved, every output that subtracts it gets `{ published: false, error:
 StaleOperandError }` and is not published, and the others publish. `StaleOperandError` carries `code: 'stale-operand'`, the
 operand's name in the call (`operand`) and why (`reason: 'moved'`). A subtracted operand that cannot be re-read is not
-assumed unchanged, and its outputs are not published.
+assumed unchanged, and its outputs are not published. A subtracted operand destroyed during the call (crypto-shredded,
+destroyed in the clear or dropped) resolves no generation, so it counts as moved and its outputs are not published, as
+such an operand is refused at the start of a call (without `allowAbsentOperands`). A subtracted operand pinned as
+absent (`allowAbsentOperands`) and still absent is not refused, whatever its row: a tombstone pinned as absent
+publishes, where an earlier release refused it as moved.
 
 **`stats.operands[name]`** (an object with no prototype, so any name is a key) gives each operand's `pinnedGeneration`,
-`startGeneration`, `endGeneration` and `moved`, for every operand of the call, those read live included: the end is one
-registry read of the operand's row when the call finishes, or the re-check's read for a subtracted one, so it is the last
-read of the call and not a snapshot of one instant. `stats.outputs[i]` gives the operands an output read, the group that
+`startGeneration`, `endGeneration` and `moved`, for every operand of the call, those read live included: the end is
+one registry read of the operand's row when the call finishes, or the re-check's read for a subtracted one, so it is the
+last read of the call and not a snapshot of one instant. An operand that held a generation when the call read it (pinned
+at one, or read live at one) and whose row resolves none at the end (destroyed, or dropped) reports
+`endGeneration: null` and `moved: true`, whatever its role in the call; one absent at the start and still absent
+reports `endGeneration: null` and `moved: false`. `stats.outputs[i]` gives the operands an output read, the group that
 computed it and when it ran.
 
 **Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass counts

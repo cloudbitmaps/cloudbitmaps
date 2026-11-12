@@ -571,7 +571,15 @@ function pinnedOperands(
       pinnedGeneration: at[0],
       pinnedVersion: at[0] === null ? null : `${at[0]}:${at[1]}`,
       pinnedFingerprint: at[0] === null ? null : `${at[0]}:fp`,
-      current: async () => (reads.n++, now[o.name] ?? null),
+      // a read that asks for the fingerprint gets the one a row of that number holds
+      current: async (ask) => {
+        const fingerprint = ask?.fingerprint === true;
+        reads.n++;
+        const row = now[o.name] ?? null;
+        return row === null || row.generation === null || !fingerprint
+          ? row
+          : { ...row, fingerprint: `${row.generation}:fp` };
+      },
     };
   });
 }
@@ -994,7 +1002,7 @@ describe('pricing a group does not grow with the group', () => {
 });
 
 describe('the identity of a pinned operand', () => {
-  it('compares the fingerprint of the object where the row read carries one', async () => {
+  it('compares the fingerprint of the object, and refuses a numbered row read with none', async () => {
     const setup = seed({ a: ids([1]), opt: ids([1]) });
     const A = token('a');
     const operandsFor = (held: string | null, now: string | null): CombineManyOperand[] =>
@@ -1021,7 +1029,8 @@ describe('the identity of a pinned operand', () => {
     expect((await go('10:1', '10:1')).outputs[0]!.ok).toBe(true);
     await expect(go(null, '10:2')).rejects.toThrow(/do not match it/);
     await expect(go(null, null)).rejects.toThrow(/do not match it/);
-    expect((await go('10:1', null)).outputs[0]!.ok).toBe(true);
+    // A numbered row that carries no fingerprint, when the re-check asked for one, is not shown to be the pinned one.
+    expect(stale((await go('10:1', null)).outputs[0]!)).toBe(true);
     const message = ((await go('10:1', '10:2')).outputs[0] as { error: Error }).error.message;
     expect(message).toMatch(/its row or its object is not the pinned one/);
   });

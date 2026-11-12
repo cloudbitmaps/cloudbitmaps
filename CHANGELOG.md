@@ -148,6 +148,21 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`materializeMany` refuses the outputs that subtract a pinned operand destroyed while the call ran.** An operand that
+  was crypto-shredded, destroyed in the clear or dropped after the call read it passed the re-check before the
+  publishes, because the row it left reports the generation number it kept, and the outputs that subtracted it were
+  published having subtracted its old contents; such an operand is refused at the start of a call (without
+  `allowAbsentOperands`). The re-check now treats a row that resolves no generation as holding none, so those outputs
+  get `StaleOperandError` (`reason: 'moved'`). With `pin: false` an operand is still not re-checked. Two other
+  behaviours change with it. A subtracted operand pinned as absent (`allowAbsentOperands`) whose row is a tombstone was
+  refused as moved (the tombstone's kept number against the pin's none); it is no longer: an absent operand that stays
+  absent is not refused, whatever its row. And the end-of-call stats change for an operand whose row resolves no
+  generation at the end: one that held a generation when the call read it (pinned at one, or read live at one) reads
+  `endGeneration: null` and `moved: true`, whatever its role, where it read the kept number and `false`; one absent at
+  the start and still absent reads `endGeneration: null` and `moved: false`, where it read the kept number and `true`.
+  In core, the re-check before a publish also fails closed when it asked for a fingerprint and the row it got back is
+  numbered but carries none.
+
 - **`checkConsistency({ summaries: true })` reports every summary no read uses on a row with no keys.** A registry of
   your own can store a sealed summary, a summary of another generation, or a clear one whose `tailBytes` no object of
   its size can have; no read uses any of them, so the object is opened unchecked, but the check passed the row. It now
