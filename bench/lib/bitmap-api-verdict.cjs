@@ -48,6 +48,7 @@ const paired = require('./paired-verdict.cjs');
 const cellsLib = require('./bitmap-api-cells.cjs');
 const { MIN_ROUNDS } = require('./codec-verdict.cjs');
 const { treeProblems } = require('./tree-state.cjs');
+const { builtProblems } = require('./built-digest.cjs');
 
 const { median, medianInterval, MAX_LOAD, keepRound, collectRounds } = paired;
 
@@ -446,6 +447,7 @@ function passProblems(label, pass) {
   if (e.smoke) problems.push(`${label}: a smoke pass is no evidence`);
   if (e.anyLoad) problems.push(`${label}: the load rule was turned off for this pass`);
   problems.push(...treeProblems(label, e));
+  problems.push(...builtProblems(label, e, pass.pass));
   if (e.coldProcesses !== undefined && e.coldProcesses !== (e.smoke ? 1 : COLD_PROCESSES))
     problems.push(
       `${label}: the pass records ${e.coldProcesses} fresh processes a cold sample, but a ${e.smoke ? 'smoke' : 'full'} pass takes ${e.smoke ? 1 : COLD_PROCESSES}`,

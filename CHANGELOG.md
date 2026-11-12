@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A bitmap-api bench pass records a digest of the build it measured.** `bench/bitmap-api.cjs` imports the built
+  `packages/roaring/dist` and `packages/core/dist`, which git ignores, so the `head` it recorded could differ from the
+  code it timed when it was run by hand over a stale build. A pass now records `environment.built` (a SHA-256 of each
+  folder's code), and the gate refuses a new pass without it; the six passes already committed predate the field and
+  stay valid. No library change.
+
 - **The calibration harness has a multi suite, so an `intersect` over three to ten operands can be measured on S3.**
   `--suite multi` (or `CR_CALIBRATE_SUITE=multi`) loads thirty operands in five sets and runs 20 cold `intersect` reads
   (streamed and drained) and 20 cold `intersectCount` reads of seven shapes on stores that have read nothing: k = 3, 5 and
@@ -69,6 +75,34 @@ so, and so do the module headers in the code.
   before the stage is still valid. No library code, package or version changes.
 
 ### Changed
+
+- **The TypeScript codec's per-operation figures and the at-scale benchmark are re-measured.** On an
+  Apple M3 Pro (Node v24.22.1, 2026-11-10), the per-operation record has the union of one dense pair of containers at 3.41
+  times native (900 ns against 3,066 ns), the worst `or` pair, and a run chunk's `optimize` at 3.06 times; the pages had
+  4.22 times (a skewed pair) and 3.31 times from the run of 2026-10-21. The at-scale run was taken twice
+  and the two runs agree: a first run agreed with the second, whose record is published. The retained heap
+  is 13.2, 12.5 and 12.8 MiB for 1,000, 10,000 and 100,000 segments, against 8.2, 8.3 and 7.4 MiB in the earlier record,
+  and the scan that enumerates the 100,000-segment fleet took 28,530.8 ms against 11,606.4 ms. Among what differs between the
+  earlier record and these runs (none isolated as the cause): the codec, the seeding route (each segment loaded through
+  `store.load()`, where the earlier run wrote and published each generation), the reader keeping small objects whole, the
+  registry rows (schema 4, then 5), and Node (v24.22.1, from v24.18.1). The load average rose from 1.9 to 3 in the published
+  run. The intersection of two 2,000,000-id segments fetched the same 100 of 2,000 chunks, in
+  24.1 ms (24.6 ms before). The byte counter of that intersection reads 0, where the earlier record has 3,000: it counts the
+  bytes of the range requests sent, and these segments are small enough for the reader to keep whole, so none is sent; no
+  page states the 3,000 bytes any more, and the record now says what the counter counts. The
+  at-scale footnote on both pages now prints the run's commit, day and load and the growth of the scan between fleet
+  sizes, and the panel head no longer says "native codec". Both result files now record the day of the run, and the
+  at-scale file its commit and load. No library behaviour or version changes.
+
+- **The event-loop figures are re-measured on the TypeScript codec, and a load from a bitmap has its first recorded
+  figures.** On an Apple M3 Pro (Node v24.22.1, in-memory storage, 2026-11-10), a 1M-id load takes a median 399 ms
+  with a longest stall of 31 ms (35 ms at worst), and holds the loop for 399 ms when it yields nothing; the guide had the
+  native codec's 526 ms and 24 ms. A load of the 11.5M-member dense set from `{ bitmap }` takes a median 15 ms against
+  449 ms from ids in an array; the loading guide has the table, and the sparse and runs sets. The load-input bench's
+  check of identical bytes hashed the whole object, which no two writes can match, since each carries its own write
+  identity in the footer; it now hashes every stored object with that identity (the nonce and the checksum covering it)
+  zeroed, and fails unless every input of a set wrote the same bytes. No library behaviour or version changes; two
+  source comments quote the new run.
 
 - **The docs say what a killed `LocalFsStorage` write can leave.** A `.tmp` file holds a part of the object when the process
   was killed while the object was being written, and the whole object once every byte was written: before
@@ -128,6 +162,15 @@ so, and so do the module headers in the code.
   the start and still absent reads `endGeneration: null` and `moved: false`, where it read the kept number and `true`.
   In core, the re-check before a publish also fails closed when it asked for a fingerprint and the row it got back is
   numbered but carries none.
+
+- **`checkConsistency({ summaries: true })` reports every summary no read uses on a row with no keys.** A registry of
+  your own can store a sealed summary, a summary of another generation, or a clear one whose `tailBytes` no object of
+  its size can have; no read uses any of them, so the object is opened unchecked, but the check passed the row. It now
+  reports each as `summary-mismatch`, as it already did a clear summary whose fingerprint names no object. A shipped
+  registry refuses each of these shapes when it writes the row, so no row the library wrote is reported by this change,
+  and no read changes. A row edited by hand can still hold a sealed summary or one of another generation, since a read
+  checks only the summary's own shape, and such a row is now reported.
+
 - **A hardening in core, not reachable through the shipped drivers or the `CloudRoaring` facade.** A caller of core's
   batch combine can no longer skip the check that a subtracted, pinned operand is still the generation it was pinned
   to by leaving its `pinnedFingerprint` (or `pinnedVersion`) out or setting it to `null`: a pinned operand now names

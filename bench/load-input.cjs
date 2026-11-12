@@ -16,19 +16,24 @@
  *   dense        72 % of [0, 16M): about 11.5M members in 245 bitset containers.
  *   sparse       184 members in each of the 65,536 chunks: 12,058,624 members in 65,536 array containers, the
  *                worst case for the per-byte work, since every container is copied out and checksummed.
- *   runs         ranges of 1 to 400 ids with gaps of 1 to 200, to 12M members: mostly run containers.
+ *   runs         ranges of 1 to 400 ids with gaps of 1 to 200, to 12M members.
  *   density-10   10 % of the same 245 chunks: about 1.6M members.
  *   density-90   90 % of them: about 14.4M members, the same 245 bitset containers.
  *
- * The last two are the falsifiable figure. Same container layout, nine times the members: a path with per-id work
- * costs about nine times as much on the second, and a path without it costs about the same.
+ * The last two are the falsifiable figure. Same container layout, nine times the members: a path with per-id work is
+ * expected to cost close to nine times as much on the second, and a path without it about the same. Recorded: 5.4x
+ * from a plain array, 8.2x through an async generator and 0.9x from a bitmap (the loading guide has the table).
  *
  * Four inputs per set: ids as a plain array (the sync id path), the same ids through an async generator (what a
  * caller iterating its bitmap into `load` pays), `{ bitmap }`, and `{ serialized }`. Building the set and the
  * caller-side array or bytes is outside the timed region; `{ bitmap }`'s own `serialize` is inside it, because the
  * load makes that call. Per trial it records the load's wall time, the longest single event-loop stall (the
- * longest gap between two turns of a `setImmediate` chain beside the load), and the object's SHA-256, so the run
- * also records that every input wrote the same bytes.
+ * longest gap between two turns of a `setImmediate` chain beside the load, a chain separate from the load's own
+ * timer), and, after the load and outside the timed region, the stored object's size and the SHA-256 of its bytes with
+ * the write's identity zeroed (the footer's cleartext `indexNonce` and the `footerCrc32c` that covers it, the only
+ * bytes that differ between two writes of the same input). So the run also records that every input of a set wrote
+ * the same bytes, apart from that identity. `inputContainers` is the layout of the input bitmap before the load (the
+ * `roaring` package's `statistics()`, with no run optimization), not of the stored object.
  *
  * HONESTY BOUNDARY — read this before quoting any number here.
  *
@@ -47,6 +52,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { setImmediate } = require('node:timers');
 
 // `LOAD_INPUT_ROOT` points `--check` at a copy of the tree, which is how its test mutates the files it reads.
@@ -62,6 +68,12 @@ const SHAPES = ['dense', 'sparse', 'runs', 'density-10', 'density-90'];
 const VARIANTS = ['idsSync', 'idsAsync', 'bitmap', 'serialized'];
 const TRIALS = int(process.env.LOAD_INPUT_TRIALS, 5);
 const MIN_TRIALS = 5;
+/** Footer layout (the last 104 bytes of an object): the write identity is the 12-byte nonce and the CRC over it. */
+const FOOTER_BYTES = 104;
+const NONCE_AT = 40;
+const NONCE_BYTES = 12;
+const FOOTER_CRC_AT = 96;
+const FOOTER_CRC_BYTES = 4;
 
 function int(v, dflt) {
   const n = Number(v);
@@ -118,6 +130,15 @@ function shapeIds(shape) {
   throw new Error(`unknown shape ${shape}`);
 }
 
+/** SHA-256 of an object's bytes with the write's identity in the footer (the nonce and the CRC covering it) zeroed. */
+function hashWithoutIdentity(bytes) {
+  const copy = Uint8Array.from(bytes);
+  const footer = copy.length - FOOTER_BYTES;
+  copy.fill(0, footer + NONCE_AT, footer + NONCE_AT + NONCE_BYTES);
+  copy.fill(0, footer + FOOTER_CRC_AT, footer + FOOTER_CRC_AT + FOOTER_CRC_BYTES);
+  return createHash('sha256').update(copy).digest('hex');
+}
+
 /** The built library, loaded only by the modes that measure: `--check` reads files and nothing else. */
 function library() {
   return require('@cloudbitmaps/roaring');
@@ -163,6 +184,13 @@ async function child() {
   await new Promise((resolve) => setImmediate(resolve));
   running = false;
 
+  // Outside the timed region: the stored object's bytes, hashed with the write's identity zeroed.
+  let key;
+  for await (const k of backend.storage.list({ segment: 'bench' })) key = k;
+  const bytes = await backend.storage.getRange(key, 0, result.size);
+  if (bytes.length !== result.size) throw new Error(`read ${bytes.length} bytes of ${result.size}`);
+  const sha256 = hashWithoutIdentity(bytes);
+
   process.stdout.write(
     'LOAD_INPUT_RESULT:' +
       JSON.stringify({
@@ -171,8 +199,8 @@ async function child() {
         members: result.cardinality,
         chunkCount: result.chunkCount,
         size: result.size,
-        sha256: result.sha256,
-        containers: {
+        sha256,
+        inputContainers: {
           array: stats.arrayContainers,
           bitset: stats.bitsetContainers,
           run: stats.runContainers,
@@ -222,6 +250,8 @@ function summarize(trials) {
     trials: trials.length,
     wallMs: { median: round1(median(col('wallMs'))), worst: round1(Math.max(...col('wallMs'))) },
     stallMs: { median: round1(median(col('stallMs'))), worst: round1(Math.max(...col('stallMs'))) },
+    sizes: [...new Set(col('size'))].sort((a, b) => a - b),
+    sha256: [...new Set(col('sha256'))].sort(),
     nsPerMember: round1((median(col('wallMs')) * 1e6) / trials[0].members),
     samples: trials.map((t) => ({ wallMs: round1(t.wallMs), stallMs: round1(t.stallMs) })),
   };
@@ -267,8 +297,8 @@ function parent() {
       members: first.members,
       chunkCount: first.chunkCount,
       crbmBytes: first.size,
-      containers: first.containers,
-      identicalBytes: all.every((t) => t.sha256 === first.sha256 && t.size === first.size),
+      inputContainers: first.inputContainers,
+      identicalBytes: all.every((t) => t.size === first.size && t.sha256 === first.sha256),
       ...Object.fromEntries(VARIANTS.map((v) => [v, summarize(trials[v])])),
     };
   }
@@ -316,6 +346,7 @@ function publishedFigures(results) {
   const ratio = (v) =>
     `${round1(results.shapes['density-90'][v].wallMs.median / results.shapes['density-10'][v].wallMs.median)}×`;
   out['density 90/10, ids'] = ratio('idsSync');
+  out['density 90/10, ids through an async generator'] = ratio('idsAsync');
   out['density 90/10, bitmap'] = ratio('bitmap');
   out['longest stall, bitmap'] = ms(
     Math.max(...SHAPES.map((s) => results.shapes[s].bitmap.stallMs.worst)),
@@ -390,8 +421,15 @@ function checkProblems() {
   if (results.trials < MIN_TRIALS)
     problems.push(`the results file records ${results.trials} trials, fewer than ${MIN_TRIALS}`);
   for (const shape of SHAPES) {
-    if (results.shapes[shape]?.identicalBytes !== true)
-      problems.push(`the results do not record every input writing the same bytes for "${shape}"`);
+    const entry = results.shapes[shape] || {};
+    // Recomputed from the recorded hashes, so a hand-edited hash fails even when the stored flag still says true.
+    const hashes = new Set(VARIANTS.flatMap((v) => entry[v]?.sha256 || []));
+    const sizes = new Set(VARIANTS.flatMap((v) => entry[v]?.sizes || []));
+    const hex = [...hashes].every((h) => /^[0-9a-f]{64}$/.test(h));
+    if (entry.identicalBytes !== true || hashes.size !== 1 || sizes.size !== 1 || !hex)
+      problems.push(
+        `the results do not record every input writing the same bytes, apart from the write's identity in the footer, for "${shape}"`,
+      );
   }
   return problems;
 }

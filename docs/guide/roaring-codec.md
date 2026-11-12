@@ -100,17 +100,17 @@ wall-clock, recorded and not asserted:
   native codec keeps part of its memory outside those counters, and how much is not measured); no multiple of native's
   memory is claimed.
 - **No union cell through the store:** the store comparison times `intersect` and `andNot`, not `union`. One container
-  pair of `or` is 1.2 to 4.2 times slower in the per-operation record (measured on 2026-10-21 on an Apple M3 Pro under Node
-  v24.18.1 at commit `7bf70e54`; the kernels changed after that commit, so that figure is a record of that day), and that
+  pair of `or` is 1.1 to 3.4 times slower in the per-operation record (measured on 2026-11-10 on an Apple M3 Pro under Node
+  v24.22.1 at commit `1bee11b9`, load 1.57 before and 2.41 after), and that
   does not show in the combines that were timed through the store. The `or` of the public class in memory is timed against
   native in [the table below](#the-public-class-against-native-in-memory); what a store `union` costs on this codec is expected to
   be inside the same bar, and is not measured.
 - **Not measured:** the two codecs compared in region against real S3 (the TypeScript codec alone was measured in region, in the default and large suites, on 2026-10-30), Alpine, arm64 Lambda; Bun and Deno ran a local self-check only. CI runs Node
   22 and 24.
 
-The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) are the native
+The event-loop figures in [Before production](production.md#what-blocks-the-event-loop-and-where-to-run-it) are the TypeScript
 codec's, and say so. On the benchmarks page the in-region and large-operand figures are the TypeScript codec's
-(the runs of 2026-10-30, through the published packages), and the read, fleet-memory and at-scale figures are the native codec's, and say so.
+(the runs of 2026-10-30, through the published packages), the at-scale figures are the TypeScript codec's (2026-11-10), and the read and fleet-memory figures are the native codec's, and say so.
 
 ### The public class against native, in memory
 

@@ -499,6 +499,7 @@ function main() {
     }
     const doc = {
       note: 'Wall-clock and machine-dependent: recorded, not asserted. Medians of 11 interleaved rounds after a 300 ms warm-up, each cell in its own process, ns per call (count and has: per read); ratio is typescript over native.',
+      measuredOn: localDate(),
       cpu: os.cpus()[0].model,
       node: process.version,
       commit: process.env.TS_CODEC_SRC_COMMIT || commit,
@@ -512,6 +513,12 @@ function main() {
     };
     fs.writeFileSync(RESULTS, `${JSON.stringify(doc, null, 2)}\n`);
   }
+}
+
+function localDate() {
+  const d = new Date();
+  const two = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 }
 
 main();
