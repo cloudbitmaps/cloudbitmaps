@@ -149,23 +149,29 @@ describe('every writer of a run container leaves maximal runs and the smallest k
     );
   });
 
-  it('containerAdd into a run, one id at a time, joining on either side and at 0 and 65,535', () => {
-    fc.assert(
-      fc.property(anySet, anySet, (base, ids) => {
-        let c = containerOf(RUN, base);
-        const have = new Set(base);
-        for (const v of ids.slice(0, 8)) {
-          const present = have.has(v);
-          const wasRun = c.kind === RUN && !present;
-          c = containerAdd(c, v);
-          have.add(v);
-          // a write into a run is the writer that picks the kind; once it is an array a write is an array's
-          expectCanonical(c, sortedUnique([...have]), 'containerAdd', wasRun, present);
-        }
-      }),
-      { numRuns: 60 },
-    );
-  });
+  it(
+    'containerAdd into a run, one id at a time, joining on either side and at 0 and 65,535',
+    // 60 generated sets, each checked against a fresh build after every add: 2.8 s once on a loaded runner, over half
+    // the default 5 s limit.
+    { timeout: 15_000 },
+    () => {
+      fc.assert(
+        fc.property(anySet, anySet, (base, ids) => {
+          let c = containerOf(RUN, base);
+          const have = new Set(base);
+          for (const v of ids.slice(0, 8)) {
+            const present = have.has(v);
+            const wasRun = c.kind === RUN && !present;
+            c = containerAdd(c, v);
+            have.add(v);
+            // a write into a run is the writer that picks the kind; once it is an array a write is an array's
+            expectCanonical(c, sortedUnique([...have]), 'containerAdd', wasRun, present);
+          }
+        }),
+        { numRuns: 60 },
+      );
+    },
+  );
 
   for (const [name, op, model] of models) {
     for (const ka of KINDS) {
