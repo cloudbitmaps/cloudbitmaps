@@ -228,8 +228,8 @@
   }
 
   /**
-   * Beat 03's counters. The bytes figure climbing from zero is the only way the page shows that the fetch is
-   * a consequence of the comparison rather than something that happened alongside it. Text, not CSS, so it
+   * Beat 03's counters. The counter animating in place shows the fetch following the comparison rather than
+   * happening alongside it; the bytes figure stays at 0 for this run. Text, not CSS, so it
    * cannot be a keyframe — but it is a number changing in place, and the cell is fixed-width, so nothing
    * reflows around it.
    */

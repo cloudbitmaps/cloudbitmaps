@@ -76,6 +76,24 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The TypeScript codec's per-operation figures and the at-scale benchmark are re-measured.** On an
+  Apple M3 Pro (Node v24.22.1, 2026-11-10), the per-operation record has the union of one dense pair of containers at 3.41
+  times native (900 ns against 3,066 ns), the worst `or` pair, and a run chunk's `optimize` at 3.06 times; the pages had
+  4.22 times (a skewed pair) and 3.31 times from the run of 2026-10-21. The at-scale run was taken twice
+  and the two runs agree: a first run agreed with the second, whose record is published. The retained heap
+  is 13.2, 12.5 and 12.8 MiB for 1,000, 10,000 and 100,000 segments, against 8.2, 8.3 and 7.4 MiB in the earlier record,
+  and the scan that enumerates the 100,000-segment fleet took 28,530.8 ms against 11,606.4 ms. Among what differs between the
+  earlier record and these runs (none isolated as the cause): the codec, the seeding route (each segment loaded through
+  `store.load()`, where the earlier run wrote and published each generation), the reader keeping small objects whole, the
+  registry rows (schema 4, then 5), and Node (v24.22.1, from v24.18.1). The load average rose from 1.9 to 3 in the published
+  run. The intersection of two 2,000,000-id segments fetched the same 100 of 2,000 chunks, in
+  24.1 ms (24.6 ms before). The byte counter of that intersection reads 0, where the earlier record has 3,000: it counts the
+  bytes of the range requests sent, and these segments are small enough for the reader to keep whole, so none is sent; no
+  page states the 3,000 bytes any more, and the record now says what the counter counts. The
+  at-scale footnote on both pages now prints the run's commit, day and load and the growth of the scan between fleet
+  sizes, and the panel head no longer says "native codec". Both result files now record the day of the run, and the
+  at-scale file its commit and load. No library behaviour or version changes.
+
 - **The event-loop figures are re-measured on the TypeScript codec, and a load from a bitmap has its first recorded
   figures.** On an Apple M3 Pro (Node v24.22.1, in-memory storage, 2026-11-10), a 1M-id load takes a median 399 ms
   with a longest stall of 31 ms (35 ms at worst), and holds the loop for 399 ms when it yields nothing; the guide had the
