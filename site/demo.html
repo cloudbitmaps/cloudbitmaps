@@ -22,7 +22,7 @@
     <title>CloudBitmaps — a measured intersection, replayed</title>
     <meta
       name="description"
-      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and the result comes back in 24.1 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and the range requests carry 403,200 bytes, and the result comes back in 29.1 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -97,8 +97,9 @@
         <p class="hero-lede" style="max-width: 74ch">
           Two segments of <strong>2,000,000 ids</strong> each. Intersecting them fetches
           <strong>100 chunks</strong> of each and returns <strong>100,000 ids</strong> in
-          <strong>24.1 ms</strong> on the in-memory drivers — because keys are compared before any chunk is
-          requested, and <strong>3,800</strong> chunk reads simply never happen.
+          <strong>29.1 ms</strong> on the in-memory drivers — because keys are compared before any chunk is
+          requested, and <strong>3,800</strong> chunk reads simply never happen. The range requests carried
+          <strong>403,200 bytes</strong>, about 5% of the 8.1 MB the two stored objects hold (derived).
         </p>
         <p class="note" style="max-width: 78ch">
           Every measured number on this page comes from one recorded run of
@@ -225,10 +226,10 @@
           data-chunks="2000"
           data-shared="100"
           data-skipped="3800"
-          data-bytes="0"
-          data-bytes-per-chunk="0"
+          data-bytes="403200"
+          data-bytes-per-chunk="4032"
           data-ids="100000"
-          data-ms="24.1"
+          data-ms="29.1"
           data-density="1000"
         >
           <!-- The beat rail. Real buttons: a beat is a destination, and a reader who wants to sit on beat
@@ -319,7 +320,7 @@
               <div class="tally-cell">
                 <span class="label">Chunk bytes counted</span>
                 <span class="tally-fig" id="t-bytes">0</span>
-                <span class="tally-note">no range request was sent: the reader kept each small segment whole</span>
+                <span class="tally-note">bytes of the range requests sent, of about 8.1 MB held (derived)</span>
               </div>
             </div>
           </div>
@@ -347,16 +348,16 @@
             <article class="beat" data-beat="2">
               <p class="beat-head"><span class="beat-n">03</span> 100 chunks</p>
               <p>
-                Only the hundred aligned <em>keys</em> are wanted. These segments are small (about 48 KB each),
-                so the open's single read brought each one whole and the 100 shared chunks were served from that
-                copy: no chunk request was sent, and the run's byte counter read 0 (it counts the bytes of range
-                requests sent). A segment larger than the reader's 64 KiB share reads its shared chunks by range,
-                which this run does not measure. The other <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never
+                Only the hundred aligned <em>keys</em> are wanted. Each segment here is about 4 MB (derived from the
+                record's object sizes), well past what a reader keeps whole, so each of the 100 shared chunks is read by
+                range: 403,200 bytes in all, 4,032 for each shared key across the two segments (derived, about 2 KB a
+                chunk at 1,000 ids a chunk). That is about 5% of the 8.1 MB the two objects hold (derived); the
+                counter leaves out each reader's one tail read of up to 256 KiB. The other <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never
                 issued. On object storage that is 3,800 GET requests you are not charged for.
               </p>
             </article>
             <article class="beat" data-beat="3">
-              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 24.1 ms</p>
+              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 29.1 ms</p>
               <p>
                 One hundred shared keys times 1,000 ids per key is 100,000 ids — and 100,000 is what the run
                 reported. The result is <em>derivable from the setup</em> as well as observed, which is the
@@ -423,12 +424,12 @@
                   </tr>
                   <tr>
                     <td>Chunk payload bytes counted</td>
-                    <td class="num">0</td>
-                    <td class="from">metrics sink; counts the bytes of range requests sent</td>
+                    <td class="num">403,200</td>
+                    <td class="from">metrics sink; counts the bytes of range requests sent, not each reader's one tail read of up to 256 KiB</td>
                   </tr>
                   <tr>
                     <td>Wall time</td>
-                    <td class="num">24.1 ms</td>
+                    <td class="num">29.1 ms</td>
                     <td class="from">timer around the drained stream</td>
                   </tr>
                   <tr>
@@ -513,18 +514,19 @@
             </p>
           </div>
           <div class="limit">
-            <p class="label">The chunk count is the figure; no figure for bytes read is stated</p>
+            <p class="label">The chunk count holds for any segment; the byte figure is this fixture's</p>
             <p>
               Key alignment does not care how ids sit inside a chunk, so <em>100 of 2,000</em> holds for any
-              segment. A byte figure would care: it depends on how the ids sit inside a chunk. This run's counter
-              read 0 (it counts the bytes of range requests sent), so the page states none; price the requests, not a
-              byte count.
+              segment. The byte figure does care: here each chunk holds 1,000 ids spread across its range, about 2 KB
+              as an array, so the 100 shared chunks are 403,200 bytes of the range requests sent. Ids packed into
+              runs would make a chunk far smaller. The figure is of this in-memory run; what S3 sends is what the
+              calibration runs in the <a href="benchmarks.html">benchmarks</a> measured.
             </p>
           </div>
           <div class="limit">
             <p class="label">Memory drivers, not S3</p>
             <p>
-              24.1 ms is compute, not cloud latency. It is the right number for
+              29.1 ms is compute, not cloud latency. It is the right number for
               <em>how many</em> requests happen and the wrong one for how long they take — the
               <a href="benchmarks.html">benchmarks</a> carry the real-backend costs, and the rate past which a flat
               tier is cheaper.

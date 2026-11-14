@@ -76,6 +76,19 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The at-scale intersection demo now shows bytes saved, from a fixture whose segments are too large to read whole.** The
+  intersect fixture of `bench/scale.cjs` spread each chunk's ids across its 65,536-id range instead of laying them in a
+  contiguous run, so each chunk is an array container of about 2 KB and each of the two objects is about 4 MB, where the
+  contiguous fixture made each about 48 KB and the reader kept it whole, so the earlier run sent no range request and
+  its byte counter read 0. The same 2,000,000 ids a segment, 2,000 chunks and 100 shared chunks now read 403,200 bytes
+  by range (4,032 for each shared key across the two segments) of the 8,104,225 bytes the two objects hold, 5.0%
+  (derived), and the record states each object's size; the chunks fetched (100) and skipped (3,800) are unchanged. The
+  intersection took 29.1 ms (24.1 ms before). The run was taken once, on Apple M3 Pro, Node v24.22.1, 2026-11-14, load
+  2.0 at the start and 6.6 at the end; the fleet figures re-measured with it agree with the previous record within 20%
+  (the 100,000-segment seed rate 47 a second against 57, the scan of that fleet 30,268.2 ms against 28,530.8 ms). The
+  demo, the home and architecture pages, the benchmarks pages and the reading guide were rewritten from the new record.
+  No library behaviour or version changes.
+
 - **An erasure that deleted a generation and did not finish now has an audit event.** A call that deleted an object holding the subject's id and then ended `superseded` (another writer won the row, or a conditional delete was refused) or threw used to emit nothing, and `eraseSubject`'s ledger entry did not carry what it had deleted, so a deletion could leave no record. It now emits `segment.collect` with the generations it deleted (or found already deleted while deleting), before a throw is raised, whenever that list is not empty when the call exits. A delete whose outcome the call could not learn (no answer, and the read-back failed too) is in no event: the thrown error is its record. The event has no `fromGeneration` and its shape is unchanged; a finished call still emits its single event, and a call that deleted nothing emits none. The event does not say the erasure finished: the ledger's `erased` does. The audit contract in `PRIVACY.md`, the erasure and observability guides and the `AuditEvent` doc comment say so.
 
 - **The TypeScript codec's per-operation figures and the at-scale benchmark are re-measured.** On an

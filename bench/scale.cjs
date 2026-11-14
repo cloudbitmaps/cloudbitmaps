@@ -209,7 +209,8 @@ async function measureIntersect() {
   // Segment A: chunks [0, CHUNKS). Segment B: `sharedChunks` chunks shared with A, the rest disjoint (offset
   // past A's range) — so exactly `sharedChunks` chunk keys align, and intersect must fetch only those.
   const idsA = [];
-  for (let c = 0; c < CHUNKS; c++) for (let j = 0; j < DENSITY; j++) idsA.push(c * 65536 + j * STRIDE);
+  for (let c = 0; c < CHUNKS; c++)
+    for (let j = 0; j < DENSITY; j++) idsA.push(c * 65536 + j * STRIDE);
   const idsB = [];
   for (let c = 0; c < CHUNKS; c++) {
     const chunk = c < sharedChunks ? c : c + CHUNKS; // shared prefix, then a disjoint tail
