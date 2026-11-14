@@ -89,7 +89,7 @@ so, and so do the module headers in the code.
   Apple M3 Pro, Node v24.22.1, 2026-11-14, on a loaded machine: load 2.0 at the start and 6.6 at the end. The figures the
   pages publish from the fleet runs (the 100,000-segment seed rate 47 a second against 57, the scan of that fleet 30,268.2
   ms against 28,530.8 ms, the retained heap and the peak RSS) agree with the previous record within 20%; the unpublished
-  `readAllMs` and `seedMs` at 100,000 segments moved more (see the pull request). The demo, the home and architecture
+  `readAllMs` and `seedMs` at 100,000 segments moved more: `readAllMs` 43,816 to 77,075 ms and `seedMs` up 20.9%. The demo, the home and architecture
   pages, the benchmarks pages and the reading guide were rewritten from the new record. No library behaviour or version
   changes.
 

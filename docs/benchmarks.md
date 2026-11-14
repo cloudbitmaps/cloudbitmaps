@@ -498,7 +498,7 @@ _Measured on Apple M3 Pro (arm64, node v24.22.1, commit c76241dd, 2026-11-14, lo
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend
-  on how the ids inside a chunk are distributed. The run's counter of payload bytes read 403,200 of the 8,104,225 the two objects hold (derived: 5.0%): it counts the bytes of range requests sent, and this fixture spreads 1,000 ids across each chunk's range, so a chunk is about 2 KB. How many bytes a chunk read takes depends on how the ids sit inside the chunk (ids in runs make a chunk far smaller), so for a bill, price the requests.
+  on how the ids inside a chunk are distributed. The run's counter of payload bytes read 403,200 of the 8,104,225 the two objects hold (derived: 5.0%), a floor: it counts the bytes of range requests sent and leaves out each reader's first read, the object's last 262,144 bytes, so with those two reads the run read about 927,488 bytes, about 11.4% (derived); and this fixture spreads 1,000 ids across each chunk's range, so a chunk is about 2 KB. How many bytes a chunk read takes depends on how the ids sit inside the chunk (ids in runs make a chunk far smaller), so for a bill, price the requests.
 
 ## What RSS is, and why it is the number we bound
 
