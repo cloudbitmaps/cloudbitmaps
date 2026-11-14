@@ -399,12 +399,18 @@ function render(r) {
   // The bytes of the range requests the run sent, against the bytes of the two objects (each stored object's size,
   // recorded by the run). The share is derived: bytes sent divided by bytes held.
   const heldBytes = r.intersect.objectBytes.A + r.intersect.objectBytes.B;
+  // Each reader's first read is the object's last 256 KiB (DEFAULT_TAIL_BYTES, stated here, not imported); it emits no
+  // range-request event, so the counter is a floor. The total read adds one such read per object (two objects).
+  const TAIL_BYTES = 262144;
+  const totalRead = r.intersect.storageBytesRead + 2 * TAIL_BYTES;
+  const share = (n) => ((100 * n) / heldBytes).toFixed(1);
   const bytesSentence =
     `The run's range requests carried ${r.intersect.storageBytesRead.toLocaleString('en-US')} bytes, against the ` +
     `${heldBytes.toLocaleString('en-US')} bytes of the two stored objects ` +
-    `(${r.intersect.objectBytes.A.toLocaleString('en-US')} and ${r.intersect.objectBytes.B.toLocaleString('en-US')}), ` +
-    `${((100 * r.intersect.storageBytesRead) / heldBytes).toFixed(1)}% (derived); the counter does not include each ` +
-    `reader's one tail read of up to 256 KiB.`;
+    `(${r.intersect.objectBytes.A.toLocaleString('en-US')} and ${r.intersect.objectBytes.B.toLocaleString('en-US')}): ` +
+    `${share(r.intersect.storageBytesRead)}% (derived), a floor, because the counter leaves out each reader's first read, ` +
+    `the object's last ${TAIL_BYTES.toLocaleString('en-US')} bytes. With those two reads the run read about ` +
+    `${totalRead.toLocaleString('en-US')} bytes, about ${share(totalRead)}% (derived).`;
   const mdTable =
     `| ${header.join(' | ')} |\n| ${header.map(() => '---').join(' | ')} |\n` +
     rows.map((row) => `| ${row.join(' | ')} |`).join('\n') +
