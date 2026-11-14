@@ -200,20 +200,32 @@ async function measureIntersect() {
   const DENSITY = int(process.env.SCALE_INTERSECT_DENSITY, 1000);
   const OVERLAP = Number(process.env.SCALE_INTERSECT_OVERLAP || '0.05');
   const sharedChunks = Math.max(1, Math.round(CHUNKS * OVERLAP));
+  // The ids of a chunk are spread across its 65,536-id range, `STRIDE` apart, so each chunk is an array container of
+  // about 2 bytes an id (about 2 KB at 1,000 ids), not a run of a few bytes. Contiguous ids would make a segment's
+  // object a few tens of KB, which a reader keeps whole after its first read, so the run would send no range request.
+  const STRIDE = Math.floor(65536 / DENSITY);
 
   const backend = new MemoryStorage({ now: () => 0 });
   // Segment A: chunks [0, CHUNKS). Segment B: `sharedChunks` chunks shared with A, the rest disjoint (offset
   // past A's range) — so exactly `sharedChunks` chunk keys align, and intersect must fetch only those.
   const idsA = [];
-  for (let c = 0; c < CHUNKS; c++) for (let j = 0; j < DENSITY; j++) idsA.push(c * 65536 + j);
+  for (let c = 0; c < CHUNKS; c++) for (let j = 0; j < DENSITY; j++) idsA.push(c * 65536 + j * STRIDE);
   const idsB = [];
   for (let c = 0; c < CHUNKS; c++) {
     const chunk = c < sharedChunks ? c : c + CHUNKS; // shared prefix, then a disjoint tail
-    for (let j = 0; j < DENSITY; j++) idsB.push(chunk * 65536 + j);
+    for (let j = 0; j < DENSITY; j++) idsB.push(chunk * 65536 + j * STRIDE);
   }
   const writer = new CloudRoaring({ storage: backend });
   await writer.load({ segment: 'A' }, idsA);
   await writer.load({ segment: 'B' }, idsB);
+
+  // Each stored object's size, read from the driver before the timed reader exists (a size-only tail read).
+  const objectBytes = {};
+  for (const name of ['A', 'B']) {
+    const keys = [];
+    for await (const key of backend.storage.list({ segment: name })) keys.push(key);
+    objectBytes[name] = (await backend.storage.getTail(keys[keys.length - 1], 0)).size;
+  }
 
   const metrics = new CountingMetricsSink();
   // A second store over the same backend: a fresh reader with its own cold cache, so the intersect below starts
@@ -236,12 +248,13 @@ async function measureIntersect() {
     resultCount,
     fetchedChunks: snap.intersect.fetchedChunks,
     skippedChunks: snap.intersect.skippedChunks,
+    objectBytes,
     storageBytesRead: snap.storage.bytes,
     // What that counter counts, recorded beside it: the bytes of range requests that were sent. A read served from the
-    // copy of a small object that a reader keeps whole sends none and adds nothing, so 0 here is "no request was sent
-    // for these reads", not "no bytes were read".
+    // copy of a small object that a reader keeps whole sends none and adds nothing, so 0 would mean "no request was
+    // sent for these reads", not "no bytes were read"; the tail read each reader makes first is not counted either.
     storageBytesReadMeans:
-      'bytes of the range requests sent to the storage driver; a read served from a small object a reader keeps whole sends none',
+      'bytes of the range requests sent to the storage driver; a read served from a small object a reader keeps whole sends none, and the first tail read of each object is not counted',
   };
 }
 
@@ -382,13 +395,22 @@ function render(r) {
     .join(', then ');
   const rssFigures = r.fleets.map((f) => f.rssPeakMiB).join(', ');
   const perSeg = `fetched only ${r.intersect.fetchedChunks} of the ${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks per segment`;
+  // The bytes of the range requests the run sent, against the bytes of the two objects (each stored object's size,
+  // recorded by the run). The share is derived: bytes sent divided by bytes held.
+  const heldBytes = r.intersect.objectBytes.A + r.intersect.objectBytes.B;
+  const bytesSentence =
+    `The run's range requests carried ${r.intersect.storageBytesRead.toLocaleString('en-US')} bytes, against the ` +
+    `${heldBytes.toLocaleString('en-US')} bytes of the two stored objects ` +
+    `(${r.intersect.objectBytes.A.toLocaleString('en-US')} and ${r.intersect.objectBytes.B.toLocaleString('en-US')}), ` +
+    `${((100 * r.intersect.storageBytesRead) / heldBytes).toFixed(1)}% (derived); the counter does not include each ` +
+    `reader's one tail read of up to 256 KiB.`;
   const mdTable =
     `| ${header.join(' | ')} |\n| ${header.map(() => '---').join(' | ')} |\n` +
     rows.map((row) => `| ${row.join(' | ')} |`).join('\n') +
     `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments on in-memory storage ` +
     `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared): ` +
     `**${perSeg}** — the shared keys; the rest skipped by key alignment — in ${r.intersect.intersectMs} ms, ` +
-    `which times the engine rather than object storage.\n\n` +
+    `which times the engine rather than object storage. ${bytesSentence}\n\n` +
     `_Measured on ${r.env.cpu} (${r.env.arch}, node ${r.env.node}, ${provenance}). **The bound is the retained heap** (post-GC): ` +
     `${memFlat} — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** ` +
     `(${rssFigures} MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* ` +
@@ -425,7 +447,7 @@ function render(r) {
     `inside a <strong>${heapSpread} MiB</strong> band. Intersection of two ` +
     `${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
     `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared) ` +
-    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms against the in-memory drivers. Fleet seeded ` +
+    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms against the in-memory drivers. ${bytesSentence} Fleet seeded ` +
     `${seededByHtml} at ~${seedLo}&ndash;${seedHi} ` +
     `durable segments/s (fsync-bound). Measured on ${esc(r.env.cpu)} (${r.env.arch}, node ` +
     `${r.env.node}, ${esc(provenance)}) &mdash; discovery is filesystem-bound here, and its scan took ` +
@@ -439,7 +461,7 @@ function render(r) {
           `n=${f.n} heap=${f.heapRetainedMiB}MiB rssPeak=${f.rssPeakMiB}MiB disc=${f.discoveryMs}ms seed=${f.seedPerSec}/s`,
       )
       .join(' | ') +
-    ` || intersect fetched=${r.intersect.fetchedChunks}/${r.intersect.chunksPerSegment} in ${r.intersect.intersectMs}ms`;
+    ` || intersect fetched=${r.intersect.fetchedChunks}/${r.intersect.chunksPerSegment} in ${r.intersect.intersectMs}ms, ${r.intersect.storageBytesRead} bytes by range of ${heldBytes}`;
   return { mdTable, htmlTable, summary };
 }
 
