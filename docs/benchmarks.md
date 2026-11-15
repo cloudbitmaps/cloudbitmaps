@@ -456,13 +456,13 @@ measured evidence at fleet scale:
 <!-- BENCH:SCALE:START -->
 | Fleet | Retained heap (cap 1024) | Peak RSS | Discovery scan |
 | --- | --- | --- | --- |
-| 1,000 segments | 13.2 MiB | 88.4 MiB | 169.9 ms |
-| 10,000 segments | 12.5 MiB | 182.8 MiB | 1,702 ms |
-| 100,000 segments | 12.8 MiB | 183.2 MiB | 28,530.8 ms |
+| 1,000 segments | 13.2 MiB | 88.4 MiB | 171.1 ms |
+| 10,000 segments | 12.5 MiB | 188.4 MiB | 1,780.3 ms |
+| 100,000 segments | 12.7 MiB | 180.0 MiB | 30,268.2 ms |
 
-Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.1 ms, which times the engine rather than object storage.
+Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 29.1 ms, which times the engine rather than object storage. The run's range requests carried 403,200 bytes, against the 8,104,225 bytes of the two stored objects (4,052,112 and 4,052,113): 5.0% (derived), a floor, because the counter leaves out each reader's first read, the object's last 262,144 bytes. With those two reads the run read about 927,488 bytes, about 11.4% (derived).
 
-_Measured on Apple M3 Pro (arm64, node v24.22.1, commit f140176e, 2026-11-10, load 1.9 at the start and 3 at the end). **The bound is the retained heap** (post-GC): 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.8 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (88.4, 182.8, 183.2 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~57–60 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 10.0x for 10x the segments, then 16.8x for 10x the segments — read the milliseconds as this run's, not as a law._
+_Measured on Apple M3 Pro (arm64, node v24.22.1, commit c76241dd, 2026-11-14, load 2 at the start and 6.6 at the end). **The bound is the retained heap** (post-GC): 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.7 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (88.4, 188.4, 180 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~47–60 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 10.4x for 10x the segments, then 17.0x for 10x the segments — read the milliseconds as this run's, not as a law._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment
@@ -498,8 +498,7 @@ _Measured on Apple M3 Pro (arm64, node v24.22.1, commit f140176e, 2026-11-10, lo
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend
-  on how the ids inside a chunk are distributed. The run's counter of payload bytes read 0: it counts the bytes of range requests sent, and a segment small enough for its reader to keep whole is read with none, so no byte figure is published
-  from it; how many bytes a chunk read takes depends on how the ids sit inside the chunk, so for a bill, price the requests.
+  on how the ids inside a chunk are distributed. The run's counter of payload bytes read 403,200 of the 8,104,225 the two objects hold (derived: 5.0%), a floor: it counts the bytes of range requests sent and leaves out each reader's first read, the object's last 262,144 bytes, so with those two reads the run read about 927,488 bytes, about 11.4% (derived); and this fixture spreads 1,000 ids across each chunk's range, so a chunk is about 2 KB. How many bytes a chunk read takes depends on how the ids sit inside the chunk (ids in runs make a chunk far smaller), so for a bill, price the requests.
 
 ## What RSS is, and why it is the number we bound
 

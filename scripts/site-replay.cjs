@@ -120,6 +120,7 @@ if (m.storageBytesRead % shared !== 0) {
   fail(`storageBytesRead (${m.storageBytesRead}) is not divisible by the ${shared} fetched chunks`);
 }
 const bytesPerChunk = m.storageBytesRead / shared;
+const TAIL_BYTES = 262144;
 
 // ── key-space geometry, entirely derived ──────────────────────────────────────────────────────────────────
 const axisKeys = 2 * chunks; // A occupies the low half, B's disjoint tail the high half
@@ -179,6 +180,12 @@ function checkPage() {
       m.storageBytesRead,
       m.skippedChunks,
       m.resultCount,
+      // the objects' recorded sizes, and the tail reads the byte counter leaves out (each reader's first read, the
+      // object's last 262,144 bytes: stated here, as the bench states it, not imported) added to the counter
+      m.objectBytes.A,
+      m.objectBytes.B,
+      TAIL_BYTES,
+      m.storageBytesRead + 2 * TAIL_BYTES,
       // format constants, sourced above rather than allow-listed
       fc.chunkCount,
       fc.arrayCrossoverIds,
@@ -208,7 +215,7 @@ function checkPage() {
     ['data-skipped', m.skippedChunks],
     ['data-bytes', m.storageBytesRead],
     ['data-ids', m.resultCount],
-    ['data-bytes-per-chunk', bytesPerChunk],
+    ['data-bytes-per-shared-key', bytesPerChunk],
     ['data-density', density],
   ];
   for (const [attr, want] of attrs) {
