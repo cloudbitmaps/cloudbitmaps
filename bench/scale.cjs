@@ -56,7 +56,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const workFolder = require('./lib/work-folder.cjs');
-const { readTailBytes } = require('./lib/tail-bytes.cjs');
+const { readTailBytes, tailsRead } = require('./lib/tail-bytes.cjs');
 
 /**
  * The built library, loaded only by the modes that measure. Rendering and checking the table read the committed
@@ -404,10 +404,7 @@ function render(r) {
   // no range-request event, so the counter is a floor. The total read adds one such read per object, or the whole object
   // where it is smaller than that.
   const TAIL_BYTES = readTailBytes(path.resolve(__dirname, '..'));
-  const totalRead =
-    r.intersect.storageBytesRead +
-    Math.min(TAIL_BYTES, r.intersect.objectBytes.A) +
-    Math.min(TAIL_BYTES, r.intersect.objectBytes.B);
+  const totalRead = r.intersect.storageBytesRead + tailsRead(TAIL_BYTES, r.intersect.objectBytes);
   const share = (n) => ((100 * n) / heldBytes).toFixed(1);
   const bytesSentence =
     `The run's range requests carried ${r.intersect.storageBytesRead.toLocaleString('en-US')} bytes, against the ` +

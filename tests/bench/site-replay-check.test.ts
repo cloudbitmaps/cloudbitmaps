@@ -46,6 +46,20 @@ function edit(dir: string, file: string, from: string | RegExp, to: string): voi
   writeFileSync(p, after);
 }
 
+// Replace a value inside the provenance sentence itself (the text after "checked into the repository ("), so a value
+// that also appears earlier on the page cannot make the case mutate the wrong place.
+function editSentence(dir: string, from: string | RegExp, to: string): void {
+  const p = join(dir, 'site/demo.html');
+  const html = readFileSync(p, 'utf8');
+  const at = html.indexOf('checked into the repository (');
+  expect(at).toBeGreaterThan(-1);
+  const head = html.slice(0, at);
+  const tail = html.slice(at);
+  const after = tail.replace(from, to);
+  expect(after).not.toBe(tail); // the mutation must land
+  writeFileSync(p, head + after);
+}
+
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
@@ -69,12 +83,44 @@ describe('site:replay:check', () => {
   ] as const) {
     it(`fails when the demo's provenance line states another ${name}`, () => {
       const d = copy();
-      edit(d, 'site/demo.html', from, to);
+      editSentence(d, from, to);
       const r = check(d);
       expect(r.status).toBe(1);
-      expect(r.err).toContain(name);
+      expect(r.err).toContain(`demo.html states ${name} `);
     });
   }
+
+  it('does not let a correct copy elsewhere on the page stand in for a stale line', () => {
+    const d = copy();
+    const p = join(d, 'site/demo.html');
+    const html = readFileSync(p, 'utf8');
+    const line = /\(([^()]*Node v[\d.]+[^()]*)\)/.exec(html)![0];
+    editSentence(d, record.measuredOn, '2000-01-01');
+    writeFileSync(
+      p,
+      readFileSync(p, 'utf8').replace('</body>', `<p>The run (${line.slice(1)}</p></body>`),
+    );
+    const r = check(d);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('demo.html states day ');
+  });
+
+  it('fails when the page has a second copy of the provenance sentence, or none', () => {
+    const d = copy();
+    const p = join(d, 'site/demo.html');
+    const html = readFileSync(p, 'utf8');
+    writeFileSync(
+      p,
+      html.replace('</body>', '<p>checked into the repository (a second)</p></body>'),
+    );
+    const two = check(d);
+    expect(two.status).toBe(1);
+    expect(two.err).toContain('2 sentences that open with');
+    writeFileSync(p, html.replace('checked into the repository (', 'checked into the repo ('));
+    const none = check(d);
+    expect(none.status).toBe(1);
+    expect(none.err).toContain('0 sentences that open with');
+  });
 
   it('fails when the record drops a field the page states', () => {
     const d = copy();
@@ -84,7 +130,7 @@ describe('site:replay:check', () => {
     writeFileSync(p, JSON.stringify(r, null, 2) + '\n');
     const out = check(d);
     expect(out.status).toBe(1);
-    expect(out.err).toContain('machine');
+    expect(out.err).toContain('the record carries no machine');
   });
 
   it('reads the tail size from the format source, and accepts an equal restatement', () => {
@@ -102,6 +148,9 @@ describe('site:replay:check', () => {
       edit(d, FORMAT, '256 * 1024', to);
       const r = check(d);
       expect(r.status).toBe(1);
+      expect(r.err).toContain(
+        name === 'zero' ? 'is 0, not a positive integer' : 'DEFAULT_TAIL_BYTES is not declared',
+      );
       expect(r.err).toContain(FORMAT);
     });
   }
@@ -111,6 +160,7 @@ describe('site:replay:check', () => {
     edit(d, FORMAT, 'DEFAULT_TAIL_BYTES =', 'DEFAULT_TAIL =');
     const r = check(d);
     expect(r.status).toBe(1);
+    expect(r.err).toContain('DEFAULT_TAIL_BYTES is not declared');
     expect(r.err).toContain(FORMAT);
   });
 
@@ -118,6 +168,37 @@ describe('site:replay:check', () => {
     const d = copy();
     edit(d, FORMAT, '256 * 1024', '128 * 1024');
     const r = check(d);
-    expect(r.status).toBe(1); // the page states 262,144 and the total read under a 256 KiB tail
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('262,144'); // the page states the 256 KiB tail, which a 128 KiB tail does not allow
+  });
+
+  it('counts the whole object where it is smaller than a tail', () => {
+    const fixture = JSON.parse(readFileSync(join(ROOT, 'bench/scale-results.json'), 'utf8')) as {
+      intersect: { objectBytes: { A: number; B: number }; storageBytesRead: number };
+    };
+    const { objectBytes, storageBytesRead } = fixture.intersect;
+    const tail = 256 * 1024;
+    const smaller = 100_000;
+    const g = (n: number): string => n.toLocaleString('en-US');
+    const swap = (html: string, from: number, to: number): string =>
+      html.split(g(from)).join(g(to));
+    const rebuilt = (total: number): string => {
+      const d = copy();
+      const p = join(d, 'bench/scale-results.json');
+      const r = JSON.parse(readFileSync(p, 'utf8')) as typeof fixture;
+      r.intersect.objectBytes.A = smaller;
+      writeFileSync(p, JSON.stringify(r, null, 2) + '\n');
+      const page = join(d, 'site/demo.html');
+      let html = readFileSync(page, 'utf8');
+      html = swap(html, objectBytes.A, smaller);
+      html = swap(html, storageBytesRead + 2 * tail, total);
+      writeFileSync(page, html);
+      return d;
+    };
+    // The page states the total read with A counted whole (under a tail), which the check allows ...
+    expect(check(rebuilt(storageBytesRead + smaller + tail)).status).toBe(0);
+    // ... and not the total a flat two tails would give.
+    const flat = check(rebuilt(storageBytesRead + 2 * tail));
+    expect(flat.status).toBe(1);
   });
 });

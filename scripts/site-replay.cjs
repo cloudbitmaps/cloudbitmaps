@@ -33,7 +33,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { removeAll } = require('../bench/lib/remove-all.cjs');
-const { readTailBytes } = require('../bench/lib/tail-bytes.cjs');
+const { readTailBytes, tailsRead: tailsReadOf } = require('../bench/lib/tail-bytes.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SOURCE = path.join(ROOT, 'bench', 'scale-results.json');
@@ -129,7 +129,7 @@ try {
   fail(e.message);
 }
 // The two objects' first reads: one tail each, or the whole object where it is smaller than a tail.
-const tailsRead = Math.min(TAIL_BYTES, m.objectBytes.A) + Math.min(TAIL_BYTES, m.objectBytes.B);
+const tailsRead = tailsReadOf(TAIL_BYTES, m.objectBytes);
 
 // ── key-space geometry, entirely derived ──────────────────────────────────────────────────────────────────
 const axisKeys = 2 * chunks; // A occupies the low half, B's disjoint tail the high half
@@ -172,11 +172,19 @@ function checkPage() {
   // states them, with the whitespace of the markup folded; the loads as numbers, so 2.0 on the page is 2 in the record.
   const text = html.replace(/\s+/g, ' ');
   const env = raw.env || {};
+  // The sentence that holds it: the text after "checked into the repository (", of which the page has exactly one.
+  const opener = 'checked into the repository (';
+  const sentences = text.split(opener).length - 1;
+  const sentence = sentences === 1 ? text.slice(text.indexOf(opener) + opener.length) : '';
   const provenance =
-    /\(([^()]+), Node (v[\d.]+), commit ([0-9a-f]{8}), (\d{4}-\d{2}-\d{2}), 1-minute load ([\d.]+) at the start and ([\d.]+) at the end\)/.exec(
-      text,
+    /^([^()]+), Node (v[\d.]+), commit ([0-9a-f]{8}), (\d{4}-\d{2}-\d{2}), 1-minute load ([\d.]+) at the start and ([\d.]+) at the end\)/.exec(
+      sentence,
     );
-  if (!provenance) {
+  if (sentences !== 1) {
+    problems.push(
+      `demo.html has ${sentences} sentences that open with "${opener}", not exactly one`,
+    );
+  } else if (!provenance) {
     problems.push(
       'demo.html has no provenance line of the form "(machine, Node vX, commit, day, 1-minute load N at the start and N at the end)"',
     );
