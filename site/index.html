@@ -549,7 +549,7 @@
             <p class="lede">
               Intersecting two 2,000,000-id segments never requests by key, or decodes, the 1,900 chunks per segment outside the shared 100. Chunk keys are
               compared first, and only chunks whose keys appear in <strong>both</strong> are ever
-              requested by key — 100 of 2,000, in 28.4 ms on the in-memory drivers. The other 1,900 are never
+              requested by key — 100 of 2,000, in 27.8 ms on the in-memory drivers. The other 1,900 are never
               requested by key: each object&rsquo;s one opening read takes its last 256&nbsp;KiB (the default), where its index of keys sits.
             </p>
             <figure class="keys">
@@ -560,7 +560,7 @@
                 ><i></i><i></i><i></i><i></i>
               </div>
               <figcaption class="keys-foot">
-                <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 28.4 ms in memory</span>
+                <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 27.8 ms in memory</span>
               </figcaption>
               <a class="keys-link" href="architecture.html">See the full walk-through →</a>
             </figure>
