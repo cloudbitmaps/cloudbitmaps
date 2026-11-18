@@ -245,11 +245,15 @@ gate ignores.
 
 ### Forced transitive versions (`pnpm.overrides`)
 
-Every advisory we have had sat in **development-only** transitive dependencies, so the blocking gate above —
-scoped to production dependencies — correctly ignored them and CI was green. They still generated alerts, and
-"correctly ignored" is not the same as "fine", so they are **fixed rather than accepted**: `package.json` →
+Every advisory below sat in a transitive dependency under the blocking gate's bar: most in **development-only**
+tooling, which the gate's production scope leaves out, and two (`uuid`, medium, and `fast-xml-parser`, low) under a
+driver's cloud SDK, at a severity below **high**. CI stayed green, as the gate intends. They still generated alerts, and
+"below the bar" is not the same as "fine", so they are **fixed rather than accepted**: `package.json` →
 `pnpm.overrides` forces each to a patched version, pinned inside its current major so an override never
-smuggles in a breaking change.
+smuggles in a breaking change. An override holds this workspace's lockfile, and so what this repository's tests and
+tools run on; it reaches no application, and the Lambda layer carries no driver SDK. An application that installs a
+driver resolves the SDK's own range, so for the two rows under an SDK the fix there is a fresh resolution of the
+application's own lockfile, which the SDK's range allows.
 
 | forced | reached us via | note |
 | --- | --- | --- |
@@ -261,6 +265,7 @@ smuggles in a breaking change.
 | `source-map-js >=1.2.2 <2` | the vitest toolchain: `vite` -> `postcss` | |
 | `shell-quote >=1.11.0 <2` | the changesets CLI: `@changesets/cli` -> `launch-editor` | |
 | `launch-editor >=2.14.2 <3` | the changesets CLI: `@changesets/cli` -> `launch-editor` | |
+| `fast-xml-parser >=5.12.0 <6` | the Azure and GCS drivers' SDKs: `@azure/storage-blob` -> `@azure/core-xml`, and `@google-cloud/storage` | a runtime dependency of `@cloudbitmaps/azure-blob` and `@cloudbitmaps/gcs`; the SDKs' own ranges (`^5.5.9`, `^5.3.4`) allow the patched version |
 
 An override is a **claim that the forced version still works**, which is only worth making if it is tested, and
 only meaningful while something in the tree actually resolves to it. Every row above binds to at least one
