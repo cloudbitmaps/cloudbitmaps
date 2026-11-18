@@ -456,13 +456,13 @@ measured evidence at fleet scale:
 <!-- BENCH:SCALE:START -->
 | Fleet | Retained heap (cap 1024) | Peak RSS | Discovery scan |
 | --- | --- | --- | --- |
-| 1,000 segments | 13.2 MiB | 88.4 MiB | 171.1 ms |
-| 10,000 segments | 12.5 MiB | 188.4 MiB | 1,780.3 ms |
-| 100,000 segments | 12.7 MiB | 180.0 MiB | 30,268.2 ms |
+| 1,000 segments | 13.0 MiB | 87.9 MiB | 121.5 ms |
+| 10,000 segments | 12.3 MiB | 182.3 MiB | 1,130 ms |
+| 100,000 segments | 12.4 MiB | 184.8 MiB | 22,410.1 ms |
 
-Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 29.1 ms, which times the engine rather than object storage. The run's range requests carried 403,200 bytes, against the 8,104,225 bytes of the two stored objects (4,052,112 and 4,052,113): 5.0% (derived), a floor, because the counter leaves out each reader's first read, the object's last 262,144 bytes. With those two reads the run read about 927,488 bytes, about 11.4% (derived).
+Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 28.4 ms, which times the engine rather than object storage. The run's range requests carried 403,200 bytes, against the 8,104,225 bytes of the two stored objects (4,052,112 and 4,052,113): 5.0% (derived), a floor, because the counter leaves out each reader's first read, the object's last 262,144 bytes. With those two reads the run read about 927,488 bytes, about 11.4% (derived).
 
-_Measured on Apple M3 Pro (arm64, node v24.22.1, commit c76241dd, 2026-11-14, load 2 at the start and 6.6 at the end). **The bound is the retained heap** (post-GC): 13.2 MiB @ 1,000 · 12.5 MiB @ 10,000 · 12.7 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (88.4, 188.4, 180 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~47–60 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 10.4x for 10x the segments, then 17.0x for 10x the segments — read the milliseconds as this run's, not as a law._
+_Measured on Apple M3 Pro (arm64, node v24.22.1, commit df765485, 2026-11-18, load 10 at the start and 3.8 at the end). **The bound is the retained heap** (post-GC): 13 MiB @ 1,000 · 12.3 MiB @ 10,000 · 12.4 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (87.9, 182.3, 184.8 MiB, shown for context) is a high-water that may also fold in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded through `store.load()` at ~45–64 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound, and its scan took 9.3x for 10x the segments, then 19.8x for 10x the segments — read the milliseconds as this run's, not as a law._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment

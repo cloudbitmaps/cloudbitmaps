@@ -83,6 +83,18 @@ so, and so do the module headers in the code.
   to `list`), so a case variant reads as absent or is refused exactly as before. A case-sensitive
   filesystem is unchanged.
 
+- **The at-scale figures were re-measured on one run, after the settled heap reading and the faster LocalFs listing.** One
+  full `SCALE_INJECT=1 pnpm bench:scale` on commit df765485 re-recorded every figure from one commit and date, on Apple M3
+  Pro, Node v24.22.1, 2026-11-18, on a loaded machine: load 10 at the start (the run's own build had just finished) and 3.8
+  at the end. Two figures moved by design. The retained heap, now read after it settles, is 13 MiB at 1,000 segments
+  (13.2 before), 12.3 at 10,000 (12.5) and 12.4 at 100,000 (12.7). The discovery scan, which no longer checks the real path of
+  each listed row on this case-insensitive filesystem, took 121.5 ms (171.1), 1,130 ms (1,780.3) and 22,410.1 ms
+  (30,268.2). The other published figures agree with the previous record within 20%: the 100,000-segment seed rate 45 a
+  second against 47, the peak RSS 87.9, 182.3 and 184.8 MiB against 88.4, 188.4 and 180, and the intersection 28.4 ms
+  against 29.1 with the same chunks fetched (100), chunks skipped (3,800), bytes read (403,200) and object sizes. The
+  unpublished `readAllMs` at 100,000 segments moved more, 77,075 to 46,042 ms. The demo, the home and architecture pages,
+  the benchmarks pages and the reading guide were updated from the new record. No library behaviour or version changes.
+
 - **The at-scale intersection demo now shows the bytes its range requests read, from a fixture too large to read whole.** The
   intersect fixture of `bench/scale.cjs` spread each chunk's ids across its 65,536-id range instead of laying them in a
   contiguous run, so each chunk is an array container of about 2 KB and each of the two objects is about 4 MB, where the
