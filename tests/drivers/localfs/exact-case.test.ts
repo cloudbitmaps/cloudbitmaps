@@ -124,6 +124,22 @@ describe.skipIf(!INSENSITIVE)(TITLE, () => {
     expect(seen).toEqual([]);
   });
 
+  it('list() returns every stored row, and a case variant of a listed name is still refused by get()', async () => {
+    const registry = new LocalFsRegistryDriver(join(root, 'reg'));
+    for (const segment of ['Alpha', 'beta', 'GAMMA']) {
+      await registry.create({ namespace: 'Tenant', segment }, { currentGen: 0 });
+    }
+    const seen: string[] = [];
+    for await (const row of registry.list('Tenant')) seen.push(row.segment);
+    expect(seen.sort()).toEqual(['Alpha', 'GAMMA', 'beta']);
+    for (const variant of ['alpha', 'BETA', 'gamma']) {
+      expect(await registry.get({ namespace: 'Tenant', segment: variant })).toBeNull();
+    }
+    const other: string[] = [];
+    for await (const row of registry.list('tenant')) other.push(row.segment);
+    expect(other).toEqual([]);
+  });
+
   it('the storage driver: a delete or a listing in another case touches nothing', async () => {
     const storage = new LocalFsStorageDriver(join(root, 'obj'));
     const key = { namespace: 'NS', segment: 'Seg', generation: 1 };
@@ -249,5 +265,41 @@ describe('a case-folding root emulated with symlinks: names that begin with two 
     );
     await expect(put).rejects.toBeInstanceOf(ValidationError);
     await expect(put).rejects.toThrow(/differ only by case on a case-insensitive filesystem/);
+  });
+});
+
+describe('LocalFs registry list(): the exact-case check', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'crbm-case-list-'));
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('checks the namespace directory once and no listed row, while get() checks the name it is given', async () => {
+    const registry = new LocalFsRegistryDriver(root);
+    for (let i = 0; i < 5; i++) {
+      await registry.create({ namespace: 'ns', segment: `Seg${i}` }, { currentGen: 0 });
+    }
+    const differs = vi.spyOn(ExactCase.prototype, 'differs');
+    const seen: string[] = [];
+    for await (const row of registry.list('ns')) seen.push(row.segment);
+    expect(seen.sort()).toEqual(['Seg0', 'Seg1', 'Seg2', 'Seg3', 'Seg4']);
+    expect(differs).toHaveBeenCalledTimes(1);
+    differs.mockClear();
+    expect((await registry.get({ namespace: 'ns', segment: 'Seg0' }))?.segment).toBe('Seg0');
+    expect(differs).toHaveBeenCalledTimes(1);
+  });
+
+  it('a root that did not exist at the first call is resolved again once it does', async () => {
+    const later = join(root, 'later');
+    const exact = new ExactCase(later);
+    expect(await exact.differs(join(later, 'x'))).toBe(false);
+    await mkdir(later);
+    await writeFile(join(later, 'x'), 'x');
+    expect(await exact.differs(join(later, 'x'))).toBe(false);
+    expect(await exact.differs(join(later, 'x'))).toBe(false);
   });
 });

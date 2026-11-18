@@ -76,6 +76,14 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **LocalFs lists registry rows faster on a case-insensitive filesystem.** `list()` checked the exact case of every row
+  it read from a directory listing, which on macOS and Windows resolved two real paths per row, although a name that came
+  out of the listing is the name as stored and cannot differ by case. It now skips that check for listed rows and
+  resolves the root's real path once per store instead of on every check, which also halves the cost for a name a caller
+  supplies. The case check still applies to every name a caller supplies (`get`, `create`, `update`, `delete`, and a
+  namespace given to `list`), so a case variant reads as absent or is refused exactly as before. A case-sensitive
+  filesystem is unchanged.
+
 - **The at-scale intersection demo now shows the bytes its range requests read, from a fixture too large to read whole.** The
   intersect fixture of `bench/scale.cjs` spread each chunk's ids across its 65,536-id range instead of laying them in a
   contiguous run, so each chunk is an array container of about 2 KB and each of the two objects is about 4 MB, where the

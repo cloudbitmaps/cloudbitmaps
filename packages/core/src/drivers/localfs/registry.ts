@@ -204,7 +204,9 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         const segment = parseRegistryRow(entry.name);
         if (segment === null) continue;
         const ref = { namespace: ns, segment };
-        const env = await this.readRow(registryRowPath(this.root, ref), ref);
+        // The name came out of the directory listing, so it is the name as stored: the exact-case check, which
+        // resolves real paths per row, cannot find a difference and is skipped.
+        const env = await this.readRow(registryRowPath(this.root, ref), ref, true);
         if (env && !env.deleted) yield env.record;
       }
     }
@@ -258,10 +260,15 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   /** Read the row at `path`, which must be the row of `ref`: one that names another segment is refused. */
-  private async readRow(path: string, ref: SegmentRef): Promise<RegistryEnvelope | null> {
+  private async readRow(
+    path: string,
+    ref: SegmentRef,
+    // Only for a name just read from a directory listing; a name a caller supplied is always checked.
+    listed = false,
+  ): Promise<RegistryEnvelope | null> {
     let handle;
     try {
-      if (await this.exactCase.differs(path)) return null; // another case's row is not this one
+      if (!listed && (await this.exactCase.differs(path))) return null; // another case's row is not this one
       handle = await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
       if (isAbsent(err) || isCode(err, 'ELOOP')) return null;
