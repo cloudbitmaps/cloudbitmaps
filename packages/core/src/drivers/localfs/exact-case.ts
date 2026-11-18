@@ -146,12 +146,8 @@ export class ExactCase {
         probe = dirname(probe);
       }
     }
-    let realRoot: string;
-    try {
-      realRoot = await realpath(rootAbs);
-    } catch {
-      return false;
-    }
+    const realRoot = await realpath(rootAbs).catch(() => undefined);
+    if (realRoot === undefined) return false;
     const actual = relative(realRoot, real);
     // Outside the root once symlinks are resolved: a symlinked directory is outside this model, as the root is.
     if (isOutside(actual)) return false;

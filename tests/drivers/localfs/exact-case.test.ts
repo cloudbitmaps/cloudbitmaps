@@ -305,7 +305,9 @@ describe('LocalFs registry list(): the exact-case check', () => {
     expect(differs).toHaveBeenCalledWith(path);
     differs.mockClear();
     const next = await registry.compareAndSwap(ref, token, { currentGen: 1 });
-    expect(differs).toHaveBeenCalledWith(path);
+    // Its read of the row and its write's variant check each ask about the path: two calls, so a read that skipped
+    // the check would leave one.
+    expect(differs.mock.calls.filter(([p]) => p === path)).toHaveLength(2);
     differs.mockClear();
     await registry.delete(ref, next.token);
     expect(differs).toHaveBeenCalledWith(path);
@@ -317,7 +319,10 @@ describe('LocalFs registry list(): the exact-case check', () => {
     const real = registryRowPath(root, { namespace: 'ns', segment: 'a:b' });
     const dir = dirname(real);
     const body = await readFile(real);
-    // Non-canonical spellings of the same names: not written by the driver, so never listed.
+    // Names that are not the driver's own spelling of any segment (an escape in lower case, a suffix in upper case)
+    // are never listed. `x%3a.reg` and `y%3A.REG` are files of their own on any filesystem, so they prove it
+    // everywhere; on a case-insensitive filesystem `a%3ab.reg` is the real row's own file, so it adds a case only
+    // where case matters (Linux, so CI).
     await writeFile(join(dir, 'x%3a.reg'), body);
     await writeFile(join(dir, 'a%3ab.reg'), body);
     await writeFile(join(dir, 'y%3A.REG'), body);
