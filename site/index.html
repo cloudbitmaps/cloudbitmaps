@@ -547,10 +547,10 @@
               A ∩ B without downloading A or B
             </h2>
             <p class="lede">
-              Intersecting two 2,000,000-id segments does not request or decode the 1,900 chunks per segment outside the shared 100. Chunk keys are
+              Intersecting two 2,000,000-id segments never requests by key, or decodes, the 1,900 chunks per segment outside the shared 100. Chunk keys are
               compared first, and only chunks whose keys appear in <strong>both</strong> are ever
-              requested — 100 of 2,000, in 29.1 ms on the in-memory drivers. The other 1,900 are never
-              requested by key: each object&rsquo;s one opening read takes its last 256&nbsp;KiB, where the keys are kept.
+              requested by key — 100 of 2,000, in 29.1 ms on the in-memory drivers. The other 1,900 are never
+              requested by key: each object&rsquo;s one opening read takes its last 256&nbsp;KiB (the default), where its index of keys sits.
             </p>
             <figure class="keys">
               <div class="label">Chunk keys · shared only</div>

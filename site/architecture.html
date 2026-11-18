@@ -98,7 +98,7 @@
               <strong>remainder</strong>. The key is metadata, the remainder is payload, and the two live apart
               — which is the whole trick. Intersecting two 2,000,000-id segments compares keys first and
               requests only the <strong>100 shared chunks of 2,000</strong>. The other 1,900 are never
-              requested by key: each object&rsquo;s one opening read takes its last 256&nbsp;KiB, where the keys are kept.
+              requested by key: each object&rsquo;s one opening read takes its last 256&nbsp;KiB (the default), where its index of keys sits.
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="demo.html">Step through a measured run →</a>
