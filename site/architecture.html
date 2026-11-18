@@ -97,8 +97,8 @@
               Every id splits into a 16-bit <strong>chunk key</strong> and a 16-bit
               <strong>remainder</strong>. The key is metadata, the remainder is payload, and the two live apart
               — which is the whole trick. Intersecting two 2,000,000-id segments compares keys first and
-              fetches only the <strong>100 shared chunks of 2,000</strong>. The other 1,900 are never
-              requested and never billed.
+              requests only the <strong>100 shared chunks of 2,000</strong>. The other 1,900 are never
+              requested by key: each object&rsquo;s one opening read takes its last 256&nbsp;KiB, where the keys are kept.
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="demo.html">Step through a measured run →</a>
