@@ -78,9 +78,7 @@ so, and so do the module headers in the code.
 
 - **LocalFs lists registry rows faster on a case-insensitive filesystem.** `list()` checked the exact case of every row
   it read from a directory listing, which on macOS and Windows resolved two real paths per row, although a name that came
-  out of the listing is the name as stored and cannot differ by case. It now skips that check for listed rows and
-  resolves the root's real path once per store instead of on every check, which also halves the cost for a name a caller
-  supplies. The case check still applies to every name a caller supplies (`get`, `create`, `update`, `delete`, and a
+  out of the listing is the name as stored and cannot differ by case. It now skips that check for listed rows. The case check still applies to every name a caller supplies (`get`, `create`, `update`, `delete`, and a
   namespace given to `list`), so a case variant reads as absent or is refused exactly as before. A case-sensitive
   filesystem is unchanged.
 

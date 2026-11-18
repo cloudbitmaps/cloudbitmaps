@@ -204,8 +204,11 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         const segment = parseRegistryRow(entry.name);
         if (segment === null) continue;
         const ref = { namespace: ns, segment };
-        // The name came out of the directory listing, so it is the name as stored: the exact-case check, which
-        // resolves real paths per row, cannot find a difference and is skipped.
+        // The name came out of the directory listing, so it is the name as stored, and parseRegistryRow refused any
+        // name that does not re-encode exactly (case included: `%3a` against `%3A`), so the path rebuilt here names
+        // that same file in its stored case. The per-row exact-case check, which resolves real paths, therefore
+        // cannot find a difference and is skipped; the namespace directory above is still checked. Loosening the
+        // parser would make this skip unsafe.
         const env = await this.readRow(registryRowPath(this.root, ref), ref, true);
         if (env && !env.deleted) yield env.record;
       }

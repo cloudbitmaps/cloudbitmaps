@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve, sep, win32 } from 'node:path';
+import { dirname, join, resolve, sep, win32 } from 'node:path';
 import { CloudRoaring, LocalFsStorage, ValidationError } from '@/index';
 import { ExactCase, firstCaseDifference, isOutside } from '@/drivers/localfs/exact-case';
+import { registryRowPath } from '@/drivers/localfs/paths';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
@@ -268,6 +269,7 @@ describe('a case-folding root emulated with symlinks: names that begin with two 
   });
 });
 
+// Runs on every filesystem, case-sensitive or not.
 describe('LocalFs registry list(): the exact-case check', () => {
   let root: string;
   beforeEach(async () => {
@@ -293,13 +295,34 @@ describe('LocalFs registry list(): the exact-case check', () => {
     expect(differs).toHaveBeenCalledTimes(1);
   });
 
-  it('a root that did not exist at the first call is resolved again once it does', async () => {
-    const later = join(root, 'later');
-    const exact = new ExactCase(later);
-    expect(await exact.differs(join(later, 'x'))).toBe(false);
-    await mkdir(later);
-    await writeFile(join(later, 'x'), 'x');
-    expect(await exact.differs(join(later, 'x'))).toBe(false);
-    expect(await exact.differs(join(later, 'x'))).toBe(false);
+  it('get(), update() and delete() each check the row path they are given', async () => {
+    const registry = new LocalFsRegistryDriver(root);
+    const ref = { namespace: 'ns', segment: 'Seg0' };
+    const { token } = await registry.create(ref, { currentGen: 0 });
+    const path = registryRowPath(root, ref);
+    const differs = vi.spyOn(ExactCase.prototype, 'differs');
+    await registry.get(ref);
+    expect(differs).toHaveBeenCalledWith(path);
+    differs.mockClear();
+    const next = await registry.compareAndSwap(ref, token, { currentGen: 1 });
+    expect(differs).toHaveBeenCalledWith(path);
+    differs.mockClear();
+    await registry.delete(ref, next.token);
+    expect(differs).toHaveBeenCalledWith(path);
+  });
+
+  it('list() returns only the rows the driver wrote, whatever else is planted beside them', async () => {
+    const registry = new LocalFsRegistryDriver(root);
+    await registry.create({ namespace: 'ns', segment: 'a:b' }, { currentGen: 0 });
+    const real = registryRowPath(root, { namespace: 'ns', segment: 'a:b' });
+    const dir = dirname(real);
+    const body = await readFile(real);
+    // Non-canonical spellings of the same names: not written by the driver, so never listed.
+    await writeFile(join(dir, 'x%3a.reg'), body);
+    await writeFile(join(dir, 'a%3ab.reg'), body);
+    await writeFile(join(dir, 'y%3A.REG'), body);
+    const seen: string[] = [];
+    for await (const row of registry.list('ns')) seen.push(row.segment);
+    expect(seen).toEqual(['a:b']);
   });
 });

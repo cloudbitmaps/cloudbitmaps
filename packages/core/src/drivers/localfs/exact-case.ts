@@ -119,24 +119,6 @@ export class ExactCase {
     }
   }
 
-  /**
-   * The root's real path, resolved once per instance: the root does not move under a running store, so the answer
-   * is kept (as a promise, so concurrent calls share one lookup). A root that cannot be resolved yet (absent) is
-   * not kept and is looked at again on the next call.
-   */
-  private realRootPromise: Promise<string | undefined> | undefined;
-
-  private realRoot(rootAbs: string): Promise<string | undefined> {
-    this.realRootPromise ??= realpath(rootAbs).then(
-      (real) => real,
-      () => {
-        this.realRootPromise = undefined;
-        return undefined;
-      },
-    );
-    return this.realRootPromise;
-  }
-
   /** Whether the root's filesystem folds case: names that differ only by case are one file there. */
   folds(): Promise<boolean> {
     return this.foldsCase();
@@ -164,8 +146,12 @@ export class ExactCase {
         probe = dirname(probe);
       }
     }
-    const realRoot = await this.realRoot(rootAbs);
-    if (realRoot === undefined) return false;
+    let realRoot: string;
+    try {
+      realRoot = await realpath(rootAbs);
+    } catch {
+      return false;
+    }
     const actual = relative(realRoot, real);
     // Outside the root once symlinks are resolved: a symlinked directory is outside this model, as the root is.
     if (isOutside(actual)) return false;
