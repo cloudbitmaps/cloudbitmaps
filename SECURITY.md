@@ -250,10 +250,7 @@ tooling, which the gate's production scope leaves out, and two (`uuid`, medium, 
 driver's cloud SDK, at a severity below **high**. CI stayed green, as the gate intends. They still generated alerts, and
 "below the bar" is not the same as "fine", so they are **fixed rather than accepted**: `package.json` →
 `pnpm.overrides` forces each to a patched version, pinned inside its current major so an override never
-smuggles in a breaking change. An override holds this workspace's lockfile, and so what this repository's tests and
-tools run on; it reaches no application, and the Lambda layer carries no driver SDK. An application that installs a
-driver resolves the SDK's own range, so for the two rows under an SDK the fix there is a fresh resolution of the
-application's own lockfile, which the SDK's range allows.
+smuggles in a breaking change.
 
 | forced | reached us via | note |
 | --- | --- | --- |
@@ -272,8 +269,9 @@ only meaningful while something in the tree actually resolves to it. Every row a
 package in `pnpm-lock.yaml` — `tests/docs/override-hygiene.test.ts` fails the build otherwise, because an
 override matching nothing cannot be tested by any suite and quietly becomes a claim about a package that is not
 here. Each was verified against the full `pnpm test:integration` suite (against the real backends in
-containers — MinIO, fake-gcs-server and Azurite), which matters most for `uuid` under `@google-cloud/storage`:
-it is the only one on a path the unit suite never exercises.
+containers — MinIO, fake-gcs-server and Azurite), which matters most for the two under a cloud SDK: `uuid` under
+`@google-cloud/storage`, on a path the unit suite never exercises, and `fast-xml-parser`, which the two SDKs use to parse
+the XML responses they read.
 
 `uuid` is deliberately pinned to `^11.1.1` rather than left open: the advisory is fixed at 11.1.1, and an
 unbounded range resolved to 14.x, which is three majors of blast radius for no security benefit.
@@ -282,9 +280,9 @@ unbounded range resolved to 14.x, which is three majors of blast radius for no s
 tree and is not part of any published manifest, so an installed `@cloudbitmaps/*` package resolves by the
 ranges its own manifest declares. What a consumer actually gets is counted **per package** — none for
 `@cloudbitmaps/core` and none for `@cloudbitmaps/tools`, none for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
-(the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). One of the packages above does
-sit under a shipped SDK transitively — `uuid` under `@google-cloud/storage` — at whatever version that SDK
-itself resolves, which is the surface to reason about here, not our pinned one. `undici` is **not** in that
+(the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). Two of the packages above sit under a shipped SDK transitively, `uuid` under `@google-cloud/storage` and
+`fast-xml-parser` under both `@google-cloud/storage` and `@azure/storage-blob` (through `@azure/core-xml`), at whatever
+version that SDK itself resolves, which is the surface to reason about here, not our pinned one. `undici` is **not** in that
 category: it reaches this repo only through the test oracle's `roaring` dev dependency and its `node-gyp`, and never
 through a package a consumer installs.
 
@@ -294,8 +292,15 @@ path `@cloudbitmaps/gcs` → `@google-cloud/storage` → `gaxios` → `uuid@9`. 
 `uuid`'s `v3`, `v5` and `v6` when the caller passes a buffer to fill. `gaxios` calls `uuid.v4()` with no buffer
 argument, to make a multipart boundary, so the flaw is not reachable here. The finding clears when the upstream SDK moves
 to a `gaxios` that no longer depends on that `uuid`; a consumer that gates on `npm audit` can add
-`"overrides": { "uuid": "^11.1.1" }` to its own manifest in the meantime. No other `@cloudbitmaps` package, and no
-other SDK it installs, shows a finding.
+`"overrides": { "uuid": "^11.1.1" }` to its own manifest in the meantime.
+
+**A consumer whose lockfile holds `fast-xml-parser` 5.11.2 or earlier also sees a low finding** through
+`@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob`
+([GHSA-474x-hrwr-fgx4](https://github.com/advisories/GHSA-474x-hrwr-fgx4)): quadratic CPU when the parser scans an
+unterminated stop-node tag. The input it parses is an XML response from the storage service, so reaching it takes a service, or an
+endpoint the application was pointed at, that answers with crafted XML. Both SDKs' ranges (`^5.3.4` and `^5.5.9`)
+allow 5.12.0, the patched version, so a fresh resolution of the consumer's lockfile clears it. No other `@cloudbitmaps`
+package, and no other SDK it installs, shows a finding.
 
 ### Triaged (accepted) advisories
 
