@@ -91,6 +91,29 @@ function rssMiB() {
 function gc() {
   if (typeof global.gc === 'function') global.gc();
 }
+/**
+ * Force collections until the heap has stopped moving, and report how many it took. A single collection can read a
+ * figure in one of two modes about 1.2 MiB apart on identical code: V8 ages unused compiled bytecode over successive
+ * major collections and flushes it, so a reading taken before the flush includes code the run no longer uses. Running
+ * at least SETTLE_MIN collections lets that ageing finish; after that it stops once two consecutive readings differ
+ * by less than SETTLE_EPS_BYTES, and gives up at SETTLE_MAX.
+ */
+const SETTLE_MIN = 8;
+const SETTLE_MAX = 40;
+const SETTLE_EPS_BYTES = 16 * 1024;
+function settledHeapUsed() {
+  let prev = Infinity;
+  let used = process.memoryUsage().heapUsed;
+  let collections = 0;
+  while (collections < SETTLE_MAX) {
+    gc();
+    collections++;
+    used = process.memoryUsage().heapUsed;
+    if (collections >= SETTLE_MIN && Math.abs(prev - used) < SETTLE_EPS_BYTES) break;
+    prev = used;
+  }
+  return { heapUsed: used, collections };
+}
 async function ms(fn) {
   const t = process.hrtime.bigint();
   const out = await fn();
@@ -151,8 +174,8 @@ async function measureFleet(n) {
       }
       rssPeak = Math.max(rssPeak, rssMiB());
     });
-    gc();
-    const heapRetainedMiB = process.memoryUsage().heapUsed / 1024 / 1024;
+    const settled = settledHeapUsed();
+    const heapRetainedMiB = settled.heapUsed / 1024 / 1024;
     const rssAfterGcMiB = rssMiB();
 
     // M2 — fleet-scan cost. Time the one bounded drain of `registry.list()` that every fleet-wide admin pass
@@ -182,7 +205,8 @@ async function measureFleet(n) {
       seedPerSec: round(n / (seed.ms / 1000), 0),
       readAllMs: round(read.ms, 0),
       heapBaselineMiB: round(heapBaselineMiB, 1),
-      heapRetainedMiB: round(heapRetainedMiB, 1), // headline: live memory after GC — the bound proof
+      heapRetainedMiB: round(heapRetainedMiB, 1), // headline: live memory once collections stop changing it — the bound proof
+      heapSettleGcs: settled.collections, // collections that took (this is not rendered into the pages)
       rssPeakMiB: round(rssPeak, 1), // informational high-water (including transient garbage)
       rssAfterGcMiB: round(rssAfterGcMiB, 1),
       cap: CAP,
