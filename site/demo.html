@@ -22,7 +22,7 @@
     <title>CloudBitmaps — a measured intersection, replayed</title>
     <meta
       name="description"
-      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and the range requests carry 403,200 bytes, and the result comes back in 29.1 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and the range requests carry 403,200 bytes, and the result comes back in 27.8 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -97,16 +97,16 @@
         <p class="hero-lede" style="max-width: 74ch">
           Two segments of <strong>2,000,000 ids</strong> each. Intersecting them fetches
           <strong>100 chunks</strong> of each and returns <strong>100,000 ids</strong> in
-          <strong>29.1 ms</strong> on the in-memory drivers — because keys are compared before any chunk is
+          <strong>27.8 ms</strong> on the in-memory drivers — because keys are compared before any chunk is
           requested, and <strong>3,800</strong> chunk reads simply never happen. The range requests carried
           <strong>403,200 bytes</strong>, about 5% of the 8.1 MB the two stored objects hold (derived). That is a floor: each
           reader's first read, the last 256 KiB of its object, is not in that count, and with those two reads about
           927,488 bytes were read, about 11% (derived). All of it is from this in-memory run.
         </p>
         <p class="note" style="max-width: 78ch">
-          Every measured number on this page comes from one recorded run of
-          <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository (Apple M3 Pro, Node v24.22.1, commit c76241dd, 2026-11-14, 1-minute load
-          2.0 at the start and 6.6 at the end); the rest is
+          Every measured number on this page comes from one recorded run of the benchmark
+          <span class="m">SCALE_INJECT=1 pnpm bench:scale</span> runs after its build, checked into the repository (Apple M3 Pro, Node v24.22.1, commit df765485, 2026-11-18, 1-minute load
+          2.1 at the start and 2.4 at the end); the rest is
           arithmetic on that run or on the format, and the panels below say which is which. Nothing here is
           simulated, and nothing is computed live — this is a replay, and it says so because the distinction
           is the point.
@@ -361,7 +361,7 @@
               </p>
             </article>
             <article class="beat" data-beat="3">
-              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 29.1 ms</p>
+              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 27.8 ms</p>
               <p>
                 One hundred shared keys times 1,000 ids per key is 100,000 ids — and 100,000 is what the run
                 reported. The result is <em>derivable from the setup</em> as well as observed, which is the
@@ -433,7 +433,7 @@
                   </tr>
                   <tr>
                     <td>Wall time</td>
-                    <td class="num">29.1 ms</td>
+                    <td class="num">27.8 ms</td>
                     <td class="from">timer around the drained stream</td>
                   </tr>
                   <tr>
@@ -530,7 +530,7 @@
           <div class="limit">
             <p class="label">Memory drivers, not S3</p>
             <p>
-              29.1 ms is compute, not cloud latency. It is the right number for
+              27.8 ms is compute, not cloud latency. It is the right number for
               <em>how many</em> requests happen and the wrong one for how long they take — the
               <a href="benchmarks.html">benchmarks</a> carry the real-backend costs, and the rate past which a flat
               tier is cheaper.
