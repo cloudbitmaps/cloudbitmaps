@@ -95,7 +95,7 @@ const stagesLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-multi-stages.cj
   refuseOtherKnobsUnderMulti: (env: Record<string, string | undefined>, others: string[]) => void;
 };
 const countsLib = require_(join(ROOT, 'bench', 'lib', 'multi-counts.cjs')) as {
-  countMulti: (i: { engine: unknown }) => Promise<Counts>;
+  countMulti: (i: { engine: unknown; pools?: string[] }) => Promise<Counts>;
 };
 const runner = require_(join(ROOT, 'bench', 'lib', 'calibrate-multi.cjs')) as {
   runMultiSuite: (ctx: Record<string, unknown>) => Promise<void>;
@@ -562,6 +562,12 @@ describe('the counts, taken from the real engine in memory', () => {
       /the engine's intersect returned/,
     );
   }, 300_000);
+
+  it('refuse a pool the suite does not plan, before counting anything', async () => {
+    await expect(countsLib.countMulti({ engine, pools: ['a', 'nope'] })).rejects.toThrow(
+      /countMulti: no pool nope in the multi suite \(a, b, c5, c50, d\)/,
+    );
+  });
 
   it('feed a projection whose bound the ceiling covers, whose count is the exact expected', async () => {
     const counts = await getCounts();
