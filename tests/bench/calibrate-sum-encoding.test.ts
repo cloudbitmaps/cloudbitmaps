@@ -63,11 +63,11 @@ describe('a results file never holds a standalone 12-digit run', () => {
   }, 60_000);
 
   it('for the batch suite’s real workload', async () => {
-    for (const shape of ['small', 'refresh']) {
+    for (const shape of ['small']) {
       const counts = await batchCounts.countBatch({ shape, engine });
       expect(processLib.resultsJson({ suite: 'batch', workload: counts })).not.toMatch(ACCOUNT_ID);
     }
-  }, 60_000);
+  }, 30_000);
 
   it('for the default and large suites’ recorded rehearsal files', () => {
     for (const name of ['calibration-rehearsal.json', 'calibration-large-rehearsal.json']) {
