@@ -89,7 +89,11 @@ a dollar for a cost. A ratio's binary tail runs to 17 digits, and one of exactly
 A `sum` field (the checksum of the ids a layout holds, in the multi suite's workload) is a whole number of any length, and
 a bare one of exactly 12 digits would be refused the same way, so it is written as a string of digits grouped by `_` every
 three from the right (`"122_497_550_000"`, `"9_000"`, `"0"`), whatever its size; `groupSum` writes it and `parseSum`, in
-`lib/calibrate-guards.cjs`, is the only reader, refusing a JSON number or any other form.
+`lib/calibrate-guards.cjs`, is the only reader, refusing a JSON number or any other form. A `sum` that is not a whole
+number (none is written today) is written like any other number. If the results still hold a standalone 12-digit run
+anywhere, the file is written all the same, since the run has been paid for, and the run prints `calibrate: WARNING: the
+results hold a standalone 12-digit run at <path>. The file is still written, but pnpm leak-scan will refuse it …`: such a
+file cannot be committed as it is.
 
 ## How a pass records its tree, and where a bench keeps its temp files
 
