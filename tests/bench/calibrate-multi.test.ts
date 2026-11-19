@@ -95,7 +95,7 @@ const stagesLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-multi-stages.cj
   refuseOtherKnobsUnderMulti: (env: Record<string, string | undefined>, others: string[]) => void;
 };
 const countsLib = require_(join(ROOT, 'bench', 'lib', 'multi-counts.cjs')) as {
-  countMulti: (i: { engine: unknown }) => Promise<Counts>;
+  countMulti: (i: { engine: unknown; pools?: string[] }) => Promise<Counts>;
 };
 const runner = require_(join(ROOT, 'bench', 'lib', 'calibrate-multi.cjs')) as {
   runMultiSuite: (ctx: Record<string, unknown>) => Promise<void>;
@@ -562,6 +562,26 @@ describe('the counts, taken from the real engine in memory', () => {
       /the engine's intersect returned/,
     );
   }, 300_000);
+
+  it('refuse a pool the suite does not plan, an empty list and anything but a list, before counting anything', async () => {
+    // An engine that throws when touched: a refusal that came after any counting would surface its error instead.
+    const untouched = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('the engine was used');
+        },
+      },
+    );
+    await expect(countsLib.countMulti({ engine: untouched, pools: ['a', 'nope'] })).rejects.toThrow(
+      /countMulti: no pool nope in the multi suite \(a, b, c5, c50, d\)/,
+    );
+    for (const pools of [[], null, 'a', 5, {}] as unknown[]) {
+      await expect(
+        countsLib.countMulti({ engine: untouched, pools: pools as string[] }),
+      ).rejects.toThrow(/countMulti: pools must be a non-empty list of the multi suite's pools/);
+    }
+  });
 
   it('feed a projection whose bound the ceiling covers, whose count is the exact expected', async () => {
     const counts = await getCounts();

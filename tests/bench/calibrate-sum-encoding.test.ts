@@ -27,7 +27,10 @@ const processLib = require_(lib('calibrate-process.cjs')) as {
   accountIdPaths: (text: string) => string[];
 };
 const countsLib = require_(lib('multi-counts.cjs')) as {
-  countMulti: (i: { engine: unknown }) => Promise<{ pools: unknown[]; shapes: unknown[] }>;
+  countMulti: (i: {
+    engine: unknown;
+    pools?: string[];
+  }) => Promise<{ pools: unknown[]; shapes: { pool: string }[] }>;
 };
 const batchCounts = require_(lib('batch-counts.cjs')) as {
   countBatch: (i: { shape: string; engine: unknown }) => Promise<unknown>;
@@ -35,11 +38,10 @@ const batchCounts = require_(lib('batch-counts.cjs')) as {
 const evidenceLib = require_(lib('multi-evidence.cjs')) as {
   multiRunProblems: (run: unknown, o?: { rehearsal?: boolean }) => string[];
 };
-const planMultiPool = (
-  require_(lib('calibrate-multi-stages.cjs')) as {
-    planMultiPool: (n: string) => { expected: { count: number; sum: number } };
-  }
-).planMultiPool;
+const { planMultiPool, MULTI_POOLS } = require_(lib('calibrate-multi-stages.cjs')) as {
+  planMultiPool: (n: string) => { expected: { count: number; sum: number } };
+  MULTI_POOLS: Record<string, unknown>;
+};
 const engine = { CloudRoaring, MemoryStorage };
 
 describe('the detector', () => {
@@ -58,24 +60,34 @@ describe('the detector', () => {
 });
 
 describe('a results file never holds a standalone 12-digit run', () => {
-  // Budget 16 s (the default is 5 s): the multi suite's whole workload is counted in memory. Measured: 3.4 s on node 24
-  // and 5.1 s on node 22 in CI. Rule: the slowest measured time x 3, rounded up.
+  // Only the pools whose planned checksum is twelve digits are counted. `countMulti` refuses a read whose sum differs from
+  // the plan, so the planned sums are every checksum a multi file holds, and the other pools' cannot make the run the scan
+  // refuses. Counting every pool (operands of up to 5,000,000 ids) took up to 6.0 s on the pull request's CI runs and 9.7 s
+  // on main's; this one pool takes 0.4 s locally, so it runs under vitest's 5 s default, and the budget check names it
+  // once it reaches 35 % of that.
   it('for the multi suite’s real workload, whose layouts include a 12-digit sum', async () => {
-    const { pools, shapes } = await countsLib.countMulti({ engine });
+    const twelve = Object.keys(MULTI_POOLS).filter(
+      (n) => String(planMultiPool(n).expected.sum).length === 12,
+    );
+    expect(twelve.length).toBeGreaterThan(0);
+    const { pools, shapes } = await countsLib.countMulti({ engine, pools: twelve });
+    expect(pools).toHaveLength(twelve.length);
+    expect(shapes.length).toBeGreaterThan(0);
+    expect(shapes.every((s) => twelve.includes(s.pool))).toBe(true);
     const workload = { reads: 1, pools, shapes };
     // The control: the workload does hold a twelve-digit sum, so a bare number would have failed the scan.
     expect(ACCOUNT_ID.test(JSON.stringify(workload))).toBe(true);
     const text = processLib.resultsJson({ suite: 'multi', workload });
     expect(text).not.toMatch(ACCOUNT_ID);
     expect(text).toMatch(/"sum": "\d{1,3}(_\d{3})*"/);
-  }, 16_000);
+  });
 
-  // Budget 6 s (the default is 5 s): the small batch shape is counted in memory. Measured: 1.6 s on node 24 and 2.0 s on
-  // node 22 in CI. Rule: the slowest measured time x 3, rounded up.
+  // Budget 9 s (the default is 5 s): the small batch shape is counted in memory. The slowest time CI has measured is 2.84 s,
+  // on node 22. Rule: the slowest measured time x 3, rounded up.
   it('for the batch suite’s real workload', async () => {
     const counts = await batchCounts.countBatch({ shape: 'small', engine });
     expect(processLib.resultsJson({ suite: 'batch', workload: counts })).not.toMatch(ACCOUNT_ID);
-  }, 6_000);
+  }, 9_000);
 
   // These two recorded files hold no checksum (the large suite writes none), so they guard the older rounding of ratios.
   it('for the default and large suites’ recorded rehearsal files', () => {
