@@ -45,9 +45,9 @@ so, and so do the module headers in the code.
   that count; the evidence's gate refuses a new file without them and reads their absence in the two committed files as
   not passed. The page's section on the latest run at the defaults stays on a run that passed nothing, a run at another
   value gets a section of its own, and the figures gate no longer fixes the number of runs or calls. The library's default
-  is unchanged, and no run at another value has been made: the option exists and is unmeasured. For a comparison, run the
-  defaults and the other value in one CloudShell session, since latencies of runs from different sessions are not
-  comparable. No library code, package or version changes.
+  is unchanged. The first run at another value is `2026-11-19-86991` (`publishConcurrency` 64), recorded in the benchmarks
+  page's section on it. For a comparison, run the defaults and the other value in one CloudShell session, since latencies
+  of runs from different sessions are not comparable. No library code, package or version changes.
 - **The calibration harness has a batch suite, so `store.materializeMany` can be measured on S3.** `--suite batch` (or
   `CR_CALIBRATE_SUITE=batch`) loads the refresh shape of `bench/materialize-many-counts.cjs` (100 operands of 200,000 ids)
   and runs one cold `materializeMany` of its 1,000 outputs three times, each sample onto destinations of its own that
@@ -85,13 +85,17 @@ so, and so do the module headers in the code.
   in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests, then 1,000 GET-class to read them back, as before. One
   sample was discarded after a transient S3 fault (a timed-out connection, `ECONNRESET`) and run again by the harness on a fresh store;
   its 1,916 PUT-class and 4,294 GET-class requests are in the stage, which made 7,916 PUT-class and 20,641 GET-class, and in the
-  bill, $0.0490608. The median call took 46,971 ms (95th percentile 51,368 ms, 3 calls, 21.29 outputs a second), against 53,192 ms in
-  `2026-11-08-b12e6` and 64,034 ms in `2026-11-03-78516`, whose sessions are not this one's, so no latency is set against another
-  across sessions. The median call averaged 4.92 requests in flight (5.11 and 4.63 in the earlier runs) and peaked at 49 against the
-  client's 128 sockets, which fits a call that publishes 8 outputs at a time (an inference from the defaults). `peakRssMB` was 724 to
+  bill, $0.0490608. The median call took 46,971 ms (95th percentile 51,368 ms, 3 calls, 21.29 outputs a second); the discarded attempt is in no
+  latency figure, and the re-run of its sample, 51,368 ms, was the slowest kept call. The two earlier runs, `2026-11-08-b12e6` and `2026-11-03-78516`, are from other sessions, with medians of 53,192 ms and
+  64,034 ms, which are context and not a comparison: no latency is set against another across sessions. The median call averaged 4.92 requests in
+  flight (5.11 and 4.63 in the earlier runs) and peaked at 49 against the client's 128 sockets, which fits a call that publishes
+  8 outputs at a time (an inference from the defaults, which the run at 64 below weakly counts against). `peakRssMB` was 724 to
   754 MiB across the three defaults runs. `2026-11-19-86991`, with `publishConcurrency` 64, ran in 9 groups with 2,000 PUT-class and
   4,617 GET-class requests a call, stages of 6,000 PUT-class and 16,851 GET-class, a bill of $0.0379448 and a median call of 47,208 ms
-  (21.18 outputs a second), which peaked at 106 requests in flight and averaged 22.60. From one session, one run of three calls each,
+  (21.18 outputs a second), which peaked at 105 requests in flight and averaged 23.85 (the three calls' peaks were 105, 106 and 106,
+  against 49 in each call at the defaults): about twice the peak and about 4.8 times the mean at the same median time, one run of
+  three calls each from one session, which is weak evidence against the inference above and no more. The 9 groups and the extra
+  GET-class requests are what the engine plans for that setting, computed in memory before the run. From one session, one run of three calls each,
   the two medians differ by less than either run's own spread of three calls, so no call at 64 is claimed faster or slower than one
   at 8, and no default is chosen here. This is a first materialization onto new destinations: the guide's refresh figures (3,732
   GET-class, 1,768 PUT-class, 6 groups, onto destinations that already hold a generation) are counted in memory and still not

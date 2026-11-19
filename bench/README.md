@@ -603,9 +603,10 @@ sample records `peakInFlight` and `meanInFlight` (the call's own peak requests i
 over its wall time) and `noObjectReads`, its GET-class requests that returned no object (a HEAD, a read that found nothing,
 the earlier attempt of a retried one), which the meter files under no kind of read: a sample's `get` is `rangeReads +
 tailReads + pointerReads + noObjectReads`. `lib/batch-evidence.cjs` refuses a new run's file that lacks them, and reads their
-absence in the two committed files, written before the fields existed, as "not passed". One run at 64, made in the same session as a run at the defaults, has been made (the calls' medians, 47,208 ms against 46,971 ms, differ by less than either run's own spread of three calls, so it does not say what
-`publishConcurrency` does to the time of the call; it measured more requests in flight at 64). That the default of 8 publishes at a time sets the pace is
-an **inference** from the in-flight figures, and a run at another value is how it is checked.
+absence in the two committed files, written before the fields existed, as "not passed". One run at 64 has been made, in the same session as a run at the defaults. The calls' medians, 47,208 ms against 46,971 ms, differ by less than either run's own spread of three calls, so it does not say what
+`publishConcurrency` does to the time of the call.
+It measured more requests in flight at 64: a peak of 105 against 49 and a mean of 23.85 against 4.92 for the median-time calls, one run of three calls each from one session.
+That the default of 8 publishes at a time sets the pace is an **inference** from the in-flight figures at 8, and that run is weak evidence against it (about twice the peak and about 4.8 times the mean at the same median time), not a test of it.
 
 **Comparing `publishConcurrency` values.** Latencies of runs from different CloudShell sessions are not comparable, so a
 comparison needs both runs **in one CloudShell session**: the defaults first, then the other value, each with a log of its
@@ -807,7 +808,9 @@ The default suite's scope is the three measurements above, on one workload shape
 - **Lambda.** CloudShell is a long-lived shell inside the region; a function's cold start and initialisation are
   a separate figure, which needs a run from inside a function.
 - **Another `publishConcurrency` on S3.** One run at another value has been made, `publishConcurrency` 64, in the same CloudShell session as a
-  run at the defaults: three calls each, whose medians the runs' own spreads do not separate. Any other value, and a second session at 64, are not measured.
+  run at the defaults.
+  It was three calls each, and the runs' own spreads do not separate the medians.
+  Any other value, and a second session at 64, are not measured.
 - **A steady load at another `keep`.** The steady-load stage runs at `keep: 12`, with a first load, 12 reloads, 4 loads that
   delete by name and one that lists; the requests at a `keep` of 1 or 64, of a multipart or an encrypted segment, are not measured.
 

@@ -59,6 +59,9 @@ const DIR = join(ROOT, 'bench', 'calibration', 'batch');
 
 interface Sample {
   ms: number;
+  /** Recorded by the runs from 2026-11-19 on; the earlier files lack it. */
+  peakInFlight: number;
+  meanInFlight: number;
   groups: number;
   published: number;
   put: number;
@@ -162,7 +165,10 @@ const mib = (n: number): string => fmt(n);
 const unfiled = (x: Sample): number => x.get - x.rangeReads - x.tailReads - x.pointerReads;
 const day = (e: Evidence): string => e.startedAt.slice(0, 10);
 const inFlight = (e: Evidence): string =>
-  `median call peaked at ${e.phases.batch.medianPeakInFlight} requests in flight and averaged ${e.phases.batch.medianMeanInFlight.toFixed(2)}`;
+  `median of the three calls' peaks in flight was ${e.phases.batch.medianPeakInFlight} and of their means ${e.phases.batch.medianMeanInFlight.toFixed(2)}`;
+/** Each call's own peak and mean in flight, in order. */
+const inFlightEach = (e: Evidence): string =>
+  `the calls' peaks were ${list(e.phases.batch.perSample.map((x) => x.peakInFlight))} and their means ${list(e.phases.batch.perSample.map((x) => x.meanInFlight.toFixed(2)))}`;
 
 /** The stated numbers (by unit) that are not in `known`. */
 function stray(text: string, unitPattern: string, known: Set<string>): string[] {
@@ -172,7 +178,12 @@ function stray(text: string, unitPattern: string, known: Set<string>): string[] 
   return stated.filter((n) => !known.has(n));
 }
 /** Every request count, byte count and millisecond figure a run records. */
-function known(es: Evidence[]): { ms: Set<string>; counts: Set<string>; mib: Set<string> } {
+function known(es: Evidence[]): {
+  ms: Set<string>;
+  counts: Set<string>;
+  discarded: Set<string>;
+  mib: Set<string>;
+} {
   const refresh = (
     JSON.parse(readFileSync(join(ROOT, 'bench', 'materialize-many-counts.json'), 'utf8')) as {
       shapes: { refresh: { batch: { getClass: number; putClass: number } } };
@@ -182,6 +193,8 @@ function known(es: Evidence[]): { ms: Set<string>; counts: Set<string>; mib: Set
   // The refresh call's counted figures stay on the page, named as counted and not measured.
   const counts = new Set<string>([fmt(refresh.getClass), fmt(refresh.putClass)]);
   const mibs = new Set<string>();
+  // A discarded sample's requests are in the file, and only a sentence about the discard may state them.
+  const discarded = new Set<string>();
   for (const e of es) {
     const b = e.phases.batch;
     for (const n of [b.p50ms, b.p95ms, ...b.perSample.map((x) => x.ms)]) ms.add(fmt(n));
@@ -198,10 +211,9 @@ function known(es: Evidence[]): { ms: Set<string>; counts: Set<string>; mib: Set
     ]) {
       counts.add(fmt(n));
     }
-    // A discarded sample's requests are in the file, and a page may state them as the discarded attempt's.
     for (const d of b.discarded ?? []) {
-      counts.add(fmt(d.requests.put));
-      counts.add(fmt(d.requests.get));
+      discarded.add(fmt(d.requests.put));
+      discarded.add(fmt(d.requests.get));
     }
     for (const x of b.perSample) {
       for (const n of [
@@ -222,7 +234,25 @@ function known(es: Evidence[]): { ms: Set<string>; counts: Set<string>; mib: Set
       }
     }
   }
-  return { ms, counts, mib: mibs };
+  return { ms, counts, discarded, mib: mibs };
+}
+/**
+ * The sentences of flattened text: split after a full stop that ends a word and before a capital, and between table rows.
+ * A decimal point has no space after it, so a figure such as 21.29 does not split a sentence.
+ */
+const sentencesOf = (text: string): string[] =>
+  text.split(/(?<=[a-z0-9)`*])\.\s+(?=[A-Z`*(])|\s\|\s\|\s/);
+/** Whether a sentence says something was discarded. */
+const aboutDiscard = (sentence: string): boolean => /\bdiscard/i.test(sentence);
+/**
+ * The request and byte counts stated that no run recorded. A discarded attempt's own request counts count as recorded only
+ * in a sentence that says it was discarded, so a sentence on the kept samples cannot state them.
+ */
+function strayCounts(text: string, k: ReturnType<typeof known>): string[] {
+  const withDiscard = new Set([...k.counts, ...k.discarded]);
+  return sentencesOf(text).flatMap((sentence) =>
+    stray(sentence, COUNT_UNITS, aboutDiscard(sentence) ? withDiscard : k.counts),
+  );
 }
 const refreshFigures = (): string => {
   const r = (
@@ -270,6 +300,7 @@ function figures(e: Evidence): string[] {
     `with ${b.n} calls`,
     // The median of the calls' peaks and of their means: the evidence records no maximum for the run.
     inFlight(e),
+    inFlightEach(e),
     `${fmt(e.resources.memoryMB)} MiB`,
     e.network.rttFloorMs.toFixed(2),
     `${e.resources.cpus} CPUs`,
@@ -343,9 +374,22 @@ describe('the batch suite figures', () => {
   });
 
   it('every request count and byte count the section states is one a run recorded', () => {
-    const k = known(defaultRuns).counts;
-    const bad = stray(section, COUNT_UNITS, k);
+    const bad = strayCounts(section, known(defaultRuns));
     expect(bad, `counts no run recorded: ${bad.join(', ')}`).toEqual([]);
+  });
+
+  it("a run that discarded a sample states the discarded attempt's requests, in a sentence that says it was discarded", () => {
+    for (const e of runs) {
+      const text = sectionOf(e).text;
+      for (const d of e.phases.batch.discarded ?? []) {
+        const phrase = `${fmt(d.requests.put)} PUT-class and ${fmt(d.requests.get)} GET-class`;
+        const sentence = sentencesOf(text).find((x) => aboutDiscard(x) && holds(x, phrase));
+        expect(
+          sentence,
+          `the section of ${e.runId} must state, in a sentence that says it was discarded: ${phrase}`,
+        ).toBeDefined();
+      }
+    }
   });
 
   it("the roadmap's two sentences on the batch requests each state them, as a phrase", () => {
@@ -393,7 +437,7 @@ describe('the batch suite figures', () => {
       const k = known([e]);
       const bad = [
         ...stray(row!, ' ms\\b', k.ms),
-        ...stray(row!, COUNT_UNITS, k.counts),
+        ...strayCounts(row!, k),
         ...stray(row!, ' MiB', k.mib),
         ...[...row!.matchAll(/\$(\d+\.\d+)/g)]
           .map((m) => m[1]!)
@@ -446,8 +490,37 @@ describe('the batch suite figures', () => {
     expect(missing, `the CHANGELOG entry lacks: ${missing.join(' | ')}`).toEqual([]);
     // The entry also names the run at another value, whose figures are in its own file.
     const k = known([...defaultRuns, ...others]);
-    const bad = [...stray(entry, ' ms\\b', k.ms), ...stray(entry, COUNT_UNITS, k.counts)];
+    const bad = [...stray(entry, ' ms\\b', k.ms), ...strayCounts(entry, k)];
     expect(bad, `the CHANGELOG entry states what no run recorded: ${bad.join(', ')}`).toEqual([]);
+    // The entry states each run at another value with that run's own figures, by id and by its peaks in flight.
+    const own = others.flatMap((e) => [
+      e.runId,
+      `${fmt(e.phases.batch.p50ms)} ms`,
+      `${fmt(e.phases.batch.perSample[0]!.get)} GET-class`,
+      `$${e.cost.totalUSD}`,
+      `peaks were ${list(e.phases.batch.perSample.map((x) => x.peakInFlight))}`,
+    ]);
+    const ownMissing = lacking(entry, own);
+    expect(
+      ownMissing,
+      `the CHANGELOG entry lacks the run at another value: ${ownMissing.join(' | ')}`,
+    ).toEqual([]);
+    // A sentence that names exactly one run states only figures that run's own file records. A figure in a
+    // sentence that names no run, or several, is checked against all the runs only (a known limit).
+    const byRun = new Map(runs.map((e) => [e.runId, e]));
+    const misplaced: string[] = [];
+    for (const sentence of sentencesOf(entry)) {
+      const named = [...byRun.keys()].filter((id) => sentence.includes(id));
+      if (named.length !== 1) continue;
+      const mine = known([byRun.get(named[0]!)!]);
+      for (const n of [...stray(sentence, ' ms\\b', mine.ms), ...strayCounts(sentence, mine)]) {
+        misplaced.push(`${n} beside ${named[0]}`);
+      }
+    }
+    expect(
+      misplaced,
+      `the CHANGELOG entry gives a run another run's figure: ${misplaced.join(', ')}`,
+    ).toEqual([]);
   });
 
   it("the defaults section states the library's defaults for the run's version, and no other publishConcurrency or concurrency", () => {

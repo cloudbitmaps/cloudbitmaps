@@ -318,10 +318,10 @@ measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `ma
 `publishConcurrency` 8 and `concurrency` 1. The evidence records the call's settings (`publishConcurrency`,
 `concurrency` and `maxBufferedBytes`, each null when not passed): all three are null, so this run is at the library's defaults.
 
-**One discarded sample.** The first attempt at the first sample failed: `materializeMany output 188 failed: transient S3 fault`, a timed-out
+**One discarded sample.** The discarded attempt, the first at the first sample, failed: `materializeMany output 188 failed: transient S3 fault`, a timed-out
 connection (code `ECONNRESET`, 1 attempt), after about 45 seconds and after 1,916 PUT-class and 4,294
 GET-class requests. A transient fault discards the sample, so the harness ran it again on a fresh store (the run allows 3 such
-discards and a stage 2; this run had 1). The three samples below are the kept ones. The discarded attempt's requests were made
+discards and a stage 2; this run had 1). The discarded attempt is in no latency figure below (the 45 seconds or so it ran before failing is not among the three calls), and the re-run of that sample, 51,368 ms, was the run's slowest kept call. The three samples below are the kept ones. The discarded attempt's requests were made
 and billed, so the stage's total and the run's bill include them, and the stage table says so (**measured**: the evidence's
 `discarded` record).
 
@@ -343,7 +343,7 @@ Of each call's 4,449 GET-class, 722 were range reads (156,515,808 bytes), 100 ta
 that returned an object, 170,019,670 bytes in all (**measured**); the call wrote about 292.4 MB (**measured**). The other 3,000 found
 nothing: the 1,000 new destinations were each read before their publish (two row reads and a size check), and the meter files such
 reads under no kind (**derived**: the 3,000 is the GET-class less the three kinds, and the engine's own count in the evidence,
-1,100 tail reads and 2,627 pointer reads, agrees with that split). The evidence records the run's bill, by request class, at the
+1,100 tail reads and 2,627 pointer reads, agrees with that split, and each sample's recorded `noObjectReads` is 3,000, **measured**). The evidence records the run's bill, by request class, at the
 `aws-us-east-1-ondemand` list prices (`cost` in the file); it covers 8,136 PUT-class and 20,952 GET-class requests, the discarded attempt's included.
 
 **Time and memory.** The three calls took 51,368 ms, 46,971 ms and 42,063 ms: a median of 46,971 ms and, of 3 calls, a
@@ -351,12 +351,12 @@ reads under no kind (**derived**: the 3,000 is the GET-class less the three kind
 slowest). The process's resident-set high-water mark (`peakRssMB`) was 726, 726 and 728 MiB across the samples, with 2,687 MiB
 available (the figure includes the in-memory count made earlier in the same process, so it is not the call's own peak).
 
-**In flight.** The median call peaked at 49 requests in flight and averaged 4.92 (summed request time over wall time,
-**measured**; the evidence records each call's peak only as the median of the three, not the run's maximum), against the client's 128 sockets. That fits a call that publishes 8 outputs at a time; that reading is an
-**inference** from the defaults and the measured figure. The run did not vary the setting. The same session's run at another
+**In flight.** The median of the three calls' peaks in flight was 49 and of their means 4.92 (summed request time over wall time,
+**measured**; the calls' peaks were 49, 49 and 49 and their means 4.80, 4.92 and 5.06, the median-time call's own 49 and 4.92, and the evidence records each call's peak and the run's maximum, 49), against the client's 128 sockets. That fits a call that publishes 8 outputs at a time; that reading is an
+**inference** from the defaults and the measured figure, and the run did not vary the setting. The run at 64 made in the same session is weak evidence against it: at the same median time it peaked at about twice the requests in flight (105 against 49) and averaged about 4.8 times as many (23.85 against 4.92), from one run of three calls each in one session, so the inference is not supported by it, and no default is recommended. The same session's run at another
 value, made straight after this one, has a section of its own, [`2026-11-19-86991`](#many-outputs-from-one-call--run-2026-11-19-86991-publishconcurrency-64), and is compared with this one there, never in this section's figures.
 
-**Against the earlier runs** (**measured**): [`2026-11-08-b12e6`](../bench/calibration/batch/2026-11-08-b12e6.json) made the same
+**Against the earlier runs** (**measured**): [`2026-11-08-b12e6`](../bench/calibration/batch/2026-11-08-b12e6.json), whose own section this one replaced (its full figures are in its evidence file and in the [calibration README's "Runs" table](../bench/calibration/batch/README.md)), made the same
 requests in every kept sample, with no discarded sample, and its median was 53,192 ms (95th percentile 61,032 ms, 18.80 outputs a second,
 `peakRssMB` 724 to 754). [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json) made the same requests and had a median of 64,034 ms
 (95th percentile 68,668 ms, 15.62 outputs a second, `peakRssMB` 740 to 751). Latencies of runs from different CloudShell sessions are not comparable,
@@ -398,14 +398,15 @@ reading the outputs back took 1,000 more GET-class (**measured**, each equal to 
 Of each call's 4,617 GET-class, 840 were range reads (183,587,908 bytes), 100 tail reads (13,232,140 bytes) and 677 pointer reads
 that returned an object, 197,113,449 bytes in all (**measured**); the call wrote about 292.4 MB (**measured**). The other 3,000 found
 nothing (**derived**: the GET-class less the three kinds; the engine's own count in the evidence, 1,100 tail reads and 2,677 pointer
-reads, is the same split's). The evidence records its bill (`cost` in the file), over 6,216 PUT-class and 17,162 GET-class requests.
+reads, is the same split's; each sample's `noObjectReads`, 3,000, is **measured**). The evidence records its bill (`cost` in the file), over 6,216 PUT-class and 17,162 GET-class requests.
 
 **Time and memory.** The three calls took 47,208 ms, 45,961 ms and 47,866 ms: a median of 47,208 ms and, of 3 calls, a
 95th percentile of 47,866 ms, at a median of 21.18 outputs a second (**measured**; with 3 calls, the percentile is the
 slowest). `peakRssMB` was 720, 723 and 724 MiB across the samples, with 2,609 MiB available.
 
-**In flight.** The median call peaked at 106 requests in flight and averaged 22.60 (summed request time over wall time,
-**measured**; the evidence records each call's peak only as the median of the three), against the client's 128 sockets.
+**In flight.** The median of the three calls' peaks in flight was 106 and of their means 22.60 (summed request time over wall
+time, **measured**; the calls' peaks were 105, 106 and 106 and their means 23.85, 22.60 and 22.31, the median-time call's own,
+the 47,208 ms one, 105 and 23.85, and the evidence records each call's peak and the run's maximum, 106), against the client's 128 sockets.
 
 **Against the defaults run of the same session** (**measured**: one run of three calls each, from one CloudShell session, the
 defaults first at 02:09 UTC and this run at 02:13 UTC; nothing here is more than two runs show):
@@ -418,7 +419,7 @@ defaults first at 02:09 UTC and this run at 02:13 UTC; nothing here is more than
 | groups a call | 8 | 9 |
 | a call's requests | 2,000 PUT-class, 4,449 GET-class | 2,000 PUT-class, 4,617 GET-class |
 | of the GET-class: range reads, pointer reads | 722, 627 | 840, 677 |
-| the median call's peak and mean in flight | 49 and 4.92 | 106 and 22.60 |
+| the median-time call's peak and mean in flight | 49 and 4.92 | 105 and 23.85 |
 | the stage, as expected | 6,000 PUT-class, 16,347 GET-class | 6,000 PUT-class, 16,851 GET-class |
 | the stage as made | 7,916 PUT-class, 20,641 GET-class, a discarded attempt included | 6,000 PUT-class, 16,851 GET-class |
 | the bill covers | 8,136 PUT-class and 20,952 GET-class, a discarded attempt included | 6,216 PUT-class and 17,162 GET-class |
@@ -428,8 +429,8 @@ The two medians differ by 237 ms, and each run's own three calls spread by more:
 51,368 ms) and this run's 1,906 ms (45,961 to 47,866 ms), and this run's three calls all lie inside the defaults run's range. Two runs of three
 calls from one session do not show a call at 64 to be faster or slower than one at 8, so none is claimed. What the two do show is
 requests and concurrency: at 64 the call ran in 9 groups, not 8, and made 168 more GET-class requests (118 range reads and 50
-pointer reads more; the same 2,000 PUT-class), and its median call held more requests in flight (peak 106 against 49, mean 22.60
-against 4.92). The defaults run's bill is higher because it includes the discarded attempt's 1,916 PUT-class and 4,294 GET-class requests; this
+pointer reads more; the same 2,000 PUT-class), and its median-time call held more requests in flight (peak 105 against 49, mean 23.85
+against 4.92; the three calls' peaks were 105, 106 and 106 against 49, 49 and 49, and their means 22.31 to 23.85 against 4.80 to 5.06). That is about twice the peak and about 4.8 times the mean at the same median time. It is weak evidence against the inference that publishing 8 outputs at a time sets the pace of a call (the 8 run's in-flight figures are what that inference was drawn from), and it is no more than that: one run of three calls each, from one session, and no default is recommended. The 9 groups and the extra GET-class requests are what the engine plans for that setting, not run-to-run variation: `publishConcurrency` is one of the inputs to the grouping (the largest outputs' bytes held while they are written are charged against the buffer limit), and the harness computes the grouping and the requests in memory before the run, with the same options, which is why each is stated as the count the engine was expected to make. The defaults run's bill is higher because it includes the discarded attempt's 1,916 PUT-class and 4,294 GET-class requests; this
 run's three kept calls made 504 more GET-class requests in all (168 a call) than the defaults run's.
 
 **What these figures are not.** A first materialization onto new destinations at one other value of one setting: not another
