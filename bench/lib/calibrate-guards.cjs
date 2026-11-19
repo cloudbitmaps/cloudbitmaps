@@ -781,11 +781,41 @@ function checkRunRegion(region) {
   return region;
 }
 
+/**
+ * An id-range checksum as it is written into a results file: decimal digits grouped by `_` every three from the right
+ * (`122_497_550_000`, `9_000`, `0`). A checksum is a sum of ids and can be any number of digits, and a bare JSON number of
+ * exactly twelve is the run the leak scan refuses as a possible account id, so every checksum is written grouped, whatever
+ * its size: a group of three digits is never a twelve-digit run. Every writer goes through this; `parseSum` reads it back.
+ */
+function groupSum(n) {
+  if (!Number.isSafeInteger(n) || n < 0) {
+    throw new Error(`a checksum must be a non-negative safe integer, got ${String(n)}`);
+  }
+  return String(n).replace(/\B(?=(\d{3})+$)/g, '_');
+}
+
+const GROUPED_SUM = /^(?:0|[1-9]\d{0,2}(?:_\d{3})*)$/;
+
+/** The number a results file's checksum (`what` says whose) stands for; anything but the exact grouped form is refused. */
+function parseSum(text, what = 'checksum') {
+  if (typeof text !== 'string' || !GROUPED_SUM.test(text)) {
+    throw new Error(
+      `${what} is ${JSON.stringify(text)}; a results file writes a checksum as digits grouped by "_" every three ` +
+        'from the right, as a string ("122_497_550_000", "9_000", "0")',
+    );
+  }
+  const n = Number(text.replaceAll('_', ''));
+  if (!Number.isSafeInteger(n)) throw new Error(`${what} is ${text}, past 2^53`);
+  return n;
+}
+
 module.exports = {
   CONFIRM_PHRASE,
   RETRY_BOUND,
   CHUNK_SPAN,
   DEFAULT_LAYOUT,
+  groupSum,
+  parseSum,
   parseCeiling,
   resolveSize,
   resolveMaxSockets,

@@ -22,7 +22,10 @@ Each finished run will have one file here, named by its run id and committed une
 `bench/lib/multi-evidence.cjs` is the check a committed file is held to (a test reads every file here through it): a
 finished run of the multi suite with no count missed, the projection not exceeded, a bill, every stage's requests equal to
 the expected ones in both classes, and every shape's reads exact, as many as asked, at the expected requests and under
-the bound. No default-suite figure is derived from a multi run.
+the bound. Its workload's id-range checksums (each pool's expected `sum`, each shape's in-memory intersect `sum`) are
+written as strings of digits grouped by `_` every three from the right (`"122_497_550_000"`), because a bare JSON number of
+exactly twelve digits is a run the leak scan refuses as a possible account id; the gate reads them through `parseSum`,
+which refuses a number or a malformed string, and holds each shape's to its pool's. No default-suite figure is derived from a multi run.
 
 When the first run lands, the same change updates `docs/benchmarks.md` ("What is still owed" and a section naming which
 shapes were measured and which were not: `union` and `andNot` over k operands, run-encoded containers, unequal sizes) and
