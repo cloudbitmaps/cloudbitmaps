@@ -76,6 +76,27 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`store.materializeMany` is measured on S3, by the batch suite at the defaults and at `publishConcurrency` 64, in one CloudShell session.**
+  Two runs from AWS CloudShell in `us-east-1` on 2026-11-19 (UTC), the defaults first and the other value straight after,
+  against the published `0.27.0` packages (`2026-11-19-cb5aa` and `2026-11-19-86991`), of one cold call of the refresh
+  shape's 1,000 outputs over 100 stored operands of 200,000 ids, three times a run (3 calls each), onto destinations nothing
+  had written, with `keep: 12` and the request budget lifted. `2026-11-19-cb5aa`, at the defaults (`publishConcurrency` 8 and
+  `concurrency` 1), is the third run at the defaults, after `2026-11-03-78516` and `2026-11-08-b12e6`: every kept sample published 1,000 outputs
+  in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests, then 1,000 GET-class to read them back, as before. One
+  sample was discarded after a transient S3 fault (a timed-out connection, `ECONNRESET`) and run again by the harness on a fresh store;
+  its 1,916 PUT-class and 4,294 GET-class requests are in the stage, which made 7,916 PUT-class and 20,641 GET-class, and in the
+  bill, $0.0490608. The median call took 46,971 ms (95th percentile 51,368 ms, 3 calls, 21.29 outputs a second), against 53,192 ms in
+  `2026-11-08-b12e6` and 64,034 ms in `2026-11-03-78516`, whose sessions are not this one's, so no latency is set against another
+  across sessions. The median call averaged 4.92 requests in flight (5.11 and 4.63 in the earlier runs) and peaked at 49 against the
+  client's 128 sockets, which fits a call that publishes 8 outputs at a time (an inference from the defaults). `peakRssMB` was 724 to
+  754 MiB across the three defaults runs. `2026-11-19-86991`, with `publishConcurrency` 64, ran in 9 groups with 2,000 PUT-class and
+  4,617 GET-class requests a call, stages of 6,000 PUT-class and 16,851 GET-class, a bill of $0.0379448 and a median call of 47,208 ms
+  (21.18 outputs a second), which peaked at 106 requests in flight and averaged 22.60. From one session, one run of three calls each,
+  the two medians differ by less than either run's own spread of three calls, so no call at 64 is claimed faster or slower than one
+  at 8, and no default is chosen here. This is a first materialization onto new destinations: the guide's refresh figures (3,732
+  GET-class, 1,768 PUT-class, 6 groups, onto destinations that already hold a generation) are counted in memory and still not
+  measured, and neither run confirms them; other `publishConcurrency` values, `concurrency`, `maxBufferedBytes`, the `target` shape
+  and the `*Into` side are not measured either. The benchmarks page, the roadmap, the site and the calibration READMEs say so. No library code changes.
 - **The at-scale figures were re-measured on one run, after the settled heap reading and the faster LocalFs listing.** One
   full run of the benchmark `SCALE_INJECT=1 pnpm bench:scale` runs after its build (`bench/scale.cjs`), on commit df765485,
   re-recorded every figure from one commit and date, on Apple M3 Pro, Node v24.22.1, 2026-11-18. The packages were built
@@ -174,7 +195,7 @@ so, and so do the module headers in the code.
   time (an inference from the defaults, not something the runs varied). `peakRssMB` was 724 to 754 MiB. This is a
   first materialization onto new destinations: the guide's refresh figures (3,732 GET-class, 1,768 PUT-class, 6 groups,
   onto destinations that already hold a generation) are counted in memory and still not measured, and neither run
-  confirms them; other `publishConcurrency` values, the `target` shape and the `*Into` side are not measured either.
+  confirms them; the `target` shape and the `*Into` side are not measured either, and both runs were at the defaults (the entry above records a run at another value).
   The benchmarks page, the roadmap, the site and the calibration READMEs say so. No library code changes.
 - **The count verbs are measured on S3, by the calibration runs of 2026-11-03.** Two runs from AWS CloudShell in
   `us-east-1`, against the published `0.27.0` packages (`2026-11-03-56b81` and `2026-11-03-fbbb8`), the first run of each

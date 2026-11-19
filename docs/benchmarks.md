@@ -296,15 +296,17 @@ different CloudShell sessions are not comparable either, and this is one session
 them run-encoded. The count verbs were each called 40 times a size and not drained, so their latencies are those of a
 call that returns a number.
 
-## Many outputs from one call — run `2026-11-08-b12e6`
+## Many outputs from one call — run `2026-11-19-cb5aa`
 
 > **Codec:** the TypeScript codec, the one the store uses in the release the run installed (named by the evidence's `packageVersion`).
 >
-> **Measured** against real S3 in `us-east-1` on 2026-11-08 (UTC), from AWS CloudShell in the same region (2 CPUs, a
-> round-trip floor of 5.64 ms to the region, so in-region), through the published `0.27.0` packages. This is the second run
-> of the harness's [batch suite](../bench/README.md#the-batch-suite), after
-> [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json), which made the same requests. The evidence is
-> [`bench/calibration/batch/2026-11-08-b12e6.json`](../bench/calibration/batch/2026-11-08-b12e6.json). It has no report
+> **Measured** against real S3 in `us-east-1` on 2026-11-19 (UTC), from AWS CloudShell in the same region (2 CPUs, a
+> round-trip floor of 6.56 ms to the region, so in-region), through the published `0.27.0` packages. This is the third run
+> of the harness's [batch suite](../bench/README.md#the-batch-suite) at the defaults, after
+> [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json) and
+> [`2026-11-08-b12e6`](../bench/calibration/batch/2026-11-08-b12e6.json), whose kept samples made the same requests, and the first of two
+> made in one CloudShell session: the run at another value, [`2026-11-19-86991`](#many-outputs-from-one-call--run-2026-11-19-86991-publishconcurrency-64), followed it straight after. The evidence is
+> [`bench/calibration/batch/2026-11-19-cb5aa.json`](../bench/calibration/batch/2026-11-19-cb5aa.json). It has no report
 > file; this section and the gate over it (`tests/docs/batch-figures.test.ts`), with the evidence's own gate (`bench/lib/batch-evidence.cjs`), are its record.
 
 **What was called.** One `store.materializeMany` call on a cold store, three times: the refresh shape's 1,000 outputs
@@ -313,11 +315,17 @@ operands of 200,000 ids, each sample onto destinations nothing had written. **It
 guide's refresh call**, whose every destination already holds a generation: the [refresh figures](guide/loading.md#many-outputs-from-one-pass-materializemany)
 (3,732 GET-class, 1,768 PUT-class, 6 groups) are counted in memory and are **not measured**, and these runs neither
 measure nor confirm the 3,732, 1,768 and 6 the guide publishes. The call was `materializeMany({ operands, outputs, keep: 12, budget: false })`, so the request budget was lifted and `keep` set to 12; the rest, among it `maxBufferedBytes` (which, with `publishConcurrency`, sets the 8 groups), ran at its defaults,
-`publishConcurrency` 8 and `concurrency` 1. This run's file predates the fields that record a call's settings, and the
-gates read their absence as "not passed": the library's defaults. A run made after the fields were added records `publishConcurrency`,
-`concurrency` and `maxBufferedBytes` as passed (null when not passed), so a run at another value is told apart from this one.
+`publishConcurrency` 8 and `concurrency` 1. The evidence records the call's settings (`publishConcurrency`,
+`concurrency` and `maxBufferedBytes`, each null when not passed): all three are null, so this run is at the library's defaults.
 
-**Requests.** Every sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
+**One discarded sample.** The first attempt at the first sample failed: `materializeMany output 188 failed: transient S3 fault`, a timed-out
+connection (code `ECONNRESET`, 1 attempt), after about 45 seconds and after 1,916 PUT-class and 4,294
+GET-class requests. A transient fault discards the sample, so the harness ran it again on a fresh store (the run allows 3 such
+discards and a stage 2; this run had 1). The three samples below are the kept ones. The discarded attempt's requests were made
+and billed, so the stage's total and the run's bill include them, and the stage table says so (**measured**: the evidence's
+`discarded` record).
+
+**Requests.** Every kept sample published 1,000 outputs in 8 groups with exactly 2,000 PUT-class and 4,449 GET-class requests,
 and reading the outputs back (one pointer read each, untimed) took 1,000 more GET-class (**measured**, each equal to the
 count the engine was expected to make):
 
@@ -326,35 +334,108 @@ count the engine was expected to make):
 | each sample's call | 2,000 | 4,449 |
 | each sample's read-back | 0 | 1,000 |
 | the 100 operands' loads | 200 | 300 |
-| the three calls and their read-backs | 6,000 | 16,347 |
-| the whole run, the bucket's own requests included | 6,216 | 16,658 |
+| the three kept calls and their read-backs, as expected | 6,000 | 16,347 |
+| of which the discarded attempt made | 1,916 | 4,294 |
+| the discarded attempt, then the three calls and their read-backs | 7,916 | 20,641 |
+| the whole run, the bucket's own requests included | 8,136 | 20,952 |
 
 Of each call's 4,449 GET-class, 722 were range reads (156,515,808 bytes), 100 tail reads (13,232,140 bytes) and 627 pointer reads
-that returned an object, 170,019,702 bytes in all (**measured**); the call wrote about 292.4 MB (**measured**). The other 3,000 found
+that returned an object, 170,019,670 bytes in all (**measured**); the call wrote about 292.4 MB (**measured**). The other 3,000 found
 nothing: the 1,000 new destinations were each read before their publish (two row reads and a size check), and the meter files such
 reads under no kind (**derived**: the 3,000 is the GET-class less the three kinds, and the engine's own count in the evidence,
 1,100 tail reads and 2,627 pointer reads, agrees with that split). The evidence records the run's bill, by request class, at the
-`aws-us-east-1-ondemand` list prices (`cost` in the file).
+`aws-us-east-1-ondemand` list prices (`cost` in the file); it covers 8,136 PUT-class and 20,952 GET-class requests, the discarded attempt's included.
 
-**Time and memory.** The three calls took 61,032 ms, 52,998 ms and 53,192 ms: a median of 53,192 ms and, of 3 calls, a
-95th percentile of 61,032 ms, at a median of 18.80 outputs a second (**measured**; with 3 calls, the percentile is the
-slowest). The process's resident-set high-water mark (`peakRssMB`) was 724, 753 and 754 MiB across the samples, with 2,609 MiB
+**Time and memory.** The three calls took 51,368 ms, 46,971 ms and 42,063 ms: a median of 46,971 ms and, of 3 calls, a
+95th percentile of 51,368 ms, at a median of 21.29 outputs a second (**measured**; with 3 calls, the percentile is the
+slowest). The process's resident-set high-water mark (`peakRssMB`) was 726, 726 and 728 MiB across the samples, with 2,687 MiB
 available (the figure includes the in-memory count made earlier in the same process, so it is not the call's own peak).
 
-**In flight.** The median call peaked at 49 requests in flight and averaged 5.11 (summed request time over wall time,
+**In flight.** The median call peaked at 49 requests in flight and averaged 4.92 (summed request time over wall time,
 **measured**; the evidence records each call's peak only as the median of the three, not the run's maximum), against the client's 128 sockets. That fits a call that publishes 8 outputs at a time; that reading is an
-**inference** from the defaults and the measured figure. The run did not vary `publishConcurrency`, and no other value is measured: the harness can set it
-(`CR_CALIBRATE_BATCH_PUBLISH_CONCURRENCY`, an integer from 1 to 1,024), and no run at another value has been made yet.
-A run at another value gets a section of its own beside this one, never this section's figures.
+**inference** from the defaults and the measured figure. The run did not vary the setting. The same session's run at another
+value, made straight after this one, has a section of its own, [`2026-11-19-86991`](#many-outputs-from-one-call--run-2026-11-19-86991-publishconcurrency-64), and is compared with this one there, never in this section's figures.
 
-**Against the earlier run** (**measured**): [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json) made the same
-requests in every stage and sample and the same bill. Its median was 64,034 ms (95th percentile 68,668 ms, 15.62 outputs a second,
-`peakRssMB` 740 to 751). Latencies of runs from different CloudShell sessions are not comparable, so no difference between the two
-is called a speed-up or a slowdown.
+**Against the earlier runs** (**measured**): [`2026-11-08-b12e6`](../bench/calibration/batch/2026-11-08-b12e6.json) made the same
+requests in every kept sample, with no discarded sample, and its median was 53,192 ms (95th percentile 61,032 ms, 18.80 outputs a second,
+`peakRssMB` 724 to 754). [`2026-11-03-78516`](../bench/calibration/batch/2026-11-03-78516.json) made the same requests and had a median of 64,034 ms
+(95th percentile 68,668 ms, 15.62 outputs a second, `peakRssMB` 740 to 751). Latencies of runs from different CloudShell sessions are not comparable,
+so no difference between these runs is called a speed-up or a slowdown.
 
 **What these figures are not.** A first materialization onto new destinations: not a dry run, not the refresh call onto destinations that
 already hold a generation, not another `publishConcurrency`, not the `target` shape (operands of 3,000,000 ids) and not the `*Into`
 side. It is one client with 128 sockets and 2 CPUs, one storage class in one region, three calls on cold stores.
+
+## Many outputs from one call — run `2026-11-19-86991` (`publishConcurrency` 64)
+
+> **Codec:** the TypeScript codec, the one the store uses in the release the run installed (named by the evidence's `packageVersion`).
+>
+> **Measured** against real S3 in `us-east-1` on 2026-11-19 (UTC), from AWS CloudShell in the same region (2 CPUs, a
+> round-trip floor of 5.81 ms to the region, so in-region), through the published `0.27.0` packages. This is the first run of the
+> batch suite at another value: the call passed `publishConcurrency` 64, and `concurrency` and `maxBufferedBytes` ran at their
+> defaults (all three are recorded in the evidence's `workload`). It ran in the same CloudShell session as the defaults run
+> [`2026-11-19-cb5aa`](#many-outputs-from-one-call--run-2026-11-19-cb5aa), straight after it, which is the section's comparison
+> below. The evidence is [`bench/calibration/batch/2026-11-19-86991.json`](../bench/calibration/batch/2026-11-19-86991.json).
+> It has no report file; this section and the gate over it (`tests/docs/batch-figures.test.ts`), with the evidence's own gate
+> (`bench/lib/batch-evidence.cjs`), are its record.
+
+**What was called.** The same call as the defaults section's: one `store.materializeMany` call on a cold store, three times, of the
+refresh shape's 1,000 outputs over 100 stored operands of 200,000 ids, each sample onto destinations nothing had written, with `keep: 12`
+and the request budget lifted, and `publishConcurrency` 64 where the defaults section's ran at 8. It is a first materialization, not
+the guide's refresh call, and it neither measures nor confirms that call's counted figures. No sample was discarded.
+
+**Requests.** Every sample published 1,000 outputs in 9 groups with exactly 2,000 PUT-class and 4,617 GET-class requests, and
+reading the outputs back took 1,000 more GET-class (**measured**, each equal to the count the engine was expected to make at this setting):
+
+| Stage | PUT-class | GET-class |
+| --- | --- | --- |
+| each sample's call | 2,000 | 4,617 |
+| each sample's read-back | 0 | 1,000 |
+| the 100 operands' loads | 200 | 300 |
+| the three calls and their read-backs | 6,000 | 16,851 |
+| the whole run, the bucket's own requests included | 6,216 | 17,162 |
+
+Of each call's 4,617 GET-class, 840 were range reads (183,587,908 bytes), 100 tail reads (13,232,140 bytes) and 677 pointer reads
+that returned an object, 197,113,449 bytes in all (**measured**); the call wrote about 292.4 MB (**measured**). The other 3,000 found
+nothing (**derived**: the GET-class less the three kinds; the engine's own count in the evidence, 1,100 tail reads and 2,677 pointer
+reads, is the same split's). The evidence records its bill (`cost` in the file), over 6,216 PUT-class and 17,162 GET-class requests.
+
+**Time and memory.** The three calls took 47,208 ms, 45,961 ms and 47,866 ms: a median of 47,208 ms and, of 3 calls, a
+95th percentile of 47,866 ms, at a median of 21.18 outputs a second (**measured**; with 3 calls, the percentile is the
+slowest). `peakRssMB` was 720, 723 and 724 MiB across the samples, with 2,609 MiB available.
+
+**In flight.** The median call peaked at 106 requests in flight and averaged 22.60 (summed request time over wall time,
+**measured**; the evidence records each call's peak only as the median of the three), against the client's 128 sockets.
+
+**Against the defaults run of the same session** (**measured**: one run of three calls each, from one CloudShell session, the
+defaults first at 02:09 UTC and this run at 02:13 UTC; nothing here is more than two runs show):
+
+| | `2026-11-19-cb5aa` (defaults) | `2026-11-19-86991` (`publishConcurrency` 64) |
+| --- | --- | --- |
+| median call | 46,971 ms | 47,208 ms |
+| the three calls, in order | 51,368, 46,971 and 42,063 ms | 47,208, 45,961 and 47,866 ms |
+| outputs a second, at the median | 21.29 | 21.18 |
+| groups a call | 8 | 9 |
+| a call's requests | 2,000 PUT-class, 4,449 GET-class | 2,000 PUT-class, 4,617 GET-class |
+| of the GET-class: range reads, pointer reads | 722, 627 | 840, 677 |
+| the median call's peak and mean in flight | 49 and 4.92 | 106 and 22.60 |
+| the stage, as expected | 6,000 PUT-class, 16,347 GET-class | 6,000 PUT-class, 16,851 GET-class |
+| the stage as made | 7,916 PUT-class, 20,641 GET-class, a discarded attempt included | 6,000 PUT-class, 16,851 GET-class |
+| the bill covers | 8,136 PUT-class and 20,952 GET-class, a discarded attempt included | 6,216 PUT-class and 17,162 GET-class |
+| `peakRssMB` | 726 to 728 | 720 to 724 |
+
+The two medians differ by 237 ms, and each run's own three calls spread by more: the defaults run's span 9,305 ms (42,063 to
+51,368 ms) and this run's 1,906 ms (45,961 to 47,866 ms), and this run's three calls all lie inside the defaults run's range. Two runs of three
+calls from one session do not show a call at 64 to be faster or slower than one at 8, so none is claimed. What the two do show is
+requests and concurrency: at 64 the call ran in 9 groups, not 8, and made 168 more GET-class requests (118 range reads and 50
+pointer reads more; the same 2,000 PUT-class), and its median call held more requests in flight (peak 106 against 49, mean 22.60
+against 4.92). The defaults run's bill is higher because it includes the discarded attempt's 1,916 PUT-class and 4,294 GET-class requests; this
+run's three kept calls made 504 more GET-class requests in all (168 a call) than the defaults run's.
+
+**What these figures are not.** A first materialization onto new destinations at one other value of one setting: not another
+`publishConcurrency` than 64, not `concurrency` or `maxBufferedBytes`, not a dry run, not the refresh call onto destinations that
+already hold a generation, not the `target` shape and not the `*Into` side. It is one client with 128 sockets and 2 CPUs, one storage
+class in one region, three calls on cold stores, in a session of two runs.
 
 ## Counting a combine — counted in memory, and measured on S3
 
@@ -782,9 +863,9 @@ throughput on S3. These are not published yet:
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 - **The refresh call of `materializeMany` onto destinations that already hold a generation.** Its request counts (3,732
-  GET-class, 1,768 PUT-class, 6 groups) are counted in memory, not measured. The [batch suite's runs](#many-outputs-from-one-call--run-2026-11-08-b12e6)
+  GET-class, 1,768 PUT-class, 6 groups) are counted in memory, not measured. The [batch suite's runs](#many-outputs-from-one-call--run-2026-11-19-cb5aa)
   measured a first materialization onto new destinations. That call neither measures nor confirms the 3,732, 1,768 and 6. Also unmeasured: any
-  `publishConcurrency` other than the default 8, the `target` shape (operands of 3,000,000 ids) and the `*Into` side. The `*Into` verbs and combines on
+  `publishConcurrency` other than the default 8 and the 64 of one run ([`2026-11-19-86991`](#many-outputs-from-one-call--run-2026-11-19-86991-publishconcurrency-64)), the `target` shape (operands of 3,000,000 ids) and the `*Into` side. The `*Into` verbs and combines on
   operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-11-03-fbbb8), with
   operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.

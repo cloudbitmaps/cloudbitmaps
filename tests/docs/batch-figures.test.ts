@@ -102,6 +102,7 @@ interface Evidence {
       medianPeakInFlight: number;
       medianMeanInFlight: number;
       perSample: Sample[];
+      discarded?: { requests: { put: number; get: number } }[];
     };
   };
 }
@@ -196,6 +197,11 @@ function known(es: Evidence[]): { ms: Set<string>; counts: Set<string>; mib: Set
       e.cost.ops.get,
     ]) {
       counts.add(fmt(n));
+    }
+    // A discarded sample's requests are in the file, and a page may state them as the discarded attempt's.
+    for (const d of b.discarded ?? []) {
+      counts.add(fmt(d.requests.put));
+      counts.add(fmt(d.requests.get));
     }
     for (const x of b.perSample) {
       for (const n of [
@@ -438,7 +444,8 @@ describe('the batch suite figures', () => {
     ];
     const missing = lacking(entry, need);
     expect(missing, `the CHANGELOG entry lacks: ${missing.join(' | ')}`).toEqual([]);
-    const k = known(defaultRuns);
+    // The entry also names the run at another value, whose figures are in its own file.
+    const k = known([...defaultRuns, ...others]);
     const bad = [...stray(entry, ' ms\\b', k.ms), ...stray(entry, COUNT_UNITS, k.counts)];
     expect(bad, `the CHANGELOG entry states what no run recorded: ${bad.join(', ')}`).toEqual([]);
   });
