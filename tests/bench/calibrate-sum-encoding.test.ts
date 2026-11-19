@@ -60,10 +60,11 @@ describe('the detector', () => {
 });
 
 describe('a results file never holds a standalone 12-digit run', () => {
-  // Only the pools whose planned checksum is twelve digits are counted: the others cannot make the run the scan refuses,
-  // and counting every pool (operands of up to 5,000,000 ids) took 3.4 to 9.7 s in CI. Budget 15 s: the rule is the slowest
-  // measured time x 3, rounded up, and never below 15 s for a test whose time scales with load, as an in-memory count's
-  // does. Measured: 0.4 s locally for the one pool.
+  // Only the pools whose planned checksum is twelve digits are counted. `countMulti` refuses a read whose sum differs from
+  // the plan, so the planned sums are every checksum a multi file holds, and the other pools' cannot make the run the scan
+  // refuses. Counting every pool (operands of up to 5,000,000 ids) took up to 6.0 s on the pull request's CI runs and 9.7 s
+  // on main's; this one pool takes 0.4 s locally, so it runs under vitest's 5 s default, and the budget check names it
+  // once it reaches 35 % of that.
   it('for the multi suite’s real workload, whose layouts include a 12-digit sum', async () => {
     const twelve = Object.keys(MULTI_POOLS).filter(
       (n) => String(planMultiPool(n).expected.sum).length === 12,
@@ -79,15 +80,14 @@ describe('a results file never holds a standalone 12-digit run', () => {
     const text = processLib.resultsJson({ suite: 'multi', workload });
     expect(text).not.toMatch(ACCOUNT_ID);
     expect(text).toMatch(/"sum": "\d{1,3}(_\d{3})*"/);
-  }, 15_000);
+  });
 
-  // Budget 15 s: the small batch shape is counted in memory, so its time scales with load (1.6 s on node 24 and 2.0 s on
-  // node 22 in one CI run, 2.7 s and 2.8 s in the next). The rule: the slowest measured time x 3, rounded up, and never
-  // below 15 s for such a test.
+  // Budget 9 s (the default is 5 s): the small batch shape is counted in memory. The slowest time CI has measured is 2.84 s,
+  // on node 22. Rule: the slowest measured time x 3, rounded up.
   it('for the batch suite’s real workload', async () => {
     const counts = await batchCounts.countBatch({ shape: 'small', engine });
     expect(processLib.resultsJson({ suite: 'batch', workload: counts })).not.toMatch(ACCOUNT_ID);
-  }, 15_000);
+  }, 9_000);
 
   // These two recorded files hold no checksum (the large suite writes none), so they guard the older rounding of ratios.
   it('for the default and large suites’ recorded rehearsal files', () => {

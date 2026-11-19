@@ -38,7 +38,7 @@ const readOf = (c) => ({
  * Count the multi suite. `engine` is the library's module (`CloudRoaring`, `MemoryStorage`; required: the harness passes the
  * one its stores come from, so a count is never taken from another engine than the one under test). `pools` names the pools
  * to count, in the suite's order (default: every pool; the harness always counts every one); a name the suite does not
- * plan is refused. A test that needs one pool's real layout counts that pool alone.
+ * plan, an empty list or anything but a list is refused, before anything is counted. A test that needs one pool's real layout counts that pool alone.
  *
  * Returns `{ pools, shapes }`. A pool is its layout without the generator, plus `operandBytes`, the size of each stored
  * object. A shape is `{ name, group, pool, k, bound, objectBytes, counts: { intersect, count } }`: `bound` the most GET-class a
@@ -47,6 +47,11 @@ const readOf = (c) => ({
  */
 async function countMulti({ engine, pools: only }) {
   const names = Object.keys(MULTI_POOLS);
+  if (only !== undefined && (!Array.isArray(only) || only.length === 0)) {
+    throw new Error(
+      `countMulti: pools must be a non-empty list of the multi suite's pools (${names.join(', ')}), or left out to count every one`,
+    );
+  }
   for (const name of only ?? []) {
     if (!names.includes(name))
       throw new Error(

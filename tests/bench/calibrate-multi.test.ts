@@ -563,10 +563,24 @@ describe('the counts, taken from the real engine in memory', () => {
     );
   }, 300_000);
 
-  it('refuse a pool the suite does not plan, before counting anything', async () => {
-    await expect(countsLib.countMulti({ engine, pools: ['a', 'nope'] })).rejects.toThrow(
+  it('refuse a pool the suite does not plan, an empty list and anything but a list, before counting anything', async () => {
+    // An engine that throws when touched: a refusal that came after any counting would surface its error instead.
+    const untouched = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('the engine was used');
+        },
+      },
+    );
+    await expect(countsLib.countMulti({ engine: untouched, pools: ['a', 'nope'] })).rejects.toThrow(
       /countMulti: no pool nope in the multi suite \(a, b, c5, c50, d\)/,
     );
+    for (const pools of [[], null, 'a', 5, {}] as unknown[]) {
+      await expect(
+        countsLib.countMulti({ engine: untouched, pools: pools as string[] }),
+      ).rejects.toThrow(/countMulti: pools must be a non-empty list of the multi suite's pools/);
+    }
   });
 
   it('feed a projection whose bound the ceiling covers, whose count is the exact expected', async () => {
