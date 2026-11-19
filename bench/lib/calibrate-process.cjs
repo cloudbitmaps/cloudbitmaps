@@ -261,16 +261,51 @@ function writeResultsFile({ file, fallback, text, overwrite = false }) {
  * is the run of digits the leak scan refuses as a possible account id, so a file could fail it by chance and then
  * not be committed. Nine decimals is below a nanosecond for a time in milliseconds and a billionth of a dollar for a
  * cost, so nothing measured is lost. An id-range checksum (a `sum` field) is a whole number of any length, so it is
- * written grouped by `_` every three digits as a string (`groupSum`), whatever its size.
+ * written grouped by `_` every three digits as a string (`groupSum`), whatever its size; a `sum` that is anything else
+ * (negative, fractional, past 2^53) is not a checksum and is written like any number, so a paid run's file is never lost
+ * to a throw. A file that still holds a standalone twelve-digit run is written all the same, with a warning that names
+ * where, since the leak scan will refuse it.
  */
 function resultsJson(results) {
   const write = (key, v) => {
-    if (key === 'sum' && typeof v === 'number') return groupSum(v);
+    if (key === 'sum' && Number.isSafeInteger(v) && v >= 0) return groupSum(v);
     return typeof v === 'number' && !Number.isInteger(v) && Number.isFinite(v)
       ? Number(v.toFixed(9))
       : v;
   };
-  return `${JSON.stringify(results, write, 2)}\n`;
+  const text = `${JSON.stringify(results, write, 2)}\n`;
+  const at = accountIdPaths(text);
+  if (at.length > 0) {
+    console.error(
+      `calibrate: WARNING: the results hold a standalone 12-digit run at ${at.join(', ')}. The file is still written, ` +
+        'but `pnpm leak-scan` will refuse it as a possible account id, so it cannot be committed as it is.',
+    );
+  }
+  return text;
+}
+
+/** The leak scan's account-id rule: a run of exactly twelve digits standing alone. */
+const ACCOUNT_ID = /\b\d{12}\b/;
+
+/**
+ * The JSON paths (`workload.pools[0].expected.count`) of every value in the results text that holds a standalone
+ * twelve-digit run, so a run can name what the leak scan will refuse. A key holding one is named as `key of <path>`.
+ */
+function accountIdPaths(text) {
+  const out = [];
+  const walk = (v, path) => {
+    if (v !== null && typeof v === 'object') {
+      for (const [k, child] of Object.entries(v)) {
+        const at = Array.isArray(v) ? `${path}[${k}]` : path === '' ? k : `${path}.${k}`;
+        if (!Array.isArray(v) && ACCOUNT_ID.test(k)) out.push(`key of ${at}`);
+        walk(child, at);
+      }
+    } else if (ACCOUNT_ID.test(JSON.stringify(v))) {
+      out.push(path === '' ? '(the whole value)' : path);
+    }
+  };
+  walk(JSON.parse(text), '');
+  return out;
 }
 
 /**
@@ -556,6 +591,7 @@ module.exports = {
   silenceTerminal,
   writeResultsFile,
   resultsJson,
+  accountIdPaths,
   harnessRef,
   HARNESS_FILES,
 };

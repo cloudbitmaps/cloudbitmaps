@@ -13,7 +13,7 @@
  * Whether a read was exact is not read from the file: the stage throws on an inexact read and records nothing, so a flag
  * in the file would prove no more than the file says.
  */
-const { MULTI_STAGES, MULTI_SHAPES } = require('./calibrate-multi-stages.cjs');
+const { MULTI_STAGES, MULTI_SHAPES, planMultiPool } = require('./calibrate-multi-stages.cjs');
 const { keptRequests } = require('./calibrate-samples.cjs');
 const { countMisses } = require('./calibrate-large-stages.cjs');
 const { parseSum } = require('./calibrate-guards.cjs');
@@ -61,20 +61,60 @@ function shapeProblems(name, entry, shape, reads) {
 
 /**
  * Why the workload's id-range checksums are not usable: each pool's expected sum and each shape's in-memory intersect sum are
- * read through `parseSum` (the one grouped-string form a results file writes), and a shape's must be its pool's, since the
- * engine's in-memory read of the shape is held to the layout before anything is written.
+ * read through `parseSum` (the one grouped-string form a results file writes), a shape's must be its pool's, since the
+ * engine's in-memory read of the shape is held to the layout before anything is written, and each pool's recorded count and
+ * sum must be those of the suite's own plan for that pool. A `pools` or `shapes` that is not a list, a null in either, an
+ * unnamed pool and a pool name recorded twice are reported, never thrown.
  */
 function checksumProblems(w) {
   const out = [];
+  const listOf = (what, v) => {
+    if (v === undefined) return [];
+    if (!Array.isArray(v)) {
+      out.push(`the workload's ${what} is ${JSON.stringify(v)}, not a list`);
+      return [];
+    }
+    return v;
+  };
   const poolSums = new Map();
-  for (const p of w.pools ?? []) {
+  for (const [i, p] of listOf('pools', w.pools).entries()) {
+    if (p === null || typeof p !== 'object') {
+      out.push(`pool ${i} is ${JSON.stringify(p)}, not an object`);
+      continue;
+    }
+    if (typeof p.name !== 'string' || p.name === '') {
+      out.push(`pool ${i} has no name`);
+      continue;
+    }
+    if (poolSums.has(p.name)) {
+      out.push(`pool ${p.name} is recorded more than once`);
+      continue;
+    }
     try {
       poolSums.set(p.name, parseSum(p.expected?.sum, `pool ${p.name} expected.sum`));
     } catch (err) {
       out.push(err.message);
+      continue;
+    }
+    let plan;
+    try {
+      plan = planMultiPool(p.name).expected;
+    } catch {
+      out.push(`pool ${p.name} is not a pool of the multi suite`);
+      continue;
+    }
+    if (p.expected.count !== plan.count || poolSums.get(p.name) !== plan.sum) {
+      out.push(
+        `pool ${p.name} records count ${String(p.expected.count)} and sum ${String(poolSums.get(p.name))}, ` +
+          `where the suite's plan is ${plan.count} and ${plan.sum}`,
+      );
     }
   }
-  for (const s of w.shapes ?? []) {
+  for (const [i, s] of listOf('shapes', w.shapes).entries()) {
+    if (s === null || typeof s !== 'object') {
+      out.push(`shape ${i} is ${JSON.stringify(s)}, not an object`);
+      continue;
+    }
     let got;
     try {
       got = parseSum(s.counts?.intersect?.sum, `shape ${s.name} intersect sum`);
@@ -108,7 +148,7 @@ function multiRunProblems(run, { rehearsal = false } = {}) {
   else if (w.reads < 1)
     out.push('the workload records no reads: a run that read nothing measured nothing');
   out.push(...checksumProblems(w));
-  const have = (w.shapes ?? []).map((s) => s.name).join(',');
+  const have = (Array.isArray(w.shapes) ? w.shapes : []).map((s) => s?.name).join(',');
   const suites = MULTI_SHAPES.map((s) => s.name).join(',');
   if (have !== suites) {
     out.push(
@@ -132,11 +172,12 @@ function multiRunProblems(run, { rehearsal = false } = {}) {
     }
     if (name === 'multiLoad') continue;
     const entries = phase.shapes ?? [];
-    for (const shape of w.shapes ?? []) {
-      if (!entries.some((e) => e.shape === shape.name)) out.push(`${name} has no ${shape.name}`);
+    for (const shape of Array.isArray(w.shapes) ? w.shapes : []) {
+      if (!entries.some((e) => e.shape === shape?.name))
+        out.push(`${name} has no ${String(shape?.name)}`);
     }
     for (const entry of entries) {
-      const shape = (w.shapes ?? []).find((s) => s.name === entry.shape);
+      const shape = (Array.isArray(w.shapes) ? w.shapes : []).find((s) => s?.name === entry.shape);
       out.push(...shapeProblems(name, entry, shape, w.reads));
     }
   }

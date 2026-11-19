@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage } from '@/index';
 
 // An id-range checksum is a sum of ids and can be any number of digits. Written as a bare JSON number it can be exactly
@@ -24,6 +24,7 @@ const guards = require_(lib('calibrate-guards.cjs')) as {
 };
 const processLib = require_(lib('calibrate-process.cjs')) as {
   resultsJson: (results: unknown) => string;
+  accountIdPaths: (text: string) => string[];
 };
 const countsLib = require_(lib('multi-counts.cjs')) as {
   countMulti: (i: { engine: unknown }) => Promise<{ pools: unknown[]; shapes: unknown[] }>;
@@ -32,8 +33,13 @@ const batchCounts = require_(lib('batch-counts.cjs')) as {
   countBatch: (i: { shape: string; engine: unknown }) => Promise<unknown>;
 };
 const evidenceLib = require_(lib('multi-evidence.cjs')) as {
-  multiRunProblems: (run: unknown) => string[];
+  multiRunProblems: (run: unknown, o?: { rehearsal?: boolean }) => string[];
 };
+const planMultiPool = (
+  require_(lib('calibrate-multi-stages.cjs')) as {
+    planMultiPool: (n: string) => { expected: { count: number; sum: number } };
+  }
+).planMultiPool;
 const engine = { CloudRoaring, MemoryStorage };
 
 describe('the detector', () => {
@@ -52,6 +58,8 @@ describe('the detector', () => {
 });
 
 describe('a results file never holds a standalone 12-digit run', () => {
+  // Budget 16 s (the default is 5 s): the multi suite's whole workload is counted in memory. Measured: 3.4 s on node 24
+  // and 5.1 s on node 22 in CI. Rule: the slowest measured time x 3, rounded up.
   it('for the multi suite’s real workload, whose layouts include a 12-digit sum', async () => {
     const { pools, shapes } = await countsLib.countMulti({ engine });
     const workload = { reads: 1, pools, shapes };
@@ -60,15 +68,16 @@ describe('a results file never holds a standalone 12-digit run', () => {
     const text = processLib.resultsJson({ suite: 'multi', workload });
     expect(text).not.toMatch(ACCOUNT_ID);
     expect(text).toMatch(/"sum": "\d{1,3}(_\d{3})*"/);
-  }, 60_000);
+  }, 16_000);
 
+  // Budget 6 s (the default is 5 s): the small batch shape is counted in memory. Measured: 1.6 s on node 24 and 2.0 s on
+  // node 22 in CI. Rule: the slowest measured time x 3, rounded up.
   it('for the batch suite’s real workload', async () => {
-    for (const shape of ['small']) {
-      const counts = await batchCounts.countBatch({ shape, engine });
-      expect(processLib.resultsJson({ suite: 'batch', workload: counts })).not.toMatch(ACCOUNT_ID);
-    }
-  }, 30_000);
+    const counts = await batchCounts.countBatch({ shape: 'small', engine });
+    expect(processLib.resultsJson({ suite: 'batch', workload: counts })).not.toMatch(ACCOUNT_ID);
+  }, 6_000);
 
+  // These two recorded files hold no checksum (the large suite writes none), so they guard the older rounding of ratios.
   it('for the default and large suites’ recorded rehearsal files', () => {
     for (const name of ['calibration-rehearsal.json', 'calibration-large-rehearsal.json']) {
       const text = readFileSync(join(ROOT, 'tests', 'bench', 'fixtures', name), 'utf8');
@@ -84,6 +93,82 @@ describe('a results file never holds a standalone 12-digit run', () => {
     const text = processLib.resultsJson(run);
     expect(text).not.toMatch(ACCOUNT_ID);
     expect(JSON.parse(text).workload.pools[0].expected.sum).toBe('122_497_550_000');
+  });
+});
+
+describe('resultsJson on a file that cannot be made clean', () => {
+  it('writes a sum that is not a checksum like any number, and never throws', () => {
+    for (const bad of [-1, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      const text = processLib.resultsJson({ sum: bad });
+      expect(JSON.parse(text).sum).toBe(bad);
+    }
+    expect(JSON.parse(processLib.resultsJson({ sum: 0.1 + 0.2 })).sum).toBe(0.3);
+  });
+
+  it('still writes a file that holds a standalone 12-digit run, and warns where, naming the scan', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const text = processLib.resultsJson({
+        workload: { pools: [{ id: TWELVE }], note: 'x' },
+        clean: 'a_122_497_550_000',
+      });
+      expect(JSON.parse(text).workload.pools[0].id).toBe(TWELVE);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const said = String(warn.mock.calls[0]![0]);
+      expect(said).toContain('workload.pools[0].id');
+      expect(said).not.toContain('clean');
+      expect(said).toMatch(/pnpm leak-scan/);
+      expect(said).toMatch(/still written/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('is silent for a clean file', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      processLib.resultsJson({ sum: TWELVE });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('every results-file writer goes through resultsJson', () => {
+  const harness = [
+    join(ROOT, 'bench', 'calibrate-aws.cjs'),
+    ...readdirSync(join(ROOT, 'bench', 'lib'))
+      .filter((f) => f.startsWith('calibrate-') && f.endsWith('.cjs'))
+      .map((f) => join(ROOT, 'bench', 'lib', f)),
+  ];
+  // A results object serialized anywhere but resultsJson, or a results file written with other text.
+  const strayWriters = (name: string, source: string): string[] => {
+    const out: string[] = [];
+    if (!name.endsWith('calibrate-process.cjs')) {
+      for (const m of source.matchAll(/JSON\.stringify\(\s*(results|run|partial|summary)\b/g)) {
+        out.push(`${name}: ${m[0]}`);
+      }
+    }
+    for (const m of source.matchAll(/writeResultsFile\(\{[^}]*?\btext:\s*([^,\n]+)/g)) {
+      if (!/^resultsJson\(/.test(m[1]!.trim()))
+        out.push(`${name}: writeResultsFile text is ${m[1]!.trim()}`);
+    }
+    return out;
+  };
+
+  it('holds on the real harness, which has a writer', () => {
+    const calls = readFileSync(harness[0]!, 'utf8').match(/writeResultsFile\(\{/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const f of harness) expect(strayWriters(f, readFileSync(f, 'utf8')), f).toEqual([]);
+  });
+
+  it('fails on a second writer that serializes a results object itself', () => {
+    const real = readFileSync(harness[0]!, 'utf8');
+    const planted = `${real}\nwriteFileSync(other, JSON.stringify(results, null, 2));\n`;
+    expect(strayWriters('planted', planted)).toHaveLength(1);
+    const plantedText = real.replace('text: resultsJson(results)', 'text: String(results)');
+    expect(strayWriters('planted', plantedText)).toHaveLength(1);
   });
 });
 
@@ -137,33 +222,84 @@ describe('the one helper that reads a checksum', () => {
 });
 
 describe('the multi evidence gate reads checksums through it', () => {
-  const run = (sum: unknown, poolSum: unknown = '9_000') => ({
+  const PLAN = planMultiPool('a').expected;
+  const PLAN_SUM = guards.groupSum(PLAN.sum);
+  const run = (sum: unknown, poolSum: unknown = PLAN_SUM) => ({
     suite: 'multi',
     partial: false,
     workload: {
       reads: 1,
-      pools: [{ name: 'a', expected: { count: 3, sum: poolSum } }],
+      pools: [{ name: 'a', expected: { count: PLAN.count, sum: poolSum } }],
       shapes: [{ name: 'k3', pool: 'a', counts: { intersect: { sum } } }],
     },
   });
   const sumProblems = (r: unknown) => evidenceLib.multiRunProblems(r).filter((p) => /sum/.test(p));
 
   it('accepts matching grouped sums', () => {
-    expect(sumProblems(run('9_000'))).toEqual([]);
+    expect(sumProblems(run(PLAN_SUM))).toEqual([]);
   });
 
   it('refuses a JSON number, a malformed string, a missing sum and a shape that disagrees with its pool', () => {
     expect(sumProblems(run(TWELVE, TWELVE)).join('\n')).toMatch(/grouped by "_"/);
-    expect(sumProblems(run('9000')).join('\n')).toMatch(/shape k3 intersect sum is "9000"/);
+    expect(sumProblems(run(String(PLAN.sum))).join('\n')).toMatch(
+      new RegExp(`shape k3 intersect sum is "${PLAN.sum}"`),
+    );
     expect(sumProblems(run(undefined)).join('\n')).toMatch(/shape k3 intersect sum/);
-    expect(sumProblems(run('9_001')).join('\n')).toMatch(/is not its pool's 9000/);
+    expect(sumProblems(run(guards.groupSum(PLAN.sum + 1))).join('\n')).toMatch(
+      new RegExp(`is not its pool's ${PLAN.sum}`),
+    );
   });
 
   it('refuses a shape whose pool is not among the recorded pools', () => {
-    const r = run('9_000');
+    const r = run(PLAN_SUM);
     r.workload.shapes[0]!.pool = 'elsewhere';
     expect(evidenceLib.multiRunProblems(r).join('\n')).toMatch(
       /shape k3 names pool elsewhere, which the workload does not record/,
     );
+  });
+});
+
+describe('the multi evidence gate reports a malformed workload and holds each pool to the plan', () => {
+  const planned = (name: string) => planMultiPool(name).expected;
+  const problems = (workload: unknown) =>
+    evidenceLib.multiRunProblems({ suite: 'multi', partial: false, workload }).join('\n');
+
+  it('does not throw for pools or shapes that are not lists, or that hold a null', () => {
+    for (const w of [
+      { reads: 1, pools: 'x', shapes: [] },
+      { reads: 1, pools: [null], shapes: [null] },
+      { reads: 1, pools: {}, shapes: 5 },
+    ]) {
+      expect(() => problems(w)).not.toThrow();
+    }
+    expect(problems({ reads: 1, pools: 'x' })).toMatch(/pools is "x", not a list/);
+    expect(problems({ reads: 1, shapes: 5 })).toMatch(/shapes is 5, not a list/);
+    expect(problems({ reads: 1, pools: [null] })).toMatch(/pool 0 is null/);
+    expect(problems({ reads: 1, shapes: [null] })).toMatch(/shape 0 is null/);
+  });
+
+  it('reports an unnamed pool and a pool recorded twice', () => {
+    const a = planned('a');
+    const pool = { name: 'a', expected: { count: a.count, sum: guards.groupSum(a.sum) } };
+    expect(problems({ reads: 1, pools: [{ expected: pool.expected }] })).toMatch(
+      /pool 0 has no name/,
+    );
+    expect(problems({ reads: 1, pools: [pool, pool] })).toMatch(
+      /pool a is recorded more than once/,
+    );
+    expect(problems({ reads: 1, pools: [pool] })).not.toMatch(/pool a/);
+  });
+
+  it('refuses a pool whose count or sum is not the plan’s, and one the suite does not have', () => {
+    const a = planned('a');
+    const wrong = (count: number, sum: number) => ({
+      reads: 1,
+      pools: [{ name: 'a', expected: { count, sum: guards.groupSum(sum) } }],
+    });
+    expect(problems(wrong(a.count + 1, a.sum))).toMatch(/pool a records count/);
+    expect(problems(wrong(a.count, a.sum + 1))).toMatch(/where the suite's plan is/);
+    expect(
+      problems({ reads: 1, pools: [{ name: 'zz', expected: { count: 1, sum: '1' } }] }),
+    ).toMatch(/pool zz is not a pool of the multi suite/);
   });
 });

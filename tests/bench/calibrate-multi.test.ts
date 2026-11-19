@@ -117,6 +117,7 @@ const largeStages = require_(join(ROOT, 'bench', 'lib', 'calibrate-large-stages.
   ) => { class: string; kept: number; expected: number }[];
 };
 const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
+  groupSum: (n: number) => string;
   suiteEvidenceDir: (s: string) => string;
   resultsFile: (rehearse: boolean, runId?: string, o?: Record<string, unknown>) => string;
   layoutFromCounts: (i: { segments: number; shared: number; priv: number; stride: number }) => {
@@ -762,6 +763,11 @@ describe('the evidence gate over a rehearsal’s file', () => {
       })),
     });
     const intersectGets = defs.reduce((n, d) => n + reads * d.gets, 0);
+    // A pool's recorded count and checksum are the suite's plan for it, in the grouped form a file writes.
+    const planned = (name: string) => {
+      const e = stagesLib.planMultiPool(name).expected;
+      return { count: e.count, sum: guards.groupSum(e.sum) };
+    };
     return {
       runId: '2026-12-01-abcde',
       suite: 'multi',
@@ -771,13 +777,16 @@ describe('the evidence gate over a rehearsal’s file', () => {
         reads,
         pools: [...new Set(stagesLib.MULTI_SHAPES.map((m) => m.pool))].map((name) => ({
           name,
-          expected: { count: 3, sum: '9_000' },
+          expected: planned(name),
         })),
         shapes: defs.flatMap((d, i) => [
           {
             ...shape(d.name, d.gets, d.bound, 'intersect'),
             pool: stagesLib.MULTI_SHAPES[i]?.pool,
-            counts: { intersect: { gets: d.gets, sum: '9_000' }, count: { gets: d.gets } },
+            counts: {
+              intersect: { gets: d.gets, sum: planned(stagesLib.MULTI_SHAPES[i]?.pool ?? '').sum },
+              count: { gets: d.gets },
+            },
           },
         ]),
         expected: {
