@@ -14,7 +14,7 @@ const { createRequire } = require('node:module');
 const { clearTimeout, setTimeout } = require('node:timers');
 const { AbortController } = globalThis;
 
-const { redact, resolveMaxSockets } = require('./calibrate-guards.cjs');
+const { groupSum, redact, resolveMaxSockets } = require('./calibrate-guards.cjs');
 
 const INTERRUPTED = 'CalibrationInterrupted';
 
@@ -257,15 +257,20 @@ function writeResultsFile({ file, fallback, text, overwrite = false }) {
 /**
  * A run's results as the text of its file, every fractional number written to nine decimals.
  *
- * A ratio or a sum prints with a binary tail of up to 17 digits that no measurement carries, and a tail of exactly 12
+ * A ratio prints with a binary tail of up to 17 digits that no measurement carries, and a tail of exactly 12
  * is the run of digits the leak scan refuses as a possible account id, so a file could fail it by chance and then
  * not be committed. Nine decimals is below a nanosecond for a time in milliseconds and a billionth of a dollar for a
- * cost, so nothing measured is lost.
+ * cost, so nothing measured is lost. An id-range checksum (a `sum` field) is a whole number of any length, so it is
+ * written grouped by `_` every three digits as a string (`groupSum`), whatever its size.
  */
 function resultsJson(results) {
-  const round = (_key, v) =>
-    typeof v === 'number' && !Number.isInteger(v) && Number.isFinite(v) ? Number(v.toFixed(9)) : v;
-  return `${JSON.stringify(results, round, 2)}\n`;
+  const write = (key, v) => {
+    if (key === 'sum' && typeof v === 'number') return groupSum(v);
+    return typeof v === 'number' && !Number.isInteger(v) && Number.isFinite(v)
+      ? Number(v.toFixed(9))
+      : v;
+  };
+  return `${JSON.stringify(results, write, 2)}\n`;
 }
 
 /**

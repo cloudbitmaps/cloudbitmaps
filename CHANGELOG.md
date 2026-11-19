@@ -192,6 +192,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A calibration results file writes each id-range checksum grouped, so it never holds a standalone 12-digit run.** The
+  multi suite's results recorded the checksum of the ids a layout holds as a JSON number, and one of exactly twelve digits
+  is the run the leak scan refuses as a possible account id, so a finished run could not be committed. Every `sum` is now
+  written as a string of digits grouped by `_` every three from the right (`"122_497_550_000"`, `"9_000"`, `"0"`),
+  whatever its size, and the multi evidence gate reads it back through one parser that refuses a number or a malformed
+  string. No committed results file held a `sum`. No library change.
+
 - **`materializeMany` refuses the outputs that subtract a pinned operand destroyed while the call ran.** An operand that
   was crypto-shredded, destroyed in the clear or dropped after the call read it passed the re-check before the
   publishes, because the row it left reports the generation number it kept, and the outputs that subtracted it were

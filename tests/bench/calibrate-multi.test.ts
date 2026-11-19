@@ -716,6 +716,7 @@ type Run = {
   cost?: { totalUSD: number };
   workload: {
     reads: number;
+    pools?: unknown[];
     shapes: unknown[];
     expected: Record<string, Bound>;
   };
@@ -768,10 +769,15 @@ describe('the evidence gate over a rehearsal’s file', () => {
       cost: { totalUSD: 0.01 },
       workload: {
         reads,
-        shapes: defs.flatMap((d) => [
+        pools: [...new Set(stagesLib.MULTI_SHAPES.map((m) => m.pool))].map((name) => ({
+          name,
+          expected: { count: 3, sum: '9_000' },
+        })),
+        shapes: defs.flatMap((d, i) => [
           {
             ...shape(d.name, d.gets, d.bound, 'intersect'),
-            counts: { intersect: { gets: d.gets }, count: { gets: d.gets } },
+            pool: stagesLib.MULTI_SHAPES[i]?.pool,
+            counts: { intersect: { gets: d.gets, sum: '9_000' }, count: { gets: d.gets } },
           },
         ]),
         expected: {

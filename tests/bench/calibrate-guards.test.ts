@@ -856,7 +856,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     const text = processLib.resultsJson({
       rounds: 18.388563978644598,
       meanInFlight: 11.129749221924502,
-      sum: 0.1 + 0.2,
+      ratio: 0.1 + 0.2,
       p50ms: 1059.2655,
       getUSD: 92948 * 0.4e-6,
       gets: 92948,
@@ -866,7 +866,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(JSON.parse(text)).toEqual({
       rounds: 18.388563979,
       meanInFlight: 11.129749222,
-      sum: 0.3,
+      ratio: 0.3,
       p50ms: 1059.2655,
       getUSD: 0.0371792,
       gets: 92948,

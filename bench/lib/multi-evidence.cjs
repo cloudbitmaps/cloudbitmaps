@@ -16,6 +16,7 @@
 const { MULTI_STAGES, MULTI_SHAPES } = require('./calibrate-multi-stages.cjs');
 const { keptRequests } = require('./calibrate-samples.cjs');
 const { countMisses } = require('./calibrate-large-stages.cjs');
+const { parseSum } = require('./calibrate-guards.cjs');
 
 /** The counts a read stage holds each shape to: the stage and the counted verb it ran. */
 const COUNTED = Object.freeze({ multiIntersect: 'intersect', multiCount: 'count' });
@@ -59,6 +60,38 @@ function shapeProblems(name, entry, shape, reads) {
 }
 
 /**
+ * Why the workload's id-range checksums are not usable: each pool's expected sum and each shape's in-memory intersect sum are
+ * read through `parseSum` (the one grouped-string form a results file writes), and a shape's must be its pool's, since the
+ * engine's in-memory read of the shape is held to the layout before anything is written.
+ */
+function checksumProblems(w) {
+  const out = [];
+  const poolSums = new Map();
+  for (const p of w.pools ?? []) {
+    try {
+      poolSums.set(p.name, parseSum(p.expected?.sum, `pool ${p.name} expected.sum`));
+    } catch (err) {
+      out.push(err.message);
+    }
+  }
+  for (const s of w.shapes ?? []) {
+    let got;
+    try {
+      got = parseSum(s.counts?.intersect?.sum, `shape ${s.name} intersect sum`);
+    } catch (err) {
+      out.push(err.message);
+      continue;
+    }
+    if (!poolSums.has(s.pool)) {
+      out.push(`shape ${s.name} names pool ${String(s.pool)}, which the workload does not record`);
+    } else if (poolSums.get(s.pool) !== got) {
+      out.push(`shape ${s.name} intersect sum ${got} is not its pool's ${poolSums.get(s.pool)}`);
+    }
+  }
+  return out;
+}
+
+/**
  * Why a results file is not a finished, exact run of the multi suite: one message each, none for a run that is. A
  * rehearsal's file (`rehearsal: true`) carries no bill, since a rehearsal bills nothing.
  */
@@ -74,6 +107,7 @@ function multiRunProblems(run, { rehearsal = false } = {}) {
   if (!Number.isInteger(w.reads)) out.push('the workload records no read count');
   else if (w.reads < 1)
     out.push('the workload records no reads: a run that read nothing measured nothing');
+  out.push(...checksumProblems(w));
   const have = (w.shapes ?? []).map((s) => s.name).join(',');
   const suites = MULTI_SHAPES.map((s) => s.name).join(',');
   if (have !== suites) {

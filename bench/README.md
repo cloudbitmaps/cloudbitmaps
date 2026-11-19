@@ -86,6 +86,10 @@ A rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores —
 run's file, so under an evidence name it would be one `git add` from being committed as the evidence.
 Both write every fractional number to nine decimals: below a nanosecond for a time in milliseconds and a billionth of
 a dollar for a cost. A ratio's binary tail runs to 17 digits, and one of exactly 12 is a run the leak scan refuses.
+A `sum` field (the checksum of the ids a layout holds, in the multi suite's workload) is a whole number of any length, and
+a bare one of exactly 12 digits would be refused the same way, so it is written as a string of digits grouped by `_` every
+three from the right (`"122_497_550_000"`, `"9_000"`, `"0"`), whatever its size; `groupSum` writes it and `parseSum`, in
+`lib/calibrate-guards.cjs`, is the only reader, refusing a JSON number or any other form.
 
 ## How a pass records its tree, and where a bench keeps its temp files
 
