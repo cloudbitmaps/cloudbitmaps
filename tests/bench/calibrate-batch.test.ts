@@ -97,6 +97,13 @@ const batchEvidence = {
         batchRunProblems: (run: unknown, options?: { rehearsal?: boolean }) => string[];
       }
     ).batchRunProblems(run, options),
+  get RUNS_BEFORE_SETTINGS(): readonly string[] {
+    return (
+      require_(join(ROOT, 'bench', 'lib', 'batch-evidence.cjs')) as {
+        RUNS_BEFORE_SETTINGS: readonly string[];
+      }
+    ).RUNS_BEFORE_SETTINGS;
+  },
 };
 const batchCounts = require_(join(ROOT, 'bench', 'lib', 'batch-counts.cjs')) as {
   lcg: (seed: number) => () => number;
@@ -1265,8 +1272,12 @@ describe('the evidence of a batch run', () => {
 
   it('lets the two runs committed before the fields existed lack them, and no other run', async () => {
     const dir = join(ROOT, 'bench', 'calibration', 'batch');
-    const committed = readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}-[0-9a-f]+\.json$/.test(f));
-    expect(committed.length).toBeGreaterThanOrEqual(2);
+    const committed = readdirSync(dir).filter(
+      (f) =>
+        /^\d{4}-\d{2}-\d{2}-[0-9a-f]+\.json$/.test(f) &&
+        batchEvidence.RUNS_BEFORE_SETTINGS.includes(f.replace(/\.json$/, '')),
+    );
+    expect(committed.length).toBe(2);
     for (const f of committed) {
       const run = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Run;
       // The premise: neither file records a setting or a per-sample depth, and both pass the gate as written.
